@@ -1,12 +1,8 @@
 name: spec-implement
-description: Spec-driven implementation workflow (implement from an approved Spec file path passed via task)
+description: Spec-driven implementation workflow (implement from an approved Spec directory)
 builtin: true
 
 nodes:
-  # 1. 実装（agent）
-  # task には Spec ファイルパスを記述する想定（例: "Spec: docs/spec/issues-123.md"）。
-  # 入力 Contract `spec-file-path` を宣言することで、task で渡される入力データの
-  # 仕様が engine 経由で agent に明示される（[02] Contract 双方向対称性）。
   - name: implement
     type: agent
     model: default
@@ -14,4 +10,4 @@ nodes:
     instruction: implement
     policy: coding
     input_contracts:
-      - spec-file-path
+      - spec-directory

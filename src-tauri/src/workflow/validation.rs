@@ -2579,15 +2579,15 @@ mod tests {
     #[test]
     fn validate_facet_refs_passes_when_all_contracts_exist() {
         let wf = make_workflow(vec![NodeDefinition {
-            output_contract: Some("review-verdict".to_string()),
+            output_contract: Some("output-contract".to_string()),
             input_contracts: Some(vec![
-                "spec-file-path".to_string(),
-                "approved-fix-policy".to_string(),
+                "input-contract-a".to_string(),
+                "input-contract-b".to_string(),
             ]),
             ..make_step("step1", NodeType::Agent, vec![])
         }]);
         let known: HashSet<&str> =
-            HashSet::from(["review-verdict", "spec-file-path", "approved-fix-policy"]);
+            HashSet::from(["output-contract", "input-contract-a", "input-contract-b"]);
         assert!(validate_facet_refs(&wf, |k| known.contains(k)).is_ok());
     }
 

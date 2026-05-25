@@ -2,7 +2,7 @@
 
 ## 入力
 
-- 入力で渡される Spec ファイルパス（`spec-file-path` Contract に相当）
+- 入力で渡される Spec ディレクトリ（`spec-directory` Contract）
 - レビュー結果（`review-verdict` Contract に相当、観点ごとに複数）
 - 自動決定された修正方針（`approved-fix-policy` Contract に相当）
 - これまでに適用された全コード変更

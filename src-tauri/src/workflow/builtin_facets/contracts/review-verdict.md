@@ -12,6 +12,26 @@
 }
 ```
 
+```contract-validation
+{
+  "result_field": "verdict",
+  "required": ["verdict"],
+  "enums": {
+    "verdict": ["LGTM", "NEEDS_FIX"]
+  },
+  "non_empty_array_when": [
+    {
+      "field": "verdict",
+      "equals": "NEEDS_FIX",
+      "array": "findings"
+    }
+  ],
+  "array_items_required": {
+    "findings": ["severity", "message"]
+  }
+}
+```
+
 ルール:
 - `verdict` は必須: "LGTM"（問題なし）または "NEEDS_FIX"（問題あり）
 - `findings` は verdict が "NEEDS_FIX" の場合に必須（最低1エントリ）

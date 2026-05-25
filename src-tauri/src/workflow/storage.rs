@@ -287,6 +287,20 @@ mod tests {
         }
     }
 
+    fn builtin_workflow_names() -> Vec<String> {
+        builtin::list_builtin_workflows()
+            .into_iter()
+            .map(|summary| summary.name)
+            .collect()
+    }
+
+    fn first_builtin_workflow_name() -> String {
+        builtin_workflow_names()
+            .into_iter()
+            .next()
+            .expect("test premise: at least one builtin workflow exists")
+    }
+
     #[test]
     fn save_and_load_workflow() {
         let tmp = TempDir::new().unwrap();
@@ -314,29 +328,25 @@ mod tests {
         save_workflow(dir, dir, &sample_workflow("bravo", false)).unwrap();
 
         let list = list_workflows(dir).unwrap();
-        // ディスク3件 + ビルトイン6件 (bug-fix, spec-driven-development, spec-implement,
-        // spec-plan, spec-review, spec-review-auto) = 9件。ソートは ASCII 順なので
-        // ディスク3件 + ビルトイン6件が辞書順でマージされる。
-        assert_eq!(list.len(), 9);
-        assert_eq!(list[0].name, "alpha");
-        assert_eq!(list[1].name, "bravo");
-        assert_eq!(list[2].name, "bug-fix");
-        assert_eq!(list[3].name, "charlie");
-        assert_eq!(list[4].name, "spec-driven-development");
-        assert_eq!(list[5].name, "spec-implement");
-        assert_eq!(list[6].name, "spec-plan");
-        assert_eq!(list[7].name, "spec-review");
-        assert_eq!(list[8].name, "spec-review-auto");
-        // ビルトイン6件すべて builtin=true
-        for name in [
-            "bug-fix",
-            "spec-driven-development",
-            "spec-implement",
-            "spec-plan",
-            "spec-review",
-            "spec-review-auto",
-        ] {
-            let entry = list.iter().find(|s| s.name == name).unwrap();
+        let builtin_names = builtin_workflow_names();
+        let mut expected_names = vec![
+            "alpha".to_string(),
+            "bravo".to_string(),
+            "charlie".to_string(),
+        ];
+        expected_names.extend(builtin_names.iter().cloned());
+        expected_names.sort();
+        assert_eq!(
+            list.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            expected_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
+        for name in builtin_names {
+            let entry = list.iter().find(|s| s.name == name).unwrap_or_else(|| {
+                panic!("builtin workflow '{name}' must be present in merged list")
+            });
             assert!(entry.builtin, "builtin '{name}' must be marked builtin");
         }
     }
@@ -353,7 +363,6 @@ mod tests {
         fs::rename(dir.join("original.yml"), dir.join("renamed.yml")).unwrap();
 
         let list = list_workflows(dir).unwrap();
-        // ディスク1件(renamed) + ビルトイン(spec-driven-development) = 2件
         let disk_entry = list.iter().find(|s| s.name == "renamed").unwrap();
         // Summary.nameはファイルstem（renamed）であるべき、YAML本文（original）ではない
         assert_eq!(disk_entry.name, "renamed");
@@ -363,13 +372,17 @@ mod tests {
     fn list_workflows_empty_dir_includes_builtins() {
         let tmp = TempDir::new().unwrap();
         let list = list_workflows(tmp.path()).unwrap();
-        assert!(list.iter().any(|s| s.name == "spec-driven-development"));
+        for name in builtin_workflow_names() {
+            assert!(list.iter().any(|s| s.name == name));
+        }
     }
 
     #[test]
     fn list_workflows_nonexistent_dir_includes_builtins() {
         let list = list_workflows(Path::new("/nonexistent/path")).unwrap();
-        assert!(list.iter().any(|s| s.name == "spec-driven-development"));
+        for name in builtin_workflow_names() {
+            assert!(list.iter().any(|s| s.name == name));
+        }
     }
 
     #[test]
@@ -389,10 +402,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        let result = delete_workflow(dir, "spec-driven-development");
+        let builtin_name = first_builtin_workflow_name();
+        let result = delete_workflow(dir, &builtin_name);
         assert!(matches!(
             result.unwrap_err(),
-            StorageError::BuiltinProtected { ref name } if name == "spec-driven-development"
+            StorageError::BuiltinProtected { ref name } if name == &builtin_name
         ));
     }
 
@@ -458,7 +472,7 @@ mod tests {
     #[test]
     fn save_builtin_name_workflow_is_prevented_by_guard() {
         // commands.rs でビルトイン名のチェックを行うため、storage層ではそのチェックをシミュレート
-        assert!(builtin::is_builtin_workflow("spec-driven-development"));
+        assert!(builtin::is_builtin_workflow(&first_builtin_workflow_name()));
         // カスタム名はOK
         assert!(!builtin::is_builtin_workflow("my-custom"));
     }
@@ -502,7 +516,8 @@ mod tests {
         // ビルトインは削除不可（既にdelete_builtin_workflow_failsでテスト済み）
         // open_workflow_in_editor でもビルトインは弾かれる（カスタムファイルのみ）
         let tmp = TempDir::new().unwrap();
-        let result = resolve_workflow_path(tmp.path(), "spec-driven-development");
+        let builtin_name = first_builtin_workflow_name();
+        let result = resolve_workflow_path(tmp.path(), &builtin_name);
         assert!(matches!(result.unwrap_err(), StorageError::NotFound { .. }));
     }
 

@@ -992,14 +992,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "impl", "content");
-        setup_facet(wf_dir, "contracts", "spec-file-path", "format: text");
+        setup_facet(wf_dir, "contracts", "input-contract", "format: text");
 
         let wf = Workflow {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             nodes: vec![NodeDefinition {
-                input_contracts: Some(vec!["spec-file-path".to_string()]),
+                input_contracts: Some(vec!["input-contract".to_string()]),
                 ..make_step("step1", Some("impl"))
             }],
         };
@@ -1008,8 +1008,8 @@ mod tests {
         let report = diagnose_all(wf_dir, wf_dir);
         let usage = report
             .facet_usage
-            .get("contracts/spec-file-path")
-            .expect("contracts/spec-file-path usage entry should exist");
+            .get("contracts/input-contract")
+            .expect("contracts/input-contract usage entry should exist");
         assert!(
             usage
                 .iter()

@@ -464,7 +464,7 @@ struct WorkflowExecution {
     task: Option<String>,
     /// 並列実行中の場合の状態。
     parallel_run: Option<ParallelRunState>,
-    /// ワークフローレベルの変数（spec-file-path等のcontract結果から設定）。
+    /// ワークフローレベルの変数（spec-directory等のcontract結果から設定）。
     workflow_variables: HashMap<String, String>,
 }
 
@@ -4826,7 +4826,7 @@ impl WorkflowEngine {
     }
 
     /// contract検証成功時にworkflow_variablesへの反映を行う共通ヘルパー。
-    /// spec-file-path contractの場合、spec_file_pathをworkflow_variablesに設定する。
+    /// spec-directory contractの場合、spec_dirをworkflow_variablesに設定する。
     async fn apply_contract_variables(
         &self,
         worktree_path: &str,
@@ -4849,9 +4849,9 @@ impl WorkflowEngine {
     ) -> HashMap<String, String> {
         let mut vars = HashMap::new();
         if let (Some(ref contract), Some(ref so)) = (output_contract, structured_output) {
-            if contract == "spec-file-path" {
-                if let Some(path) = so.get("spec_file_path").and_then(|v| v.as_str()) {
-                    vars.insert("spec_file_path".to_string(), path.to_string());
+            if contract == "spec-directory" {
+                if let Some(path) = so.get("spec_dir").and_then(|v| v.as_str()) {
+                    vars.insert("spec_dir".to_string(), path.to_string());
                 }
             }
         }
@@ -7507,11 +7507,11 @@ mod tests {
         }
     }
 
-    fn make_spec_driven_plan_fix_policy_exec(
+    fn make_spec_driven_spec_fix_policy_exec(
         execution_id: &str,
         current_session_id: &str,
     ) -> WorkflowExecution {
-        make_spec_driven_fix_policy_exec(execution_id, current_session_id, "plan_fix_policy")
+        make_spec_driven_fix_policy_exec(execution_id, current_session_id, "spec_fix_policy")
     }
 
     fn make_spec_driven_fix_policy_exec(
@@ -8780,12 +8780,12 @@ mod tests {
         let step = make_test_step("step_b", NodeType::Agent, "Do B", vec![], None);
         let mut wv = HashMap::new();
         wv.insert(
-            "spec_file_path".to_string(),
+            "spec_dir".to_string(),
             "docs/spec/issues-909.md".to_string(),
         );
         let result = WorkflowEngine::inject_step_outputs("Do B", &step, &HashMap::new(), &[], &wv);
         assert!(result.contains("<workflow_variables>"));
-        assert!(result.contains("spec_file_path"));
+        assert!(result.contains("spec_dir"));
         assert!(result.contains("docs/spec/issues-909.md"));
     }
 
@@ -8800,18 +8800,18 @@ mod tests {
     #[test]
     fn inject_step_outputs_parallel_parent_aggregated_children() {
         // 並列ブロック親名で集約された子出力がpass_output_fromで参照できること
-        let mut step = make_test_step("plan_fix", NodeType::Agent, "Fix plan", vec![], None);
+        let mut step = make_test_step("spec_fix", NodeType::Agent, "Fix plan", vec![], None);
         step.pass_output_from = Some(vec![
-            "plan_review_parallel".to_string(),
+            "spec_review_parallel".to_string(),
             "plan_draft".to_string(),
         ]);
 
         let mut outputs = HashMap::new();
         // 並列ブロック親の集約StepOutput（子出力をまとめたJSONオブジェクト）
         outputs.insert(
-            "plan_review_parallel".to_string(),
+            "spec_review_parallel".to_string(),
             StepOutput {
-                step_name: "plan_review_parallel".to_string(),
+                step_name: "spec_review_parallel".to_string(),
                 run_index: 1,
                 session_id: None,
                 result: None,
@@ -8837,7 +8837,7 @@ mod tests {
 
         let result =
             WorkflowEngine::inject_step_outputs("Fix plan", &step, &outputs, &[], &HashMap::new());
-        assert!(result.contains("<step_output name=\"plan_review_parallel\">"));
+        assert!(result.contains("<step_output name=\"spec_review_parallel\">"));
         assert!(result.contains("NEEDS_FIX"));
         assert!(result.contains("Missing error handling"));
         assert!(result.contains("<step_output name=\"plan_draft\">"));
@@ -8847,14 +8847,14 @@ mod tests {
     #[test]
     fn inject_step_outputs_parallel_parent_via_pass_previous_response() {
         // pass_previous_response: trueで並列ブロック親の集約出力が参照できること
-        let mut step = make_test_step("plan_fix", NodeType::Agent, "Fix plan", vec![], None);
+        let mut step = make_test_step("spec_fix", NodeType::Agent, "Fix plan", vec![], None);
         step.pass_previous_response = Some(true);
 
         let mut outputs = HashMap::new();
         outputs.insert(
-            "plan_review_parallel".to_string(),
+            "spec_review_parallel".to_string(),
             StepOutput {
-                step_name: "plan_review_parallel".to_string(),
+                step_name: "spec_review_parallel".to_string(),
                 run_index: 1,
                 session_id: None,
                 result: None,
@@ -8869,7 +8869,7 @@ mod tests {
         );
 
         let history = vec![StepHistoryEntry {
-            step_name: "plan_review_parallel".to_string(),
+            step_name: "spec_review_parallel".to_string(),
             completed_at: 1000.0,
             result: Some("else".to_string()),
             session_id: None,
@@ -8887,7 +8887,7 @@ mod tests {
             &history,
             &HashMap::new(),
         );
-        assert!(result.contains("<step_output name=\"plan_review_parallel\">"));
+        assert!(result.contains("<step_output name=\"spec_review_parallel\">"));
         assert!(result.contains("NEEDS_FIX"));
         assert!(result.contains("SQL injection risk"));
     }
@@ -8895,16 +8895,13 @@ mod tests {
     // ---- extract_contract_variables ----
 
     #[test]
-    fn extract_contract_variables_spec_file_path() {
-        let contract = Some("spec-file-path".to_string());
+    fn extract_contract_variables_spec_dir() {
+        let contract = Some("spec-directory".to_string());
         let so = Some(serde_json::json!({
-            "spec_file_path": "docs/spec/issues-909.md"
+            "spec_dir": "docs/spec/issues-909.md"
         }));
         let vars = WorkflowEngine::extract_contract_variables(&contract, &so);
-        assert_eq!(
-            vars.get("spec_file_path").unwrap(),
-            "docs/spec/issues-909.md"
-        );
+        assert_eq!(vars.get("spec_dir").unwrap(), "docs/spec/issues-909.md");
     }
 
     #[test]
@@ -8923,7 +8920,7 @@ mod tests {
         let contract = Some("approved-fix-policy".to_string());
         let so = Some(serde_json::json!({
             "policy": "Fix only approved findings.",
-            "review_step": "plan_review_parallel"
+            "review_step": "spec_review_parallel"
         }));
         let vars = WorkflowEngine::extract_contract_variables(&contract, &so);
         assert!(vars.is_empty());
@@ -9148,14 +9145,14 @@ mod tests {
     #[test]
     fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut exec = make_spec_driven_plan_fix_policy_exec(
+        let mut exec = make_spec_driven_spec_fix_policy_exec(
             "00000000-0000-0000-0000-000000000917",
             "policy-session",
         );
         let secret_env_value = "MY_TOKEN_VALUE_123456".to_string();
         let mut structured = serde_json::json!({
             "policy": "Use password=secret123 with ghp_abcdefghijklmnopqrstuvwxyz1234567890 -----BEGIN PRIVATE KEY-----abc-----END PRIVATE KEY----- MY_TOKEN_VALUE_123456",
-            "review_step": "plan_review_parallel"
+            "review_step": "spec_review_parallel"
         });
         WorkflowEngine::mask_json_strings(&mut structured, &[secret_env_value]);
 
@@ -9174,7 +9171,7 @@ mod tests {
         let entry = exec
             .step_history
             .iter()
-            .find(|entry| entry.step_name == "plan_fix_policy")
+            .find(|entry| entry.step_name == "spec_fix_policy")
             .unwrap();
         let log = WorkflowEventLog::new(tmp.path());
         log.append(&WorkflowEvent::RunStarted {
@@ -9237,21 +9234,21 @@ mod tests {
 
     #[test]
     fn extract_contract_variables_no_contract_returns_empty() {
-        let so = Some(serde_json::json!({"spec_file_path": "docs/spec.md"}));
+        let so = Some(serde_json::json!({"spec_dir": "docs/spec.md"}));
         let vars = WorkflowEngine::extract_contract_variables(&None, &so);
         assert!(vars.is_empty());
     }
 
     #[test]
     fn extract_contract_variables_no_output_returns_empty() {
-        let contract = Some("spec-file-path".to_string());
+        let contract = Some("spec-directory".to_string());
         let vars = WorkflowEngine::extract_contract_variables(&contract, &None);
         assert!(vars.is_empty());
     }
 
     #[test]
     fn extract_contract_variables_missing_field_returns_empty() {
-        let contract = Some("spec-file-path".to_string());
+        let contract = Some("spec-directory".to_string());
         let so = Some(serde_json::json!({"other_field": "value"}));
         let vars = WorkflowEngine::extract_contract_variables(&contract, &so);
         assert!(vars.is_empty());
@@ -11380,15 +11377,15 @@ mod tests {
     }
 
     #[test]
-    fn spec_driven_plan_fix_policy_approve_records_policy_and_starts_plan_fix_once() {
+    fn spec_driven_spec_fix_policy_approve_records_policy_and_starts_spec_fix_once() {
         // [08] prose 抽出経路は廃止済み。テストでは CLI submit 経由で確定する想定の
         // structured_output と effective_result を直接組み立てて apply_approval_application
         // の遷移挙動を検証する（spec [08] Rule 4 / [05] internal node command 境界）。
         let mut exec =
-            make_spec_driven_plan_fix_policy_exec("exec-plan-approve", "plan-policy-session");
+            make_spec_driven_spec_fix_policy_exec("exec-plan-approve", "plan-policy-session");
         let structured_output = serde_json::json!({
             "policy": "Update the spec only for the approved plan review finding.",
-            "review_step": "plan_review_parallel",
+            "review_step": "spec_review_parallel",
         });
         let effective_result = "approved".to_string();
 
@@ -11406,19 +11403,19 @@ mod tests {
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
         assert_eq!(
             exec.workflow.nodes[exec.current_step_index].name,
-            "plan_fix"
+            "spec_fix"
         );
-        assert_eq!(exec.step_execution_counts.get("plan_fix"), Some(&1));
+        assert_eq!(exec.step_execution_counts.get("spec_fix"), Some(&1));
         assert_eq!(
             exec.step_history
                 .iter()
-                .filter(|entry| entry.step_name == "plan_fix_policy")
+                .filter(|entry| entry.step_name == "spec_fix_policy")
                 .count(),
             1
         );
         assert_eq!(
             exec.step_outputs
-                .get("plan_fix_policy")
+                .get("spec_fix_policy")
                 .and_then(|output| output.structured_output.as_ref())
                 .and_then(|output| output.get("policy"))
                 .and_then(|policy| policy.as_str()),
@@ -11426,7 +11423,7 @@ mod tests {
         );
         assert_eq!(
             exec.step_outputs
-                .get("plan_fix_policy")
+                .get("spec_fix_policy")
                 .and_then(|output| output.output_contract.as_deref()),
             Some("approved-fix-policy")
         );
@@ -11438,7 +11435,7 @@ mod tests {
                 effective_result: "approved".to_string(),
                 structured_output: Some(serde_json::json!({
                     "policy": "Duplicate",
-                    "review_step": "plan_review_parallel"
+                    "review_step": "spec_review_parallel"
                 })),
                 output_contract: Some("approved-fix-policy".to_string()),
             },
@@ -11450,20 +11447,20 @@ mod tests {
         assert_eq!(
             exec.step_history
                 .iter()
-                .filter(|entry| entry.step_name == "plan_fix_policy")
+                .filter(|entry| entry.step_name == "spec_fix_policy")
                 .count(),
             1
         );
-        assert_eq!(exec.step_execution_counts.get("plan_fix"), Some(&1));
+        assert_eq!(exec.step_execution_counts.get("spec_fix"), Some(&1));
     }
 
     #[test]
-    fn spec_driven_plan_fix_policy_reject_returns_to_plan_approval_without_approved_policy_or_plan_fix(
+    fn spec_driven_spec_fix_policy_reject_returns_to_plan_approval_without_approved_policy_or_spec_fix(
     ) {
         let mut exec =
-            make_spec_driven_plan_fix_policy_exec("exec-plan-reject", "plan-policy-session");
+            make_spec_driven_spec_fix_policy_exec("exec-plan-reject", "plan-policy-session");
         let decision = ApprovalDecision::Reject {
-            comment: "Revise the plan policy first.".to_string(),
+            comment: "Revise the spec policy first.".to_string(),
         };
 
         let outcome = WorkflowEngine::apply_approval_application(
@@ -11472,7 +11469,7 @@ mod tests {
             ApprovalApplication {
                 effective_result: "reject".to_string(),
                 structured_output: Some(WorkflowEngine::reject_structured_output(
-                    "Revise the plan policy first.",
+                    "Revise the spec policy first.",
                     &[],
                 )),
                 output_contract: None,
@@ -11483,16 +11480,16 @@ mod tests {
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
         assert_eq!(
             exec.workflow.nodes[exec.current_step_index].name,
-            "plan_approval"
+            "approve_spec"
         );
-        assert_eq!(exec.step_execution_counts.get("plan_fix"), None);
+        assert_eq!(exec.step_execution_counts.get("spec_fix"), None);
         assert!(!exec
             .step_outputs
             .values()
             .any(|output| output.output_contract.as_deref() == Some("approved-fix-policy")));
         assert_eq!(
             exec.step_outputs
-                .get("plan_fix_policy")
+                .get("spec_fix_policy")
                 .and_then(|output| output.structured_output.as_ref())
                 .and_then(|output| output.get("decision"))
                 .and_then(|decision| decision.as_str()),
@@ -11802,12 +11799,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_outcome_auto_approve_plan_policy_starts_plan_fix_once() {
+    async fn execute_outcome_auto_approve_plan_policy_starts_spec_fix_once() {
         let engine = WorkflowEngine::new_for_test();
         let worktree_path = "/repo";
         let policy_session_id = uuid::Uuid::new_v4().to_string();
         let exec =
-            make_spec_driven_plan_fix_policy_exec("exec-plan-auto-approve", &policy_session_id);
+            make_spec_driven_spec_fix_policy_exec("exec-plan-auto-approve", &policy_session_id);
         let snapshot = exec.to_workflow_state();
         let run_id = exec.id.clone();
         engine.executions.lock().await.insert(run_id.clone(), exec);
@@ -11829,31 +11826,31 @@ mod tests {
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
         assert_eq!(
             exec.workflow.nodes[exec.current_step_index].name,
-            "plan_fix"
+            "spec_fix"
         );
-        assert_eq!(exec.step_execution_counts.get("plan_fix"), Some(&1));
+        assert_eq!(exec.step_execution_counts.get("spec_fix"), Some(&1));
         assert_eq!(
             exec.step_history
                 .iter()
-                .filter(|entry| entry.step_name == "plan_fix_policy")
+                .filter(|entry| entry.step_name == "spec_fix_policy")
                 .count(),
             1
         );
         // [08] prose 抽出経路は廃止済み（spec [08] Rule 4）。
         assert!(exec
             .step_outputs
-            .get("plan_fix_policy")
+            .get("spec_fix_policy")
             .and_then(|output| output.structured_output.as_ref())
             .is_none());
     }
 
     #[tokio::test]
-    async fn auto_approve_and_manual_approve_race_starts_plan_fix_once() {
+    async fn auto_approve_and_manual_approve_race_starts_spec_fix_once() {
         let engine = Arc::new(WorkflowEngine::new_for_test());
         let worktree_path = "/repo";
         let policy_session_id = uuid::Uuid::new_v4().to_string();
         let exec =
-            make_spec_driven_plan_fix_policy_exec("exec-plan-approve-race", &policy_session_id);
+            make_spec_driven_spec_fix_policy_exec("exec-plan-approve-race", &policy_session_id);
         let snapshot = exec.to_workflow_state();
         let run_id = exec.id.clone();
         engine.executions.lock().await.insert(run_id.clone(), exec);
@@ -11940,20 +11937,20 @@ mod tests {
         let (_, exec) = find_by_worktree(&execs, worktree_path).unwrap();
         assert_eq!(
             exec.workflow.nodes[exec.current_step_index].name,
-            "plan_fix"
+            "spec_fix"
         );
-        assert_eq!(exec.step_execution_counts.get("plan_fix"), Some(&1));
+        assert_eq!(exec.step_execution_counts.get("spec_fix"), Some(&1));
         assert_eq!(
             exec.step_history
                 .iter()
-                .filter(|entry| entry.step_name == "plan_fix_policy")
+                .filter(|entry| entry.step_name == "spec_fix_policy")
                 .count(),
             1
         );
         // [08] prose 抽出経路は廃止済み（spec [08] Rule 4）。
         assert!(exec
             .step_outputs
-            .get("plan_fix_policy")
+            .get("spec_fix_policy")
             .and_then(|output| output.structured_output.as_ref())
             .is_none());
     }
@@ -17081,10 +17078,10 @@ mod dispatch_boundary_tests {
         assert!(step_output.structured_output.is_some());
     }
 
-    /// [08] spec-file-path contract が submit された場合、workflow_variables に
-    /// `spec_file_path` が反映される（extract_contract_variables の合流）。
+    /// [08] spec-directory contract が submit された場合、workflow_variables に
+    /// `spec_dir` が反映される（extract_contract_variables の合流）。
     #[tokio::test]
-    async fn submit_output_applies_contract_variables_for_spec_file_path() {
+    async fn submit_output_applies_contract_variables_for_spec_dir() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowEngine::new_for_test());
         let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
@@ -17097,7 +17094,7 @@ mod dispatch_boundary_tests {
             nodes: vec![NodeDefinition {
                 name: "plan".to_string(),
                 node_type: NodeType::Agent,
-                output_contract: Some("spec-file-path".to_string()),
+                output_contract: Some("spec-directory".to_string()),
                 ..NodeDefinition::default()
             }],
         };
@@ -17116,8 +17113,8 @@ mod dispatch_boundary_tests {
             app.handle(),
             &run_id,
             "plan",
-            "spec-file-path",
-            serde_json::json!({"spec_file_path": "docs/spec/issues-1029.md"}),
+            "spec-directory",
+            serde_json::json!({"spec_dir": "docs/spec/issues-1029.md"}),
             None,
             None,
         )
@@ -17132,7 +17129,7 @@ mod dispatch_boundary_tests {
             .map(|exec| exec.workflow_variables.clone())
             .unwrap();
         assert_eq!(
-            vars.get("spec_file_path").map(|s| s.as_str()),
+            vars.get("spec_dir").map(|s| s.as_str()),
             Some("docs/spec/issues-1029.md")
         );
     }
@@ -17326,7 +17323,7 @@ mod dispatch_boundary_tests {
             nodes: vec![NodeDefinition {
                 name: "plan".to_string(),
                 node_type: NodeType::Agent,
-                output_contract: Some("spec-file-path".to_string()),
+                output_contract: Some("spec-directory".to_string()),
                 ..NodeDefinition::default()
             }],
         };
@@ -17356,8 +17353,8 @@ mod dispatch_boundary_tests {
             app.handle(),
             &run_id,
             "plan",
-            "spec-file-path",
-            serde_json::json!({"spec_file_path": "docs/spec/issues-1029.md"}),
+            "spec-directory",
+            serde_json::json!({"spec_dir": "docs/spec/issues-1029.md"}),
             None,
             None,
         )

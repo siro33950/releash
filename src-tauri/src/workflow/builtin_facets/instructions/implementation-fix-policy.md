@@ -1,6 +1,6 @@
 # Implementation Fix Policy Approval
 
-入力で渡されるレビュー結果（6観点 reviewer の `review-verdict`）と Spec ファイルを読み込み、実装の修正方針を策定する。
+入力で渡されるレビュー結果（6観点 reviewer の `review-verdict`）と Spec 3文書を読み込み、実装の修正方針を策定する。
 
 ファイル編集は一切行わない。
 

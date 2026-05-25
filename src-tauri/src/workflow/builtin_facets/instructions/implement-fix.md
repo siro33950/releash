@@ -3,7 +3,7 @@
 ## 入力
 
 - 承認済みの実装修正方針（`approved-fix-policy`）
-- Spec ファイルパス（参照用）
+- `spec-directory` Contract（参照用）
 
 ## 早期終了判定（最優先）
 
@@ -18,7 +18,7 @@ NO_FIX_NEEDED
 ## プロセス（`action: "fix"` の指摘が1件以上ある場合）
 
 1. `approved-fix-policy.findings` の各要素を参照し、`action: "fix"` のものだけを修正対象とする
-2. 必要に応じて Spec ファイル（`spec_file_path`）を読み込み、要求と振る舞い定義のコンテキストを把握する
+2. 必要に応じて `spec_dir` 配下の requirements.md / behavior.md / design.md を読み込み、要求・振る舞い・設計境界のコンテキストを把握する
 3. 各修正対象について:
    - `line`（指定があれば）を参考に該当コードを読み込む
    - `rationale` と `policy` 全体方針に沿う修正だけを適用する

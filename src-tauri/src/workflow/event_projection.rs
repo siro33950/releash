@@ -1347,13 +1347,10 @@ pub(crate) fn reconstruct_state_from_events(
                         completed_at: *timestamp,
                     },
                 );
-                // contract 由来の workflow_variables を反映（spec-file-path のみ）。
-                if contract == "spec-file-path" {
-                    if let Some(path) = structured_output
-                        .get("spec_file_path")
-                        .and_then(|v| v.as_str())
-                    {
-                        workflow_variables.insert("spec_file_path".to_string(), path.to_string());
+                // contract 由来の workflow_variables を反映（spec-directory のみ）。
+                if contract == "spec-directory" {
+                    if let Some(path) = structured_output.get("spec_dir").and_then(|v| v.as_str()) {
+                        workflow_variables.insert("spec_dir".to_string(), path.to_string());
                     }
                 }
                 updated_at = *timestamp;

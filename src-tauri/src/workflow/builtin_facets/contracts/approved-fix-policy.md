@@ -2,7 +2,7 @@
 ```json
 {
   "policy": "全体方針の自由文（fix ステップが従う全体ガイダンス）",
-  "review_step": "code_review_parallel" | "plan_review_parallel" | "bug_investigation" | "bug_review_parallel",
+  "review_step": "code_review_parallel" | "spec_review_parallel" | "bug_investigation" | "bug_review_parallel",
   "findings": [
     {
       "severity": "error" | "warning" | "info",
@@ -15,9 +15,15 @@
 }
 ```
 
+```contract-validation
+{
+  "result": "approved"
+}
+```
+
 ルール:
 - `policy` は必須・空不可・65536 UTF-8 バイト以下。fix ステップが従う全体方針を自由文で書く
-- `review_step` は必須: Plan 修正方針なら `plan_review_parallel`、実装修正方針なら `code_review_parallel`、バグ初回修正方針なら `bug_investigation`、バグ追加修正方針なら `bug_review_parallel`
+- `review_step` は必須: Spec 修正方針なら `spec_review_parallel`、実装修正方針なら `code_review_parallel`、バグ初回修正方針なら `bug_investigation`、バグ追加修正方針なら `bug_review_parallel`
 - `findings` は必須（空配列可）。レビューで挙がった各指摘について判断を1件ずつ記載する
 - 各 finding:
   - `severity` 必須: `error` / `warning` / `info`

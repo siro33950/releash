@@ -1,6 +1,6 @@
 # Fix Policy Auto Decision
 
-入力で渡されたレビュー結果（6観点 reviewer の `review-verdict`）と Spec ファイルを読み込み、実装の修正方針を **エージェント自身が** 策定する。
+入力で渡されたレビュー結果（6観点 reviewer の `review-verdict`）と Spec 3文書を読み込み、実装の修正方針を **エージェント自身が** 策定する。
 ユーザーへの承認問い合わせは行わず、最初の応答で `releash workflow output submit` により構造化出力を提出する。
 
 ファイル編集は一切行わない（permission: readonly）。
@@ -11,7 +11,7 @@
 
 - 入力に含まれる 6観点 reviewer 各々の `review-verdict` を取得する
 - 各 `review-verdict.findings` を全件抽出する
-- 入力に含まれる Spec ファイルパスを参照する（要求・振る舞い定義の文脈把握のため）
+- 入力に含まれる `spec_dir` を参照する（要求・振る舞い・設計境界の文脈把握のため）
 
 ### 2. 妥当性検証（各 finding ごと）
 
