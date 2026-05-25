@@ -55,7 +55,7 @@
 		"lucide-react": "^1.7.0",
 		"radix-ui": "^1.4.3",
 		"react": "^19.2.6",
-		"react-dom": "^19.1.0",
+		"react-dom": "^19.2.6",
 		"react-markdown": "^10.1.0",
 		"react-resizable-panels": "^4.7.4",
 		"rehype-highlight": "^7.0.2",
