@@ -57,4 +57,4 @@ behavior.md の各 Rule をどの設計方針で満たすか。
 
 ## 出力
 
-`design.md` 更新後、`spec-directory` Contract に従って同じ `spec_dir` を構造化出力する。
+`design.md` 更新後、同じ `spec_dir` を提出値として確定し、提出は出力Contract側の手順に従う。

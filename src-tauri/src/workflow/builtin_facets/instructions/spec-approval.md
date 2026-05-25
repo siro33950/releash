@@ -18,5 +18,3 @@ Spec 3文書の承認を行う。
 
 - ユーザーが approve した場合: 承認されたことを短く確認する。
 - ユーザーが reject した場合: reject の意図を短く確認する。workflow が Spec 修正方針へ進む。
-
-`<workflow_output>` は出力しない。

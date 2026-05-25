@@ -1,7 +1,7 @@
 # Fix Policy Auto Decision
 
 入力で渡されたレビュー結果（6観点 reviewer の `review-verdict`）と Spec 3文書を読み込み、実装の修正方針を **エージェント自身が** 策定する。
-ユーザーへの承認問い合わせは行わず、最初の応答で `releash workflow output submit` により構造化出力を提出する。
+ユーザーへの承認問い合わせは行わず、最初の応答で構造化出力を提出する。
 
 ファイル編集は一切行わない（permission: readonly）。
 
@@ -49,17 +49,9 @@
 
 ## 出力
 
-策定した方針を `approved-fix-policy` Contract に従う JSON にして `releash workflow output submit` で提出する。
-
-```sh
-releash workflow output submit <run_id> \
-  --step <step_name> \
-  --type approved-fix-policy \
-  --json '{"review_step":"code_review_parallel","policy":"...","findings":[...]}'
-```
+策定した方針を提出に必要な値を確定する。
 
 - `findings` は元のレビュー結果から **棄却分も含めて** 全件残す（fix 側で `action: "skip"` を解釈する）
 - `line` は元の review-verdict から引き継ぐ（無い場合は省略）
 - 「ついでに直す」項目は加えない
 - `review_step` は `code_review_parallel`
-- 提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する

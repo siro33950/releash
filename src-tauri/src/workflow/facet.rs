@@ -98,7 +98,25 @@ impl FacetKind {
 /// engine から観測されないため、必ず CLI 経由で提出する必要がある。
 pub fn output_contract_preamble(key: &str) -> String {
     format!(
-        "step 完了時に下記データ仕様 (型: {key}) に従う JSON を `releash workflow output submit` で提出すること。\n\n```sh\nreleash workflow output submit {{{{run_id}}}} \\\n  --step {{{{step_name}}}} \\\n  --type {key} \\\n  --json '{{...}}'\n```\n\n`--json` の代わりに `--file <path>.json` も使える。提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する。\n\nデータ仕様 (型: {key}):"
+        "step 完了時に下記データ仕様 (型: {key}) に従う JSON を `releash workflow output submit` で提出すること。\nチャット本文や最終応答に JSON をそのまま書いても提出とは扱われない。必ず CLI コマンドを実行すること。\n\n```sh\nreleash workflow output submit {{{{run_id}}}} \\\n  --step {{{{step_name}}}} \\\n  --type {key} \\\n  --json '{{...}}'\n```\n\n提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する。\n\nデータ仕様 (型: {key}):"
+    )
+}
+
+/// 出力 Contract がある step の user message 末尾に置く完了時アクション。
+///
+/// system_prompt 側の Contract preamble だけだと、作業本文の最後にある instruction /
+/// step output 注入 / task 注入が直近文脈になり、agent が最終応答で説明してしまう
+/// 余地が残る。Contract 由来の提出手順を user message の末尾にも置き、提出値が
+/// 確定した時点の次アクションを CLI 実行に固定する。
+pub fn output_contract_completion_action(key: &str) -> String {
+    format!(
+        "## 完了時の必須アクション\n\n\
+提出値が確定した時点で、次の assistant action は最終応答ではなく CLI 実行でなければならない。\n\
+チャット本文に JSON や要約を書いても提出とは扱われない。必ず次のコマンドで出力を提出すること。\n\
+このコマンドが成功するまで step は完了していない。\n\n\
+```sh\n\
+releash workflow output submit {{{{run_id}}}} \\\n  --step {{{{step_name}}}} \\\n  --type {key} \\\n  --json '{{...}}'\n\
+```"
     )
 }
 
@@ -733,8 +751,24 @@ mod tests {
         // 型ラベルと Contract 本文を含む
         assert!(sys.contains("releash workflow output submit"));
         assert!(sys.contains("--type plan-doc"));
+        assert!(sys.contains("--json"));
+        assert!(sys.contains("チャット本文や最終応答に JSON をそのまま書いても提出とは扱われない"));
+        assert!(!sys.contains("--file"));
         assert!(sys.contains("Output as markdown."));
         assert_eq!(result.user_message, "");
+    }
+
+    #[test]
+    fn output_contract_completion_action_requires_cli_as_next_action() {
+        let action = output_contract_completion_action("plan-doc");
+
+        assert!(action.contains("完了時の必須アクション"));
+        assert!(action.contains("次の assistant action は最終応答ではなく CLI 実行"));
+        assert!(action.contains("releash workflow output submit"));
+        assert!(action.contains("--type plan-doc"));
+        assert!(action.contains("--json"));
+        assert!(!action.contains("--file"));
+        assert!(!action.contains("+  --step"));
     }
 
     #[test]

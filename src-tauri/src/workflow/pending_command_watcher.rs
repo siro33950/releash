@@ -18,7 +18,9 @@ use crate::agent_sdk::AgentProcessMap;
 use crate::agent_status::current_timestamp;
 use crate::session::SessionStore;
 use crate::workflow::engine::WorkflowEngine;
-use crate::workflow::pending_command::{PendingCommandStore, DEFAULT_PENDING_TTL_SECS};
+use crate::workflow::pending_command::{
+    PendingCommandPayload, PendingCommandStore, DEFAULT_PENDING_TTL_SECS,
+};
 use crate::workflow::pending_command_dispatcher::process_pending_command_entry;
 
 /// pending command watcher を起動し、新規 entry を engine に dispatch するバックグ
@@ -169,6 +171,70 @@ async fn process_pending_pickup<R: tauri::Runtime>(
 
     for entry in entries {
         process_pending_command_entry(app, &engine, &session_store, &handles, store, entry).await;
+    }
+}
+
+/// turn_complete 直前の同期 pickup 用。
+///
+/// agent が `releash workflow output submit` を呼ぶと CLI は pending file 書き出しで
+/// 完了するため、通常 watcher の 200ms debounce / 1s rescan より先に agent
+/// turn_complete が届き得る。この経路では SubmitOutput だけを先に取り込み、
+/// approve / reject / abort は WaitingApproval 等の状態遷移後に通常 watcher が
+/// 処理する順序を保つ。
+pub(crate) async fn process_pending_submit_output_pickup<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    store: &PendingCommandStore,
+) {
+    if let Err(e) = store.cleanup_expired(current_timestamp(), DEFAULT_PENDING_TTL_SECS) {
+        log::warn!("pending command cleanup_expired failed: {e}");
+    }
+    if let Err(e) =
+        store.requeue_unexpired_processing(current_timestamp(), DEFAULT_PENDING_TTL_SECS)
+    {
+        log::warn!("pending command processing orphan requeue failed: {e}");
+    }
+
+    let entries = match store.list_pending() {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("pending command list_pending failed: {e}");
+            return;
+        }
+    };
+    if entries.is_empty() {
+        return;
+    }
+
+    let engine = match app.try_state::<Arc<WorkflowEngine>>() {
+        Some(s) => s.inner().clone(),
+        None => {
+            log::warn!("pending command pickup skipped: WorkflowEngine state not available");
+            return;
+        }
+    };
+    let session_store = match app.try_state::<Arc<SessionStore>>() {
+        Some(s) => s.inner().clone(),
+        None => {
+            log::warn!("pending command pickup skipped: SessionStore state not available");
+            return;
+        }
+    };
+    let handles = match app.try_state::<Arc<Mutex<AgentProcessMap>>>() {
+        Some(s) => s.inner().clone(),
+        None => {
+            log::warn!("pending command pickup skipped: AgentProcessMap state not available");
+            return;
+        }
+    };
+
+    for entry in entries {
+        if matches!(
+            entry.command.payload,
+            PendingCommandPayload::SubmitOutput { .. }
+        ) {
+            process_pending_command_entry(app, &engine, &session_store, &handles, store, entry)
+                .await;
+        }
     }
 }
 

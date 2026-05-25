@@ -1,7 +1,7 @@
 ---
 type: instruction
 key: bug-fix-policy
-description: バグ原因調査の結果を踏まえ、修正方針をユーザーに承認させて approved-fix-policy を CLI 提出する
+description: バグ原因調査の結果を踏まえ、修正方針をユーザーに承認させて 構造化出力を作成する
 ---
 
 # Bug Fix Policy Approval
@@ -28,14 +28,14 @@ description: バグ原因調査の結果を踏まえ、修正方針をユーザ�
 
    > この方針で修正に進みますか? 変更があれば指示してください。
 
-**このターンでは構造化出力は提出しない（`releash workflow output submit` を呼ばない）。**
+**このターンでは構造化出力は提出しない。**
 
 ### ターン2以降
 
 ユーザーの応答に応じて分岐する:
 
 - **承認された場合**（「OK」「承認」「approve」「いいよ」等）:
-  下記「承認後の出力」に従い `releash workflow output submit` で `approved-fix-policy` を提出する。
+  下記「承認後の出力」に従い 構造化出力を提出する。
 
 - **修正指示があった場合**:
   指示に従って方針を更新し、再度ターン1の構成で人間向けに報告し直して承認を求める。
@@ -45,16 +45,8 @@ description: バグ原因調査の結果を踏まえ、修正方針をユーザ�
 
 ## 承認後の出力
 
-ユーザーから承認を得た場合、`approved-fix-policy` Contract に従う JSON を組み立て、当該 step 名と `run_id` を主語に `releash workflow output submit` を呼んで提出する。
-
-```sh
-releash workflow output submit <run_id> \
-  --step <step_name> \
-  --type approved-fix-policy \
-  --json '{"review_step":"bug_investigation","policy":"...","findings":[...]}'
-```
+ユーザーから承認を得た場合、提出に必要な値を確定する。
 
 - `review_step` には `"bug_investigation"` を指定する（本 policy が参照した一次入力の種別）
 - `policy` には承認された修正方針の全体ガイダンスを書く
 - `findings` は人間に報告した修正項目と完全に一致させる
-- 提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する
