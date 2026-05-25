@@ -4,6 +4,7 @@ mod agent_sdk;
 mod agent_status;
 mod backends;
 pub mod cli;
+mod cli_install;
 mod config;
 mod diff_comment_sender;
 mod diff_comment_store;
@@ -184,6 +185,7 @@ pub fn run() {
             ))));
 
             let data_dir = app.path().app_data_dir()?;
+            cli_install::ensure_cli_symlink_installed();
             let config_path = data_dir.join("releash.toml");
             let config = load_or_create_config(&config_path)
                 .map_err(|e| format!("設定ファイルの読み込みに失敗: {e}"))?;
