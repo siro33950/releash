@@ -18,7 +18,9 @@ use crate::workflow::command_input::{
     validate_optional_comment_text, validate_reject_reason_text, validate_required_comment_text,
     CommandInputError,
 };
-use crate::workflow::contract::{validate_contract_value, ContractValidationResult};
+use crate::workflow::contract::{
+    strip_contract_validation_metadata, validate_contract_value, ContractValidationResult,
+};
 use crate::workflow::event::{
     ApprovalDecisionRecord, CliMutationRejectionReason, CliMutationRequestRecord,
     CollectedOutputEntry, WorkflowEvent,
@@ -44,6 +46,7 @@ use crate::workflow::state::{
 
 #[allow(dead_code)]
 const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
+const MAX_CONTRACT_REPAIR_ATTEMPTS: u32 = 2;
 
 static PRIVATE_KEY_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
@@ -1972,6 +1975,52 @@ impl WorkflowEngine {
         false
     }
 
+    fn submitted_step_output_for(
+        exec: &WorkflowExecution,
+        step_name: &str,
+        run_index: u32,
+        contract: &str,
+    ) -> Option<StepOutput> {
+        let output = exec.step_outputs.get(step_name)?;
+        if output.run_index == run_index
+            && output.output_contract.as_deref() == Some(contract)
+            && output.structured_output.is_some()
+        {
+            Some(output.clone())
+        } else {
+            None
+        }
+    }
+
+    fn resolved_output_contract_definition_for(
+        exec: &WorkflowExecution,
+        step_name: &str,
+        contract: &str,
+    ) -> Option<String> {
+        for node in &exec.workflow.nodes {
+            if node.name == step_name && node.output_contract.as_deref() == Some(contract) {
+                return node
+                    .resolved_facets
+                    .output_contract
+                    .as_deref()
+                    .map(strip_contract_validation_metadata);
+            }
+            if let Some(children) = node.parallel_children.as_ref() {
+                for child in children {
+                    if child.name == step_name && child.output_contract.as_deref() == Some(contract)
+                    {
+                        return child
+                            .resolved_facets
+                            .output_contract
+                            .as_deref()
+                            .map(strip_contract_validation_metadata);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub(crate) async fn append_command_commit_context<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -3094,14 +3143,38 @@ impl WorkflowEngine {
             ApprovalDecision::Reject { .. } => ("reject", ApprovalDecisionRecord::Reject),
         };
 
-        // target検証 + session_id + worktree_path を1回のロックで取得
-        let (current_session_id, worktree_path) = {
+        // target検証 + session_id + worktree_path + contract 提出状態を1回のロックで取得
+        let (
+            current_session_id,
+            worktree_path,
+            workflow_name_for_contract,
+            node_name_for_contract,
+            approval_output_contract,
+            approval_submitted_output,
+        ) = {
             let execs = self.executions.lock().await;
             let exec = execs
                 .get(run_id)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
             Self::resolve_approval_target_snapshot(exec, Some(run_id), expected_step_name)?;
-            (exec.current_session_id.clone(), exec.worktree_path.clone())
+            let node = &exec.workflow.nodes[exec.current_step_index];
+            let output_contract = node.output_contract.clone();
+            let run_index = exec
+                .step_execution_counts
+                .get(&node.name)
+                .copied()
+                .unwrap_or(1);
+            let submitted_output = output_contract.as_deref().and_then(|contract| {
+                Self::submitted_step_output_for(exec, &node.name, run_index, contract)
+            });
+            (
+                exec.current_session_id.clone(),
+                exec.worktree_path.clone(),
+                exec.workflow.name.clone(),
+                node.name.clone(),
+                output_contract,
+                submitted_output,
+            )
         };
 
         // Reject時: 空コメントバリデーション + Approve/Reject 共通の長さ上限検証
@@ -3121,13 +3194,43 @@ impl WorkflowEngine {
             Self::validate_approval_turn_phase(turn_phase)?;
         }
 
+        let approve_submitted_output = if matches!(decision, ApprovalDecision::Approve) {
+            if let Some(ref contract) = approval_output_contract {
+                if let Some(output) = approval_submitted_output {
+                    Some(output)
+                } else {
+                    self.handle_missing_required_output(
+                        app,
+                        session_store,
+                        handles,
+                        &worktree_path,
+                        run_id,
+                        &workflow_name_for_contract,
+                        &node_name_for_contract,
+                        contract,
+                        current_session_id.as_deref(),
+                    )
+                    .await?;
+                    return Err(WorkflowEngineError::ValidationError(
+                        "required structured output has not been submitted".to_string(),
+                    ));
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // [08] prose 抽出経路廃止に伴い、approval node の structured output は CLI / Tauri
-        // 経由の `SubmitOutput` でしか確定しない。Approve 時に agent 自由文を構造化
-        // 出力に昇格させない（spec [08] Rule 4: 構造化出力の確定経路は明示的提出のみ）。
-        // Reject は理由を redaction 済み JSON に整形し、application 入力に渡す。
+        // 経由の `SubmitOutput` でしか確定しない。Approve 時は提出済み output を採用し、
+        // Reject は理由を redaction 済み JSON に整形して application 入力に渡す。
         let (structured_output, contract_result): (Option<serde_json::Value>, Option<String>) =
             match &decision {
-                ApprovalDecision::Approve => (None, None),
+                ApprovalDecision::Approve => approve_submitted_output
+                    .as_ref()
+                    .map(|output| (output.structured_output.clone(), output.result.clone()))
+                    .unwrap_or((None, None)),
                 ApprovalDecision::Reject { comment } => {
                     let secrets = Self::collect_configured_secret_values(app);
                     (
@@ -3137,10 +3240,15 @@ impl WorkflowEngine {
                 }
             };
 
-        // SubmitOutput で確定する output_contract は application_output_contract に
-        // 直接持ち込まない（CLI 経由でのみ確定する境界）。Approve / Reject いずれも
-        // application 入力上は contract 名を持たせない。
-        let application_output_contract: Option<String> = None;
+        let application_output_contract: Option<String> = if matches!(
+            decision,
+            ApprovalDecision::Approve
+        ) && approve_submitted_output.is_some()
+        {
+            approval_output_contract.clone()
+        } else {
+            None
+        };
         let contract_variables =
             Self::extract_contract_variables(&application_output_contract, &structured_output);
 
@@ -3499,13 +3607,69 @@ impl WorkflowEngine {
         token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError> {
         // [08] parallel child の構造化出力は CLI / Tauri 経由の `SubmitOutput` で確定する。
-        // 旧来の「agent 自由文から `<workflow_output>` を抽出して step output を確定する」
-        // 経路は廃止された（spec [08] Rule 4 構造化出力の確定経路は明示的提出のみ）。
-        // child 完了時点では agent 自由文を観測せず、後続 step は SubmitOutput で
-        // 確定済みの output（projection で merge 済み）を経路非依存に参照する。
+        // output_contract がある child は、提出済み output が無い限り Completed にしない。
         let _ = final_parts;
-        let child_result: Option<String> = None;
-        let child_structured_output: Option<serde_json::Value> = None;
+        let (submitted_child_output, missing_child_output) = if exit_code == 0 {
+            let execs = self.executions.lock().await;
+            let exec = execs
+                .get(run_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
+            if exec.is_terminal() {
+                return Ok(());
+            }
+            let Some(pr) = exec.parallel_run.as_ref() else {
+                return Ok(());
+            };
+            if pr.parent_step_name != parent_step_name {
+                return Ok(());
+            }
+            let Some(child) = pr.children.iter().find(|c| c.session_id == session_id) else {
+                return Ok(());
+            };
+            if let Some(contract) = child.output_contract.clone() {
+                let submitted = Self::submitted_step_output_for(
+                    exec,
+                    &child.step_name,
+                    child.run_index,
+                    &contract,
+                );
+                let missing = if submitted.is_none() {
+                    Some((
+                        exec.workflow.name.clone(),
+                        child.step_name.clone(),
+                        contract.clone(),
+                    ))
+                } else {
+                    None
+                };
+                (submitted, missing)
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+        if let Some((workflow_name, child_name, contract)) = missing_child_output {
+            self.handle_missing_required_output(
+                app,
+                session_store,
+                handles,
+                worktree_path,
+                run_id,
+                &workflow_name,
+                &child_name,
+                &contract,
+                Some(session_id),
+            )
+            .await?;
+            return Ok(());
+        }
+        let child_result = submitted_child_output
+            .as_ref()
+            .and_then(|output| output.result.clone());
+        let child_structured_output = submitted_child_output
+            .as_ref()
+            .and_then(|output| output.structured_output.clone());
 
         // ロック内: 子ステップの状態更新 + 全完了チェック
         let (all_completed, outcome_opt, exec_snapshot_before) = {
@@ -3923,6 +4087,209 @@ impl WorkflowEngine {
             open_tabs,
         )
         .await;
+    }
+
+    fn build_missing_output_repair_prompt(
+        run_id: &str,
+        step_name: &str,
+        contract: &str,
+        contract_definition: Option<&str>,
+    ) -> String {
+        let contract_section = contract_definition
+            .filter(|body| !body.trim().is_empty())
+            .map(|body| {
+                format!(
+                    "\n\nContract definition (type: {contract}):\n\n```text\n{}\n```",
+                    body.trim()
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            "The required structured output for this workflow step has not been submitted.\n\n\
+Submit it by running this command with a JSON object that satisfies the `{contract}` contract:{contract_section}\n\n\
+```sh\n\
+releash workflow output submit {run_id} \\\n  --step {step_name} \\\n  --type {contract} \\\n  --json '{{...}}'\n\
+```\n\n\
+Do not create a temporary JSON file for this. Do not finish the step until the command succeeds."
+        )
+    }
+
+    fn contract_repair_attempt_count<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        run_id: &str,
+        node_name: &str,
+    ) -> Result<u32, WorkflowEngineError> {
+        let data_dir =
+            crate::session::resolve_data_dir(app).map_err(WorkflowEngineError::SessionStore)?;
+        let log = WorkflowEventLog::new(&data_dir);
+        let events = log
+            .read_log(run_id)
+            .map_err(WorkflowEngineError::SessionStore)?;
+        Ok(events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    WorkflowEvent::ContractRepairRequested {
+                        node_name: event_node,
+                        ..
+                    } if event_node == node_name
+                )
+            })
+            .count() as u32)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_missing_required_output<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+        run_id: &str,
+        workflow_name: &str,
+        node_name: &str,
+        contract: &str,
+        session_id: Option<&str>,
+    ) -> Result<(), WorkflowEngineError> {
+        let prior_attempts = self.contract_repair_attempt_count(app, run_id, node_name)?;
+        let attempt = prior_attempts + 1;
+        let Some(session_id) = session_id else {
+            return self
+                .fail_missing_required_output(
+                    app,
+                    session_store,
+                    handles,
+                    worktree_path,
+                    run_id,
+                    node_name,
+                    contract,
+                    "no active session is available for contract output repair",
+                )
+                .await;
+        };
+        if attempt > MAX_CONTRACT_REPAIR_ATTEMPTS {
+            return self
+                .fail_missing_required_output(
+                    app,
+                    session_store,
+                    handles,
+                    worktree_path,
+                    run_id,
+                    node_name,
+                    contract,
+                    &format!(
+                        "required structured output was not submitted after {MAX_CONTRACT_REPAIR_ATTEMPTS} repair attempts"
+                    ),
+                )
+                .await;
+        }
+
+        let data_dir =
+            crate::session::resolve_data_dir(app).map_err(WorkflowEngineError::SessionStore)?;
+        let Some(session) = session_store
+            .get_session(&data_dir, session_id)
+            .map_err(WorkflowEngineError::SessionStore)?
+        else {
+            return self
+                .fail_missing_required_output(
+                    app,
+                    session_store,
+                    handles,
+                    worktree_path,
+                    run_id,
+                    node_name,
+                    contract,
+                    &format!("step session not found for contract repair: {session_id}"),
+                )
+                .await;
+        };
+
+        self.write_log_required(
+            app,
+            WorkflowEvent::ContractRepairRequested {
+                run_id: run_id.to_string(),
+                workflow_name: workflow_name.to_string(),
+                node_name: node_name.to_string(),
+                attempt,
+                violation_reason: "missing_submit_output".to_string(),
+                timestamp: current_timestamp(),
+            },
+        )
+        .map_err(WorkflowEngineError::SessionStore)?;
+
+        let contract_definition = {
+            let execs = self.executions.lock().await;
+            execs.get(run_id).and_then(|exec| {
+                Self::resolved_output_contract_definition_for(exec, node_name, contract)
+            })
+        };
+        let prompt = Self::build_missing_output_repair_prompt(
+            run_id,
+            node_name,
+            contract,
+            contract_definition.as_deref(),
+        );
+        let _runtime_guard = crate::agent_sdk::acquire_session_runtime_lock(session_id).await;
+        crate::agent_sdk::start_agent_turn_internal_locked(
+            app,
+            handles,
+            session_store,
+            session_id,
+            worktree_path,
+            &session.permission_mode,
+            &prompt,
+        )
+        .await
+        .map_err(WorkflowEngineError::AgentSession)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn fail_missing_required_output<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+        run_id: &str,
+        node_name: &str,
+        contract: &str,
+        reason: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        let (snapshot, snapshot_before) = {
+            let mut execs = self.executions.lock().await;
+            let exec = execs
+                .get_mut(run_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
+            if exec.is_terminal() {
+                return Ok(());
+            }
+            let snapshot_before = exec.clone();
+            let mut entry = exec.make_step_history_entry(
+                Some("contract_missing_output".to_string()),
+                None,
+                Some(contract.to_string()),
+            );
+            entry.state = "failed".to_string();
+            exec.step_history.push(entry);
+            exec.state = WorkflowExecutionState::Failed {
+                reason: format!(
+                    "Required structured output for step '{node_name}' was not submitted: {reason}"
+                ),
+            };
+            exec.updated_at = current_timestamp();
+            (exec.to_workflow_state(), snapshot_before)
+        };
+        self.execute_outcome(
+            app,
+            session_store,
+            handles,
+            worktree_path,
+            StepOutcome::Persist(snapshot),
+            snapshot_before,
+        )
+        .await
     }
 
     /// session_idがワークフロー実行中かどうか。
@@ -4445,21 +4812,62 @@ impl WorkflowEngine {
         let text = Self::extract_text_from_parts(final_parts);
 
         // [08] prose 抽出経路廃止: agent step の structured output は CLI / Tauri 経由の
-        // `SubmitOutput` でしか確定しない。本経路では output_contract の有無に依らず
-        // 自由文を structured output に昇格させず、後続経路は `structured_output = None`
-        // で進行する（spec [08] Rule 4: 構造化出力の確定経路は明示的提出のみに統一）。
-        let output_contract = {
+        // `SubmitOutput` でしか確定しない。output_contract がある step は、提出済み
+        // output が見つからない限り完了扱いにせず、同じ session に修正ターンを投げる。
+        let (
+            run_id,
+            workflow_name,
+            output_contract,
+            run_index,
+            current_session_id,
+            submitted_output,
+        ) = {
             let execs = self.executions.lock().await;
-            let (_, exec) = find_by_worktree(&execs, worktree_path)
+            let (run_id, exec) = find_by_worktree(&execs, worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
-            exec.workflow.nodes[exec.current_step_index]
-                .output_contract
-                .clone()
+            let node = &exec.workflow.nodes[exec.current_step_index];
+            let output_contract = node.output_contract.clone();
+            let run_index = exec
+                .step_execution_counts
+                .get(&node.name)
+                .copied()
+                .unwrap_or(1);
+            let submitted_output = output_contract.as_deref().and_then(|contract| {
+                Self::submitted_step_output_for(exec, &node.name, run_index, contract)
+            });
+            (
+                run_id.clone(),
+                exec.workflow.name.clone(),
+                output_contract,
+                run_index,
+                exec.current_session_id.clone(),
+                submitted_output,
+            )
         };
-        let structured_output: Option<serde_json::Value> = None;
-        let contract_result: Option<String> = None;
+        let (structured_output, contract_result) = if let Some(ref contract) = output_contract {
+            if let Some(output) = submitted_output {
+                (output.structured_output.clone(), output.result.clone())
+            } else {
+                self.handle_missing_required_output(
+                    app,
+                    session_store,
+                    handles,
+                    worktree_path,
+                    &run_id,
+                    &workflow_name,
+                    step_name,
+                    contract,
+                    current_session_id.as_deref(),
+                )
+                .await?;
+                return Ok(());
+            }
+        } else {
+            (None, None)
+        };
+        let _ = run_index;
 
-        // contract検証成功時のworkflow_variables反映（structured_output が None の本経路では no-op）。
+        // contract検証成功時のworkflow_variables反映。
         self.apply_contract_variables(worktree_path, &output_contract, &structured_output)
             .await;
 
@@ -4763,6 +5171,12 @@ impl WorkflowEngine {
         // 既存 builtin の `{{task}}` テンプレート展開と二重注入にならないようにする。
         let allow_task = step.input_contracts.as_ref().is_some_and(|v| !v.is_empty());
         Self::append_task_block(&mut prompt, task, allow_task);
+        Self::append_output_contract_completion_action(
+            &mut prompt,
+            step.output_contract.as_deref(),
+            run_id,
+            &step.name,
+        );
         Ok((system_prompt, prompt))
     }
 
@@ -5136,6 +5550,23 @@ impl WorkflowEngine {
         }
         let escaped = Self::escape_xml_text(t);
         prompt.push_str(&format!("\n\n<task>\n{}\n</task>", escaped));
+    }
+
+    fn append_output_contract_completion_action(
+        prompt: &mut String,
+        output_contract: Option<&str>,
+        run_id: &str,
+        step_name: &str,
+    ) {
+        let Some(contract) = output_contract else {
+            return;
+        };
+        let action = crate::workflow::facet::output_contract_completion_action(contract);
+        let action = Self::render_submit_command_variables(&action, run_id, step_name);
+        if !prompt.is_empty() {
+            prompt.push_str("\n\n");
+        }
+        prompt.push_str(&action);
     }
 
     /// XML 風タグ内に文字列を埋め込む際に `<` / `>` / `&` をエスケープする。
@@ -6221,6 +6652,7 @@ impl WorkflowEngine {
             // ファセットからプロンプト構築
             let (system_prompt, user_message) = Self::build_parallel_step_prompt(
                 ps,
+                &execution_id,
                 worktree_path,
                 task_clone.as_deref(),
                 &step_outputs_snapshot,
@@ -6371,6 +6803,7 @@ impl WorkflowEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build_parallel_step_prompt(
         ps: &crate::workflow::schema::ChildNodeDefinition,
+        run_id: &str,
         worktree_path: &str,
         task: Option<&str>,
         step_outputs: &HashMap<String, StepOutput>,
@@ -6386,9 +6819,10 @@ impl WorkflowEngine {
         }
         let composed = crate::workflow::facet::compose_child_facets(ps);
 
-        let system_prompt = composed
-            .system_prompt
-            .map(|s| Self::render_facet_variables(&s, worktree_path, task));
+        let system_prompt = composed.system_prompt.map(|s| {
+            let s = Self::render_facet_variables(&s, worktree_path, task);
+            Self::render_submit_command_variables(&s, run_id, &ps.name)
+        });
         let mut user_message =
             Self::render_facet_variables(&composed.user_message, worktree_path, task);
 
@@ -6425,6 +6859,12 @@ impl WorkflowEngine {
         // 並列子 node も top-level 同様、input_contracts 宣言があるときだけ `<task>` 注入する
         let allow_task = ps.input_contracts.as_ref().is_some_and(|v| !v.is_empty());
         Self::append_task_block(&mut user_message, task, allow_task);
+        Self::append_output_contract_completion_action(
+            &mut user_message,
+            ps.output_contract.as_deref(),
+            run_id,
+            &ps.name,
+        );
 
         Ok((system_prompt, user_message))
     }
@@ -9710,9 +10150,25 @@ mod tests {
         // instruction in user_message, with variable expansion
         assert!(prompt.contains("Task: Fix bug"));
         assert!(prompt.contains("Implement the feature."));
+        // output_contract がある場合、作業本文の末尾にも Contract 由来の
+        // 完了時アクションを置き、初回完了時に CLI 提出へ誘導する。
+        assert!(prompt.contains("完了時の必須アクション"));
+        assert!(
+            prompt.contains("releash workflow output submit 00000000-0000-0000-0000-000000000000")
+        );
+        assert!(prompt.contains("--step build"));
+        assert!(prompt.contains("--type plan-doc"));
+        assert!(prompt.contains("--json"));
+        assert!(!prompt.contains("--file"));
+        assert!(!prompt.contains("+  --step"));
         // inject_step_outputs: pass_previous_response includes plan output
         assert!(prompt.contains("<step_output name=\"plan\">"));
         assert!(prompt.contains("Plan output text"));
+        assert!(
+            prompt.find("完了時の必須アクション").unwrap()
+                > prompt.find("Plan output text").unwrap(),
+            "completion action must remain after injected step outputs"
+        );
     }
 
     #[test]
@@ -9798,7 +10254,7 @@ mod tests {
         step.instruction = None;
         resolve_node_facets_for_test(&mut step, tmp.path());
 
-        let (sys, _prompt) = WorkflowEngine::build_step_prompt(
+        let (sys, prompt) = WorkflowEngine::build_step_prompt(
             &step,
             "00000000-0000-0000-0000-000000000000",
             "/repo",
@@ -9814,6 +10270,13 @@ mod tests {
         assert!(!sys.is_empty(), "system_prompt must not be empty string");
         assert!(sys.contains("POLICY_BODY"));
         assert!(sys.contains("CONTRACT_BODY"));
+        assert!(prompt.contains("完了時の必須アクション"));
+        assert!(
+            prompt.contains("releash workflow output submit 00000000-0000-0000-0000-000000000000")
+        );
+        assert!(prompt.contains("--step s"));
+        assert!(prompt.contains("--type plan-doc"));
+        assert!(!prompt.contains("+  --step"));
     }
 
     // ---- dispatch_session_start (SessionStartGate 経由のテストダブル検証) ----
@@ -9960,7 +10423,8 @@ mod tests {
         .await
         .unwrap();
 
-        // user_message に knowledge / instruction はなく空のままだが、関数自体は成功する
+        // knowledge / instruction がなくても、output_contract があれば user_message には
+        // Contract 由来の完了時アクションが入る。
         let _ = prompt;
 
         let recorded = records.lock().unwrap();
@@ -10370,6 +10834,7 @@ mod tests {
 
         let (system_prompt, user_message) = WorkflowEngine::build_parallel_step_prompt(
             &ps,
+            "11111111-1111-1111-1111-111111111111",
             "/repo",
             None,
             &HashMap::new(),
@@ -10384,14 +10849,21 @@ mod tests {
         // policy と output_contract の本文が system_prompt に集約される
         assert!(sp.contains("PARALLEL_POLICY_BODY"));
         assert!(sp.contains("PARALLEL_CONTRACT_BODY"));
-        // user_message には knowledge / instruction しか入らない
+        // Contract 本文は system_prompt に集約される
         assert!(!sp.contains("PARALLEL_KNOWLEDGE_BODY"));
         assert!(!sp.contains("PARALLEL_INSTRUCTION_BODY"));
 
-        // knowledge / instruction の本文は user_message に集約される
+        // knowledge / instruction の本文と、Contract 由来の完了時アクションは
+        // user_message に集約される。
         assert!(user_message.contains("PARALLEL_KNOWLEDGE_BODY"));
         assert!(user_message.contains("PARALLEL_INSTRUCTION_BODY"));
-        // policy / output_contract は user_message には入らない
+        assert!(user_message.contains("完了時の必須アクション"));
+        assert!(user_message
+            .contains("releash workflow output submit 11111111-1111-1111-1111-111111111111"));
+        assert!(user_message.contains("--step child"));
+        assert!(user_message.contains("--type oc"));
+        assert!(!user_message.contains("+  --step"));
+        // policy / output_contract 本文は user_message には入らない
         assert!(!user_message.contains("PARALLEL_POLICY_BODY"));
         assert!(!user_message.contains("PARALLEL_CONTRACT_BODY"));
     }
@@ -10411,6 +10883,7 @@ mod tests {
 
         let (system_prompt, user_message) = WorkflowEngine::build_parallel_step_prompt(
             &ps,
+            "11111111-1111-1111-1111-111111111111",
             "/repo",
             None,
             &HashMap::new(),
@@ -17269,7 +17742,8 @@ mod dispatch_boundary_tests {
         }];
 
         let (session_store, handles) = make_dispatch_deps();
-        // 自由文経路は prose 抽出を行わないため、step_outputs は変化しない。
+        // 自由文経路は prose 抽出を行わないため、step_outputs は変化せず、
+        // output_contract がある step は明示的提出なしでは完了しない。
         // [08] handle_auto_complete のエラーを .ok() で握り潰さないこと（review 指摘）。
         // 完了経路を通って初めて「自由文出力中の `<workflow_output>` は無視される」を
         // 検証できるため、.expect で経路実行を保証する。
@@ -17307,15 +17781,40 @@ mod dispatch_boundary_tests {
             .filter(|e| matches!(e, WorkflowEvent::OutputSubmitted { .. }))
             .count();
         assert_eq!(submitted_count_before, submitted_count_after);
-        // 経路実行の事実: review step の NodeCompleted が事実履歴に残る。
         let node_completed = events_after
             .iter()
             .filter(|e| matches!(e, WorkflowEvent::NodeCompleted { node_name, .. } if node_name == "review"))
             .count();
-        assert!(
-            node_completed > 0,
-            "handle_auto_complete should commit NodeCompleted for review step"
+        assert_eq!(
+            node_completed, 0,
+            "handle_auto_complete must not advance a contract step without SubmitOutput"
         );
+        let state_after = engine
+            .executions
+            .lock()
+            .await
+            .get(&run_id)
+            .map(|e| e.state.clone())
+            .unwrap();
+        assert!(
+            matches!(state_after, WorkflowExecutionState::Failed { .. }),
+            "seeded test execution has no active session, so missing SubmitOutput fails instead of advancing"
+        );
+    }
+
+    #[test]
+    fn missing_output_repair_prompt_uses_json_not_file() {
+        let prompt = WorkflowEngine::build_missing_output_repair_prompt(
+            "11111111-1111-1111-1111-111111111111",
+            "review",
+            "review-verdict",
+            Some("データ:\n- verdict: LGTM | NEEDS_FIX"),
+        );
+        assert!(prompt.contains("--json"));
+        assert!(!prompt.contains("--file"));
+        assert!(prompt.contains("Contract definition (type: review-verdict)"));
+        assert!(prompt.contains("verdict: LGTM | NEEDS_FIX"));
+        assert!(prompt.contains("Do not create a temporary JSON file"));
     }
 
     /// [08] 振る舞い定義 Rule 1: OutputSubmitted append が失敗した場合、

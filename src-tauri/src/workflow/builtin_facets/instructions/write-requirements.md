@@ -69,4 +69,4 @@ docs/specs/<spec-id>/
 
 ## 出力
 
-Spec ディレクトリと `requirements.md` の作成・更新後、`spec-directory` Contract に従って構造化出力を出す。
+Spec ディレクトリと `requirements.md` の作成・更新後、提出に必要な値を確定し、提出は出力Contract側の手順に従う。

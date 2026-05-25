@@ -17,9 +17,11 @@
 
 ## 出力制御
 
-最初の応答では `<workflow_output>` ブロックを出力しない。ユーザーが approve した場合のみ、`approved-fix-policy` Contract に従って `<workflow_output>` ブロックを1つだけ出力する。
+最初の応答では構造化出力は提出しない。
 
-ユーザーが reject した場合は、reject の意図を短く確認応答する。`<workflow_output>` は出力しない。
+ユーザーが approve した場合のみ、提出に必要な値を確定する。
+
+ユーザーが reject した場合は、reject の意図を短く確認応答し、構造化出力は提出しない。
 
 ## approved-fix-policy 作成ルール
 

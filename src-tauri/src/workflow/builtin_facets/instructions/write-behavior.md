@@ -50,4 +50,4 @@ Feature: [機能名]
 
 ## 出力
 
-`behavior.md` 更新後、`spec-directory` Contract に従って同じ `spec_dir` を構造化出力する。
+`behavior.md` 更新後、同じ `spec_dir` を提出値として確定し、提出は出力Contract側の手順に従う。

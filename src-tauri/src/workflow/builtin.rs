@@ -939,6 +939,7 @@ mod tests {
                         });
                     let (_sys, prompt) = WorkflowEngine::build_parallel_step_prompt(
                         child,
+                        "11111111-1111-1111-1111-111111111111",
                         "/tmp/worktree",
                         Some(TASK_TEXT),
                         &HashMap::new(),
@@ -1297,11 +1298,11 @@ mod tests {
         }
     }
 
-    /// bug-investigation instruction が Contract 経路 (output_contract:
-    /// bug-investigation-result) と整合する出力指示のみを持つことを固定する。
+    /// bug-investigation instruction が output_contract の具体名に依存しない
+    /// 出力指示のみを持つことを固定する。
     /// [08] CLI/Tauri 経由の `SubmitOutput` を唯一の構造化出力確定経路に揃える
-    /// 不変条件として、`<workflow_output>` envelope の出力指示は禁止し、代わりに
-    /// `releash workflow output submit` 経由で contract を提出するよう指示する。
+    /// 不変条件として、`<workflow_output>` envelope の出力指示は禁止する。
+    /// 提出コマンドの案内は instruction ではなく output Contract preamble に集約する。
     #[test]
     fn bug_investigation_instruction_aligns_with_contract() {
         let body = facet::load_facet(
@@ -1325,15 +1326,17 @@ mod tests {
             );
         }
 
-        // Contract 準拠 JSON 出力を要求する指示を含む。
         assert!(
-            body.contains("bug-investigation-result"),
-            "bug-investigation instruction must reference 'bug-investigation-result' Contract. body={body}"
+            body.contains("出力Contract側の定義"),
+            "bug-investigation instruction must defer output shape to the provided output Contract. body={body}"
         );
-        // [08] CLI 経由の typed 提出を明示する。
         assert!(
-            body.contains("releash workflow output submit"),
-            "bug-investigation instruction must direct agent to call `releash workflow output submit`. body={body}"
+            !body.contains("bug-investigation-result"),
+            "bug-investigation instruction must not hard-code output Contract name. body={body}"
+        );
+        assert!(
+            !body.contains("releash workflow output submit"),
+            "bug-investigation instruction must not duplicate submit command guidance. body={body}"
         );
     }
 
@@ -1400,6 +1403,47 @@ mod tests {
                 assert!(
                     occurrences <= allowed,
                     "instruction '{key}' must not embed step name '{step_name}' as route info. occurrences={occurrences}, allowed_quoted={allowed}, body={body}"
+                );
+            }
+        }
+    }
+
+    /// [08] prose 抽出経路は廃止済み。ビルトイン instruction は旧
+    /// `<workflow_output>` envelope を案内せず、Contract 提出は CLI / typed API
+    /// 経由の `SubmitOutput` に寄せる。
+    #[test]
+    fn builtin_instructions_do_not_reference_legacy_workflow_output_envelope() {
+        for entry in BUILTIN_FACETS
+            .iter()
+            .filter(|entry| entry.kind == FacetKind::Instruction)
+        {
+            assert!(
+                !entry.content.contains("<workflow_output>"),
+                "builtin instruction '{}' must not reference legacy <workflow_output> envelope. body={}",
+                entry.key,
+                entry.content
+            );
+            assert!(
+                !entry.content.contains("releash workflow output submit"),
+                "builtin instruction '{}' must not duplicate output submit command guidance; output Contract preamble owns it. body={}",
+                entry.key,
+                entry.content
+            );
+            for phrase in [
+                "`review-verdict` Contract に従う",
+                "`approved-fix-policy` Contract に従う",
+                "`bug-investigation-result` Contract に従う",
+                "`spec-directory` Contract に従って",
+                "構造化出力を出す",
+                "構造化出力する",
+                "JSON を組み立てる",
+                "JSON にする",
+            ] {
+                assert!(
+                    !entry.content.contains(phrase),
+                    "builtin instruction '{}' must not hard-code output Contract guidance phrase '{phrase}'. body={}",
+                    entry.key,
+                    entry.content
                 );
             }
         }

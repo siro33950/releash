@@ -2261,6 +2261,24 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                     handle.block_on(async move {
                                         if let Some(engine) = wf_engine {
                                             if engine.is_running(&csid_wf).await {
+                                                match crate::session::resolve_data_dir(&app_wf) {
+                                                    Ok(data_dir) => {
+                                                        let store =
+                                                            crate::workflow::pending_command::PendingCommandStore::new(
+                                                                &data_dir,
+                                                            );
+                                                        crate::workflow::pending_command_watcher::process_pending_submit_output_pickup(
+                                                            &app_wf, &store,
+                                                        )
+                                                        .await;
+                                                    }
+                                                    Err(e) => {
+                                                        log::warn!(
+                                                            "pending SubmitOutput pickup skipped for {}: resolve_data_dir failed: {e}",
+                                                            csid_wf
+                                                        );
+                                                    }
+                                                }
                                                 if let Err(e) = engine
                                                     .on_turn_complete(
                                                         &app_wf, &ss_wf, &h_wf, &csid_wf,
