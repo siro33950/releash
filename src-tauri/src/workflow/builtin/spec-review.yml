@@ -9,7 +9,7 @@ nodes:
       - name: code_review_acceptance
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: review-acceptance
         policy: review
         output_contract: review-verdict
@@ -20,7 +20,7 @@ nodes:
       - name: code_review_structure
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: review-structure
         policy: review
         output_contract: review-verdict
@@ -31,7 +31,7 @@ nodes:
       - name: code_review_quality
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: review-quality
         policy: review
         output_contract: review-verdict
@@ -42,7 +42,7 @@ nodes:
       - name: code_review_test
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: review-test
         policy: review
         output_contract: review-verdict
@@ -53,7 +53,7 @@ nodes:
       - name: code_review_security
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: review-security
         policy: review
         output_contract: review-verdict
@@ -64,7 +64,7 @@ nodes:
       - name: code_review_architecture
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: review-architecture
         policy: review
         output_contract: review-verdict
@@ -80,7 +80,7 @@ nodes:
   - name: implementation_fix_policy
     type: approval
     model: default
-    permission: readonly
+    permission: ask
     instruction: implementation-fix-policy
     policy: coding
     output_contract: approved-fix-policy
@@ -117,7 +117,7 @@ nodes:
   - name: implementation_approval
     type: approval
     model: default
-    permission: readonly
+    permission: ask
     instruction: implementation-approval
     policy: coding
     input_contracts:

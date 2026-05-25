@@ -1,18 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
-import type {
-	BackendInfo,
-	ChatMessage,
-	ChatSession,
-	ImageAttachment,
-	LegacyChatMessage,
-	MentionReference,
-	MessagePart,
-	MessageRole,
-	ModelInfo,
-	PermissionMode,
-	SessionState,
-	SessionSummary,
-	TurnPhase,
+import {
+	type BackendInfo,
+	type ChatMessage,
+	type ChatSession,
+	type ImageAttachment,
+	type LegacyChatMessage,
+	type MentionReference,
+	type MessagePart,
+	type MessageRole,
+	type ModelInfo,
+	normalizePermissionMode,
+	type PermissionMode,
+	type SessionState,
+	type SessionSummary,
+	type TurnPhase,
 } from "@/types/session";
 
 interface LegacyChatSession {
@@ -23,7 +24,7 @@ interface LegacyChatSession {
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
-	permissionMode: PermissionMode;
+	permissionMode: string;
 	backendId?: string | null;
 	workflowStepSession?: boolean;
 }
@@ -85,7 +86,7 @@ function convertLegacySession(session: LegacyChatSession): ChatSession {
 	return {
 		...session,
 		messages: session.messages.map(convertLegacyMessage),
-		permissionMode: session.permissionMode,
+		permissionMode: normalizePermissionMode(session.permissionMode),
 		backendId: session.backendId ?? null,
 	};
 }
@@ -112,7 +113,7 @@ interface RawGetSessionResponse {
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
-	permissionMode: PermissionMode;
+	permissionMode: string;
 	backendId?: string | null;
 	selectedModel?: string | null;
 	availableModels?: ModelInfo[];

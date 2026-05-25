@@ -176,7 +176,7 @@ pub struct ChatSession {
     pub updated_at: f64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_session_id: Option<String>,
-    /// 抽象モード文字列（"readonly" / "edit" / "full"）。
+    /// 抽象モード文字列（"ask" / "edit" / "full"）。
     /// serde の default を意図的に付けない: 保存済みセッションで欠落していた場合は
     /// デシリアライズエラーで起動を拒否する（破壊的変更、Spec issues-947 参照）。
     pub permission_mode: String,
@@ -702,7 +702,7 @@ mod tests {
             };
             let err = validate_session_permission_mode(&session).unwrap_err();
             assert!(
-                err.contains("readonly, edit, full"),
+                err.contains("ask, edit, full"),
                 "legacy '{legacy}' must be rejected with allowed list, got: {err}"
             );
         }
@@ -1628,12 +1628,12 @@ mod tests {
 
     // Spec issues-947: WS handler の AgentSessionStartRequest 経路は
     // `create_session_internal_with_permission` で session を生成し、検証済み抽象モードを
-    // 初回保存で確定する。readonly / edit / full それぞれが保存済みセッションの
+    // 初回保存で確定する。ask / edit / full それぞれが保存済みセッションの
     // permission_mode として選択値どおりに記録されることを確認する。
     #[test]
     fn create_session_with_permission_persists_selected_abstract_mode() {
         for mode in [
-            crate::permission::PermissionMode::Readonly,
+            crate::permission::PermissionMode::Ask,
             crate::permission::PermissionMode::Edit,
             crate::permission::PermissionMode::Full,
         ] {
@@ -1664,7 +1664,7 @@ mod tests {
 
     #[test]
     fn create_session_command_inner_persists_valid_permission_modes() {
-        for mode in ["readonly", "edit", "full"] {
+        for mode in ["ask", "edit", "full"] {
             let store = SessionStore::default();
             let dir = tempfile::tempdir().unwrap();
             let registry = test_backend_registry();
@@ -1709,7 +1709,7 @@ mod tests {
             )
             .unwrap_err();
             assert!(
-                err.contains("readonly, edit, full"),
+                err.contains("ask, edit, full"),
                 "invalid mode '{invalid}' must include allowed list, got: {err}"
             );
             assert!(store

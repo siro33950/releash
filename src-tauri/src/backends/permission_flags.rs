@@ -10,7 +10,7 @@ use crate::permission::PermissionMode;
 /// 抽象モード → Claude SDK の permissionMode 値
 pub(super) fn claude_flag_from_mode(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::Readonly => "default",
+        PermissionMode::Ask => "default",
         PermissionMode::Edit => "acceptEdits",
         PermissionMode::Full => "bypassPermissions",
     }
@@ -21,7 +21,7 @@ pub(super) fn claude_flag_from_mode(mode: PermissionMode) -> &'static str {
 /// "plan" は廃止語彙のため、安全側として None を返す（呼び出し側で無視する）。
 pub(super) fn mode_from_claude_flag(flag: &str) -> Option<PermissionMode> {
     match flag {
-        "default" => Some(PermissionMode::Readonly),
+        "default" => Some(PermissionMode::Ask),
         "acceptEdits" => Some(PermissionMode::Edit),
         "bypassPermissions" => Some(PermissionMode::Full),
         _ => None,
@@ -31,7 +31,7 @@ pub(super) fn mode_from_claude_flag(flag: &str) -> Option<PermissionMode> {
 /// 抽象モード → Codex CLI の sandbox_mode 値
 pub(super) fn codex_sandbox_mode_from_mode(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::Readonly => "read-only",
+        PermissionMode::Ask => "read-only",
         PermissionMode::Edit => "workspace-write",
         PermissionMode::Full => "danger-full-access",
     }
@@ -40,7 +40,7 @@ pub(super) fn codex_sandbox_mode_from_mode(mode: PermissionMode) -> &'static str
 /// 抽象モード → Codex CLI の approval_policy 値
 pub(super) fn codex_approval_policy_from_mode(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::Readonly => "never",
+        PermissionMode::Ask => "on-request",
         PermissionMode::Edit => "on-request",
         PermissionMode::Full => "never",
     }
@@ -52,7 +52,7 @@ mod tests {
 
     #[test]
     fn claude_flag_mapping() {
-        assert_eq!(claude_flag_from_mode(PermissionMode::Readonly), "default");
+        assert_eq!(claude_flag_from_mode(PermissionMode::Ask), "default");
         assert_eq!(claude_flag_from_mode(PermissionMode::Edit), "acceptEdits");
         assert_eq!(
             claude_flag_from_mode(PermissionMode::Full),
@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn claude_flag_roundtrip() {
         for mode in [
-            PermissionMode::Readonly,
+            PermissionMode::Ask,
             PermissionMode::Edit,
             PermissionMode::Full,
         ] {
@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn codex_sandbox_mode_mapping() {
         assert_eq!(
-            codex_sandbox_mode_from_mode(PermissionMode::Readonly),
+            codex_sandbox_mode_from_mode(PermissionMode::Ask),
             "read-only"
         );
         assert_eq!(
@@ -96,8 +96,8 @@ mod tests {
     #[test]
     fn codex_approval_policy_mapping() {
         assert_eq!(
-            codex_approval_policy_from_mode(PermissionMode::Readonly),
-            "never"
+            codex_approval_policy_from_mode(PermissionMode::Ask),
+            "on-request"
         );
         assert_eq!(
             codex_approval_policy_from_mode(PermissionMode::Edit),

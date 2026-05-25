@@ -43,7 +43,7 @@ interface WorkflowPanelProps {
 export function WorkflowPanel({
 	workflowState,
 	worktreePath,
-	permissionMode = "readonly",
+	permissionMode = "ask",
 	onSessionClick,
 	onCloseSession,
 	openStepSessionIds,

@@ -60,11 +60,7 @@ describe("StepEditor permission select", () => {
 
 		const listbox = await screen.findByRole("listbox");
 		const options = within(listbox).getAllByRole("option");
-		expect(options.map((o) => o.textContent)).toEqual([
-			"Read Only",
-			"Edit",
-			"Full",
-		]);
+		expect(options.map((o) => o.textContent)).toEqual(["Ask", "Edit", "Full"]);
 
 		// 旧語彙は提示されない。
 		for (const legacy of [
@@ -83,14 +79,14 @@ describe("StepEditor permission select", () => {
 
 		await user.click(screen.getByText("implement"));
 		await user.click(screen.getByTestId("step-0-permission"));
-		await user.click(await screen.findByRole("option", { name: "Read Only" }));
+		await user.click(await screen.findByRole("option", { name: "Ask" }));
 
 		expect(onUpdate).toHaveBeenCalled();
 		const updater = onUpdate.mock.calls[0][0] as (
 			s: NodeDefinition,
 		) => NodeDefinition;
 		const updated = updater(makeNodeDefinition({ permission: "edit" }));
-		expect(updated.permission).toBe("readonly");
+		expect(updated.permission).toBe("ask");
 	});
 });
 

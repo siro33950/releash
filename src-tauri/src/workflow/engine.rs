@@ -10555,7 +10555,7 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(StepSessionInfo {
                 id: "step-session-id".to_string(),
-                permission_mode: "readonly".to_string(),
+                permission_mode: "ask".to_string(),
             })
         }
 
@@ -13168,7 +13168,7 @@ mod tests {
         // permission のみ指定でも selected_model は None になる。
         let result = resolve_step_settings(
             None,
-            Some("readonly".to_string()),
+            Some("ask".to_string()),
             None,
             &WorkflowDefaults {
                 backend_id: Some("claude".to_string()),
@@ -13180,7 +13180,7 @@ mod tests {
             ResolvedStepSettings {
                 backend_id: Some("claude".to_string()),
                 selected_model: None,
-                permission_mode: "readonly".to_string(),
+                permission_mode: "ask".to_string(),
             }
         );
     }
@@ -13210,10 +13210,10 @@ mod tests {
 
     #[test]
     fn resolve_step_settings_parallel_children_different_configs() {
-        // ステップA: model=opus-4, permission=readonly
+        // ステップA: model=opus-4, permission=ask
         let result_a = resolve_step_settings(
             Some("opus-4".to_string()),
-            Some("readonly".to_string()),
+            Some("ask".to_string()),
             Some("claude".to_string()),
             &WorkflowDefaults {
                 backend_id: Some("claude".to_string()),
@@ -13225,7 +13225,7 @@ mod tests {
             ResolvedStepSettings {
                 backend_id: Some("claude".to_string()),
                 selected_model: Some("opus-4".to_string()),
-                permission_mode: "readonly".to_string(),
+                permission_mode: "ask".to_string(),
             }
         );
 
@@ -13272,7 +13272,7 @@ mod tests {
             Some("claude".to_string()),
             &WorkflowDefaults {
                 backend_id: Some("codex".to_string()),
-                permission_mode: "readonly".to_string(),
+                permission_mode: "ask".to_string(),
             },
         );
         let permission_mode =

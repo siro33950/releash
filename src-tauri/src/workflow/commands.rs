@@ -280,7 +280,7 @@ fn parse_trigger_source(value: Option<String>) -> Result<super::run::TriggerSour
 fn parse_workflow_start_permission_mode(
     permission_mode: Option<String>,
 ) -> Result<PermissionMode, String> {
-    let permission_value = permission_mode.unwrap_or_else(|| PermissionMode::Readonly.to_string());
+    let permission_value = permission_mode.unwrap_or_else(|| PermissionMode::Ask.to_string());
     PermissionMode::parse(&permission_value).map_err(|e| e.to_string())
 }
 
@@ -2294,7 +2294,7 @@ mod tests {
             let err = parse_workflow_approval_permission_mode(invalid.map(str::to_string))
                 .expect_err("invalid permission_mode must be rejected");
             assert!(
-                err.contains("readonly, edit, full"),
+                err.contains("ask, edit, full"),
                 "error must include allowed list, got: {err}"
             );
         }
@@ -2303,7 +2303,7 @@ mod tests {
     #[test]
     fn workflow_approval_chat_permission_mode_accepts_abstract_values() {
         for (value, expected) in [
-            ("readonly", PermissionMode::Readonly),
+            ("ask", PermissionMode::Ask),
             ("edit", PermissionMode::Edit),
             ("full", PermissionMode::Full),
         ] {
@@ -2327,10 +2327,10 @@ mod tests {
     }
 
     #[test]
-    fn workflow_start_permission_mode_defaults_readonly_and_rejects_invalid_values() {
+    fn workflow_start_permission_mode_defaults_ask_and_rejects_invalid_values() {
         assert_eq!(
             parse_workflow_start_permission_mode(None).unwrap(),
-            PermissionMode::Readonly
+            PermissionMode::Ask
         );
         assert_eq!(
             parse_workflow_start_permission_mode(Some("edit".to_string())).unwrap(),
@@ -2338,7 +2338,7 @@ mod tests {
         );
         let err = parse_workflow_start_permission_mode(Some("acceptEdits".to_string()))
             .expect_err("provider-specific permission flags must not be accepted");
-        assert!(err.contains("readonly, edit, full"));
+        assert!(err.contains("ask, edit, full"));
     }
 
     #[test]

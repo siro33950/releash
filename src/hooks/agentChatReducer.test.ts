@@ -387,18 +387,18 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("SET_PERMISSION_MODE", () => {
-		it("updates permissionMode to readonly", () => {
+		it("updates permissionMode to ask", () => {
 			const next = reducer(INITIAL_STATE, {
 				type: "SET_PERMISSION_MODE",
-				mode: "readonly",
+				mode: "ask",
 			});
-			expect(next.permissionMode).toBe("readonly");
+			expect(next.permissionMode).toBe("ask");
 		});
 
-		it("switches from readonly to full", () => {
+		it("switches from ask to full", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				permissionMode: "readonly",
+				permissionMode: "ask",
 			};
 			const next = reducer(state, {
 				type: "SET_PERMISSION_MODE",

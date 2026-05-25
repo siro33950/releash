@@ -6,11 +6,11 @@ builtin: true
 # 例: "ログイン後に /dashboard へ遷移すると 500 エラー。再現: ..."
 
 nodes:
-  # 1. 原因調査（agent、readonly）
+  # 1. 原因調査（agent、ask）
   - name: bug_investigation
     type: agent
     model: default
-    permission: readonly
+    permission: ask
     instruction: bug-investigation
     policy: planning
     output_contract: bug-investigation-result
@@ -19,7 +19,7 @@ nodes:
   - name: bug_fix_policy
     type: approval
     model: default
-    permission: readonly
+    permission: ask
     instruction: bug-fix-policy
     policy: planning
     input_contracts:
@@ -52,7 +52,7 @@ nodes:
       - name: bug_review_acceptance
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: bug-review-acceptance
         policy: review
         input_contracts:
@@ -64,7 +64,7 @@ nodes:
       - name: bug_review_quality
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: bug-review-quality
         policy: review
         input_contracts:
@@ -76,7 +76,7 @@ nodes:
       - name: bug_review_test
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: bug-review-test
         policy: review
         input_contracts:
@@ -94,7 +94,7 @@ nodes:
   - name: bug_fix_loop_policy
     type: approval
     model: default
-    permission: readonly
+    permission: ask
     instruction: bug-fix-loop-policy
     policy: coding
     input_contracts:
@@ -135,7 +135,7 @@ nodes:
   - name: bug_final_approval
     type: approval
     model: default
-    permission: readonly
+    permission: ask
     instruction: bug-final-approval
     policy: coding
     input_contracts:

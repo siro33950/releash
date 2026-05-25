@@ -134,7 +134,7 @@ mod tests {
             let label = permission.clone();
             let err = validate_invoke_permission_mode(permission).unwrap_err();
             assert!(
-                err.contains("readonly, edit, full"),
+                err.contains("ask, edit, full"),
                 "{:?} must include allowed list, got: {err}",
                 label
             );
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn start_agent_session_validate_accepts_abstract_modes() {
-        for mode in ["readonly", "edit", "full"] {
+        for mode in ["ask", "edit", "full"] {
             let validated = validate_invoke_permission_mode(Some(mode.to_string())).unwrap();
             assert_eq!(validated.as_str(), mode);
         }
