@@ -633,14 +633,14 @@ nodes:
         knowledge: kc
         instruction: ic
         output_contract: occ
-        permission: readonly
+        permission: ask
       - name: c2
         type: agent
         policy: pc
         knowledge: kc
         instruction: ic
         output_contract: occ
-        permission: readonly
+        permission: ask
     aggregate:
       all_match: LGTM
       then: lead

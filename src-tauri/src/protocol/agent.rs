@@ -84,7 +84,7 @@ pub struct AgentSessionStartRequest {
     pub worktree_path: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
-    /// 抽象パーミッションモード（readonly / edit / full）。
+    /// 抽象パーミッションモード（ask / edit / full）。
     /// リモート UI で選択された permission_mode をセッション開始時にセッション保存層へ反映する。
     /// 欠落・対象外値は WebSocket ハンドラで InvalidPermissionMode として拒否する。
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn agent_session_start_handler_request_accepts_abstract_modes() {
-        for value in ["readonly", "edit", "full"] {
+        for value in ["ask", "edit", "full"] {
             let req = AgentSessionStartRequest {
                 worktree_path: "/repo".to_string(),
                 backend_id: Some("claude".to_string()),
@@ -332,7 +332,7 @@ mod tests {
             };
             let err = AgentSessionStartHandlerRequest::try_from(&req).unwrap_err();
             assert!(
-                err.to_string().contains("readonly, edit, full"),
+                err.to_string().contains("ask, edit, full"),
                 "{value:?} must be rejected with allowed list, got {err}"
             );
         }
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn agent_message_handler_request_accepts_abstract_modes() {
-        for value in ["readonly", "edit", "full"] {
+        for value in ["ask", "edit", "full"] {
             let req = AgentMessageRequest {
                 session_id: Some("s1".to_string()),
                 worktree_path: "/repo".to_string(),
@@ -374,7 +374,7 @@ mod tests {
             };
             let err = AgentMessageHandlerRequest::try_from(&req).unwrap_err();
             assert!(
-                err.to_string().contains("readonly, edit, full"),
+                err.to_string().contains("ask, edit, full"),
                 "{value:?} must be rejected with allowed list, got {err}"
             );
         }

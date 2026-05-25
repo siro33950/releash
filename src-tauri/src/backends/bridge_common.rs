@@ -89,7 +89,7 @@ pub struct AgentProcess {
     /// Auto-consumed on turn_complete by the stdout reader.
     pub pending_message: Option<PendingMessage>,
     /// Runtime permission mode tracked from SDK notifications.
-    /// Holds the abstract mode (readonly / edit / full) and is updated when the SDK
+    /// Holds the abstract mode (ask / edit / full) and is updated when the SDK
     /// reports a transition that maps cleanly to an abstract mode; unmapped values
     /// (e.g. transient "plan" from Claude SDK) are ignored.
     pub current_permission_mode: String,
@@ -1237,7 +1237,7 @@ fn emit_permission_mode_changed<R: tauri::Runtime>(
 /// SDK 由来の `permissionMode` 通知を保存値ベースで処理する。
 /// Spec issues-947: 保存値の読み取り失敗時は SDK 値に fallback せず、log::error! を残して
 /// runtime/UI を更新せずに通知の処理だけスキップする（保存値が edit/full のセッションを
-/// 誤って readonly に落とさないため）。後段の `write_bridge_command` 失敗も log に記録する。
+/// 誤って ask に落とさないため）。後段の `write_bridge_command` 失敗も log に記録する。
 async fn handle_sdk_permission_mode_notification<R: tauri::Runtime>(
     sdk_mode: &str,
     app: &tauri::AppHandle<R>,
@@ -1311,7 +1311,7 @@ async fn handle_sdk_permission_mode_notification<R: tauri::Runtime>(
     }
 }
 
-/// 抽象モード文字列（"readonly"/"edit"/"full"）→ バックエンド固有の setMode コマンドを生成する。
+/// 抽象モード文字列（"ask"/"edit"/"full"）→ バックエンド固有の setMode コマンドを生成する。
 /// 対象外の値が渡された場合はエラー（境界で検証済みを前提）。
 fn build_set_mode_command_for_backend(
     permission_mode: &str,
@@ -2484,7 +2484,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         // ここでは SessionStore の値は書き換えない（Spec issues-947）。
                         //
                         // SDK は ExitPlanMode 等の遷移時に "default" を送ることがあるが、保存値が
-                        // edit/full のセッションでは runtime/UI が readonly に落ちると整合性が崩れる。
+                        // edit/full のセッションでは runtime/UI が ask に落ちると整合性が崩れる。
                         // そのため SDK 通知をきっかけにせず、保存済み ChatSession.permission_mode を
                         // 正典として読み直し、ランタイムと UI をそれに合わせる。保存値と SDK 値が
                         // ズレた場合は setMode を再送して bridge を保存値に追従させる。
@@ -2495,7 +2495,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                 // 保存値を正典として扱う経路。読み取り失敗時は SDK 由来の値で
                                 // fallback せず、log::error! を出して runtime/UI を更新せずに
                                 // 当該通知の処理だけスキップする（Spec issues-947: 保存値が
-                                // edit/full のセッションを readonly に落とすような誤更新を排除）。
+                                // edit/full のセッションを ask に落とすような誤更新を排除）。
                                 handle_sdk_permission_mode_notification(
                                     sdk_mode,
                                     &app_stdout,
@@ -3219,6 +3219,8 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<(), String>>,
 {
+    let canonical_permission_mode =
+        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
     ensure_runtime_for_turn(handles, chat_session_id, spawn_runtime).await?;
 
     // Send message command.
@@ -3233,7 +3235,7 @@ where
         if let Some(proc) = map.get_mut(chat_session_id) {
             proc.sync_pre_turn_settings(permission_mode).await?;
 
-            proc.current_permission_mode = permission_mode.to_string();
+            proc.current_permission_mode = canonical_permission_mode.as_str().to_string();
             proc.state = BridgeState::Streaming;
             proc.turn_phase = TurnPhase::Streaming;
             proc.streaming_message_id = Some(streaming_message_id.to_string());
@@ -6378,7 +6380,7 @@ mod tests {
             None,
             worktree_path.clone(),
             "hi".to_string(),
-            crate::permission::PermissionMode::Readonly,
+            crate::permission::PermissionMode::Ask,
             Some("mock".to_string()),
             None,
             None,
@@ -6387,13 +6389,13 @@ mod tests {
         .unwrap();
 
         let prepared_turn = prepared_turn.expect("new session should start a turn");
-        assert_eq!(prepared_turn.permission_mode, "readonly");
-        assert_eq!(response.session.permission_mode, "readonly");
+        assert_eq!(prepared_turn.permission_mode, "ask");
+        assert_eq!(response.session.permission_mode, "ask");
         let saved = session_store
             .get_session(data_dir.path(), &response.session.id)
             .unwrap()
             .unwrap();
-        assert_eq!(saved.permission_mode, "readonly");
+        assert_eq!(saved.permission_mode, "ask");
     }
 
     #[tokio::test]
@@ -8752,7 +8754,7 @@ mod tests {
         use crate::backends::permission_flags::{claude_flag_from_mode, mode_from_claude_flag};
         use crate::permission::PermissionMode;
         for (abstract_mode, expected_flag) in [
-            (PermissionMode::Readonly, "default"),
+            (PermissionMode::Ask, "default"),
             (PermissionMode::Edit, "acceptEdits"),
             (PermissionMode::Full, "bypassPermissions"),
         ] {
@@ -8929,8 +8931,8 @@ mod tests {
     }
 
     #[test]
-    fn build_init_cmd_readonly_for_claude_emits_default() {
-        let cmd = build_init_cmd("/repo", "readonly", &None, None, CLAUDE_BACKEND_ID).unwrap();
+    fn build_init_cmd_ask_for_claude_emits_default() {
+        let cmd = build_init_cmd("/repo", "ask", &None, None, CLAUDE_BACKEND_ID).unwrap();
         assert_eq!(cmd["permissionMode"], "default");
     }
 
@@ -8945,10 +8947,10 @@ mod tests {
     }
 
     #[test]
-    fn build_init_cmd_for_codex_readonly_and_full() {
-        let readonly = build_init_cmd("/repo", "readonly", &None, None, CODEX_BACKEND_ID).unwrap();
-        assert_eq!(readonly["sandboxMode"], "read-only");
-        assert_eq!(readonly["approvalPolicy"], "never");
+    fn build_init_cmd_for_codex_ask_and_full() {
+        let ask = build_init_cmd("/repo", "ask", &None, None, CODEX_BACKEND_ID).unwrap();
+        assert_eq!(ask["sandboxMode"], "read-only");
+        assert_eq!(ask["approvalPolicy"], "on-request");
         let full = build_init_cmd("/repo", "full", &None, None, CODEX_BACKEND_ID).unwrap();
         assert_eq!(full["sandboxMode"], "danger-full-access");
         assert_eq!(full["approvalPolicy"], "never");
@@ -8975,7 +8977,7 @@ mod tests {
                 "spawn 前の検証は '{invalid}' を弾く必要がある"
             );
         }
-        for valid in ["readonly", "edit", "full"] {
+        for valid in ["ask", "edit", "full"] {
             assert!(crate::permission::PermissionMode::parse(valid).is_ok());
         }
     }
@@ -9107,7 +9109,7 @@ mod tests {
             .err()
             .unwrap_or_else(|| panic!("invalid '{invalid}' must be rejected"));
             assert!(
-                err.contains("readonly, edit, full"),
+                err.contains("ask, edit, full"),
                 "invalid '{invalid}' must include allowed list, got: {err}"
             );
 
@@ -9165,7 +9167,7 @@ mod tests {
             &handles,
             data_dir.path(),
             &session_id,
-            "readonly",
+            "ask",
         )
         .await
         .expect("valid abstract mode must be accepted");
@@ -9174,7 +9176,7 @@ mod tests {
             .get_session(data_dir.path(), &session_id)
             .unwrap()
             .unwrap();
-        assert_eq!(saved.permission_mode, "readonly");
+        assert_eq!(saved.permission_mode, "ask");
     }
 
     #[tokio::test]
@@ -9205,7 +9207,7 @@ mod tests {
             Some(session_id.clone()),
             "/repo".to_string(),
             "hello".to_string(),
-            crate::permission::PermissionMode::Readonly,
+            crate::permission::PermissionMode::Ask,
             Some("mock".to_string()),
             None,
             None,
@@ -9213,12 +9215,12 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(response.session.permission_mode, "readonly");
+        assert_eq!(response.session.permission_mode, "ask");
         let saved = session_store
             .get_session(data_dir.path(), &session_id)
             .unwrap()
             .unwrap();
-        assert_eq!(saved.permission_mode, "readonly");
+        assert_eq!(saved.permission_mode, "ask");
     }
 
     #[test]
@@ -9714,7 +9716,7 @@ mod tests {
                 last_message_id: None,
                 task_id_map: HashMap::new(),
                 pending_message: None,
-                current_permission_mode: "readonly".to_string(),
+                current_permission_mode: "ask".to_string(),
                 available_models: Vec::new(),
                 selected_model: None,
                 last_result_token_usage: None,

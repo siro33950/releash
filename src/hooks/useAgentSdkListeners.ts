@@ -1,13 +1,13 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Dispatch } from "react";
 import { useEffect } from "react";
-import type {
-	MessagePart,
-	ModelInfo,
-	PermissionMode,
-	PermissionRequest,
-	SessionState,
-	TurnPhase,
+import {
+	type MessagePart,
+	type ModelInfo,
+	normalizePermissionMode,
+	type PermissionRequest,
+	type SessionState,
+	type TurnPhase,
 } from "@/types/session";
 import type { AgentChatAction } from "./agentChatReducer";
 import { getSession, updateSessionState } from "./useSessionStore";
@@ -238,7 +238,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				if (isViewable(chat_session_id, viewableRegistry)) {
 					dispatch({
 						type: "SET_PERMISSION_MODE",
-						mode: permission_mode as PermissionMode,
+						mode: normalizePermissionMode(permission_mode),
 					});
 				}
 			},

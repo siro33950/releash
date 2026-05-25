@@ -29,10 +29,10 @@ describe("WorkflowEditor permission handling", () => {
 					name: "fanout",
 					type: "agent",
 					rules: [],
-					permission: "readonly",
+					permission: "ask",
 					parallel_children: [
 						{ name: "child-a", type: "agent" },
-						{ name: "child-b", type: "agent", permission: "readonly" },
+						{ name: "child-b", type: "agent", permission: "ask" },
 					],
 				},
 			],
@@ -59,8 +59,8 @@ describe("WorkflowEditor permission handling", () => {
 		expect(savedWorkflow.nodes[0].permission).toBeUndefined();
 
 		const parallelStep = savedWorkflow.nodes[1];
-		expect(parallelStep.permission).toBe("readonly");
+		expect(parallelStep.permission).toBe("ask");
 		expect(parallelStep.parallel_children?.[0].permission).toBeUndefined();
-		expect(parallelStep.parallel_children?.[1].permission).toBe("readonly");
+		expect(parallelStep.parallel_children?.[1].permission).toBe("ask");
 	});
 });

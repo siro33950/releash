@@ -70,7 +70,7 @@ describe("RemoteAgentPanel", () => {
 		const select = screen.getByTestId(
 			"remote-permission-mode-select",
 		) as HTMLSelectElement;
-		await user.selectOptions(select, "readonly");
+		await user.selectOptions(select, "ask");
 		await user.click(screen.getByText("Start Session"));
 
 		expect(send).toHaveBeenLastCalledWith({
@@ -78,7 +78,7 @@ describe("RemoteAgentPanel", () => {
 			payload: {
 				worktree_path: "/repo/worktree",
 				backend_id: "codex",
-				permission_mode: "readonly",
+				permission_mode: "ask",
 			},
 		});
 	});
@@ -358,7 +358,7 @@ describe("RemoteAgentPanel", () => {
 			"remote-permission-mode-select",
 		) as HTMLSelectElement;
 		const labels = Array.from(select.options).map((o) => o.textContent);
-		expect(labels).toEqual(["Read Only", "Edit", "Full"]);
+		expect(labels).toEqual(["Ask", "Edit", "Full"]);
 		for (const legacy of [
 			"acceptEdits",
 			"bypassPermissions",
@@ -483,7 +483,7 @@ describe("RemoteAgentPanel", () => {
 		const select = screen.getByTestId(
 			"remote-permission-mode-select",
 		) as HTMLSelectElement;
-		await user.selectOptions(select, "readonly");
+		await user.selectOptions(select, "ask");
 		await user.type(screen.getByPlaceholderText("Message"), "Hi");
 		await user.click(screen.getByLabelText("Send message"));
 
@@ -493,7 +493,7 @@ describe("RemoteAgentPanel", () => {
 				session_id: "session-1",
 				worktree_path: "/repo/worktree",
 				content: "Hi",
-				permission_mode: "readonly",
+				permission_mode: "ask",
 				backend_id: null,
 			},
 		});

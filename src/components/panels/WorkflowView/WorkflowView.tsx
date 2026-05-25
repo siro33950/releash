@@ -44,7 +44,7 @@ interface WorkflowViewProps {
  */
 export function WorkflowView({
 	worktreePath,
-	permissionMode = "readonly",
+	permissionMode = "ask",
 }: WorkflowViewProps) {
 	const { workflowState } = useWorkflowState(worktreePath);
 

@@ -1,9 +1,10 @@
 import type { AgentState } from "./protocol";
 
-export type PermissionMode = "readonly" | "edit" | "full";
+export type PermissionMode = "ask" | "edit" | "full";
+export type LegacyPermissionMode = "readonly" | "edit" | "full";
 
 export const PERMISSION_MODES: readonly PermissionMode[] = [
-	"readonly",
+	"ask",
 	"edit",
 	"full",
 ] as const;
@@ -14,10 +15,26 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
  * 3 択の表示差分や変更漏れを防ぐ。
  */
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
-	readonly: "Read Only",
+	ask: "Ask",
 	edit: "Edit",
 	full: "Full",
 };
+
+export function normalizePermissionMode(
+	mode: PermissionMode | LegacyPermissionMode | string | null | undefined,
+): PermissionMode {
+	const normalized = typeof mode === "string" ? mode.trim().toLowerCase() : "";
+	switch (normalized) {
+		case "ask":
+		case "edit":
+		case "full":
+			return normalized;
+		case "readonly":
+			return "ask";
+		default:
+			return "edit";
+	}
+}
 
 export interface ModelInfo {
 	value: string;

@@ -1118,7 +1118,7 @@ mod tests {
         assert!(error.contains("missing-session"));
     }
 
-    // Spec issues-947: AgentSessionStartRequest の正常系3モード（readonly/edit/full）が
+    // Spec issues-947: AgentSessionStartRequest の正常系3モード（ask/edit/full）が
     // handler 経路を通って保存済み ChatSession.permission_mode に記録されることを検証する。
     // 検証済み抽象 PermissionMode を初回保存で確定する経路（edit デフォルトで保存→update する
     // 二段階保存をやめる）が壊れたら、ここで検出する。
@@ -1148,7 +1148,7 @@ mod tests {
         );
         state.set_test_session_deps(session_store.clone(), tmp_data.path().to_path_buf());
 
-        for mode in ["readonly", "edit", "full"] {
+        for mode in ["ask", "edit", "full"] {
             let req = AgentSessionStartRequest {
                 worktree_path: repo_path.clone(),
                 backend_id: Some("claude".to_string()),
@@ -1179,7 +1179,7 @@ mod tests {
 
     // Spec issues-947: WS 境界での AgentSessionStartRequest.permission_mode 拒否。
     // None / acceptEdits / unknown / 空文字 のいずれも success=false を返し、エラーメッセージに
-    // 許可一覧（readonly, edit, full）を含む。is_managed_worktree がエラー応答を生み出さないよう
+    // 許可一覧（ask, edit, full）を含む。is_managed_worktree がエラー応答を生み出さないよう
     // 必ず存在する worktree を渡す。
     #[tokio::test]
     async fn handle_agent_session_start_request_rejects_invalid_permission_mode() {
@@ -1211,7 +1211,7 @@ mod tests {
                     assert!(response.session_id.is_none());
                     let error = response.error.unwrap_or_default();
                     assert!(
-                        error.contains("readonly, edit, full"),
+                        error.contains("ask, edit, full"),
                         "error must include allowed list, got: {error}"
                     );
                 }
@@ -1255,7 +1255,7 @@ mod tests {
                     assert!(response.agent_message_id.is_none());
                     let error = response.error.unwrap_or_default();
                     assert!(
-                        error.contains("readonly, edit, full"),
+                        error.contains("ask, edit, full"),
                         "error must include allowed list, got: {error}"
                     );
                 }

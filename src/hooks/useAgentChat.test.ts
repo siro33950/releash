@@ -717,7 +717,7 @@ describe("useAgentChat", () => {
 		act(() => {
 			result.current.setPermissionMode(
 				result.current.activeSession?.id ?? null,
-				"readonly",
+				"ask",
 			);
 		});
 
@@ -732,7 +732,7 @@ describe("useAgentChat", () => {
 			null,
 			"/repo",
 			"hello",
-			"readonly",
+			"ask",
 			null,
 			undefined,
 			undefined,
@@ -1867,7 +1867,7 @@ describe("permissionMode per-session persistence", () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
-		// Mock getSession returning a session with "readonly" permissionMode
+		// Mock getSession returning a session with "ask" permissionMode
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: {
 				id: "s2",
@@ -1876,7 +1876,7 @@ describe("permissionMode per-session persistence", () => {
 				state: "idle",
 				createdAt: 1000,
 				updatedAt: 1000,
-				permissionMode: "readonly",
+				permissionMode: "ask",
 			},
 			turnPhase: "idle",
 		} as never);
@@ -1885,7 +1885,7 @@ describe("permissionMode per-session persistence", () => {
 			await result.current.selectSession("s2");
 		});
 
-		expect(result.current.permissionMode).toBe("readonly");
+		expect(result.current.permissionMode).toBe("ask");
 	});
 
 	it("switching between sessions preserves independent permissionModes", async () => {
@@ -1900,7 +1900,7 @@ describe("permissionMode per-session persistence", () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
-		// Switch to Session A with "readonly" mode
+		// Switch to Session A with "ask" mode
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: {
 				id: "session-a",
@@ -1909,7 +1909,7 @@ describe("permissionMode per-session persistence", () => {
 				state: "idle",
 				createdAt: 1000,
 				updatedAt: 1000,
-				permissionMode: "readonly",
+				permissionMode: "ask",
 			},
 			turnPhase: "idle",
 		} as never);
@@ -1918,7 +1918,7 @@ describe("permissionMode per-session persistence", () => {
 			await result.current.selectSession("session-a");
 		});
 
-		expect(result.current.permissionMode).toBe("readonly");
+		expect(result.current.permissionMode).toBe("ask");
 
 		// Switch to Session B with "full" mode
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
@@ -1940,7 +1940,7 @@ describe("permissionMode per-session persistence", () => {
 
 		expect(result.current.permissionMode).toBe("full");
 
-		// Switch back to Session A — mode should still be "readonly"
+		// Switch back to Session A — mode should still be "ask"
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: {
 				id: "session-a",
@@ -1949,7 +1949,7 @@ describe("permissionMode per-session persistence", () => {
 				state: "idle",
 				createdAt: 1000,
 				updatedAt: 1000,
-				permissionMode: "readonly",
+				permissionMode: "ask",
 			},
 			turnPhase: "idle",
 		} as never);
@@ -1958,7 +1958,7 @@ describe("permissionMode per-session persistence", () => {
 			await result.current.selectSession("session-a");
 		});
 
-		expect(result.current.permissionMode).toBe("readonly");
+		expect(result.current.permissionMode).toBe("ask");
 	});
 
 	it("createNewSession resets permissionMode to default", async () => {
@@ -1973,7 +1973,7 @@ describe("permissionMode per-session persistence", () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
-		// Change mode to readonly via event
+		// Change mode to ask via event
 		const permCb = listenCallbacks.get("agent-permission-mode-changed");
 		// First send a message to create session
 		await act(async () => {
@@ -1986,11 +1986,11 @@ describe("permissionMode per-session persistence", () => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "readonly",
+					permission_mode: "ask",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("readonly");
+		expect(result.current.permissionMode).toBe("ask");
 
 		// Create new session (returns default "edit")
 		vi.mocked(sessionStore.createSession).mockResolvedValueOnce({
@@ -2031,11 +2031,11 @@ describe("permissionMode per-session persistence", () => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "readonly",
+					permission_mode: "ask",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("readonly");
+		expect(result.current.permissionMode).toBe("ask");
 
 		// Simulate turn completion via agent-session-state-changed event
 		const stateCb = listenCallbacks.get("agent-session-state-changed");
@@ -2049,8 +2049,8 @@ describe("permissionMode per-session persistence", () => {
 			});
 		});
 
-		// permissionMode should still be "readonly" after turn completion
-		expect(result.current.permissionMode).toBe("readonly");
+		// permissionMode should still be "ask" after turn completion
+		expect(result.current.permissionMode).toBe("ask");
 	});
 
 	it("permissionMode full is preserved after turn completion", async () => {
@@ -2096,7 +2096,7 @@ describe("permissionMode per-session persistence", () => {
 		expect(result.current.permissionMode).toBe("full");
 	});
 
-	it("permissionMode readonly is preserved after turn completion", async () => {
+	it("permissionMode ask is preserved after turn completion", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 
@@ -2111,17 +2111,17 @@ describe("permissionMode per-session persistence", () => {
 			);
 		});
 
-		// Set mode to "readonly" via Rust event
+		// Set mode to "ask" via Rust event
 		const permCb = listenCallbacks.get("agent-permission-mode-changed");
 		act(() => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "readonly",
+					permission_mode: "ask",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("readonly");
+		expect(result.current.permissionMode).toBe("ask");
 
 		// Simulate turn completion via agent-session-state-changed event
 		const stateCb = listenCallbacks.get("agent-session-state-changed");
@@ -2135,13 +2135,13 @@ describe("permissionMode per-session persistence", () => {
 			});
 		});
 
-		// permissionMode should still be "readonly" after turn completion
-		expect(result.current.permissionMode).toBe("readonly");
+		// permissionMode should still be "ask" after turn completion
+		expect(result.current.permissionMode).toBe("ask");
 	});
 });
 
 describe("permissionMode sync from agent-permission-mode-changed event", () => {
-	it("syncs permissionMode when agent-permission-mode-changed event fires with readonly", async () => {
+	it("syncs permissionMode when agent-permission-mode-changed event fires with ask", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 
@@ -2164,12 +2164,12 @@ describe("permissionMode sync from agent-permission-mode-changed event", () => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "readonly",
+					permission_mode: "ask",
 				},
 			});
 		});
 
-		expect(result.current.permissionMode).toBe("readonly");
+		expect(result.current.permissionMode).toBe("ask");
 	});
 
 	it("restores resolved mode when Rust sends agent-permission-mode-changed after ExitPlanMode", async () => {
@@ -2192,16 +2192,16 @@ describe("permissionMode sync from agent-permission-mode-changed event", () => {
 		const permCb = listenCallbacks.get("agent-permission-mode-changed");
 		expect(permCb).toBeDefined();
 
-		// Rust sends readonly mode
+		// Rust sends ask mode
 		act(() => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "readonly",
+					permission_mode: "ask",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("readonly");
+		expect(result.current.permissionMode).toBe("ask");
 
 		// Rust resolves and sends the restored edit mode
 		act(() => {
@@ -2215,7 +2215,7 @@ describe("permissionMode sync from agent-permission-mode-changed event", () => {
 		expect(result.current.permissionMode).toBe("edit");
 	});
 
-	it("restores full when Rust sends agent-permission-mode-changed after readonly override", async () => {
+	it("restores full when Rust sends agent-permission-mode-changed after ask override", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 
@@ -2242,16 +2242,16 @@ describe("permissionMode sync from agent-permission-mode-changed event", () => {
 		const permCb = listenCallbacks.get("agent-permission-mode-changed");
 		expect(permCb).toBeDefined();
 
-		// Rust sends readonly mode
+		// Rust sends ask mode
 		act(() => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "readonly",
+					permission_mode: "ask",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("readonly");
+		expect(result.current.permissionMode).toBe("ask");
 
 		// Rust resolves and sends full back
 		act(() => {

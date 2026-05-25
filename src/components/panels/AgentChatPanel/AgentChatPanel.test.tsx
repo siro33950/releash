@@ -568,9 +568,9 @@ describe("AgentChatPanel agent state reflection", () => {
 		expect(tab?.querySelector("[title='done']")).not.toBeNull();
 	});
 
-	it("reflects permissionMode readonly in ModeSelector trigger label", () => {
+	it("reflects permissionMode ask in ModeSelector trigger label", () => {
 		mockUseAgentChat({
-			permissionMode: "readonly",
+			permissionMode: "ask",
 			activeSession: {
 				id: "s1",
 				worktreePath: "/repo",
@@ -595,7 +595,7 @@ describe("AgentChatPanel agent state reflection", () => {
 		);
 
 		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent(
-			"Read Only",
+			"Ask",
 		);
 	});
 });
@@ -1046,7 +1046,7 @@ describe("AgentChatPanel Shift+Tab mode cycle", () => {
 
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
-		// readonly → edit → full → readonly (MODES order: readonly[0], edit[1], full[2])
+		// ask → edit → full → ask (MODES order: ask[0], edit[1], full[2])
 		// edit (index 1) → full (index 2)
 		expect(setPermissionMode).toHaveBeenCalledWith("s1", "full");
 	});
@@ -1054,7 +1054,7 @@ describe("AgentChatPanel Shift+Tab mode cycle", () => {
 	it("uses the same cycle regardless of the selected backend", () => {
 		const setPermissionMode = vi.fn();
 		mockUseAgentChat({
-			permissionMode: "readonly",
+			permissionMode: "ask",
 			selectedBackendId: "codex",
 			setPermissionMode,
 			activeSession: emptyActiveSession,
@@ -1068,11 +1068,11 @@ describe("AgentChatPanel Shift+Tab mode cycle", () => {
 
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
-		// readonly (index 0) → edit (index 1)
+		// ask (index 0) → edit (index 1)
 		expect(setPermissionMode).toHaveBeenCalledWith("s1", "edit");
 	});
 
-	it("wraps around from full back to readonly on Shift+Tab", () => {
+	it("wraps around from full back to ask on Shift+Tab", () => {
 		const setPermissionMode = vi.fn();
 		mockUseAgentChat({
 			permissionMode: "full",
@@ -1088,8 +1088,8 @@ describe("AgentChatPanel Shift+Tab mode cycle", () => {
 
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
-		// full (index 2) → readonly (index 0) via (currentIndex + 1) % MODES.length
-		expect(setPermissionMode).toHaveBeenCalledWith("s1", "readonly");
+		// full (index 2) → ask (index 0) via (currentIndex + 1) % MODES.length
+		expect(setPermissionMode).toHaveBeenCalledWith("s1", "ask");
 	});
 });
 

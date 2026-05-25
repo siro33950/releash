@@ -678,7 +678,7 @@ describe("WorkflowPanel", () => {
 				workflowName: "quick-fix",
 				worktreePath: "/repo",
 				task: "Fix the login bug",
-				permissionMode: "readonly",
+				permissionMode: "ask",
 			});
 		});
 
@@ -694,7 +694,7 @@ describe("WorkflowPanel", () => {
 				workflowName: "quick-fix",
 				worktreePath: "/repo",
 				task: null,
-				permissionMode: "readonly",
+				permissionMode: "ask",
 			});
 		});
 	});

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MessagePart } from "./session";
-import { getTextContent } from "./session";
+import { getTextContent, normalizePermissionMode } from "./session";
 
 describe("getTextContent", () => {
 	it("joins text parts into a single string", () => {
@@ -44,5 +44,25 @@ describe("getTextContent", () => {
 			{ type: "text", content: "after" },
 		];
 		expect(getTextContent(parts)).toBe("beforeafter");
+	});
+});
+
+describe("normalizePermissionMode", () => {
+	it("normalizes canonical, display, and legacy permission modes", () => {
+		expect(normalizePermissionMode("ask")).toBe("ask");
+		expect(normalizePermissionMode("Ask")).toBe("ask");
+		expect(normalizePermissionMode(" ask ")).toBe("ask");
+		expect(normalizePermissionMode("edit")).toBe("edit");
+		expect(normalizePermissionMode("EDIT")).toBe("edit");
+		expect(normalizePermissionMode("full")).toBe("full");
+		expect(normalizePermissionMode(" Full ")).toBe("full");
+		expect(normalizePermissionMode("readonly")).toBe("ask");
+		expect(normalizePermissionMode("READONLY")).toBe("ask");
+	});
+
+	it("keeps the existing fallback for unknown values", () => {
+		expect(normalizePermissionMode("unknown")).toBe("edit");
+		expect(normalizePermissionMode(null)).toBe("edit");
+		expect(normalizePermissionMode(undefined)).toBe("edit");
 	});
 });

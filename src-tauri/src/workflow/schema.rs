@@ -421,7 +421,7 @@ nodes:
     type: agent
     instruction: implement
     model: gpt-5.5
-    permission: readonly
+    permission: ask
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(wf.nodes[0].model.as_deref(), Some("test-model"));

@@ -13,6 +13,7 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
+	normalizePermissionMode,
 	PERMISSION_MODE_LABELS,
 	PERMISSION_MODES,
 	type PermissionMode,
@@ -173,7 +174,7 @@ export function StepEditor({
 							Permission
 						</span>
 						<Select
-							value={step.permission}
+							value={normalizePermissionMode(step.permission)}
 							onValueChange={(v) =>
 								onUpdate((s) => ({ ...s, permission: v as PermissionMode }))
 							}

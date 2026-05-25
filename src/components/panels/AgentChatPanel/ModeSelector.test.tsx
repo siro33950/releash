@@ -5,7 +5,7 @@ import { MODES, ModeSelector } from "./ModeSelector";
 
 describe("ModeSelector", () => {
 	it("exposes exactly the three abstract permission modes", () => {
-		expect(MODES.map((m) => m.value)).toEqual(["readonly", "edit", "full"]);
+		expect(MODES.map((m) => m.value)).toEqual(["ask", "edit", "full"]);
 	});
 
 	it("shows the Edit label when mode is edit", () => {
@@ -17,12 +17,10 @@ describe("ModeSelector", () => {
 		);
 	});
 
-	it("shows the Read Only label when mode is readonly", () => {
-		render(
-			<ModeSelector mode="readonly" onModeChange={vi.fn()} disabled={false} />,
-		);
+	it("shows the Ask label when mode is ask", () => {
+		render(<ModeSelector mode="ask" onModeChange={vi.fn()} disabled={false} />);
 		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent(
-			"Read Only",
+			"Ask",
 		);
 	});
 
@@ -43,8 +41,8 @@ describe("ModeSelector", () => {
 		);
 
 		await user.click(screen.getByTestId("mode-selector-trigger"));
-		await user.click(screen.getByText("Read Only"));
-		expect(onModeChange).toHaveBeenCalledWith("readonly");
+		await user.click(screen.getByText("Ask"));
+		expect(onModeChange).toHaveBeenCalledWith("ask");
 	});
 
 	it("disables trigger when disabled is true", () => {

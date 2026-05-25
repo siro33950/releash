@@ -39,7 +39,7 @@ nodes:
       - name: spec_review_requirements
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: spec-review-requirements
         policy: plan-review
         output_contract: review-verdict
@@ -51,7 +51,7 @@ nodes:
       - name: spec_review_behavior
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: spec-review-behavior
         policy: plan-review
         output_contract: review-verdict
@@ -63,7 +63,7 @@ nodes:
       - name: spec_review_design
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: spec-review-design
         policy: plan-review
         output_contract: review-verdict
@@ -75,7 +75,7 @@ nodes:
       - name: spec_review_consistency
         type: agent
         model: gpt-5.5
-        permission: readonly
+        permission: ask
         instruction: spec-review-consistency
         policy: plan-review
         output_contract: review-verdict
@@ -92,7 +92,7 @@ nodes:
   - name: spec_fix_policy
     type: approval
     model: default
-    permission: readonly
+    permission: ask
     instruction: spec-fix-policy
     policy: planning
     output_contract: approved-fix-policy
@@ -131,7 +131,7 @@ nodes:
   - name: approve_spec
     type: approval
     model: default
-    permission: readonly
+    permission: ask
     instruction: spec-approval
     policy: planning
     input_contracts:

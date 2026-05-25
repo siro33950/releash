@@ -2076,9 +2076,9 @@ mod tests {
     // ---- permission バリデーション ----
 
     #[test]
-    fn valid_permission_readonly_passes() {
+    fn valid_permission_ask_passes() {
         let wf = make_workflow(vec![NodeDefinition {
-            permission: Some("readonly".to_string()),
+            permission: Some("ask".to_string()),
             ..make_step("step1", NodeType::Agent, vec![])
         }]);
         assert!(validate(&wf).is_ok());
@@ -2116,7 +2116,7 @@ mod tests {
                     if step == "step1" && value == legacy
             ));
             assert!(
-                err.to_string().contains("readonly, edit, full"),
+                err.to_string().contains("ask, edit, full"),
                 "error must include allowed list, got: {err}"
             );
         }
@@ -2134,7 +2134,7 @@ mod tests {
             ValidationError::InvalidPermissionMode { ref step, ref value }
                 if step == "step1" && value == "invalid-mode"
         ));
-        assert!(err.to_string().contains("readonly, edit, full"));
+        assert!(err.to_string().contains("ask, edit, full"));
     }
 
     #[test]
@@ -2149,7 +2149,7 @@ mod tests {
             ValidationError::InvalidPermissionMode { ref step, ref value }
                 if step == "step1" && value.is_empty()
         ));
-        assert!(err.to_string().contains("readonly, edit, full"));
+        assert!(err.to_string().contains("ask, edit, full"));
     }
 
     #[test]
@@ -2194,7 +2194,7 @@ mod tests {
             err,
             ValidationError::MissingPermissionMode { ref step } if step == "step1"
         ));
-        assert!(err.to_string().contains("readonly, edit, full"));
+        assert!(err.to_string().contains("ask, edit, full"));
     }
 
     #[test]
