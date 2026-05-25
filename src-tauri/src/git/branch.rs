@@ -84,7 +84,7 @@ pub(crate) fn detect_default_branch(repo: &Repository) -> Option<String> {
     // remote HEAD (refs/remotes/origin/HEAD) を最優先で確認
     if let Ok(reference) = repo.find_reference("refs/remotes/origin/HEAD") {
         if let Ok(resolved) = reference.resolve() {
-            if let Some(name) = resolved.shorthand() {
+            if let Ok(name) = resolved.shorthand() {
                 // "origin/main" → "main"
                 let short = name.strip_prefix("origin/").unwrap_or(name);
                 if repo.find_branch(short, BranchType::Local).is_ok() {
@@ -133,8 +133,8 @@ pub fn delete_branch(repo_path: String, branch_name: String, force: bool) -> Res
     if let Ok(wt_names) = repo.worktrees() {
         for i in 0..wt_names.len() {
             let wt_name = match wt_names.get(i) {
-                Some(n) => n.to_string(),
-                None => continue,
+                Ok(Some(n)) => n.to_string(),
+                Ok(None) | Err(_) => continue,
             };
             let wt = match repo.find_worktree(&wt_name) {
                 Ok(wt) => wt,
@@ -481,7 +481,7 @@ mod tests {
         let default_name = repo
             .head()
             .ok()
-            .and_then(|h| h.shorthand().map(|s| s.to_string()));
+            .and_then(|h| h.shorthand().ok().map(|s| s.to_string()));
         if let Some(name) = default_name {
             if name == "main" || name == "master" {
                 // Switch HEAD to develop first

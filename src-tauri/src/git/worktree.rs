@@ -127,8 +127,8 @@ pub fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeEntry>, GitError>
     let wt_names = repo.worktrees()?;
     for i in 0..wt_names.len() {
         let wt_name = match wt_names.get(i) {
-            Some(name) => name.to_string(),
-            None => continue,
+            Ok(Some(name)) => name.to_string(),
+            Ok(None) | Err(_) => continue,
         };
 
         let wt = match repo.find_worktree(&wt_name) {
@@ -234,8 +234,8 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<WorktreeBranch
     if let Ok(wt_names) = repo.worktrees() {
         for i in 0..wt_names.len() {
             let wt_name = match wt_names.get(i) {
-                Some(name) => name.to_string(),
-                None => continue,
+                Ok(Some(name)) => name.to_string(),
+                Ok(None) | Err(_) => continue,
             };
             let wt = match repo.find_worktree(&wt_name) {
                 Ok(wt) => wt,
@@ -371,7 +371,7 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<WorktreeBranch
             let mut to_remove = Vec::new();
             if let Ok(mut entries) = snap.entries(Some("branch.*.releash-base")) {
                 while let Some(Ok(entry)) = entries.next() {
-                    if let Some(entry_name) = entry.name() {
+                    if let Ok(entry_name) = entry.name() {
                         if let Some(branch_name) = entry_name
                             .strip_prefix("branch.")
                             .and_then(|s| s.strip_suffix(".releash-base"))
@@ -406,7 +406,7 @@ pub fn create_worktree(
     // 壊れた worktree エントリを事前に掃除
     if let Ok(wt_names) = repo.worktrees() {
         for i in 0..wt_names.len() {
-            if let Some(name) = wt_names.get(i) {
+            if let Ok(Some(name)) = wt_names.get(i) {
                 if let Ok(wt) = repo.find_worktree(name) {
                     if wt.validate().is_err() {
                         let mut prune_opts = WorktreePruneOptions::new();
@@ -485,8 +485,8 @@ pub fn remove_worktree(
     let mut found_name: Option<String> = None;
     for i in 0..wt_names.len() {
         let name = match wt_names.get(i) {
-            Some(n) => n.to_string(),
-            None => continue,
+            Ok(Some(n)) => n.to_string(),
+            Ok(None) | Err(_) => continue,
         };
         if let Ok(wt) = repo.find_worktree(&name) {
             if let Ok(canonical) = wt.path().canonicalize() {

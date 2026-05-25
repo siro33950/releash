@@ -78,9 +78,7 @@ fn find_merge_base_commit(repo: &Repository) -> Result<git2::Commit<'_>, GitErro
         return Ok(repo.find_commit(current_oid)?);
     }
 
-    let branch_name = head
-        .shorthand()
-        .ok_or_else(|| GitError::Custom("HEAD has no shorthand".to_string()))?;
+    let branch_name = head.shorthand()?;
 
     let config = repo.config().ok();
     let base_branch_name =
