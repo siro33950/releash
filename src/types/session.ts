@@ -23,17 +23,12 @@ export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
 export function normalizePermissionMode(
 	mode: PermissionMode | LegacyPermissionMode | string | null | undefined,
 ): PermissionMode {
-	switch (mode) {
+	const normalized = typeof mode === "string" ? mode.trim().toLowerCase() : "";
+	switch (normalized) {
 		case "ask":
 		case "edit":
 		case "full":
-			return mode;
-		case "Ask":
-			return "ask";
-		case "Edit":
-			return "edit";
-		case "Full":
-			return "full";
+			return normalized;
 		case "readonly":
 			return "ask";
 		default:

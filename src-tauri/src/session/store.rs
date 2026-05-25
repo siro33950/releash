@@ -766,20 +766,25 @@ mod tests {
     }
 
     #[test]
-    fn ensure_loaded_accepts_valid_permission_modes() {
-        for valid in ["ask", "edit", "full"] {
+    fn ensure_loaded_normalizes_legacy_and_accepts_valid_permission_modes() {
+        for (input, expected) in [
+            ("readonly", "ask"),
+            ("ask", "ask"),
+            ("edit", "edit"),
+            ("full", "full"),
+        ] {
             let tmp = TempDir::new().unwrap();
             write_session_json(
                 tmp.path(),
                 UUID1,
-                &session_json_with_permission(UUID1, Some(valid)),
+                &session_json_with_permission(UUID1, Some(input)),
             );
             let store = SessionStore::default();
             let session = store
                 .get_session(tmp.path(), UUID1)
                 .unwrap()
                 .expect("session loads with valid permission_mode");
-            assert_eq!(session.permission_mode, valid);
+            assert_eq!(session.permission_mode, expected);
         }
     }
 
