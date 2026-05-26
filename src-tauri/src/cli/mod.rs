@@ -295,12 +295,26 @@ impl From<String> for CliError {
 ///
 /// Tauri 側 `AppHandle::path().app_data_dir()` と同等のパスを CLI 側で計算する。
 /// CLI 起動独立性境界: デスクトップアプリ非稼働でも動作する。
+///
+/// 解決順序（spec [01]「解決順序: 明示指定 > alias 内包値 > プロセス既定」）:
+/// 1. `RELEASH_DATA_DIR` の明示指定
+/// 2. `PathAliases` から決まる alias 内包の data_dir。`PathAliases` が CLI alias 名・
+///    実行 binary・data dir の単一所有者として dev / 本番 を切り分けるため、CLI 側で
+///    `cfg!(debug_assertions)` を再実装しない
 fn resolve_data_dir() -> Result<PathBuf, String> {
-    if let Ok(custom) = std::env::var("RELEASH_DATA_DIR") {
+    resolve_data_dir_from_env(std::env::var("RELEASH_DATA_DIR").ok())
+}
+
+/// `resolve_data_dir` の pure 版（env を入力で受ける）。
+///
+/// spec [01] 解決順序「明示指定 > alias 内包値」をテストで検証可能にするための分離。
+/// 明示指定が空文字列の場合は未設定扱いとし、alias 内包値にフォールバックする。
+fn resolve_data_dir_from_env(env_value: Option<String>) -> Result<PathBuf, String> {
+    if let Some(custom) = env_value.filter(|s| !s.is_empty()) {
         return Ok(PathBuf::from(custom));
     }
-    let base = dirs::data_dir().ok_or_else(|| "Cannot resolve OS data_dir".to_string())?;
-    Ok(base.join("com.releash.app"))
+    let aliases = crate::path_aliases::PathAliases::from_runtime(None)?;
+    Ok(aliases.releash().data_dir.clone())
 }
 
 /// data_dir を解決し、パスが実在することを確認する。
@@ -1086,6 +1100,7 @@ mod tests {
             workflow_file_stem: workflow_name.to_string(),
             worktree_path: worktree.to_string(),
             workflow_definition: crate::workflow::schema::Workflow {
+                variables: Default::default(),
                 name: workflow_name.to_string(),
                 description: "test".to_string(),
                 builtin: false,
@@ -1309,6 +1324,7 @@ mod tests {
             .await;
 
         let workflow = Workflow {
+            variables: Default::default(),
             name: "engine-cli-list".to_string(),
             description: String::new(),
             builtin: false,
@@ -1639,6 +1655,7 @@ mod tests {
         contract: &str,
     ) {
         let workflow = crate::workflow::schema::Workflow {
+            variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -1883,6 +1900,7 @@ mod tests {
         let run_id = test_uuid(95);
         // RunStarted event に workflow definition を埋め込む
         let yaml = crate::workflow::schema::Workflow {
+            variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -1960,6 +1978,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let run_id = test_uuid(96);
         let workflow = crate::workflow::schema::Workflow {
+            variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -2309,6 +2328,52 @@ mod tests {
         assert!(
             entries.is_empty(),
             "pending file must not be written when run is unknown"
+        );
+    }
+
+    /// spec [01] 解決順序「明示指定 > alias 内包値」: RELEASH_DATA_DIR が明示
+    /// 指定されている場合は、その値がそのまま採用される（PathBuf 化のみ）。
+    #[test]
+    fn resolve_data_dir_uses_explicit_env_when_set() {
+        let resolved = resolve_data_dir_from_env(Some("/explicit/path".to_string())).unwrap();
+        assert_eq!(resolved, std::path::PathBuf::from("/explicit/path"));
+    }
+
+    /// spec [01] 解決順序「明示指定 > alias 内包値」: 明示指定が無い場合は
+    /// `PathAliases` から導いた alias 内包の data_dir を返す（既定値は bundle
+    /// identifier suffix を持つ）。
+    #[test]
+    fn resolve_data_dir_falls_back_to_alias_data_dir_when_env_unset() {
+        if dirs::data_dir().is_none() {
+            return;
+        }
+        let resolved = resolve_data_dir_from_env(None).unwrap();
+        let expected_suffix = crate::path_aliases::default_data_dir_name_for_profile(
+            crate::path_aliases::BuildProfile::current(),
+        );
+        assert!(
+            resolved.ends_with(expected_suffix),
+            "expected suffix {expected_suffix}, got {}",
+            resolved.display()
+        );
+    }
+
+    /// spec [01]: 明示指定が空文字列のときは未設定扱いとし alias 内包値に
+    /// フォールバックする（空文字列を data_dir として採用すると以降の
+    /// 観測経路で「runs 0 件」と紛れるため）。
+    #[test]
+    fn resolve_data_dir_treats_empty_env_as_unset() {
+        if dirs::data_dir().is_none() {
+            return;
+        }
+        let resolved = resolve_data_dir_from_env(Some(String::new())).unwrap();
+        let expected_suffix = crate::path_aliases::default_data_dir_name_for_profile(
+            crate::path_aliases::BuildProfile::current(),
+        );
+        assert!(
+            resolved.ends_with(expected_suffix),
+            "empty env should fall through to alias data_dir, got {}",
+            resolved.display()
         );
     }
 

@@ -1268,6 +1268,7 @@ mod tests {
 
     fn make_workflow(nodes: Vec<NodeDefinition>) -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "test".to_string(),
             description: "test workflow".to_string(),
             builtin: false,

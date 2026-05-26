@@ -18,6 +18,7 @@ mod mcp;
 mod menu;
 mod native_drop;
 mod notion;
+mod path_aliases;
 mod permission;
 mod protocol;
 mod pty;

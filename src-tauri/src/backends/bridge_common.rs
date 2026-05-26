@@ -1916,6 +1916,24 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
     .stdout(std::process::Stdio::piped())
     .stderr(std::process::Stdio::piped());
 
+    // spec issues-1054: agent bridge にも起動環境別 alias が解決可能な PATH と
+    // `RELEASH_DATA_DIR` を伝搬する（bridge 経由で呼ばれるツールが alias を解決できるように）。
+    match crate::path_aliases::prepare_child_env(app.path().app_data_dir().ok()) {
+        Ok(env) => {
+            for (k, v) in env {
+                cmd.env(k, v);
+            }
+        }
+        Err(e) => {
+            // 提示する alias と実行環境の不整合を避けるため、wrapper 作成失敗時は
+            // bridge 起動を中止する（spec issues-1054「agent 子プロセスへの実行
+            // 環境の伝搬」: PATH 経由で alias 解決可能な環境を約束する）。
+            return Err(format!(
+                "failed to prepare alias child env for agent bridge: {e}"
+            ));
+        }
+    }
+
     #[cfg(unix)]
     // SAFETY: setsid() is async-signal-safe per POSIX.
     unsafe {
@@ -6268,6 +6286,7 @@ mod tests {
             step_history: Vec::new(),
             step_execution_counts: HashMap::new(),
             workflow_definition: crate::workflow::schema::Workflow {
+                variables: Default::default(),
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,

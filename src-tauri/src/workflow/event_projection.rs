@@ -1407,6 +1407,7 @@ mod tests {
 
     fn workflow_with_nodes(name: &str, nodes: Vec<&str>) -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: name.to_string(),
             description: String::new(),
             builtin: false,

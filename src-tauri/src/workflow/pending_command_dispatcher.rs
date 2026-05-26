@@ -353,6 +353,7 @@ mod tests {
 
     fn make_approval_only_workflow() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -367,6 +368,7 @@ mod tests {
 
     fn make_submit_output_workflow() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -399,6 +401,7 @@ mod tests {
 
     fn make_rejectable_approval_workflow() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,

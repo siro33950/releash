@@ -1429,6 +1429,7 @@ mod tests {
 
     fn make_test_workflow_for_session() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "review-cycle".to_string(),
             description: "Test".to_string(),
             builtin: false,

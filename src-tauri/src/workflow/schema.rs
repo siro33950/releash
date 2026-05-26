@@ -1,17 +1,26 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// ワークフローテンプレート定義（[02] Normalized Workflow）。
 ///
 /// 旧 `steps:` 記法は廃止され、`nodes:` 配下の `NodeDefinition` 列が
 /// YAML deserialize 先となる。実行インスタンス（`WorkflowRun` / `NodeExecution`）
 /// とは語彙が分離される（後者は [03][04] で導入予定）。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Workflow {
     pub name: String,
     pub description: String,
     #[serde(default)]
     pub builtin: bool,
+    /// facet 展開用の静的変数宣言（spec issues-1054）。
+    ///
+    /// workflow 全体共通スコープで宣言され、facet 本文から `{{vars.<name>}}` で参照できる。
+    /// 値は静的文字列のみで、環境変数や実行時情報などの動的解決値は含まない。
+    /// 実行時に積み上がる workflow 実行変数 (`WorkflowExecution.workflow_variables`) とは
+    /// 別領域として並存する。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub variables: HashMap<String, String>,
     pub nodes: Vec<NodeDefinition>,
 }
 

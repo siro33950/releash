@@ -4104,14 +4104,26 @@ impl WorkflowEngine {
                 )
             })
             .unwrap_or_default();
+        // CLI 名は起動環境別に解決する（dev → `releash-dev`、本番 → `releash`）。
+        let cli = Self::resolve_releash_alias();
         format!(
             "The required structured output for this workflow step has not been submitted.\n\n\
 Submit it by running this command with a JSON object that satisfies the `{contract}` contract:{contract_section}\n\n\
 ```sh\n\
-releash workflow output submit {run_id} \\\n  --step {step_name} \\\n  --type {contract} \\\n  --json '{{...}}'\n\
+{cli} workflow output submit {run_id} \\\n  --step {step_name} \\\n  --type {contract} \\\n  --json '{{...}}'\n\
 ```\n\n\
 Do not create a temporary JSON file for this. Do not finish the step until the command succeeds."
         )
+    }
+
+    /// 起動環境別の `releash` alias 名を返す（spec issues-1054）。
+    ///
+    /// 本関数は alias 名のみを必要とするため、data_dir 解決を経由しない pure helper
+    /// (`alias_name_for_profile`) を直接呼び、`dirs::data_dir()` 失敗で alias 名解決が
+    /// 巻き込まれないようにする。
+    pub(crate) fn resolve_releash_alias() -> String {
+        crate::path_aliases::alias_name_for_profile(crate::path_aliases::BuildProfile::current())
+            .to_string()
     }
 
     fn contract_repair_attempt_count<R: tauri::Runtime>(
@@ -5022,6 +5034,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
             step_history_clone,
             task_clone,
             workflow_variables_clone,
+            workflow_declared_variables_clone,
             workflow_defaults_clone,
         ) = {
             let execs = self.executions.lock().await;
@@ -5035,6 +5048,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
                 exec.step_history.clone(),
                 exec.task.clone(),
                 exec.workflow_variables.clone(),
+                exec.workflow.variables.clone(),
                 exec.workflow_defaults.clone(),
             )
         };
@@ -5052,6 +5066,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
             &step_outputs_clone,
             &step_history_clone,
             &workflow_variables_clone,
+            &workflow_declared_variables_clone,
         )?;
 
         // ステップ設定の解決 → セッション生成（workflow_defaults を継承元に注入）
@@ -5111,6 +5126,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
     /// `{{run_id}}` / `{{step_name}}` プレースホルダを実値に展開する。これにより
     /// agent が表示された CLI コマンドをそのまま `releash workflow output submit` 用に
     /// 呼び出せる（spec [08] 要求: run_id と step_name を主語に CLI 提出できる）。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build_step_prompt(
         step: &NodeDefinition,
         run_id: &str,
@@ -5119,12 +5135,15 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         step_outputs: &HashMap<String, StepOutput>,
         step_history: &[StepHistoryEntry],
         workflow_variables: &HashMap<String, String>,
+        workflow_declared_variables: &HashMap<String, String>,
     ) -> Result<(Option<String>, String), WorkflowEngineError> {
         // inline_prompt のみ（ファセット参照なし）のステップ: inline_prompt をそのまま使用
         if !step.has_facet_refs() {
             if let Some(ref inline) = step.inline_prompt {
                 let rendered = Self::render_facet_variables(inline, worktree_path, task);
                 let rendered = Self::render_submit_command_variables(&rendered, run_id, &step.name);
+                let rendered =
+                    Self::render_namespaced_variables(&rendered, workflow_declared_variables);
                 let prompt = Self::inject_step_outputs(
                     &rendered,
                     step,
@@ -5154,11 +5173,13 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         let composed = crate::workflow::facet::compose_facets(step);
         let system_prompt = composed.system_prompt.map(|s| {
             let s = Self::render_facet_variables(&s, worktree_path, task);
-            Self::render_submit_command_variables(&s, run_id, &step.name)
+            let s = Self::render_submit_command_variables(&s, run_id, &step.name);
+            Self::render_namespaced_variables(&s, workflow_declared_variables)
         });
         let rendered_user = {
             let s = Self::render_facet_variables(&composed.user_message, worktree_path, task);
-            Self::render_submit_command_variables(&s, run_id, &step.name)
+            let s = Self::render_submit_command_variables(&s, run_id, &step.name);
+            Self::render_namespaced_variables(&s, workflow_declared_variables)
         };
         let mut prompt = Self::inject_step_outputs(
             &rendered_user,
@@ -5176,6 +5197,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
             step.output_contract.as_deref(),
             run_id,
             &step.name,
+            workflow_declared_variables,
         );
         Ok((system_prompt, prompt))
     }
@@ -5227,6 +5249,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
             step_outputs,
             step_history,
             workflow_variables,
+            &HashMap::new(),
         )?;
         Self::dispatch_session_start(
             gate,
@@ -5466,6 +5489,29 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
             .replace("{{step_name}}", step_name)
     }
 
+    /// facet 本文に対し、起動環境別 alias と workflow 定義変数を namespace 展開する。
+    ///
+    /// spec issues-1054:
+    /// - `{{path_alias.releash}}` → 起動環境別 alias 名 (`releash` / `releash-dev`)
+    /// - `{{vars.<name>}}` → workflow 定義側の宣言値
+    ///
+    /// 既存プレースホルダ (`{{project_name}}` / `{{task}}` / `{{run_id}}` / `{{step_name}}`) は
+    /// 名前空間を持たないトップレベル namespace に残り、別途 `render_facet_variables` /
+    /// `render_submit_command_variables` で展開される。
+    pub(crate) fn render_namespaced_variables(
+        content: &str,
+        workflow_declared_variables: &HashMap<String, String>,
+    ) -> String {
+        // path_alias の展開は alias 名のみで完結する。data_dir 解決を経由しないため
+        // `alias_name_for_profile` を直接渡し、`dirs::data_dir()` 失敗から切り離す。
+        let releash_alias = crate::path_aliases::alias_name_for_profile(
+            crate::path_aliases::BuildProfile::current(),
+        );
+        let s =
+            crate::workflow::facet::render_path_alias_variables_with_name(content, releash_alias);
+        crate::workflow::facet::render_workflow_variables(&s, workflow_declared_variables)
+    }
+
     /// [08] prose 抽出経路は engine から完全除去された（spec [08] Rule 4 構造化出力の
     /// 確定経路は明示的提出のみ）。本 helper は ChatSession 表示など event log と無関係な
     /// 経路で「最後の Agent メッセージ本文」を取り出すテスト用 fixture としてのみ残す。
@@ -5557,12 +5603,14 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         output_contract: Option<&str>,
         run_id: &str,
         step_name: &str,
+        workflow_declared_variables: &HashMap<String, String>,
     ) {
         let Some(contract) = output_contract else {
             return;
         };
         let action = crate::workflow::facet::output_contract_completion_action(contract);
         let action = Self::render_submit_command_variables(&action, run_id, step_name);
+        let action = Self::render_namespaced_variables(&action, workflow_declared_variables);
         if !prompt.is_empty() {
             prompt.push_str("\n\n");
         }
@@ -6603,11 +6651,15 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
 
         // step_outputsとworkflow_variablesのスナップショットをロック外で取得
-        let (step_outputs_snapshot, wf_variables_snapshot) = {
+        let (step_outputs_snapshot, wf_variables_snapshot, wf_declared_variables_snapshot) = {
             let execs = self.executions.lock().await;
             let (_, exec) = find_by_worktree(&execs, worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
-            (exec.step_outputs.clone(), exec.workflow_variables.clone())
+            (
+                exec.step_outputs.clone(),
+                exec.workflow_variables.clone(),
+                exec.workflow.variables.clone(),
+            )
         };
 
         // Phase 1: セッション生成 + ref登録 + プロンプト構築（AgentSessionはまだ起動しない）
@@ -6659,6 +6711,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
                 ps.pass_previous_response.unwrap_or(false),
                 ps.pass_output_from.as_deref(),
                 &wf_variables_snapshot,
+                &wf_declared_variables_snapshot,
             )?;
 
             child_setups.push(ChildSetup {
@@ -6810,6 +6863,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         pass_previous_response: bool,
         pass_output_from: Option<&[String]>,
         workflow_variables: &HashMap<String, String>,
+        workflow_declared_variables: &HashMap<String, String>,
     ) -> Result<(Option<String>, String), WorkflowEngineError> {
         if ps.has_facet_refs() && ps.resolved_facets.is_empty() {
             return Err(WorkflowEngineError::InvalidWorkflow(format!(
@@ -6821,10 +6875,13 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
 
         let system_prompt = composed.system_prompt.map(|s| {
             let s = Self::render_facet_variables(&s, worktree_path, task);
-            Self::render_submit_command_variables(&s, run_id, &ps.name)
+            let s = Self::render_submit_command_variables(&s, run_id, &ps.name);
+            Self::render_namespaced_variables(&s, workflow_declared_variables)
         });
         let mut user_message =
             Self::render_facet_variables(&composed.user_message, worktree_path, task);
+        user_message =
+            Self::render_namespaced_variables(&user_message, workflow_declared_variables);
 
         // pass_output_from による出力注入
         if let Some(from_steps) = pass_output_from {
@@ -6864,6 +6921,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
             ps.output_contract.as_deref(),
             run_id,
             &ps.name,
+            workflow_declared_variables,
         );
 
         Ok((system_prompt, user_message))
@@ -7381,6 +7439,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         state: WorkflowExecutionState,
     ) -> WorkflowState {
         let workflow = Workflow {
+            variables: Default::default(),
             name: "test-approval-workflow".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -7443,6 +7502,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         worktree_path: &str,
     ) {
         let workflow = Workflow {
+            variables: Default::default(),
             name: "pending-pickup-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -7894,6 +7954,7 @@ mod tests {
     #[allow(dead_code)]
     fn make_approved_fix_policy_workflow() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "approved-fix-policy-test".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -8152,6 +8213,7 @@ mod tests {
 
     fn make_test_workflow() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "test-workflow".to_string(),
             description: "Test workflow".to_string(),
             builtin: false,
@@ -8880,6 +8942,7 @@ mod tests {
     #[test]
     fn validate_start_empty_steps_returns_err() {
         let workflow = Workflow {
+            variables: Default::default(),
             name: "empty".to_string(),
             description: String::new(),
             builtin: false,
@@ -8920,6 +8983,7 @@ mod tests {
     #[test]
     fn validate_start_rejects_bash_node() {
         let workflow = Workflow {
+            variables: Default::default(),
             name: "bash-wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -10131,7 +10195,6 @@ mod tests {
             child_outputs: None,
             state: crate::workflow::state::default_step_entry_state(),
         }];
-
         let (sys, prompt) = WorkflowEngine::build_step_prompt(
             &step,
             "00000000-0000-0000-0000-000000000000",
@@ -10139,6 +10202,7 @@ mod tests {
             Some("Fix bug"),
             &outputs,
             &history,
+            &HashMap::new(),
             &HashMap::new(),
         )
         .unwrap();
@@ -10153,9 +10217,11 @@ mod tests {
         // output_contract がある場合、作業本文の末尾にも Contract 由来の
         // 完了時アクションを置き、初回完了時に CLI 提出へ誘導する。
         assert!(prompt.contains("完了時の必須アクション"));
-        assert!(
-            prompt.contains("releash workflow output submit 00000000-0000-0000-0000-000000000000")
-        );
+        // CLI 名は起動環境別 alias で展開される（spec issues-1054）。
+        let cli_alias = WorkflowEngine::resolve_releash_alias();
+        assert!(prompt.contains(&format!(
+            "{cli_alias} workflow output submit 00000000-0000-0000-0000-000000000000"
+        )));
         assert!(prompt.contains("--step build"));
         assert!(prompt.contains("--type plan-doc"));
         assert!(prompt.contains("--json"));
@@ -10201,6 +10267,7 @@ mod tests {
             &HashMap::new(),
             &[],
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -10219,7 +10286,6 @@ mod tests {
         step.policy = Some("review".to_string());
         step.instruction = None;
         resolve_node_facets_for_test(&mut step, tmp.path());
-
         let (sys, prompt) = WorkflowEngine::build_step_prompt(
             &step,
             "00000000-0000-0000-0000-000000000000",
@@ -10227,6 +10293,7 @@ mod tests {
             None,
             &HashMap::new(),
             &[],
+            &HashMap::new(),
             &HashMap::new(),
         )
         .unwrap();
@@ -10253,7 +10320,6 @@ mod tests {
         step.output_contract = Some("plan-doc".to_string());
         step.instruction = None;
         resolve_node_facets_for_test(&mut step, tmp.path());
-
         let (sys, prompt) = WorkflowEngine::build_step_prompt(
             &step,
             "00000000-0000-0000-0000-000000000000",
@@ -10261,6 +10327,7 @@ mod tests {
             None,
             &HashMap::new(),
             &[],
+            &HashMap::new(),
             &HashMap::new(),
         )
         .unwrap();
@@ -10271,12 +10338,72 @@ mod tests {
         assert!(sys.contains("POLICY_BODY"));
         assert!(sys.contains("CONTRACT_BODY"));
         assert!(prompt.contains("完了時の必須アクション"));
-        assert!(
-            prompt.contains("releash workflow output submit 00000000-0000-0000-0000-000000000000")
-        );
+        // CLI 名は起動環境別 alias で展開される（spec issues-1054）。
+        let cli_alias = WorkflowEngine::resolve_releash_alias();
+        assert!(prompt.contains(&format!(
+            "{cli_alias} workflow output submit 00000000-0000-0000-0000-000000000000"
+        )));
         assert!(prompt.contains("--step s"));
         assert!(prompt.contains("--type plan-doc"));
         assert!(!prompt.contains("+  --step"));
+    }
+
+    #[test]
+    fn build_step_prompt_expands_workflow_declared_variables_in_user_message() {
+        // spec issues-1054「workflow 定義変数の facet 展開」:
+        // build_step_prompt は workflow_declared_variables を facet 本文の
+        // `{{vars.<name>}}` 展開に渡す。本テストは instruction（user_message）と
+        // policy（system_prompt）の双方で `{{vars.*}}` が宣言値に置換されることを検証する。
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path();
+        let instructions = base.join("instructions");
+        let policies = base.join("policies");
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::create_dir_all(&policies).unwrap();
+        std::fs::write(
+            instructions.join("impl-vars.md"),
+            "Spec dir: {{vars.spec_dir}}\nEnv: {{vars.env}}",
+        )
+        .unwrap();
+        std::fs::write(
+            policies.join("vars-policy.md"),
+            "Operate within {{vars.env}}.",
+        )
+        .unwrap();
+
+        let mut step = make_test_step("impl", NodeType::Agent, "unused", vec![], None);
+        step.instruction = Some("impl-vars".to_string());
+        step.policy = Some("vars-policy".to_string());
+        step.output_contract = None;
+        resolve_node_facets_for_test(&mut step, base);
+
+        let mut declared = HashMap::new();
+        declared.insert("spec_dir".to_string(), "docs/specs/issues-1054".to_string());
+        declared.insert("env".to_string(), "production".to_string());
+
+        let (sys, prompt) = WorkflowEngine::build_step_prompt(
+            &step,
+            "00000000-0000-0000-0000-000000000000",
+            "/repo",
+            None,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &declared,
+        )
+        .unwrap();
+
+        // user_message 側の `{{vars.spec_dir}}` / `{{vars.env}}` が宣言値に展開される
+        assert!(prompt.contains("Spec dir: docs/specs/issues-1054"));
+        assert!(prompt.contains("Env: production"));
+        // 未展開トークンが残らない
+        assert!(!prompt.contains("{{vars.spec_dir}}"));
+        assert!(!prompt.contains("{{vars.env}}"));
+
+        // system_prompt 側でも `{{vars.env}}` が展開される
+        let sys_str = sys.expect("system_prompt should be set");
+        assert!(sys_str.contains("Operate within production."));
+        assert!(!sys_str.contains("{{vars.env}}"));
     }
 
     // ---- dispatch_session_start (SessionStartGate 経由のテストダブル検証) ----
@@ -10341,6 +10468,7 @@ mod tests {
             None,
             &HashMap::new(),
             &[],
+            &HashMap::new(),
             &HashMap::new(),
         )
         .unwrap();
@@ -10460,7 +10588,6 @@ mod tests {
         let mut step = make_test_step("s", NodeType::Agent, "unused", vec![], None);
         step.instruction = Some("only-instr".to_string());
         resolve_node_facets_for_test(&mut step, tmp.path());
-
         let (system_prompt, _prompt) = WorkflowEngine::build_step_prompt(
             &step,
             "00000000-0000-0000-0000-000000000000",
@@ -10468,6 +10595,7 @@ mod tests {
             None,
             &HashMap::new(),
             &[],
+            &HashMap::new(),
             &HashMap::new(),
         )
         .unwrap();
@@ -10613,6 +10741,7 @@ mod tests {
         step: NodeDefinition,
     ) {
         let workflow = Workflow {
+            variables: Default::default(),
             name: "regression-workflow".to_string(),
             description: "regression test".to_string(),
             builtin: false,
@@ -10831,7 +10960,6 @@ mod tests {
         ps.instruction = Some("inst".to_string());
         ps.output_contract = Some("oc".to_string());
         resolve_child_facets_for_test(&mut ps, base);
-
         let (system_prompt, user_message) = WorkflowEngine::build_parallel_step_prompt(
             &ps,
             "11111111-1111-1111-1111-111111111111",
@@ -10840,6 +10968,7 @@ mod tests {
             &HashMap::new(),
             false,
             None,
+            &HashMap::new(),
             &HashMap::new(),
         )
         .unwrap();
@@ -10858,8 +10987,11 @@ mod tests {
         assert!(user_message.contains("PARALLEL_KNOWLEDGE_BODY"));
         assert!(user_message.contains("PARALLEL_INSTRUCTION_BODY"));
         assert!(user_message.contains("完了時の必須アクション"));
-        assert!(user_message
-            .contains("releash workflow output submit 11111111-1111-1111-1111-111111111111"));
+        // CLI 名は起動環境別 alias で展開される（spec issues-1054）。
+        let cli_alias = WorkflowEngine::resolve_releash_alias();
+        assert!(user_message.contains(&format!(
+            "{cli_alias} workflow output submit 11111111-1111-1111-1111-111111111111"
+        )));
         assert!(user_message.contains("--step child"));
         assert!(user_message.contains("--type oc"));
         assert!(!user_message.contains("+  --step"));
@@ -10880,7 +11012,6 @@ mod tests {
         let mut ps = make_parallel_step("child");
         ps.instruction = Some("inst".to_string());
         resolve_child_facets_for_test(&mut ps, base);
-
         let (system_prompt, user_message) = WorkflowEngine::build_parallel_step_prompt(
             &ps,
             "11111111-1111-1111-1111-111111111111",
@@ -10889,6 +11020,7 @@ mod tests {
             &HashMap::new(),
             false,
             None,
+            &HashMap::new(),
             &HashMap::new(),
         )
         .unwrap();
@@ -11136,6 +11268,7 @@ mod tests {
         WorkflowExecution {
             id: "exec-1".to_string(),
             workflow: Workflow {
+                variables: Default::default(),
                 name: "test".to_string(),
                 description: "test".to_string(),
                 builtin: false,
@@ -11643,6 +11776,7 @@ mod tests {
         let mut exec = WorkflowExecution {
             id: "exec-1".to_string(),
             workflow: Workflow {
+                variables: Default::default(),
                 name: "review-fix".to_string(),
                 description: "test".to_string(),
                 builtin: false,
@@ -11767,6 +11901,7 @@ mod tests {
         let mut exec = WorkflowExecution {
             id: "exec-1".to_string(),
             workflow: Workflow {
+                variables: Default::default(),
                 name: "auto-approve".to_string(),
                 description: "test".to_string(),
                 builtin: false,
@@ -12032,6 +12167,7 @@ mod tests {
         let mut exec = WorkflowExecution {
             id: "exec-auto-approve".to_string(),
             workflow: Workflow {
+                variables: Default::default(),
                 name: "auto-approve-path".to_string(),
                 description: "test".to_string(),
                 builtin: false,
@@ -12178,6 +12314,7 @@ mod tests {
         let exec = WorkflowExecution {
             id: "exec-auto-approve".to_string(),
             workflow: Workflow {
+                variables: Default::default(),
                 name: "auto-approve-execute-outcome".to_string(),
                 description: "test".to_string(),
                 builtin: false,
@@ -12614,6 +12751,7 @@ mod tests {
 
     fn make_on_exhausted_workflow() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "on-exhausted-test".to_string(),
             description: "Test on_exhausted".to_string(),
             builtin: false,
@@ -12872,6 +13010,7 @@ mod tests {
     fn on_exhausted_chain_transitions() {
         // step_a → (exhausted) → step_b → (exhausted) → step_c
         let wf = Workflow {
+            variables: Default::default(),
             name: "chain-test".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -12936,6 +13075,7 @@ mod tests {
     fn on_exhausted_chain_to_non_exhausted_fails() {
         // step_a → (exhausted) → step_b (exhausted, no on_exhausted) → Failed
         let wf = Workflow {
+            variables: Default::default(),
             name: "chain-fail-test".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -13063,6 +13203,7 @@ mod tests {
             ..NodeDefinition::default()
         };
         let wf = Workflow {
+            variables: Default::default(),
             name: "loop-parallel".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -13575,6 +13716,7 @@ mod tests {
 
     fn make_minimal_workflow() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "engine-test-wf".to_string(),
             description: "minimal".to_string(),
             builtin: false,
@@ -13595,6 +13737,7 @@ mod tests {
     fn validate_workflow_shape_rejects_empty_and_bash_workflows_without_side_effects() {
         // 空 nodes は InvalidWorkflow
         let empty = Workflow {
+            variables: Default::default(),
             name: "wf".to_string(),
             description: "".to_string(),
             builtin: false,
@@ -13607,6 +13750,7 @@ mod tests {
 
         // bash node を含む workflow も InvalidWorkflow
         let bash = Workflow {
+            variables: Default::default(),
             name: "wf".to_string(),
             description: "".to_string(),
             builtin: false,
@@ -14572,6 +14716,7 @@ mod dispatch_boundary_tests {
 
     fn make_approval_only_workflow() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -14586,6 +14731,7 @@ mod dispatch_boundary_tests {
 
     fn make_rejectable_approval_workflow() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -14906,6 +15052,7 @@ mod dispatch_boundary_tests {
             step_history: vec![],
             step_execution_counts: HashMap::new(),
             workflow_definition: crate::workflow::schema::Workflow {
+                variables: Default::default(),
                 name: workflow_name.to_string(),
                 description: String::new(),
                 builtin: false,
@@ -15606,6 +15753,7 @@ mod dispatch_boundary_tests {
             step_history: vec![],
             step_execution_counts: HashMap::new(),
             workflow_definition: crate::workflow::schema::Workflow {
+                variables: Default::default(),
                 name: "fail-wf".to_string(),
                 description: String::new(),
                 builtin: false,
@@ -16232,6 +16380,7 @@ mod dispatch_boundary_tests {
     #[test]
     fn make_aborted_parallel_history_entry_snapshots_mixed_child_states() {
         let workflow = Workflow {
+            variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -17131,6 +17280,7 @@ mod dispatch_boundary_tests {
             workflow_file_stem: "wf".to_string(),
             worktree_path: "/wt/a".to_string(),
             workflow_definition: Workflow {
+                variables: Default::default(),
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
@@ -17276,6 +17426,7 @@ mod dispatch_boundary_tests {
 
     fn make_submit_output_workflow() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "submit-wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -17574,6 +17725,7 @@ mod dispatch_boundary_tests {
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
+            variables: Default::default(),
             name: "spec-wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -17630,6 +17782,7 @@ mod dispatch_boundary_tests {
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
+            variables: Default::default(),
             name: "multi-step".to_string(),
             description: String::new(),
             builtin: false,
@@ -17829,6 +17982,7 @@ mod dispatch_boundary_tests {
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
+            variables: Default::default(),
             name: "spec-wf".to_string(),
             description: String::new(),
             builtin: false,

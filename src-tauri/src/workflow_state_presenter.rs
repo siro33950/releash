@@ -319,6 +319,7 @@ mod tests {
             }],
             step_execution_counts: HashMap::new(),
             workflow_definition: Workflow {
+                variables: Default::default(),
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,

@@ -34,6 +34,10 @@ impl fmt::Display for CliInstallStatus {
 pub(crate) fn ensure_cli_symlink_installed() {
     #[cfg(target_os = "macos")]
     {
+        if !should_install_cli_symlink_for_profile(cfg!(debug_assertions)) {
+            log::info!("Skipping Releash CLI install on dev build to preserve production CLI");
+            return;
+        }
         let exe = match std::env::current_exe() {
             Ok(path) => path,
             Err(e) => {
@@ -46,6 +50,16 @@ pub(crate) fn ensure_cli_symlink_installed() {
             Err(e) => log::warn!("Failed to install Releash CLI: {e}"),
         }
     }
+}
+
+/// `/usr/local/bin/releash` を install してよいかをビルド種別から判定する純粋関数。
+///
+/// dev ビルドは本番 CLI 名 `releash` を所有しない（spec [01]「dev 起動による本番 CLI の不変性」）。
+/// `/usr/local/bin/releash` を debug binary に張り替えると本番 CLI を破壊するため、
+/// dev 起動はこの install 経路に関与しない。
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn should_install_cli_symlink_for_profile(is_debug_build: bool) -> bool {
+    !is_debug_build
 }
 
 #[cfg(all(unix, any(target_os = "macos", test)))]
@@ -299,5 +313,18 @@ mod tests {
     #[test]
     fn applescript_string_escapes_backslashes_and_quotes() {
         assert_eq!(applescript_string(r#"echo "a\b""#), r#""echo \"a\\b\"""#);
+    }
+
+    #[test]
+    fn should_install_cli_symlink_skips_dev_build() {
+        // dev (debug) ビルドは本番 CLI を所有しないため install しない
+        // （spec [01]「dev 起動による本番 CLI の不変性」）。
+        assert!(!should_install_cli_symlink_for_profile(true));
+    }
+
+    #[test]
+    fn should_install_cli_symlink_allows_release_build() {
+        // 本番 (release) ビルドは `/usr/local/bin/releash` を更新する。
+        assert!(should_install_cli_symlink_for_profile(false));
     }
 }

@@ -918,6 +918,7 @@ mod tests {
                         &HashMap::new(),
                         &[],
                         &workflow_variables,
+                        &HashMap::new(),
                     )
                     .expect("build_step_prompt must succeed");
                     (&node.resolved_facets.input_contracts, prompt)
@@ -946,6 +947,7 @@ mod tests {
                         false,
                         None,
                         &workflow_variables,
+                        &HashMap::new(),
                     )
                     .expect("build_parallel_step_prompt must succeed");
                     (&child.resolved_facets.input_contracts, prompt)
@@ -1056,6 +1058,7 @@ mod tests {
             &HashMap::new(),
             &[],
             &HashMap::new(),
+            &HashMap::new(),
         )
         .expect("build_step_prompt must succeed");
 
@@ -1089,6 +1092,7 @@ mod tests {
             Some(evil),
             &HashMap::new(),
             &[],
+            &HashMap::new(),
             &HashMap::new(),
         )
         .expect("build_step_prompt must succeed");
