@@ -125,7 +125,6 @@ export function ReviewPanel({
 	diffOnlyMode,
 	onDiffOnlyModeChange,
 	navigateToFile,
-	onSendToAgent,
 	initialSelectedFile,
 	onSelectedFileChange,
 }: ReviewPanelProps) {
@@ -277,18 +276,14 @@ export function ReviewPanel({
 	);
 
 	// Diff comments
-	const worktreeName = useMemo(() => {
-		const parts = rootPath.split("/");
-		return parts[parts.length - 1] ?? "";
-	}, [rootPath]);
+	const worktreeName = rootPath;
 
 	const {
 		comments: allComments,
 		addComment,
-		updateComment,
-		deleteComment,
-		sendToAgent,
-		markSent,
+		appendComment,
+		setStance,
+		resolveThread,
 		getCommentsForFile,
 	} = useDiffComments({ worktreeName });
 
@@ -298,7 +293,7 @@ export function ReviewPanel({
 	);
 
 	const lineComments = useMemo(
-		() => fileComments.filter((c) => c.lineNumber != null),
+		() => fileComments.filter((c) => c.target.lineNumber != null),
 		[fileComments],
 	);
 
@@ -338,15 +333,11 @@ export function ReviewPanel({
 		[selectedFile, addComment],
 	);
 
-	const handleSendComments = useCallback(
-		async (commentIds: string[]) => {
-			const result = await sendToAgent(commentIds);
-			if (result.formattedMessage && onSendToAgent) {
-				await onSendToAgent(result.formattedMessage, result.mentions);
-				await markSent(result.commentIds);
-			}
+	const handleAddGeneralComment = useCallback(
+		async (content: string) => {
+			await addComment({ content });
 		},
-		[sendToAgent, markSent, onSendToAgent],
+		[addComment],
 	);
 
 	// File tree panel collapse
@@ -474,6 +465,15 @@ export function ReviewPanel({
 				<div className="flex items-center justify-between px-2 h-[32px] border-b border-border bg-card shrink-0">
 					<div className="w-5" />
 					<div className="flex items-center gap-1">
+						<FileCommentPopoverTrigger
+							comments={allComments}
+							title="General threads"
+							addLabel="Add general thread"
+							onAdd={handleAddGeneralComment}
+							onAppend={appendComment}
+							onSetStance={setStance}
+							onResolve={resolveThread}
+						/>
 						<DiffBaseToggle
 							diffBase={diffBase}
 							onDiffBaseChange={handleDiffBaseChange}
@@ -536,6 +536,15 @@ export function ReviewPanel({
 					</TooltipContent>
 				</Tooltip>
 				<div className="flex items-center gap-1">
+					<FileCommentPopoverTrigger
+						comments={allComments}
+						title="General threads"
+						addLabel="Add general thread"
+						onAdd={handleAddGeneralComment}
+						onAppend={appendComment}
+						onSetStance={setStance}
+						onResolve={resolveThread}
+					/>
 					<DiffBaseToggle
 						diffBase={diffBase}
 						onDiffBaseChange={handleDiffBaseChange}
@@ -606,9 +615,9 @@ export function ReviewPanel({
 												comments={allComments}
 												filePath={selectedFile}
 												onAdd={handleAddFileComment}
-												onUpdate={updateComment}
-												onDelete={deleteComment}
-												onSend={handleSendComments}
+												onAppend={appendComment}
+												onSetStance={setStance}
+												onResolve={resolveThread}
 											/>
 										)}
 									</Breadcrumb>
@@ -683,9 +692,9 @@ export function ReviewPanel({
 											comments={lineComments}
 											onAddComment={handleAddLineComment}
 											onAddRangeComment={handleAddRangeComment}
-											onUpdateComment={updateComment}
-											onDeleteComment={deleteComment}
-											onSendComment={handleSendComments}
+											onAppendComment={appendComment}
+											onSetStance={setStance}
+											onResolveThread={resolveThread}
 											scrollToLine={scrollToLine}
 										/>
 									</div>

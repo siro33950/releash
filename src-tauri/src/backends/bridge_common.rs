@@ -1900,6 +1900,8 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
     let initial_permission_mode = permission_mode;
     crate::permission::PermissionMode::parse(&initial_permission_mode)
         .map_err(|e| e.to_string())?;
+    let data_dir = resolve_data_dir(app)
+        .map_err(|e| format!("Failed to resolve data dir for session {chat_session_id}: {e}"))?;
 
     let mut cmd = Command::new("node");
     cmd.arg(
@@ -1953,13 +1955,6 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
     let pgid = child.id();
     #[cfg(unix)]
     if let Some(pg) = pgid {
-        let data_dir = resolve_data_dir(app).map_err(|e| {
-            log::error!("Failed to resolve data dir, killing spawned process group: {e}");
-            unsafe {
-                libc::killpg(pg as libc::pid_t, libc::SIGKILL);
-            }
-            format!("Failed to resolve data dir for session {chat_session_id}: {e}")
-        })?;
         if let Err(e) = save_pgid(&data_dir, chat_session_id, pg) {
             log::error!("Failed to save PGID file, killing spawned process group: {e}");
             unsafe {

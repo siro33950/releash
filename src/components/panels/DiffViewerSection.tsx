@@ -1,5 +1,6 @@
 import type { ChangeGroup } from "@/lib/computeHunks";
-import type { DiffComment } from "@/types/diffComment";
+import type { ReviewDiscussionThread } from "@/types/diffComment";
+import type { ReviewStanceValue } from "@/types/protocol";
 import type { DiffMode } from "@/types/settings";
 import { CodeDiffViewer } from "./CodeDiffViewer";
 import { ImageDiffViewer } from "./ImageDiffViewer";
@@ -22,16 +23,20 @@ export interface DiffViewerSectionProps {
 	changeGroups?: ChangeGroup[];
 	onStageGroup?: (groupIndex: number) => void;
 	groupActionLabel?: string;
-	comments?: DiffComment[];
+	comments?: ReviewDiscussionThread[];
 	onAddComment?: (lineNumber: number, content: string) => Promise<void>;
 	onAddRangeComment?: (
 		startLine: number,
 		endLine: number,
 		content: string,
 	) => Promise<void>;
-	onUpdateComment?: (commentId: string, content: string) => Promise<void>;
-	onDeleteComment?: (commentId: string) => Promise<void>;
-	onSendComment?: (commentIds: string[]) => Promise<void>;
+	onAppendComment?: (threadId: string, content: string) => Promise<void>;
+	onSetStance?: (threadId: string, value: ReviewStanceValue) => Promise<void>;
+	onResolveThread?: (
+		threadId: string,
+		outcome: string,
+		summary: string,
+	) => Promise<void>;
 	scrollToLine?: number | null;
 }
 
@@ -70,9 +75,9 @@ export function DiffViewerSection(props: DiffViewerSectionProps) {
 			comments={props.comments}
 			onAddComment={props.onAddComment}
 			onAddRangeComment={props.onAddRangeComment}
-			onUpdateComment={props.onUpdateComment}
-			onDeleteComment={props.onDeleteComment}
-			onSendComment={props.onSendComment}
+			onAppendComment={props.onAppendComment}
+			onSetStance={props.onSetStance}
+			onResolveThread={props.onResolveThread}
 			scrollToLine={props.scrollToLine}
 		/>
 	);

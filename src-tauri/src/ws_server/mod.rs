@@ -83,6 +83,10 @@ pub(crate) struct WsServerState {
     /// `create_session_with_permission` を AppHandle 無しで走らせる。
     #[cfg(test)]
     test_session_deps: Option<(Arc<crate::session::SessionStore>, PathBuf)>,
+    #[cfg(test)]
+    test_review_deps: Option<(Arc<crate::review_comments::ReviewCommentStore>, PathBuf)>,
+    #[cfg(test)]
+    test_review_emit_log: Arc<parking_lot::Mutex<Vec<String>>>,
 }
 
 impl WsServerState {
@@ -113,6 +117,10 @@ impl WsServerState {
             backend_registry,
             #[cfg(test)]
             test_session_deps: None,
+            #[cfg(test)]
+            test_review_deps: None,
+            #[cfg(test)]
+            test_review_emit_log: Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
@@ -123,6 +131,20 @@ impl WsServerState {
         data_dir: PathBuf,
     ) {
         self.test_session_deps = Some((session_store, data_dir));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_review_deps(
+        &mut self,
+        store: Arc<crate::review_comments::ReviewCommentStore>,
+        data_dir: PathBuf,
+    ) {
+        self.test_review_deps = Some((store, data_dir));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_review_emit_log(&self) -> Vec<String> {
+        self.test_review_emit_log.lock().clone()
     }
 
     pub(crate) fn get_backend_registry(&self) -> &Arc<crate::backends::AgentBackendRegistry> {

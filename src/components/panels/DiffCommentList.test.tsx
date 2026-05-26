@@ -2,82 +2,89 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { DiffComment } from "@/types/diffComment";
+import type { ReviewDiscussionThread } from "@/types/diffComment";
 import { DiffCommentList } from "./DiffCommentList";
 
 function renderWithProviders(ui: React.ReactElement) {
 	return render(<TooltipProvider>{ui}</TooltipProvider>);
 }
 
-const makeComment = (overrides: Partial<DiffComment> = {}): DiffComment => ({
-	id: "c1",
-	filePath: "src/main.ts",
-	lineNumber: 10,
-	endLine: undefined,
-	content: "Fix this",
-	status: "unsent",
+const makeComment = (
+	overrides: Partial<ReviewDiscussionThread> = {},
+): ReviewDiscussionThread => ({
+	id: "t1",
+	worktreeName: "wt",
+	author: { kind: "human", displayName: "Human" },
+	target: { filePath: "src/main.ts", lineNumber: 10, endLine: null },
+	state: "open",
+	comments: [
+		{
+			id: "c1",
+			threadId: "t1",
+			author: { kind: "human", displayName: "Human" },
+			content: "Fix this",
+			createdAt: Date.now(),
+		},
+	],
+	stances: [],
+	resolve: null,
 	createdAt: Date.now(),
+	updatedAt: Date.now(),
+	version: 1,
+	canResolve: true,
+	myStance: "none",
 	...overrides,
 });
 
 describe("DiffCommentList", () => {
 	const defaultProps = {
-		unsentCount: 0,
 		onCommentClick: vi.fn(),
-		onDelete: vi.fn().mockResolvedValue(undefined),
-		onSend: vi.fn().mockResolvedValue(undefined),
-		onSendAll: vi.fn().mockResolvedValue(undefined),
 	};
 
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
 
-	it("shows empty state when no comments", () => {
+	it("shows empty state when no threads", () => {
 		renderWithProviders(<DiffCommentList comments={[]} {...defaultProps} />);
-		expect(screen.getByText("No comments yet")).toBeInTheDocument();
-		expect(screen.getByText("Add comments on diff lines")).toBeInTheDocument();
+		expect(screen.getByText("No threads yet")).toBeInTheDocument();
 	});
 
-	it("renders header with Comments label", () => {
+	it("renders header with Threads label", () => {
 		renderWithProviders(
-			<DiffCommentList
-				comments={[makeComment()]}
-				{...defaultProps}
-				unsentCount={1}
-			/>,
+			<DiffCommentList comments={[makeComment()]} {...defaultProps} />,
 		);
-		expect(screen.getByText("Comments")).toBeInTheDocument();
+		expect(screen.getByText("Threads")).toBeInTheDocument();
 	});
 
-	it("shows unsent count badge", () => {
-		renderWithProviders(
-			<DiffCommentList
-				comments={[makeComment()]}
-				{...defaultProps}
-				unsentCount={3}
-			/>,
-		);
-		expect(screen.getByText("3")).toBeInTheDocument();
-	});
-
-	it("does not show badge when unsentCount is 0", () => {
-		renderWithProviders(
-			<DiffCommentList
-				comments={[makeComment({ status: "sent" })]}
-				{...defaultProps}
-				unsentCount={0}
-			/>,
-		);
-		const badges = screen.queryAllByText("0");
-		expect(badges).toHaveLength(0);
-	});
-
-	it("groups comments by file", () => {
+	it("groups threads by file", () => {
 		const comments = [
-			makeComment({ id: "c1", filePath: "src/a.ts", content: "Comment A" }),
-			makeComment({ id: "c2", filePath: "src/b.ts", content: "Comment B" }),
-			makeComment({ id: "c3", filePath: "src/a.ts", content: "Comment C" }),
+			makeComment({
+				id: "t1",
+				target: { filePath: "src/a.ts", lineNumber: 10, endLine: null },
+				comments: [
+					{
+						id: "c1",
+						threadId: "t1",
+						author: { kind: "human", displayName: "Human" },
+						content: "Comment A",
+						createdAt: Date.now(),
+					},
+				],
+			}),
+			makeComment({
+				id: "t2",
+				target: { filePath: "src/b.ts", lineNumber: 10, endLine: null },
+				comments: [
+					{
+						id: "c2",
+						threadId: "t2",
+						author: { kind: "human", displayName: "Human" },
+						content: "Comment B",
+						createdAt: Date.now(),
+					},
+				],
+			}),
 		];
 		renderWithProviders(
 			<DiffCommentList comments={comments} {...defaultProps} />,
@@ -86,54 +93,44 @@ describe("DiffCommentList", () => {
 		expect(screen.getByText("b.ts")).toBeInTheDocument();
 		expect(screen.getByText("Comment A")).toBeInTheDocument();
 		expect(screen.getByText("Comment B")).toBeInTheDocument();
-		expect(screen.getByText("Comment C")).toBeInTheDocument();
 	});
 
-	it("shows line label for line comments", () => {
+	it("shows line, range, file, and resolved labels", () => {
 		renderWithProviders(
 			<DiffCommentList
-				comments={[makeComment({ lineNumber: 42 })]}
+				comments={[
+					makeComment({
+						id: "t1",
+						target: { filePath: "src/a.ts", lineNumber: 42, endLine: null },
+					}),
+					makeComment({
+						id: "t2",
+						target: { filePath: "src/a.ts", lineNumber: 10, endLine: 20 },
+					}),
+					makeComment({
+						id: "t3",
+						target: { filePath: "src/a.ts", lineNumber: null, endLine: null },
+						state: "resolved",
+					}),
+				]}
 				{...defaultProps}
 			/>,
 		);
 		expect(screen.getByText("L42")).toBeInTheDocument();
-	});
-
-	it("shows range label for multi-line comments", () => {
-		renderWithProviders(
-			<DiffCommentList
-				comments={[makeComment({ lineNumber: 10, endLine: 20 })]}
-				{...defaultProps}
-			/>,
-		);
 		expect(screen.getByText("L10-20")).toBeInTheDocument();
-	});
-
-	it("shows 'file' label for file comments", () => {
-		renderWithProviders(
-			<DiffCommentList
-				comments={[makeComment({ lineNumber: undefined })]}
-				{...defaultProps}
-			/>,
-		);
 		expect(screen.getByText("file")).toBeInTheDocument();
-	});
-
-	it("shows sent badge for sent comments", () => {
-		renderWithProviders(
-			<DiffCommentList
-				comments={[makeComment({ status: "sent" })]}
-				{...defaultProps}
-			/>,
-		);
-		expect(screen.getByText("sent")).toBeInTheDocument();
+		expect(screen.getByText("resolved")).toBeInTheDocument();
 	});
 
 	it("calls onCommentClick with filePath and lineNumber", async () => {
 		const user = userEvent.setup();
 		renderWithProviders(
 			<DiffCommentList
-				comments={[makeComment({ lineNumber: 42 })]}
+				comments={[
+					makeComment({
+						target: { filePath: "src/main.ts", lineNumber: 42, endLine: null },
+					}),
+				]}
 				{...defaultProps}
 			/>,
 		);
@@ -142,60 +139,31 @@ describe("DiffCommentList", () => {
 		expect(defaultProps.onCommentClick).toHaveBeenCalledWith("src/main.ts", 42);
 	});
 
-	it("calls onCommentClick with filePath only for file comments", async () => {
+	it("shows and selects general threads without a file position", async () => {
 		const user = userEvent.setup();
 		renderWithProviders(
 			<DiffCommentList
-				comments={[makeComment({ lineNumber: undefined })]}
+				comments={[
+					makeComment({
+						target: { filePath: null, lineNumber: null, endLine: null },
+						comments: [
+							{
+								id: "c1",
+								threadId: "t1",
+								author: { kind: "human", displayName: "Human" },
+								content: "General discussion",
+								createdAt: Date.now(),
+							},
+						],
+					}),
+				]}
 				{...defaultProps}
 			/>,
 		);
 
-		await user.click(screen.getByText("Fix this"));
-		expect(defaultProps.onCommentClick).toHaveBeenCalledWith(
-			"src/main.ts",
-			undefined,
-		);
-	});
-
-	it("calls onDelete when delete button clicked", async () => {
-		const user = userEvent.setup();
-		renderWithProviders(
-			<DiffCommentList
-				comments={[makeComment()]}
-				{...defaultProps}
-				unsentCount={1}
-			/>,
-		);
-
-		await user.click(screen.getByLabelText("Delete comment"));
-		expect(defaultProps.onDelete).toHaveBeenCalledWith("c1");
-	});
-
-	it("disables send all button when unsentCount is 0", () => {
-		renderWithProviders(
-			<DiffCommentList
-				comments={[makeComment({ status: "sent" })]}
-				{...defaultProps}
-				unsentCount={0}
-			/>,
-		);
-
-		const sendAllButton = screen.getByLabelText("Send all unsent comments");
-		expect(sendAllButton).toBeDisabled();
-	});
-
-	it("calls onSendAll when send all button clicked", async () => {
-		const user = userEvent.setup();
-		renderWithProviders(
-			<DiffCommentList
-				comments={[makeComment()]}
-				{...defaultProps}
-				unsentCount={1}
-			/>,
-		);
-
-		await user.click(screen.getByLabelText("Send all unsent comments"));
-		expect(defaultProps.onSendAll).toHaveBeenCalled();
+		expect(screen.getByText("General")).toBeInTheDocument();
+		expect(screen.getByText("file")).toBeInTheDocument();
+		await user.click(screen.getByText("General discussion"));
+		expect(defaultProps.onCommentClick).toHaveBeenCalledWith("", undefined);
 	});
 });

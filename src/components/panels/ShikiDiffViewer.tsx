@@ -17,7 +17,12 @@ import {
 } from "@/hooks/useDiffTokens";
 import { useShikiHighlighter } from "@/hooks/useShikiHighlighter";
 import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
-import type { DiffComment } from "@/types/diffComment";
+import {
+	getThreadEndLine,
+	getThreadLineNumber,
+	type ReviewDiscussionThread,
+} from "@/types/diffComment";
+import type { ReviewStanceValue } from "@/types/protocol";
 import type { DiffMode } from "@/types/settings";
 import { DiffInlineComment, DiffInlineCommentInput } from "./DiffInlineComment";
 import { DiffSearchBar } from "./DiffSearchBar";
@@ -59,16 +64,20 @@ export interface ShikiDiffViewerProps {
 	changeGroups?: ChangeGroup[];
 	onStageGroup?: (groupIndex: number) => void;
 	groupActionLabel?: string;
-	comments?: DiffComment[];
+	comments?: ReviewDiscussionThread[];
 	onAddComment?: (lineNumber: number, content: string) => Promise<void>;
 	onAddRangeComment?: (
 		startLine: number,
 		endLine: number,
 		content: string,
 	) => Promise<void>;
-	onUpdateComment?: (commentId: string, content: string) => Promise<void>;
-	onDeleteComment?: (commentId: string) => Promise<void>;
-	onSendComment?: (commentIds: string[]) => Promise<void>;
+	onAppendComment?: (threadId: string, content: string) => Promise<void>;
+	onSetStance?: (threadId: string, value: ReviewStanceValue) => Promise<void>;
+	onResolveThread?: (
+		threadId: string,
+		outcome: string,
+		summary: string,
+	) => Promise<void>;
 	scrollToLine?: number | null;
 }
 
@@ -382,7 +391,7 @@ const SplitDiffLineRow = React.memo(function SplitDiffLineRow({
 type FlatGutterItem =
 	| { kind: "gutter-line"; line: GutterDiffLine }
 	| { kind: "hidden"; range: HiddenRange }
-	| { kind: "comment"; comment: DiffComment }
+	| { kind: "comment"; comment: ReviewDiscussionThread }
 	| { kind: "comment-input"; afterLine: number };
 
 type FlatInlineItem =
@@ -393,7 +402,7 @@ type FlatInlineItem =
 			changeGroupIndex?: number;
 	  }
 	| { kind: "hidden"; range: HiddenRange }
-	| { kind: "comment"; comment: DiffComment }
+	| { kind: "comment"; comment: ReviewDiscussionThread }
 	| { kind: "comment-input"; afterLine: number };
 
 interface FlatSplitRow {
@@ -406,20 +415,24 @@ interface FlatSplitRow {
 type FlatSplitItem =
 	| { kind: "split-row"; row: FlatSplitRow }
 	| { kind: "hidden"; range: HiddenRange }
-	| { kind: "comment"; comment: DiffComment }
+	| { kind: "comment"; comment: ReviewDiscussionThread }
 	| { kind: "comment-input"; afterLine: number };
 
 interface CommentCallbacks {
-	comments?: DiffComment[];
+	comments?: ReviewDiscussionThread[];
 	onAddComment?: (lineNumber: number, content: string) => Promise<void>;
 	onAddRangeComment?: (
 		startLine: number,
 		endLine: number,
 		content: string,
 	) => Promise<void>;
-	onUpdateComment?: (commentId: string, content: string) => Promise<void>;
-	onDeleteComment?: (commentId: string) => Promise<void>;
-	onSendComment?: (commentIds: string[]) => Promise<void>;
+	onAppendComment?: (threadId: string, content: string) => Promise<void>;
+	onSetStance?: (threadId: string, value: ReviewStanceValue) => Promise<void>;
+	onResolveThread?: (
+		threadId: string,
+		outcome: string,
+		summary: string,
+	) => Promise<void>;
 }
 
 interface VirtualViewProps extends CommentCallbacks {
@@ -576,7 +589,7 @@ function isLineInRange(
 	return lineNumber >= range.start && lineNumber <= range.end;
 }
 
-function useCommentViewState(comments: DiffComment[] | undefined) {
+function useCommentViewState(comments: ReviewDiscussionThread[] | undefined) {
 	const [commentInputLine, setCommentInputLine] = useState<number | null>(null);
 	const [commentInputRange, setCommentInputRange] = useState<{
 		start: number;
@@ -594,13 +607,15 @@ function useCommentViewState(comments: DiffComment[] | undefined) {
 	const commentHighlightLines = useMemo(() => {
 		const set = new Set<number>();
 		for (const c of comments ?? []) {
-			if (c.lineNumber != null) {
-				if (c.endLine != null) {
-					for (let i = c.lineNumber; i <= c.endLine; i++) {
+			const lineNumber = getThreadLineNumber(c);
+			const endLine = getThreadEndLine(c);
+			if (lineNumber != null) {
+				if (endLine != null) {
+					for (let i = lineNumber; i <= endLine; i++) {
 						set.add(i);
 					}
 				} else {
-					set.add(c.lineNumber);
+					set.add(lineNumber);
 				}
 			}
 		}
@@ -621,12 +636,13 @@ function useCommentViewState(comments: DiffComment[] | undefined) {
 }
 
 function buildCommentsByLine(
-	comments: DiffComment[] | undefined,
-): Map<number, DiffComment[]> {
-	const map = new Map<number, DiffComment[]>();
+	comments: ReviewDiscussionThread[] | undefined,
+): Map<number, ReviewDiscussionThread[]> {
+	const map = new Map<number, ReviewDiscussionThread[]>();
 	for (const c of comments ?? []) {
-		if (c.lineNumber != null) {
-			const key = c.endLine ?? c.lineNumber;
+		const lineNumber = getThreadLineNumber(c);
+		if (lineNumber != null) {
+			const key = getThreadEndLine(c) ?? lineNumber;
 			const arr = map.get(key) ?? [];
 			arr.push(c);
 			map.set(key, arr);
@@ -638,10 +654,10 @@ function buildCommentsByLine(
 function insertCommentItems<T extends { kind: string }>(
 	result: T[],
 	lineNum: number | null,
-	commentsByLine: Map<number, DiffComment[]>,
+	commentsByLine: Map<number, ReviewDiscussionThread[]>,
 	commentInputLine: number | null,
 	commentInputRange: { start: number; end: number } | null,
-	makeComment: (comment: DiffComment) => T,
+	makeComment: (comment: ReviewDiscussionThread) => T,
 	makeCommentInput: (afterLine: number) => T,
 ) {
 	if (lineNum == null) return;
@@ -748,9 +764,9 @@ function GutterView({
 	comments,
 	onAddComment,
 	onAddRangeComment,
-	onUpdateComment,
-	onDeleteComment,
-	onSendComment,
+	onAppendComment,
+	onSetStance,
+	onResolveThread,
 }: VirtualViewProps) {
 	const {
 		commentInputLine,
@@ -843,9 +859,9 @@ function GutterView({
 						) : item.kind === "comment" ? (
 							<DiffInlineComment
 								comment={item.comment}
-								onUpdate={onUpdateComment ?? (async () => {})}
-								onDelete={onDeleteComment ?? (async () => {})}
-								onSend={onSendComment ?? (async () => {})}
+								onAppend={onAppendComment}
+								onSetStance={onSetStance}
+								onResolve={onResolveThread}
 							/>
 						) : item.kind === "comment-input" ? (
 							<DiffInlineCommentInput
@@ -953,9 +969,9 @@ function InlineView({
 	comments,
 	onAddComment,
 	onAddRangeComment,
-	onUpdateComment,
-	onDeleteComment,
-	onSendComment,
+	onAppendComment,
+	onSetStance,
+	onResolveThread,
 }: VirtualViewProps) {
 	const {
 		commentInputLine,
@@ -1055,9 +1071,9 @@ function InlineView({
 						) : item.kind === "comment" ? (
 							<DiffInlineComment
 								comment={item.comment}
-								onUpdate={onUpdateComment ?? (async () => {})}
-								onDelete={onDeleteComment ?? (async () => {})}
-								onSend={onSendComment ?? (async () => {})}
+								onAppend={onAppendComment}
+								onSetStance={onSetStance}
+								onResolve={onResolveThread}
 							/>
 						) : item.kind === "comment-input" ? (
 							<DiffInlineCommentInput
@@ -1165,9 +1181,9 @@ function SplitView({
 	comments,
 	onAddComment,
 	onAddRangeComment,
-	onUpdateComment,
-	onDeleteComment,
-	onSendComment,
+	onAppendComment,
+	onSetStance,
+	onResolveThread,
 }: VirtualViewProps) {
 	const {
 		commentInputLine,
@@ -1310,9 +1326,9 @@ function SplitView({
 						) : item.kind === "comment" ? (
 							<DiffInlineComment
 								comment={item.comment}
-								onUpdate={onUpdateComment ?? (async () => {})}
-								onDelete={onDeleteComment ?? (async () => {})}
-								onSend={onSendComment ?? (async () => {})}
+								onAppend={onAppendComment}
+								onSetStance={onSetStance}
+								onResolve={onResolveThread}
 							/>
 						) : item.kind === "comment-input" ? (
 							<DiffInlineCommentInput
@@ -1599,9 +1615,9 @@ export function ShikiDiffViewer({
 	comments,
 	onAddComment,
 	onAddRangeComment,
-	onUpdateComment,
-	onDeleteComment,
-	onSendComment,
+	onAppendComment,
+	onSetStance,
+	onResolveThread,
 	scrollToLine,
 }: ShikiDiffViewerProps) {
 	const originalTokens = useShikiHighlighter(originalContent, language);
@@ -1802,9 +1818,9 @@ export function ShikiDiffViewer({
 					comments={comments}
 					onAddComment={onAddComment}
 					onAddRangeComment={onAddRangeComment}
-					onUpdateComment={onUpdateComment}
-					onDeleteComment={onDeleteComment}
-					onSendComment={onSendComment}
+					onAppendComment={onAppendComment}
+					onSetStance={onSetStance}
+					onResolveThread={onResolveThread}
 				/>
 			</div>
 			<ScrollbarMarkers markers={diffMarkers} />

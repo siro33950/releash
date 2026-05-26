@@ -230,6 +230,181 @@ export interface AgentStreamSync {
 	parts: MessagePart[];
 }
 
+// --- Review comments ---
+
+export type ReviewActorKind = "human" | "agent";
+export type ReviewThreadState = "open" | "resolved";
+export type ReviewStanceValue = "agree" | "disagree" | "none";
+export type ReviewErrorCode =
+	| "invalid_input"
+	| "not_found"
+	| "already_resolved"
+	| "permission_denied"
+	| "io"
+	| "serialize";
+
+export interface ReviewActor {
+	kind: ReviewActorKind;
+	backendId?: string | null;
+	model?: string | null;
+	displayName: string;
+}
+
+export interface ReviewTarget {
+	filePath?: string | null;
+	lineNumber?: number | null;
+	endLine?: number | null;
+}
+
+export interface ReviewComment {
+	id: string;
+	threadId: string;
+	author: ReviewActor;
+	content: string;
+	createdAt: number;
+}
+
+export interface ReviewStance {
+	actor: ReviewActor;
+	value: ReviewStanceValue;
+	updatedAt: number;
+}
+
+export interface ReviewResolveInfo {
+	actor: ReviewActor;
+	outcome: string;
+	summary: string;
+	resolvedAt: number;
+}
+
+export interface ReviewThread {
+	id: string;
+	worktreeName: string;
+	author: ReviewActor;
+	target: ReviewTarget;
+	state: ReviewThreadState;
+	comments: ReviewComment[];
+	stances: ReviewStance[];
+	resolve?: ReviewResolveInfo | null;
+	createdAt: number;
+	updatedAt: number;
+	version: number;
+	canResolve: boolean;
+	myStance: ReviewStanceValue;
+}
+
+export interface ReviewThreadFilter {
+	filePath?: string | null;
+	state?: ReviewThreadState | null;
+	authorKey?: string | null;
+	myStance?: ReviewStanceValue | null;
+	updatedAfter?: number | null;
+}
+
+export interface ReviewErrorPayload {
+	code: ReviewErrorCode;
+	message: string;
+}
+
+export interface ReviewListRequest {
+	worktreeName?: string | null;
+	filter?: ReviewThreadFilter | null;
+}
+
+export interface ReviewListResponse {
+	success: boolean;
+	worktreeName?: string | null;
+	threads: ReviewThread[];
+	error?: ReviewErrorPayload | null;
+}
+
+export interface ReviewGetRequest {
+	worktreeName?: string | null;
+	threadId: string;
+}
+
+export interface ReviewThreadResponse {
+	success: boolean;
+	worktreeName?: string | null;
+	thread?: ReviewThread | null;
+	error?: ReviewErrorPayload | null;
+}
+
+export interface ReviewCreateRequest {
+	worktreeName?: string | null;
+	target: ReviewTarget;
+	content: string;
+}
+
+export interface ReviewAppendCommentRequest {
+	worktreeName?: string | null;
+	threadId: string;
+	content: string;
+}
+
+export interface ReviewSetStanceRequest {
+	worktreeName?: string | null;
+	threadId: string;
+	value: ReviewStanceValue;
+}
+
+export interface ReviewResolveRequest {
+	worktreeName?: string | null;
+	threadId: string;
+	outcome: string;
+	summary: string;
+}
+
+export interface ReviewHistoryRequest {
+	worktreeName?: string | null;
+	threadId: string;
+}
+
+export type ReviewHistoryEntry =
+	| {
+			kind: "thread_created";
+			id: string;
+			threadId: string;
+			commentId: string;
+			actor: ReviewActor;
+			target: ReviewTarget;
+			content: string;
+			at: number;
+	  }
+	| {
+			kind: "comment_appended";
+			id: string;
+			threadId: string;
+			commentId: string;
+			actor: ReviewActor;
+			content: string;
+			at: number;
+	  }
+	| {
+			kind: "stance_set";
+			id: string;
+			threadId: string;
+			actor: ReviewActor;
+			value: ReviewStanceValue;
+			at: number;
+	  }
+	| {
+			kind: "thread_resolved";
+			id: string;
+			threadId: string;
+			actor: ReviewActor;
+			outcome: string;
+			summary: string;
+			at: number;
+	  };
+
+export interface ReviewHistoryResponse {
+	success: boolean;
+	worktreeName?: string | null;
+	events: ReviewHistoryEntry[];
+	error?: ReviewErrorPayload | null;
+}
+
 // --- 制御 ---
 
 export interface ErrorMsg {
@@ -289,6 +464,19 @@ export type WsMessage =
 			payload: AgentPermissionModeSetResponse;
 	  }
 	| { type: "agent_stream_sync"; payload: AgentStreamSync }
+	| { type: "review_list_request"; payload: ReviewListRequest }
+	| { type: "review_list_response"; payload: ReviewListResponse }
+	| { type: "review_get_request"; payload: ReviewGetRequest }
+	| { type: "review_thread_response"; payload: ReviewThreadResponse }
+	| { type: "review_create_request"; payload: ReviewCreateRequest }
+	| {
+			type: "review_append_comment_request";
+			payload: ReviewAppendCommentRequest;
+	  }
+	| { type: "review_set_stance_request"; payload: ReviewSetStanceRequest }
+	| { type: "review_resolve_request"; payload: ReviewResolveRequest }
+	| { type: "review_history_request"; payload: ReviewHistoryRequest }
+	| { type: "review_history_response"; payload: ReviewHistoryResponse }
 	| { type: "workflow_state_sync"; payload: WorkflowStatePayload }
 	| { type: "error"; payload: ErrorMsg };
 

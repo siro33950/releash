@@ -88,10 +88,7 @@ function WorktreeContent({
 		line?: number;
 	} | null>(null);
 
-	const worktreeName = useMemo(() => {
-		const parts = rootPath.split("/");
-		return parts[parts.length - 1] ?? "";
-	}, [rootPath]);
+	const worktreeName = rootPath;
 
 	const sendAgentMessageRef = useRef<
 		((content: string, mentions?: MentionReference[]) => Promise<void>) | null
@@ -236,7 +233,6 @@ function WorktreeContent({
 										rootPath={rootPath}
 										theme={settings.theme}
 										worktreeName={worktreeName}
-										onSendToAgent={handleSendToAgent}
 										onCommentClick={handleCommentClick}
 										onToggleCollapse={handleToggleRightBottom}
 										collapsed={s.rightBottomCollapsed}

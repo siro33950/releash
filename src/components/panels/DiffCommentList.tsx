@@ -1,31 +1,32 @@
-import { MessageSquare, Send, Trash2 } from "lucide-react";
+import { CheckCircle2, MessageSquare } from "lucide-react";
 import { useMemo } from "react";
-import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
-import type { DiffComment } from "@/types/diffComment";
+import {
+	getThreadEndLine,
+	getThreadFilePath,
+	getThreadLineNumber,
+	getThreadPreviewContent,
+	type ReviewDiscussionThread,
+} from "@/types/diffComment";
 
 export interface DiffCommentListProps {
-	comments: DiffComment[];
-	unsentCount: number;
+	comments: ReviewDiscussionThread[];
 	onCommentClick: (filePath: string, lineNumber?: number) => void;
-	onDelete: (commentId: string) => Promise<void>;
-	onSend: (commentIds: string[]) => Promise<void>;
-	onSendAll: () => Promise<void>;
 }
 
-function formatLineLabel(comment: DiffComment): string {
-	if (comment.lineNumber == null) return "file";
-	if (comment.lineNumber == null) return "";
-	if (comment.endLine != null && comment.endLine !== comment.lineNumber) {
-		return `L${comment.lineNumber}-${comment.endLine}`;
+function formatLineLabel(comment: ReviewDiscussionThread): string {
+	const lineNumber = getThreadLineNumber(comment);
+	const endLine = getThreadEndLine(comment);
+	if (lineNumber == null) return "file";
+	if (endLine != null && endLine !== lineNumber) {
+		return `L${lineNumber}-${endLine}`;
 	}
-	return `L${comment.lineNumber}`;
+	return `L${lineNumber}`;
 }
 
 function getFileName(filePath: string): string {
@@ -35,20 +36,17 @@ function getFileName(filePath: string): string {
 
 export function DiffCommentList({
 	comments,
-	unsentCount,
 	onCommentClick,
-	onDelete,
-	onSend,
-	onSendAll,
 }: DiffCommentListProps) {
 	const groupedByFile = useMemo(() => {
-		const map = new Map<string, DiffComment[]>();
+		const map = new Map<string, ReviewDiscussionThread[]>();
 		for (const comment of comments) {
-			const existing = map.get(comment.filePath);
+			const filePath = getThreadFilePath(comment);
+			const existing = map.get(filePath);
 			if (existing) {
 				existing.push(comment);
 			} else {
-				map.set(comment.filePath, [comment]);
+				map.set(filePath, [comment]);
 			}
 		}
 		return map;
@@ -58,12 +56,12 @@ export function DiffCommentList({
 		return (
 			<div className="h-full flex flex-col">
 				<div className="flex items-center justify-between px-3 py-1.5 border-b border-border shrink-0">
-					<span className="text-xs font-medium text-foreground">Comments</span>
+					<span className="text-xs font-medium text-foreground">Threads</span>
 				</div>
 				<div className="flex-1 flex items-center justify-center">
 					<EmptyState
 						icon={MessageSquare}
-						title="No comments yet"
+						title="No threads yet"
 						description="Add comments on diff lines"
 					/>
 				</div>
@@ -74,38 +72,12 @@ export function DiffCommentList({
 	return (
 		<div className="h-full flex flex-col">
 			<div className="flex items-center justify-between px-3 py-1.5 border-b border-border shrink-0">
-				<div className="flex items-center gap-1.5">
-					<span className="text-xs font-medium text-foreground">Comments</span>
-					{unsentCount > 0 && (
-						<span className="min-w-[16px] h-[16px] rounded-full bg-blue-600 text-[10px] text-white flex items-center justify-center px-1">
-							{unsentCount}
-						</span>
-					)}
-				</div>
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<Button
-							variant="ghost"
-							size="icon-xs"
-							onClick={() => onSendAll()}
-							disabled={unsentCount === 0}
-							className="h-5 w-5 text-muted-foreground hover:text-foreground disabled:opacity-30"
-							aria-label="Send all unsent comments"
-						>
-							<Send className="h-3 w-3" />
-						</Button>
-					</TooltipTrigger>
-					<TooltipContent side="bottom" className="text-xs">
-						{unsentCount > 0
-							? `Send ${unsentCount} comments to Agent`
-							: "No unsent comments"}
-					</TooltipContent>
-				</Tooltip>
+				<span className="text-xs font-medium text-foreground">Threads</span>
 			</div>
 			<div className="flex-1 min-h-0 overflow-auto">
 				<div className="px-2 py-1">
 					{[...groupedByFile.entries()].map(([filePath, fileComments]) => (
-						<div key={filePath} className="mb-2">
+						<div key={filePath || "general"} className="mb-2">
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<button
@@ -113,11 +85,11 @@ export function DiffCommentList({
 										onClick={() => onCommentClick(filePath)}
 										className="w-full text-left px-1 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground truncate"
 									>
-										{getFileName(filePath)}
+										{filePath ? getFileName(filePath) : "General"}
 									</button>
 								</TooltipTrigger>
 								<TooltipContent side="top" className="text-xs">
-									{filePath}
+									{filePath || "General"}
 								</TooltipContent>
 							</Tooltip>
 							<div className="space-y-0.5">
@@ -127,8 +99,8 @@ export function DiffCommentList({
 										key={comment.id}
 										onClick={() =>
 											onCommentClick(
-												comment.filePath,
-												comment.lineNumber ?? undefined,
+												getThreadFilePath(comment),
+												getThreadLineNumber(comment),
 											)
 										}
 										className="group/item w-full text-left flex items-start gap-1.5 px-1.5 py-1 rounded hover:bg-muted/50 transition-colors"
@@ -137,46 +109,17 @@ export function DiffCommentList({
 											{formatLineLabel(comment)}
 										</span>
 										<span className="flex-1 text-xs text-foreground truncate">
-											{comment.content}
+											{getThreadPreviewContent(comment)}
 										</span>
-										<span className="shrink-0 flex items-center gap-0.5">
-											{comment.status === "sent" ? (
-												<span className="text-[9px] bg-green-600/15 text-green-600 px-1 py-0.5 rounded-full">
-													sent
-												</span>
-											) : (
-												<Button
-													variant="ghost"
-													size="icon-xs"
-													onClick={(e) => {
-														e.stopPropagation();
-														onSend([comment.id]);
-													}}
-													className={cn(
-														"h-4 w-4 text-muted-foreground hover:text-foreground",
-														"opacity-0 group-hover/item:opacity-100",
-													)}
-													aria-label="Send comment"
-												>
-													<Send className="h-2.5 w-2.5" />
-												</Button>
-											)}
-											<Button
-												variant="ghost"
-												size="icon-xs"
-												onClick={(e) => {
-													e.stopPropagation();
-													onDelete(comment.id);
-												}}
-												className={cn(
-													"h-4 w-4 text-muted-foreground hover:text-destructive",
-													"opacity-0 group-hover/item:opacity-100",
-												)}
-												aria-label="Delete comment"
-											>
-												<Trash2 className="h-2.5 w-2.5" />
-											</Button>
+										<span className="shrink-0 text-[10px] text-muted-foreground">
+											{comment.comments.length}
 										</span>
+										{comment.state === "resolved" && (
+											<span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] bg-green-600/15 text-green-600 px-1 py-0.5 rounded-full">
+												<CheckCircle2 className="h-2.5 w-2.5" />
+												resolved
+											</span>
+										)}
 									</button>
 								))}
 							</div>

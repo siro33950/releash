@@ -6,8 +6,6 @@ mod backends;
 pub mod cli;
 mod cli_install;
 mod config;
-mod diff_comment_sender;
-mod diff_comment_store;
 mod domain;
 mod external_editor;
 mod file_mention;
@@ -24,6 +22,7 @@ mod protocol;
 mod pty;
 mod qr_code;
 mod repo_registry;
+mod review_comments;
 mod sentry_integration;
 mod session;
 mod session_commands;
@@ -161,7 +160,7 @@ pub fn run() {
         .manage(Arc::new(
             workspace_state_store::WorkspaceStateStore::default(),
         ))
-        .manage(Arc::new(diff_comment_store::DiffCommentStore::default()))
+        .manage(Arc::new(review_comments::ReviewCommentStore::default()))
         .manage(Arc::new(session::SessionStore::default()))
         .manage(Arc::new(pty::PtyManager::default()))
         .manage(watcher::FileWatcherManager::default())
@@ -535,13 +534,14 @@ pub fn run() {
             // Workspace state
             workspace_state_store::load_workspace_state,
             workspace_state_store::save_workspace_state,
-            // Diff comments
-            diff_comment_store::load_diff_comments,
-            diff_comment_store::add_diff_comment,
-            diff_comment_store::update_diff_comment,
-            diff_comment_store::delete_diff_comment,
-            diff_comment_sender::send_diff_comments_to_agent,
-            diff_comment_sender::mark_diff_comments_sent,
+            // Review comments
+            review_comments::list_review_threads,
+            review_comments::get_review_thread,
+            review_comments::create_review_thread,
+            review_comments::append_review_comment,
+            review_comments::set_review_stance,
+            review_comments::resolve_review_thread,
+            review_comments::get_review_thread_history,
             // OneShot PTY
             pty::oneshot::spawn_oneshot_pty,
             pty::oneshot::cancel_oneshot_pty,

@@ -13,6 +13,11 @@ use clap::{Parser, Subcommand};
 use crate::agent_status::current_timestamp;
 use crate::config::read_config_if_exists;
 use crate::protocol::WorkflowStateView;
+use crate::review_comments::{
+    ReviewActor, ReviewCommentStore, ReviewStanceValue, ReviewTarget, ReviewThreadFilter,
+    ReviewThreadState,
+};
+use crate::session::{SessionState, SessionStore};
 use crate::workflow::command_input::{
     validate_optional_comment_text, validate_reject_reason_text, CommandInputError,
 };
@@ -45,6 +50,11 @@ enum TopCommand {
     Workflow {
         #[command(subcommand)]
         command: WorkflowSubcommand,
+    },
+    /// Agent review comment サブコマンド。
+    Review {
+        #[command(subcommand)]
+        command: ReviewSubcommand,
     },
 }
 
@@ -153,6 +163,106 @@ enum OutputSubcommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum ReviewSubcommand {
+    /// review Thread 一覧を表示する。
+    List {
+        #[arg(long)]
+        worktree: String,
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long)]
+        state: Option<String>,
+        #[arg(long)]
+        author: Option<String>,
+        #[arg(long)]
+        author_key: Option<String>,
+        #[arg(long)]
+        my_stance: Option<String>,
+        #[arg(long)]
+        updated_after: Option<f64>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// review Thread 詳細を表示する。
+    Get {
+        thread_id: String,
+        #[arg(long)]
+        worktree: String,
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 初回 Comment とともに review Thread を作成する。
+    Create {
+        #[arg(long)]
+        worktree: String,
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        content: String,
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long)]
+        line: Option<u32>,
+        #[arg(long)]
+        end_line: Option<u32>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// open Thread に Comment を追記する。
+    Comment {
+        thread_id: String,
+        #[arg(long)]
+        worktree: String,
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        content: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Thread 単位の Stance を設定する。
+    Stance {
+        thread_id: String,
+        #[arg(long)]
+        worktree: String,
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        value: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 作成者 Agent として open Thread を resolve する。
+    Resolve {
+        thread_id: String,
+        #[arg(long)]
+        worktree: String,
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        outcome: String,
+        #[arg(long)]
+        summary: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Thread 履歴を表示する。
+    History {
+        thread_id: String,
+        #[arg(long)]
+        worktree: String,
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 /// CLI のエントリーポイント。`std::process::exit` 用の終了コードを返す。
 pub fn run() -> i32 {
     let cli = match Cli::try_parse() {
@@ -256,6 +366,10 @@ pub fn run() -> i32 {
                 },
                 Err(e) => Err(e),
             },
+        },
+        TopCommand::Review { command } => match resolve() {
+            Ok(data_dir) => cmd_review(&data_dir, command),
+            Err(e) => Err(e),
         },
     };
     match result {
@@ -528,6 +642,314 @@ fn validate_optional_cli_text_len(
 
 fn command_input_error_to_cli_error(err: CommandInputError) -> CliError {
     CliError::InvalidInput(err.to_string())
+}
+
+#[cfg(test)]
+fn review_actor(data_dir: &Path, session_id: &str) -> Result<ReviewActor, CliError> {
+    review_actor_and_worktree(data_dir, session_id).map(|(actor, _)| actor)
+}
+
+#[cfg(test)]
+fn review_actor_for_worktree(
+    data_dir: &Path,
+    session_id: &str,
+    worktree: &str,
+) -> Result<ReviewActor, CliError> {
+    review_actor_and_review_worktree(data_dir, session_id, worktree).map(|(actor, _)| actor)
+}
+
+fn review_actor_and_review_worktree(
+    data_dir: &Path,
+    session_id: &str,
+    worktree: &str,
+) -> Result<(ReviewActor, String), CliError> {
+    let (actor, session_worktree) = review_actor_and_worktree(data_dir, session_id)?;
+    if session_worktree == worktree
+        || Path::new(&session_worktree)
+            .file_name()
+            .and_then(|name| name.to_str())
+            == Some(worktree)
+    {
+        return Ok((actor, session_worktree));
+    }
+    Err(CliError::InvalidInput(format!(
+        "Session worktree does not match --worktree: session={session_worktree}, requested={worktree}"
+    )))
+}
+
+fn review_actor_and_worktree(
+    data_dir: &Path,
+    session_id: &str,
+) -> Result<(ReviewActor, String), CliError> {
+    if session_id.trim().is_empty() {
+        return Err(CliError::InvalidInput(
+            "--session-id must not be empty".to_string(),
+        ));
+    }
+    let session_store = SessionStore::default();
+    let session = session_store
+        .get_session(data_dir, session_id)
+        .map_err(CliError::Other)?
+        .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
+    if session.state == SessionState::Closed {
+        return Err(CliError::InvalidInput(format!(
+            "Session is closed and cannot be used as a review actor: {session_id}"
+        )));
+    }
+    let backend_id = session.backend_id.clone().ok_or_else(|| {
+        CliError::InvalidInput(format!(
+            "Session has no backend_id and cannot be used as a review actor: {session_id}"
+        ))
+    })?;
+    let model = session.selected_model.clone().ok_or_else(|| {
+        CliError::InvalidInput(format!(
+            "Session has no selected_model and cannot be used as a review actor: {session_id}"
+        ))
+    })?;
+    Ok(ReviewActor::agent(
+        backend_id,
+        model,
+        Some(session_id.to_string()),
+    ))
+    .map(|actor| (actor, session.worktree_path))
+}
+
+fn parse_review_state(value: Option<String>) -> Result<Option<ReviewThreadState>, CliError> {
+    match value.as_deref() {
+        None | Some("") => Ok(None),
+        Some("open") => Ok(Some(ReviewThreadState::Open)),
+        Some("resolved") => Ok(Some(ReviewThreadState::Resolved)),
+        Some(other) => Err(CliError::InvalidInput(format!(
+            "Invalid --state value: {other} (expected: open | resolved)"
+        ))),
+    }
+}
+
+fn parse_review_stance_value(value: &str) -> Result<ReviewStanceValue, CliError> {
+    match value {
+        "agree" => Ok(ReviewStanceValue::Agree),
+        "disagree" => Ok(ReviewStanceValue::Disagree),
+        "none" => Ok(ReviewStanceValue::None),
+        other => Err(CliError::InvalidInput(format!(
+            "Invalid stance value: {other} (expected: agree | disagree | none)"
+        ))),
+    }
+}
+
+fn parse_optional_review_stance(
+    value: Option<String>,
+) -> Result<Option<ReviewStanceValue>, CliError> {
+    value.as_deref().map(parse_review_stance_value).transpose()
+}
+
+fn review_error_to_cli_error(error: crate::review_comments::ReviewError) -> CliError {
+    match error {
+        crate::review_comments::ReviewError::InvalidInput(msg) => CliError::InvalidInput(msg),
+        crate::review_comments::ReviewError::NotFound(msg) => CliError::NotFound(msg),
+        crate::review_comments::ReviewError::AlreadyResolved(msg)
+        | crate::review_comments::ReviewError::PermissionDenied(msg) => CliError::InvalidInput(msg),
+        crate::review_comments::ReviewError::Io(e) => CliError::Other(e.to_string()),
+        crate::review_comments::ReviewError::Serialize(e) => CliError::Other(e.to_string()),
+    }
+}
+
+fn print_review_thread(
+    thread: &crate::review_comments::ReviewThread,
+    json: bool,
+) -> Result<(), CliError> {
+    if json {
+        let text =
+            serde_json::to_string_pretty(thread).map_err(|e| format!("serialize thread: {e}"))?;
+        println!("{text}");
+        return Ok(());
+    }
+    let location = match (
+        thread.target.file_path.as_deref(),
+        thread.target.line_number,
+        thread.target.end_line,
+    ) {
+        (Some(file), Some(start), Some(end)) => format!("{file}:L{start}-L{end}"),
+        (Some(file), Some(start), None) => format!("{file}:L{start}"),
+        (Some(file), None, _) => file.to_string(),
+        (None, _, _) => "(general)".to_string(),
+    };
+    println!(
+        "thread_id: {}\nstate:     {:?}\nauthor:    {}\nlocation:  {}\nupdated:   {}\ncomments:  {}",
+        thread.id,
+        thread.state,
+        thread.author.display_name,
+        location,
+        thread.updated_at,
+        thread.comments.len()
+    );
+    if let Some(resolve) = &thread.resolve {
+        println!(
+            "resolve:   {} by {} ({})",
+            resolve.outcome, resolve.actor.display_name, resolve.summary
+        );
+    }
+    Ok(())
+}
+
+fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError> {
+    let store = ReviewCommentStore::default();
+    match command {
+        ReviewSubcommand::List {
+            worktree,
+            session_id,
+            file,
+            state,
+            author,
+            author_key,
+            my_stance,
+            updated_after,
+            json,
+        } => {
+            let (actor, review_worktree) =
+                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let filter = ReviewThreadFilter {
+                file_path: file,
+                state: parse_review_state(state)?,
+                author_key: author_key.or(author),
+                my_stance: parse_optional_review_stance(my_stance)?,
+                updated_after,
+            };
+            let threads = store
+                .list_threads(data_dir, &review_worktree, Some(filter), actor)
+                .map_err(review_error_to_cli_error)?;
+            if json {
+                let text = serde_json::to_string_pretty(&threads)
+                    .map_err(|e| format!("serialize threads: {e}"))?;
+                println!("{text}");
+            } else if threads.is_empty() {
+                println!("(no review threads)");
+            } else {
+                println!(
+                    "{:<36}  {:<9}  {:<20}  UPDATED",
+                    "THREAD_ID", "STATE", "AUTHOR"
+                );
+                for thread in &threads {
+                    println!(
+                        "{:<36}  {:<9}  {:<20}  {}",
+                        thread.id,
+                        format!("{:?}", thread.state).to_lowercase(),
+                        truncate(&thread.author.display_name, 20),
+                        thread.updated_at
+                    );
+                }
+            }
+            Ok(())
+        }
+        ReviewSubcommand::Get {
+            thread_id,
+            worktree,
+            session_id,
+            json,
+        } => {
+            let (actor, review_worktree) =
+                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let thread = store
+                .get_thread(data_dir, &review_worktree, &thread_id, actor)
+                .map_err(review_error_to_cli_error)?;
+            print_review_thread(&thread, json)
+        }
+        ReviewSubcommand::Create {
+            worktree,
+            session_id,
+            content,
+            file,
+            line,
+            end_line,
+            json,
+        } => {
+            let (actor, review_worktree) =
+                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let target = ReviewTarget {
+                file_path: file,
+                line_number: line,
+                end_line,
+            };
+            let thread = store
+                .create_thread(data_dir, &review_worktree, actor, target, content)
+                .map_err(review_error_to_cli_error)?;
+            print_review_thread(&thread, json)
+        }
+        ReviewSubcommand::Comment {
+            thread_id,
+            worktree,
+            session_id,
+            content,
+            json,
+        } => {
+            let (actor, review_worktree) =
+                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let thread = store
+                .append_comment(data_dir, &review_worktree, actor, &thread_id, content)
+                .map_err(review_error_to_cli_error)?;
+            print_review_thread(&thread, json)
+        }
+        ReviewSubcommand::Stance {
+            thread_id,
+            worktree,
+            session_id,
+            value,
+            json,
+        } => {
+            let (actor, review_worktree) =
+                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let value = parse_review_stance_value(&value)?;
+            let thread = store
+                .set_stance(data_dir, &review_worktree, actor, &thread_id, value)
+                .map_err(review_error_to_cli_error)?;
+            print_review_thread(&thread, json)
+        }
+        ReviewSubcommand::Resolve {
+            thread_id,
+            worktree,
+            session_id,
+            outcome,
+            summary,
+            json,
+        } => {
+            let (actor, review_worktree) =
+                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let thread = store
+                .resolve_thread(
+                    data_dir,
+                    &review_worktree,
+                    actor,
+                    &thread_id,
+                    outcome,
+                    summary,
+                )
+                .map_err(review_error_to_cli_error)?;
+            print_review_thread(&thread, json)
+        }
+        ReviewSubcommand::History {
+            thread_id,
+            worktree,
+            session_id,
+            json,
+        } => {
+            let (_actor, review_worktree) =
+                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let events = store
+                .history(data_dir, &review_worktree, &thread_id)
+                .map_err(review_error_to_cli_error)?;
+            if json {
+                let text = serde_json::to_string_pretty(&events)
+                    .map_err(|e| format!("serialize history: {e}"))?;
+                println!("{text}");
+            } else if events.is_empty() {
+                println!("(no review history)");
+            } else {
+                for event in events {
+                    println!("{:?}", event);
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 /// [08] `releash workflow output submit`: 構造化出力を pending command として書き出す。
@@ -944,6 +1366,46 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    fn write_review_config(data_dir: &Path) {
+        fs::write(
+            data_dir.join("releash.toml"),
+            r#"
+[agents]
+default = "codex"
+
+[agents.codex]
+models = ["gpt-5"]
+
+[agents.claude]
+models = ["opus"]
+"#,
+        )
+        .unwrap();
+    }
+
+    fn write_review_session(
+        data_dir: &Path,
+        session_id: &str,
+        backend_id: Option<&str>,
+        model: Option<&str>,
+    ) {
+        let store = SessionStore::default();
+        let session = crate::session::ChatSession {
+            id: session_id.to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: Vec::new(),
+            state: crate::session::SessionState::Active,
+            created_at: 1.0,
+            updated_at: 1.0,
+            agent_session_id: None,
+            permission_mode: "edit".to_string(),
+            selected_model: model.map(str::to_string),
+            backend_id: backend_id.map(str::to_string),
+            workflow_step_session: false,
+        };
+        store.save_session(data_dir, &session).unwrap();
+    }
+
     fn make_run(run_id: &str, worktree: &str, status: RunStatus, started_at: f64) -> WorkflowRun {
         WorkflowRun {
             run_id: run_id.to_string(),
@@ -974,6 +1436,395 @@ mod tests {
 
     fn test_uuid(seed: u8) -> String {
         uuid::Uuid::from_bytes([seed; 16]).to_string()
+    }
+
+    #[test]
+    fn review_actor_resolves_backend_and_model_from_session_id() {
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
+
+        let actor = review_actor(tmp.path(), &session_id).unwrap();
+
+        assert_eq!(actor.backend_id.as_deref(), Some("codex"));
+        assert_eq!(actor.model.as_deref(), Some("gpt-5"));
+        assert_eq!(actor.session_id.as_deref(), Some(session_id.as_str()));
+    }
+
+    #[test]
+    fn review_actor_uses_saved_backend_model_without_catalog_validation() {
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+
+        let missing = review_actor(tmp.path(), &uuid::Uuid::new_v4().to_string());
+        assert!(matches!(missing, Err(CliError::NotFound(_))));
+
+        let session_id = uuid::Uuid::new_v4().to_string();
+        write_review_session(tmp.path(), &session_id, Some("codex"), Some("fake-model"));
+        let actor = review_actor(tmp.path(), &session_id).unwrap();
+        assert_eq!(actor.backend_id.as_deref(), Some("codex"));
+        assert_eq!(actor.model.as_deref(), Some("fake-model"));
+
+        let missing_backend_id = uuid::Uuid::new_v4().to_string();
+        write_review_session(tmp.path(), &missing_backend_id, None, Some("gpt-5"));
+        assert!(matches!(
+            review_actor(tmp.path(), &missing_backend_id),
+            Err(CliError::InvalidInput(_))
+        ));
+
+        let missing_model_id = uuid::Uuid::new_v4().to_string();
+        write_review_session(tmp.path(), &missing_model_id, Some("codex"), None);
+        assert!(matches!(
+            review_actor(tmp.path(), &missing_model_id),
+            Err(CliError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn review_actor_for_worktree_rejects_session_worktree_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
+
+        let actor = review_actor_for_worktree(tmp.path(), &session_id, "repo").unwrap();
+        assert_eq!(actor.display_name, "codex/gpt-5");
+
+        let mismatch = review_actor_for_worktree(tmp.path(), &session_id, "other");
+        assert!(matches!(mismatch, Err(CliError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn review_cli_rejects_mutation_for_closed_session() {
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
+
+        SessionStore::default()
+            .set_session_state(tmp.path(), &session_id, SessionState::Closed)
+            .unwrap();
+        let closed = cmd_review(
+            tmp.path(),
+            ReviewSubcommand::Create {
+                worktree: "/repo".to_string(),
+                session_id,
+                content: "Claim".to_string(),
+                file: None,
+                line: None,
+                end_line: None,
+                json: true,
+            },
+        );
+        match closed {
+            Err(CliError::InvalidInput(msg)) => assert!(msg.contains("Session is closed")),
+            other => panic!("expected closed session rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn review_cli_parser_accepts_review_subcommands() {
+        let parsed = Cli::try_parse_from([
+            "releash",
+            "review",
+            "create",
+            "--worktree",
+            "/repo",
+            "--session-id",
+            "session-1",
+            "--content",
+            "Claim",
+            "--json",
+        ])
+        .unwrap();
+
+        match parsed.command {
+            TopCommand::Review {
+                command:
+                    ReviewSubcommand::Create {
+                        worktree,
+                        session_id,
+                        content,
+                        json,
+                        ..
+                    },
+            } => {
+                assert_eq!(worktree, "/repo");
+                assert_eq!(session_id, "session-1");
+                assert_eq!(content, "Claim");
+                assert!(json);
+            }
+            _ => panic!("expected review create command"),
+        }
+    }
+
+    #[test]
+    fn cmd_review_create_list_get_and_json_mode_use_session_worktree_key() {
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
+
+        cmd_review(
+            tmp.path(),
+            ReviewSubcommand::Create {
+                worktree: "repo".to_string(),
+                session_id: session_id.clone(),
+                content: "Claim".to_string(),
+                file: None,
+                line: None,
+                end_line: None,
+                json: true,
+            },
+        )
+        .unwrap();
+
+        let store = ReviewCommentStore::default();
+        let threads = store
+            .list_threads(tmp.path(), "/repo", None, ReviewActor::human())
+            .unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].worktree_name, "/repo");
+        let json = serde_json::to_string(&threads[0]).unwrap();
+        assert!(!json.contains("sessionId"));
+
+        cmd_review(
+            tmp.path(),
+            ReviewSubcommand::List {
+                worktree: "/repo".to_string(),
+                session_id: session_id.clone(),
+                file: None,
+                state: Some("open".to_string()),
+                author: None,
+                author_key: None,
+                my_stance: None,
+                updated_after: None,
+                json: true,
+            },
+        )
+        .unwrap();
+        cmd_review(
+            tmp.path(),
+            ReviewSubcommand::Get {
+                thread_id: threads[0].id.clone(),
+                worktree: "repo".to_string(),
+                session_id,
+                json: true,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn cmd_review_comment_stance_resolve_history_and_rejections_use_domain_reasons() {
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+        let owner_session = uuid::Uuid::new_v4().to_string();
+        let other_session = uuid::Uuid::new_v4().to_string();
+        write_review_session(tmp.path(), &owner_session, Some("codex"), Some("gpt-5"));
+        write_review_session(tmp.path(), &other_session, Some("claude"), Some("opus"));
+
+        cmd_review(
+            tmp.path(),
+            ReviewSubcommand::Create {
+                worktree: "/repo".to_string(),
+                session_id: owner_session.clone(),
+                content: "Claim".to_string(),
+                file: Some("src/main.rs".to_string()),
+                line: Some(3),
+                end_line: Some(5),
+                json: true,
+            },
+        )
+        .unwrap();
+        let store = ReviewCommentStore::default();
+        let thread_id = store
+            .list_threads(tmp.path(), "/repo", None, ReviewActor::human())
+            .unwrap()[0]
+            .id
+            .clone();
+
+        cmd_review(
+            tmp.path(),
+            ReviewSubcommand::Comment {
+                thread_id: thread_id.clone(),
+                worktree: "/repo".to_string(),
+                session_id: owner_session.clone(),
+                content: "Follow-up".to_string(),
+                json: true,
+            },
+        )
+        .unwrap();
+        cmd_review(
+            tmp.path(),
+            ReviewSubcommand::Stance {
+                thread_id: thread_id.clone(),
+                worktree: "/repo".to_string(),
+                session_id: owner_session.clone(),
+                value: "agree".to_string(),
+                json: true,
+            },
+        )
+        .unwrap();
+        cmd_review(
+            tmp.path(),
+            ReviewSubcommand::History {
+                thread_id: thread_id.clone(),
+                worktree: "/repo".to_string(),
+                session_id: owner_session.clone(),
+                json: true,
+            },
+        )
+        .unwrap();
+
+        let unauthorized = cmd_review(
+            tmp.path(),
+            ReviewSubcommand::Resolve {
+                thread_id: thread_id.clone(),
+                worktree: "/repo".to_string(),
+                session_id: other_session,
+                outcome: "accepted".to_string(),
+                summary: "not owner".to_string(),
+                json: true,
+            },
+        );
+        match unauthorized {
+            Err(CliError::InvalidInput(msg)) => assert!(msg.contains("Only the thread author")),
+            other => panic!("expected permission rejection, got {other:?}"),
+        }
+
+        cmd_review(
+            tmp.path(),
+            ReviewSubcommand::Resolve {
+                thread_id: thread_id.clone(),
+                worktree: "/repo".to_string(),
+                session_id: owner_session.clone(),
+                outcome: "accepted".to_string(),
+                summary: "done".to_string(),
+                json: true,
+            },
+        )
+        .unwrap();
+        let rejected_after_resolve = cmd_review(
+            tmp.path(),
+            ReviewSubcommand::Comment {
+                thread_id: thread_id.clone(),
+                worktree: "/repo".to_string(),
+                session_id: owner_session.clone(),
+                content: "late".to_string(),
+                json: true,
+            },
+        );
+        match rejected_after_resolve {
+            Err(CliError::InvalidInput(msg)) => assert!(msg.contains("already resolved")),
+            other => panic!("expected resolved rejection, got {other:?}"),
+        }
+
+        let missing_history = cmd_review(
+            tmp.path(),
+            ReviewSubcommand::History {
+                thread_id: "missing-thread".to_string(),
+                worktree: "/repo".to_string(),
+                session_id: owner_session.clone(),
+                json: true,
+            },
+        );
+        assert!(matches!(missing_history, Err(CliError::NotFound(_))));
+
+        let invalid_target = cmd_review(
+            tmp.path(),
+            ReviewSubcommand::Create {
+                worktree: "/repo".to_string(),
+                session_id: owner_session,
+                content: "Bad target".to_string(),
+                file: Some("../secret".to_string()),
+                line: Some(1),
+                end_line: None,
+                json: true,
+            },
+        );
+        assert!(matches!(invalid_target, Err(CliError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn cmd_review_rejects_invalid_stance_without_changing_thread() {
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
+
+        cmd_review(
+            tmp.path(),
+            ReviewSubcommand::Create {
+                worktree: "/repo".to_string(),
+                session_id: session_id.clone(),
+                content: "Claim".to_string(),
+                file: None,
+                line: None,
+                end_line: None,
+                json: true,
+            },
+        )
+        .unwrap();
+        let store = ReviewCommentStore::default();
+        let thread_id = store
+            .list_threads(tmp.path(), "/repo", None, ReviewActor::human())
+            .unwrap()[0]
+            .id
+            .clone();
+
+        let invalid = cmd_review(
+            tmp.path(),
+            ReviewSubcommand::Stance {
+                thread_id: thread_id.clone(),
+                worktree: "/repo".to_string(),
+                session_id: session_id.clone(),
+                value: "maybe".to_string(),
+                json: true,
+            },
+        );
+        match invalid {
+            Err(CliError::InvalidInput(msg)) => assert!(msg.contains("Invalid stance value")),
+            other => panic!("expected invalid stance rejection, got {other:?}"),
+        }
+
+        let thread = store
+            .get_thread(
+                tmp.path(),
+                "/repo",
+                &thread_id,
+                review_actor(tmp.path(), &session_id).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(thread.my_stance, ReviewStanceValue::None);
+        assert_eq!(thread.stances.len(), 1);
+        assert_eq!(thread.stances[0].value, ReviewStanceValue::None);
+    }
+
+    #[test]
+    fn cmd_review_rejects_unowned_worktree() {
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
+
+        let result = cmd_review(
+            tmp.path(),
+            ReviewSubcommand::List {
+                worktree: "/other".to_string(),
+                session_id,
+                file: None,
+                state: None,
+                author: None,
+                author_key: None,
+                my_stance: None,
+                updated_after: None,
+                json: false,
+            },
+        );
+
+        assert!(matches!(result, Err(CliError::InvalidInput(_))));
     }
 
     /// Rule: 観測対象として存在しない run_id は明示的に「該当 run なし」として扱われる

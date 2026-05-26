@@ -1,130 +1,192 @@
-import { Check, Pencil, Send, Trash2, X } from "lucide-react";
+import { Check, CheckCircle2, MessageSquareReply, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import type { DiffComment } from "@/types/diffComment";
+import {
+	getThreadEndLine,
+	getThreadLineNumber,
+	type ReviewDiscussionThread,
+} from "@/types/diffComment";
+import type { ReviewStanceValue } from "@/types/protocol";
 
 interface DiffInlineCommentProps {
-	comment: DiffComment;
-	onUpdate: (commentId: string, content: string) => Promise<void>;
-	onDelete: (commentId: string) => Promise<void>;
-	onSend: (commentIds: string[]) => Promise<void>;
+	comment: ReviewDiscussionThread;
+	onAppend?: (threadId: string, content: string) => Promise<void>;
+	onSetStance?: (threadId: string, value: ReviewStanceValue) => Promise<void>;
+	onResolve?: (
+		threadId: string,
+		outcome: string,
+		summary: string,
+	) => Promise<void>;
+}
+
+function rangeLabel(comment: ReviewDiscussionThread): string | null {
+	const lineNumber = getThreadLineNumber(comment);
+	const endLine = getThreadEndLine(comment);
+	if (lineNumber && endLine && endLine !== lineNumber) {
+		return `L${lineNumber}-${endLine}`;
+	}
+	if (lineNumber) return `L${lineNumber}`;
+	return null;
 }
 
 export function DiffInlineComment({
 	comment,
-	onUpdate,
-	onDelete,
-	onSend,
+	onAppend,
+	onSetStance,
+	onResolve,
 }: DiffInlineCommentProps) {
-	const [editing, setEditing] = useState(false);
-	const [editContent, setEditContent] = useState(comment.content);
+	const [reply, setReply] = useState("");
+	const [resolveSummary, setResolveSummary] = useState("");
+	const [busy, setBusy] = useState(false);
+	const label = rangeLabel(comment);
+	const currentStance = comment.myStance;
+	const disabled = busy || comment.state === "resolved";
 
-	const handleSave = async () => {
-		if (editContent.trim() === "") return;
-		await onUpdate(comment.id, editContent.trim());
-		setEditing(false);
+	const run = async (action: () => Promise<void>) => {
+		setBusy(true);
+		try {
+			await action();
+		} finally {
+			setBusy(false);
+		}
 	};
-
-	const handleCancel = () => {
-		setEditContent(comment.content);
-		setEditing(false);
-	};
-
-	const rangeLabel =
-		comment.lineNumber && comment.endLine
-			? `L${comment.lineNumber}-${comment.endLine}`
-			: comment.lineNumber
-				? `L${comment.lineNumber}`
-				: null;
 
 	return (
-		<div className="flex flex-col gap-1.5 mx-2 my-1 p-3 rounded-md border border-border bg-card shadow-sm">
-			{rangeLabel && (
-				<span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded w-fit">
-					{rangeLabel}
-				</span>
+		<div className="flex flex-col gap-2 mx-2 my-1 p-3 rounded-md border border-border bg-card shadow-sm">
+			<div className="flex items-center justify-between gap-2">
+				{label && (
+					<span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded w-fit">
+						{label}
+					</span>
+				)}
+				{comment.state === "resolved" && (
+					<span className="inline-flex items-center gap-1 text-[10px] bg-green-600/15 text-green-600 px-1.5 py-0.5 rounded-full shrink-0">
+						<CheckCircle2 className="size-3" />
+						resolved
+					</span>
+				)}
+			</div>
+
+			<div className="space-y-2">
+				{comment.comments.map((entry) => (
+					<div key={entry.id} className="text-sm">
+						<div className="text-[10px] text-muted-foreground">
+							{entry.author.kind} · {entry.author.displayName}
+						</div>
+						<p className="whitespace-pre-wrap break-words leading-relaxed">
+							{entry.content}
+						</p>
+					</div>
+				))}
+			</div>
+
+			<div className="flex flex-wrap gap-1">
+				{comment.stances.map((stance) => (
+					<span
+						key={`${stance.actor.kind}:${stance.actor.displayName}`}
+						className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground"
+					>
+						<span>{stance.actor.kind}</span>
+						<span>{stance.actor.displayName}</span>
+						<span className="text-foreground">{stance.value}</span>
+					</span>
+				))}
+			</div>
+
+			{comment.resolve && (
+				<div className="rounded border border-green-600/20 bg-green-600/10 px-2 py-1 text-[11px] text-green-700 dark:text-green-400">
+					<div>
+						{comment.resolve.outcome} by {comment.resolve.actor.kind} ·{" "}
+						{comment.resolve.actor.displayName}
+					</div>
+					<div className="break-words">{comment.resolve.summary}</div>
+				</div>
 			)}
 
-			{editing ? (
-				<div className="flex flex-col gap-1">
+			<div className="flex flex-wrap items-center gap-1">
+				{(["agree", "disagree", "none"] as const).map((value) => (
+					<Button
+						key={value}
+						type="button"
+						variant={currentStance === value ? "default" : "outline"}
+						size="sm"
+						className="h-7 px-2 text-xs"
+						disabled={disabled || !onSetStance}
+						onClick={() =>
+							run(() => onSetStance?.(comment.id, value) ?? Promise.resolve())
+						}
+					>
+						{value}
+					</Button>
+				))}
+			</div>
+
+			{comment.state === "open" && (
+				<div className="flex flex-col gap-1.5">
 					<Textarea
-						value={editContent}
-						onChange={(e) => setEditContent(e.target.value)}
-						className="min-h-[80px] text-sm resize-none bg-background"
-						autoFocus
-						onKeyDown={(e) => {
-							if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-								handleSave();
-							}
-							if (e.key === "Escape") {
-								handleCancel();
-							}
-						}}
+						value={reply}
+						onChange={(e) => setReply(e.target.value)}
+						placeholder="Reply..."
+						className="min-h-[64px] text-sm resize-none bg-background"
 					/>
-					<div className="flex gap-1 justify-end">
+					<div className="flex justify-end">
 						<Button
-							variant="ghost"
+							type="button"
+							variant="outline"
 							size="sm"
-							onClick={handleCancel}
-							className="h-7 px-3 text-xs"
+							className="h-7 px-2 text-xs"
+							disabled={disabled || reply.trim() === "" || !onAppend}
+							onClick={() =>
+								run(async () => {
+									await onAppend?.(comment.id, reply.trim());
+									setReply("");
+								})
+							}
 						>
-							<X className="size-3 mr-1" />
-							Cancel
-						</Button>
-						<Button
-							variant="default"
-							size="sm"
-							onClick={handleSave}
-							className="h-7 px-3 text-xs"
-							disabled={editContent.trim() === ""}
-						>
-							<Check className="size-3 mr-1" />
-							Save
+							<MessageSquareReply className="size-3" />
+							Reply
 						</Button>
 					</div>
 				</div>
-			) : (
-				<div className="flex items-start gap-2">
-					<p className="flex-1 text-sm whitespace-pre-wrap break-words leading-relaxed">
-						{comment.content}
-					</p>
-					<div className="flex items-center gap-0.5 shrink-0">
-						{comment.status === "sent" && (
-							<span className="text-[10px] bg-green-600/15 text-green-600 px-1.5 py-0.5 rounded-full mr-1">
-								sent
-							</span>
-						)}
-						<Button
-							variant="ghost"
-							size="sm"
-							onClick={() => setEditing(true)}
-							className="size-6 p-0"
-							title="Edit"
-						>
-							<Pencil className="size-3" />
-						</Button>
-						<Button
-							variant="ghost"
-							size="sm"
-							onClick={() => onDelete(comment.id)}
-							className="size-6 p-0 text-destructive"
-							title="Delete"
-						>
-							<Trash2 className="size-3" />
-						</Button>
-						{comment.status === "unsent" && (
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => onSend([comment.id])}
-								className="size-6 p-0"
-								title="Send to Agent"
-							>
-								<Send className="size-3" />
-							</Button>
-						)}
-					</div>
+			)}
+
+			{comment.canResolve && comment.state === "open" && (
+				<div className="flex items-center gap-1">
+					<input
+						value={resolveSummary}
+						onChange={(e) => setResolveSummary(e.target.value)}
+						placeholder="Resolution summary"
+						className="min-w-0 flex-1 h-7 px-2 rounded border border-input bg-background text-xs"
+					/>
+					<Button
+						type="button"
+						variant="outline"
+						size="icon-xs"
+						disabled={disabled || resolveSummary.trim() === "" || !onResolve}
+						title="Resolve"
+						onClick={() =>
+							run(async () => {
+								await onResolve?.(
+									comment.id,
+									"resolved",
+									resolveSummary.trim(),
+								);
+								setResolveSummary("");
+							})
+						}
+					>
+						<Check className="size-3.5" />
+					</Button>
+					<Button
+						type="button"
+						variant="ghost"
+						size="icon-xs"
+						title="Clear resolution summary"
+						onClick={() => setResolveSummary("")}
+					>
+						<X className="size-3.5" />
+					</Button>
 				</div>
 			)}
 		</div>

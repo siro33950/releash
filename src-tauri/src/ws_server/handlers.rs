@@ -1,5 +1,7 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 
 use super::WsServerState;
@@ -24,6 +26,626 @@ pub(super) fn join_error_msg(e: tokio::task::JoinError) -> WsMessage {
         code: "INTERNAL_ERROR".to_string(),
         message: format!("Task join error: {e}"),
     })
+}
+
+fn review_error_payload(error: crate::review_comments::ReviewError) -> ReviewErrorPayload {
+    let dto = error.dto();
+    ReviewErrorPayload {
+        code: dto.code,
+        message: dto.message,
+    }
+}
+
+async fn resolve_review_worktree(
+    requested: Option<String>,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Result<String, WsMessage> {
+    let wt = selected_worktree.lock().await;
+    let selected = wt.clone().ok_or_else(no_worktree_selected_error)?;
+    if let Some(worktree) = requested {
+        let selected_name = worktree_name_from_path(&selected);
+        if worktree == selected || worktree == selected_name {
+            return Ok(selected);
+        }
+        return Err(WsMessage::Error(ErrorMsg {
+            code: "WORKTREE_MISMATCH".to_string(),
+            message: "Requested review worktree does not match the selected worktree".to_string(),
+        }));
+    }
+    Ok(selected)
+}
+
+fn worktree_name_from_path(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| path.to_string())
+}
+
+fn emit_review_changed(app: &tauri::AppHandle, worktree_name: &str) {
+    let _ = app.emit("review-comments-changed", worktree_name);
+}
+
+#[cfg(test)]
+fn review_test_deps(
+    state: &WsServerState,
+) -> Option<(
+    Arc<crate::review_comments::ReviewCommentStore>,
+    PathBuf,
+    Arc<parking_lot::Mutex<Vec<String>>>,
+)> {
+    state.test_review_deps.as_ref().map(|(store, data_dir)| {
+        (
+            Arc::clone(store),
+            data_dir.clone(),
+            Arc::clone(&state.test_review_emit_log),
+        )
+    })
+}
+
+pub(super) async fn handle_review_list_request(
+    req: &ReviewListRequest,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
+    let worktree_name =
+        match resolve_review_worktree(req.worktree_name.clone(), selected_worktree).await {
+            Ok(worktree_name) => worktree_name,
+            Err(msg) => return Some(msg),
+        };
+    #[cfg(test)]
+    if let Some((store, data_dir, _emit_log)) = review_test_deps(state) {
+        return review_list_response_from_store(store, data_dir, worktree_name, req.filter.clone())
+            .await;
+    }
+    let app = match &state.app_handle {
+        Some(app) => app.clone(),
+        None => {
+            return Some(WsMessage::ReviewListResponse(ReviewListResponse {
+                success: false,
+                worktree_name: Some(worktree_name),
+                threads: Vec::new(),
+                error: Some(ReviewErrorPayload {
+                    code: crate::review_comments::ReviewErrorCode::Io,
+                    message: "App handle not available".to_string(),
+                }),
+            }))
+        }
+    };
+    let filter = req.filter.clone();
+    let query_worktree_name = worktree_name.clone();
+    match tokio::task::spawn_blocking(move || {
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| crate::review_comments::ReviewError::InvalidInput(e.to_string()))?;
+        let store = app.state::<Arc<crate::review_comments::ReviewCommentStore>>();
+        store.list_threads(
+            &data_dir,
+            &query_worktree_name,
+            filter,
+            crate::review_comments::ReviewActor::human(),
+        )
+    })
+    .await
+    {
+        Ok(Ok(threads)) => Some(WsMessage::ReviewListResponse(ReviewListResponse {
+            success: true,
+            worktree_name: Some(worktree_name),
+            threads,
+            error: None,
+        })),
+        Ok(Err(e)) => Some(WsMessage::ReviewListResponse(ReviewListResponse {
+            success: false,
+            worktree_name: Some(worktree_name),
+            threads: Vec::new(),
+            error: Some(review_error_payload(e)),
+        })),
+        Err(e) => Some(join_error_msg(e)),
+    }
+}
+
+pub(super) async fn handle_review_get_request(
+    req: &ReviewGetRequest,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
+    let worktree_name =
+        match resolve_review_worktree(req.worktree_name.clone(), selected_worktree).await {
+            Ok(worktree_name) => worktree_name,
+            Err(msg) => return Some(msg),
+        };
+    let thread_id = req.thread_id.clone();
+    #[cfg(test)]
+    if let Some((store, data_dir, emit_log)) = review_test_deps(state) {
+        return review_thread_response_from_store(
+            store,
+            data_dir,
+            worktree_name,
+            false,
+            emit_log,
+            move |store, data_dir, worktree_name| {
+                store.get_thread(
+                    data_dir,
+                    worktree_name,
+                    &thread_id,
+                    crate::review_comments::ReviewActor::human(),
+                )
+            },
+        )
+        .await;
+    }
+    let app = match &state.app_handle {
+        Some(app) => app.clone(),
+        None => {
+            return Some(WsMessage::Error(ErrorMsg {
+                code: "INTERNAL_ERROR".to_string(),
+                message: "App handle not available".to_string(),
+            }))
+        }
+    };
+    review_thread_response_from_blocking(
+        app,
+        worktree_name,
+        false,
+        move |store, data_dir, worktree_name| {
+            store.get_thread(
+                data_dir,
+                worktree_name,
+                &thread_id,
+                crate::review_comments::ReviewActor::human(),
+            )
+        },
+    )
+    .await
+}
+
+pub(super) async fn handle_review_create_request(
+    req: &ReviewCreateRequest,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
+    let worktree_name =
+        match resolve_review_worktree(req.worktree_name.clone(), selected_worktree).await {
+            Ok(worktree_name) => worktree_name,
+            Err(msg) => return Some(msg),
+        };
+    let target = req.target.clone();
+    let content = req.content.clone();
+    #[cfg(test)]
+    if let Some((store, data_dir, emit_log)) = review_test_deps(state) {
+        return review_thread_response_from_store(
+            store,
+            data_dir,
+            worktree_name,
+            true,
+            emit_log,
+            move |store, data_dir, worktree_name| {
+                store.create_thread(
+                    data_dir,
+                    worktree_name,
+                    crate::review_comments::ReviewActor::human(),
+                    target,
+                    content,
+                )
+            },
+        )
+        .await;
+    }
+    let app = match &state.app_handle {
+        Some(app) => app.clone(),
+        None => {
+            return Some(WsMessage::Error(ErrorMsg {
+                code: "INTERNAL_ERROR".to_string(),
+                message: "App handle not available".to_string(),
+            }))
+        }
+    };
+    review_thread_response_from_blocking(
+        app,
+        worktree_name,
+        true,
+        move |store, data_dir, worktree_name| {
+            store.create_thread(
+                data_dir,
+                worktree_name,
+                crate::review_comments::ReviewActor::human(),
+                target,
+                content,
+            )
+        },
+    )
+    .await
+}
+
+pub(super) async fn handle_review_append_comment_request(
+    req: &ReviewAppendCommentRequest,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
+    let worktree_name =
+        match resolve_review_worktree(req.worktree_name.clone(), selected_worktree).await {
+            Ok(worktree_name) => worktree_name,
+            Err(msg) => return Some(msg),
+        };
+    let thread_id = req.thread_id.clone();
+    let content = req.content.clone();
+    #[cfg(test)]
+    if let Some((store, data_dir, emit_log)) = review_test_deps(state) {
+        return review_thread_response_from_store(
+            store,
+            data_dir,
+            worktree_name,
+            true,
+            emit_log,
+            move |store, data_dir, worktree_name| {
+                store.append_comment(
+                    data_dir,
+                    worktree_name,
+                    crate::review_comments::ReviewActor::human(),
+                    &thread_id,
+                    content,
+                )
+            },
+        )
+        .await;
+    }
+    let app = match &state.app_handle {
+        Some(app) => app.clone(),
+        None => {
+            return Some(WsMessage::Error(ErrorMsg {
+                code: "INTERNAL_ERROR".to_string(),
+                message: "App handle not available".to_string(),
+            }))
+        }
+    };
+    review_thread_response_from_blocking(
+        app,
+        worktree_name,
+        true,
+        move |store, data_dir, worktree_name| {
+            store.append_comment(
+                data_dir,
+                worktree_name,
+                crate::review_comments::ReviewActor::human(),
+                &thread_id,
+                content,
+            )
+        },
+    )
+    .await
+}
+
+pub(super) async fn handle_review_set_stance_request(
+    req: &ReviewSetStanceRequest,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
+    let worktree_name =
+        match resolve_review_worktree(req.worktree_name.clone(), selected_worktree).await {
+            Ok(worktree_name) => worktree_name,
+            Err(msg) => return Some(msg),
+        };
+    let thread_id = req.thread_id.clone();
+    let value = req.value.clone();
+    #[cfg(test)]
+    if let Some((store, data_dir, emit_log)) = review_test_deps(state) {
+        return review_thread_response_from_store(
+            store,
+            data_dir,
+            worktree_name,
+            true,
+            emit_log,
+            move |store, data_dir, worktree_name| {
+                store.set_stance(
+                    data_dir,
+                    worktree_name,
+                    crate::review_comments::ReviewActor::human(),
+                    &thread_id,
+                    value,
+                )
+            },
+        )
+        .await;
+    }
+    let app = match &state.app_handle {
+        Some(app) => app.clone(),
+        None => {
+            return Some(WsMessage::Error(ErrorMsg {
+                code: "INTERNAL_ERROR".to_string(),
+                message: "App handle not available".to_string(),
+            }))
+        }
+    };
+    review_thread_response_from_blocking(
+        app,
+        worktree_name,
+        true,
+        move |store, data_dir, worktree_name| {
+            store.set_stance(
+                data_dir,
+                worktree_name,
+                crate::review_comments::ReviewActor::human(),
+                &thread_id,
+                value,
+            )
+        },
+    )
+    .await
+}
+
+pub(super) async fn handle_review_resolve_request(
+    req: &ReviewResolveRequest,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
+    let worktree_name =
+        match resolve_review_worktree(req.worktree_name.clone(), selected_worktree).await {
+            Ok(worktree_name) => worktree_name,
+            Err(msg) => return Some(msg),
+        };
+    let thread_id = req.thread_id.clone();
+    let outcome = req.outcome.clone();
+    let summary = req.summary.clone();
+    #[cfg(test)]
+    if let Some((store, data_dir, emit_log)) = review_test_deps(state) {
+        return review_thread_response_from_store(
+            store,
+            data_dir,
+            worktree_name,
+            true,
+            emit_log,
+            move |store, data_dir, worktree_name| {
+                store.resolve_thread(
+                    data_dir,
+                    worktree_name,
+                    crate::review_comments::ReviewActor::human(),
+                    &thread_id,
+                    outcome,
+                    summary,
+                )
+            },
+        )
+        .await;
+    }
+    let app = match &state.app_handle {
+        Some(app) => app.clone(),
+        None => {
+            return Some(WsMessage::Error(ErrorMsg {
+                code: "INTERNAL_ERROR".to_string(),
+                message: "App handle not available".to_string(),
+            }))
+        }
+    };
+    review_thread_response_from_blocking(
+        app,
+        worktree_name,
+        true,
+        move |store, data_dir, worktree_name| {
+            store.resolve_thread(
+                data_dir,
+                worktree_name,
+                crate::review_comments::ReviewActor::human(),
+                &thread_id,
+                outcome,
+                summary,
+            )
+        },
+    )
+    .await
+}
+
+pub(super) async fn handle_review_history_request(
+    req: &ReviewHistoryRequest,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
+    let worktree_name =
+        match resolve_review_worktree(req.worktree_name.clone(), selected_worktree).await {
+            Ok(worktree_name) => worktree_name,
+            Err(msg) => return Some(msg),
+        };
+    let thread_id = req.thread_id.clone();
+    #[cfg(test)]
+    if let Some((store, data_dir, _emit_log)) = review_test_deps(state) {
+        return review_history_response_from_store(store, data_dir, worktree_name, thread_id).await;
+    }
+    let app = match &state.app_handle {
+        Some(app) => app.clone(),
+        None => {
+            return Some(WsMessage::Error(ErrorMsg {
+                code: "INTERNAL_ERROR".to_string(),
+                message: "App handle not available".to_string(),
+            }))
+        }
+    };
+    let query_worktree_name = worktree_name.clone();
+    match tokio::task::spawn_blocking(move || {
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| crate::review_comments::ReviewError::InvalidInput(e.to_string()))?;
+        let store = app.state::<Arc<crate::review_comments::ReviewCommentStore>>();
+        store.history(&data_dir, &query_worktree_name, &thread_id)
+    })
+    .await
+    {
+        Ok(Ok(events)) => Some(WsMessage::ReviewHistoryResponse(ReviewHistoryResponse {
+            success: true,
+            worktree_name: Some(worktree_name),
+            events,
+            error: None,
+        })),
+        Ok(Err(e)) => Some(WsMessage::ReviewHistoryResponse(ReviewHistoryResponse {
+            success: false,
+            worktree_name: Some(worktree_name),
+            events: Vec::new(),
+            error: Some(review_error_payload(e)),
+        })),
+        Err(e) => Some(join_error_msg(e)),
+    }
+}
+
+#[cfg(test)]
+async fn review_list_response_from_store(
+    store: Arc<crate::review_comments::ReviewCommentStore>,
+    data_dir: PathBuf,
+    worktree_name: String,
+    filter: Option<crate::review_comments::ReviewThreadFilter>,
+) -> Option<WsMessage> {
+    let query_worktree_name = worktree_name.clone();
+    match tokio::task::spawn_blocking(move || {
+        store.list_threads(
+            &data_dir,
+            &query_worktree_name,
+            filter,
+            crate::review_comments::ReviewActor::human(),
+        )
+    })
+    .await
+    {
+        Ok(Ok(threads)) => Some(WsMessage::ReviewListResponse(ReviewListResponse {
+            success: true,
+            worktree_name: Some(worktree_name),
+            threads,
+            error: None,
+        })),
+        Ok(Err(e)) => Some(WsMessage::ReviewListResponse(ReviewListResponse {
+            success: false,
+            worktree_name: Some(worktree_name),
+            threads: Vec::new(),
+            error: Some(review_error_payload(e)),
+        })),
+        Err(e) => Some(join_error_msg(e)),
+    }
+}
+
+#[cfg(test)]
+async fn review_history_response_from_store(
+    store: Arc<crate::review_comments::ReviewCommentStore>,
+    data_dir: PathBuf,
+    worktree_name: String,
+    thread_id: String,
+) -> Option<WsMessage> {
+    let query_worktree_name = worktree_name.clone();
+    match tokio::task::spawn_blocking(move || {
+        store.history(&data_dir, &query_worktree_name, &thread_id)
+    })
+    .await
+    {
+        Ok(Ok(events)) => Some(WsMessage::ReviewHistoryResponse(ReviewHistoryResponse {
+            success: true,
+            worktree_name: Some(worktree_name),
+            events,
+            error: None,
+        })),
+        Ok(Err(e)) => Some(WsMessage::ReviewHistoryResponse(ReviewHistoryResponse {
+            success: false,
+            worktree_name: Some(worktree_name),
+            events: Vec::new(),
+            error: Some(review_error_payload(e)),
+        })),
+        Err(e) => Some(join_error_msg(e)),
+    }
+}
+
+#[cfg(test)]
+async fn review_thread_response_from_store<F>(
+    store: Arc<crate::review_comments::ReviewCommentStore>,
+    data_dir: PathBuf,
+    worktree_name: String,
+    emit_changed: bool,
+    emit_log: Arc<parking_lot::Mutex<Vec<String>>>,
+    f: F,
+) -> Option<WsMessage>
+where
+    F: FnOnce(
+            &Arc<crate::review_comments::ReviewCommentStore>,
+            &PathBuf,
+            &str,
+        )
+            -> Result<crate::review_comments::ReviewThread, crate::review_comments::ReviewError>
+        + Send
+        + 'static,
+{
+    let emit_worktree_name = worktree_name.clone();
+    match tokio::task::spawn_blocking(move || {
+        let thread = f(&store, &data_dir, &worktree_name)?;
+        Ok::<_, crate::review_comments::ReviewError>(thread)
+    })
+    .await
+    {
+        Ok(Ok(thread)) => {
+            if emit_changed {
+                emit_log.lock().push(emit_worktree_name.clone());
+            }
+            Some(WsMessage::ReviewThreadResponse(ReviewThreadResponse {
+                success: true,
+                worktree_name: Some(emit_worktree_name),
+                thread: Some(thread),
+                error: None,
+            }))
+        }
+        Ok(Err(e)) => Some(WsMessage::ReviewThreadResponse(ReviewThreadResponse {
+            success: false,
+            worktree_name: Some(emit_worktree_name),
+            thread: None,
+            error: Some(review_error_payload(e)),
+        })),
+        Err(e) => Some(join_error_msg(e)),
+    }
+}
+
+async fn review_thread_response_from_blocking<F>(
+    app: tauri::AppHandle,
+    worktree_name: String,
+    emit_changed: bool,
+    f: F,
+) -> Option<WsMessage>
+where
+    F: FnOnce(
+            &Arc<crate::review_comments::ReviewCommentStore>,
+            &PathBuf,
+            &str,
+        )
+            -> Result<crate::review_comments::ReviewThread, crate::review_comments::ReviewError>
+        + Send
+        + 'static,
+{
+    let emit_app = app.clone();
+    let emit_worktree_name = worktree_name.clone();
+    match tokio::task::spawn_blocking(move || {
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| crate::review_comments::ReviewError::InvalidInput(e.to_string()))?;
+        let store = app.state::<Arc<crate::review_comments::ReviewCommentStore>>();
+        let thread = f(store.inner(), &data_dir, &worktree_name)?;
+        Ok::<_, crate::review_comments::ReviewError>(thread)
+    })
+    .await
+    {
+        Ok(Ok(thread)) => {
+            if emit_changed {
+                emit_review_changed(&emit_app, &emit_worktree_name);
+            }
+            Some(WsMessage::ReviewThreadResponse(ReviewThreadResponse {
+                success: true,
+                worktree_name: Some(emit_worktree_name),
+                thread: Some(thread),
+                error: None,
+            }))
+        }
+        Ok(Err(e)) => Some(WsMessage::ReviewThreadResponse(ReviewThreadResponse {
+            success: false,
+            worktree_name: Some(emit_worktree_name),
+            thread: None,
+            error: Some(review_error_payload(e)),
+        })),
+        Err(e) => Some(join_error_msg(e)),
+    }
 }
 
 pub(super) async fn with_worktree_blocking<F>(
@@ -1009,6 +1631,206 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(after.selected_model, None);
+    }
+
+    #[tokio::test]
+    async fn review_handlers_return_success_rejection_payloads_and_emit_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::review_comments::ReviewCommentStore::default());
+        let mut state = make_state(Vec::new());
+        state.set_test_review_deps(Arc::clone(&store), temp.path().to_path_buf());
+        let selected = make_selected(Some("/repo".to_string()));
+
+        let created = handle_review_create_request(
+            &ReviewCreateRequest {
+                worktree_name: None,
+                target: ReviewTarget {
+                    file_path: Some("src/main.rs".to_string()),
+                    line_number: Some(1),
+                    end_line: Some(2),
+                },
+                content: "Review claim".to_string(),
+            },
+            &state,
+            &selected,
+        )
+        .await;
+        let thread = match created {
+            Some(WsMessage::ReviewThreadResponse(resp)) => {
+                assert!(resp.success);
+                assert_eq!(resp.worktree_name.as_deref(), Some("/repo"));
+                resp.thread.unwrap()
+            }
+            other => panic!("expected review thread response, got {other:?}"),
+        };
+        assert_eq!(state.test_review_emit_log(), vec!["/repo".to_string()]);
+
+        let appended = handle_review_append_comment_request(
+            &ReviewAppendCommentRequest {
+                worktree_name: Some("repo".to_string()),
+                thread_id: thread.id.clone(),
+                content: "Human follow-up".to_string(),
+            },
+            &state,
+            &selected,
+        )
+        .await;
+        match appended {
+            Some(WsMessage::ReviewThreadResponse(resp)) => {
+                assert!(resp.success);
+                assert_eq!(resp.thread.unwrap().comments.len(), 2);
+            }
+            other => panic!("expected append response, got {other:?}"),
+        }
+
+        let stance = handle_review_set_stance_request(
+            &ReviewSetStanceRequest {
+                worktree_name: None,
+                thread_id: thread.id.clone(),
+                value: crate::review_comments::ReviewStanceValue::Agree,
+            },
+            &state,
+            &selected,
+        )
+        .await;
+        match stance {
+            Some(WsMessage::ReviewThreadResponse(resp)) => {
+                assert!(resp.success);
+                let thread = resp.thread.unwrap();
+                assert_eq!(
+                    thread.my_stance,
+                    crate::review_comments::ReviewStanceValue::Agree
+                );
+                assert!(thread.stances.iter().any(|stance| {
+                    stance.actor.kind == crate::review_comments::ReviewActorKind::Human
+                        && stance.value == crate::review_comments::ReviewStanceValue::Agree
+                }));
+            }
+            other => panic!("expected stance response, got {other:?}"),
+        }
+        assert_eq!(state.test_review_emit_log().len(), 3);
+
+        let resolved = handle_review_resolve_request(
+            &ReviewResolveRequest {
+                worktree_name: None,
+                thread_id: thread.id.clone(),
+                outcome: "accepted".to_string(),
+                summary: "done".to_string(),
+            },
+            &state,
+            &selected,
+        )
+        .await;
+        match resolved {
+            Some(WsMessage::ReviewThreadResponse(resp)) => {
+                assert!(resp.success);
+                assert_eq!(
+                    resp.thread.unwrap().state,
+                    crate::review_comments::ReviewThreadState::Resolved
+                );
+            }
+            other => panic!("expected resolve response, got {other:?}"),
+        }
+
+        let rejected = handle_review_append_comment_request(
+            &ReviewAppendCommentRequest {
+                worktree_name: None,
+                thread_id: thread.id.clone(),
+                content: "late".to_string(),
+            },
+            &state,
+            &selected,
+        )
+        .await;
+        match rejected {
+            Some(WsMessage::ReviewThreadResponse(resp)) => {
+                assert!(!resp.success);
+                let error = resp.error.unwrap();
+                assert_eq!(
+                    error.code,
+                    crate::review_comments::ReviewErrorCode::AlreadyResolved
+                );
+                assert!(error.message.contains("already resolved"));
+            }
+            other => panic!("expected rejected append response, got {other:?}"),
+        }
+
+        let history = handle_review_history_request(
+            &ReviewHistoryRequest {
+                worktree_name: None,
+                thread_id: thread.id,
+            },
+            &state,
+            &selected,
+        )
+        .await;
+        match history {
+            Some(WsMessage::ReviewHistoryResponse(resp)) => {
+                assert!(resp.success);
+                assert_eq!(resp.worktree_name.as_deref(), Some("/repo"));
+                assert_eq!(resp.events.len(), 4);
+            }
+            other => panic!("expected history response, got {other:?}"),
+        }
+
+        let missing_history = handle_review_history_request(
+            &ReviewHistoryRequest {
+                worktree_name: None,
+                thread_id: "missing-thread".to_string(),
+            },
+            &state,
+            &selected,
+        )
+        .await;
+        match missing_history {
+            Some(WsMessage::ReviewHistoryResponse(resp)) => {
+                assert!(!resp.success);
+                assert_eq!(resp.worktree_name.as_deref(), Some("/repo"));
+                assert_eq!(resp.events.len(), 0);
+                assert_eq!(
+                    resp.error.unwrap().code,
+                    crate::review_comments::ReviewErrorCode::NotFound
+                );
+            }
+            other => panic!("expected rejected history response, got {other:?}"),
+        }
+        assert_eq!(state.test_review_emit_log().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn review_handler_rejects_invalid_target_with_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::review_comments::ReviewCommentStore::default());
+        let mut state = make_state(Vec::new());
+        state.set_test_review_deps(store, temp.path().to_path_buf());
+        let selected = make_selected(Some("/repo".to_string()));
+
+        let response = handle_review_create_request(
+            &ReviewCreateRequest {
+                worktree_name: None,
+                target: ReviewTarget {
+                    file_path: Some("../secret".to_string()),
+                    line_number: Some(1),
+                    end_line: None,
+                },
+                content: "Review claim".to_string(),
+            },
+            &state,
+            &selected,
+        )
+        .await;
+
+        match response {
+            Some(WsMessage::ReviewThreadResponse(resp)) => {
+                assert!(!resp.success);
+                assert_eq!(
+                    resp.error.unwrap().code,
+                    crate::review_comments::ReviewErrorCode::InvalidInput
+                );
+            }
+            other => panic!("expected rejection response, got {other:?}"),
+        }
+        assert!(state.test_review_emit_log().is_empty());
     }
 
     // --- A. ユーティリティ ---
