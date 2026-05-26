@@ -466,6 +466,21 @@ impl PtyManager {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
 
         let mut extra_env = Vec::new();
+        // spec issues-1054: agent が起動する子プロセスに対し、起動環境別 alias が
+        // 解決可能な PATH と alias 内包の `RELEASH_DATA_DIR` を伝搬する。
+        // データディレクトリは Tauri の bundle identifier に従って `app_data_dir()` が
+        // 解決した値を渡し、dev / 本番で実体が分かれることを保証する。
+        match crate::path_aliases::prepare_child_env(app.path().app_data_dir().ok()) {
+            Ok(env) => extra_env.extend(env),
+            Err(e) => {
+                // 提示する alias と実行環境の不整合を避けるため、wrapper 作成失敗時は
+                // PTY spawn を中止する（spec issues-1054「agent 子プロセスへの実行
+                // 環境の伝搬」: PATH 経由で alias 解決可能な環境を約束する）。
+                return Err(format!(
+                    "failed to prepare alias child env for PTY spawn: {e}"
+                ));
+            }
+        }
         if let Some(mcp_handle) = app.try_state::<crate::mcp::McpServerHandle>() {
             if let Some(info) = mcp_handle.connection_info() {
                 extra_env.push(("RELEASH_MCP_URL".to_string(), info.url));

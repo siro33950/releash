@@ -373,6 +373,7 @@ mod tests {
     fn minimal_workflow() -> Workflow {
         use crate::workflow::schema::{NodeDefinition, NodeType};
         Workflow {
+            variables: Default::default(),
             name: "wf".to_string(),
             description: "".to_string(),
             builtin: false,

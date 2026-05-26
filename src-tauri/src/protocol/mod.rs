@@ -354,6 +354,7 @@ mod tests {
                             step_execution_counts: std::collections::HashMap::new(),
                             step_outputs: std::collections::HashMap::new(),
                             workflow_definition: crate::workflow::schema::Workflow {
+                                variables: Default::default(),
                                 name: "test".to_string(),
                                 description: "test".to_string(),
                                 builtin: false,

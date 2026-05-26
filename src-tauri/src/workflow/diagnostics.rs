@@ -941,6 +941,7 @@ mod tests {
         let wf_dir = tmp.path();
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -964,6 +965,7 @@ mod tests {
         setup_facet(wf_dir, "instructions", "impl", "content");
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -995,6 +997,7 @@ mod tests {
         setup_facet(wf_dir, "contracts", "input-contract", "format: text");
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1028,6 +1031,7 @@ mod tests {
         setup_facet(wf_dir, "instructions", "impl", "content");
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1063,6 +1067,7 @@ mod tests {
         setup_facet(wf_dir, "instructions", "impl", "content");
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1090,6 +1095,7 @@ mod tests {
         setup_facet(wf_dir, "instructions", "review", "content");
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1124,6 +1130,7 @@ mod tests {
 
         // step1 が Auto + rules で step3 へ遷移 → orphan は到達不能
         let wf = Workflow {
+            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1160,6 +1167,7 @@ mod tests {
         // rules なしの step → 次の step は暗黙的に到達可能（到達不能ではない）
         // ただし明示的遷移なしの warning は出る
         let wf = Workflow {
+            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1250,6 +1258,7 @@ mod tests {
         let wf_dir = tmp.path();
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1275,6 +1284,7 @@ mod tests {
         let wf_dir = tmp.path();
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "bash-wf".to_string(),
             description: "bash test".to_string(),
             builtin: false,
@@ -1305,6 +1315,7 @@ mod tests {
         let wf_dir = tmp.path();
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "bash-wf".to_string(),
             description: "bash test".to_string(),
             builtin: false,
@@ -1335,6 +1346,7 @@ mod tests {
         setup_facet(wf_dir, "instructions", "impl", "content");
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1358,6 +1370,7 @@ mod tests {
         // diagnose_allでは「読み込みに失敗」エラーとして報告される
         fs::create_dir_all(wf_dir).unwrap();
         let wf = Workflow {
+            variables: Default::default(),
             name: "bad workflow".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1380,6 +1393,7 @@ mod tests {
         setup_facet(wf_dir, "instructions", "review", "content");
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1451,6 +1465,7 @@ mod tests {
         setup_facet(wf_dir, "instructions", "task", "content");
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "dup-step".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1480,6 +1495,7 @@ mod tests {
         setup_facet(wf_dir, "instructions", "task", "content");
 
         let wf = Workflow {
+            variables: Default::default(),
             name: "agg-no-par".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1516,6 +1532,7 @@ mod tests {
 
         // step1 が後続の step2 を pass_output_from で参照 → 後方参照は許可（エラーにならない）
         let wf = Workflow {
+            variables: Default::default(),
             name: "backward-ref".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1549,6 +1566,7 @@ mod tests {
 
         // step1 が後続の step2 を collect.from で参照 → エラーになるべき
         let wf = Workflow {
+            variables: Default::default(),
             name: "subsequent-collect".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1586,6 +1604,7 @@ mod tests {
 
         // parallel block の子step が後続の report を参照 → 後方参照は許可（エラーにならない）
         let wf = Workflow {
+            variables: Default::default(),
             name: "par-backward".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1624,6 +1643,7 @@ mod tests {
 
         // parallel block の子step が兄弟を参照 → エラーになるべき
         let wf = Workflow {
+            variables: Default::default(),
             name: "par-sibling".to_string(),
             description: "test".to_string(),
             builtin: false,

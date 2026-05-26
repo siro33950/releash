@@ -695,6 +695,7 @@ mod tests {
     fn workflow_with_review_contract(contract: Option<&str>) -> Workflow {
         use crate::workflow::schema::{NodeDefinition, NodeType};
         Workflow {
+            variables: Default::default(),
             name: "wf-resolve".to_string(),
             description: "".to_string(),
             builtin: false,

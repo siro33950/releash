@@ -16,8 +16,30 @@ pub fn facets_base_dir() -> PathBuf {
     storage::workflows_dir()
 }
 
-/// システム定義テンプレート変数（commands.rs / diagnostics.rs 両方から参照）
+/// システム定義テンプレート変数（commands.rs / diagnostics.rs 両方から参照）。
+///
+/// トップレベル namespace（namespace 接頭辞を持たない）として展開される変数群。
+/// 新規 namespace (`path_alias.*` / `vars.*`) とは別経路で解決され、互換性のために
+/// そのまま残す（spec [01] 既存プレースホルダの互換性）。
 pub const SYSTEM_TEMPLATE_VARIABLES: &[&str] = &["project_name", "task"];
+
+/// テンプレート変数の namespace 接頭辞。
+///
+/// `path_alias.<key>` と `vars.<key>` の 2 つのみを公開する
+/// （spec [01] テンプレート展開は namespace 制）。
+pub const PATH_ALIAS_NAMESPACE: &str = "path_alias";
+pub const VARS_NAMESPACE: &str = "vars";
+
+/// 既知の namespace 接頭辞集合。`<namespace>.<key>` 形式の変数参照を判定する。
+pub const KNOWN_NAMESPACES: &[&str] = &[PATH_ALIAS_NAMESPACE, VARS_NAMESPACE];
+
+/// テンプレート変数参照を namespace と key に分解する。
+///
+/// - `"path_alias.releash"` → `Some(("path_alias", "releash"))`
+/// - `"project_name"` → `None`（namespace を持たないトップレベル変数）
+pub fn split_namespaced(var: &str) -> Option<(&str, &str)> {
+    var.split_once('.')
+}
 
 #[derive(Debug)]
 pub enum FacetError {
@@ -97,8 +119,11 @@ impl FacetKind {
 /// typed API）のみ。step agent の自由文に書かれた `<workflow_output>` 相当の表現は
 /// engine から観測されないため、必ず CLI 経由で提出する必要がある。
 pub fn output_contract_preamble(key: &str) -> String {
+    // CLI 名は起動環境別に展開する。`{{path_alias.releash}}` は engine の
+    // `render_namespaced_variables` 段で `releash` / `releash-dev` に置換される
+    // （spec issues-1054 facet テンプレートにおける CLI alias の展開）。
     format!(
-        "step 完了時に下記データ仕様 (型: {key}) に従う JSON を `releash workflow output submit` で提出すること。\nチャット本文や最終応答に JSON をそのまま書いても提出とは扱われない。必ず CLI コマンドを実行すること。\n\n```sh\nreleash workflow output submit {{{{run_id}}}} \\\n  --step {{{{step_name}}}} \\\n  --type {key} \\\n  --json '{{...}}'\n```\n\n提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する。\n\nデータ仕様 (型: {key}):"
+        "step 完了時に下記データ仕様 (型: {key}) に従う JSON を `{{{{path_alias.releash}}}} workflow output submit` で提出すること。\nチャット本文や最終応答に JSON をそのまま書いても提出とは扱われない。必ず CLI コマンドを実行すること。\n\n```sh\n{{{{path_alias.releash}}}} workflow output submit {{{{run_id}}}} \\\n  --step {{{{step_name}}}} \\\n  --type {key} \\\n  --json '{{...}}'\n```\n\n提出が成功するまで step は完了として扱われない。失敗時は `{{{{path_alias.releash}}}} workflow output validate` でフォーマットを確認してから再提出する。\n\nデータ仕様 (型: {key}):"
     )
 }
 
@@ -109,13 +134,15 @@ pub fn output_contract_preamble(key: &str) -> String {
 /// 余地が残る。Contract 由来の提出手順を user message の末尾にも置き、提出値が
 /// 確定した時点の次アクションを CLI 実行に固定する。
 pub fn output_contract_completion_action(key: &str) -> String {
+    // CLI 名は起動環境別に展開する（dev → `releash-dev` / 本番 → `releash`）。
+    // engine 側で `{{path_alias.releash}}` を解決する（spec issues-1054）。
     format!(
         "## 完了時の必須アクション\n\n\
 提出値が確定した時点で、次の assistant action は最終応答ではなく CLI 実行でなければならない。\n\
 チャット本文に JSON や要約を書いても提出とは扱われない。必ず次のコマンドで出力を提出すること。\n\
 このコマンドが成功するまで step は完了していない。\n\n\
 ```sh\n\
-releash workflow output submit {{{{run_id}}}} \\\n  --step {{{{step_name}}}} \\\n  --type {key} \\\n  --json '{{...}}'\n\
+{{{{path_alias.releash}}}} workflow output submit {{{{run_id}}}} \\\n  --step {{{{step_name}}}} \\\n  --type {key} \\\n  --json '{{...}}'\n\
 ```"
     )
 }
@@ -165,10 +192,55 @@ pub fn extract_template_variables(content: &str) -> Vec<String> {
 
 /// テンプレート変数がすべてシステム定義変数であることを検証する。
 /// 未定義変数があればそのリストを返す。
+///
+/// namespace 付きの参照は namespace 別に判定する:
+/// - `path_alias.<key>`: `PathAliases::known_keys()` に含まれる key のみ既知。
+///   未知 key（typo 等）は未定義として返す（spec design.md「未定義参照はエラー」）。
+/// - `vars.<key>`: workflow 文脈に依存して解決可能性が決まるため、ここでは「定義済み」とみなし
+///   対象から除外する。`vars.*` の未定義検出は `find_undefined_workflow_variable_refs` 経由で
+///   workflow 読み込み時に行う（spec [01] 未定義 workflow 変数の拒否）。
+/// - 未知 namespace（`KNOWN_NAMESPACES` 外）は未定義として返す。
 pub fn find_undefined_template_variables(content: &str) -> Vec<String> {
     extract_template_variables(content)
         .into_iter()
-        .filter(|v| !SYSTEM_TEMPLATE_VARIABLES.contains(&v.as_str()))
+        .filter(|v| {
+            if let Some((ns, key)) = split_namespaced(v) {
+                if ns == PATH_ALIAS_NAMESPACE {
+                    // 公開 path_alias key 集合に含まれないものは未定義（typo の検出）。
+                    !crate::path_aliases::PathAliases::known_keys().contains(&key)
+                } else if ns == VARS_NAMESPACE {
+                    // workflow 定義依存のため facet 単体検証では弾かない。
+                    false
+                } else {
+                    // 未知 namespace は未定義として扱う。
+                    !KNOWN_NAMESPACES.contains(&ns)
+                }
+            } else {
+                !SYSTEM_TEMPLATE_VARIABLES.contains(&v.as_str())
+            }
+        })
+        .collect()
+}
+
+/// facet 本文に含まれる `{{vars.<name>}}` 参照のうち、`defined` に存在しないものを返す。
+///
+/// workflow 読み込み時 (`storage::load_workflow`) に、宣言された変数定義を渡して
+/// 未定義参照を検出する境界として使う（spec [01] 未定義 workflow 変数の拒否）。
+pub fn find_undefined_workflow_variable_refs(
+    content: &str,
+    defined: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    extract_template_variables(content)
+        .into_iter()
+        .filter_map(|v| {
+            split_namespaced(&v).and_then(|(ns, key)| {
+                if ns == VARS_NAMESPACE && !defined.contains_key(key) {
+                    Some(key.to_string())
+                } else {
+                    None
+                }
+            })
+        })
         .collect()
 }
 
@@ -178,10 +250,85 @@ pub fn render_template_variables(
     content: &str,
     values: &std::collections::HashMap<String, String>,
 ) -> String {
-    let mut result = content.to_string();
-    for (key, value) in values {
-        let pattern = format!("{{{{{key}}}}}");
-        result = result.replace(&pattern, value);
+    replace_template_refs(content, |inner| values.get(inner).cloned())
+}
+
+/// facet 本文中の `{{path_alias.<key>}}` を解決済み alias 名で置換する。
+///
+/// spec [01] 「facet テンプレートにおける CLI alias の展開」:
+/// - 本番起動時 `{{path_alias.releash}}` → `releash`
+/// - dev 起動時 `{{path_alias.releash}}` → `releash-dev`
+///
+/// 既知 key のみを置換し、`{{path_alias.relase}}`（typo）等は未展開のまま残す。
+/// 未展開は `find_undefined_template_variables` 側で未定義として検出される
+/// （spec design.md「未定義参照はエラー」）。
+///
+/// 引数で alias 名のみを受け取る。data_dir 解決を経由しないため、`dirs::data_dir()`
+/// 失敗の経路と切り離せる。
+pub fn render_path_alias_variables_with_name(content: &str, releash_alias_name: &str) -> String {
+    replace_template_refs(content, |inner| match inner {
+        "path_alias.releash" => Some(releash_alias_name.to_string()),
+        _ => None,
+    })
+}
+
+/// facet 本文中の `{{vars.<name>}}` を workflow 定義側の変数値で置換する。
+///
+/// spec [01] 「workflow 定義変数の facet 展開」:
+/// `vars` namespace は workflow 定義で宣言された静的文字列のみを解決する。
+/// 未定義参照の検出は load 時 (`find_undefined_workflow_variable_refs`) が一次境界。
+///
+/// 元 content から `{{...}}` を**単一パス**で検出して置換する（置換後文字列を再スキャン
+/// しない）。これにより、変数値に `{{vars.other}}` の文字列が含まれていても二次展開
+/// されず、HashMap 反復順序にも依存しない（spec Contracts「{{vars.<name>}} の値は
+/// 静的文字列のみとし、動的解決値を含まない」）。
+pub fn render_workflow_variables(
+    content: &str,
+    variables: &std::collections::HashMap<String, String>,
+) -> String {
+    replace_template_refs(content, |inner| {
+        inner
+            .strip_prefix("vars.")
+            .and_then(|name| variables.get(name).cloned())
+    })
+}
+
+/// `{{...}}` 参照を元 content から単一パスで検出し、`resolve` が `Some` を返した
+/// 参照のみを置換する。`None` を返した参照は元の `{{...}}` を保ったまま残す。
+///
+/// 置換後の文字列を再スキャンしないため、二次展開が発生せず、入力の HashMap 反復順序
+/// にも依存しない。
+///
+/// `{{...}}` 内側の前後空白は trim してから `resolve` に渡すため、`{{key}}` と
+/// `{{ key }}` は同一参照として扱う。未解決時に元のまま残す出力は `raw_inner`
+/// （trim 前）を用いるため、内側スペースは保存される。
+fn replace_template_refs(content: &str, mut resolve: impl FnMut(&str) -> Option<String>) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut rest = content;
+    while !rest.is_empty() {
+        let Some(open_idx) = rest.find("{{") else {
+            result.push_str(rest);
+            break;
+        };
+        result.push_str(&rest[..open_idx]);
+        let after_open = &rest[open_idx + 2..];
+        let Some(close_idx) = after_open.find("}}") else {
+            // 閉じが見つからない: 残り全部をそのまま出して終わる。
+            result.push_str("{{");
+            result.push_str(after_open);
+            break;
+        };
+        let raw_inner = &after_open[..close_idx];
+        let inner = raw_inner.trim();
+        match resolve(inner) {
+            Some(value) => result.push_str(&value),
+            None => {
+                result.push_str("{{");
+                result.push_str(raw_inner);
+                result.push_str("}}");
+            }
+        }
+        rest = &after_open[close_idx + 2..];
     }
     result
 }
@@ -748,8 +895,9 @@ mod tests {
 
         let sys = result.system_prompt.expect("system_prompt should be set");
         // 出力 Contract preamble は CLI 提出経路（[08]）を agent に指示し、
-        // 型ラベルと Contract 本文を含む
-        assert!(sys.contains("releash workflow output submit"));
+        // 型ラベルと Contract 本文を含む。CLI 名は engine 側で
+        // `{{path_alias.releash}}` を起動環境別 alias に置換する（spec issues-1054）。
+        assert!(sys.contains("{{path_alias.releash}} workflow output submit"));
         assert!(sys.contains("--type plan-doc"));
         assert!(sys.contains("--json"));
         assert!(sys.contains("チャット本文や最終応答に JSON をそのまま書いても提出とは扱われない"));
@@ -764,7 +912,8 @@ mod tests {
 
         assert!(action.contains("完了時の必須アクション"));
         assert!(action.contains("次の assistant action は最終応答ではなく CLI 実行"));
-        assert!(action.contains("releash workflow output submit"));
+        // CLI 名は engine 側の `render_namespaced_variables` で展開される。
+        assert!(action.contains("{{path_alias.releash}} workflow output submit"));
         assert!(action.contains("--type plan-doc"));
         assert!(action.contains("--json"));
         assert!(!action.contains("--file"));
@@ -1036,5 +1185,135 @@ mod tests {
                 FacetError::BuiltinProtected { .. }
             ));
         }
+    }
+
+    // --- namespace 展開 (spec issues-1054) ---
+
+    #[test]
+    fn render_path_alias_substitutes_releash_with_runtime_alias() {
+        // Rule: 起動環境別 `{{path_alias.releash}}` が `releash` / `releash-dev` に展開される
+        let alias_name = crate::path_aliases::alias_name_for_profile(
+            crate::path_aliases::BuildProfile::current(),
+        );
+        let content = "Run `{{path_alias.releash}} workflow output submit`";
+        let rendered = render_path_alias_variables_with_name(content, alias_name);
+        let expected_alias = if cfg!(debug_assertions) {
+            "releash-dev"
+        } else {
+            "releash"
+        };
+        assert!(
+            rendered.contains(&format!("Run `{expected_alias} workflow output submit`")),
+            "rendered={rendered}"
+        );
+    }
+
+    #[test]
+    fn render_workflow_variables_substitutes_declared_vars() {
+        // Rule: workflow が宣言した変数は `{{vars.<name>}}` で facet から参照できる
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("project_label".to_string(), "Releash".to_string());
+        vars.insert("env".to_string(), "production".to_string());
+        let content = "Project: {{vars.project_label}}, env={{vars.env}}";
+        let rendered = render_workflow_variables(content, &vars);
+        assert_eq!(rendered, "Project: Releash, env=production");
+    }
+
+    #[test]
+    fn find_undefined_workflow_variable_refs_returns_only_undefined_vars() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("known".to_string(), "value".to_string());
+        let content = "{{vars.known}} {{vars.unknown}} {{vars.another_missing}}";
+        let mut undefined = find_undefined_workflow_variable_refs(content, &vars);
+        undefined.sort();
+        assert_eq!(undefined, vec!["another_missing", "unknown"]);
+    }
+
+    #[test]
+    fn find_undefined_template_variables_does_not_flag_namespaced_refs() {
+        // 既存 SYSTEM_TEMPLATE_VARIABLES 以外のトップレベル参照は未定義扱いだが、
+        // 既知 namespace + 既知 key（`path_alias.releash` / `vars.*`）は facet 単体検証では対象外。
+        let content = "{{project_name}} {{vars.x}} {{path_alias.releash}} {{unknown_top}}";
+        let undefined = find_undefined_template_variables(content);
+        assert_eq!(undefined, vec!["unknown_top".to_string()]);
+    }
+
+    #[test]
+    fn find_undefined_template_variables_flags_unknown_namespace() {
+        // 既知 namespace に含まれない `<ns>.<key>` は未定義扱いになる。
+        let content = "{{not_a_namespace.key}}";
+        let undefined = find_undefined_template_variables(content);
+        assert_eq!(undefined, vec!["not_a_namespace.key".to_string()]);
+    }
+
+    #[test]
+    fn find_undefined_template_variables_flags_unknown_path_alias_key() {
+        // path_alias namespace は known_keys に含まれる key のみ既知扱い。
+        // typo（例: `relase`）は未定義として検出される（spec design.md「未定義参照はエラー」）。
+        let content = "{{path_alias.relase}} {{path_alias.releash}}";
+        let undefined = find_undefined_template_variables(content);
+        assert_eq!(undefined, vec!["path_alias.relase".to_string()]);
+    }
+
+    #[test]
+    fn render_path_alias_variables_leaves_unknown_keys_intact() {
+        // typo した key は置換せず未展開のまま残す（未定義検出側でエラーになる）。
+        let alias_name = crate::path_aliases::alias_name_for_profile(
+            crate::path_aliases::BuildProfile::current(),
+        );
+        let content = "{{path_alias.relase}} / {{path_alias.releash}}";
+        let rendered = render_path_alias_variables_with_name(content, alias_name);
+        assert!(
+            rendered.contains("{{path_alias.relase}}"),
+            "unknown key should remain unexpanded: {rendered}"
+        );
+        let expected_alias = if cfg!(debug_assertions) {
+            "releash-dev"
+        } else {
+            "releash"
+        };
+        assert!(
+            rendered.contains(expected_alias),
+            "known key should be expanded: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_workflow_variables_does_not_secondary_expand() {
+        // Rule: 値内に `{{vars.other}}` の文字列があっても二次展開せず、HashMap
+        // 反復順序に依存しない（spec Contracts: 値は静的文字列のみ）。
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("a".to_string(), "{{vars.b}}".to_string());
+        vars.insert("b".to_string(), "RESOLVED_B".to_string());
+        let content = "A={{vars.a}} B={{vars.b}}";
+        let rendered = render_workflow_variables(content, &vars);
+        // 反復順序によらず: `{{vars.a}}` は値そのもの (`{{vars.b}}` 文字列) になる。
+        assert_eq!(rendered, "A={{vars.b}} B=RESOLVED_B");
+    }
+
+    #[test]
+    fn render_workflow_variables_leaves_undefined_refs_unchanged() {
+        let vars = std::collections::HashMap::new();
+        let rendered = render_workflow_variables("hello {{vars.missing}} world", &vars);
+        assert_eq!(rendered, "hello {{vars.missing}} world");
+    }
+
+    #[test]
+    fn render_template_variables_treats_surrounding_whitespace_inside_refs_as_equivalent() {
+        // `{{ task }}` と `{{task}}` を同一参照として扱う（trim 後にマッチ）。
+        // 既存テンプレートに空白付き参照は存在しないため互換性影響はなく、
+        // 本挙動は `replace_template_refs` の意図的な仕様（doc 参照）。
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("task".to_string(), "do".to_string());
+        let out = render_template_variables("a {{ task }} b", &vars);
+        assert_eq!(out, "a do b");
+    }
+
+    #[test]
+    fn render_template_variables_keeps_unresolved_ref_verbatim_including_whitespace() {
+        // 解決できない参照は元の `{{ ... }}` をそのまま残し、内側のスペースを変更しない。
+        let vars = std::collections::HashMap::new();
+        let out = render_template_variables("x {{ unknown }} y", &vars);
+        assert_eq!(out, "x {{ unknown }} y");
     }
 }

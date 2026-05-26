@@ -14,8 +14,18 @@ pub enum StorageError {
     YamlSerialize(serde_saphyr::ser::Error),
     Validation(ValidationError),
     FacetResolution(facet::FacetError),
-    NotFound { name: String },
-    BuiltinProtected { name: String },
+    /// facet 本文が `{{vars.<name>}}` で workflow 定義に存在しない変数を参照している。
+    /// spec issues-1054 「未定義 workflow 変数の拒否」: load 経路を一次境界として検出する。
+    UndefinedWorkflowVariables {
+        node_name: String,
+        undefined: Vec<String>,
+    },
+    NotFound {
+        name: String,
+    },
+    BuiltinProtected {
+        name: String,
+    },
 }
 
 impl fmt::Display for StorageError {
@@ -26,6 +36,14 @@ impl fmt::Display for StorageError {
             Self::YamlSerialize(e) => write!(f, "YAMLシリアライズ失敗: {e}"),
             Self::Validation(e) => write!(f, "validation_error: {e}"),
             Self::FacetResolution(e) => write!(f, "facet解決失敗: {e}"),
+            Self::UndefinedWorkflowVariables {
+                node_name,
+                undefined,
+            } => write!(
+                f,
+                "node '{node_name}' の facet が未定義の workflow 変数を参照しています: {} （workflow 定義の `variables` で宣言してください）",
+                undefined.join(", ")
+            ),
             Self::NotFound { name } => {
                 write!(f, "ワークフロー '{name}' が見つかりません")
             }
@@ -44,7 +62,9 @@ impl std::error::Error for StorageError {
             Self::YamlSerialize(e) => Some(e),
             Self::Validation(e) => Some(e),
             Self::FacetResolution(e) => Some(e),
-            _ => None,
+            Self::UndefinedWorkflowVariables { .. } => None,
+            Self::NotFound { .. } => None,
+            Self::BuiltinProtected { .. } => None,
         }
     }
 }
@@ -154,7 +174,63 @@ pub fn load_workflow(path: &Path, facets_base_dir: &Path) -> Result<Workflow, St
     workflow.builtin = builtin::is_builtin_workflow(&workflow.name);
     validation::validate(&workflow)?;
     facet::resolve_workflow_facets(&mut workflow, facets_base_dir)?;
+    // spec issues-1054: 未定義 `{{vars.<name>}}` 参照は load 経路を一次境界として検出する。
+    validate_workflow_variable_refs(&workflow)?;
     Ok(workflow)
+}
+
+/// resolved_facets の各本文に `{{vars.<name>}}` 参照が含まれている場合、
+/// すべて workflow.variables で宣言されていることを検証する。
+///
+/// spec issues-1054 「未定義 workflow 変数の拒否」: load 時点でエラーとし、
+/// 黙って空文字へ展開させない（権限や宛先ずれの事故防止）。
+fn validate_workflow_variable_refs(workflow: &Workflow) -> Result<(), StorageError> {
+    for node in &workflow.nodes {
+        for body in resolved_bodies(&node.resolved_facets) {
+            check_undefined_vars(&node.name, body, &workflow.variables)?;
+        }
+        if let Some(inline) = &node.inline_prompt {
+            check_undefined_vars(&node.name, inline, &workflow.variables)?;
+        }
+        if let Some(children) = &node.parallel_children {
+            for child in children {
+                for body in resolved_bodies(&child.resolved_facets) {
+                    check_undefined_vars(&child.name, body, &workflow.variables)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolved_bodies(
+    rf: &crate::workflow::schema::ResolvedFacets,
+) -> impl Iterator<Item = &str> + '_ {
+    rf.policy
+        .as_deref()
+        .into_iter()
+        .chain(rf.knowledge.as_deref())
+        .chain(rf.instruction.as_deref())
+        .chain(rf.output_contract.as_deref())
+        .chain(rf.input_contracts.iter().map(|s| s.as_str()))
+}
+
+fn check_undefined_vars(
+    node_name: &str,
+    body: &str,
+    defined: &std::collections::HashMap<String, String>,
+) -> Result<(), StorageError> {
+    let undefined = facet::find_undefined_workflow_variable_refs(body, defined);
+    if undefined.is_empty() {
+        return Ok(());
+    }
+    let mut unique: Vec<String> = undefined;
+    unique.sort();
+    unique.dedup();
+    Err(StorageError::UndefinedWorkflowVariables {
+        node_name: node_name.to_string(),
+        undefined: unique,
+    })
 }
 
 fn list_yml_summaries<T, E: fmt::Display>(
@@ -274,6 +350,7 @@ mod tests {
 
     fn sample_workflow(name: &str, builtin: bool) -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: name.to_string(),
             description: format!("{name} workflow"),
             builtin,
@@ -703,5 +780,80 @@ nodes:
         std::fs::write(&file_path, yaml).unwrap();
         let result = load_workflow(&file_path, dir);
         assert!(matches!(result, Err(StorageError::FacetResolution(_))));
+    }
+
+    /// spec issues-1054 「未定義 workflow 変数の拒否」: facet 本文が宣言されていない
+    /// `{{vars.<name>}}` を参照している workflow は load 経路で拒否される。
+    #[test]
+    fn load_workflow_rejects_undefined_workflow_variable_reference() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let instructions = dir.join("instructions");
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::write(
+            instructions.join("impl.md"),
+            "Run `{{vars.cli_alias}} workflow output submit`",
+        )
+        .unwrap();
+
+        let yaml = r#"
+name: undefined-var-ref
+description: undefined variable test
+variables:
+  other_var: "value"
+nodes:
+  - name: implement
+    type: agent
+    instruction: impl
+    permission: edit
+"#;
+        let file_path = dir.join("undefined-var-ref.yml");
+        std::fs::write(&file_path, yaml).unwrap();
+        let result = load_workflow(&file_path, dir);
+        let err = result.expect_err("undefined {{vars.cli_alias}} must be rejected");
+        match err {
+            StorageError::UndefinedWorkflowVariables {
+                node_name,
+                undefined,
+            } => {
+                assert_eq!(node_name, "implement");
+                assert_eq!(undefined, vec!["cli_alias".to_string()]);
+            }
+            other => panic!("expected UndefinedWorkflowVariables, got {other:?}"),
+        }
+    }
+
+    /// spec issues-1054 「workflow 定義変数の facet 展開」: workflow 定義の
+    /// `variables` で宣言された変数を参照する facet は load 経路を通る。
+    #[test]
+    fn load_workflow_accepts_declared_workflow_variable_reference() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let instructions = dir.join("instructions");
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::write(
+            instructions.join("impl.md"),
+            "Label: {{vars.project_label}}",
+        )
+        .unwrap();
+
+        let yaml = r#"
+name: declared-var-ref
+description: declared variable test
+variables:
+  project_label: "Releash"
+nodes:
+  - name: implement
+    type: agent
+    instruction: impl
+    permission: edit
+"#;
+        let file_path = dir.join("declared-var-ref.yml");
+        std::fs::write(&file_path, yaml).unwrap();
+        let wf = load_workflow(&file_path, dir).expect("load must succeed");
+        assert_eq!(
+            wf.variables.get("project_label").map(String::as_str),
+            Some("Releash")
+        );
     }
 }

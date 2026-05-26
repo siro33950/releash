@@ -1287,6 +1287,7 @@ mod tests {
 
     fn approval_only_workflow() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "adapter-boundary".to_string(),
             description: "adapter command test".to_string(),
             builtin: false,
@@ -1301,6 +1302,7 @@ mod tests {
 
     fn rejectable_adapter_workflow() -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: "adapter-boundary".to_string(),
             description: "adapter command test".to_string(),
             builtin: false,
@@ -2696,6 +2698,7 @@ mod tests {
 
     fn make_test_workflow(name: &str) -> Workflow {
         Workflow {
+            variables: Default::default(),
             name: name.to_string(),
             description: "test workflow".to_string(),
             builtin: false,
@@ -3420,6 +3423,7 @@ mod tests {
                 workflow_file_stem: "wf".to_string(),
                 worktree_path: unauthorized_wt.to_string(),
                 workflow_definition: Workflow {
+                    variables: Default::default(),
                     name: "wf".to_string(),
                     description: "test".to_string(),
                     builtin: false,
@@ -3489,6 +3493,7 @@ mod tests {
                 workflow_file_stem: "wf".to_string(),
                 worktree_path: worktree_path.clone(),
                 workflow_definition: Workflow {
+                    variables: Default::default(),
                     name: "wf".to_string(),
                     description: "test".to_string(),
                     builtin: false,
@@ -3604,6 +3609,7 @@ mod tests {
         );
         let event_log = WorkflowEventLog::new(&data_dir);
         let snapshot = Workflow {
+            variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,

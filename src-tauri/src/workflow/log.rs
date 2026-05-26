@@ -232,6 +232,7 @@ mod tests {
     fn minimal_workflow_for_log(name: &str) -> Workflow {
         use crate::workflow::schema::{NodeDefinition, NodeType};
         Workflow {
+            variables: Default::default(),
             name: name.to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -705,6 +706,7 @@ mod tests {
         });
         let _ = &mut plan;
         Workflow {
+            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "".to_string(),
             builtin: false,
@@ -923,6 +925,7 @@ mod tests {
             ..NodeDefinition::default()
         };
         let wf = Workflow {
+            variables: Default::default(),
             name: "parallel-wf".to_string(),
             description: "".to_string(),
             builtin: false,
@@ -1189,6 +1192,7 @@ mod tests {
             next: "ship".to_string(),
         }];
         let wf = Workflow {
+            variables: Default::default(),
             name: "approval-then-next".to_string(),
             description: "".to_string(),
             builtin: false,
