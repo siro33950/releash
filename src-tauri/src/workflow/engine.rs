@@ -6880,6 +6880,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         });
         let mut user_message =
             Self::render_facet_variables(&composed.user_message, worktree_path, task);
+        user_message = Self::render_submit_command_variables(&user_message, run_id, &ps.name);
         user_message =
             Self::render_namespaced_variables(&user_message, workflow_declared_variables);
 
