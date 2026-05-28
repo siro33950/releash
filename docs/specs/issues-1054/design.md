@@ -63,6 +63,10 @@
   - 起動環境に対応する `RELEASH_DATA_DIR` が設定される（明示指定がある場合はそちらが優先）。
 - **本番 CLI install**
   - 本番 binary 起動時のみ `/usr/local/bin/releash` を更新する。dev 起動はこのパスへ書き込まない。
+- **Releash alias data_dir パスは明示指定とみなさない**
+  - 親プロセス env の `RELEASH_DATA_DIR` が既知の Releash alias の data_dir パス（`com.releash.app` / `com.releash.app.dev` 等の既定値）と一致する場合、それは別 Releash binary 由来の inherit と判定し、自プロセスの alias data_dir で上書きする。
+  - 「利用者明示指定は alias 内包値で上書きしない」原則は、上記いずれの alias data_dir にも一致しない任意パスにのみ適用する。
+  - 本判定は Tauri app 起動初期に行い、以降の子プロセス起動経路すべてに正された env を伝搬する。
 
 ## Data / Communication Flow
 

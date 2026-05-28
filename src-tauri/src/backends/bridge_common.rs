@@ -1874,6 +1874,47 @@ fn accumulate_sdk_message(
     }
 }
 
+/// agent process に session 固有 env を渡すための (key, value) 一覧を組み立てる。
+///
+/// spec issues-1022 "Agent process environment contract" の実装:
+/// - `RELEASH_SESSION_ID`: agent process 自身の chat_session_id。agent CLI 呼出時に
+///   `--session-id "$RELEASH_SESSION_ID"` を付ければ Releash 側 SessionStore lookup から
+///   identity (backend / model) が解決される。
+/// - `RELEASH_BASE_BRANCH`: 当該 worktree の base ブランチ名。reviewer agent が
+///   `git diff "$RELEASH_BASE_BRANCH"...HEAD` で今回の差分のみを対象化するために使う。
+///   解決できない場合 (unborn / detached / 未設定) は env を立てない。
+///
+/// facet template に `{{session_id}}` のような動的解決値を持ち込まず、Spec issues-1054 の
+/// `{{vars.<name>}}` 静的値原則を破らない経路で session 固有値を agent に届ける単一責任 helper。
+fn session_specific_env_overrides(
+    chat_session_id: &str,
+    base_branch: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut env = vec![("RELEASH_SESSION_ID", chat_session_id.to_string())];
+    if let Some(b) = base_branch {
+        env.push(("RELEASH_BASE_BRANCH", b.to_string()));
+    }
+    env
+}
+
+/// ユーザー指定の system_prompt に Releash CLI の long help を append する。
+///
+/// spec issues-1022 "Agent process environment contract": Agent process の
+/// system_prompt には Releash CLI の long help が常に含まれ、Agent は help を
+/// 別経路で取得する必要を持たない。clap derive 由来 (`cli::render_long_help`) を
+/// 単一ソースとし、Agent 向けに別個の文字列を手書きしない。
+///
+/// - `None` または空文字 → `Some(<help>)`
+/// - `Some(user)` → `Some("{user}\n\n{help}")`
+fn compose_system_prompt(user: Option<String>) -> Option<String> {
+    let help = crate::cli::render_long_help();
+    let composed = match user {
+        Some(ref s) if !s.is_empty() => format!("{s}\n\n{help}"),
+        _ => help.to_string(),
+    };
+    Some(composed)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn spawn_bridge_process<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -1900,6 +1941,9 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
     let initial_permission_mode = permission_mode;
     crate::permission::PermissionMode::parse(&initial_permission_mode)
         .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    let data_dir = resolve_data_dir(app)
+        .map_err(|e| format!("Failed to resolve data dir for session {chat_session_id}: {e}"))?;
 
     let mut cmd = Command::new("node");
     cmd.arg(
@@ -1934,6 +1978,14 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
         }
     }
 
+    // spec issues-1022 "Agent process environment contract": agent process 自身が
+    // 自分の chat_session_id を env 経由で参照できるよう、session 固有 env を
+    // pure helper 経由で組み立てて設置する。
+    let base_branch = crate::git::branch_diff::resolve_base_branch_name(cwd);
+    for (k, v) in session_specific_env_overrides(chat_session_id, base_branch.as_deref()) {
+        cmd.env(k, v);
+    }
+
     #[cfg(unix)]
     // SAFETY: setsid() is async-signal-safe per POSIX.
     unsafe {
@@ -1953,13 +2005,6 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
     let pgid = child.id();
     #[cfg(unix)]
     if let Some(pg) = pgid {
-        let data_dir = resolve_data_dir(app).map_err(|e| {
-            log::error!("Failed to resolve data dir, killing spawned process group: {e}");
-            unsafe {
-                libc::killpg(pg as libc::pid_t, libc::SIGKILL);
-            }
-            format!("Failed to resolve data dir for session {chat_session_id}: {e}")
-        })?;
         if let Err(e) = save_pgid(&data_dir, chat_session_id, pg) {
             log::error!("Failed to save PGID file, killing spawned process group: {e}");
             unsafe {
@@ -1986,11 +2031,14 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
 
     // Send init command（permission_mode は抽象モード文字列を期待）。
     // initial_permission_mode は spawn 前に検証済み（上方参照）。
+    // spec issues-1022 "Agent process environment contract": ユーザー指定の
+    // system_prompt に Releash CLI の long help を append したものを Agent に渡す。
+    let composed_system_prompt = compose_system_prompt(system_prompt);
     let mut init_cmd = build_init_cmd(
         cwd,
         &initial_permission_mode,
         &session_id,
-        system_prompt,
+        composed_system_prompt,
         &backend_id,
     )?;
     let runtime_config = backend_runtime_config(app, &backend_id);
@@ -8915,6 +8963,39 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    /// spec issues-1022 "Agent process environment contract": user system_prompt が
+    /// 未指定でも、Releash CLI の long help が必ず注入されること。
+    #[test]
+    fn compose_system_prompt_none_returns_only_cli_help() {
+        let composed = super::compose_system_prompt(None).expect("must return Some");
+        let help = crate::cli::render_long_help();
+        assert_eq!(composed, help);
+    }
+
+    /// user system_prompt 指定時は、user prompt の後ろに CLI help を append する。
+    #[test]
+    fn compose_system_prompt_some_appends_cli_help() {
+        let composed = super::compose_system_prompt(Some("user prompt".to_string()))
+            .expect("must return Some");
+        let help = crate::cli::render_long_help();
+        assert!(
+            composed.starts_with("user prompt\n\n"),
+            "composed must start with user prompt: {composed}"
+        );
+        assert!(
+            composed.ends_with(help),
+            "composed must end with CLI help: {composed}"
+        );
+    }
+
+    /// 空文字の user system_prompt は None と同じ扱いとし、CLI help のみを返す。
+    #[test]
+    fn compose_system_prompt_empty_string_treated_as_none() {
+        let composed = super::compose_system_prompt(Some(String::new())).expect("must return Some");
+        let help = crate::cli::render_long_help();
+        assert_eq!(composed, help);
+    }
+
     #[test]
     fn build_init_cmd_without_system_prompt_for_claude() {
         let cmd = build_init_cmd("/repo", "edit", &None, None, CLAUDE_BACKEND_ID).unwrap();
@@ -10740,5 +10821,63 @@ mod tests {
         )
         .await;
         assert!(err.is_err());
+    }
+
+    /// spec issues-1022 "Agent process environment contract":
+    /// agent process には自分の chat_session_id が `RELEASH_SESSION_ID` env として渡る。
+    /// pure helper 単位で固定し、spawn_bridge_process の経路改修で env 注入が漏れた場合に
+    /// 即座に検知できるようにする。
+    #[test]
+    fn session_specific_env_overrides_includes_releash_session_id() {
+        let env = session_specific_env_overrides("my-session-id", None);
+        let session_id = env
+            .iter()
+            .find_map(|(k, v)| (*k == "RELEASH_SESSION_ID").then_some(v.as_str()));
+        assert_eq!(
+            session_id,
+            Some("my-session-id"),
+            "agent process must receive its chat_session_id as RELEASH_SESSION_ID env"
+        );
+    }
+
+    /// helper は受け取った文字列を env 値としてそのまま返す。入力検証 (空文字等) は
+    /// spawn_bridge_process の呼び出し側 (Tauri command / WS handler) で行われる責務であり、
+    /// helper はその境界を越えて値を加工しないことを固定する。
+    #[test]
+    fn session_specific_env_overrides_passes_through_value_verbatim() {
+        let env = session_specific_env_overrides("", None);
+        let session_id = env
+            .iter()
+            .find_map(|(k, v)| (*k == "RELEASH_SESSION_ID").then_some(v.as_str()));
+        assert_eq!(session_id, Some(""));
+    }
+
+    /// spec issues-1022 "Agent process environment contract":
+    /// base_branch が解決できた場合 (= Some) は `RELEASH_BASE_BRANCH` env が渡る。
+    /// reviewer agent が `git diff "$RELEASH_BASE_BRANCH"...HEAD` で今回差分のみを
+    /// 対象化できるようにする境界の固定。
+    #[test]
+    fn session_specific_env_overrides_includes_releash_base_branch_when_resolved() {
+        let env = session_specific_env_overrides("sid", Some("main"));
+        let base = env
+            .iter()
+            .find_map(|(k, v)| (*k == "RELEASH_BASE_BRANCH").then_some(v.as_str()));
+        assert_eq!(
+            base,
+            Some("main"),
+            "agent process must receive base branch as RELEASH_BASE_BRANCH env when resolved"
+        );
+    }
+
+    /// base_branch が解決できない場合 (None) は `RELEASH_BASE_BRANCH` env を立てない。
+    /// 空文字を立ててしまうと `git diff "$RELEASH_BASE_BRANCH"...HEAD` が
+    /// `git diff ...HEAD` になり仕様外の挙動を起こすため、env 自体を立てないことを固定する。
+    #[test]
+    fn session_specific_env_overrides_omits_releash_base_branch_when_none() {
+        let env = session_specific_env_overrides("sid", None);
+        assert!(
+            !env.iter().any(|(k, _)| *k == "RELEASH_BASE_BRANCH"),
+            "RELEASH_BASE_BRANCH must not be set when base branch cannot be resolved"
+        );
     }
 }

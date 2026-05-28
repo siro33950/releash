@@ -102,14 +102,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	"plugin:autostart|enable": null,
 	"plugin:autostart|disable": null,
 
-	// Diff comments
-	load_diff_comments: [],
-	add_diff_comment: null,
-	update_diff_comment: null,
-	delete_diff_comment: null,
-	send_diff_comments_to_agent: { sentCount: 0, formattedMessage: "", commentIds: [] },
-	mark_diff_comments_sent: null,
-
 	// Comments (legacy)
 	load_comments: [],
 	add_comment: null,

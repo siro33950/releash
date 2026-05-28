@@ -1,21 +1,16 @@
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { useCallback } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { DiffCommentList } from "@/components/panels/DiffCommentList";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { useDiffComments } from "@/hooks/useDiffComments";
-import type { MentionReference } from "@/types/session";
+import type { ThreadNavigationTarget } from "@/types/diffComment";
 import type { Theme } from "@/types/settings";
 
 interface RightSidebarBottomProps {
 	rootPath: string;
 	theme?: Theme;
 	worktreeName: string;
-	onSendToAgent?: (
-		message: string,
-		mentions?: MentionReference[],
-	) => Promise<void>;
-	onCommentClick?: (filePath: string, lineNumber?: number) => void;
+	onThreadClick?: (target: ThreadNavigationTarget) => void;
 	onToggleCollapse?: () => void;
 	collapsed?: boolean;
 }
@@ -24,33 +19,11 @@ export function RightSidebarBottom({
 	rootPath,
 	theme,
 	worktreeName,
-	onSendToAgent,
-	onCommentClick,
+	onThreadClick,
 	onToggleCollapse,
 	collapsed,
 }: RightSidebarBottomProps) {
-	const {
-		comments,
-		unsentCount,
-		deleteComment,
-		sendToAgent,
-		markSent,
-		sendAllUnsent,
-	} = useDiffComments({ worktreeName });
-
-	const handleSendResult = useCallback(
-		async (result: {
-			formattedMessage: string;
-			mentions: MentionReference[];
-			commentIds: string[];
-		}) => {
-			if (result.formattedMessage && onSendToAgent) {
-				await onSendToAgent(result.formattedMessage, result.mentions);
-				await markSent(result.commentIds);
-			}
-		},
-		[onSendToAgent, markSent],
-	);
+	const { comments, deleteThread } = useDiffComments({ worktreeName });
 
 	return (
 		<div className="flex flex-col h-full">
@@ -82,11 +55,8 @@ export function RightSidebarBottom({
 						<div className="h-full overflow-hidden">
 							<DiffCommentList
 								comments={comments}
-								unsentCount={unsentCount}
-								onCommentClick={onCommentClick ?? (() => {})}
-								onDelete={deleteComment}
-								onSend={async (ids) => handleSendResult(await sendToAgent(ids))}
-								onSendAll={async () => handleSendResult(await sendAllUnsent())}
+								onThreadClick={onThreadClick ?? (() => {})}
+								onDelete={deleteThread}
 							/>
 						</div>
 					</Panel>

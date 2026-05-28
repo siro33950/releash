@@ -1,25 +1,44 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DiffComment } from "@/types/diffComment";
+import { ReviewThreadHandoffContext } from "@/contexts/ReviewThreadHandoffContext";
+import type { ReviewDiscussionThread } from "@/types/diffComment";
 import { DiffInlineComment, DiffInlineCommentInput } from "./DiffInlineComment";
 
-const makeComment = (overrides: Partial<DiffComment> = {}): DiffComment => ({
+const makeComment = (
+	overrides: Partial<ReviewDiscussionThread> = {},
+): ReviewDiscussionThread => ({
 	id: "c1",
-	filePath: "src/main.ts",
-	lineNumber: 10,
-	endLine: undefined,
-	content: "Fix this bug",
-	status: "unsent",
+	worktreeName: "wt",
+	author: {
+		kind: "human",
+		displayName: "Human",
+		backendId: null,
+		model: null,
+	},
+	target: { filePath: "src/main.ts", lineNumber: 10, endLine: null },
+	state: "open",
+	comments: [
+		{
+			id: "comment-1",
+			threadId: "c1",
+			author: { kind: "human", displayName: "Human" },
+			content: "Fix this bug",
+			createdAt: Date.now(),
+		},
+	],
+	resolve: null,
 	createdAt: Date.now(),
+	updatedAt: Date.now(),
+	version: 1,
+	canResolve: true,
 	...overrides,
 });
 
 describe("DiffInlineComment", () => {
 	const defaultProps = {
-		onUpdate: vi.fn().mockResolvedValue(undefined),
-		onDelete: vi.fn().mockResolvedValue(undefined),
-		onSend: vi.fn().mockResolvedValue(undefined),
+		onAppend: vi.fn().mockResolvedValue(undefined),
+		onResolve: vi.fn().mockResolvedValue(undefined),
 	};
 
 	beforeEach(() => {
@@ -34,7 +53,9 @@ describe("DiffInlineComment", () => {
 	it("renders line label for single line comment", () => {
 		render(
 			<DiffInlineComment
-				comment={makeComment({ lineNumber: 42 })}
+				comment={makeComment({
+					target: { filePath: "src/main.ts", lineNumber: 42, endLine: null },
+				})}
 				{...defaultProps}
 			/>,
 		);
@@ -44,7 +65,9 @@ describe("DiffInlineComment", () => {
 	it("renders range label for multi-line comment", () => {
 		render(
 			<DiffInlineComment
-				comment={makeComment({ lineNumber: 10, endLine: 20 })}
+				comment={makeComment({
+					target: { filePath: "src/main.ts", lineNumber: 10, endLine: 20 },
+				})}
 				{...defaultProps}
 			/>,
 		);
@@ -54,105 +77,244 @@ describe("DiffInlineComment", () => {
 	it("does not render line label for file comment", () => {
 		render(
 			<DiffInlineComment
-				comment={makeComment({ lineNumber: undefined })}
+				comment={makeComment({
+					target: { filePath: "src/main.ts", lineNumber: null, endLine: null },
+				})}
 				{...defaultProps}
 			/>,
 		);
 		expect(screen.queryByText(/^L\d/)).not.toBeInTheDocument();
 	});
 
-	it("shows sent badge when status is sent", () => {
+	it("shows resolved badge when status is resolved", () => {
 		render(
 			<DiffInlineComment
-				comment={makeComment({ status: "sent" })}
+				comment={makeComment({ state: "resolved" })}
 				{...defaultProps}
 			/>,
 		);
-		expect(screen.getByText("sent")).toBeInTheDocument();
+		expect(screen.getByText("resolved")).toBeInTheDocument();
 	});
 
-	it("shows send button when status is unsent", () => {
+	it("renders actor kind and resolve metadata", () => {
 		render(
 			<DiffInlineComment
-				comment={makeComment({ status: "unsent" })}
+				comment={makeComment({
+					resolve: {
+						actor: { kind: "human", displayName: "Human" },
+						outcome: "resolved",
+						summary: "Fixed",
+						resolvedAt: 3,
+					},
+				})}
 				{...defaultProps}
 			/>,
 		);
-		expect(screen.getByTitle("Send to Agent")).toBeInTheDocument();
+
+		// コメント author の displayName/kind は別要素として表示される
+		expect(screen.getAllByText("Human").length).toBeGreaterThan(0);
+		expect(screen.getAllByText("human").length).toBeGreaterThan(0);
+		// Resolve メタ情報（アイコンと同じ flex div 内に連続テキストとして配置）
+		expect(screen.getByText(/resolved by human · Human/)).toBeInTheDocument();
+		// resolve.summary は DiffCommentBody 経由で Markdown レンダリングされる
+		expect(screen.getByText("Fixed")).toBeInTheDocument();
 	});
 
-	it("hides send button when status is sent", () => {
+	it("renders comment content as markdown (bold, code, list)", () => {
 		render(
 			<DiffInlineComment
-				comment={makeComment({ status: "sent" })}
+				comment={makeComment({
+					comments: [
+						{
+							id: "c-md",
+							threadId: "c1",
+							author: { kind: "human", displayName: "Human" },
+							content: "**bold** and `inline` and\n- item",
+							createdAt: Date.now(),
+						},
+					],
+				})}
 				{...defaultProps}
 			/>,
 		);
+		expect(screen.getByText("bold").tagName).toBe("STRONG");
+		expect(screen.getByText("inline").tagName).toBe("CODE");
+		expect(screen.getByRole("listitem")).toHaveTextContent("item");
+	});
+
+	it("renders author icon by kind (human → User, agent → Bot)", () => {
+		render(
+			<DiffInlineComment
+				comment={makeComment({
+					comments: [
+						{
+							id: "ch",
+							threadId: "c1",
+							author: { kind: "human", displayName: "Human" },
+							content: "hi",
+							createdAt: Date.now(),
+						},
+						{
+							id: "ca",
+							threadId: "c1",
+							author: { kind: "agent", displayName: "Agent" },
+							content: "yo",
+							createdAt: Date.now(),
+						},
+					],
+				})}
+				{...defaultProps}
+			/>,
+		);
+		expect(screen.getByTestId("author-icon-human")).toBeInTheDocument();
+		expect(screen.getByTestId("author-icon-agent")).toBeInTheDocument();
+	});
+
+	it("renders resolve summary as markdown", () => {
+		render(
+			<DiffInlineComment
+				comment={makeComment({
+					resolve: {
+						actor: { kind: "human", displayName: "Human" },
+						outcome: "resolved",
+						summary: "Fixed **all** issues",
+						resolvedAt: 1,
+					},
+				})}
+				{...defaultProps}
+			/>,
+		);
+		expect(screen.getByText("all").tagName).toBe("STRONG");
+	});
+
+	it("does not render legacy edit, delete, or send controls", () => {
+		render(
+			<DiffInlineComment
+				comment={makeComment({ state: "open" })}
+				{...defaultProps}
+			/>,
+		);
+		expect(screen.queryByTitle("Edit")).not.toBeInTheDocument();
+		expect(screen.queryByTitle("Delete")).not.toBeInTheDocument();
 		expect(screen.queryByTitle("Send to Agent")).not.toBeInTheDocument();
 	});
 
-	it("calls onDelete when delete button clicked", async () => {
-		const user = userEvent.setup();
+	it("does not render delete button when onDelete is not provided", () => {
 		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
-
-		await user.click(screen.getByTitle("Delete"));
-		expect(defaultProps.onDelete).toHaveBeenCalledWith("c1");
+		expect(screen.queryByLabelText("Delete thread")).not.toBeInTheDocument();
 	});
 
-	it("calls onSend when send button clicked", async () => {
-		const user = userEvent.setup();
-		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
-
-		await user.click(screen.getByTitle("Send to Agent"));
-		expect(defaultProps.onSend).toHaveBeenCalledWith(["c1"]);
+	it("renders delete button when onDelete is provided", () => {
+		render(
+			<DiffInlineComment
+				comment={makeComment()}
+				{...defaultProps}
+				onDelete={vi.fn().mockResolvedValue(undefined)}
+			/>,
+		);
+		expect(screen.getByLabelText("Delete thread")).toBeInTheDocument();
 	});
 
-	it("enters edit mode when edit button clicked", async () => {
+	it("does not call onDelete when the confirmation dialog is cancelled", async () => {
+		const onDelete = vi.fn().mockResolvedValue(undefined);
 		const user = userEvent.setup();
-		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
+		render(
+			<DiffInlineComment
+				comment={makeComment()}
+				{...defaultProps}
+				onDelete={onDelete}
+			/>,
+		);
 
-		await user.click(screen.getByTitle("Edit"));
-		expect(screen.getByRole("textbox")).toBeInTheDocument();
-		expect(screen.getByRole("textbox")).toHaveValue("Fix this bug");
+		await user.click(screen.getByLabelText("Delete thread"));
+		expect(
+			screen.getByRole("alertdialog", { name: "Delete this thread?" }),
+		).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Cancel" }));
+		expect(onDelete).not.toHaveBeenCalled();
 	});
 
-	it("saves edited content", async () => {
+	it("calls onDelete with the thread id when the confirmation is accepted", async () => {
+		const onDelete = vi.fn().mockResolvedValue(undefined);
 		const user = userEvent.setup();
-		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
+		render(
+			<DiffInlineComment
+				comment={makeComment({ id: "thread-xyz" })}
+				{...defaultProps}
+				onDelete={onDelete}
+			/>,
+		);
 
-		await user.click(screen.getByTitle("Edit"));
-		const textarea = screen.getByRole("textbox");
-		await user.clear(textarea);
-		await user.type(textarea, "Updated content");
-		await user.click(screen.getByText("Save"));
-
-		expect(defaultProps.onUpdate).toHaveBeenCalledWith("c1", "Updated content");
+		await user.click(screen.getByLabelText("Delete thread"));
+		await user.click(screen.getByRole("button", { name: "Delete" }));
+		expect(onDelete).toHaveBeenCalledWith("thread-xyz");
 	});
 
-	it("cancels editing and restores original content", async () => {
+	it("wires reply and resolve actions to thread operations", async () => {
 		const user = userEvent.setup();
 		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 
-		await user.click(screen.getByTitle("Edit"));
-		const textarea = screen.getByRole("textbox");
-		await user.clear(textarea);
-		await user.type(textarea, "Changed");
-		await user.click(screen.getByText("Cancel"));
+		await user.type(screen.getByPlaceholderText("Reply..."), "Looks fixed");
+		await user.click(screen.getByRole("button", { name: "Reply" }));
+		expect(defaultProps.onAppend).toHaveBeenLastCalledWith("c1", "Looks fixed");
 
-		expect(screen.getByText("Fix this bug")).toBeInTheDocument();
-		expect(defaultProps.onUpdate).not.toHaveBeenCalled();
+		await user.type(
+			screen.getByPlaceholderText("Resolution summary"),
+			"Resolved by change",
+		);
+		await user.click(screen.getByTitle("Resolve"));
+
+		expect(defaultProps.onResolve).toHaveBeenCalledWith(
+			"c1",
+			"resolved",
+			"Resolved by change",
+		);
 	});
 
-	it("does not save empty content", async () => {
-		const user = userEvent.setup();
-		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
+	// spec issues-1022 "Thread handoff contract": Diff Thread を active な AgentChat
+	// session に共有するボタンが、active session の有無に応じて活性 / 非活性を切り替え、
+	// 押下時に thread id 付きで sendThreadToAgent が呼ばれる。
+	describe("send-to-agent button", () => {
+		const sendToAgentLabel = "Send Diff Thread to current Agent";
+		const noActiveLabel = "No active Agent session";
 
-		await user.click(screen.getByTitle("Edit"));
-		const textarea = screen.getByRole("textbox");
-		await user.clear(textarea);
+		it("is disabled and shows no-active-session tooltip when no active session", () => {
+			render(
+				<ReviewThreadHandoffContext.Provider
+					value={{
+						canSend: false,
+						sendThreadToAgent: vi.fn(),
+					}}
+				>
+					<DiffInlineComment comment={makeComment()} {...defaultProps} />
+				</ReviewThreadHandoffContext.Provider>,
+			);
+			const button = screen.getByRole("button", { name: noActiveLabel });
+			expect(button).toBeDisabled();
+		});
 
-		const saveButton = screen.getByText("Save");
-		expect(saveButton).toBeDisabled();
+		it("dispatches sendThreadToAgent with thread id when clicked", async () => {
+			const sendThreadToAgent = vi.fn().mockResolvedValue(undefined);
+			render(
+				<ReviewThreadHandoffContext.Provider
+					value={{ canSend: true, sendThreadToAgent }}
+				>
+					<DiffInlineComment comment={makeComment()} {...defaultProps} />
+				</ReviewThreadHandoffContext.Provider>,
+			);
+			const user = userEvent.setup();
+			const button = screen.getByRole("button", { name: sendToAgentLabel });
+			expect(button).toBeEnabled();
+			await user.click(button);
+			expect(sendThreadToAgent).toHaveBeenCalledWith("c1");
+		});
+
+		it("is disabled (alongside other actions) when thread is busy with another action", () => {
+			// 既存テストと同じく、provider 不在の場合は no-op fallback により canSend=false。
+			render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
+			const button = screen.getByRole("button", { name: noActiveLabel });
+			expect(button).toBeDisabled();
+		});
 	});
 });
 

@@ -1,15 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { DiffComment } from "@/types/diffComment";
-import type { MentionReference } from "@/types/session";
+import {
+	getThreadFilePath,
+	type ReviewDiscussionThread,
+} from "@/types/diffComment";
+import type { ReviewThread } from "@/types/protocol";
 
 interface UseDiffCommentsOptions {
 	worktreeName: string;
 }
 
 export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
-	const [comments, setComments] = useState<DiffComment[]>([]);
+	const [comments, setComments] = useState<ReviewDiscussionThread[]>([]);
 	const [loading, setLoading] = useState(false);
 	const worktreeNameRef = useRef(worktreeName);
 	worktreeNameRef.current = worktreeName;
@@ -19,8 +22,9 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 		const requestedWorktree = worktreeName;
 		setLoading(true);
 		try {
-			const result = await invoke<DiffComment[]>("load_diff_comments", {
+			const result = await invoke<ReviewThread[]>("list_review_threads", {
 				worktreeName: requestedWorktree,
+				filter: null,
 			});
 			if (worktreeNameRef.current === requestedWorktree) {
 				setComments(result ?? []);
@@ -35,8 +39,12 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 	}, [loadComments]);
 
 	useEffect(() => {
-		const unlisten = listen<string>("diff-comments-changed", (event) => {
-			if (event.payload === worktreeNameRef.current) {
+		const unlisten = listen<string>("review-comments-changed", (event) => {
+			// payload "*" は CLI/Agent/外部書き込みを拾う file watcher 由来の通知。
+			// worktree 名を逆引きしない設計のため、ワイルドカードのときは全 listener が
+			// それぞれ自分の worktreeName で reload する（無関係 worktree に書き込まれた
+			// 場合の不要 reload は実コスト微小なので許容）。
+			if (event.payload === "*" || event.payload === worktreeNameRef.current) {
 				loadComments();
 			}
 		});
@@ -47,14 +55,14 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 
 	const addComment = useCallback(
 		async (params: {
-			filePath: string;
+			filePath?: string;
 			lineNumber?: number;
 			endLine?: number;
 			content: string;
 		}) => {
-			return invoke<DiffComment>("add_diff_comment", {
+			return invoke<ReviewThread>("create_review_thread", {
 				worktreeName,
-				filePath: params.filePath,
+				filePath: params.filePath ?? null,
 				lineNumber: params.lineNumber ?? null,
 				endLine: params.endLine ?? null,
 				content: params.content,
@@ -63,75 +71,56 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 		[worktreeName],
 	);
 
-	const updateComment = useCallback(
-		async (commentId: string, content: string) => {
-			return invoke<void>("update_diff_comment", {
+	const appendComment = useCallback(
+		async (threadId: string, content: string) => {
+			await invoke<ReviewThread>("append_review_comment", {
 				worktreeName,
-				commentId,
+				threadId,
 				content,
 			});
 		},
 		[worktreeName],
 	);
 
-	const deleteComment = useCallback(
-		async (commentId: string) => {
-			return invoke<void>("delete_diff_comment", {
+	const resolveThread = useCallback(
+		async (threadId: string, outcome: string, summary: string) => {
+			await invoke<ReviewThread>("resolve_review_thread", {
 				worktreeName,
-				commentId,
+				threadId,
+				outcome,
+				summary,
 			});
 		},
 		[worktreeName],
 	);
 
-	const sendToAgent = useCallback(
-		async (commentIds: string[]) => {
-			return invoke<{
-				sentCount: number;
-				formattedMessage: string;
-				mentions: MentionReference[];
-				commentIds: string[];
-			}>("send_diff_comments_to_agent", {
+	const deleteThread = useCallback(
+		async (threadId: string) => {
+			await invoke<void>("delete_review_thread", {
 				worktreeName,
-				commentIds,
+				threadId,
 			});
 		},
 		[worktreeName],
 	);
-
-	const markSent = useCallback(
-		async (commentIds: string[]) => {
-			return invoke<void>("mark_diff_comments_sent", {
-				worktreeName,
-				commentIds,
-			});
-		},
-		[worktreeName],
-	);
-
-	const sendAllUnsent = useCallback(async () => {
-		return sendToAgent([]);
-	}, [sendToAgent]);
 
 	const getCommentsForFile = useCallback(
 		(filePath: string) => {
-			return comments.filter((c) => c.filePath === filePath);
+			return comments.filter(
+				(thread) => getThreadFilePath(thread) === filePath,
+			);
 		},
 		[comments],
 	);
 
-	const unsentCount = comments.filter((c) => c.status === "unsent").length;
-
 	return {
 		comments,
 		loading,
-		unsentCount,
+		unsentCount: 0,
 		addComment,
-		updateComment,
-		deleteComment,
-		sendToAgent,
-		markSent,
-		sendAllUnsent,
+		appendComment,
+		resolveThread,
+		deleteThread,
 		getCommentsForFile,
 		reload: loadComments,
 	};

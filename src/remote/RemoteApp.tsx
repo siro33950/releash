@@ -1,10 +1,11 @@
-import { Bot, Terminal } from "lucide-react";
+import { Bot, MessageSquare, Terminal } from "lucide-react";
 import type { ComponentType } from "react";
 import { useState } from "react";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { RemoteAgentPanel } from "./components/RemoteAgentPanel";
 import { RemoteAppHeader } from "./components/RemoteAppHeader";
 import { RemoteDashboard } from "./components/RemoteDashboard";
+import { RemoteReviewPanel } from "./components/RemoteReviewPanel";
 import { TabBar } from "./components/TabBar";
 import { TerminalTabContent } from "./components/TerminalTabContent";
 import { useBrowserBackGuard } from "./hooks/useBrowserBackGuard";
@@ -14,6 +15,7 @@ import { useRemoteAppActions } from "./hooks/useRemoteAppActions";
 import { useRemoteBackends } from "./hooks/useRemoteBackends";
 import { useRemoteContent } from "./hooks/useRemoteContent";
 import { type Tab, useRemoteNavigation } from "./hooks/useRemoteNavigation";
+import { useRemoteReviewThreads } from "./hooks/useRemoteReviewThreads";
 import { useRemoteWorkflowState } from "./hooks/useRemoteWorkflowState";
 import { useRemoteWorktrees } from "./hooks/useRemoteWorktrees";
 import { useWebSocket } from "./hooks/useWebSocket";
@@ -25,6 +27,7 @@ const tabs: {
 }[] = [
 	{ id: "terminal", label: "Terminal", icon: Terminal },
 	{ id: "agent", label: "Agent", icon: Bot },
+	{ id: "threads", label: "Threads", icon: MessageSquare },
 ];
 
 export function RemoteApp() {
@@ -79,6 +82,13 @@ export function RemoteApp() {
 
 	const { workflowState } = useRemoteWorkflowState({
 		subscribe,
+		selectedWorktree,
+	});
+
+	const reviewThreads = useRemoteReviewThreads({
+		subscribe,
+		send,
+		connected: status === "connected",
 		selectedWorktree,
 	});
 
@@ -189,6 +199,26 @@ export function RemoteApp() {
 								subscribe={subscribe}
 								onBackendChange={setSelectedBackendId}
 								onRefreshBackends={refreshBackends}
+							/>
+						</div>
+						<div
+							className="absolute inset-0 flex flex-col"
+							style={{
+								visibility: activeTab === "threads" ? "visible" : "hidden",
+								pointerEvents: activeTab === "threads" ? "auto" : "none",
+							}}
+						>
+							<RemoteReviewPanel
+								threads={reviewThreads.threads}
+								selectedThread={reviewThreads.selectedThread}
+								selectedThreadId={reviewThreads.selectedThreadId}
+								loading={reviewThreads.loading}
+								error={reviewThreads.error}
+								onSelectThread={reviewThreads.setSelectedThreadId}
+								onRefresh={reviewThreads.refresh}
+								onCreateThread={reviewThreads.createThread}
+								onAppendComment={reviewThreads.appendComment}
+								onResolveThread={reviewThreads.resolveThread}
 							/>
 						</div>
 					</main>

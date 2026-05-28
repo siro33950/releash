@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChatContext } from "@/contexts/AgentChatContext";
+import { useDisplayedActiveSession } from "@/hooks/useDisplayedActiveSession";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
 import type { MentionReference } from "@/types/session";
 import { BoundSessionChat } from "./BoundSessionChat";
@@ -39,7 +40,6 @@ export function AgentChatPanel({
 	const {
 		orderedSessions,
 		closedSessions,
-		activeSession,
 		sessionAgentStates,
 		selectSession,
 		closeSession,
@@ -61,10 +61,10 @@ export function AgentChatPanel({
 		[closedSessions],
 	);
 
-	// spec issues-1023: 万一 activeSession が workflow step session の状態でも
+	// spec issues-1023 / issues-1022: 万一 activeSession が workflow step session の状態でも
 	// AgentChatPanel 本文では表示しない（Workflow panel 側 transcript の二重表示防止）。
-	const displayedActiveSession =
-		activeSession && !activeSession.workflowStepSession ? activeSession : null;
+	// Diff Thread handoff (issues-1022) と同じ判定規則を共通 hook 経由で参照する。
+	const displayedActiveSession = useDisplayedActiveSession();
 	const activeSessionId = displayedActiveSession?.id ?? null;
 
 	const [historyOpen, setHistoryOpen] = useState(false);

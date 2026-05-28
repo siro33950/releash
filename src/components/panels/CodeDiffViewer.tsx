@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
-import type { DiffComment } from "@/types/diffComment";
+import type { ReviewDiscussionThread } from "@/types/diffComment";
 import type { DiffMode } from "@/types/settings";
 import { ShikiDiffViewer } from "./ShikiDiffViewer";
 
@@ -19,17 +19,22 @@ export interface CodeDiffViewerProps {
 	changeGroups?: ChangeGroup[];
 	onStageGroup?: (groupIndex: number) => void;
 	groupActionLabel?: string;
-	comments?: DiffComment[];
+	comments?: ReviewDiscussionThread[];
 	onAddComment?: (lineNumber: number, content: string) => Promise<void>;
 	onAddRangeComment?: (
 		startLine: number,
 		endLine: number,
 		content: string,
 	) => Promise<void>;
-	onUpdateComment?: (commentId: string, content: string) => Promise<void>;
-	onDeleteComment?: (commentId: string) => Promise<void>;
-	onSendComment?: (commentIds: string[]) => Promise<void>;
+	onAppendComment?: (threadId: string, content: string) => Promise<void>;
+	onResolveThread?: (
+		threadId: string,
+		outcome: string,
+		summary: string,
+	) => Promise<void>;
+	onDeleteThread?: (threadId: string) => Promise<void>;
 	scrollToLine?: number | null;
+	scrollToThread?: string | null;
 }
 
 export function CodeDiffViewer({
@@ -45,10 +50,11 @@ export function CodeDiffViewer({
 	comments,
 	onAddComment,
 	onAddRangeComment,
-	onUpdateComment,
-	onDeleteComment,
-	onSendComment,
+	onAppendComment,
+	onResolveThread,
+	onDeleteThread,
 	scrollToLine,
+	scrollToThread,
 }: CodeDiffViewerProps) {
 	const [detectedLanguage, setDetectedLanguage] = useState("plaintext");
 	const [hunks, setHunks] = useState<Hunk[] | null>(null);
@@ -109,10 +115,11 @@ export function CodeDiffViewer({
 			comments={comments}
 			onAddComment={onAddComment}
 			onAddRangeComment={onAddRangeComment}
-			onUpdateComment={onUpdateComment}
-			onDeleteComment={onDeleteComment}
-			onSendComment={onSendComment}
+			onAppendComment={onAppendComment}
+			onResolveThread={onResolveThread}
+			onDeleteThread={onDeleteThread}
 			scrollToLine={scrollToLine}
+			scrollToThread={scrollToThread}
 		/>
 	);
 }

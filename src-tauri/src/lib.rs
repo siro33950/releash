@@ -6,8 +6,6 @@ mod backends;
 pub mod cli;
 mod cli_install;
 mod config;
-mod diff_comment_sender;
-mod diff_comment_store;
 mod domain;
 mod external_editor;
 mod file_mention;
@@ -24,6 +22,7 @@ mod protocol;
 mod pty;
 mod qr_code;
 mod repo_registry;
+mod review_comments;
 mod sentry_integration;
 mod session;
 mod session_commands;
@@ -161,7 +160,7 @@ pub fn run() {
         .manage(Arc::new(
             workspace_state_store::WorkspaceStateStore::default(),
         ))
-        .manage(Arc::new(diff_comment_store::DiffCommentStore::default()))
+        .manage(Arc::new(review_comments::ReviewCommentStore::default()))
         .manage(Arc::new(session::SessionStore::default()))
         .manage(Arc::new(pty::PtyManager::default()))
         .manage(watcher::FileWatcherManager::default())
@@ -186,6 +185,11 @@ pub fn run() {
             ))));
 
             let data_dir = app.path().app_data_dir()?;
+            // spec issues-1054 Implementation Freedom (L104): 別 Releash binary 由来の
+            // RELEASH_DATA_DIR inherit (例: prod 版 Releash の Terminal Panel から起動
+            // した shell から dev binary を起動した場合) を「ユーザー明示指定」と誤認しないよう、
+            // 起動初期に env を自プロセス alias data_dir で正す。
+            crate::path_aliases::ensure_release_data_dir_env_for_app(app.handle());
             cli_install::ensure_cli_symlink_installed();
             let config_path = data_dir.join("releash.toml");
             let config = load_or_create_config(&config_path)
@@ -328,8 +332,15 @@ pub fn run() {
             if let Some(data_dir) = pending_data_dir {
                 workflow::pending_command_watcher::spawn_pending_command_watcher(
                     app.handle().clone(),
-                    data_dir,
+                    data_dir.clone(),
                 );
+
+                // [issues-1022] CLI からの Thread / Comment 書き込みを UI へ
+                // 反映するため、`<data_dir>/review-comments/` を file watch して
+                // `review-comments-changed` を発火する。Tauri コマンド経由の
+                // `emit_changed` とは別系統の通知経路で、CLI / Agent / 外部編集
+                // 由来の書き込みも拾う。
+                review_comments::spawn_review_comments_watcher(app.handle().clone(), data_dir);
             }
 
             menu::setup_menu(app)?;
@@ -535,13 +546,15 @@ pub fn run() {
             // Workspace state
             workspace_state_store::load_workspace_state,
             workspace_state_store::save_workspace_state,
-            // Diff comments
-            diff_comment_store::load_diff_comments,
-            diff_comment_store::add_diff_comment,
-            diff_comment_store::update_diff_comment,
-            diff_comment_store::delete_diff_comment,
-            diff_comment_sender::send_diff_comments_to_agent,
-            diff_comment_sender::mark_diff_comments_sent,
+            // Review comments
+            review_comments::list_review_threads,
+            review_comments::get_review_thread,
+            review_comments::create_review_thread,
+            review_comments::append_review_comment,
+            review_comments::resolve_review_thread,
+            review_comments::delete_review_thread,
+            review_comments::get_review_thread_history,
+            review_comments::build_review_thread_handoff,
             // OneShot PTY
             pty::oneshot::spawn_oneshot_pty,
             pty::oneshot::cancel_oneshot_pty,

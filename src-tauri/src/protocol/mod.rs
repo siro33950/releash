@@ -3,6 +3,7 @@ mod auth;
 mod branch;
 mod error;
 mod pty;
+mod review;
 mod workflow;
 mod worktree;
 
@@ -11,6 +12,7 @@ pub use auth::*;
 pub use branch::*;
 pub use error::*;
 pub use pty::*;
+pub use review::*;
 pub use workflow::*;
 pub use worktree::*;
 
@@ -18,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
+#[allow(clippy::large_enum_variant)]
 pub enum WsMessage {
     // 認証
     #[serde(rename = "auth_challenge")]
@@ -112,6 +115,26 @@ pub enum WsMessage {
     AgentPermissionModeSetResponse(AgentPermissionModeSetResponse),
     #[serde(rename = "agent_stream_sync")]
     AgentStreamSync(AgentStreamSync),
+
+    // Review comments
+    #[serde(rename = "review_list_request")]
+    ReviewListRequest(ReviewListRequest),
+    #[serde(rename = "review_list_response")]
+    ReviewListResponse(ReviewListResponse),
+    #[serde(rename = "review_get_request")]
+    ReviewGetRequest(ReviewGetRequest),
+    #[serde(rename = "review_thread_response")]
+    ReviewThreadResponse(ReviewThreadResponse),
+    #[serde(rename = "review_create_request")]
+    ReviewCreateRequest(ReviewCreateRequest),
+    #[serde(rename = "review_append_comment_request")]
+    ReviewAppendCommentRequest(ReviewAppendCommentRequest),
+    #[serde(rename = "review_resolve_request")]
+    ReviewResolveRequest(ReviewResolveRequest),
+    #[serde(rename = "review_history_request")]
+    ReviewHistoryRequest(ReviewHistoryRequest),
+    #[serde(rename = "review_history_response")]
+    ReviewHistoryResponse(ReviewHistoryResponse),
 
     // 制御
     #[serde(rename = "error")]
@@ -548,5 +571,39 @@ mod tests {
             }
             _ => panic!("unexpected variant"),
         }
+    }
+
+    #[test]
+    fn review_history_json_uses_dto_shape_and_camel_case_fields() {
+        let msg = WsMessage::ReviewHistoryResponse(ReviewHistoryResponse {
+            success: true,
+            worktree_name: Some("wt".to_string()),
+            events: vec![ReviewHistoryEntry::ThreadCreated {
+                id: "event-1".to_string(),
+                thread_id: "thread-1".to_string(),
+                comment_id: "comment-1".to_string(),
+                actor: crate::review_comments::ReviewActorDto::human(),
+                target: ReviewTarget {
+                    file_path: Some("src/main.rs".to_string()),
+                    line_number: Some(12),
+                    end_line: None,
+                },
+                content: "Check this".to_string(),
+                at: 1.0,
+            }],
+            error: None,
+        });
+
+        let json = serialize_message(&msg).unwrap();
+
+        assert!(json.contains("\"kind\":\"thread_created\""));
+        assert!(json.contains("\"worktreeName\":\"wt\""));
+        assert!(json.contains("\"id\":\"event-1\""));
+        assert!(json.contains("\"threadId\":\"thread-1\""));
+        assert!(json.contains("\"commentId\":\"comment-1\""));
+        assert!(json.contains("\"filePath\":\"src/main.rs\""));
+        assert!(json.contains("\"lineNumber\":12"));
+        assert!(!json.contains("\"thread_id\""));
+        assert!(!json.contains("\"sessionId\""));
     }
 }

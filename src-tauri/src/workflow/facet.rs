@@ -825,7 +825,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
         let keys = list_facets(FacetKind::Knowledge, tmp.path()).unwrap();
-        assert_eq!(keys, vec!["architecture"]);
+        // custom: architecture + builtin: releash-thread-cli (BTreeSet で sort 済み)
+        assert_eq!(keys, vec!["architecture", "releash-thread-cli"]);
     }
 
     #[test]
@@ -833,14 +834,16 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         fs::create_dir_all(tmp.path().join("knowledge")).unwrap();
         let keys = list_facets(FacetKind::Knowledge, tmp.path()).unwrap();
-        assert!(keys.is_empty());
+        // custom dir は空でも builtin Knowledge facets は含まれる
+        assert_eq!(keys, vec!["releash-thread-cli"]);
     }
 
     #[test]
     fn list_facets_nonexistent_dir() {
         let tmp = TempDir::new().unwrap();
         let keys = list_facets(FacetKind::Knowledge, tmp.path()).unwrap();
-        assert!(keys.is_empty());
+        // custom dir が存在しなくても builtin Knowledge facets は含まれる
+        assert_eq!(keys, vec!["releash-thread-cli"]);
     }
 
     // `resolve_node_facets` はモジュール直下の `#[cfg(test)] pub(crate)` ヘルパーを
@@ -1127,8 +1130,8 @@ mod tests {
         .unwrap();
 
         let summaries = list_facet_summaries(FacetKind::Policy, tmp.path()).unwrap();
-        // 4 builtin policies + 1 custom
-        assert_eq!(summaries.len(), 5);
+        // 6 builtin policies (coding/review/planning/plan-review/multi-agent-reviewer/multi-agent-summary) + 1 custom
+        assert_eq!(summaries.len(), 7);
 
         let custom = summaries.iter().find(|s| s.key == "custom-policy").unwrap();
         assert!(!custom.builtin);

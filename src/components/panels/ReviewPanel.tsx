@@ -35,6 +35,7 @@ import { useReviewPanel } from "@/hooks/useReviewPanel";
 import { isImageFile } from "@/lib/imageUtils";
 import { isMarkdownFile } from "@/lib/markdownUtils";
 import { cn } from "@/lib/utils";
+import type { ThreadNavigationTarget } from "@/types/diffComment";
 import type { MentionReference } from "@/types/session";
 import type { DiffBase, DiffMode, DiffSection } from "@/types/settings";
 import { Breadcrumb } from "./Breadcrumb";
@@ -51,7 +52,7 @@ interface ReviewPanelProps {
 	defaultDiffMode?: DiffMode;
 	diffOnlyMode: boolean;
 	onDiffOnlyModeChange: (enabled: boolean) => void;
-	navigateToFile?: { path: string; line?: number } | null;
+	navigateToThread?: ThreadNavigationTarget | null;
 	onSendToAgent?: (
 		message: string,
 		mentions?: MentionReference[],
@@ -124,8 +125,7 @@ export function ReviewPanel({
 	defaultDiffMode,
 	diffOnlyMode,
 	onDiffOnlyModeChange,
-	navigateToFile,
-	onSendToAgent,
+	navigateToThread,
 	initialSelectedFile,
 	onSelectedFileChange,
 }: ReviewPanelProps) {
@@ -227,13 +227,35 @@ export function ReviewPanel({
 	);
 
 	const [scrollToLine, setScrollToLine] = useState<number | null>(null);
+	const [scrollToThread, setScrollToThread] = useState<string | null>(null);
+	const [openFileCommentsForFile, setOpenFileCommentsForFile] = useState<
+		string | null
+	>(null);
+	// General threads (file 非依存) のポップオーバー制御。`navigateToThread` が
+	// general thread を指す場合に、両ヘッダー位置の "General threads" ポップオーバーを
+	// プログラム的に開けるようにする。
+	const [openGeneralComments, setOpenGeneralComments] = useState(false);
 
 	useEffect(() => {
-		if (!navigateToFile) return;
-		const section = determineSectionForFile(navigateToFile.path);
-		selectFile(navigateToFile.path, section);
-		setScrollToLine(navigateToFile.line ?? null);
-	}, [navigateToFile, determineSectionForFile, selectFile]);
+		if (!navigateToThread) return;
+		const { filePath, threadId, lineNumber, isFileComment } = navigateToThread;
+		const isGeneral = !filePath;
+		if (!isGeneral) {
+			const section = determineSectionForFile(filePath);
+			selectFile(filePath, section);
+		}
+		if (isFileComment) {
+			setScrollToLine(null);
+			setScrollToThread(null);
+			setOpenGeneralComments(isGeneral);
+			setOpenFileCommentsForFile(isGeneral ? null : filePath);
+		} else {
+			setOpenGeneralComments(false);
+			setOpenFileCommentsForFile(null);
+			setScrollToLine(lineNumber ?? null);
+			setScrollToThread(threadId);
+		}
+	}, [navigateToThread, determineSectionForFile, selectFile]);
 
 	const handleGoToPrevFile = useCallback(() => {
 		const prev = goToPrevFile();
@@ -277,18 +299,14 @@ export function ReviewPanel({
 	);
 
 	// Diff comments
-	const worktreeName = useMemo(() => {
-		const parts = rootPath.split("/");
-		return parts[parts.length - 1] ?? "";
-	}, [rootPath]);
+	const worktreeName = rootPath;
 
 	const {
 		comments: allComments,
 		addComment,
-		updateComment,
-		deleteComment,
-		sendToAgent,
-		markSent,
+		appendComment,
+		resolveThread,
+		deleteThread,
 		getCommentsForFile,
 	} = useDiffComments({ worktreeName });
 
@@ -298,7 +316,7 @@ export function ReviewPanel({
 	);
 
 	const lineComments = useMemo(
-		() => fileComments.filter((c) => c.lineNumber != null),
+		() => fileComments.filter((c) => c.target.lineNumber != null),
 		[fileComments],
 	);
 
@@ -338,15 +356,11 @@ export function ReviewPanel({
 		[selectedFile, addComment],
 	);
 
-	const handleSendComments = useCallback(
-		async (commentIds: string[]) => {
-			const result = await sendToAgent(commentIds);
-			if (result.formattedMessage && onSendToAgent) {
-				await onSendToAgent(result.formattedMessage, result.mentions);
-				await markSent(result.commentIds);
-			}
+	const handleAddGeneralComment = useCallback(
+		async (content: string) => {
+			await addComment({ content });
 		},
-		[sendToAgent, markSent, onSendToAgent],
+		[addComment],
 	);
 
 	// File tree panel collapse
@@ -474,6 +488,17 @@ export function ReviewPanel({
 				<div className="flex items-center justify-between px-2 h-[32px] border-b border-border bg-card shrink-0">
 					<div className="w-5" />
 					<div className="flex items-center gap-1">
+						<FileCommentPopoverTrigger
+							comments={allComments}
+							title="General threads"
+							addLabel="Add general thread"
+							onAdd={handleAddGeneralComment}
+							onAppend={appendComment}
+							onResolve={resolveThread}
+							onDelete={deleteThread}
+							open={openGeneralComments}
+							onOpenChange={setOpenGeneralComments}
+						/>
 						<DiffBaseToggle
 							diffBase={diffBase}
 							onDiffBaseChange={handleDiffBaseChange}
@@ -536,6 +561,17 @@ export function ReviewPanel({
 					</TooltipContent>
 				</Tooltip>
 				<div className="flex items-center gap-1">
+					<FileCommentPopoverTrigger
+						comments={allComments}
+						title="General threads"
+						addLabel="Add general thread"
+						onAdd={handleAddGeneralComment}
+						onAppend={appendComment}
+						onResolve={resolveThread}
+						onDelete={deleteThread}
+						open={openGeneralComments}
+						onOpenChange={setOpenGeneralComments}
+					/>
 					<DiffBaseToggle
 						diffBase={diffBase}
 						onDiffBaseChange={handleDiffBaseChange}
@@ -606,9 +642,17 @@ export function ReviewPanel({
 												comments={allComments}
 												filePath={selectedFile}
 												onAdd={handleAddFileComment}
-												onUpdate={updateComment}
-												onDelete={deleteComment}
-												onSend={handleSendComments}
+												onAppend={appendComment}
+												onResolve={resolveThread}
+												onDelete={deleteThread}
+												open={openFileCommentsForFile === selectedFile}
+												onOpenChange={(o) => {
+													if (o && selectedFile) {
+														setOpenFileCommentsForFile(selectedFile);
+													} else {
+														setOpenFileCommentsForFile(null);
+													}
+												}}
 											/>
 										)}
 									</Breadcrumb>
@@ -683,10 +727,11 @@ export function ReviewPanel({
 											comments={lineComments}
 											onAddComment={handleAddLineComment}
 											onAddRangeComment={handleAddRangeComment}
-											onUpdateComment={updateComment}
-											onDeleteComment={deleteComment}
-											onSendComment={handleSendComments}
+											onAppendComment={appendComment}
+											onResolveThread={resolveThread}
+											onDeleteThread={deleteThread}
 											scrollToLine={scrollToLine}
+											scrollToThread={scrollToThread}
 										/>
 									</div>
 									<DiffToolbar

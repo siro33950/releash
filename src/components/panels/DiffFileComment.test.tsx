@@ -1,17 +1,31 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DiffComment } from "@/types/diffComment";
+import type { ReviewDiscussionThread } from "@/types/diffComment";
 import { FileCommentPopoverTrigger } from "./DiffFileComment";
 
-const makeComment = (overrides: Partial<DiffComment> = {}): DiffComment => ({
-	id: "c1",
-	filePath: "src/main.ts",
-	lineNumber: undefined,
-	endLine: undefined,
-	content: "File-level comment",
-	status: "unsent",
+const makeComment = (
+	overrides: Partial<ReviewDiscussionThread> = {},
+): ReviewDiscussionThread => ({
+	id: "t1",
+	worktreeName: "wt",
+	author: { kind: "human", displayName: "Human" },
+	target: { filePath: "src/main.ts", lineNumber: null, endLine: null },
+	state: "open",
+	comments: [
+		{
+			id: "c1",
+			threadId: "t1",
+			author: { kind: "human", displayName: "Human" },
+			content: "File-level comment",
+			createdAt: Date.now(),
+		},
+	],
+	resolve: null,
 	createdAt: Date.now(),
+	updatedAt: Date.now(),
+	version: 1,
+	canResolve: true,
 	...overrides,
 });
 
@@ -19,9 +33,8 @@ describe("FileCommentPopoverTrigger", () => {
 	const defaultProps = {
 		filePath: "src/main.ts",
 		onAdd: vi.fn().mockResolvedValue(undefined),
-		onUpdate: vi.fn().mockResolvedValue(undefined),
-		onDelete: vi.fn().mockResolvedValue(undefined),
-		onSend: vi.fn().mockResolvedValue(undefined),
+		onAppend: vi.fn().mockResolvedValue(undefined),
+		onResolve: vi.fn().mockResolvedValue(undefined),
 	};
 
 	beforeEach(() => {
@@ -34,29 +47,22 @@ describe("FileCommentPopoverTrigger", () => {
 	});
 
 	it("shows badge count when file comments exist", () => {
-		const comments = [makeComment({ id: "c1" }), makeComment({ id: "c2" })];
+		const comments = [makeComment({ id: "t1" }), makeComment({ id: "t2" })];
 		render(<FileCommentPopoverTrigger comments={comments} {...defaultProps} />);
 		expect(screen.getByText("2")).toBeInTheDocument();
 	});
 
-	it("does not show badge when no file comments", () => {
-		render(<FileCommentPopoverTrigger comments={[]} {...defaultProps} />);
-		expect(screen.queryByText("0")).not.toBeInTheDocument();
-	});
-
-	it("filters out line comments (only shows file comments)", () => {
+	it("filters out line comments and other files", () => {
 		const comments = [
-			makeComment({ id: "c1", lineNumber: undefined }),
-			makeComment({ id: "c2", lineNumber: 10 }),
-		];
-		render(<FileCommentPopoverTrigger comments={comments} {...defaultProps} />);
-		expect(screen.getByText("1")).toBeInTheDocument();
-	});
-
-	it("filters by filePath", () => {
-		const comments = [
-			makeComment({ id: "c1", filePath: "src/main.ts" }),
-			makeComment({ id: "c2", filePath: "src/other.ts" }),
+			makeComment({ id: "t1" }),
+			makeComment({
+				id: "t2",
+				target: { filePath: "src/main.ts", lineNumber: 10, endLine: null },
+			}),
+			makeComment({
+				id: "t3",
+				target: { filePath: "src/other.ts", lineNumber: null, endLine: null },
+			}),
 		];
 		render(<FileCommentPopoverTrigger comments={comments} {...defaultProps} />);
 		expect(screen.getByText("1")).toBeInTheDocument();
@@ -64,7 +70,19 @@ describe("FileCommentPopoverTrigger", () => {
 
 	it("opens popover and shows comments on click", async () => {
 		const user = userEvent.setup();
-		const comments = [makeComment({ content: "Review this file" })];
+		const comments = [
+			makeComment({
+				comments: [
+					{
+						id: "c1",
+						threadId: "t1",
+						author: { kind: "human", displayName: "Human" },
+						content: "Review this file",
+						createdAt: Date.now(),
+					},
+				],
+			}),
+		];
 		render(<FileCommentPopoverTrigger comments={comments} {...defaultProps} />);
 
 		await user.click(screen.getByTitle("File comments"));
@@ -77,5 +95,61 @@ describe("FileCommentPopoverTrigger", () => {
 
 		await user.click(screen.getByTitle("File comments"));
 		expect(screen.getByText("Add file comment")).toBeInTheDocument();
+	});
+
+	it("forwards onDelete to inline comment items so the delete button is rendered", async () => {
+		const user = userEvent.setup();
+		const onDelete = vi.fn().mockResolvedValue(undefined);
+		render(
+			<FileCommentPopoverTrigger
+				comments={[makeComment()]}
+				{...defaultProps}
+				onDelete={onDelete}
+			/>,
+		);
+
+		await user.click(screen.getByTitle("File comments"));
+		expect(screen.getByLabelText("Delete thread")).toBeInTheDocument();
+	});
+
+	it("does not render delete button on inline comments when onDelete is omitted", async () => {
+		const user = userEvent.setup();
+		render(
+			<FileCommentPopoverTrigger
+				comments={[makeComment()]}
+				{...defaultProps}
+			/>,
+		);
+
+		await user.click(screen.getByTitle("File comments"));
+		expect(screen.queryByLabelText("Delete thread")).not.toBeInTheDocument();
+	});
+
+	it("opens the popover when controlled via the open prop", () => {
+		render(
+			<FileCommentPopoverTrigger
+				comments={[makeComment()]}
+				{...defaultProps}
+				open
+			/>,
+		);
+		// Popover content shows the file-level comment without clicking the trigger.
+		expect(screen.getByText("File-level comment")).toBeInTheDocument();
+	});
+
+	it("propagates close events back through onOpenChange", async () => {
+		const user = userEvent.setup();
+		const onOpenChange = vi.fn();
+		render(
+			<FileCommentPopoverTrigger
+				comments={[makeComment()]}
+				{...defaultProps}
+				open
+				onOpenChange={onOpenChange}
+			/>,
+		);
+		// Press Escape to dismiss the popover content.
+		await user.keyboard("{Escape}");
+		expect(onOpenChange).toHaveBeenCalledWith(false);
 	});
 });

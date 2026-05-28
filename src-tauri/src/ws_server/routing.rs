@@ -35,6 +35,24 @@ pub(super) async fn route_message(
         WsMessage::AgentPermissionModeSetRequest(req) => {
             handle_agent_permission_mode_set_request(req, state).await
         }
+        WsMessage::ReviewListRequest(req) => {
+            handle_review_list_request(req, state, selected_worktree).await
+        }
+        WsMessage::ReviewGetRequest(req) => {
+            handle_review_get_request(req, state, selected_worktree).await
+        }
+        WsMessage::ReviewCreateRequest(req) => {
+            handle_review_create_request(req, state, selected_worktree).await
+        }
+        WsMessage::ReviewAppendCommentRequest(req) => {
+            handle_review_append_comment_request(req, state, selected_worktree).await
+        }
+        WsMessage::ReviewResolveRequest(req) => {
+            handle_review_resolve_request(req, state, selected_worktree).await
+        }
+        WsMessage::ReviewHistoryRequest(req) => {
+            handle_review_history_request(req, state, selected_worktree).await
+        }
         _ => Some(WsMessage::Error(ErrorMsg {
             code: "INVALID_MESSAGE".to_string(),
             message: "Unexpected message from client".to_string(),
@@ -283,6 +301,60 @@ mod tests {
                 assert!(r.error.unwrap().contains("worktree"));
             }
             _ => panic!("expected AgentSessionStartResponse with error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_review_list_without_worktree_rejects() {
+        let state = test_state();
+        let wt = test_selected_worktree();
+        let msg = WsMessage::ReviewListRequest(ReviewListRequest {
+            worktree_name: None,
+            filter: None,
+        });
+        let result = route_message(&msg, &state, &wt).await;
+        match result {
+            Some(WsMessage::Error(e)) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("expected no worktree selected error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_review_create_without_app_returns_rejection_response() {
+        let state = test_state();
+        let wt = Arc::new(Mutex::new(Some("wt".to_string())));
+        let msg = WsMessage::ReviewCreateRequest(ReviewCreateRequest {
+            worktree_name: None,
+            target: ReviewTarget {
+                file_path: None,
+                line_number: None,
+                end_line: None,
+            },
+            content: "Review claim".to_string(),
+        });
+        let result = route_message(&msg, &state, &wt).await;
+        match result {
+            Some(WsMessage::ReviewThreadResponse(r)) => {
+                assert!(!r.success);
+                assert!(r.thread.is_none());
+                assert!(r.error.is_some());
+            }
+            _ => panic!("expected ReviewThreadResponse rejection without app handle"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_review_request_rejects_worktree_mismatch() {
+        let state = test_state();
+        let wt = Arc::new(Mutex::new(Some("/repo/managed".to_string())));
+        let msg = WsMessage::ReviewListRequest(ReviewListRequest {
+            worktree_name: Some("other".to_string()),
+            filter: None,
+        });
+        let result = route_message(&msg, &state, &wt).await;
+        match result {
+            Some(WsMessage::Error(e)) => assert_eq!(e.code, "WORKTREE_MISMATCH"),
+            _ => panic!("expected worktree mismatch error"),
         }
     }
 }

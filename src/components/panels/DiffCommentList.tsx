@@ -1,5 +1,16 @@
-import { MessageSquare, Send, Trash2 } from "lucide-react";
-import { useMemo } from "react";
+import { CheckCircle2, MessageSquare, Send, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+	AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
@@ -7,25 +18,31 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
-import type { DiffComment } from "@/types/diffComment";
+import { useReviewThreadHandoff } from "@/contexts/ReviewThreadHandoffContext";
+import {
+	getThreadEndLine,
+	getThreadFilePath,
+	getThreadInitialContent,
+	getThreadLineNumber,
+	type ReviewDiscussionThread,
+	type ThreadNavigationTarget,
+	toThreadNavigationTarget,
+} from "@/types/diffComment";
 
 export interface DiffCommentListProps {
-	comments: DiffComment[];
-	unsentCount: number;
-	onCommentClick: (filePath: string, lineNumber?: number) => void;
-	onDelete: (commentId: string) => Promise<void>;
-	onSend: (commentIds: string[]) => Promise<void>;
-	onSendAll: () => Promise<void>;
+	comments: ReviewDiscussionThread[];
+	onThreadClick: (target: ThreadNavigationTarget) => void;
+	onDelete?: (threadId: string) => Promise<void>;
 }
 
-function formatLineLabel(comment: DiffComment): string {
-	if (comment.lineNumber == null) return "file";
-	if (comment.lineNumber == null) return "";
-	if (comment.endLine != null && comment.endLine !== comment.lineNumber) {
-		return `L${comment.lineNumber}-${comment.endLine}`;
+function formatLineLabel(comment: ReviewDiscussionThread): string {
+	const lineNumber = getThreadLineNumber(comment);
+	const endLine = getThreadEndLine(comment);
+	if (lineNumber == null) return "file";
+	if (endLine != null && endLine !== lineNumber) {
+		return `L${lineNumber}-${endLine}`;
 	}
-	return `L${comment.lineNumber}`;
+	return `L${lineNumber}`;
 }
 
 function getFileName(filePath: string): string {
@@ -33,22 +50,127 @@ function getFileName(filePath: string): string {
 	return parts[parts.length - 1] ?? filePath;
 }
 
+/**
+ * spec issues-1022 "Thread handoff contract": スレッドパネル各行から、対象 Thread を
+ * 現在 active な AgentChat session の入力として共有するためのアイコンボタン。
+ * active session 不在時は disabled になり、tooltip で理由を示す。
+ */
+function SendThreadToAgentButton({ threadId }: { threadId: string }) {
+	const { canSend, sendThreadToAgent } = useReviewThreadHandoff();
+	const [busy, setBusy] = useState(false);
+	const title = canSend
+		? "Send Diff Thread to current Agent"
+		: "No active Agent session";
+	return (
+		<Button
+			type="button"
+			variant="ghost"
+			size="icon-xs"
+			aria-label={title}
+			title={title}
+			disabled={busy || !canSend}
+			onClick={(e) => {
+				e.stopPropagation();
+				(async () => {
+					setBusy(true);
+					try {
+						await sendThreadToAgent(threadId);
+					} catch (error) {
+						console.error("Failed to send thread to agent:", error);
+					} finally {
+						setBusy(false);
+					}
+				})();
+			}}
+			className="shrink-0 opacity-0 group-hover/item:opacity-100 focus:opacity-100"
+		>
+			<Send className="size-3.5" />
+		</Button>
+	);
+}
+
+function DeleteThreadButton({
+	threadId,
+	onDelete,
+}: {
+	threadId: string;
+	onDelete: (threadId: string) => Promise<void>;
+}) {
+	const [open, setOpen] = useState(false);
+	const [busy, setBusy] = useState(false);
+
+	return (
+		<AlertDialog open={open} onOpenChange={setOpen}>
+			<AlertDialogTrigger asChild>
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon-xs"
+					aria-label="Delete thread"
+					title="Delete thread"
+					disabled={busy}
+					onClick={(e) => {
+						e.stopPropagation();
+					}}
+					className="shrink-0 opacity-0 group-hover/item:opacity-100 focus:opacity-100"
+				>
+					<Trash2 className="size-3.5" />
+				</Button>
+			</AlertDialogTrigger>
+			<AlertDialogContent
+				onClick={(e) => {
+					e.stopPropagation();
+				}}
+			>
+				<AlertDialogHeader>
+					<AlertDialogTitle>Delete this thread?</AlertDialogTitle>
+					<AlertDialogDescription>
+						This will remove the thread from the review list. The deletion is
+						recorded in the thread history and cannot be undone from the UI.
+					</AlertDialogDescription>
+				</AlertDialogHeader>
+				<AlertDialogFooter>
+					<AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+					<AlertDialogAction
+						disabled={busy}
+						onClick={(e) => {
+							e.preventDefault();
+							e.stopPropagation();
+							(async () => {
+								setBusy(true);
+								try {
+									await onDelete(threadId);
+									setOpen(false);
+								} catch (error) {
+									console.error("Failed to delete thread:", error);
+								} finally {
+									setBusy(false);
+								}
+							})();
+						}}
+					>
+						Delete
+					</AlertDialogAction>
+				</AlertDialogFooter>
+			</AlertDialogContent>
+		</AlertDialog>
+	);
+}
+
 export function DiffCommentList({
 	comments,
-	unsentCount,
-	onCommentClick,
+	onThreadClick,
 	onDelete,
-	onSend,
-	onSendAll,
 }: DiffCommentListProps) {
 	const groupedByFile = useMemo(() => {
-		const map = new Map<string, DiffComment[]>();
+		const map = new Map<string, ReviewDiscussionThread[]>();
 		for (const comment of comments) {
-			const existing = map.get(comment.filePath);
+			const filePath = getThreadFilePath(comment);
+			const existing = map.get(filePath);
 			if (existing) {
 				existing.push(comment);
 			} else {
-				map.set(comment.filePath, [comment]);
+				map.set(filePath, [comment]);
 			}
 		}
 		return map;
@@ -58,12 +180,12 @@ export function DiffCommentList({
 		return (
 			<div className="h-full flex flex-col">
 				<div className="flex items-center justify-between px-3 py-1.5 border-b border-border shrink-0">
-					<span className="text-xs font-medium text-foreground">Comments</span>
+					<span className="text-xs font-medium text-foreground">Threads</span>
 				</div>
 				<div className="flex-1 flex items-center justify-center">
 					<EmptyState
 						icon={MessageSquare}
-						title="No comments yet"
+						title="No threads yet"
 						description="Add comments on diff lines"
 					/>
 				</div>
@@ -74,110 +196,68 @@ export function DiffCommentList({
 	return (
 		<div className="h-full flex flex-col">
 			<div className="flex items-center justify-between px-3 py-1.5 border-b border-border shrink-0">
-				<div className="flex items-center gap-1.5">
-					<span className="text-xs font-medium text-foreground">Comments</span>
-					{unsentCount > 0 && (
-						<span className="min-w-[16px] h-[16px] rounded-full bg-blue-600 text-[10px] text-white flex items-center justify-center px-1">
-							{unsentCount}
-						</span>
-					)}
-				</div>
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<Button
-							variant="ghost"
-							size="icon-xs"
-							onClick={() => onSendAll()}
-							disabled={unsentCount === 0}
-							className="h-5 w-5 text-muted-foreground hover:text-foreground disabled:opacity-30"
-							aria-label="Send all unsent comments"
-						>
-							<Send className="h-3 w-3" />
-						</Button>
-					</TooltipTrigger>
-					<TooltipContent side="bottom" className="text-xs">
-						{unsentCount > 0
-							? `Send ${unsentCount} comments to Agent`
-							: "No unsent comments"}
-					</TooltipContent>
-				</Tooltip>
+				<span className="text-xs font-medium text-foreground">Threads</span>
 			</div>
 			<div className="flex-1 min-h-0 overflow-auto">
 				<div className="px-2 py-1">
 					{[...groupedByFile.entries()].map(([filePath, fileComments]) => (
-						<div key={filePath} className="mb-2">
+						<div key={filePath || "general"} className="mb-2">
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<button
 										type="button"
-										onClick={() => onCommentClick(filePath)}
+										onClick={() => {
+											const first = fileComments[0];
+											if (first) {
+												onThreadClick(toThreadNavigationTarget(first));
+											}
+										}}
 										className="w-full text-left px-1 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground truncate"
 									>
-										{getFileName(filePath)}
+										{filePath ? getFileName(filePath) : "General"}
 									</button>
 								</TooltipTrigger>
 								<TooltipContent side="top" className="text-xs">
-									{filePath}
+									{filePath || "General"}
 								</TooltipContent>
 							</Tooltip>
 							<div className="space-y-0.5">
 								{fileComments.map((comment) => (
-									<button
-										type="button"
+									<div
 										key={comment.id}
-										onClick={() =>
-											onCommentClick(
-												comment.filePath,
-												comment.lineNumber ?? undefined,
-											)
-										}
-										className="group/item w-full text-left flex items-start gap-1.5 px-1.5 py-1 rounded hover:bg-muted/50 transition-colors"
+										className="group/item flex items-start gap-1 px-1.5 py-1 rounded hover:bg-muted/50 transition-colors"
 									>
-										<span className="shrink-0 text-[10px] font-mono text-muted-foreground mt-0.5 min-w-[36px]">
-											{formatLineLabel(comment)}
-										</span>
-										<span className="flex-1 text-xs text-foreground truncate">
-											{comment.content}
-										</span>
-										<span className="shrink-0 flex items-center gap-0.5">
-											{comment.status === "sent" ? (
-												<span className="text-[9px] bg-green-600/15 text-green-600 px-1 py-0.5 rounded-full">
-													sent
+										<button
+											type="button"
+											onClick={() =>
+												onThreadClick(toThreadNavigationTarget(comment))
+											}
+											className="flex-1 min-w-0 text-left flex items-start gap-1.5"
+										>
+											<span className="shrink-0 text-[10px] font-mono text-muted-foreground mt-0.5 min-w-[36px]">
+												{formatLineLabel(comment)}
+											</span>
+											<span className="flex-1 text-xs text-foreground truncate">
+												{getThreadInitialContent(comment)}
+											</span>
+											<span className="shrink-0 text-[10px] text-muted-foreground">
+												{comment.comments.length}
+											</span>
+											{comment.state === "resolved" && (
+												<span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] bg-green-600/15 text-green-600 px-1 py-0.5 rounded-full">
+													<CheckCircle2 className="h-2.5 w-2.5" />
+													resolved
 												</span>
-											) : (
-												<Button
-													variant="ghost"
-													size="icon-xs"
-													onClick={(e) => {
-														e.stopPropagation();
-														onSend([comment.id]);
-													}}
-													className={cn(
-														"h-4 w-4 text-muted-foreground hover:text-foreground",
-														"opacity-0 group-hover/item:opacity-100",
-													)}
-													aria-label="Send comment"
-												>
-													<Send className="h-2.5 w-2.5" />
-												</Button>
 											)}
-											<Button
-												variant="ghost"
-												size="icon-xs"
-												onClick={(e) => {
-													e.stopPropagation();
-													onDelete(comment.id);
-												}}
-												className={cn(
-													"h-4 w-4 text-muted-foreground hover:text-destructive",
-													"opacity-0 group-hover/item:opacity-100",
-												)}
-												aria-label="Delete comment"
-											>
-												<Trash2 className="h-2.5 w-2.5" />
-											</Button>
-										</span>
-									</button>
+										</button>
+										<SendThreadToAgentButton threadId={comment.id} />
+										{onDelete && (
+											<DeleteThreadButton
+												threadId={comment.id}
+												onDelete={onDelete}
+											/>
+										)}
+									</div>
 								))}
 							</div>
 						</div>

@@ -153,6 +153,25 @@ fn is_unborn_branch(repo: &Repository) -> Result<bool, GitError> {
     }
 }
 
+/// Returns the base branch name resolved from worktree config / git config.
+///
+/// Used to expose the base branch as an env var to agent processes
+/// (`RELEASH_BASE_BRANCH`) so reviewer agents can diff against it.
+/// Returns `None` when the repository cannot be opened, has no commits yet,
+/// HEAD is detached, or no base branch is configured.
+pub fn resolve_base_branch_name(repo_path: &str) -> Option<String> {
+    let repo = Repository::open(repo_path).ok()?;
+    if is_unborn_branch(&repo).unwrap_or(true) {
+        return None;
+    }
+    let (name, _) = find_base_commit(&repo, None).ok()?;
+    if name == "HEAD" {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 pub(crate) fn find_base_commit<'a>(
     repo: &'a Repository,
     base_branch: Option<&str>,

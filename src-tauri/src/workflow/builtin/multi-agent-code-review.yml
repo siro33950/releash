@@ -1,0 +1,134 @@
+name: multi-agent-code-review
+description: Multi-agent collaborative code review workflow. 12 reviewer agents (6 viewpoints × 2 backends) post review Threads. 2 verifier agents independently verify each Thread with tool execution and assign one of four states (VERIFIED / REFUTED / MANUAL_JUDGMENT / INFORMATIONAL). A Summary agent then walks through each Thread interactively with the human, discussing findings until an explicit policy is agreed, then posts the conclusion to the Thread as a fix-policy Comment or a rationale-backed Resolve.
+
+nodes:
+  # ===== Posting phase: 6 viewpoints × 2 backends = 12 reviewers in parallel =====
+  - name: review-parallel
+    type: parallel
+    parallel_children:
+      - name: review-acceptance-opus
+        type: agent
+        model: default
+        permission: edit
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-review-acceptance
+      - name: review-acceptance-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-review-acceptance
+      - name: review-structure-opus
+        type: agent
+        model: default
+        permission: edit
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-review-structure
+      - name: review-structure-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-review-structure
+      - name: review-quality-opus
+        type: agent
+        model: default
+        permission: edit
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-review-quality
+      - name: review-quality-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-review-quality
+      - name: review-test-opus
+        type: agent
+        model: default
+        permission: edit
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-review-test
+      - name: review-test-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-review-test
+      - name: review-security-opus
+        type: agent
+        model: default
+        permission: edit
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-review-security
+      - name: review-security-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-review-security
+      - name: review-architecture-opus
+        type: agent
+        model: default
+        permission: edit
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-review-architecture
+      - name: review-architecture-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-review-architecture
+    aggregate:
+      all_match: ".*"
+      then: verify-and-classify
+      else: verify-and-classify
+
+  # ===== Verification phase: 2 verifiers independently verify every open Thread =====
+  # Each verifier executes tools (grep / cat / git diff / ast-grep / test) and assigns
+  # one of four states: VERIFIED / REFUTED / MANUAL_JUDGMENT / INFORMATIONAL.
+  # No consensus is sought; dissent is preserved for the Summary step.
+  - name: verify-and-classify
+    type: parallel
+    parallel_children:
+      - name: verify-opus
+        type: agent
+        model: default
+        permission: edit
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-verify-and-classify
+      - name: verify-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: multi-agent-reviewer
+        knowledge: releash-thread-cli
+        instruction: mar-verify-and-classify
+    aggregate:
+      all_match: ".*"
+      then: review-summary
+      else: review-summary
+
+  # ===== Summary: terminal step. Walks through each Thread interactively with
+  # the human, discussing findings until an explicit policy is agreed, then
+  # posts the conclusion to the Thread (fix-policy Comment or rationale-backed
+  # Resolve). All actions require explicit human approval.
+  - name: review-summary
+    type: agent
+    model: default
+    permission: edit
+    policy: multi-agent-summary
+    knowledge: releash-thread-cli
+    instruction: mar-summary
