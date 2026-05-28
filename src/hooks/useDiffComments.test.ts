@@ -31,13 +31,11 @@ const makeThread = (
 			createdAt: Date.now(),
 		},
 	],
-	stances: [],
 	resolve: null,
 	createdAt: Date.now(),
 	updatedAt: Date.now(),
 	version: 1,
 	canResolve: true,
-	myStance: "none",
 	...overrides,
 });
 
@@ -141,7 +139,7 @@ describe("useDiffComments", () => {
 
 		await act(async () => {
 			await result.current.appendComment("t1", "Reply");
-			await result.current.appendComment("t1", "Taking stance", "agree");
+			await result.current.appendComment("t1", "Another reply");
 			await result.current.resolveThread("t1", "resolved", "Done");
 		});
 
@@ -149,13 +147,11 @@ describe("useDiffComments", () => {
 			worktreeName: "wt",
 			threadId: "t1",
 			content: "Reply",
-			stance: null,
 		});
 		expect(mockInvoke).toHaveBeenCalledWith("append_review_comment", {
 			worktreeName: "wt",
 			threadId: "t1",
-			content: "Taking stance",
-			stance: "agree",
+			content: "Another reply",
 		});
 		expect(mockInvoke).toHaveBeenCalledWith("resolve_review_thread", {
 			worktreeName: "wt",
@@ -209,6 +205,36 @@ describe("useDiffComments", () => {
 
 		await waitFor(() => {
 			expect(result.current.comments).toHaveLength(0);
+		});
+	});
+
+	it("reloads comments when the review-comments-changed event payload is wildcard '*'", async () => {
+		let listenerHandler: ((event: { payload: string }) => void) | undefined;
+		mockListen.mockImplementation((_eventName, handler) => {
+			listenerHandler = handler as (event: { payload: string }) => void;
+			return Promise.resolve(() => {});
+		});
+
+		mockInvoke.mockResolvedValue([makeThread()]);
+		const { result } = renderHook(() =>
+			useDiffComments({ worktreeName: "wt" }),
+		);
+
+		await waitFor(() => {
+			expect(result.current.comments).toHaveLength(1);
+		});
+
+		mockInvoke.mockResolvedValue([
+			makeThread({ id: "t1" }),
+			makeThread({ id: "t2" }),
+		]);
+
+		await act(async () => {
+			listenerHandler?.({ payload: "*" });
+		});
+
+		await waitFor(() => {
+			expect(result.current.comments).toHaveLength(2);
 		});
 	});
 

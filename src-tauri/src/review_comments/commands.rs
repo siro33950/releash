@@ -5,8 +5,9 @@ use tauri::{Emitter, Manager};
 
 use super::{
     build_review_thread_handoff_message, ReviewActor, ReviewCommentStore, ReviewHistoryEntry,
-    ReviewStanceValue, ReviewTarget, ReviewThread, ReviewThreadFilter,
+    ReviewTarget, ReviewThread, ReviewThreadFilter,
 };
+use crate::path_aliases::{alias_name_for_profile, BuildProfile};
 
 fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
@@ -40,7 +41,7 @@ pub fn get_review_thread(
 ) -> Result<ReviewThread, String> {
     let data_dir = data_dir(&app)?;
     store
-        .get_thread(&data_dir, &worktree_name, &thread_id, ReviewActor::human())
+        .get_thread(&data_dir, &worktree_name, &thread_id)
         .map_err(String::from)
 }
 
@@ -66,7 +67,6 @@ pub fn create_review_thread(
                 end_line,
             },
             content,
-            None,
         )
         .map_err(String::from)?;
     emit_changed(&app, &worktree_name);
@@ -80,7 +80,6 @@ pub fn append_review_comment(
     worktree_name: String,
     thread_id: String,
     content: String,
-    stance: Option<ReviewStanceValue>,
 ) -> Result<ReviewThread, String> {
     let data_dir = data_dir(&app)?;
     let thread = store
@@ -90,7 +89,6 @@ pub fn append_review_comment(
             ReviewActor::human(),
             &thread_id,
             content,
-            stance,
         )
         .map_err(String::from)?;
     emit_changed(&app, &worktree_name);
@@ -140,6 +138,11 @@ pub fn delete_review_thread(
 /// 対象 Thread の参照情報を含む Agent 共有メッセージを Rust 側で組み立てて返す。
 /// フロントエンドはこの文字列を active な AgentChat session の入力としてそのまま送信する。
 /// メッセージ本文の整形は Rust が owner であり、フロントエンドは本文の作成を行わない。
+///
+/// Follow-up: メッセージ内の CLI 実行例は `path_aliases` の wrapper が PATH に登録する
+/// 名前 (`releash` / `releash-dev`) と一致させる必要がある。ここで build profile から
+/// alias 名を解決して builder に渡し、Dev (`releash-dev`) / Production (`releash`) 双方で
+/// Agent process から CLI を呼べる文面を保証する。
 #[tauri::command]
 pub fn build_review_thread_handoff(
     app: tauri::AppHandle,
@@ -149,9 +152,10 @@ pub fn build_review_thread_handoff(
 ) -> Result<String, String> {
     let data_dir = data_dir(&app)?;
     let thread = store
-        .get_thread(&data_dir, &worktree_name, &thread_id, ReviewActor::human())
+        .get_thread(&data_dir, &worktree_name, &thread_id)
         .map_err(String::from)?;
-    Ok(build_review_thread_handoff_message(&worktree_name, &thread))
+    let releash_alias = alias_name_for_profile(BuildProfile::current());
+    Ok(build_review_thread_handoff_message(releash_alias, &thread))
 }
 
 #[tauri::command]

@@ -7,71 +7,41 @@
 //! Agent は受信メッセージから既存 `releash review` CLI で本文・履歴を自律取得する
 //! (ライブ型: spec "Source of truth は CLI / usecase" 原則と整合)。
 
-use super::{ReviewThread, ReviewThreadState};
+use super::ReviewThread;
 
 /// Diff Thread → Active AgentChat session 共有メッセージを組み立てる。
 ///
-/// 含める参照情報:
-/// - thread_id: Agent が CLI で thread を取得するためのキー
-/// - worktree: 対象 worktree 識別子 (`releash` CLI が session 経由で path を解決するため
-///   識別子のみで十分。spec design.md "CLI contract": session が worktree を解決する)
-/// - file: 対象ファイルパス (位置不依存 thread の場合は省略)
-/// - lines: 対象行範囲 (単一行は単独数値、複数行は `start-end`)
-/// - state: open / resolved
+/// 出力は「内容を確認してください」という最小限の指示と、取得用 CLI コマンド 1 行で構成する。
+/// thread の本文・対象 file / lines / state / worktree などはすべて CLI 応答に含まれるため、
+/// メッセージ本文には埋め込まない。Agent は受信メッセージから CLI を実行して必要な情報を
+/// 取得する (ライブ型: spec "Source of truth は CLI / usecase" 原則)。Comment 追記 /
+/// Resolve など以降の行動指示はユーザーが必要に応じて自分の言葉で追記する想定。
 ///
-/// メッセージ末尾には推奨 CLI コマンド (`releash review get`) を実行例として埋め込み、
 /// `$RELEASH_SESSION_ID` 環境変数 (spec "Agent process environment contract") から
-/// session id を取り出して `--session-id` に渡す形を案内する。
-pub fn build_review_thread_handoff_message(worktree_name: &str, thread: &ReviewThread) -> String {
-    let mut lines = Vec::new();
-    lines.push("レビュースレッドへの対応を依頼します。".to_string());
-    lines.push(String::new());
-    lines.push(format!("- thread_id: {}", thread.id));
-    lines.push(format!("- worktree: {worktree_name}"));
-    if let Some(file) = thread.target.file_path.as_deref() {
-        lines.push(format!("- file: {file}"));
-    }
-    if let Some(range) = format_line_range(thread.target.line_number, thread.target.end_line) {
-        lines.push(format!("- lines: {range}"));
-    }
-    let state_label = match thread.state {
-        ReviewThreadState::Open => "open",
-        ReviewThreadState::Resolved => "resolved",
-    };
-    lines.push(format!("- state: {state_label}"));
-    lines.push(String::new());
-    lines.push("本文と現在の Stance / Comment を取得して内容を確認してください:".to_string());
-    lines.push(String::new());
-    lines.push(format!(
-        "    releash review get --session-id \"$RELEASH_SESSION_ID\" {}",
+/// session id を取り出して `--session-id` に渡す。worktree も session から解決される
+/// (spec design.md "CLI contract")。
+///
+/// `releash_alias` 引数は build profile に応じた CLI 実行名 (`releash` / `releash-dev`) を
+/// 表す。Agent process の `PATH` には `path_aliases` の wrapper が `alias_name_for_profile`
+/// の名前でだけ登録されるため、ここをリテラル化すると Dev 環境 (`releash-dev`) で Agent が
+/// CLI 解決に失敗する。呼び出し側 (Tauri command controller) で
+/// `alias_name_for_profile(BuildProfile::current())` を解決して渡すこと。pure 関数性を保つ
+/// ため、本 builder では `cfg!(debug_assertions)` 等の build profile 依存を持たない。
+pub fn build_review_thread_handoff_message(releash_alias: &str, thread: &ReviewThread) -> String {
+    format!(
+        "以下のスレッドの内容を確認してください。\n\n{releash_alias} review get --session-id \"$RELEASH_SESSION_ID\" {}",
         thread.id
-    ));
-    lines.push(String::new());
-    lines.push(
-        "必要に応じて Comment 追記・Stance 表明・Resolve を行ってください (権限・状態は CLI の応答に従ってください)。"
-            .to_string(),
-    );
-    lines.join("\n")
-}
-
-fn format_line_range(start: Option<u32>, end: Option<u32>) -> Option<String> {
-    match (start, end) {
-        (Some(s), Some(e)) if s != e => Some(format!("{s}-{e}")),
-        (Some(s), _) => Some(s.to_string()),
-        (None, Some(e)) => Some(e.to_string()),
-        (None, None) => None,
-    }
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::review_comments::{
-        ReviewActorDto, ReviewActorKind, ReviewStanceValue, ReviewTarget, ReviewThread,
-        ReviewThreadState,
+        ReviewActorDto, ReviewActorKind, ReviewTarget, ReviewThread, ReviewThreadState,
     };
 
-    fn sample_thread(target: ReviewTarget, state: ReviewThreadState) -> ReviewThread {
+    fn sample_thread() -> ReviewThread {
         ReviewThread {
             id: "thread-1234".to_string(),
             worktree_name: "feat-issues-1022".to_string(),
@@ -81,112 +51,45 @@ mod tests {
                 model: None,
                 display_name: "Human".to_string(),
             },
-            target,
-            state,
+            target: ReviewTarget {
+                file_path: None,
+                line_number: None,
+                end_line: None,
+            },
+            state: ReviewThreadState::Open,
             comments: vec![],
-            stances: vec![],
             resolve: None,
             created_at: 0.0,
             updated_at: 0.0,
             version: 1,
             can_resolve: false,
-            my_stance: ReviewStanceValue::None,
         }
     }
 
+    /// Production 環境 (alias = `releash`) では、最小限の指示と CLI コマンドだけが含まれる。
+    /// Agent は CLI を実行して thread の本文・file / lines / state / worktree などを
+    /// すべて自律取得する設計のため、メッセージ本文には参照情報を埋め込まない。
     #[test]
-    fn handoff_message_for_positioned_thread_includes_file_and_line_range() {
-        let thread = sample_thread(
-            ReviewTarget {
-                file_path: Some("src/components/panels/DiffInlineComment.tsx".to_string()),
-                line_number: Some(82),
-                end_line: Some(139),
-            },
-            ReviewThreadState::Open,
-        );
-        let message = build_review_thread_handoff_message("feat-issues-1022", &thread);
-        assert!(
-            message.contains("thread-1234"),
-            "missing thread_id: {message}"
-        );
-        assert!(
-            message.contains("- worktree: feat-issues-1022"),
-            "missing worktree identifier: {message}"
-        );
-        assert!(
-            message.contains("src/components/panels/DiffInlineComment.tsx"),
-            "missing file path: {message}"
-        );
-        assert!(message.contains("82-139"), "missing line range: {message}");
-        assert!(
-            message.contains("- state: open"),
-            "missing state: {message}"
-        );
-        assert!(
-            message.contains("releash review get"),
-            "missing CLI hint: {message}"
-        );
-        assert!(
-            message.contains("$RELEASH_SESSION_ID"),
-            "must hint environment variable usage: {message}"
+    fn handoff_message_for_production_alias_contains_only_instruction_and_cli() {
+        let thread = sample_thread();
+        let message = build_review_thread_handoff_message("releash", &thread);
+        assert_eq!(
+            message,
+            "以下のスレッドの内容を確認してください。\n\nreleash review get --session-id \"$RELEASH_SESSION_ID\" thread-1234"
         );
     }
 
+    /// spec issues-1022 Follow-up: Development 環境 (alias = `releash-dev`) では、
+    /// メッセージ内のコマンドが `releash-dev` を使う。`path_aliases` の wrapper は
+    /// `releash-dev` 名でしか PATH に登録されないため、この alias 名が反映されないと
+    /// Dev 環境で Agent が CLI を呼べない。
     #[test]
-    fn handoff_message_for_position_less_thread_omits_file_and_lines() {
-        let thread = sample_thread(
-            ReviewTarget {
-                file_path: None,
-                line_number: None,
-                end_line: None,
-            },
-            ReviewThreadState::Open,
-        );
-        let message = build_review_thread_handoff_message("feat-issues-1022", &thread);
-        assert!(
-            !message.contains("- file:"),
-            "must omit file line for position-less thread: {message}"
-        );
-        assert!(
-            !message.contains("- lines:"),
-            "must omit lines line for position-less thread: {message}"
-        );
-        assert!(message.contains("thread-1234"));
-        assert!(message.contains("releash review get"));
-    }
-
-    #[test]
-    fn handoff_message_for_single_line_thread_renders_single_line_number() {
-        let thread = sample_thread(
-            ReviewTarget {
-                file_path: Some("a.rs".to_string()),
-                line_number: Some(42),
-                end_line: Some(42),
-            },
-            ReviewThreadState::Open,
-        );
-        let message = build_review_thread_handoff_message("wt", &thread);
-        assert!(
-            message.contains("- lines: 42"),
-            "single-line range must be a single number: {message}"
-        );
-        assert!(!message.contains("42-42"));
-    }
-
-    #[test]
-    fn handoff_message_for_resolved_thread_marks_state_as_resolved() {
-        let thread = sample_thread(
-            ReviewTarget {
-                file_path: Some("a.rs".to_string()),
-                line_number: Some(1),
-                end_line: Some(1),
-            },
-            ReviewThreadState::Resolved,
-        );
-        let message = build_review_thread_handoff_message("wt", &thread);
-        assert!(
-            message.contains("- state: resolved"),
-            "missing resolved state label: {message}"
+    fn handoff_message_for_development_alias_uses_releash_dev() {
+        let thread = sample_thread();
+        let message = build_review_thread_handoff_message("releash-dev", &thread);
+        assert_eq!(
+            message,
+            "以下のスレッドの内容を確認してください。\n\nreleash-dev review get --session-id \"$RELEASH_SESSION_ID\" thread-1234"
         );
     }
 }

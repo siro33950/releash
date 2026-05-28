@@ -40,13 +40,11 @@ const makeComment = (
 			createdAt: Date.now(),
 		},
 	],
-	stances: [],
 	resolve: null,
 	createdAt: Date.now(),
 	updatedAt: Date.now(),
 	version: 1,
 	canResolve: true,
-	myStance: "none",
 	...overrides,
 });
 

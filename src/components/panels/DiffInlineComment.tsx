@@ -29,16 +29,12 @@ import {
 	getThreadLineNumber,
 	type ReviewDiscussionThread,
 } from "@/types/diffComment";
-import type { ReviewActorKind, ReviewStanceValue } from "@/types/protocol";
+import type { ReviewActorKind } from "@/types/protocol";
 import { DiffCommentBody } from "./DiffCommentBody";
 
 interface DiffInlineCommentProps {
 	comment: ReviewDiscussionThread;
-	onAppend?: (
-		threadId: string,
-		content: string,
-		stance?: ReviewStanceValue | null,
-	) => Promise<void>;
+	onAppend?: (threadId: string, content: string) => Promise<void>;
 	onResolve?: (
 		threadId: string,
 		outcome: string,
@@ -46,8 +42,6 @@ interface DiffInlineCommentProps {
 	) => Promise<void>;
 	onDelete?: (threadId: string) => Promise<void>;
 }
-
-type StanceSelection = "keep" | ReviewStanceValue;
 
 function rangeLabel(comment: ReviewDiscussionThread): string | null {
 	const lineNumber = getThreadLineNumber(comment);
@@ -85,12 +79,10 @@ export function DiffInlineComment({
 	onDelete,
 }: DiffInlineCommentProps) {
 	const [reply, setReply] = useState("");
-	const [replyStance, setReplyStance] = useState<StanceSelection>("keep");
 	const [resolveSummary, setResolveSummary] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 	const label = rangeLabel(comment);
-	const currentStance = comment.myStance;
 	const disabled = busy || comment.state === "resolved";
 	// spec issues-1022 "Thread handoff contract": Diff Thread を active な
 	// AgentChat session の入力として共有する。active session 不在時は disabled。
@@ -213,19 +205,6 @@ export function DiffInlineComment({
 				))}
 			</div>
 
-			<div className="flex flex-wrap gap-1">
-				{comment.stances.map((stance) => (
-					<span
-						key={`${stance.actor.kind}:${stance.actor.displayName}`}
-						className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground"
-					>
-						<span>{stance.actor.kind}</span>
-						<span>{stance.actor.displayName}</span>
-						<span className="text-foreground">{stance.value}</span>
-					</span>
-				))}
-			</div>
-
 			{comment.resolve && (
 				<div className="rounded border border-green-600/20 bg-green-600/10 px-2 py-1.5 text-[11px] text-green-700 dark:text-green-400">
 					<div className="flex items-center gap-1 font-medium">
@@ -250,37 +229,6 @@ export function DiffInlineComment({
 						placeholder="Reply..."
 						className="min-h-[64px] text-sm resize-none bg-background"
 					/>
-					<fieldset
-						className="flex flex-wrap items-center gap-2 text-xs"
-						disabled={disabled || !onAppend}
-					>
-						<legend className="sr-only">Stance</legend>
-						<span className="text-muted-foreground">
-							Stance (current: {currentStance})
-						</span>
-						{(
-							[
-								{ value: "keep", label: "keep" },
-								{ value: "agree", label: "agree" },
-								{ value: "disagree", label: "disagree" },
-								{ value: "none", label: "none" },
-							] as const
-						).map(({ value, label }) => (
-							<label
-								key={value}
-								className="inline-flex items-center gap-1 cursor-pointer"
-							>
-								<input
-									type="radio"
-									name={`stance-${comment.id}`}
-									value={value}
-									checked={replyStance === value}
-									onChange={() => setReplyStance(value)}
-								/>
-								{label}
-							</label>
-						))}
-					</fieldset>
 					<div className="flex justify-end">
 						<Button
 							type="button"
@@ -290,13 +238,8 @@ export function DiffInlineComment({
 							disabled={disabled || reply.trim() === "" || !onAppend}
 							onClick={() =>
 								run(async () => {
-									await onAppend?.(
-										comment.id,
-										reply.trim(),
-										replyStance === "keep" ? null : replyStance,
-									);
+									await onAppend?.(comment.id, reply.trim());
 									setReply("");
-									setReplyStance("keep");
 								})
 							}
 						>

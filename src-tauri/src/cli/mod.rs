@@ -15,8 +15,8 @@ use crate::agent_status::current_timestamp;
 use crate::config::read_config_if_exists;
 use crate::protocol::WorkflowStateView;
 use crate::review_comments::{
-    AuthorScope, ReviewActor, ReviewCommentStore, ReviewStanceValue, ReviewTarget,
-    ReviewThreadFilter, ReviewThreadState,
+    AuthorScope, ReviewActor, ReviewCommentStore, ReviewTarget, ReviewThreadFilter,
+    ReviewThreadState,
 };
 use crate::session::{SessionState, SessionStore};
 use crate::workflow::command_input::{
@@ -177,8 +177,6 @@ enum ReviewSubcommand {
         #[arg(long)]
         author: Option<String>,
         #[arg(long)]
-        stance: Option<String>,
-        #[arg(long)]
         unread: Option<String>,
         #[arg(long = "thread-id")]
         thread_id: Vec<String>,
@@ -205,10 +203,6 @@ enum ReviewSubcommand {
         line: Option<u32>,
         #[arg(long)]
         end_line: Option<u32>,
-        /// 作成者の初期 Stance を atomic に設定する (agree | disagree | none)。
-        /// 未指定なら従来通り `none` で開始する。
-        #[arg(long)]
-        stance: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -219,10 +213,6 @@ enum ReviewSubcommand {
         session_id: String,
         #[arg(long)]
         content: String,
-        /// 同 actor の Stance を atomic に表明する (agree | disagree | none)。
-        /// 未指定なら現在 Stance を維持。
-        #[arg(long)]
-        stance: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -692,23 +682,6 @@ fn parse_review_state(value: Option<String>) -> Result<Option<ReviewThreadState>
     }
 }
 
-fn parse_review_stance_value(value: &str) -> Result<ReviewStanceValue, CliError> {
-    match value {
-        "agree" => Ok(ReviewStanceValue::Agree),
-        "disagree" => Ok(ReviewStanceValue::Disagree),
-        "none" => Ok(ReviewStanceValue::None),
-        other => Err(CliError::InvalidInput(format!(
-            "Invalid stance value: {other} (expected: agree | disagree | none)"
-        ))),
-    }
-}
-
-fn parse_optional_review_stance(
-    value: Option<String>,
-) -> Result<Option<ReviewStanceValue>, CliError> {
-    value.as_deref().map(parse_review_stance_value).transpose()
-}
-
 fn parse_optional_author_scope(value: Option<String>) -> Result<Option<AuthorScope>, CliError> {
     match value.as_deref() {
         None | Some("") => Ok(None),
@@ -788,7 +761,6 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
             file,
             state,
             author,
-            stance,
             unread,
             thread_id,
             json,
@@ -798,7 +770,6 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
                 file,
                 state: parse_review_state(state)?,
                 author: parse_optional_author_scope(author)?,
-                stance: parse_optional_review_stance(stance)?,
                 unread: parse_optional_unread(unread)?,
                 thread_id,
             };
@@ -833,9 +804,9 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
             session_id,
             json,
         } => {
-            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
+            let (_actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
             let thread = store
-                .get_thread(data_dir, &review_worktree, &thread_id, actor)
+                .get_thread(data_dir, &review_worktree, &thread_id)
                 .map_err(review_error_to_cli_error)?;
             print_review_thread(&thread, json)
         }
@@ -845,7 +816,6 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
             file,
             line,
             end_line,
-            stance,
             json,
         } => {
             let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
@@ -854,9 +824,8 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
                 line_number: line,
                 end_line,
             };
-            let stance = parse_optional_review_stance(stance)?;
             let thread = store
-                .create_thread(data_dir, &review_worktree, actor, target, content, stance)
+                .create_thread(data_dir, &review_worktree, actor, target, content)
                 .map_err(review_error_to_cli_error)?;
             print_review_thread(&thread, json)
         }
@@ -864,20 +833,11 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
             thread_id,
             session_id,
             content,
-            stance,
             json,
         } => {
             let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
-            let stance = parse_optional_review_stance(stance)?;
             let thread = store
-                .append_comment(
-                    data_dir,
-                    &review_worktree,
-                    actor,
-                    &thread_id,
-                    content,
-                    stance,
-                )
+                .append_comment(data_dir, &review_worktree, actor, &thread_id, content)
                 .map_err(review_error_to_cli_error)?;
             print_review_thread(&thread, json)
         }
@@ -1473,7 +1433,6 @@ models = ["opus"]
                 file: None,
                 line: None,
                 end_line: None,
-                stance: None,
                 json: true,
             },
         );
@@ -1548,7 +1507,6 @@ models = ["opus"]
                 file: None,
                 line: None,
                 end_line: None,
-                stance: None,
                 json: true,
             },
         )
@@ -1570,7 +1528,6 @@ models = ["opus"]
                 file: None,
                 state: Some("open".to_string()),
                 author: None,
-                stance: None,
                 unread: None,
                 thread_id: Vec::new(),
                 json: true,
@@ -1589,7 +1546,7 @@ models = ["opus"]
     }
 
     #[test]
-    fn cmd_review_comment_stance_resolve_history_and_rejections_use_domain_reasons() {
+    fn cmd_review_comment_resolve_history_and_rejections_use_domain_reasons() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let owner_session = uuid::Uuid::new_v4().to_string();
@@ -1605,7 +1562,6 @@ models = ["opus"]
                 file: Some("src/main.rs".to_string()),
                 line: Some(3),
                 end_line: Some(5),
-                stance: None,
                 json: true,
             },
         )
@@ -1623,7 +1579,6 @@ models = ["opus"]
                 thread_id: thread_id.clone(),
                 session_id: owner_session.clone(),
                 content: "Follow-up".to_string(),
-                stance: None,
                 json: true,
             },
         )
@@ -1633,8 +1588,7 @@ models = ["opus"]
             ReviewSubcommand::Comment {
                 thread_id: thread_id.clone(),
                 session_id: owner_session.clone(),
-                content: "Taking agree stance".to_string(),
-                stance: Some("agree".to_string()),
+                content: "Another follow-up".to_string(),
                 json: true,
             },
         )
@@ -1649,43 +1603,44 @@ models = ["opus"]
         )
         .unwrap();
 
-        let unauthorized = cmd_review(
+        // 別 backend/model session からの Resolve も participant identity に依らず成功する
+        // (spec issues-1022: Resolve 権限は participant 識別に依存しない)。
+        cmd_review(
             tmp.path(),
             ReviewSubcommand::Resolve {
                 thread_id: thread_id.clone(),
                 session_id: other_session,
                 outcome: "accepted".to_string(),
-                summary: "not owner".to_string(),
+                summary: "non-owner resolve".to_string(),
                 json: true,
             },
-        );
-        match unauthorized {
-            Err(CliError::InvalidInput(msg)) => assert!(msg.contains("Only the thread author")),
-            other => panic!("expected permission rejection, got {other:?}"),
-        }
-
-        cmd_review(
+        )
+        .unwrap();
+        // resolved 後の Resolve / Comment 追記は state により拒否される。
+        let rejected_after_resolve = cmd_review(
             tmp.path(),
             ReviewSubcommand::Resolve {
                 thread_id: thread_id.clone(),
                 session_id: owner_session.clone(),
                 outcome: "accepted".to_string(),
-                summary: "done".to_string(),
+                summary: "second resolve".to_string(),
                 json: true,
             },
-        )
-        .unwrap();
-        let rejected_after_resolve = cmd_review(
+        );
+        match rejected_after_resolve {
+            Err(CliError::InvalidInput(msg)) => assert!(msg.contains("already resolved")),
+            other => panic!("expected resolved rejection, got {other:?}"),
+        }
+        let rejected_late_comment = cmd_review(
             tmp.path(),
             ReviewSubcommand::Comment {
                 thread_id: thread_id.clone(),
                 session_id: owner_session.clone(),
                 content: "late".to_string(),
-                stance: None,
                 json: true,
             },
         );
-        match rejected_after_resolve {
+        match rejected_late_comment {
             Err(CliError::InvalidInput(msg)) => assert!(msg.contains("already resolved")),
             other => panic!("expected resolved rejection, got {other:?}"),
         }
@@ -1708,66 +1663,10 @@ models = ["opus"]
                 file: Some("../secret".to_string()),
                 line: Some(1),
                 end_line: None,
-                stance: None,
                 json: true,
             },
         );
         assert!(matches!(invalid_target, Err(CliError::InvalidInput(_))));
-    }
-
-    #[test]
-    fn cmd_review_rejects_invalid_stance_without_changing_thread() {
-        let tmp = TempDir::new().unwrap();
-        write_review_config(tmp.path());
-        let session_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
-
-        cmd_review(
-            tmp.path(),
-            ReviewSubcommand::Create {
-                session_id: session_id.clone(),
-                content: "Claim".to_string(),
-                file: None,
-                line: None,
-                end_line: None,
-                stance: None,
-                json: true,
-            },
-        )
-        .unwrap();
-        let store = ReviewCommentStore::default();
-        let thread_id = store
-            .list_threads(tmp.path(), "/repo", None, ReviewActor::human())
-            .unwrap()[0]
-            .id
-            .clone();
-
-        let invalid = cmd_review(
-            tmp.path(),
-            ReviewSubcommand::Comment {
-                thread_id: thread_id.clone(),
-                session_id: session_id.clone(),
-                content: "trying invalid stance".to_string(),
-                stance: Some("maybe".to_string()),
-                json: true,
-            },
-        );
-        match invalid {
-            Err(CliError::InvalidInput(msg)) => assert!(msg.contains("Invalid stance value")),
-            other => panic!("expected invalid stance rejection, got {other:?}"),
-        }
-
-        let thread = store
-            .get_thread(
-                tmp.path(),
-                "/repo",
-                &thread_id,
-                review_actor(tmp.path(), &session_id).unwrap(),
-            )
-            .unwrap();
-        assert_eq!(thread.my_stance, ReviewStanceValue::None);
-        assert_eq!(thread.stances.len(), 1);
-        assert_eq!(thread.stances[0].value, ReviewStanceValue::None);
     }
 
     /// Rule: 観測対象として存在しない run_id は明示的に「該当 run なし」として扱われる

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
 	ReviewErrorPayload,
-	ReviewStanceValue,
 	ReviewThread,
 	WsMessage,
 } from "@/types/protocol";
@@ -104,7 +103,7 @@ export function useRemoteReviewThreads({
 	);
 
 	const appendComment = useCallback(
-		(threadId: string, content: string, stance?: ReviewStanceValue | null) => {
+		(threadId: string, content: string) => {
 			if (!worktreeName) return;
 			send({
 				type: "review_append_comment_request",
@@ -112,7 +111,6 @@ export function useRemoteReviewThreads({
 					worktreeName,
 					threadId,
 					content,
-					stance: stance ?? null,
 				},
 			});
 		},

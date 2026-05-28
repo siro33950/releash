@@ -25,19 +25,11 @@ const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
 			createdAt: 2,
 		},
 	],
-	stances: [
-		{
-			actor: { kind: "agent", displayName: "codex/gpt-5" },
-			value: "agree",
-			updatedAt: 2,
-		},
-	],
 	resolve: null,
 	createdAt: 1,
 	updatedAt: 2,
 	version: 2,
 	canResolve: true,
-	myStance: "none",
 	...overrides,
 });
 
@@ -63,7 +55,7 @@ function renderPanel(
 }
 
 describe("RemoteReviewPanel", () => {
-	it("renders comments, stances, resolve metadata, and callbacks", () => {
+	it("renders comments, resolve metadata, and callbacks", () => {
 		const props = renderPanel({
 			selectedThread: makeThread({
 				state: "resolved",
@@ -79,7 +71,6 @@ describe("RemoteReviewPanel", () => {
 
 		expect(screen.getAllByText("Initial claim").length).toBeGreaterThan(0);
 		expect(screen.getByText("Reply text")).toBeInTheDocument();
-		expect(screen.getByText(/codex\/gpt-5:/)).toBeInTheDocument();
 		expect(screen.getByText("Fixed")).toBeInTheDocument();
 
 		fireEvent.click(screen.getAllByText("Initial claim")[0]);
@@ -128,23 +119,7 @@ describe("RemoteReviewPanel", () => {
 		expect(resolve).toBeDisabled();
 	});
 
-	it("appends a comment with selected stance via Reply form radio", () => {
-		const props = renderPanel();
-
-		fireEvent.change(screen.getByPlaceholderText("Reply..."), {
-			target: { value: "Now I agree" },
-		});
-		fireEvent.click(screen.getByRole("radio", { name: "agree" }));
-		fireEvent.click(screen.getByText("Reply"));
-
-		expect(props.onAppendComment).toHaveBeenCalledWith(
-			"t1",
-			"Now I agree",
-			"agree",
-		);
-	});
-
-	it("appends a comment without changing stance when 'keep' radio remains selected", () => {
+	it("appends a comment via Reply form", () => {
 		const props = renderPanel();
 
 		fireEvent.change(screen.getByPlaceholderText("Reply..."), {
@@ -152,11 +127,7 @@ describe("RemoteReviewPanel", () => {
 		});
 		fireEvent.click(screen.getByText("Reply"));
 
-		expect(props.onAppendComment).toHaveBeenCalledWith(
-			"t1",
-			"Just a reply",
-			null,
-		);
+		expect(props.onAppendComment).toHaveBeenCalledWith("t1", "Just a reply");
 	});
 
 	it("does not show a Reply form for resolved threads", () => {

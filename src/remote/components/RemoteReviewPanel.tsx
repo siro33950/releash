@@ -2,7 +2,7 @@ import { CheckCircle2, MessageSquare, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import type { ReviewStanceValue, ReviewThread } from "@/types/protocol";
+import type { ReviewThread } from "@/types/protocol";
 
 interface RemoteReviewPanelProps {
 	threads: ReviewThread[];
@@ -13,15 +13,9 @@ interface RemoteReviewPanelProps {
 	onSelectThread: (threadId: string) => void;
 	onRefresh: () => void;
 	onCreateThread: (content: string) => void;
-	onAppendComment: (
-		threadId: string,
-		content: string,
-		stance?: ReviewStanceValue | null,
-	) => void;
+	onAppendComment: (threadId: string, content: string) => void;
 	onResolveThread: (threadId: string, summary: string) => void;
 }
-
-type StanceSelection = "keep" | ReviewStanceValue;
 
 export function RemoteReviewPanel({
 	threads,
@@ -37,12 +31,10 @@ export function RemoteReviewPanel({
 }: RemoteReviewPanelProps) {
 	const [newThread, setNewThread] = useState("");
 	const [reply, setReply] = useState("");
-	const [replyStance, setReplyStance] = useState<StanceSelection>("keep");
 	const [resolveSummary, setResolveSummary] = useState("");
 	const [pendingAction, setPendingAction] = useState<
 		null | "create" | "reply" | "resolve"
 	>(null);
-	const humanStance = selectedThread?.myStance ?? "none";
 	const responseKey = `${selectedThread?.id ?? ""}:${selectedThread?.version ?? ""}:${threads.length}:${error ?? ""}`;
 	const previousResponseKeyRef = useRef(responseKey);
 
@@ -137,17 +129,6 @@ export function RemoteReviewPanel({
 									</div>
 								))}
 							</div>
-							<div className="flex flex-wrap gap-1">
-								{selectedThread.stances.map((stance) => (
-									<span
-										key={`${stance.actor.kind}:${stance.actor.displayName}`}
-										className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground"
-									>
-										{stance.actor.kind} · {stance.actor.displayName}:{" "}
-										<span className="text-foreground">{stance.value}</span>
-									</span>
-								))}
-							</div>
 							{selectedThread.resolve && (
 								<div className="rounded border border-green-600/20 bg-green-600/10 px-2 py-1 text-[11px] text-green-700 dark:text-green-400">
 									<div>
@@ -168,46 +149,13 @@ export function RemoteReviewPanel({
 										placeholder="Reply..."
 										className="min-h-20 text-sm"
 									/>
-									<fieldset className="flex flex-wrap items-center gap-2 text-xs">
-										<legend className="sr-only">Stance</legend>
-										<span className="text-muted-foreground">
-											Stance (current: {humanStance})
-										</span>
-										{(
-											[
-												{ value: "keep", label: "keep" },
-												{ value: "agree", label: "agree" },
-												{ value: "disagree", label: "disagree" },
-												{ value: "none", label: "none" },
-											] as const
-										).map(({ value, label }) => (
-											<label
-												key={value}
-												className="inline-flex items-center gap-1 cursor-pointer"
-											>
-												<input
-													type="radio"
-													name={`remote-stance-${selectedThread.id}`}
-													value={value}
-													checked={replyStance === value}
-													onChange={() => setReplyStance(value)}
-												/>
-												{label}
-											</label>
-										))}
-									</fieldset>
 									<Button
 										className="h-8 w-full text-xs"
 										disabled={reply.trim() === "" || pendingAction === "reply"}
 										onClick={() => {
 											setPendingAction("reply");
-											onAppendComment(
-												selectedThread.id,
-												reply.trim(),
-												replyStance === "keep" ? null : replyStance,
-											);
+											onAppendComment(selectedThread.id, reply.trim());
 											setReply("");
-											setReplyStance("keep");
 										}}
 									>
 										Reply

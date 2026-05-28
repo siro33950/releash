@@ -234,7 +234,6 @@ export interface AgentStreamSync {
 
 export type ReviewActorKind = "human" | "agent";
 export type ReviewThreadState = "open" | "resolved";
-export type ReviewStanceValue = "agree" | "disagree" | "none";
 export type ReviewErrorCode =
 	| "invalid_input"
 	| "not_found"
@@ -264,12 +263,6 @@ export interface ReviewComment {
 	createdAt: number;
 }
 
-export interface ReviewStance {
-	actor: ReviewActor;
-	value: ReviewStanceValue;
-	updatedAt: number;
-}
-
 export interface ReviewResolveInfo {
 	actor: ReviewActor;
 	outcome: string;
@@ -284,13 +277,11 @@ export interface ReviewThread {
 	target: ReviewTarget;
 	state: ReviewThreadState;
 	comments: ReviewComment[];
-	stances: ReviewStance[];
 	resolve?: ReviewResolveInfo | null;
 	createdAt: number;
 	updatedAt: number;
 	version: number;
 	canResolve: boolean;
-	myStance: ReviewStanceValue;
 }
 
 export type AuthorScope = "mine" | "other";
@@ -299,7 +290,6 @@ export interface ReviewThreadFilter {
 	file?: string | null;
 	state?: ReviewThreadState | null;
 	author?: AuthorScope | null;
-	stance?: ReviewStanceValue | null;
 	unread?: boolean | null;
 	threadId?: string[];
 }
@@ -343,7 +333,6 @@ export interface ReviewAppendCommentRequest {
 	worktreeName?: string | null;
 	threadId: string;
 	content: string;
-	stance?: ReviewStanceValue | null;
 }
 
 export interface ReviewResolveRequest {
@@ -376,14 +365,6 @@ export type ReviewHistoryEntry =
 			commentId: string;
 			actor: ReviewActor;
 			content: string;
-			at: number;
-	  }
-	| {
-			kind: "stance_set";
-			id: string;
-			threadId: string;
-			actor: ReviewActor;
-			value: ReviewStanceValue;
 			at: number;
 	  }
 	| {

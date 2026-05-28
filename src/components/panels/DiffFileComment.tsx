@@ -11,7 +11,6 @@ import {
 	getThreadLineNumber,
 	type ReviewDiscussionThread,
 } from "@/types/diffComment";
-import type { ReviewStanceValue } from "@/types/protocol";
 import { DiffInlineComment, DiffInlineCommentInput } from "./DiffInlineComment";
 
 interface FileCommentPopoverTriggerProps {
@@ -20,11 +19,7 @@ interface FileCommentPopoverTriggerProps {
 	title?: string;
 	addLabel?: string;
 	onAdd: (content: string) => Promise<void>;
-	onAppend: (
-		threadId: string,
-		content: string,
-		stance?: ReviewStanceValue | null,
-	) => Promise<void>;
+	onAppend: (threadId: string, content: string) => Promise<void>;
 	onResolve: (
 		threadId: string,
 		outcome: string,

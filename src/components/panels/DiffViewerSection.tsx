@@ -1,6 +1,5 @@
 import type { ChangeGroup } from "@/lib/computeHunks";
 import type { ReviewDiscussionThread } from "@/types/diffComment";
-import type { ReviewStanceValue } from "@/types/protocol";
 import type { DiffMode } from "@/types/settings";
 import { CodeDiffViewer } from "./CodeDiffViewer";
 import { ImageDiffViewer } from "./ImageDiffViewer";
@@ -30,11 +29,7 @@ export interface DiffViewerSectionProps {
 		endLine: number,
 		content: string,
 	) => Promise<void>;
-	onAppendComment?: (
-		threadId: string,
-		content: string,
-		stance?: ReviewStanceValue | null,
-	) => Promise<void>;
+	onAppendComment?: (threadId: string, content: string) => Promise<void>;
 	onResolveThread?: (
 		threadId: string,
 		outcome: string,

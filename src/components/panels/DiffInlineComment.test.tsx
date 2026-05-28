@@ -27,13 +27,11 @@ const makeComment = (
 			createdAt: Date.now(),
 		},
 	],
-	stances: [],
 	resolve: null,
 	createdAt: Date.now(),
 	updatedAt: Date.now(),
 	version: 1,
 	canResolve: true,
-	myStance: "none",
 	...overrides,
 });
 
@@ -98,23 +96,10 @@ describe("DiffInlineComment", () => {
 		expect(screen.getByText("resolved")).toBeInTheDocument();
 	});
 
-	it("renders actor kind, all stances, resolve metadata, and projected my stance", () => {
+	it("renders actor kind and resolve metadata", () => {
 		render(
 			<DiffInlineComment
 				comment={makeComment({
-					myStance: "agree",
-					stances: [
-						{
-							actor: { kind: "human", displayName: "Human" },
-							value: "agree",
-							updatedAt: 1,
-						},
-						{
-							actor: { kind: "agent", displayName: "codex/gpt-5" },
-							value: "disagree",
-							updatedAt: 2,
-						},
-					],
 					resolve: {
 						actor: { kind: "human", displayName: "Human" },
 						outcome: "resolved",
@@ -129,10 +114,6 @@ describe("DiffInlineComment", () => {
 		// コメント author の displayName/kind は別要素として表示される
 		expect(screen.getAllByText("Human").length).toBeGreaterThan(0);
 		expect(screen.getAllByText("human").length).toBeGreaterThan(0);
-		expect(screen.getByText("codex/gpt-5")).toBeInTheDocument();
-		expect(screen.getAllByText("disagree").length).toBeGreaterThan(0);
-		// 現在 Stance は Reply フォーム内に "(current: agree)" として表示される
-		expect(screen.getByText(/current: agree/)).toBeInTheDocument();
 		// Resolve メタ情報（アイコンと同じ flex div 内に連続テキストとして配置）
 		expect(screen.getByText(/resolved by human · Human/)).toBeInTheDocument();
 		// resolve.summary は DiffCommentBody 経由で Markdown レンダリングされる
@@ -269,28 +250,13 @@ describe("DiffInlineComment", () => {
 		expect(onDelete).toHaveBeenCalledWith("thread-xyz");
 	});
 
-	it("wires reply, stance radio, and resolve actions to thread operations", async () => {
+	it("wires reply and resolve actions to thread operations", async () => {
 		const user = userEvent.setup();
 		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 
-		// Reply without changing stance (keep is default → null stance passed)
 		await user.type(screen.getByPlaceholderText("Reply..."), "Looks fixed");
 		await user.click(screen.getByRole("button", { name: "Reply" }));
-		expect(defaultProps.onAppend).toHaveBeenLastCalledWith(
-			"c1",
-			"Looks fixed",
-			null,
-		);
-
-		// Reply while selecting agree stance
-		await user.type(screen.getByPlaceholderText("Reply..."), "Now I agree");
-		await user.click(screen.getByRole("radio", { name: "agree" }));
-		await user.click(screen.getByRole("button", { name: "Reply" }));
-		expect(defaultProps.onAppend).toHaveBeenLastCalledWith(
-			"c1",
-			"Now I agree",
-			"agree",
-		);
+		expect(defaultProps.onAppend).toHaveBeenLastCalledWith("c1", "Looks fixed");
 
 		await user.type(
 			screen.getByPlaceholderText("Resolution summary"),

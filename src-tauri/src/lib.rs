@@ -332,8 +332,15 @@ pub fn run() {
             if let Some(data_dir) = pending_data_dir {
                 workflow::pending_command_watcher::spawn_pending_command_watcher(
                     app.handle().clone(),
-                    data_dir,
+                    data_dir.clone(),
                 );
+
+                // [issues-1022] CLI からの Thread / Comment 書き込みを UI へ
+                // 反映するため、`<data_dir>/review-comments/` を file watch して
+                // `review-comments-changed` を発火する。Tauri コマンド経由の
+                // `emit_changed` とは別系統の通知経路で、CLI / Agent / 外部編集
+                // 由来の書き込みも拾う。
+                review_comments::spawn_review_comments_watcher(app.handle().clone(), data_dir);
             }
 
             menu::setup_menu(app)?;

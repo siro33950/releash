@@ -22,7 +22,6 @@ import {
 	getThreadLineNumber,
 	type ReviewDiscussionThread,
 } from "@/types/diffComment";
-import type { ReviewStanceValue } from "@/types/protocol";
 import type { DiffMode } from "@/types/settings";
 import { DiffInlineComment, DiffInlineCommentInput } from "./DiffInlineComment";
 import { DiffSearchBar } from "./DiffSearchBar";
@@ -71,11 +70,7 @@ export interface ShikiDiffViewerProps {
 		endLine: number,
 		content: string,
 	) => Promise<void>;
-	onAppendComment?: (
-		threadId: string,
-		content: string,
-		stance?: ReviewStanceValue | null,
-	) => Promise<void>;
+	onAppendComment?: (threadId: string, content: string) => Promise<void>;
 	onResolveThread?: (
 		threadId: string,
 		outcome: string,
@@ -431,11 +426,7 @@ interface CommentCallbacks {
 		endLine: number,
 		content: string,
 	) => Promise<void>;
-	onAppendComment?: (
-		threadId: string,
-		content: string,
-		stance?: ReviewStanceValue | null,
-	) => Promise<void>;
+	onAppendComment?: (threadId: string, content: string) => Promise<void>;
 	onResolveThread?: (
 		threadId: string,
 		outcome: string,

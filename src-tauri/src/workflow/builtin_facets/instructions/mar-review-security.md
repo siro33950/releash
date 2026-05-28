@@ -59,10 +59,10 @@
 
 # 出力
 
-- subcommand: `review create`（`--stance agree` 付き）
+- subcommand: `review create`
 - content フォーマット: `[security][severity:<critical|high|medium|low>][scope:<diff|touched>] <問題の説明と修正提案>`
 
 # 禁止事項
 
-- 本フェーズは投稿のみ。他者 Thread への Stance / Comment 操作を行わない
+- 本フェーズは投稿のみ。他者 Thread への Comment 操作を行わない
 - 自分の観点外の指摘を行わない

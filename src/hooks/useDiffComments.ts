@@ -5,7 +5,7 @@ import {
 	getThreadFilePath,
 	type ReviewDiscussionThread,
 } from "@/types/diffComment";
-import type { ReviewStanceValue, ReviewThread } from "@/types/protocol";
+import type { ReviewThread } from "@/types/protocol";
 
 interface UseDiffCommentsOptions {
 	worktreeName: string;
@@ -40,7 +40,11 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 
 	useEffect(() => {
 		const unlisten = listen<string>("review-comments-changed", (event) => {
-			if (event.payload === worktreeNameRef.current) {
+			// payload "*" は CLI/Agent/外部書き込みを拾う file watcher 由来の通知。
+			// worktree 名を逆引きしない設計のため、ワイルドカードのときは全 listener が
+			// それぞれ自分の worktreeName で reload する（無関係 worktree に書き込まれた
+			// 場合の不要 reload は実コスト微小なので許容）。
+			if (event.payload === "*" || event.payload === worktreeNameRef.current) {
 				loadComments();
 			}
 		});
@@ -68,16 +72,11 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 	);
 
 	const appendComment = useCallback(
-		async (
-			threadId: string,
-			content: string,
-			stance?: ReviewStanceValue | null,
-		) => {
+		async (threadId: string, content: string) => {
 			await invoke<ReviewThread>("append_review_comment", {
 				worktreeName,
 				threadId,
 				content,
-				stance: stance ?? null,
 			});
 		},
 		[worktreeName],

@@ -1,7 +1,6 @@
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -12,9 +11,11 @@ use uuid::Uuid;
 
 mod commands;
 mod handoff;
+mod watcher;
 
 pub use commands::*;
 pub use handoff::build_review_thread_handoff_message;
+pub use watcher::spawn_review_comments_watcher;
 
 const MAX_REVIEW_TEXT_BYTES: usize = 65_536;
 const MAX_REVIEW_TARGET_PATH_BYTES: usize = 4096;
@@ -55,10 +56,6 @@ impl ReviewActorDto {
                 self.model.as_deref().unwrap_or_default()
             ),
         }
-    }
-
-    fn same_participant(&self, other: &ReviewActor) -> bool {
-        self.participant_key() == other.participant_key()
     }
 }
 
@@ -105,10 +102,6 @@ impl ReviewActor {
         }
     }
 
-    fn same_participant(&self, other: &Self) -> bool {
-        self.participant_key() == other.participant_key()
-    }
-
     fn redacted_for_public(&self) -> ReviewActorDto {
         ReviewActorDto {
             kind: self.kind.clone(),
@@ -124,14 +117,6 @@ impl ReviewActor {
 pub enum ReviewThreadState {
     Open,
     Resolved,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReviewStanceValue {
-    Agree,
-    Disagree,
-    None,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -154,14 +139,6 @@ pub struct ReviewComment {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ReviewStance {
-    pub actor: ReviewActorDto,
-    pub value: ReviewStanceValue,
-    pub updated_at: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct ReviewResolveInfo {
     pub actor: ReviewActorDto,
     pub outcome: String,
@@ -178,19 +155,17 @@ pub struct ReviewThread {
     pub target: ReviewTarget,
     pub state: ReviewThreadState,
     pub comments: Vec<ReviewComment>,
-    pub stances: Vec<ReviewStance>,
     pub resolve: Option<ReviewResolveInfo>,
     pub created_at: f64,
     pub updated_at: f64,
     pub version: u64,
     pub can_resolve: bool,
-    pub my_stance: ReviewStanceValue,
 }
 
-/// `ReviewThreadFilter.author` の値。spec issues-1022 design.md L40 List contract:
+/// `ReviewThreadFilter.author` の値。spec issues-1022 design.md List contract:
 /// 「自分が作成した Thread」/「自分以外が作成した Thread」を表す。
 ///
-/// 任意 author を指定するモードは contract で提供しない (Stance / Resolve の同一性判定は
+/// 任意 author を指定するモードは contract で提供しない (List filter / unread 判定は
 /// session から解決した participant_key で完結するため、外部から任意 key を渡す経路を
 /// 露出しない)。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -211,10 +186,8 @@ pub struct ReviewThreadFilter {
     pub state: Option<ReviewThreadState>,
     /// 作成者が viewer か他者か。任意 author 文字列での絞り込みは contract で提供しない。
     pub author: Option<AuthorScope>,
-    /// viewer の現在 Stance (`agree` / `disagree` / `none`)。
-    pub stance: Option<ReviewStanceValue>,
     /// 未読 (viewer の最後の Comment 追記時刻以降に他者の Comment 追記があるか)。
-    /// Stance 表明 / Resolve は「Comment 追記」に含めない。
+    /// Resolve は「Comment 追記」に含めない。
     pub unread: Option<bool>,
     /// 指定 id の Thread のみ (空 = 絞らない、非空は配列内 OR、他軸とは AND)。
     #[serde(default)]
@@ -243,13 +216,6 @@ enum ReviewEvent {
         comment_id: String,
         actor: ReviewActor,
         content: String,
-        at: f64,
-    },
-    StanceSet {
-        event_id: String,
-        thread_id: String,
-        actor: ReviewActor,
-        value: ReviewStanceValue,
         at: f64,
     },
     ThreadResolved {
@@ -290,13 +256,6 @@ pub enum ReviewHistoryEntry {
         comment_id: String,
         actor: ReviewActorDto,
         content: String,
-        at: f64,
-    },
-    StanceSet {
-        id: String,
-        thread_id: String,
-        actor: ReviewActorDto,
-        value: ReviewStanceValue,
         at: f64,
     },
     ThreadResolved {
@@ -350,19 +309,6 @@ impl From<&ReviewEvent> for ReviewHistoryEntry {
                 content: content.clone(),
                 at: *at,
             },
-            ReviewEvent::StanceSet {
-                event_id,
-                thread_id,
-                actor,
-                value,
-                at,
-            } => Self::StanceSet {
-                id: event_id.clone(),
-                thread_id: thread_id.clone(),
-                actor: actor.redacted_for_public(),
-                value: value.clone(),
-                at: *at,
-            },
             ReviewEvent::ThreadResolved {
                 event_id,
                 thread_id,
@@ -399,7 +345,6 @@ impl ReviewEvent {
         match self {
             Self::ThreadCreated { event_id, .. }
             | Self::CommentAppended { event_id, .. }
-            | Self::StanceSet { event_id, .. }
             | Self::ThreadResolved { event_id, .. }
             | Self::ThreadDeleted { event_id, .. } => event_id,
         }
@@ -409,7 +354,6 @@ impl ReviewEvent {
         match self {
             Self::ThreadCreated { thread_id, .. }
             | Self::CommentAppended { thread_id, .. }
-            | Self::StanceSet { thread_id, .. }
             | Self::ThreadResolved { thread_id, .. }
             | Self::ThreadDeleted { thread_id, .. } => thread_id,
         }
@@ -419,7 +363,6 @@ impl ReviewEvent {
         match self {
             Self::ThreadCreated { at, .. }
             | Self::CommentAppended { at, .. }
-            | Self::StanceSet { at, .. }
             | Self::ThreadResolved { at, .. }
             | Self::ThreadDeleted { at, .. } => *at,
         }
@@ -648,8 +591,8 @@ fn validate_filter(filter: &Option<ReviewThreadFilter>) -> Result<(), ReviewErro
 /// viewer から見て当該 Thread が未読か (viewer の最後 Comment 追記時刻以降に他者 Comment 追記
 /// があるか) を判定する pure 関数。
 ///
-/// spec issues-1022 design.md L40 List contract「unread (自分の最後の Comment 追記以降に他者
-/// Comment 追記があるか)。Stance 表明や Resolve は『Comment 追記』に含めない」を実装する。
+/// spec issues-1022 design.md List contract「unread (自分の最後の Comment 追記以降に他者
+/// Comment 追記があるか)。Resolve は『Comment 追記』に含めない」を実装する。
 ///
 /// - viewer 未投稿で他者 Comment あり → true
 /// - viewer が最後の Comment 投稿者 → false
@@ -736,15 +679,6 @@ fn ensure_thread_open(thread: &ReviewThread, thread_id: &str) -> Result<(), Revi
     Ok(())
 }
 
-fn ensure_can_resolve(actor: &ReviewActor, thread: &ReviewThread) -> Result<(), ReviewError> {
-    if actor.kind != ReviewActorKind::Human && !thread.author.same_participant(actor) {
-        return Err(ReviewError::PermissionDenied(
-            "Only the thread author or a human reviewer can resolve this thread".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 fn ensure_can_delete(actor: &ReviewActor) -> Result<(), ReviewError> {
     if actor.kind != ReviewActorKind::Human {
         return Err(ReviewError::PermissionDenied(
@@ -758,12 +692,10 @@ fn project_thread(
     worktree_name: &str,
     thread_id: &str,
     events: &[ReviewEvent],
-    viewer: &ReviewActor,
 ) -> Option<ReviewThread> {
     let mut author: Option<ReviewActor> = None;
     let mut target: Option<ReviewTarget> = None;
     let mut comments = Vec::new();
-    let mut stances_by_actor: HashMap<String, ReviewStance> = HashMap::new();
     let mut resolve = None;
     let mut created_at = 0.0;
     let mut updated_at = 0.0;
@@ -808,18 +740,6 @@ fn project_thread(
                 content: content.clone(),
                 created_at: *at,
             }),
-            ReviewEvent::StanceSet {
-                actor, value, at, ..
-            } => {
-                stances_by_actor.insert(
-                    actor.participant_key(),
-                    ReviewStance {
-                        actor: actor.redacted_for_public(),
-                        value: value.clone(),
-                        updated_at: *at,
-                    },
-                );
-            }
             ReviewEvent::ThreadResolved {
                 actor,
                 outcome,
@@ -846,32 +766,12 @@ fn project_thread(
 
     let author = author?;
     let target = target?;
-    stances_by_actor
-        .entry(author.participant_key())
-        .or_insert_with(|| ReviewStance {
-            actor: author.redacted_for_public(),
-            value: ReviewStanceValue::None,
-            updated_at: created_at,
-        });
-    let mut stances: Vec<ReviewStance> = stances_by_actor.into_values().collect();
-    stances.sort_by(|a, b| {
-        a.actor
-            .display_name
-            .cmp(&b.actor.display_name)
-            .then_with(|| a.updated_at.total_cmp(&b.updated_at))
-    });
     let state = if resolve.is_some() {
         ReviewThreadState::Resolved
     } else {
         ReviewThreadState::Open
     };
-    let my_stance = stances
-        .iter()
-        .find(|stance| stance.actor.same_participant(viewer))
-        .map(|stance| stance.value.clone())
-        .unwrap_or(ReviewStanceValue::None);
-    let can_resolve = state == ReviewThreadState::Open
-        && (viewer.kind == ReviewActorKind::Human || author.same_participant(viewer));
+    let can_resolve = state == ReviewThreadState::Open;
 
     Some(ReviewThread {
         id: thread_id.to_string(),
@@ -880,21 +780,15 @@ fn project_thread(
         target,
         state,
         comments,
-        stances,
         resolve,
         created_at,
         updated_at,
         version,
         can_resolve,
-        my_stance,
     })
 }
 
-fn project_threads(
-    worktree_name: &str,
-    events: &[ReviewEvent],
-    viewer: &ReviewActor,
-) -> Vec<ReviewThread> {
+fn project_threads(worktree_name: &str, events: &[ReviewEvent]) -> Vec<ReviewThread> {
     let mut ids = Vec::<String>::new();
     for event in events {
         if matches!(event, ReviewEvent::ThreadCreated { .. }) {
@@ -903,7 +797,7 @@ fn project_threads(
     }
     let mut threads: Vec<_> = ids
         .iter()
-        .filter_map(|id| project_thread(worktree_name, id, events, viewer))
+        .filter_map(|id| project_thread(worktree_name, id, events))
         .collect();
     threads.sort_by(|a, b| b.updated_at.total_cmp(&a.updated_at));
     threads
@@ -938,11 +832,6 @@ fn apply_filter(
                     AuthorScope::Other => !is_mine,
                 };
                 if !matches {
-                    return false;
-                }
-            }
-            if let Some(stance) = &filter.stance {
-                if &thread.my_stance != stance {
                     return false;
                 }
             }
@@ -1071,7 +960,7 @@ impl ReviewCommentStore {
         let _process_guard = acquire_worktree_file_lock(app_data_dir, worktree_name)?;
         let events = self.load(app_data_dir, worktree_name)?;
         Ok(apply_filter(
-            project_threads(worktree_name, &events, &viewer),
+            project_threads(worktree_name, &events),
             filter,
             &viewer,
         ))
@@ -1082,12 +971,11 @@ impl ReviewCommentStore {
         app_data_dir: &Path,
         worktree_name: &str,
         thread_id: &str,
-        viewer: ReviewActor,
     ) -> Result<ReviewThread, ReviewError> {
         let _guard = self.gateway.file_lock.lock();
         let _process_guard = acquire_worktree_file_lock(app_data_dir, worktree_name)?;
         let events = self.load(app_data_dir, worktree_name)?;
-        project_thread(worktree_name, thread_id, &events, &viewer)
+        project_thread(worktree_name, thread_id, &events)
             .ok_or_else(|| ReviewError::NotFound(format!("Review thread not found: {thread_id}")))
     }
 
@@ -1130,11 +1018,8 @@ impl ReviewCommentStore {
 
     /// Thread を作成し、初回 Comment を確定する。
     ///
-    /// `stance` を `Some(...)` で渡した場合、初回 Comment と同一書き込み境界内で
-    /// `StanceSet` イベントを連続 append する。spec design.md L4「Thread は主張となる
-    /// 初回 Comment を伴って成立する」「Stance の書き込みは Comment 追記操作の任意フラグ
-    /// として行う」(L52) の通り、`create` は初回 Comment 追記の一形態として `--stance`
-    /// フラグを受け取り得る。`None` の場合は従来通り作成者 Stance は `none` で始まる。
+    /// spec design.md「Thread は主張となる初回 Comment を伴って成立する」の通り、
+    /// Thread の作成は初回 Comment の追記と一体で行う。
     pub fn create_thread(
         &self,
         app_data_dir: &Path,
@@ -1142,7 +1027,6 @@ impl ReviewCommentStore {
         actor: ReviewActor,
         target: ReviewTarget,
         content: String,
-        stance: Option<ReviewStanceValue>,
     ) -> Result<ReviewThread, ReviewError> {
         validate_content(&content, "content")?;
         validate_target(&target)?;
@@ -1160,32 +1044,17 @@ impl ReviewCommentStore {
             content,
             at,
         });
-        if let Some(value) = stance {
-            events.push(ReviewEvent::StanceSet {
-                event_id: event_id(),
-                thread_id: thread_id.clone(),
-                actor: actor.clone(),
-                value,
-                at,
-            });
-        }
         self.gateway
             .write_events(app_data_dir, worktree_name, &events)?;
-        project_thread(worktree_name, &thread_id, &events, &actor)
+        project_thread(worktree_name, &thread_id, &events)
             .ok_or_else(|| ReviewError::NotFound(format!("Review thread not found: {thread_id}")))
     }
 
-    /// Comment 追記と (任意で) 同 actor の Stance 更新を atomic に行う。
+    /// Comment 追記を確定する。
     ///
-    /// spec issues-1022 design.md L45 Stance contract / Boundaries L77 に基づき、Stance の
-    /// 書き込みは Comment 追記操作の任意フラグとして提供される唯一の経路。`stance` 指定:
-    /// - `Some(Agree)` / `Some(Disagree)`: 現在 Stance を上書き
-    /// - `Some(None)`: 現在 Stance を未表明状態に撤回
-    /// - `None`: 現在 Stance を維持 (Stance 更新なし)
-    ///
-    /// 同一書き込み境界 (file lock + in-process mutex) 内で `CommentAppended` イベントと
-    /// (stance が `Some` の場合) `StanceSet` イベントを連続 append する。並行更新時も
-    /// イベント列の確定順序が一意に決まる (spec design.md L15 並行操作)。
+    /// 同一書き込み境界 (file lock + in-process mutex) 内で `CommentAppended` イベントを
+    /// 1 件 append する。並行更新時もイベント列の確定順序が一意に決まる
+    /// (spec design.md 並行操作)。
     pub fn append_comment(
         &self,
         app_data_dir: &Path,
@@ -1193,16 +1062,14 @@ impl ReviewCommentStore {
         actor: ReviewActor,
         thread_id: &str,
         content: String,
-        stance: Option<ReviewStanceValue>,
     ) -> Result<ReviewThread, ReviewError> {
         validate_content(&content, "content")?;
         let _guard = self.gateway.file_lock.lock();
         let _process_guard = acquire_worktree_file_lock(app_data_dir, worktree_name)?;
         let mut events = self.load(app_data_dir, worktree_name)?;
-        let thread =
-            project_thread(worktree_name, thread_id, &events, &actor).ok_or_else(|| {
-                ReviewError::NotFound(format!("Review thread not found: {thread_id}"))
-            })?;
+        let thread = project_thread(worktree_name, thread_id, &events).ok_or_else(|| {
+            ReviewError::NotFound(format!("Review thread not found: {thread_id}"))
+        })?;
         ensure_thread_open(&thread, thread_id)?;
         let at = now();
         events.push(ReviewEvent::CommentAppended {
@@ -1213,18 +1080,9 @@ impl ReviewCommentStore {
             content,
             at,
         });
-        if let Some(value) = stance {
-            events.push(ReviewEvent::StanceSet {
-                event_id: event_id(),
-                thread_id: thread_id.to_string(),
-                actor: actor.clone(),
-                value,
-                at,
-            });
-        }
         self.gateway
             .write_events(app_data_dir, worktree_name, &events)?;
-        project_thread(worktree_name, thread_id, &events, &actor)
+        project_thread(worktree_name, thread_id, &events)
             .ok_or_else(|| ReviewError::NotFound(format!("Review thread not found: {thread_id}")))
     }
 
@@ -1242,12 +1100,10 @@ impl ReviewCommentStore {
         let _guard = self.gateway.file_lock.lock();
         let _process_guard = acquire_worktree_file_lock(app_data_dir, worktree_name)?;
         let mut events = self.load(app_data_dir, worktree_name)?;
-        let thread =
-            project_thread(worktree_name, thread_id, &events, &actor).ok_or_else(|| {
-                ReviewError::NotFound(format!("Review thread not found: {thread_id}"))
-            })?;
+        let thread = project_thread(worktree_name, thread_id, &events).ok_or_else(|| {
+            ReviewError::NotFound(format!("Review thread not found: {thread_id}"))
+        })?;
         ensure_thread_open(&thread, thread_id)?;
-        ensure_can_resolve(&actor, &thread)?;
         events.push(ReviewEvent::ThreadResolved {
             event_id: event_id(),
             thread_id: thread_id.to_string(),
@@ -1258,7 +1114,7 @@ impl ReviewCommentStore {
         });
         self.gateway
             .write_events(app_data_dir, worktree_name, &events)?;
-        project_thread(worktree_name, thread_id, &events, &actor)
+        project_thread(worktree_name, thread_id, &events)
             .ok_or_else(|| ReviewError::NotFound(format!("Review thread not found: {thread_id}")))
     }
 
@@ -1283,7 +1139,7 @@ impl ReviewCommentStore {
         let _process_guard = acquire_worktree_file_lock(app_data_dir, worktree_name)?;
         let mut events = self.load(app_data_dir, worktree_name)?;
         // 既に削除済み or 未作成なら NotFound
-        project_thread(worktree_name, thread_id, &events, &actor).ok_or_else(|| {
+        project_thread(worktree_name, thread_id, &events).ok_or_else(|| {
             ReviewError::NotFound(format!("Review thread not found: {thread_id}"))
         })?;
         events.push(ReviewEvent::ThreadDeleted {
@@ -1333,83 +1189,8 @@ mod tests {
                 end_line: None,
             },
             "  ".to_string(),
-            None,
         );
         assert!(matches!(result, Err(ReviewError::InvalidInput(_))));
-    }
-
-    #[test]
-    fn creator_stance_defaults_to_none() {
-        let dir = TempDir::new().unwrap();
-        let store = ReviewCommentStore::default();
-        let thread = store
-            .create_thread(
-                dir.path(),
-                "wt",
-                agent_a("s1"),
-                ReviewTarget {
-                    file_path: Some("src/main.rs".to_string()),
-                    line_number: Some(10),
-                    end_line: None,
-                },
-                "Initial claim".to_string(),
-                None,
-            )
-            .unwrap();
-        assert_eq!(thread.state, ReviewThreadState::Open);
-        assert_eq!(thread.comments.len(), 1);
-        assert_eq!(thread.stances[0].value, ReviewStanceValue::None);
-    }
-
-    /// Rule: `create_thread` の `stance` 引数で初期 Stance を `agree` として確定できる。
-    /// spec design.md L52「Stance の書き込みは Comment 追記操作の任意フラグとして行う」
-    /// に基づき、Thread 作成 (= 初回 Comment 追記) も Stance フラグを伴える。
-    #[test]
-    fn creator_stance_can_be_set_to_agree_at_creation() {
-        let dir = TempDir::new().unwrap();
-        let store = ReviewCommentStore::default();
-        let thread = store
-            .create_thread(
-                dir.path(),
-                "wt",
-                agent_a("s1"),
-                ReviewTarget {
-                    file_path: Some("src/main.rs".to_string()),
-                    line_number: Some(10),
-                    end_line: None,
-                },
-                "Initial claim".to_string(),
-                Some(ReviewStanceValue::Agree),
-            )
-            .unwrap();
-        assert_eq!(thread.state, ReviewThreadState::Open);
-        assert_eq!(thread.comments.len(), 1);
-        assert_eq!(thread.stances.len(), 1);
-        assert_eq!(thread.stances[0].value, ReviewStanceValue::Agree);
-        assert_eq!(thread.my_stance, ReviewStanceValue::Agree);
-    }
-
-    /// Rule: `create_thread` の `stance` 引数で `disagree` も指定できる
-    /// (議題提起目的で「これは問題ではない」と表明する Thread の作成シナリオ)。
-    #[test]
-    fn creator_stance_can_be_set_to_disagree_at_creation() {
-        let dir = TempDir::new().unwrap();
-        let store = ReviewCommentStore::default();
-        let thread = store
-            .create_thread(
-                dir.path(),
-                "wt",
-                agent_a("s1"),
-                ReviewTarget {
-                    file_path: None,
-                    line_number: None,
-                    end_line: None,
-                },
-                "Devil's advocate".to_string(),
-                Some(ReviewStanceValue::Disagree),
-            )
-            .unwrap();
-        assert_eq!(thread.my_stance, ReviewStanceValue::Disagree);
     }
 
     #[test]
@@ -1427,7 +1208,6 @@ mod tests {
                     end_line: None,
                 },
                 "Claim".to_string(),
-                None,
             )
             .unwrap();
         let resolved = store
@@ -1443,8 +1223,10 @@ mod tests {
         assert_eq!(resolved.state, ReviewThreadState::Resolved);
     }
 
+    /// Resolve は participant identity に依存せず、open Thread であれば誰でも実行できる。
+    /// 起票者ではない別 backend/model の Agent からの Resolve も成功する。
     #[test]
-    fn non_author_agent_cannot_resolve() {
+    fn non_author_agent_can_resolve() {
         let dir = TempDir::new().unwrap();
         let store = ReviewCommentStore::default();
         let thread = store
@@ -1458,26 +1240,23 @@ mod tests {
                     end_line: None,
                 },
                 "Claim".to_string(),
-                None,
             )
             .unwrap();
-        let result = store.resolve_thread(
-            dir.path(),
-            "wt",
-            ReviewActor::agent(
-                "claude".to_string(),
-                "opus".to_string(),
-                Some("s3".to_string()),
-            ),
-            &thread.id,
-            "rejected".to_string(),
-            "I disagree".to_string(),
-        );
-        assert!(matches!(result, Err(ReviewError::PermissionDenied(_))));
-        let current = store
-            .get_thread(dir.path(), "wt", &thread.id, ReviewActor::human())
+        let resolved = store
+            .resolve_thread(
+                dir.path(),
+                "wt",
+                ReviewActor::agent(
+                    "claude".to_string(),
+                    "opus".to_string(),
+                    Some("s3".to_string()),
+                ),
+                &thread.id,
+                "rejected".to_string(),
+                "I disagree".to_string(),
+            )
             .unwrap();
-        assert_eq!(current.state, ReviewThreadState::Open);
+        assert_eq!(resolved.state, ReviewThreadState::Resolved);
     }
 
     #[test]
@@ -1495,7 +1274,6 @@ mod tests {
                     end_line: None,
                 },
                 "Claim".to_string(),
-                None,
             )
             .unwrap();
         store
@@ -1514,13 +1292,14 @@ mod tests {
             agent_a("s1"),
             &thread.id,
             "More".to_string(),
-            None,
         );
         assert!(matches!(append, Err(ReviewError::AlreadyResolved(_))));
     }
 
+    /// resolved な Thread に対しては Comment 追加・再 Resolve のいずれも拒否され、
+    /// 元の Resolve 情報が保持される。
     #[test]
-    fn stance_last_write_wins_per_actor() {
+    fn resolved_thread_rejects_mutation_and_second_resolve_without_state_change() {
         let dir = TempDir::new().unwrap();
         let store = ReviewCommentStore::default();
         let thread = store
@@ -1534,117 +1313,6 @@ mod tests {
                     end_line: None,
                 },
                 "Claim".to_string(),
-                None,
-            )
-            .unwrap();
-        store
-            .append_comment(
-                dir.path(),
-                "wt",
-                agent_a("s1"),
-                &thread.id,
-                "Taking agree stance".to_string(),
-                Some(ReviewStanceValue::Agree),
-            )
-            .unwrap();
-        let current = store
-            .append_comment(
-                dir.path(),
-                "wt",
-                agent_a("s2"),
-                &thread.id,
-                "Switching to disagree".to_string(),
-                Some(ReviewStanceValue::Disagree),
-            )
-            .unwrap();
-        let stance = current
-            .stances
-            .iter()
-            .find(|s| s.actor.participant_key() == agent_a("s3").participant_key())
-            .unwrap();
-        assert_eq!(stance.value, ReviewStanceValue::Disagree);
-        assert_eq!(current.my_stance, ReviewStanceValue::Disagree);
-    }
-
-    #[test]
-    fn stances_are_independent_per_participant_and_viewer() {
-        let dir = TempDir::new().unwrap();
-        let store = ReviewCommentStore::default();
-        let thread = store
-            .create_thread(
-                dir.path(),
-                "wt",
-                agent_a("s1"),
-                ReviewTarget {
-                    file_path: None,
-                    line_number: None,
-                    end_line: None,
-                },
-                "Claim".to_string(),
-                None,
-            )
-            .unwrap();
-
-        store
-            .append_comment(
-                dir.path(),
-                "wt",
-                agent_a("s2"),
-                &thread.id,
-                "agent_a stance".to_string(),
-                Some(ReviewStanceValue::Agree),
-            )
-            .unwrap();
-        store
-            .append_comment(
-                dir.path(),
-                "wt",
-                agent_b("s3"),
-                &thread.id,
-                "agent_b stance".to_string(),
-                Some(ReviewStanceValue::Disagree),
-            )
-            .unwrap();
-
-        let as_agent_a = store
-            .get_thread(dir.path(), "wt", &thread.id, agent_a("s4"))
-            .unwrap();
-        let as_agent_b = store
-            .get_thread(dir.path(), "wt", &thread.id, agent_b("s5"))
-            .unwrap();
-        let agent_a_stance = as_agent_a
-            .stances
-            .iter()
-            .find(|stance| stance.actor.participant_key() == agent_a("s6").participant_key())
-            .unwrap();
-        let agent_b_stance = as_agent_a
-            .stances
-            .iter()
-            .find(|stance| stance.actor.participant_key() == agent_b("s7").participant_key())
-            .unwrap();
-
-        assert_eq!(agent_a_stance.value, ReviewStanceValue::Agree);
-        assert_eq!(agent_b_stance.value, ReviewStanceValue::Disagree);
-        assert_eq!(as_agent_a.my_stance, ReviewStanceValue::Agree);
-        assert_eq!(as_agent_b.my_stance, ReviewStanceValue::Disagree);
-    }
-
-    #[test]
-    fn resolved_thread_rejects_stance_and_second_resolve_without_state_change() {
-        let dir = TempDir::new().unwrap();
-        let store = ReviewCommentStore::default();
-        let thread = store
-            .create_thread(
-                dir.path(),
-                "wt",
-                agent_a("s1"),
-                ReviewTarget {
-                    file_path: None,
-                    line_number: None,
-                    end_line: None,
-                },
-                "Claim".to_string(),
-                None,
             )
             .unwrap();
         let resolved = store
@@ -1658,13 +1326,12 @@ mod tests {
             )
             .unwrap();
 
-        let stance = store.append_comment(
+        let late_comment = store.append_comment(
             dir.path(),
             "wt",
             agent_a("s1"),
             &thread.id,
-            "try late stance".to_string(),
-            Some(ReviewStanceValue::Agree),
+            "try late comment".to_string(),
         );
         let second_resolve = store.resolve_thread(
             dir.path(),
@@ -1674,11 +1341,9 @@ mod tests {
             "accepted".to_string(),
             "again".to_string(),
         );
-        let current = store
-            .get_thread(dir.path(), "wt", &thread.id, ReviewActor::human())
-            .unwrap();
+        let current = store.get_thread(dir.path(), "wt", &thread.id).unwrap();
 
-        assert!(matches!(stance, Err(ReviewError::AlreadyResolved(_))));
+        assert!(matches!(late_comment, Err(ReviewError::AlreadyResolved(_))));
         assert!(matches!(
             second_resolve,
             Err(ReviewError::AlreadyResolved(_))
@@ -1709,7 +1374,6 @@ mod tests {
                     end_line: None,
                 },
                 "A".to_string(),
-                None,
             )
             .unwrap();
         assert!(store
@@ -1740,7 +1404,6 @@ mod tests {
                     end_line: None,
                 },
                 "A".to_string(),
-                None,
             )
             .unwrap();
 
@@ -1770,7 +1433,6 @@ mod tests {
                     end_line: None,
                 },
                 "Claim".to_string(),
-                None,
             )
             .unwrap();
 
@@ -1795,7 +1457,6 @@ mod tests {
                 end_line: None,
             },
             too_long,
-            None,
         );
 
         assert!(matches!(result, Err(ReviewError::InvalidInput(_))));
@@ -1824,7 +1485,6 @@ mod tests {
                     end_line: None,
                 },
                 "A".to_string(),
-                None,
             );
             assert!(
                 matches!(result, Err(ReviewError::InvalidInput(_))),
@@ -1855,7 +1515,6 @@ mod tests {
                 ReviewActor::human(),
                 target,
                 "A".to_string(),
-                None,
             );
             assert!(matches!(result, Err(ReviewError::InvalidInput(_))));
         }
@@ -1899,7 +1558,6 @@ mod tests {
                     end_line: None,
                 },
                 "A".to_string(),
-                None,
             )
             .unwrap();
         store
@@ -1909,7 +1567,6 @@ mod tests {
                 ReviewActor::human(),
                 &thread.id,
                 "B".to_string(),
-                None,
             )
             .unwrap();
         let history = store.history_events(dir.path(), "wt", &thread.id).unwrap();
@@ -1936,7 +1593,6 @@ mod tests {
                 end_line: None,
             },
             "A".to_string(),
-            None,
         );
 
         assert!(matches!(result, Err(ReviewError::Serialize(_))));
@@ -1958,7 +1614,6 @@ mod tests {
                     end_line: None,
                 },
                 "Claim".to_string(),
-                None,
             )
             .unwrap();
 
@@ -1975,7 +1630,6 @@ mod tests {
                         agent_a(content),
                         &thread_id,
                         content.to_string(),
-                        None,
                     )
                     .unwrap();
             }));
@@ -1985,7 +1639,7 @@ mod tests {
         }
 
         let current = first_store
-            .get_thread(dir.path(), "wt", &thread.id, ReviewActor::human())
+            .get_thread(dir.path(), "wt", &thread.id)
             .unwrap();
         assert_eq!(current.comments.len(), 3);
 
@@ -2014,72 +1668,11 @@ mod tests {
         assert!(matches!(second, Err(ReviewError::AlreadyResolved(_))));
     }
 
+    /// 5 軸 (file / state / author / unread / thread_id) を組み合わせて Thread 一覧を
+    /// 絞り込めることを確認する。spec design.md List contract 通り、各軸は AND で結合し、
+    /// thread_id は配列内 OR で他軸と AND される。
     #[test]
-    fn parallel_stance_updates_are_ordered_and_project_last_value() {
-        let dir = TempDir::new().unwrap();
-        let store = ReviewCommentStore::default();
-        let thread = store
-            .create_thread(
-                dir.path(),
-                "wt",
-                agent_a("s1"),
-                ReviewTarget {
-                    file_path: None,
-                    line_number: None,
-                    end_line: None,
-                },
-                "Claim".to_string(),
-                None,
-            )
-            .unwrap();
-
-        let mut handles = Vec::new();
-        for value in [ReviewStanceValue::Agree, ReviewStanceValue::Disagree] {
-            let path = dir.path().to_path_buf();
-            let thread_id = thread.id.clone();
-            handles.push(std::thread::spawn(move || {
-                let store = ReviewCommentStore::default();
-                store
-                    .append_comment(
-                        &path,
-                        "wt",
-                        agent_a("s2"),
-                        &thread_id,
-                        format!("stance update {value:?}"),
-                        Some(value),
-                    )
-                    .unwrap();
-            }));
-        }
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        let history = store.history_events(dir.path(), "wt", &thread.id).unwrap();
-        let last_stance = history
-            .iter()
-            .filter_map(|event| match event {
-                ReviewEvent::StanceSet { value, .. } => Some(value.clone()),
-                _ => None,
-            })
-            .next_back()
-            .unwrap();
-        let current = store
-            .get_thread(dir.path(), "wt", &thread.id, agent_a("s2"))
-            .unwrap();
-
-        assert_eq!(
-            history
-                .iter()
-                .filter(|event| matches!(event, ReviewEvent::StanceSet { .. }))
-                .count(),
-            2
-        );
-        assert_eq!(current.my_stance, last_stance);
-    }
-
-    #[test]
-    fn filters_cover_file_state_author_stance_unread_thread_id_and_combined() {
+    fn filters_cover_file_state_author_unread_thread_id_and_combined() {
         let dir = TempDir::new().unwrap();
         let store = ReviewCommentStore::default();
         let _first = store
@@ -2093,7 +1686,6 @@ mod tests {
                     end_line: None,
                 },
                 "A".to_string(),
-                None,
             )
             .unwrap();
         let second = store
@@ -2107,19 +1699,17 @@ mod tests {
                     end_line: None,
                 },
                 "B".to_string(),
-                None,
             )
             .unwrap();
-        // viewer (agent_a) が second に対し agree stance を表明し、
-        // human 作者は別 actor。stance / author / file / thread_id 全軸を満たす。
+        // human 作者の Thread に viewer (agent_a) が Comment を追記し、その後 resolve する。
+        // author / file / state / thread_id 軸を満たし、viewer から見て未読は false。
         store
             .append_comment(
                 dir.path(),
                 "wt",
                 agent_a("s2"),
                 &second.id,
-                "viewer agrees".to_string(),
-                Some(ReviewStanceValue::Agree),
+                "viewer follow-up".to_string(),
             )
             .unwrap();
         store
@@ -2141,8 +1731,7 @@ mod tests {
                     file: Some("src/b.rs".to_string()),
                     state: Some(ReviewThreadState::Resolved),
                     author: Some(AuthorScope::Other),
-                    stance: Some(ReviewStanceValue::Agree),
-                    unread: None,
+                    unread: Some(false),
                     thread_id: vec![second.id.clone()],
                 }),
                 agent_a("viewer"),
@@ -2209,7 +1798,6 @@ mod tests {
                     end_line: None,
                 },
                 "viewer-owned".to_string(),
-                None,
             )
             .unwrap();
         let _other = store
@@ -2223,7 +1811,6 @@ mod tests {
                     end_line: None,
                 },
                 "other-owned".to_string(),
-                None,
             )
             .unwrap();
         let filtered = store
@@ -2257,7 +1844,6 @@ mod tests {
                     end_line: None,
                 },
                 "viewer-owned".to_string(),
-                None,
             )
             .unwrap();
         let other = store
@@ -2271,7 +1857,6 @@ mod tests {
                     end_line: None,
                 },
                 "other-owned".to_string(),
-                None,
             )
             .unwrap();
         let filtered = store
@@ -2305,7 +1890,6 @@ mod tests {
                     end_line: None,
                 },
                 "t1".to_string(),
-                None,
             )
             .unwrap();
         let t2 = store
@@ -2319,7 +1903,6 @@ mod tests {
                     end_line: None,
                 },
                 "t2".to_string(),
-                None,
             )
             .unwrap();
         let _t3 = store
@@ -2333,7 +1916,6 @@ mod tests {
                     end_line: None,
                 },
                 "t3".to_string(),
-                None,
             )
             .unwrap();
 
@@ -2371,102 +1953,6 @@ mod tests {
     }
 
     #[test]
-    fn append_comment_with_stance_updates_stance_atomically() {
-        let dir = TempDir::new().unwrap();
-        let store = ReviewCommentStore::default();
-        let actor = agent_a("s1");
-        let thread = store
-            .create_thread(
-                dir.path(),
-                "wt",
-                actor.clone(),
-                ReviewTarget {
-                    file_path: None,
-                    line_number: None,
-                    end_line: None,
-                },
-                "Claim".to_string(),
-                None,
-            )
-            .unwrap();
-        let updated = store
-            .append_comment(
-                dir.path(),
-                "wt",
-                actor.clone(),
-                &thread.id,
-                "agreeing".to_string(),
-                Some(ReviewStanceValue::Agree),
-            )
-            .unwrap();
-        assert_eq!(updated.my_stance, ReviewStanceValue::Agree);
-        assert_eq!(updated.comments.len(), 2);
-        let history = store.history_events(dir.path(), "wt", &thread.id).unwrap();
-        let stance_events: Vec<_> = history
-            .iter()
-            .filter(|e| matches!(e, ReviewEvent::StanceSet { .. }))
-            .collect();
-        let comment_events: Vec<_> = history
-            .iter()
-            .filter(|e| matches!(e, ReviewEvent::CommentAppended { .. }))
-            .collect();
-        assert_eq!(stance_events.len(), 1);
-        assert_eq!(comment_events.len(), 1);
-        // CommentAppended と StanceSet が同じ書き込み境界で連続 append される
-        let comment_idx = history
-            .iter()
-            .position(|e| matches!(e, ReviewEvent::CommentAppended { .. }))
-            .unwrap();
-        let stance_idx = history
-            .iter()
-            .position(|e| matches!(e, ReviewEvent::StanceSet { .. }))
-            .unwrap();
-        assert_eq!(stance_idx, comment_idx + 1);
-    }
-
-    #[test]
-    fn append_comment_with_stance_none_revokes_stance() {
-        let dir = TempDir::new().unwrap();
-        let store = ReviewCommentStore::default();
-        let actor = agent_a("s1");
-        let thread = store
-            .create_thread(
-                dir.path(),
-                "wt",
-                actor.clone(),
-                ReviewTarget {
-                    file_path: None,
-                    line_number: None,
-                    end_line: None,
-                },
-                "Claim".to_string(),
-                None,
-            )
-            .unwrap();
-        store
-            .append_comment(
-                dir.path(),
-                "wt",
-                actor.clone(),
-                &thread.id,
-                "agreeing".to_string(),
-                Some(ReviewStanceValue::Agree),
-            )
-            .unwrap();
-        let after_revoke = store
-            .append_comment(
-                dir.path(),
-                "wt",
-                actor.clone(),
-                &thread.id,
-                "withdrawing".to_string(),
-                Some(ReviewStanceValue::None),
-            )
-            .unwrap();
-        assert_eq!(after_revoke.my_stance, ReviewStanceValue::None);
-    }
-
-    #[test]
     fn delete_thread_hides_thread_from_list_and_get() {
         let dir = TempDir::new().unwrap();
         let store = ReviewCommentStore::default();
@@ -2481,7 +1967,6 @@ mod tests {
                     end_line: None,
                 },
                 "to be deleted".to_string(),
-                None,
             )
             .unwrap();
 
@@ -2494,7 +1979,7 @@ mod tests {
             .unwrap();
         assert!(listed.iter().all(|t| t.id != thread.id));
 
-        let got = store.get_thread(dir.path(), "wt", &thread.id, ReviewActor::human());
+        let got = store.get_thread(dir.path(), "wt", &thread.id);
         assert!(matches!(got, Err(ReviewError::NotFound(_))));
     }
 
@@ -2513,7 +1998,6 @@ mod tests {
                     end_line: None,
                 },
                 "A".to_string(),
-                None,
             )
             .unwrap();
 
@@ -2548,7 +2032,6 @@ mod tests {
                     end_line: None,
                 },
                 "Claim".to_string(),
-                None,
             )
             .unwrap();
 
@@ -2585,7 +2068,6 @@ mod tests {
                     end_line: None,
                 },
                 "A".to_string(),
-                None,
             )
             .unwrap();
 
@@ -2612,7 +2094,6 @@ mod tests {
                     end_line: None,
                 },
                 "A".to_string(),
-                None,
             )
             .unwrap();
         store
@@ -2630,7 +2111,7 @@ mod tests {
             .delete_thread(dir.path(), "wt", ReviewActor::human(), &thread.id)
             .unwrap();
 
-        let got = store.get_thread(dir.path(), "wt", &thread.id, ReviewActor::human());
+        let got = store.get_thread(dir.path(), "wt", &thread.id);
         assert!(matches!(got, Err(ReviewError::NotFound(_))));
     }
 
@@ -2645,47 +2126,5 @@ mod tests {
             "nonexistent-thread-id",
         );
         assert!(matches!(result, Err(ReviewError::NotFound(_))));
-    }
-
-    #[test]
-    fn append_comment_without_stance_keeps_current_stance() {
-        let dir = TempDir::new().unwrap();
-        let store = ReviewCommentStore::default();
-        let actor = agent_a("s1");
-        let thread = store
-            .create_thread(
-                dir.path(),
-                "wt",
-                actor.clone(),
-                ReviewTarget {
-                    file_path: None,
-                    line_number: None,
-                    end_line: None,
-                },
-                "Claim".to_string(),
-                None,
-            )
-            .unwrap();
-        store
-            .append_comment(
-                dir.path(),
-                "wt",
-                actor.clone(),
-                &thread.id,
-                "agreeing".to_string(),
-                Some(ReviewStanceValue::Agree),
-            )
-            .unwrap();
-        let after_plain = store
-            .append_comment(
-                dir.path(),
-                "wt",
-                actor.clone(),
-                &thread.id,
-                "just a comment".to_string(),
-                None,
-            )
-            .unwrap();
-        assert_eq!(after_plain.my_stance, ReviewStanceValue::Agree);
     }
 }

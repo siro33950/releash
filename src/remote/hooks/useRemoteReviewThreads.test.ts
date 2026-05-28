@@ -19,13 +19,11 @@ const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
 			createdAt: 1,
 		},
 	],
-	stances: [],
 	resolve: null,
 	createdAt: 1,
 	updatedAt: 1,
 	version: 1,
 	canResolve: true,
-	myStance: "none",
 	...overrides,
 });
 
@@ -89,7 +87,7 @@ describe("useRemoteReviewThreads", () => {
 		act(() => {
 			result.current.createThread("General");
 			result.current.appendComment("t2", "Reply");
-			result.current.appendComment("t2", "Taking stance", "agree");
+			result.current.appendComment("t2", "Another reply");
 			result.current.resolveThread("t2", "Done");
 		});
 		expect(send).toHaveBeenCalledWith({
@@ -102,7 +100,6 @@ describe("useRemoteReviewThreads", () => {
 				worktreeName: "/repo",
 				threadId: "t2",
 				content: "Reply",
-				stance: null,
 			},
 		});
 		expect(send).toHaveBeenCalledWith({
@@ -110,8 +107,7 @@ describe("useRemoteReviewThreads", () => {
 			payload: {
 				worktreeName: "/repo",
 				threadId: "t2",
-				content: "Taking stance",
-				stance: "agree",
+				content: "Another reply",
 			},
 		});
 		expect(send).toHaveBeenCalledWith({
