@@ -13,6 +13,7 @@ const BUILTIN_SPEC_REVIEW: &str = include_str!("builtin/spec-review.yml");
 const BUILTIN_SPEC_REVIEW_AUTO: &str = include_str!("builtin/spec-review-auto.yml");
 const BUILTIN_BUG_FIX: &str = include_str!("builtin/bug-fix.yml");
 const BUILTIN_MULTI_AGENT_CODE_REVIEW: &str = include_str!("builtin/multi-agent-code-review.yml");
+const BUILTIN_IMPLEMENT_FROM_THREADS: &str = include_str!("builtin/implement-from-threads.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
@@ -64,6 +65,11 @@ const BUILTINS: &[BuiltinEntry] = &[
         filename: "multi-agent-code-review.yml",
         content: BUILTIN_MULTI_AGENT_CODE_REVIEW,
         description: "Multi-agent collaborative code review workflow. 12 reviewer agents (6 viewpoints × 2 backends) post review Threads. 2 verifier agents independently verify each Thread with tool execution and assign one of four states (VERIFIED / REFUTED / MANUAL_JUDGMENT / INFORMATIONAL). A Summary agent then walks through each Thread interactively with the human, discussing findings until an explicit policy is agreed, then posts the conclusion to the Thread as a fix-policy Comment or a rationale-backed Resolve.",
+    },
+    BuiltinEntry {
+        filename: "implement-from-threads.yml",
+        content: BUILTIN_IMPLEMENT_FROM_THREADS,
+        description: "Open Thread から必要な実装を行い、対応済み Thread を resolve / 対応見送りの Thread に申し送り Comment を投稿する",
     },
 ];
 
@@ -445,6 +451,12 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         key: "mar-summary",
         content: include_str!("builtin_facets/instructions/mar-summary.md"),
     },
+    // --- implement-from-threads workflow dedicated instructions ---
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "implement-from-threads",
+        content: include_str!("builtin_facets/instructions/implement-from-threads.md"),
+    },
 ];
 
 pub fn get_builtin_facet(kind: FacetKind, key: &str) -> Option<&'static str> {
@@ -573,8 +585,9 @@ mod tests {
         // + 2 (spec-review-auto dedicated: fix-policy-auto, review-summary)
         // + 9 (bug-fix dedicated)
         // + 8 (multi-agent-code-review dedicated: mar-review-* x6,
-        //       mar-verify-and-classify, mar-summary) = 39
-        assert_eq!(instructions.len(), 39);
+        //       mar-verify-and-classify, mar-summary)
+        // + 1 (implement-from-threads dedicated) = 40
+        assert_eq!(instructions.len(), 40);
 
         let contracts = list_builtin_facet_keys(FacetKind::Contract);
         // spec-directory / review-verdict / approved-fix-policy / bug-investigation-result = 4
@@ -591,6 +604,7 @@ mod tests {
         assert!(is_builtin_workflow("spec-review-auto"));
         assert!(is_builtin_workflow("bug-fix"));
         assert!(is_builtin_workflow("multi-agent-code-review"));
+        assert!(is_builtin_workflow("implement-from-threads"));
         assert!(!is_builtin_workflow("custom-workflow"));
     }
 
