@@ -54,6 +54,7 @@ export function RemoteReviewPanel({
 				<Button
 					variant="ghost"
 					size="icon-sm"
+					aria-label="Refresh threads"
 					onClick={onRefresh}
 					disabled={loading}
 				>

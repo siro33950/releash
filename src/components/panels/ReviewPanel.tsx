@@ -231,17 +231,26 @@ export function ReviewPanel({
 	const [openFileCommentsForFile, setOpenFileCommentsForFile] = useState<
 		string | null
 	>(null);
+	// General threads (file 非依存) のポップオーバー制御。`navigateToThread` が
+	// general thread を指す場合に、両ヘッダー位置の "General threads" ポップオーバーを
+	// プログラム的に開けるようにする。
+	const [openGeneralComments, setOpenGeneralComments] = useState(false);
 
 	useEffect(() => {
 		if (!navigateToThread) return;
 		const { filePath, threadId, lineNumber, isFileComment } = navigateToThread;
-		const section = determineSectionForFile(filePath);
-		selectFile(filePath, section);
+		const isGeneral = !filePath;
+		if (!isGeneral) {
+			const section = determineSectionForFile(filePath);
+			selectFile(filePath, section);
+		}
 		if (isFileComment) {
 			setScrollToLine(null);
 			setScrollToThread(null);
-			setOpenFileCommentsForFile(filePath);
+			setOpenGeneralComments(isGeneral);
+			setOpenFileCommentsForFile(isGeneral ? null : filePath);
 		} else {
+			setOpenGeneralComments(false);
 			setOpenFileCommentsForFile(null);
 			setScrollToLine(lineNumber ?? null);
 			setScrollToThread(threadId);
@@ -487,6 +496,8 @@ export function ReviewPanel({
 							onAppend={appendComment}
 							onResolve={resolveThread}
 							onDelete={deleteThread}
+							open={openGeneralComments}
+							onOpenChange={setOpenGeneralComments}
 						/>
 						<DiffBaseToggle
 							diffBase={diffBase}
@@ -558,6 +569,8 @@ export function ReviewPanel({
 						onAppend={appendComment}
 						onResolve={resolveThread}
 						onDelete={deleteThread}
+						open={openGeneralComments}
+						onOpenChange={setOpenGeneralComments}
 					/>
 					<DiffBaseToggle
 						diffBase={diffBase}

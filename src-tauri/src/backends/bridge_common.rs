@@ -1941,6 +1941,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
     let initial_permission_mode = permission_mode;
     crate::permission::PermissionMode::parse(&initial_permission_mode)
         .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
     let data_dir = resolve_data_dir(app)
         .map_err(|e| format!("Failed to resolve data dir for session {chat_session_id}: {e}"))?;
 

@@ -89,8 +89,8 @@ export function DiffInlineComment({
 	const { canSend: canSendToAgent, sendThreadToAgent } =
 		useReviewThreadHandoff();
 	const sendToAgentTitle = canSendToAgent
-		? "Diff Thread を現在の Agent に送信"
-		: "アクティブな Agent セッションがありません";
+		? "Send Diff Thread to current Agent"
+		: "No active Agent session";
 
 	const run = async (action: () => Promise<void>) => {
 		setBusy(true);

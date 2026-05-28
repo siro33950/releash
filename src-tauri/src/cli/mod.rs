@@ -671,6 +671,26 @@ fn review_actor_and_worktree(
     .map(|actor| (actor, session.worktree_path))
 }
 
+/// 読み取り専用 review コマンド (`get` / `history`) 向けの軽量 helper。
+///
+/// `review_actor_and_worktree` は actor 構築のため `backend_id` / `selected_model` /
+/// `state != Closed` を必須としているが、Get / History は worktree path しか必要としない。
+/// このため過去セッションや actor 用フィールドを持たないセッションでも閲覧できるよう、
+/// session 存在チェックと worktree path 取り出しのみを行う。Closed セッションも許可する。
+fn review_worktree_from_session(data_dir: &Path, session_id: &str) -> Result<String, CliError> {
+    if session_id.trim().is_empty() {
+        return Err(CliError::InvalidInput(
+            "--session-id must not be empty".to_string(),
+        ));
+    }
+    let session_store = SessionStore::default();
+    let session = session_store
+        .get_session(data_dir, session_id)
+        .map_err(CliError::Other)?
+        .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
+    Ok(session.worktree_path)
+}
+
 fn parse_review_state(value: Option<String>) -> Result<Option<ReviewThreadState>, CliError> {
     match value.as_deref() {
         None | Some("") => Ok(None),
@@ -804,7 +824,7 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
             session_id,
             json,
         } => {
-            let (_actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
+            let review_worktree = review_worktree_from_session(data_dir, &session_id)?;
             let thread = store
                 .get_thread(data_dir, &review_worktree, &thread_id)
                 .map_err(review_error_to_cli_error)?;
@@ -866,7 +886,7 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
             session_id,
             json,
         } => {
-            let (_actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
+            let review_worktree = review_worktree_from_session(data_dir, &session_id)?;
             let events = store
                 .history(data_dir, &review_worktree, &thread_id)
                 .map_err(review_error_to_cli_error)?;

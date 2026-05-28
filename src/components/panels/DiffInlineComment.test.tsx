@@ -275,8 +275,8 @@ describe("DiffInlineComment", () => {
 	// session に共有するボタンが、active session の有無に応じて活性 / 非活性を切り替え、
 	// 押下時に thread id 付きで sendThreadToAgent が呼ばれる。
 	describe("send-to-agent button", () => {
-		const sendToAgentLabel = "Diff Thread を現在の Agent に送信";
-		const noActiveLabel = "アクティブな Agent セッションがありません";
+		const sendToAgentLabel = "Send Diff Thread to current Agent";
+		const noActiveLabel = "No active Agent session";
 
 		it("is disabled and shows no-active-session tooltip when no active session", () => {
 			render(

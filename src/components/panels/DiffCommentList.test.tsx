@@ -329,8 +329,8 @@ describe("DiffCommentList", () => {
 	// spec issues-1022 "Thread handoff contract": スレッドパネル各行から、対象 Thread を
 	// 現在 active な AgentChat session に共有できる。
 	describe("send-to-agent button", () => {
-		const sendToAgentLabel = "Diff Thread を現在の Agent に送信";
-		const noActiveLabel = "アクティブな Agent セッションがありません";
+		const sendToAgentLabel = "Send Diff Thread to current Agent";
+		const noActiveLabel = "No active Agent session";
 
 		it("is disabled when no active AgentChat session", () => {
 			renderWithProviders(

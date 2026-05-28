@@ -176,9 +176,14 @@ pub(super) async fn handle_review_get_request(
     let app = match &state.app_handle {
         Some(app) => app.clone(),
         None => {
-            return Some(WsMessage::Error(ErrorMsg {
-                code: "INTERNAL_ERROR".to_string(),
-                message: "App handle not available".to_string(),
+            return Some(WsMessage::ReviewThreadResponse(ReviewThreadResponse {
+                success: false,
+                worktree_name: Some(worktree_name),
+                thread: None,
+                error: Some(ReviewErrorPayload {
+                    code: crate::review_comments::ReviewErrorCode::Io,
+                    message: "App handle not available".to_string(),
+                }),
             }))
         }
     };
@@ -226,9 +231,14 @@ pub(super) async fn handle_review_create_request(
     let app = match &state.app_handle {
         Some(app) => app.clone(),
         None => {
-            return Some(WsMessage::Error(ErrorMsg {
-                code: "INTERNAL_ERROR".to_string(),
-                message: "App handle not available".to_string(),
+            return Some(WsMessage::ReviewThreadResponse(ReviewThreadResponse {
+                success: false,
+                worktree_name: Some(worktree_name),
+                thread: None,
+                error: Some(ReviewErrorPayload {
+                    code: crate::review_comments::ReviewErrorCode::Io,
+                    message: "App handle not available".to_string(),
+                }),
             }))
         }
     };
@@ -284,9 +294,14 @@ pub(super) async fn handle_review_append_comment_request(
     let app = match &state.app_handle {
         Some(app) => app.clone(),
         None => {
-            return Some(WsMessage::Error(ErrorMsg {
-                code: "INTERNAL_ERROR".to_string(),
-                message: "App handle not available".to_string(),
+            return Some(WsMessage::ReviewThreadResponse(ReviewThreadResponse {
+                success: false,
+                worktree_name: Some(worktree_name),
+                thread: None,
+                error: Some(ReviewErrorPayload {
+                    code: crate::review_comments::ReviewErrorCode::Io,
+                    message: "App handle not available".to_string(),
+                }),
             }))
         }
     };
@@ -344,9 +359,14 @@ pub(super) async fn handle_review_resolve_request(
     let app = match &state.app_handle {
         Some(app) => app.clone(),
         None => {
-            return Some(WsMessage::Error(ErrorMsg {
-                code: "INTERNAL_ERROR".to_string(),
-                message: "App handle not available".to_string(),
+            return Some(WsMessage::ReviewThreadResponse(ReviewThreadResponse {
+                success: false,
+                worktree_name: Some(worktree_name),
+                thread: None,
+                error: Some(ReviewErrorPayload {
+                    code: crate::review_comments::ReviewErrorCode::Io,
+                    message: "App handle not available".to_string(),
+                }),
             }))
         }
     };
@@ -386,9 +406,14 @@ pub(super) async fn handle_review_history_request(
     let app = match &state.app_handle {
         Some(app) => app.clone(),
         None => {
-            return Some(WsMessage::Error(ErrorMsg {
-                code: "INTERNAL_ERROR".to_string(),
-                message: "App handle not available".to_string(),
+            return Some(WsMessage::ReviewHistoryResponse(ReviewHistoryResponse {
+                success: false,
+                worktree_name: Some(worktree_name),
+                events: Vec::new(),
+                error: Some(ReviewErrorPayload {
+                    code: crate::review_comments::ReviewErrorCode::Io,
+                    message: "App handle not available".to_string(),
+                }),
             }))
         }
     };

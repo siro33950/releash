@@ -334,8 +334,12 @@ mod tests {
         });
         let result = route_message(&msg, &state, &wt).await;
         match result {
-            Some(WsMessage::Error(e)) => assert_eq!(e.code, "INTERNAL_ERROR"),
-            _ => panic!("expected internal error without app handle"),
+            Some(WsMessage::ReviewThreadResponse(r)) => {
+                assert!(!r.success);
+                assert!(r.thread.is_none());
+                assert!(r.error.is_some());
+            }
+            _ => panic!("expected ReviewThreadResponse rejection without app handle"),
         }
     }
 

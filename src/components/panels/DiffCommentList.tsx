@@ -59,8 +59,8 @@ function SendThreadToAgentButton({ threadId }: { threadId: string }) {
 	const { canSend, sendThreadToAgent } = useReviewThreadHandoff();
 	const [busy, setBusy] = useState(false);
 	const title = canSend
-		? "Diff Thread を現在の Agent に送信"
-		: "アクティブな Agent セッションがありません";
+		? "Send Diff Thread to current Agent"
+		: "No active Agent session";
 	return (
 		<Button
 			type="button"
@@ -75,6 +75,8 @@ function SendThreadToAgentButton({ threadId }: { threadId: string }) {
 					setBusy(true);
 					try {
 						await sendThreadToAgent(threadId);
+					} catch (error) {
+						console.error("Failed to send thread to agent:", error);
 					} finally {
 						setBusy(false);
 					}
@@ -139,6 +141,8 @@ function DeleteThreadButton({
 								try {
 									await onDelete(threadId);
 									setOpen(false);
+								} catch (error) {
+									console.error("Failed to delete thread:", error);
 								} finally {
 									setBusy(false);
 								}
