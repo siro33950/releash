@@ -26,6 +26,16 @@
 }
 ```
 
+```contract-validation
+{
+  "required": ["symptom", "related_code", "root_cause", "fix_candidates", "impact"],
+  "array_items_required": {
+    "related_code": ["path", "role"],
+    "fix_candidates": ["name", "summary", "expected_effect", "side_effects"]
+  }
+}
+```
+
 ルール:
 - `symptom.current_behavior` / `symptom.expected_behavior` は必須
 - `symptom.repro_steps` は明示されていれば必須、不明なら省略可

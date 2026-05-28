@@ -197,4 +197,30 @@ Feature: Agent と人間が共有するレビュー議論基盤
       Given Agent が Releash 上で起動しようとしている
       When Agent が対話を開始できる状態になる
       Then Agent はそれ以降の対話で Releash 上のレビュー議論操作の方法を把握している
+
+  Rule: 人間ユーザーは Thread を削除して議論を整理できる
+    Scenario: 人間が open な Thread を削除する
+      Given open な Thread が存在している
+      When 人間ユーザーがその Thread を削除する
+      Then その Thread はレビュー議論の現在状態から除外される
+
+    Scenario: 人間が resolved な Thread を削除する
+      Given resolved な Thread が存在している
+      When 人間ユーザーがその Thread を削除する
+      Then その Thread はレビュー議論の現在状態から除外される
+
+    Scenario: 削除済み Thread の履歴が監査用途で参照できる
+      Given 人間ユーザーが Thread を削除した
+      When 参加者がその Thread の履歴を確認する
+      Then Thread が削除された事実と削除時刻が履歴として確認できる
+
+    Scenario: Agent が Thread の削除を求める
+      Given Thread が存在している
+      When Agent がその Thread の削除を求める
+      Then 削除は受け入れられず、Thread の内容と状態は維持される
+
+    Scenario: 既に削除済みの Thread をさらに操作しようとする
+      Given Thread が既に削除されている
+      When 参加者がその Thread の再削除、Comment 追加、または Resolve を求める
+      Then その操作は受け入れられず、Thread は削除済みのまま維持される
 ```

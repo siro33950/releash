@@ -15,6 +15,7 @@
 - レビュー議論は Releash ローカルの対象に限定される: この設計の対象は Releash ローカルの review comment 基盤であり、GitHub PR review comment や外部サービス同期は契約に含めない。
 - 人間は Diff ビュー上の Thread を現在の Agent との対話に共有できる: Desktop UI は対象 Thread の参照情報を組み立て、active な AgentChat session の入力として送る経路を持つ。active な session が無いときは送信不可とする。
 - Agent は Releash 上で起動した時点でレビュー議論操作の方法を把握している: Releash は Agent process 起動時に `releash` CLI の long help を system_prompt に含めることで、Agent が起動直後から CLI 操作を把握している状態を保証する。
+- 人間ユーザーは誤投稿や重複 Thread を Thread 削除で整理できる: 人間ユーザーは UI / Remote 経由で Thread を削除でき、削除は open / resolved を問わず実行できる。Agent は Thread 削除入口を持たず、削除は人間操作に限定される。
 
 ## Key Decisions
 - 主境界は CLI / API とする。Issue #1022 と milestone #69 の目的は Agent が review comment 基盤を CLI/API 経由で扱うことであり、MCP tool は今回の主要入口にしない。
@@ -24,15 +25,16 @@
 - Agent identity は backend / model 由来の Actor とする。session ごとの分離は行わず、同じ backend / model の Agent は同じ参加者として List filter / unread 判定で扱われる。
 - CLI、Tauri command、Remote WebSocket は別々の意味論を持たない。同じ Rust usecase に接続し、経路差は入出力プロトコルと transport の違いに限定する。
 - 既存コメントデータの自動移行は行わない。要求上の完了条件は新モデルへの接続であり、過去 JSON の変換は今回の契約外とする。
+- Thread 削除は人間ユーザー限定の soft delete として扱う。Agent には削除入口を提供せず、削除済み Thread は List / Get の現在状態から除外しつつ履歴に削除イベントを残すことで、監査可能性と取り下げ運用を両立する。
 - Diff Thread の Agent への能動共有は、Agent への push 通知ではなく人間ユーザーのチャット入力の一形態として扱う。送信先は active な AgentChat session に限定し、active session が無いときは送信操作を提供しない。
 - Agent への CLI 仕様伝達は system_prompt への long help append で行う。clap 由来の help を単一ソースとし、Agent 向けに別個に手書きしない。
 
 ## Responsibility Boundaries
-- Review comment domain: Thread lifecycle、Comment append-only、Actor identity の意味、resolved 後 mutation 拒否を担当する。UI 表示、CLI flag、WebSocket transport、永続化ファイルの物理形式は担当しない。
-- Review comment usecase: Create / List / Get / Append Comment / Resolve / History の業務境界を提供し、各入口から共通に呼ばれる。入口別の表示文言や画面状態は担当しない。
+- Review comment domain: Thread lifecycle、Comment append-only、Actor identity の意味、resolved 後 mutation 拒否、Thread 削除の人間限定ルールを担当する。UI 表示、CLI flag、WebSocket transport、永続化ファイルの物理形式は担当しない。
+- Review comment usecase: Create / List / Get / Append Comment / Resolve / Delete Thread / History の業務境界を提供し、各入口から共通に呼ばれる。入口別の表示文言や画面状態は担当しない。
 - Persistence gateway: worktree ごとの永続化、順序確定、履歴からの投影、同時書き込み時の一貫性を担当する。権限判断は担当しない。
-- CLI controller: Agent 向け review command boundary を提供し、Releash が解決した Agent identity で usecase を呼ぶ。author を任意に偽装する入口は提供しない。
-- Tauri command controller: Desktop UI の人間操作入口を提供し、human Actor として usecase を呼ぶ。ビジネスルールは持たない。
+- CLI controller: Agent 向け review command boundary を提供し、Releash が解決した Agent identity で usecase を呼ぶ。author を任意に偽装する入口は提供しない。Thread 削除入口は提供しない。
+- Tauri command controller: Desktop UI の人間操作入口を提供し、human Actor として usecase を呼ぶ。Thread 削除も human 入口としてここで提供する。ビジネスルールは持たない。
 - Remote WebSocket handler: Remote UI からの review 操作を受け、Desktop UI と同じ human 操作として usecase に接続する。Remote 独自の review semantics は持たない。
 - Frontend / Remote UI: Thread、Comment、Resolve 情報の表示、入力受付、呼び出し、表示用フォーマットを担当する。フィルタの意味、権限可否、状態遷移、集計は Rust から返された結果に従う。
 - Agent backend orchestration: Agent process の起動時、Releash CLI の long help を system_prompt に組み込む責務を持つ。Agent 種別ごとの起動経路はこの system_prompt 注入規約に従う。
@@ -53,7 +55,8 @@
 - Thread contract: Thread は worktree に属し、作成者、状態、任意の対象位置、初回 Comment、Resolve 情報、更新検出に必要な情報を外部に公開する。
 - Comment contract: Comment は Thread に属する時系列発言であり、author kind、Agent 表示に必要な identity 情報、本文、作成時刻、監査用 metadata を公開する。編集・削除 contract は提供しない。
 - Resolve contract: Resolve は open Thread を resolved にする終状態操作であり、実行者、outcome、説明、時刻を公開する。reopen contract は提供しない。
-- History contract: Thread 単位で、作成、Comment 追加、Resolve の履歴を時系列に取得できる。通常表示用の現在状態とは別の監査用 contract として扱う。
+- Delete Thread contract: 人間ユーザーは Thread を削除できる。削除は open / resolved 状態を問わず実行でき、削除後は List / Get の現在状態から該当 Thread が除外される。Agent からの削除要求は拒否理由を機械的に判別できる形で返す。削除済み Thread に対する再削除、Comment 追加、Resolve も拒否される。
+- History contract: Thread 単位で、作成、Comment 追加、Resolve、削除の履歴を時系列に取得できる。通常表示用の現在状態とは別の監査用 contract として扱う。
 - Persistence document contract: worktree ごとの review comment 履歴は append-only な event document として保持する。外部 contract はイベントの意味と履歴取得可能性であり、内部 helper や具体的な読み書き手順は実装に委ねる。
 - Agent process environment contract: Releash が起動する Agent process には、自分の session_id が `RELEASH_SESSION_ID` 環境変数として渡される。Agent CLI 呼び出し時はこの値を `--session-id` に渡せば、Releash 側が session から identity (backend / model) を解決して Actor を確定する。Agent は session_id を facet template や自前の query で導出する必要はない。さらに、Agent process の system_prompt には Releash CLI の long help が常に含まれる。Agent は help を別経路で取得する必要を持たない。
 - Thread handoff contract: Desktop UI は対象 Thread の参照情報を含む Agent 共有メッセージを Rust 側で組み立て、active な AgentChat session の入力として送れる Tauri command を呼び出せる。メッセージ本文の整形は Rust contract に従い、Agent は受け取った参照情報から既存 review CLI 経路で Thread 詳細を確認できる。
@@ -81,7 +84,8 @@
 - CLI と Tauri / Remote で別々の業務ロジックを持たない。すべて同じ usecase と domain rule を通す。
 - GitHub PR review comment とは接続しない。Releash ローカルの review comment と外部サービスの review comment を同一視しない。
 - MCP は今回の主境界にしない。CLI/API を Agent と UI / Remote の共通入口とする。
-- Comment / Thread の編集、削除、reopen は公開しない。訂正や取り下げは新しい Comment または Resolve metadata で表現する。
+- Comment の編集・削除、Thread の編集、Thread の reopen は公開しない。Comment の訂正は新しい Comment または Resolve metadata で表現する。
+- Thread の削除は人間ユーザーのみに公開する。Agent は Thread 削除入口を持たない。削除は open / resolved 状態にかかわらず実行できる soft delete として表現し、履歴には削除イベントを残す。
 - Agent は外部から任意 author として投稿できない。正式な Agent 操作は Releash が起動し identity を解決できる Agent session に限定する。
 - Resolve 可否は Thread state (open / resolved) から導かれる。UI 側のボタン表示は補助であり、拒否可否の正ではない。
 - worktree 境界を越えた Thread 操作は行わない。一覧、詳細、履歴、mutation は対象 worktree 内に閉じる。

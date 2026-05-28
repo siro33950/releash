@@ -37,11 +37,14 @@ GitHub Issue #1022 は、マイルストーン `[09] Agent Review Capability - R
 - Agent backend session 起動時、`releash` CLI の long help が system_prompt の一部として常時含まれるようにする。
 - 人間ユーザーはデスクトップ UI 上の Diff 由来 Thread を、現在 active な AgentChat session の入力として能動送信できるようにする。
 - active な AgentChat session が存在しない場合は、上記能動送信を実行できないようにする。
+- 人間ユーザーは UI / Remote 経由で自分の判断により Thread を削除できるようにする。誤投稿の取り下げや重複 Thread の整理を Thread 削除で表現する。
 
 ## Non-goals
 - GitHub PR のレビューコメントを作成、更新、同期すること。
 - MCP tool をレビューコメントの主境界として追加すること。
-- Comment または Thread の編集・削除。
+- Comment の編集・削除。
+- Thread の編集（対象位置・初回 Comment の事後変更）。
+- Agent による Thread 削除操作。Thread 削除は人間ユーザーに限定する。
 - resolved な Thread の reopen。
 - 参加者ごとの賛否表明 (agree / disagree) など Thread に対する「立場」を集計・表示する機能。
 - Agent への push 通知または event subscribe。
@@ -84,6 +87,11 @@ GitHub Issue #1022 は、マイルストーン `[09] Agent Review Capability - R
 - 人間ユーザーは Diff ビュー上の Thread から、Thread を一意に指す参照情報（thread id、worktree、file、line range）を含むメッセージを active な AgentChat session の入力として送信できなければならない。
 - active な AgentChat session が存在しない場合、Diff Thread の能動送信操作は無効化されなければならない。
 - 送信されたメッセージは、Agent が `releash review get` などの CLI 経路で Thread 本文・履歴を取得できる十分な参照情報を含まなければならない。
+- 人間ユーザーは UI / Remote 経由で Thread を削除できなければならない。削除は open / resolved 状態にかかわらず実行できる。
+- Agent からの Thread 削除要求は拒否されなければならない。Thread 削除は人間ユーザーのみが実行できる。
+- 削除済み Thread は List / Get の現在状態取得から除外されなければならない。
+- 削除済み Thread の履歴は監査用途で保持され、Thread が削除された事実と削除時刻を確認できなければならない。
+- 既に削除済みの Thread に対する再度の削除、Comment 追加、Resolve は拒否されなければならない。
 
 ## Constraints
 - 主境界は Agent 向け CLI と UI / Remote 向け API とし、MCP は今回の主境界にしない。

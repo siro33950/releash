@@ -65,7 +65,7 @@
 ### 5. Thread への対応反映
 
 - 要求を満たした → `{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome <outcome> --summary "<対応要約>" --json`
-- 対応見送り / 部分対応 → `{{path_alias.releash}} review comment <thread-id> --session-id "$RELEASH_SESSION_ID" --content "<申し送り内容>" [--stance <agree|disagree>] --json`
+- 対応見送り / 部分対応 → `{{path_alias.releash}} review comment <thread-id> --session-id "$RELEASH_SESSION_ID" --content "<申し送り内容>" --json`
 - 申し送り Comment は根拠を1文以上含める
 
 ### 6. 処理結果サマリの出力
@@ -95,4 +95,4 @@
 ## 注意事項
 
 - `outcome` の値は Thread の解決状況を表す自由文（例: `resolved`, `wontfix`, `duplicate`）。Thread の文脈に合わせて適切なものを選ぶ
-- `--stance` は `comment` 投稿時の任意フラグ。同意/異議を明示すべき場合のみ付与する
+- 同意・異議は専用フラグではなく Comment 本文で表現する

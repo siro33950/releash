@@ -5,6 +5,16 @@
 - `spec-directory` Contract
 - `approved-fix-policy` Contract
 
+## 早期終了判定（最優先）
+
+`approved-fix-policy.findings` の **全件が `action: "skip"`** の場合、ファイル編集を一切行わず、レスポンス末尾に厳密に以下の1行のみを出力して終了する:
+
+```
+NO_FIX_NEEDED
+```
+
+前後に説明文を一切付けない。この1トークンがワークフローのルーティングキーとして使われる。
+
 ## 目的
 
 `requirements.md`、`behavior.md`、`design.md` のうち、承認済み方針で `action: fix` とされた指摘だけを修正する。実装詳細は追加しない。
