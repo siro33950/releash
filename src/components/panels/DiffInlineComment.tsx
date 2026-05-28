@@ -1,24 +1,53 @@
-import { Check, CheckCircle2, MessageSquareReply, X } from "lucide-react";
+import {
+	Bot,
+	Check,
+	CheckCircle2,
+	MessageSquareReply,
+	Send,
+	Trash2,
+	User,
+	X,
+} from "lucide-react";
 import { useState } from "react";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+	AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { useReviewThreadHandoff } from "@/contexts/ReviewThreadHandoffContext";
+import { formatRelativeTime } from "@/lib/formatRelativeTime";
 import {
 	getThreadEndLine,
 	getThreadLineNumber,
 	type ReviewDiscussionThread,
 } from "@/types/diffComment";
-import type { ReviewStanceValue } from "@/types/protocol";
+import type { ReviewActorKind, ReviewStanceValue } from "@/types/protocol";
+import { DiffCommentBody } from "./DiffCommentBody";
 
 interface DiffInlineCommentProps {
 	comment: ReviewDiscussionThread;
-	onAppend?: (threadId: string, content: string) => Promise<void>;
-	onSetStance?: (threadId: string, value: ReviewStanceValue) => Promise<void>;
+	onAppend?: (
+		threadId: string,
+		content: string,
+		stance?: ReviewStanceValue | null,
+	) => Promise<void>;
 	onResolve?: (
 		threadId: string,
 		outcome: string,
 		summary: string,
 	) => Promise<void>;
+	onDelete?: (threadId: string) => Promise<void>;
 }
+
+type StanceSelection = "keep" | ReviewStanceValue;
 
 function rangeLabel(comment: ReviewDiscussionThread): string | null {
 	const lineNumber = getThreadLineNumber(comment);
@@ -30,18 +59,46 @@ function rangeLabel(comment: ReviewDiscussionThread): string | null {
 	return null;
 }
 
+interface AuthorIconProps {
+	kind: ReviewActorKind;
+}
+
+function AuthorIcon({ kind }: AuthorIconProps) {
+	const Icon = kind === "agent" ? Bot : User;
+	const label = kind === "agent" ? "Agent author" : "Human author";
+	return (
+		<div
+			role="img"
+			aria-label={label}
+			data-testid={`author-icon-${kind}`}
+			className="size-6 rounded-full bg-muted text-muted-foreground flex items-center justify-center shrink-0"
+		>
+			<Icon className="size-3.5" aria-hidden="true" />
+		</div>
+	);
+}
+
 export function DiffInlineComment({
 	comment,
 	onAppend,
-	onSetStance,
 	onResolve,
+	onDelete,
 }: DiffInlineCommentProps) {
 	const [reply, setReply] = useState("");
+	const [replyStance, setReplyStance] = useState<StanceSelection>("keep");
 	const [resolveSummary, setResolveSummary] = useState("");
 	const [busy, setBusy] = useState(false);
+	const [deleteOpen, setDeleteOpen] = useState(false);
 	const label = rangeLabel(comment);
 	const currentStance = comment.myStance;
 	const disabled = busy || comment.state === "resolved";
+	// spec issues-1022 "Thread handoff contract": Diff Thread を active な
+	// AgentChat session の入力として共有する。active session 不在時は disabled。
+	const { canSend: canSendToAgent, sendThreadToAgent } =
+		useReviewThreadHandoff();
+	const sendToAgentTitle = canSendToAgent
+		? "Diff Thread を現在の Agent に送信"
+		: "アクティブな Agent セッションがありません";
 
 	const run = async (action: () => Promise<void>) => {
 		setBusy(true);
@@ -55,28 +112,103 @@ export function DiffInlineComment({
 	return (
 		<div className="flex flex-col gap-2 mx-2 my-1 p-3 rounded-md border border-border bg-card shadow-sm">
 			<div className="flex items-center justify-between gap-2">
-				{label && (
+				{label ? (
 					<span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded w-fit">
 						{label}
 					</span>
+				) : (
+					<span />
 				)}
-				{comment.state === "resolved" && (
-					<span className="inline-flex items-center gap-1 text-[10px] bg-green-600/15 text-green-600 px-1.5 py-0.5 rounded-full shrink-0">
-						<CheckCircle2 className="size-3" />
-						resolved
-					</span>
-				)}
+				<div className="flex items-center gap-1 shrink-0">
+					{comment.state === "resolved" && (
+						<span className="inline-flex items-center gap-1 text-[10px] bg-green-600/15 text-green-600 px-1.5 py-0.5 rounded-full shrink-0">
+							<CheckCircle2 className="size-3" />
+							resolved
+						</span>
+					)}
+					<Button
+						type="button"
+						variant="ghost"
+						size="icon-xs"
+						title={sendToAgentTitle}
+						aria-label={sendToAgentTitle}
+						disabled={busy || !canSendToAgent}
+						onClick={() =>
+							run(async () => {
+								await sendThreadToAgent(comment.id);
+							})
+						}
+					>
+						<Send className="size-3.5" />
+					</Button>
+					{onDelete && (
+						<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+							<AlertDialogTrigger asChild>
+								<Button
+									type="button"
+									variant="ghost"
+									size="icon-xs"
+									title="Delete thread"
+									aria-label="Delete thread"
+									disabled={busy}
+								>
+									<Trash2 className="size-3.5" />
+								</Button>
+							</AlertDialogTrigger>
+							<AlertDialogContent>
+								<AlertDialogHeader>
+									<AlertDialogTitle>Delete this thread?</AlertDialogTitle>
+									<AlertDialogDescription>
+										This will remove the thread from the review list. The
+										deletion is recorded in the thread history and cannot be
+										undone from the UI.
+									</AlertDialogDescription>
+								</AlertDialogHeader>
+								<AlertDialogFooter>
+									<AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+									<AlertDialogAction
+										disabled={busy}
+										onClick={(e) => {
+											e.preventDefault();
+											run(async () => {
+												await onDelete(comment.id);
+												setDeleteOpen(false);
+											});
+										}}
+									>
+										Delete
+									</AlertDialogAction>
+								</AlertDialogFooter>
+							</AlertDialogContent>
+						</AlertDialog>
+					)}
+				</div>
 			</div>
 
-			<div className="space-y-2">
+			<div className="divide-y divide-border">
 				{comment.comments.map((entry) => (
-					<div key={entry.id} className="text-sm">
-						<div className="text-[10px] text-muted-foreground">
-							{entry.author.kind} · {entry.author.displayName}
+					<div
+						key={entry.id}
+						className="flex gap-2.5 py-2.5 first:pt-0 last:pb-0"
+					>
+						<AuthorIcon kind={entry.author.kind} />
+						<div className="min-w-0 flex-1">
+							<div className="flex flex-wrap items-baseline gap-1.5 text-xs">
+								<span className="font-semibold text-foreground">
+									{entry.author.displayName}
+								</span>
+								<span className="text-[10px] px-1 py-0.5 rounded bg-muted text-muted-foreground">
+									{entry.author.kind}
+								</span>
+								<span
+									className="text-muted-foreground"
+									title={new Date(entry.createdAt).toLocaleString()}
+								>
+									{formatRelativeTime(entry.createdAt)}
+								</span>
+							</div>
+							<DiffCommentBody content={entry.content} className="mt-1" />
 						</div>
-						<p className="whitespace-pre-wrap break-words leading-relaxed">
-							{entry.content}
-						</p>
 					</div>
 				))}
 			</div>
@@ -95,32 +227,20 @@ export function DiffInlineComment({
 			</div>
 
 			{comment.resolve && (
-				<div className="rounded border border-green-600/20 bg-green-600/10 px-2 py-1 text-[11px] text-green-700 dark:text-green-400">
-					<div>
+				<div className="rounded border border-green-600/20 bg-green-600/10 px-2 py-1.5 text-[11px] text-green-700 dark:text-green-400">
+					<div className="flex items-center gap-1 font-medium">
+						<CheckCircle2 className="size-3" />
 						{comment.resolve.outcome} by {comment.resolve.actor.kind} ·{" "}
 						{comment.resolve.actor.displayName}
 					</div>
-					<div className="break-words">{comment.resolve.summary}</div>
+					{comment.resolve.summary && (
+						<DiffCommentBody
+							content={comment.resolve.summary}
+							className="mt-1 text-foreground"
+						/>
+					)}
 				</div>
 			)}
-
-			<div className="flex flex-wrap items-center gap-1">
-				{(["agree", "disagree", "none"] as const).map((value) => (
-					<Button
-						key={value}
-						type="button"
-						variant={currentStance === value ? "default" : "outline"}
-						size="sm"
-						className="h-7 px-2 text-xs"
-						disabled={disabled || !onSetStance}
-						onClick={() =>
-							run(() => onSetStance?.(comment.id, value) ?? Promise.resolve())
-						}
-					>
-						{value}
-					</Button>
-				))}
-			</div>
 
 			{comment.state === "open" && (
 				<div className="flex flex-col gap-1.5">
@@ -130,6 +250,37 @@ export function DiffInlineComment({
 						placeholder="Reply..."
 						className="min-h-[64px] text-sm resize-none bg-background"
 					/>
+					<fieldset
+						className="flex flex-wrap items-center gap-2 text-xs"
+						disabled={disabled || !onAppend}
+					>
+						<legend className="sr-only">Stance</legend>
+						<span className="text-muted-foreground">
+							Stance (current: {currentStance})
+						</span>
+						{(
+							[
+								{ value: "keep", label: "keep" },
+								{ value: "agree", label: "agree" },
+								{ value: "disagree", label: "disagree" },
+								{ value: "none", label: "none" },
+							] as const
+						).map(({ value, label }) => (
+							<label
+								key={value}
+								className="inline-flex items-center gap-1 cursor-pointer"
+							>
+								<input
+									type="radio"
+									name={`stance-${comment.id}`}
+									value={value}
+									checked={replyStance === value}
+									onChange={() => setReplyStance(value)}
+								/>
+								{label}
+							</label>
+						))}
+					</fieldset>
 					<div className="flex justify-end">
 						<Button
 							type="button"
@@ -139,8 +290,13 @@ export function DiffInlineComment({
 							disabled={disabled || reply.trim() === "" || !onAppend}
 							onClick={() =>
 								run(async () => {
-									await onAppend?.(comment.id, reply.trim());
+									await onAppend?.(
+										comment.id,
+										reply.trim(),
+										replyStance === "keep" ? null : replyStance,
+									);
 									setReply("");
+									setReplyStance("keep");
 								})
 							}
 						>

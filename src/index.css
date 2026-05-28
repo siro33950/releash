@@ -420,6 +420,65 @@
 	padding: 0 0.8em;
 }
 
+/* Markdown Preview (Review Comment variant) — denser layout for inline diff comments */
+.markdown-preview.markdown-preview-comment {
+	font-size: 13px;
+	line-height: 1.55;
+}
+.markdown-preview-comment > :first-child {
+	margin-top: 0;
+}
+.markdown-preview-comment > :last-child {
+	margin-bottom: 0;
+}
+.markdown-preview-comment p {
+	margin: 0.35em 0;
+}
+.markdown-preview-comment h1 {
+	font-size: 1.3em;
+	margin: 0.6em 0 0.3em;
+	padding-bottom: 0.2em;
+}
+.markdown-preview-comment h2 {
+	font-size: 1.15em;
+	margin: 0.6em 0 0.3em;
+	padding-bottom: 0.15em;
+}
+.markdown-preview-comment h3 {
+	font-size: 1.05em;
+	margin: 0.5em 0 0.25em;
+}
+.markdown-preview-comment h4,
+.markdown-preview-comment h5,
+.markdown-preview-comment h6 {
+	font-size: 1em;
+	margin: 0.5em 0 0.25em;
+}
+.markdown-preview-comment ul,
+.markdown-preview-comment ol {
+	margin: 0.35em 0;
+	padding-left: 1.4em;
+}
+.markdown-preview-comment li {
+	margin: 0.15em 0;
+}
+.markdown-preview-comment pre {
+	margin: 0.5em 0;
+	padding: 8px 10px;
+	font-size: 0.85em;
+}
+.markdown-preview-comment blockquote {
+	margin: 0.5em 0;
+	padding: 0.1em 0.8em;
+}
+.markdown-preview-comment table {
+	margin: 0.5em 0;
+	font-size: 0.95em;
+}
+.markdown-preview-comment hr {
+	margin: 0.6em 0;
+}
+
 /* Markdown Preview Gutter diff markers */
 .md-diff-gutter-added {
 	border-left: 4px solid var(--status-added);

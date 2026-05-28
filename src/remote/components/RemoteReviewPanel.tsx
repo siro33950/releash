@@ -13,10 +13,15 @@ interface RemoteReviewPanelProps {
 	onSelectThread: (threadId: string) => void;
 	onRefresh: () => void;
 	onCreateThread: (content: string) => void;
-	onAppendComment: (threadId: string, content: string) => void;
-	onSetStance: (threadId: string, value: ReviewStanceValue) => void;
+	onAppendComment: (
+		threadId: string,
+		content: string,
+		stance?: ReviewStanceValue | null,
+	) => void;
 	onResolveThread: (threadId: string, summary: string) => void;
 }
+
+type StanceSelection = "keep" | ReviewStanceValue;
 
 export function RemoteReviewPanel({
 	threads,
@@ -28,11 +33,11 @@ export function RemoteReviewPanel({
 	onRefresh,
 	onCreateThread,
 	onAppendComment,
-	onSetStance,
 	onResolveThread,
 }: RemoteReviewPanelProps) {
 	const [newThread, setNewThread] = useState("");
 	const [reply, setReply] = useState("");
+	const [replyStance, setReplyStance] = useState<StanceSelection>("keep");
 	const [resolveSummary, setResolveSummary] = useState("");
 	const [pendingAction, setPendingAction] = useState<
 		null | "create" | "reply" | "resolve"
@@ -117,20 +122,6 @@ export function RemoteReviewPanel({
 				<section className="min-h-0 overflow-auto p-3">
 					{selectedThread ? (
 						<div className="space-y-3">
-							<div className="flex flex-wrap gap-1">
-								{(["agree", "disagree", "none"] as const).map((value) => (
-									<Button
-										key={value}
-										variant={humanStance === value ? "default" : "outline"}
-										size="sm"
-										className="h-7 px-2 text-xs"
-										disabled={selectedThread.state === "resolved"}
-										onClick={() => onSetStance(selectedThread.id, value)}
-									>
-										{value}
-									</Button>
-								))}
-							</div>
 							<div className="space-y-2">
 								{selectedThread.comments.map((comment) => (
 									<div
@@ -177,13 +168,46 @@ export function RemoteReviewPanel({
 										placeholder="Reply..."
 										className="min-h-20 text-sm"
 									/>
+									<fieldset className="flex flex-wrap items-center gap-2 text-xs">
+										<legend className="sr-only">Stance</legend>
+										<span className="text-muted-foreground">
+											Stance (current: {humanStance})
+										</span>
+										{(
+											[
+												{ value: "keep", label: "keep" },
+												{ value: "agree", label: "agree" },
+												{ value: "disagree", label: "disagree" },
+												{ value: "none", label: "none" },
+											] as const
+										).map(({ value, label }) => (
+											<label
+												key={value}
+												className="inline-flex items-center gap-1 cursor-pointer"
+											>
+												<input
+													type="radio"
+													name={`remote-stance-${selectedThread.id}`}
+													value={value}
+													checked={replyStance === value}
+													onChange={() => setReplyStance(value)}
+												/>
+												{label}
+											</label>
+										))}
+									</fieldset>
 									<Button
 										className="h-8 w-full text-xs"
 										disabled={reply.trim() === "" || pendingAction === "reply"}
 										onClick={() => {
 											setPendingAction("reply");
-											onAppendComment(selectedThread.id, reply.trim());
+											onAppendComment(
+												selectedThread.id,
+												reply.trim(),
+												replyStance === "keep" ? null : replyStance,
+											);
 											setReply("");
+											setReplyStance("keep");
 										}}
 									>
 										Reply

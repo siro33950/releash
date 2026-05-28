@@ -27,6 +27,7 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { AgentChatProvider } from "@/contexts/AgentChatContext";
+import { ReviewThreadHandoffProvider } from "@/contexts/ReviewThreadHandoffContext";
 import { useBaseBranch } from "@/hooks/useBaseBranch";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useWorkspacePersistence } from "@/hooks/useWorkspacePersistence";
@@ -39,6 +40,7 @@ import {
 	CreateBranchDialog,
 	GitErrorDialog,
 } from "@/screens/WorktreeViewDialogs";
+import type { ThreadNavigationTarget } from "@/types/diffComment";
 import type { MentionReference } from "@/types/session";
 import type { AppSettings } from "@/types/settings";
 import type { WorkspaceState } from "@/types/workspace-state";
@@ -83,10 +85,8 @@ function WorktreeContent({
 }) {
 	const rightBottomRef = useRef<PanelImperativeHandle>(null);
 	const reviewRef = useRef<PanelImperativeHandle>(null);
-	const [navigateToFile, setNavigateToFile] = useState<{
-		path: string;
-		line?: number;
-	} | null>(null);
+	const [navigateToThread, setNavigateToThread] =
+		useState<ThreadNavigationTarget | null>(null);
 
 	const worktreeName = rootPath;
 
@@ -101,12 +101,9 @@ function WorktreeContent({
 		[],
 	);
 
-	const handleCommentClick = useCallback(
-		(filePath: string, lineNumber?: number) => {
-			setNavigateToFile({ path: filePath, line: lineNumber });
-		},
-		[],
-	);
+	const handleThreadClick = useCallback((target: ThreadNavigationTarget) => {
+		setNavigateToThread(target);
+	}, []);
 
 	const handleToggleRightBottom = useCallback(() => {
 		const panel = rightBottomRef.current;
@@ -149,129 +146,133 @@ function WorktreeContent({
 
 	return (
 		<AgentChatProvider worktreePath={rootPath}>
-			{/* Center */}
-			<Panel id="center" defaultSize="50%" minSize="30%">
-				<div className="h-full relative overflow-hidden flex flex-col">
-					<ViewToolbar
-						leftPanels={leftPanels}
-						rightSlot={branchSelector}
-						mode={centerMode}
-						onModeChange={onCenterModeChange}
-					/>
-					<div className="flex-1 overflow-hidden">
-						{centerMode === "workflow" ? (
-							<WorkflowView worktreePath={rootPath} />
-						) : (
-							<AgentChatPanel
-								worktreePath={rootPath}
-								registerDropZone={s.registerDropZone}
-								sendMessageRef={sendAgentMessageRef}
-							/>
-						)}
+			<ReviewThreadHandoffProvider worktreeName={worktreeName}>
+				{/* Center */}
+				<Panel id="center" defaultSize="50%" minSize="30%">
+					<div className="h-full relative overflow-hidden flex flex-col">
+						<ViewToolbar
+							leftPanels={leftPanels}
+							rightSlot={branchSelector}
+							mode={centerMode}
+							onModeChange={onCenterModeChange}
+						/>
+						<div className="flex-1 overflow-hidden">
+							{centerMode === "workflow" ? (
+								<WorkflowView worktreePath={rootPath} />
+							) : (
+								<AgentChatPanel
+									worktreePath={rootPath}
+									registerDropZone={s.registerDropZone}
+									sendMessageRef={sendAgentMessageRef}
+								/>
+							)}
+						</div>
 					</div>
-				</div>
-			</Panel>
-			<Separator />
-			{/* Right Sidebar */}
-			<Panel
-				id="right"
-				panelRef={rightPanelRef}
-				defaultSize="50%"
-				minSize={280}
-				collapsible
-				collapsedSize="0%"
-				onResize={onRightResize}
-			>
-				<div className="flex flex-col h-full border-l border-border">
-					<RightPanelHeader panels={togglePanels} />
-					<div className="flex-1 overflow-hidden">
-						<Group orientation="vertical">
-							<Panel
-								id="review"
-								panelRef={reviewRef}
-								defaultSize="60%"
-								minSize="20%"
-								collapsible
-								collapsedSize="0%"
-								onResize={(size) =>
-									s.setReviewCollapsed(size.asPercentage <= 0)
-								}
-							>
-								<div className="h-full overflow-hidden">
-									<ReviewPanel
-										rootPath={rootPath}
-										baseBranch={baseBranch}
-										defaultDiffBase={settings.defaultDiffBase}
-										defaultDiffMode={settings.defaultDiffMode}
-										diffOnlyMode={s.diffOnlyMode}
-										onDiffOnlyModeChange={s.setDiffOnlyMode}
-										navigateToFile={navigateToFile}
-										onSendToAgent={handleSendToAgent}
-										initialSelectedFile={s.selectedDiffFile}
-										onSelectedFileChange={s.setSelectedDiffFile}
-									/>
-								</div>
-							</Panel>
-							<Separator />
-							<Panel
-								id="right-bottom"
-								panelRef={rightBottomRef}
-								defaultSize={300}
-								minSize="20%"
-								groupResizeBehavior="preserve-pixel-size"
-								collapsible
-								collapsedSize={31}
-								onResize={(size) =>
-									s.setRightBottomCollapsed(size.inPixels <= 31)
-								}
-							>
-								<div
-									data-testid="right-bottom-content"
-									className="h-full overflow-hidden"
+				</Panel>
+				<Separator />
+				{/* Right Sidebar */}
+				<Panel
+					id="right"
+					panelRef={rightPanelRef}
+					defaultSize="50%"
+					minSize={280}
+					collapsible
+					collapsedSize="0%"
+					onResize={onRightResize}
+				>
+					<div className="flex flex-col h-full border-l border-border">
+						<RightPanelHeader panels={togglePanels} />
+						<div className="flex-1 overflow-hidden">
+							<Group orientation="vertical">
+								<Panel
+									id="review"
+									panelRef={reviewRef}
+									defaultSize="60%"
+									minSize="20%"
+									collapsible
+									collapsedSize="0%"
+									onResize={(size) =>
+										s.setReviewCollapsed(size.asPercentage <= 0)
+									}
 								>
-									<RightSidebarBottom
-										rootPath={rootPath}
-										theme={settings.theme}
-										worktreeName={worktreeName}
-										onCommentClick={handleCommentClick}
-										onToggleCollapse={handleToggleRightBottom}
-										collapsed={s.rightBottomCollapsed}
-									/>
-								</div>
-							</Panel>
-						</Group>
+									<div className="h-full overflow-hidden">
+										<ReviewPanel
+											rootPath={rootPath}
+											baseBranch={baseBranch}
+											defaultDiffBase={settings.defaultDiffBase}
+											defaultDiffMode={settings.defaultDiffMode}
+											diffOnlyMode={s.diffOnlyMode}
+											onDiffOnlyModeChange={s.setDiffOnlyMode}
+											navigateToThread={navigateToThread}
+											onSendToAgent={handleSendToAgent}
+											initialSelectedFile={s.selectedDiffFile}
+											onSelectedFileChange={s.setSelectedDiffFile}
+										/>
+									</div>
+								</Panel>
+								<Separator />
+								<Panel
+									id="right-bottom"
+									panelRef={rightBottomRef}
+									defaultSize={300}
+									minSize="20%"
+									groupResizeBehavior="preserve-pixel-size"
+									collapsible
+									collapsedSize={31}
+									onResize={(size) =>
+										s.setRightBottomCollapsed(size.inPixels <= 31)
+									}
+								>
+									<div
+										data-testid="right-bottom-content"
+										className="h-full overflow-hidden"
+									>
+										<RightSidebarBottom
+											rootPath={rootPath}
+											theme={settings.theme}
+											worktreeName={worktreeName}
+											onThreadClick={handleThreadClick}
+											onToggleCollapse={handleToggleRightBottom}
+											collapsed={s.rightBottomCollapsed}
+										/>
+									</div>
+								</Panel>
+							</Group>
+						</div>
 					</div>
-				</div>
-			</Panel>
+				</Panel>
 
-			{/* Dialogs */}
-			<GitErrorDialog
-				error={s.gitError}
-				onOpenChange={(o) => {
-					if (!o) s.dispatchGit({ type: "SET_GIT_ERROR", error: null });
-				}}
-				onDismiss={() => s.dispatchGit({ type: "SET_GIT_ERROR", error: null })}
-			/>
-			<CreateBranchDialog
-				open={s.showCreateBranch}
-				onOpenChange={(o) => {
-					if (!o) s.dispatchUI({ type: "CLOSE_CREATE_BRANCH" });
-				}}
-				branchName={s.newBranchName}
-				onBranchNameChange={(name) =>
-					s.dispatchUI({ type: "SET_NEW_BRANCH_NAME", name })
-				}
-				onCreate={s.gitActions.executeCreateBranch}
-			/>
-			<SettingsModal
-				open={s.isSettingsOpen}
-				onOpenChange={(open) =>
-					s.dispatchUI({ type: "SET_SETTINGS_OPEN", open })
-				}
-				settings={settings}
-				onSave={onSettingsSave}
-				repoPaths={[rootPath]}
-			/>
+				{/* Dialogs */}
+				<GitErrorDialog
+					error={s.gitError}
+					onOpenChange={(o) => {
+						if (!o) s.dispatchGit({ type: "SET_GIT_ERROR", error: null });
+					}}
+					onDismiss={() =>
+						s.dispatchGit({ type: "SET_GIT_ERROR", error: null })
+					}
+				/>
+				<CreateBranchDialog
+					open={s.showCreateBranch}
+					onOpenChange={(o) => {
+						if (!o) s.dispatchUI({ type: "CLOSE_CREATE_BRANCH" });
+					}}
+					branchName={s.newBranchName}
+					onBranchNameChange={(name) =>
+						s.dispatchUI({ type: "SET_NEW_BRANCH_NAME", name })
+					}
+					onCreate={s.gitActions.executeCreateBranch}
+				/>
+				<SettingsModal
+					open={s.isSettingsOpen}
+					onOpenChange={(open) =>
+						s.dispatchUI({ type: "SET_SETTINGS_OPEN", open })
+					}
+					settings={settings}
+					onSave={onSettingsSave}
+					repoPaths={[rootPath]}
+				/>
+			</ReviewThreadHandoffProvider>
 		</AgentChatProvider>
 	);
 }

@@ -141,7 +141,7 @@ describe("useDiffComments", () => {
 
 		await act(async () => {
 			await result.current.appendComment("t1", "Reply");
-			await result.current.setStance("t1", "agree");
+			await result.current.appendComment("t1", "Taking stance", "agree");
 			await result.current.resolveThread("t1", "resolved", "Done");
 		});
 
@@ -149,11 +149,13 @@ describe("useDiffComments", () => {
 			worktreeName: "wt",
 			threadId: "t1",
 			content: "Reply",
+			stance: null,
 		});
-		expect(mockInvoke).toHaveBeenCalledWith("set_review_stance", {
+		expect(mockInvoke).toHaveBeenCalledWith("append_review_comment", {
 			worktreeName: "wt",
 			threadId: "t1",
-			value: "agree",
+			content: "Taking stance",
+			stance: "agree",
 		});
 		expect(mockInvoke).toHaveBeenCalledWith("resolve_review_thread", {
 			worktreeName: "wt",
@@ -161,6 +163,78 @@ describe("useDiffComments", () => {
 			outcome: "resolved",
 			summary: "Done",
 		});
+	});
+
+	it("invokes delete_review_thread with the worktree name and thread id", async () => {
+		mockInvoke.mockResolvedValue([]);
+		const { result } = renderHook(() =>
+			useDiffComments({ worktreeName: "wt" }),
+		);
+
+		await waitFor(() => {
+			expect(result.current.loading).toBe(false);
+		});
+
+		await act(async () => {
+			await result.current.deleteThread("t1");
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith("delete_review_thread", {
+			worktreeName: "wt",
+			threadId: "t1",
+		});
+	});
+
+	it("reloads comments when the review-comments-changed event matches the worktree", async () => {
+		let listenerHandler: ((event: { payload: string }) => void) | undefined;
+		mockListen.mockImplementation((_eventName, handler) => {
+			listenerHandler = handler as (event: { payload: string }) => void;
+			return Promise.resolve(() => {});
+		});
+
+		mockInvoke.mockResolvedValue([makeThread()]);
+		const { result } = renderHook(() =>
+			useDiffComments({ worktreeName: "wt" }),
+		);
+
+		await waitFor(() => {
+			expect(result.current.comments).toHaveLength(1);
+		});
+
+		mockInvoke.mockResolvedValue([]);
+
+		await act(async () => {
+			listenerHandler?.({ payload: "wt" });
+		});
+
+		await waitFor(() => {
+			expect(result.current.comments).toHaveLength(0);
+		});
+	});
+
+	it("ignores review-comments-changed events for other worktrees", async () => {
+		let listenerHandler: ((event: { payload: string }) => void) | undefined;
+		mockListen.mockImplementation((_eventName, handler) => {
+			listenerHandler = handler as (event: { payload: string }) => void;
+			return Promise.resolve(() => {});
+		});
+
+		mockInvoke.mockResolvedValue([makeThread()]);
+		const { result } = renderHook(() =>
+			useDiffComments({ worktreeName: "wt" }),
+		);
+
+		await waitFor(() => {
+			expect(result.current.comments).toHaveLength(1);
+		});
+
+		const callCountBefore = mockInvoke.mock.calls.length;
+
+		await act(async () => {
+			listenerHandler?.({ payload: "other-worktree" });
+		});
+
+		expect(mockInvoke.mock.calls.length).toBe(callCountBefore);
 	});
 
 	it("getCommentsForFile filters by thread target filePath", async () => {

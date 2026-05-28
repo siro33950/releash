@@ -47,9 +47,6 @@ pub(super) async fn route_message(
         WsMessage::ReviewAppendCommentRequest(req) => {
             handle_review_append_comment_request(req, state, selected_worktree).await
         }
-        WsMessage::ReviewSetStanceRequest(req) => {
-            handle_review_set_stance_request(req, state, selected_worktree).await
-        }
         WsMessage::ReviewResolveRequest(req) => {
             handle_review_resolve_request(req, state, selected_worktree).await
         }

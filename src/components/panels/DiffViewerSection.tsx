@@ -30,14 +30,19 @@ export interface DiffViewerSectionProps {
 		endLine: number,
 		content: string,
 	) => Promise<void>;
-	onAppendComment?: (threadId: string, content: string) => Promise<void>;
-	onSetStance?: (threadId: string, value: ReviewStanceValue) => Promise<void>;
+	onAppendComment?: (
+		threadId: string,
+		content: string,
+		stance?: ReviewStanceValue | null,
+	) => Promise<void>;
 	onResolveThread?: (
 		threadId: string,
 		outcome: string,
 		summary: string,
 	) => Promise<void>;
+	onDeleteThread?: (threadId: string) => Promise<void>;
 	scrollToLine?: number | null;
+	scrollToThread?: string | null;
 }
 
 export function DiffViewerSection(props: DiffViewerSectionProps) {
@@ -76,9 +81,10 @@ export function DiffViewerSection(props: DiffViewerSectionProps) {
 			onAddComment={props.onAddComment}
 			onAddRangeComment={props.onAddRangeComment}
 			onAppendComment={props.onAppendComment}
-			onSetStance={props.onSetStance}
 			onResolveThread={props.onResolveThread}
+			onDeleteThread={props.onDeleteThread}
 			scrollToLine={props.scrollToLine}
+			scrollToThread={props.scrollToThread}
 		/>
 	);
 }

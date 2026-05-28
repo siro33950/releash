@@ -69,13 +69,14 @@ fn emit_review_changed(app: &tauri::AppHandle, worktree_name: &str) {
 }
 
 #[cfg(test)]
-fn review_test_deps(
-    state: &WsServerState,
-) -> Option<(
+type ReviewTestDeps = (
     Arc<crate::review_comments::ReviewCommentStore>,
     PathBuf,
     Arc<parking_lot::Mutex<Vec<String>>>,
-)> {
+);
+
+#[cfg(test)]
+fn review_test_deps(state: &WsServerState) -> Option<ReviewTestDeps> {
     state.test_review_deps.as_ref().map(|(store, data_dir)| {
         (
             Arc::clone(store),
@@ -229,6 +230,7 @@ pub(super) async fn handle_review_create_request(
                     crate::review_comments::ReviewActor::human(),
                     target,
                     content,
+                    None,
                 )
             },
         )
@@ -254,6 +256,7 @@ pub(super) async fn handle_review_create_request(
                 crate::review_comments::ReviewActor::human(),
                 target,
                 content,
+                None,
             )
         },
     )
@@ -272,8 +275,10 @@ pub(super) async fn handle_review_append_comment_request(
         };
     let thread_id = req.thread_id.clone();
     let content = req.content.clone();
+    let stance = req.stance.clone();
     #[cfg(test)]
     if let Some((store, data_dir, emit_log)) = review_test_deps(state) {
+        let stance_for_test = stance.clone();
         return review_thread_response_from_store(
             store,
             data_dir,
@@ -287,6 +292,7 @@ pub(super) async fn handle_review_append_comment_request(
                     crate::review_comments::ReviewActor::human(),
                     &thread_id,
                     content,
+                    stance_for_test.clone(),
                 )
             },
         )
@@ -312,64 +318,7 @@ pub(super) async fn handle_review_append_comment_request(
                 crate::review_comments::ReviewActor::human(),
                 &thread_id,
                 content,
-            )
-        },
-    )
-    .await
-}
-
-pub(super) async fn handle_review_set_stance_request(
-    req: &ReviewSetStanceRequest,
-    state: &WsServerState,
-    selected_worktree: &Arc<Mutex<Option<String>>>,
-) -> Option<WsMessage> {
-    let worktree_name =
-        match resolve_review_worktree(req.worktree_name.clone(), selected_worktree).await {
-            Ok(worktree_name) => worktree_name,
-            Err(msg) => return Some(msg),
-        };
-    let thread_id = req.thread_id.clone();
-    let value = req.value.clone();
-    #[cfg(test)]
-    if let Some((store, data_dir, emit_log)) = review_test_deps(state) {
-        return review_thread_response_from_store(
-            store,
-            data_dir,
-            worktree_name,
-            true,
-            emit_log,
-            move |store, data_dir, worktree_name| {
-                store.set_stance(
-                    data_dir,
-                    worktree_name,
-                    crate::review_comments::ReviewActor::human(),
-                    &thread_id,
-                    value,
-                )
-            },
-        )
-        .await;
-    }
-    let app = match &state.app_handle {
-        Some(app) => app.clone(),
-        None => {
-            return Some(WsMessage::Error(ErrorMsg {
-                code: "INTERNAL_ERROR".to_string(),
-                message: "App handle not available".to_string(),
-            }))
-        }
-    };
-    review_thread_response_from_blocking(
-        app,
-        worktree_name,
-        true,
-        move |store, data_dir, worktree_name| {
-            store.set_stance(
-                data_dir,
-                worktree_name,
-                crate::review_comments::ReviewActor::human(),
-                &thread_id,
-                value,
+                stance.clone(),
             )
         },
     )
@@ -1670,6 +1619,7 @@ mod tests {
                 worktree_name: Some("repo".to_string()),
                 thread_id: thread.id.clone(),
                 content: "Human follow-up".to_string(),
+                stance: None,
             },
             &state,
             &selected,
@@ -1683,11 +1633,12 @@ mod tests {
             other => panic!("expected append response, got {other:?}"),
         }
 
-        let stance = handle_review_set_stance_request(
-            &ReviewSetStanceRequest {
+        let stance = handle_review_append_comment_request(
+            &ReviewAppendCommentRequest {
                 worktree_name: None,
                 thread_id: thread.id.clone(),
-                value: crate::review_comments::ReviewStanceValue::Agree,
+                content: "agreeing".to_string(),
+                stance: Some(crate::review_comments::ReviewStanceValue::Agree),
             },
             &state,
             &selected,
@@ -1737,6 +1688,7 @@ mod tests {
                 worktree_name: None,
                 thread_id: thread.id.clone(),
                 content: "late".to_string(),
+                stance: None,
             },
             &state,
             &selected,
@@ -1768,7 +1720,9 @@ mod tests {
             Some(WsMessage::ReviewHistoryResponse(resp)) => {
                 assert!(resp.success);
                 assert_eq!(resp.worktree_name.as_deref(), Some("/repo"));
-                assert_eq!(resp.events.len(), 4);
+                // ThreadCreated + CommentAppended + (CommentAppended + StanceSet) + ThreadResolved
+                // = 5 events (stance 表明は Comment 追記と atomic に 2 イベント append される)
+                assert_eq!(resp.events.len(), 5);
             }
             other => panic!("expected history response, got {other:?}"),
         }

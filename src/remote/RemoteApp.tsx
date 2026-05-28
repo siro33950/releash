@@ -218,7 +218,6 @@ export function RemoteApp() {
 								onRefresh={reviewThreads.refresh}
 								onCreateThread={reviewThreads.createThread}
 								onAppendComment={reviewThreads.appendComment}
-								onSetStance={reviewThreads.setStance}
 								onResolveThread={reviewThreads.resolveThread}
 							/>
 						</div>

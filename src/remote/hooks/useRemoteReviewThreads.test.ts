@@ -89,7 +89,7 @@ describe("useRemoteReviewThreads", () => {
 		act(() => {
 			result.current.createThread("General");
 			result.current.appendComment("t2", "Reply");
-			result.current.setStance("t2", "agree");
+			result.current.appendComment("t2", "Taking stance", "agree");
 			result.current.resolveThread("t2", "Done");
 		});
 		expect(send).toHaveBeenCalledWith({
@@ -98,11 +98,21 @@ describe("useRemoteReviewThreads", () => {
 		});
 		expect(send).toHaveBeenCalledWith({
 			type: "review_append_comment_request",
-			payload: { worktreeName: "/repo", threadId: "t2", content: "Reply" },
+			payload: {
+				worktreeName: "/repo",
+				threadId: "t2",
+				content: "Reply",
+				stance: null,
+			},
 		});
 		expect(send).toHaveBeenCalledWith({
-			type: "review_set_stance_request",
-			payload: { worktreeName: "/repo", threadId: "t2", value: "agree" },
+			type: "review_append_comment_request",
+			payload: {
+				worktreeName: "/repo",
+				threadId: "t2",
+				content: "Taking stance",
+				stance: "agree",
+			},
 		});
 		expect(send).toHaveBeenCalledWith({
 			type: "review_resolve_request",

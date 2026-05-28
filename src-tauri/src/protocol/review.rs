@@ -54,20 +54,21 @@ pub struct ReviewCreateRequest {
     pub content: String,
 }
 
+/// Comment 追記と (任意で) 同 actor の Stance 表明を atomic に行う request。
+///
+/// spec issues-1022 design.md L45 Stance contract / Boundaries L77: Stance の書き込みは
+/// Comment 追記操作の任意フラグとしてのみ提供する。`stance` 指定:
+/// - `Some(Agree)` / `Some(Disagree)`: 現在 Stance を上書き
+/// - `Some(None)`: 現在 Stance を未表明状態に撤回
+/// - `None` (未指定): 現在 Stance を維持
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewAppendCommentRequest {
     pub worktree_name: Option<String>,
     pub thread_id: String,
     pub content: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewSetStanceRequest {
-    pub worktree_name: Option<String>,
-    pub thread_id: String,
-    pub value: ReviewStanceValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stance: Option<ReviewStanceValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

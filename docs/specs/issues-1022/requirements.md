@@ -35,6 +35,9 @@ GitHub Issue #1022 は、マイルストーン `[09] Agent Review Capability - R
 - Thread / Comment / Stance / Resolve の履歴を監査でき、Thread 単位で過去の変化を確認できるようにする。
 - 既存のコメント導線は、新しいレビューコメント基盤で動作するようにする。
 - 既存の手動送信状態を前提にしたコメント送信フローを、Agent が List / Get で発見するモデルに置き換える。
+- Agent backend session 起動時、`releash` CLI の long help が system_prompt の一部として常時含まれるようにする。
+- 人間ユーザーはデスクトップ UI 上の Diff 由来 Thread を、現在 active な AgentChat session の入力として能動送信できるようにする。
+- active な AgentChat session が存在しない場合は、上記能動送信を実行できないようにする。
 
 ## Non-goals
 - GitHub PR のレビューコメントを作成、更新、同期すること。
@@ -48,6 +51,7 @@ GitHub Issue #1022 は、マイルストーン `[09] Agent Review Capability - R
 - 既存コメントデータを自動移行すること。
 - 既存の手動送信済み / 未送信状態を継続すること。
 - ロールベース ACL、per-thread permission list、細分化された権限管理。
+- 人間ユーザーによる Diff Thread の能動送信を、Agent への push 通知や event subscribe として扱うこと。本機能は人間ユーザーが自分の意思で行うチャット入力の一形態とする。
 
 ## Requirements
 - Thread は、主張となる初回 Comment とともに作成されなければならない。
@@ -83,6 +87,10 @@ GitHub Issue #1022 は、マイルストーン `[09] Agent Review Capability - R
 - UI は human / agent の著者種別と、Agent の backend/model 由来の表示名を区別して表示できなければならない。
 - UI は Thread の open / resolved 状態、Comment の時系列、各参加者の現在 Stance、利用者が実行可能な Resolve 操作を確認できなければならない。
 - 既存の Agent への手動送信状態を前提にしたフローは、新しい List / Get による発見モデルへ置き換えられなければならない。
+- Agent backend 起動時の system_prompt には、`releash` CLI の long help が必ず含まれていなければならない。
+- 人間ユーザーは Diff ビュー上の Thread から、Thread を一意に指す参照情報（thread id、worktree、file、line range）を含むメッセージを active な AgentChat session の入力として送信できなければならない。
+- active な AgentChat session が存在しない場合、Diff Thread の能動送信操作は無効化されなければならない。
+- 送信されたメッセージは、Agent が `releash review get` などの CLI 経路で Thread 本文・履歴・Stance を取得できる十分な参照情報を含まなければならない。
 
 ## Constraints
 - 主境界は Agent 向け CLI と UI / Remote 向け API とし、MCP は今回の主境界にしない。

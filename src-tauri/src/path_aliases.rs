@@ -125,6 +125,98 @@ pub fn default_data_dir_for_profile(profile: BuildProfile) -> Result<PathBuf, St
     Ok(base.join(default_data_dir_name_for_profile(profile)))
 }
 
+/// `resolve_session_data_dir_env` の判定結果。
+///
+/// spec issues-1054 「明示指定 > alias 内包値」原則を保ちつつ、別 Releash binary 由来の
+/// inherit (例: prod Releash の Terminal Panel から起動した shell の env に prod
+/// `RELEASH_DATA_DIR` が入っており、その shell から dev binary を起動した場合) を
+/// 「ユーザー明示指定」と区別するための判定型。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedDataDirEnv {
+    /// `RELEASH_DATA_DIR` を指定パスに設置する。
+    Set(PathBuf),
+    /// 親プロセスの値を尊重する (no-op)。
+    Keep,
+}
+
+/// 既知 Releash alias の data_dir パス一覧 (両 `BuildProfile` 分)。
+///
+/// `resolve_session_data_dir_env` で「親プロセス env が別 Releash binary 由来の inherit
+/// かどうか」を判定する材料。`dirs::data_dir()` 解決失敗時は `Err` を返し、呼び出し側が
+/// 判定を諦めて安全側 (env 変更なし) にフォールバックできるようにする。
+pub fn known_alias_data_dirs() -> Result<Vec<PathBuf>, String> {
+    Ok(vec![
+        default_data_dir_for_profile(BuildProfile::Production)?,
+        default_data_dir_for_profile(BuildProfile::Development)?,
+    ])
+}
+
+/// 親プロセス env の `RELEASH_DATA_DIR` をどう扱うかを決定する pure 関数。
+///
+/// spec issues-1054 Implementation Freedom L104「`RELEASH_DATA_DIR` の明示指定検出方法」に
+/// 対する追加判定:
+/// - `None` / 空文字 → `Set(self_data_dir)`: 親 env なし、自プロセスの alias data_dir を設置
+/// - 既知 Releash alias data_dir のいずれかと一致 → `Set(self_data_dir)`: 別 Releash binary
+///   由来の inherit と判定し、自プロセスの alias data_dir で上書き
+/// - 上記いずれにも一致しない任意パス → `Keep`: ユーザーの真の明示指定として尊重
+///
+/// 「`RELEASH_DATA_DIR` の利用者明示指定は alias 内包値で上書きしない」(spec issues-1054
+/// design.md L92) は維持しつつ、Releash app 自身が PTY 等で inject した同一 env が異種 binary
+/// に伝搬する経路だけを正す。
+pub fn resolve_session_data_dir_env(
+    parent_env: Option<&str>,
+    self_data_dir: &Path,
+    known_alias_data_dirs: &[PathBuf],
+) -> ResolvedDataDirEnv {
+    match parent_env {
+        None | Some("") => ResolvedDataDirEnv::Set(self_data_dir.to_path_buf()),
+        Some(value) => {
+            let parent_path = PathBuf::from(value);
+            if known_alias_data_dirs.iter().any(|p| p == &parent_path) {
+                ResolvedDataDirEnv::Set(self_data_dir.to_path_buf())
+            } else {
+                ResolvedDataDirEnv::Keep
+            }
+        }
+    }
+}
+
+/// Tauri app 起動直後に呼び、自プロセスの `RELEASH_DATA_DIR` env を alias data_dir で正す。
+///
+/// 別 Releash binary (例: prod 版 Releash の Terminal Panel) から inherit された env を
+/// 「ユーザー明示指定」と誤認すると、子プロセス (agent / pty / oneshot) への伝搬時に
+/// 異種 data_dir を渡してしまう。本関数は起動初期に env を判定 (`resolve_session_data_dir_env`)
+/// して必要なら `std::env::set_var` で自プロセスの alias data_dir に揃える。
+///
+/// 失敗時 (data_dir 解決不能等) は env を変更せず log のみで済ませ、起動失敗を連鎖させない。
+pub fn ensure_release_data_dir_env_for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::Manager;
+    let self_data_dir = match app.path().app_data_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!(
+                "ensure_release_data_dir_env_for_app: failed to resolve own app_data_dir: {e}"
+            );
+            return;
+        }
+    };
+    let known = match known_alias_data_dirs() {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "ensure_release_data_dir_env_for_app: failed to enumerate known alias data dirs: {e}"
+            );
+            return;
+        }
+    };
+    let parent = std::env::var("RELEASH_DATA_DIR").ok();
+    if let ResolvedDataDirEnv::Set(path) =
+        resolve_session_data_dir_env(parent.as_deref(), &self_data_dir, &known)
+    {
+        std::env::set_var("RELEASH_DATA_DIR", &path);
+    }
+}
+
 /// 子プロセスへ alias 解決可能な PATH と alias 内包の `RELEASH_DATA_DIR` を提供する。
 ///
 /// spec issues-1054 「agent 子プロセスへの実行環境の伝搬」:
@@ -524,5 +616,70 @@ mod tests {
         let wrapper = bin_dir.join("releash-test");
         let mode = std::fs::metadata(&wrapper).unwrap().permissions().mode();
         assert_eq!(mode & 0o111, 0o111, "wrapper should be executable");
+    }
+
+    // ----- resolve_session_data_dir_env -----
+
+    /// 親 env が None なら自分の data_dir を設置する。
+    #[test]
+    fn resolve_session_data_dir_env_sets_self_when_parent_env_absent() {
+        let self_dir = PathBuf::from("/home/u/.local/share/com.releash.app.dev");
+        let known = vec![
+            PathBuf::from("/home/u/.local/share/com.releash.app"),
+            self_dir.clone(),
+        ];
+        let result = resolve_session_data_dir_env(None, &self_dir, &known);
+        assert_eq!(result, ResolvedDataDirEnv::Set(self_dir));
+    }
+
+    /// 親 env が空文字なら自分の data_dir を設置する。
+    #[test]
+    fn resolve_session_data_dir_env_sets_self_when_parent_env_empty() {
+        let self_dir = PathBuf::from("/home/u/.local/share/com.releash.app.dev");
+        let known = vec![
+            PathBuf::from("/home/u/.local/share/com.releash.app"),
+            self_dir.clone(),
+        ];
+        let result = resolve_session_data_dir_env(Some(""), &self_dir, &known);
+        assert_eq!(result, ResolvedDataDirEnv::Set(self_dir));
+    }
+
+    /// 親 env が「別 alias の data_dir」を指している場合は、別 Releash binary 由来の
+    /// inherit と判定して自分の alias data_dir で上書きする (バグ修正の主シナリオ)。
+    #[test]
+    fn resolve_session_data_dir_env_overrides_when_parent_matches_other_alias() {
+        let self_dir = PathBuf::from("/home/u/.local/share/com.releash.app.dev");
+        let other_alias = PathBuf::from("/home/u/.local/share/com.releash.app");
+        let known = vec![other_alias.clone(), self_dir.clone()];
+        let result =
+            resolve_session_data_dir_env(Some(other_alias.to_str().unwrap()), &self_dir, &known);
+        assert_eq!(result, ResolvedDataDirEnv::Set(self_dir));
+    }
+
+    /// 親 env が「自分と同じ alias の data_dir」を指している場合も Set(self) を返す
+    /// (同種 inherit 経路で値が一致しているケースの整合性確認、結果は no-op 同等)。
+    #[test]
+    fn resolve_session_data_dir_env_overrides_when_parent_matches_own_alias() {
+        let self_dir = PathBuf::from("/home/u/.local/share/com.releash.app.dev");
+        let known = vec![
+            PathBuf::from("/home/u/.local/share/com.releash.app"),
+            self_dir.clone(),
+        ];
+        let result =
+            resolve_session_data_dir_env(Some(self_dir.to_str().unwrap()), &self_dir, &known);
+        assert_eq!(result, ResolvedDataDirEnv::Set(self_dir));
+    }
+
+    /// 親 env が「既知 alias data_dir のいずれにも一致しない任意パス」を指している場合は
+    /// ユーザーの真の明示指定として尊重 (Keep) する。
+    #[test]
+    fn resolve_session_data_dir_env_keeps_parent_when_arbitrary_path() {
+        let self_dir = PathBuf::from("/home/u/.local/share/com.releash.app.dev");
+        let known = vec![
+            PathBuf::from("/home/u/.local/share/com.releash.app"),
+            self_dir.clone(),
+        ];
+        let result = resolve_session_data_dir_env(Some("/tmp/custom-releash"), &self_dir, &known);
+        assert_eq!(result, ResolvedDataDirEnv::Keep);
     }
 }

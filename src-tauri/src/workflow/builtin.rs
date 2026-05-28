@@ -12,6 +12,7 @@ const BUILTIN_SPEC_IMPLEMENT: &str = include_str!("builtin/spec-implement.yml");
 const BUILTIN_SPEC_REVIEW: &str = include_str!("builtin/spec-review.yml");
 const BUILTIN_SPEC_REVIEW_AUTO: &str = include_str!("builtin/spec-review-auto.yml");
 const BUILTIN_BUG_FIX: &str = include_str!("builtin/bug-fix.yml");
+const BUILTIN_MULTI_AGENT_CODE_REVIEW: &str = include_str!("builtin/multi-agent-code-review.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
@@ -58,6 +59,11 @@ const BUILTINS: &[BuiltinEntry] = &[
         filename: "bug-fix.yml",
         content: BUILTIN_BUG_FIX,
         description: "Bug fix workflow (investigate → approve fix plan → fix → review → approve)",
+    },
+    BuiltinEntry {
+        filename: "multi-agent-code-review.yml",
+        content: BUILTIN_MULTI_AGENT_CODE_REVIEW,
+        description: "Multi-agent collaborative code review workflow. 12 reviewer agents (6 viewpoints × 2 backends) post review Threads. 2 verifier agents independently verify each Thread with tool execution and assign one of four states (VERIFIED / REFUTED / MANUAL_JUDGMENT / INFORMATIONAL). A Summary agent then walks through each Thread interactively with the human, discussing findings until an explicit policy is agreed, then posts the conclusion to the Thread as a fix-policy Comment or a rationale-backed Resolve.",
     },
 ];
 
@@ -201,6 +207,22 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::Policy,
         key: "plan-review",
         content: include_str!("builtin_facets/policies/plan-review.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Policy,
+        key: "multi-agent-reviewer",
+        content: include_str!("builtin_facets/policies/multi-agent-reviewer.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Policy,
+        key: "multi-agent-summary",
+        content: include_str!("builtin_facets/policies/multi-agent-summary.md"),
+    },
+    // --- Knowledge facets ---
+    BuiltinFacetEntry {
+        kind: FacetKind::Knowledge,
+        key: "releash-thread-cli",
+        content: include_str!("builtin_facets/knowledge/releash-thread-cli.md"),
     },
     // --- Spec-driven development workflow instructions ---
     BuiltinFacetEntry {
@@ -382,6 +404,47 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         key: "bug-final-approval",
         content: include_str!("builtin_facets/instructions/bug-final-approval.md"),
     },
+    // --- multi-agent-code-review workflow dedicated instructions / contracts ---
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "mar-review-acceptance",
+        content: include_str!("builtin_facets/instructions/mar-review-acceptance.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "mar-review-structure",
+        content: include_str!("builtin_facets/instructions/mar-review-structure.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "mar-review-quality",
+        content: include_str!("builtin_facets/instructions/mar-review-quality.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "mar-review-test",
+        content: include_str!("builtin_facets/instructions/mar-review-test.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "mar-review-security",
+        content: include_str!("builtin_facets/instructions/mar-review-security.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "mar-review-architecture",
+        content: include_str!("builtin_facets/instructions/mar-review-architecture.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "mar-verify-and-classify",
+        content: include_str!("builtin_facets/instructions/mar-verify-and-classify.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "mar-summary",
+        content: include_str!("builtin_facets/instructions/mar-summary.md"),
+    },
 ];
 
 pub fn get_builtin_facet(kind: FacetKind, key: &str) -> Option<&'static str> {
@@ -493,17 +556,25 @@ mod tests {
     #[test]
     fn list_builtin_facet_keys_filters_by_kind() {
         let policies = list_builtin_facet_keys(FacetKind::Policy);
-        assert_eq!(policies.len(), 4);
+        assert_eq!(policies.len(), 6);
         assert!(policies.contains(&"coding"));
         assert!(policies.contains(&"review"));
         assert!(policies.contains(&"planning"));
         assert!(policies.contains(&"plan-review"));
+        assert!(policies.contains(&"multi-agent-reviewer"));
+        assert!(policies.contains(&"multi-agent-summary"));
+
+        let knowledge = list_builtin_facet_keys(FacetKind::Knowledge);
+        assert_eq!(knowledge.len(), 1);
+        assert!(knowledge.contains(&"releash-thread-cli"));
 
         let instructions = list_builtin_facet_keys(FacetKind::Instruction);
         // 20 (spec-driven-development 共通)
         // + 2 (spec-review-auto dedicated: fix-policy-auto, review-summary)
-        // + 9 (bug-fix dedicated) = 31
-        assert_eq!(instructions.len(), 31);
+        // + 9 (bug-fix dedicated)
+        // + 8 (multi-agent-code-review dedicated: mar-review-* x6,
+        //       mar-verify-and-classify, mar-summary) = 39
+        assert_eq!(instructions.len(), 39);
 
         let contracts = list_builtin_facet_keys(FacetKind::Contract);
         // spec-directory / review-verdict / approved-fix-policy / bug-investigation-result = 4
@@ -519,6 +590,7 @@ mod tests {
         assert!(is_builtin_workflow("spec-review"));
         assert!(is_builtin_workflow("spec-review-auto"));
         assert!(is_builtin_workflow("bug-fix"));
+        assert!(is_builtin_workflow("multi-agent-code-review"));
         assert!(!is_builtin_workflow("custom-workflow"));
     }
 

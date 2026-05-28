@@ -3,13 +3,14 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { DiffCommentList } from "@/components/panels/DiffCommentList";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { useDiffComments } from "@/hooks/useDiffComments";
+import type { ThreadNavigationTarget } from "@/types/diffComment";
 import type { Theme } from "@/types/settings";
 
 interface RightSidebarBottomProps {
 	rootPath: string;
 	theme?: Theme;
 	worktreeName: string;
-	onCommentClick?: (filePath: string, lineNumber?: number) => void;
+	onThreadClick?: (target: ThreadNavigationTarget) => void;
 	onToggleCollapse?: () => void;
 	collapsed?: boolean;
 }
@@ -18,11 +19,11 @@ export function RightSidebarBottom({
 	rootPath,
 	theme,
 	worktreeName,
-	onCommentClick,
+	onThreadClick,
 	onToggleCollapse,
 	collapsed,
 }: RightSidebarBottomProps) {
-	const { comments } = useDiffComments({ worktreeName });
+	const { comments, deleteThread } = useDiffComments({ worktreeName });
 
 	return (
 		<div className="flex flex-col h-full">
@@ -54,7 +55,8 @@ export function RightSidebarBottom({
 						<div className="h-full overflow-hidden">
 							<DiffCommentList
 								comments={comments}
-								onCommentClick={onCommentClick ?? (() => {})}
+								onThreadClick={onThreadClick ?? (() => {})}
+								onDelete={deleteThread}
 							/>
 						</div>
 					</Panel>

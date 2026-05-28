@@ -36,7 +36,6 @@ describe("FileCommentPopoverTrigger", () => {
 		filePath: "src/main.ts",
 		onAdd: vi.fn().mockResolvedValue(undefined),
 		onAppend: vi.fn().mockResolvedValue(undefined),
-		onSetStance: vi.fn().mockResolvedValue(undefined),
 		onResolve: vi.fn().mockResolvedValue(undefined),
 	};
 
@@ -98,5 +97,61 @@ describe("FileCommentPopoverTrigger", () => {
 
 		await user.click(screen.getByTitle("File comments"));
 		expect(screen.getByText("Add file comment")).toBeInTheDocument();
+	});
+
+	it("forwards onDelete to inline comment items so the delete button is rendered", async () => {
+		const user = userEvent.setup();
+		const onDelete = vi.fn().mockResolvedValue(undefined);
+		render(
+			<FileCommentPopoverTrigger
+				comments={[makeComment()]}
+				{...defaultProps}
+				onDelete={onDelete}
+			/>,
+		);
+
+		await user.click(screen.getByTitle("File comments"));
+		expect(screen.getByLabelText("Delete thread")).toBeInTheDocument();
+	});
+
+	it("does not render delete button on inline comments when onDelete is omitted", async () => {
+		const user = userEvent.setup();
+		render(
+			<FileCommentPopoverTrigger
+				comments={[makeComment()]}
+				{...defaultProps}
+			/>,
+		);
+
+		await user.click(screen.getByTitle("File comments"));
+		expect(screen.queryByLabelText("Delete thread")).not.toBeInTheDocument();
+	});
+
+	it("opens the popover when controlled via the open prop", () => {
+		render(
+			<FileCommentPopoverTrigger
+				comments={[makeComment()]}
+				{...defaultProps}
+				open
+			/>,
+		);
+		// Popover content shows the file-level comment without clicking the trigger.
+		expect(screen.getByText("File-level comment")).toBeInTheDocument();
+	});
+
+	it("propagates close events back through onOpenChange", async () => {
+		const user = userEvent.setup();
+		const onOpenChange = vi.fn();
+		render(
+			<FileCommentPopoverTrigger
+				comments={[makeComment()]}
+				{...defaultProps}
+				open
+				onOpenChange={onOpenChange}
+			/>,
+		);
+		// Press Escape to dismiss the popover content.
+		await user.keyboard("{Escape}");
+		expect(onOpenChange).toHaveBeenCalledWith(false);
 	});
 });

@@ -68,22 +68,16 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 	);
 
 	const appendComment = useCallback(
-		async (threadId: string, content: string) => {
+		async (
+			threadId: string,
+			content: string,
+			stance?: ReviewStanceValue | null,
+		) => {
 			await invoke<ReviewThread>("append_review_comment", {
 				worktreeName,
 				threadId,
 				content,
-			});
-		},
-		[worktreeName],
-	);
-
-	const setStance = useCallback(
-		async (threadId: string, value: ReviewStanceValue) => {
-			await invoke<ReviewThread>("set_review_stance", {
-				worktreeName,
-				threadId,
-				value,
+				stance: stance ?? null,
 			});
 		},
 		[worktreeName],
@@ -96,6 +90,16 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 				threadId,
 				outcome,
 				summary,
+			});
+		},
+		[worktreeName],
+	);
+
+	const deleteThread = useCallback(
+		async (threadId: string) => {
+			await invoke<void>("delete_review_thread", {
+				worktreeName,
+				threadId,
 			});
 		},
 		[worktreeName],
@@ -116,8 +120,8 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 		unsentCount: 0,
 		addComment,
 		appendComment,
-		setStance,
 		resolveThread,
+		deleteThread,
 		getCommentsForFile,
 		reload: loadComments,
 	};

@@ -2,11 +2,25 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+	ReviewThreadHandoffContext,
+	type ReviewThreadHandoffContextValue,
+} from "@/contexts/ReviewThreadHandoffContext";
 import type { ReviewDiscussionThread } from "@/types/diffComment";
 import { DiffCommentList } from "./DiffCommentList";
 
-function renderWithProviders(ui: React.ReactElement) {
-	return render(<TooltipProvider>{ui}</TooltipProvider>);
+function renderWithProviders(
+	ui: React.ReactElement,
+	handoff: ReviewThreadHandoffContextValue = {
+		canSend: false,
+		sendThreadToAgent: vi.fn().mockResolvedValue(undefined),
+	},
+) {
+	return render(
+		<ReviewThreadHandoffContext.Provider value={handoff}>
+			<TooltipProvider>{ui}</TooltipProvider>
+		</ReviewThreadHandoffContext.Provider>,
+	);
 }
 
 const makeComment = (
@@ -38,7 +52,7 @@ const makeComment = (
 
 describe("DiffCommentList", () => {
 	const defaultProps = {
-		onCommentClick: vi.fn(),
+		onThreadClick: vi.fn(),
 	};
 
 	beforeEach(() => {
@@ -122,12 +136,44 @@ describe("DiffCommentList", () => {
 		expect(screen.getByText("resolved")).toBeInTheDocument();
 	});
 
-	it("calls onCommentClick with filePath and lineNumber", async () => {
+	it("renders the initial comment as preview", () => {
+		renderWithProviders(
+			<DiffCommentList
+				comments={[
+					makeComment({
+						id: "t1",
+						comments: [
+							{
+								id: "c1",
+								threadId: "t1",
+								author: { kind: "human", displayName: "Human" },
+								content: "Initial claim",
+								createdAt: 1,
+							},
+							{
+								id: "c2",
+								threadId: "t1",
+								author: { kind: "human", displayName: "Human" },
+								content: "Later reply",
+								createdAt: 2,
+							},
+						],
+					}),
+				]}
+				{...defaultProps}
+			/>,
+		);
+		expect(screen.getByText("Initial claim")).toBeInTheDocument();
+		expect(screen.queryByText("Later reply")).not.toBeInTheDocument();
+	});
+
+	it("calls onThreadClick with target derived from a line thread", async () => {
 		const user = userEvent.setup();
 		renderWithProviders(
 			<DiffCommentList
 				comments={[
 					makeComment({
+						id: "thread-line",
 						target: { filePath: "src/main.ts", lineNumber: 42, endLine: null },
 					}),
 				]}
@@ -136,7 +182,48 @@ describe("DiffCommentList", () => {
 		);
 
 		await user.click(screen.getByText("Fix this"));
-		expect(defaultProps.onCommentClick).toHaveBeenCalledWith("src/main.ts", 42);
+		expect(defaultProps.onThreadClick).toHaveBeenCalledWith({
+			filePath: "src/main.ts",
+			threadId: "thread-line",
+			lineNumber: 42,
+			isFileComment: false,
+		});
+	});
+
+	it("calls onThreadClick with isFileComment=true for file-level threads", async () => {
+		const user = userEvent.setup();
+		renderWithProviders(
+			<DiffCommentList
+				comments={[
+					makeComment({
+						id: "thread-file",
+						target: {
+							filePath: "src/main.ts",
+							lineNumber: null,
+							endLine: null,
+						},
+						comments: [
+							{
+								id: "c1",
+								threadId: "thread-file",
+								author: { kind: "human", displayName: "Human" },
+								content: "File scope comment",
+								createdAt: Date.now(),
+							},
+						],
+					}),
+				]}
+				{...defaultProps}
+			/>,
+		);
+
+		await user.click(screen.getByText("File scope comment"));
+		expect(defaultProps.onThreadClick).toHaveBeenCalledWith({
+			filePath: "src/main.ts",
+			threadId: "thread-file",
+			lineNumber: undefined,
+			isFileComment: true,
+		});
 	});
 
 	it("shows and selects general threads without a file position", async () => {
@@ -145,11 +232,12 @@ describe("DiffCommentList", () => {
 			<DiffCommentList
 				comments={[
 					makeComment({
+						id: "thread-general",
 						target: { filePath: null, lineNumber: null, endLine: null },
 						comments: [
 							{
 								id: "c1",
-								threadId: "t1",
+								threadId: "thread-general",
 								author: { kind: "human", displayName: "Human" },
 								content: "General discussion",
 								createdAt: Date.now(),
@@ -164,6 +252,113 @@ describe("DiffCommentList", () => {
 		expect(screen.getByText("General")).toBeInTheDocument();
 		expect(screen.getByText("file")).toBeInTheDocument();
 		await user.click(screen.getByText("General discussion"));
-		expect(defaultProps.onCommentClick).toHaveBeenCalledWith("", undefined);
+		expect(defaultProps.onThreadClick).toHaveBeenCalledWith({
+			filePath: "",
+			threadId: "thread-general",
+			lineNumber: undefined,
+			isFileComment: true,
+		});
+	});
+
+	it("does not render delete button when onDelete is not provided", () => {
+		renderWithProviders(
+			<DiffCommentList comments={[makeComment()]} {...defaultProps} />,
+		);
+		expect(screen.queryByLabelText("Delete thread")).not.toBeInTheDocument();
+	});
+
+	it("renders a delete button per thread when onDelete is provided", () => {
+		renderWithProviders(
+			<DiffCommentList
+				comments={[makeComment({ id: "t1" }), makeComment({ id: "t2" })]}
+				{...defaultProps}
+				onDelete={vi.fn().mockResolvedValue(undefined)}
+			/>,
+		);
+		expect(screen.getAllByLabelText("Delete thread")).toHaveLength(2);
+	});
+
+	it("does not fire onThreadClick when the delete button is clicked", async () => {
+		const user = userEvent.setup();
+		const onDelete = vi.fn().mockResolvedValue(undefined);
+		renderWithProviders(
+			<DiffCommentList
+				comments={[makeComment()]}
+				{...defaultProps}
+				onDelete={onDelete}
+			/>,
+		);
+
+		await user.click(screen.getByLabelText("Delete thread"));
+		expect(defaultProps.onThreadClick).not.toHaveBeenCalled();
+	});
+
+	it("does not call onDelete when the confirmation dialog is cancelled", async () => {
+		const user = userEvent.setup();
+		const onDelete = vi.fn().mockResolvedValue(undefined);
+		renderWithProviders(
+			<DiffCommentList
+				comments={[makeComment()]}
+				{...defaultProps}
+				onDelete={onDelete}
+			/>,
+		);
+
+		await user.click(screen.getByLabelText("Delete thread"));
+		expect(
+			screen.getByRole("alertdialog", { name: "Delete this thread?" }),
+		).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Cancel" }));
+		expect(onDelete).not.toHaveBeenCalled();
+	});
+
+	it("calls onDelete with the thread id when the confirmation is accepted", async () => {
+		const user = userEvent.setup();
+		const onDelete = vi.fn().mockResolvedValue(undefined);
+		renderWithProviders(
+			<DiffCommentList
+				comments={[makeComment({ id: "thread-xyz" })]}
+				{...defaultProps}
+				onDelete={onDelete}
+			/>,
+		);
+
+		await user.click(screen.getByLabelText("Delete thread"));
+		await user.click(screen.getByRole("button", { name: "Delete" }));
+		expect(onDelete).toHaveBeenCalledWith("thread-xyz");
+	});
+
+	// spec issues-1022 "Thread handoff contract": スレッドパネル各行から、対象 Thread を
+	// 現在 active な AgentChat session に共有できる。
+	describe("send-to-agent button", () => {
+		const sendToAgentLabel = "Diff Thread を現在の Agent に送信";
+		const noActiveLabel = "アクティブな Agent セッションがありません";
+
+		it("is disabled when no active AgentChat session", () => {
+			renderWithProviders(
+				<DiffCommentList
+					comments={[makeComment({ id: "thread-xyz" })]}
+					{...defaultProps}
+				/>,
+				{ canSend: false, sendThreadToAgent: vi.fn() },
+			);
+			expect(
+				screen.getByRole("button", { name: noActiveLabel }),
+			).toBeDisabled();
+		});
+
+		it("dispatches sendThreadToAgent with thread id when clicked", async () => {
+			const user = userEvent.setup();
+			const sendThreadToAgent = vi.fn().mockResolvedValue(undefined);
+			renderWithProviders(
+				<DiffCommentList
+					comments={[makeComment({ id: "thread-xyz" })]}
+					{...defaultProps}
+				/>,
+				{ canSend: true, sendThreadToAgent },
+			);
+			await user.click(screen.getByRole("button", { name: sendToAgentLabel }));
+			expect(sendThreadToAgent).toHaveBeenCalledWith("thread-xyz");
+		});
 	});
 });

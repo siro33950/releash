@@ -185,6 +185,11 @@ pub fn run() {
             ))));
 
             let data_dir = app.path().app_data_dir()?;
+            // spec issues-1054 Implementation Freedom (L104): 別 Releash binary 由来の
+            // RELEASH_DATA_DIR inherit (例: prod 版 Releash の Terminal Panel から起動
+            // した shell から dev binary を起動した場合) を「ユーザー明示指定」と誤認しないよう、
+            // 起動初期に env を自プロセス alias data_dir で正す。
+            crate::path_aliases::ensure_release_data_dir_env_for_app(app.handle());
             cli_install::ensure_cli_symlink_installed();
             let config_path = data_dir.join("releash.toml");
             let config = load_or_create_config(&config_path)
@@ -539,9 +544,10 @@ pub fn run() {
             review_comments::get_review_thread,
             review_comments::create_review_thread,
             review_comments::append_review_comment,
-            review_comments::set_review_stance,
             review_comments::resolve_review_thread,
+            review_comments::delete_review_thread,
             review_comments::get_review_thread_history,
+            review_comments::build_review_thread_handoff,
             // OneShot PTY
             pty::oneshot::spawn_oneshot_pty,
             pty::oneshot::cancel_oneshot_pty,

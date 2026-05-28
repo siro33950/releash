@@ -293,12 +293,15 @@ export interface ReviewThread {
 	myStance: ReviewStanceValue;
 }
 
+export type AuthorScope = "mine" | "other";
+
 export interface ReviewThreadFilter {
-	filePath?: string | null;
+	file?: string | null;
 	state?: ReviewThreadState | null;
-	authorKey?: string | null;
-	myStance?: ReviewStanceValue | null;
-	updatedAfter?: number | null;
+	author?: AuthorScope | null;
+	stance?: ReviewStanceValue | null;
+	unread?: boolean | null;
+	threadId?: string[];
 }
 
 export interface ReviewErrorPayload {
@@ -340,12 +343,7 @@ export interface ReviewAppendCommentRequest {
 	worktreeName?: string | null;
 	threadId: string;
 	content: string;
-}
-
-export interface ReviewSetStanceRequest {
-	worktreeName?: string | null;
-	threadId: string;
-	value: ReviewStanceValue;
+	stance?: ReviewStanceValue | null;
 }
 
 export interface ReviewResolveRequest {
@@ -473,7 +471,6 @@ export type WsMessage =
 			type: "review_append_comment_request";
 			payload: ReviewAppendCommentRequest;
 	  }
-	| { type: "review_set_stance_request"; payload: ReviewSetStanceRequest }
 	| { type: "review_resolve_request"; payload: ReviewResolveRequest }
 	| { type: "review_history_request"; payload: ReviewHistoryRequest }
 	| { type: "review_history_response"; payload: ReviewHistoryResponse }

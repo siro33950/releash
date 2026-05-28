@@ -1,22 +1,38 @@
-import { CheckCircle2, MessageSquare } from "lucide-react";
-import { useMemo } from "react";
+import { CheckCircle2, MessageSquare, Send, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+	AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useReviewThreadHandoff } from "@/contexts/ReviewThreadHandoffContext";
 import {
 	getThreadEndLine,
 	getThreadFilePath,
+	getThreadInitialContent,
 	getThreadLineNumber,
-	getThreadPreviewContent,
 	type ReviewDiscussionThread,
+	type ThreadNavigationTarget,
+	toThreadNavigationTarget,
 } from "@/types/diffComment";
 
 export interface DiffCommentListProps {
 	comments: ReviewDiscussionThread[];
-	onCommentClick: (filePath: string, lineNumber?: number) => void;
+	onThreadClick: (target: ThreadNavigationTarget) => void;
+	onDelete?: (threadId: string) => Promise<void>;
 }
 
 function formatLineLabel(comment: ReviewDiscussionThread): string {
@@ -34,9 +50,113 @@ function getFileName(filePath: string): string {
 	return parts[parts.length - 1] ?? filePath;
 }
 
+/**
+ * spec issues-1022 "Thread handoff contract": スレッドパネル各行から、対象 Thread を
+ * 現在 active な AgentChat session の入力として共有するためのアイコンボタン。
+ * active session 不在時は disabled になり、tooltip で理由を示す。
+ */
+function SendThreadToAgentButton({ threadId }: { threadId: string }) {
+	const { canSend, sendThreadToAgent } = useReviewThreadHandoff();
+	const [busy, setBusy] = useState(false);
+	const title = canSend
+		? "Diff Thread を現在の Agent に送信"
+		: "アクティブな Agent セッションがありません";
+	return (
+		<Button
+			type="button"
+			variant="ghost"
+			size="icon-xs"
+			aria-label={title}
+			title={title}
+			disabled={busy || !canSend}
+			onClick={(e) => {
+				e.stopPropagation();
+				(async () => {
+					setBusy(true);
+					try {
+						await sendThreadToAgent(threadId);
+					} finally {
+						setBusy(false);
+					}
+				})();
+			}}
+			className="shrink-0 opacity-0 group-hover/item:opacity-100 focus:opacity-100"
+		>
+			<Send className="size-3.5" />
+		</Button>
+	);
+}
+
+function DeleteThreadButton({
+	threadId,
+	onDelete,
+}: {
+	threadId: string;
+	onDelete: (threadId: string) => Promise<void>;
+}) {
+	const [open, setOpen] = useState(false);
+	const [busy, setBusy] = useState(false);
+
+	return (
+		<AlertDialog open={open} onOpenChange={setOpen}>
+			<AlertDialogTrigger asChild>
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon-xs"
+					aria-label="Delete thread"
+					title="Delete thread"
+					disabled={busy}
+					onClick={(e) => {
+						e.stopPropagation();
+					}}
+					className="shrink-0 opacity-0 group-hover/item:opacity-100 focus:opacity-100"
+				>
+					<Trash2 className="size-3.5" />
+				</Button>
+			</AlertDialogTrigger>
+			<AlertDialogContent
+				onClick={(e) => {
+					e.stopPropagation();
+				}}
+			>
+				<AlertDialogHeader>
+					<AlertDialogTitle>Delete this thread?</AlertDialogTitle>
+					<AlertDialogDescription>
+						This will remove the thread from the review list. The deletion is
+						recorded in the thread history and cannot be undone from the UI.
+					</AlertDialogDescription>
+				</AlertDialogHeader>
+				<AlertDialogFooter>
+					<AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+					<AlertDialogAction
+						disabled={busy}
+						onClick={(e) => {
+							e.preventDefault();
+							e.stopPropagation();
+							(async () => {
+								setBusy(true);
+								try {
+									await onDelete(threadId);
+									setOpen(false);
+								} finally {
+									setBusy(false);
+								}
+							})();
+						}}
+					>
+						Delete
+					</AlertDialogAction>
+				</AlertDialogFooter>
+			</AlertDialogContent>
+		</AlertDialog>
+	);
+}
+
 export function DiffCommentList({
 	comments,
-	onCommentClick,
+	onThreadClick,
+	onDelete,
 }: DiffCommentListProps) {
 	const groupedByFile = useMemo(() => {
 		const map = new Map<string, ReviewDiscussionThread[]>();
@@ -82,7 +202,12 @@ export function DiffCommentList({
 								<TooltipTrigger asChild>
 									<button
 										type="button"
-										onClick={() => onCommentClick(filePath)}
+										onClick={() => {
+											const first = fileComments[0];
+											if (first) {
+												onThreadClick(toThreadNavigationTarget(first));
+											}
+										}}
 										className="w-full text-left px-1 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground truncate"
 									>
 										{filePath ? getFileName(filePath) : "General"}
@@ -94,33 +219,41 @@ export function DiffCommentList({
 							</Tooltip>
 							<div className="space-y-0.5">
 								{fileComments.map((comment) => (
-									<button
-										type="button"
+									<div
 										key={comment.id}
-										onClick={() =>
-											onCommentClick(
-												getThreadFilePath(comment),
-												getThreadLineNumber(comment),
-											)
-										}
-										className="group/item w-full text-left flex items-start gap-1.5 px-1.5 py-1 rounded hover:bg-muted/50 transition-colors"
+										className="group/item flex items-start gap-1 px-1.5 py-1 rounded hover:bg-muted/50 transition-colors"
 									>
-										<span className="shrink-0 text-[10px] font-mono text-muted-foreground mt-0.5 min-w-[36px]">
-											{formatLineLabel(comment)}
-										</span>
-										<span className="flex-1 text-xs text-foreground truncate">
-											{getThreadPreviewContent(comment)}
-										</span>
-										<span className="shrink-0 text-[10px] text-muted-foreground">
-											{comment.comments.length}
-										</span>
-										{comment.state === "resolved" && (
-											<span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] bg-green-600/15 text-green-600 px-1 py-0.5 rounded-full">
-												<CheckCircle2 className="h-2.5 w-2.5" />
-												resolved
+										<button
+											type="button"
+											onClick={() =>
+												onThreadClick(toThreadNavigationTarget(comment))
+											}
+											className="flex-1 min-w-0 text-left flex items-start gap-1.5"
+										>
+											<span className="shrink-0 text-[10px] font-mono text-muted-foreground mt-0.5 min-w-[36px]">
+												{formatLineLabel(comment)}
 											</span>
+											<span className="flex-1 text-xs text-foreground truncate">
+												{getThreadInitialContent(comment)}
+											</span>
+											<span className="shrink-0 text-[10px] text-muted-foreground">
+												{comment.comments.length}
+											</span>
+											{comment.state === "resolved" && (
+												<span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] bg-green-600/15 text-green-600 px-1 py-0.5 rounded-full">
+													<CheckCircle2 className="h-2.5 w-2.5" />
+													resolved
+												</span>
+											)}
+										</button>
+										<SendThreadToAgentButton threadId={comment.id} />
+										{onDelete && (
+											<DeleteThreadButton
+												threadId={comment.id}
+												onDelete={onDelete}
+											/>
 										)}
-									</button>
+									</div>
 								))}
 							</div>
 						</div>

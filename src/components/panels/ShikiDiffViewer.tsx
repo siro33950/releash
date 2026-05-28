@@ -71,14 +71,19 @@ export interface ShikiDiffViewerProps {
 		endLine: number,
 		content: string,
 	) => Promise<void>;
-	onAppendComment?: (threadId: string, content: string) => Promise<void>;
-	onSetStance?: (threadId: string, value: ReviewStanceValue) => Promise<void>;
+	onAppendComment?: (
+		threadId: string,
+		content: string,
+		stance?: ReviewStanceValue | null,
+	) => Promise<void>;
 	onResolveThread?: (
 		threadId: string,
 		outcome: string,
 		summary: string,
 	) => Promise<void>;
+	onDeleteThread?: (threadId: string) => Promise<void>;
 	scrollToLine?: number | null;
+	scrollToThread?: string | null;
 }
 
 type VisibleItem = DiffBlock | { type: "hidden"; range: HiddenRange };
@@ -426,13 +431,17 @@ interface CommentCallbacks {
 		endLine: number,
 		content: string,
 	) => Promise<void>;
-	onAppendComment?: (threadId: string, content: string) => Promise<void>;
-	onSetStance?: (threadId: string, value: ReviewStanceValue) => Promise<void>;
+	onAppendComment?: (
+		threadId: string,
+		content: string,
+		stance?: ReviewStanceValue | null,
+	) => Promise<void>;
 	onResolveThread?: (
 		threadId: string,
 		outcome: string,
 		summary: string,
 	) => Promise<void>;
+	onDeleteThread?: (threadId: string) => Promise<void>;
 }
 
 interface VirtualViewProps extends CommentCallbacks {
@@ -442,6 +451,7 @@ interface VirtualViewProps extends CommentCallbacks {
 	groupActionLabel?: string;
 	containerRef: React.RefObject<HTMLDivElement | null>;
 	scrollToLine?: number | null;
+	scrollToThread?: string | null;
 	lineHighlights?: Map<DiffLine, HighlightRange[]>;
 }
 
@@ -761,12 +771,13 @@ function GutterView({
 	containerRef,
 	lineHighlights,
 	scrollToLine,
+	scrollToThread,
 	comments,
 	onAddComment,
 	onAddRangeComment,
 	onAppendComment,
-	onSetStance,
 	onResolveThread,
+	onDeleteThread,
 }: VirtualViewProps) {
 	const {
 		commentInputLine,
@@ -837,6 +848,16 @@ function GutterView({
 		}
 	}, [scrollToLine, flatItems, virtualizer]);
 
+	useEffect(() => {
+		if (scrollToThread == null) return;
+		const index = flatItems.findIndex(
+			(item) => item.kind === "comment" && item.comment.id === scrollToThread,
+		);
+		if (index >= 0) {
+			virtualizer.scrollToIndex(index, { align: "center" });
+		}
+	}, [scrollToThread, flatItems, virtualizer]);
+
 	return (
 		<div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
 			{virtualizer.getVirtualItems().map((vItem) => {
@@ -860,8 +881,8 @@ function GutterView({
 							<DiffInlineComment
 								comment={item.comment}
 								onAppend={onAppendComment}
-								onSetStance={onSetStance}
 								onResolve={onResolveThread}
+								onDelete={onDeleteThread}
 							/>
 						) : item.kind === "comment-input" ? (
 							<DiffInlineCommentInput
@@ -966,12 +987,13 @@ function InlineView({
 	containerRef,
 	lineHighlights,
 	scrollToLine,
+	scrollToThread,
 	comments,
 	onAddComment,
 	onAddRangeComment,
 	onAppendComment,
-	onSetStance,
 	onResolveThread,
+	onDeleteThread,
 }: VirtualViewProps) {
 	const {
 		commentInputLine,
@@ -1049,6 +1071,16 @@ function InlineView({
 		}
 	}, [scrollToLine, flatItems, virtualizer]);
 
+	useEffect(() => {
+		if (scrollToThread == null) return;
+		const index = flatItems.findIndex(
+			(item) => item.kind === "comment" && item.comment.id === scrollToThread,
+		);
+		if (index >= 0) {
+			virtualizer.scrollToIndex(index, { align: "center" });
+		}
+	}, [scrollToThread, flatItems, virtualizer]);
+
 	return (
 		<div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
 			{virtualizer.getVirtualItems().map((vItem) => {
@@ -1072,8 +1104,8 @@ function InlineView({
 							<DiffInlineComment
 								comment={item.comment}
 								onAppend={onAppendComment}
-								onSetStance={onSetStance}
 								onResolve={onResolveThread}
+								onDelete={onDeleteThread}
 							/>
 						) : item.kind === "comment-input" ? (
 							<DiffInlineCommentInput
@@ -1178,12 +1210,13 @@ function SplitView({
 	containerRef,
 	lineHighlights,
 	scrollToLine,
+	scrollToThread,
 	comments,
 	onAddComment,
 	onAddRangeComment,
 	onAppendComment,
-	onSetStance,
 	onResolveThread,
+	onDeleteThread,
 }: VirtualViewProps) {
 	const {
 		commentInputLine,
@@ -1304,6 +1337,16 @@ function SplitView({
 		}
 	}, [scrollToLine, flatItems, virtualizer]);
 
+	useEffect(() => {
+		if (scrollToThread == null) return;
+		const index = flatItems.findIndex(
+			(item) => item.kind === "comment" && item.comment.id === scrollToThread,
+		);
+		if (index >= 0) {
+			virtualizer.scrollToIndex(index, { align: "center" });
+		}
+	}, [scrollToThread, flatItems, virtualizer]);
+
 	return (
 		<div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
 			{virtualizer.getVirtualItems().map((vItem) => {
@@ -1327,8 +1370,8 @@ function SplitView({
 							<DiffInlineComment
 								comment={item.comment}
 								onAppend={onAppendComment}
-								onSetStance={onSetStance}
 								onResolve={onResolveThread}
+								onDelete={onDeleteThread}
 							/>
 						) : item.kind === "comment-input" ? (
 							<DiffInlineCommentInput
@@ -1616,9 +1659,10 @@ export function ShikiDiffViewer({
 	onAddComment,
 	onAddRangeComment,
 	onAppendComment,
-	onSetStance,
 	onResolveThread,
+	onDeleteThread,
 	scrollToLine,
+	scrollToThread,
 }: ShikiDiffViewerProps) {
 	const originalTokens = useShikiHighlighter(originalContent, language);
 	const modifiedTokens = useShikiHighlighter(modifiedContent, language);
@@ -1815,12 +1859,13 @@ export function ShikiDiffViewer({
 					containerRef={containerRef}
 					lineHighlights={lineHighlights}
 					scrollToLine={searchScrollToLine ?? scrollToLine}
+					scrollToThread={scrollToThread}
 					comments={comments}
 					onAddComment={onAddComment}
 					onAddRangeComment={onAddRangeComment}
 					onAppendComment={onAppendComment}
-					onSetStance={onSetStance}
 					onResolveThread={onResolveThread}
+					onDeleteThread={onDeleteThread}
 				/>
 			</div>
 			<ScrollbarMarkers markers={diffMarkers} />

@@ -27,14 +27,19 @@ export interface CodeDiffViewerProps {
 		endLine: number,
 		content: string,
 	) => Promise<void>;
-	onAppendComment?: (threadId: string, content: string) => Promise<void>;
-	onSetStance?: (threadId: string, value: ReviewStanceValue) => Promise<void>;
+	onAppendComment?: (
+		threadId: string,
+		content: string,
+		stance?: ReviewStanceValue | null,
+	) => Promise<void>;
 	onResolveThread?: (
 		threadId: string,
 		outcome: string,
 		summary: string,
 	) => Promise<void>;
+	onDeleteThread?: (threadId: string) => Promise<void>;
 	scrollToLine?: number | null;
+	scrollToThread?: string | null;
 }
 
 export function CodeDiffViewer({
@@ -51,9 +56,10 @@ export function CodeDiffViewer({
 	onAddComment,
 	onAddRangeComment,
 	onAppendComment,
-	onSetStance,
 	onResolveThread,
+	onDeleteThread,
 	scrollToLine,
+	scrollToThread,
 }: CodeDiffViewerProps) {
 	const [detectedLanguage, setDetectedLanguage] = useState("plaintext");
 	const [hunks, setHunks] = useState<Hunk[] | null>(null);
@@ -115,9 +121,10 @@ export function CodeDiffViewer({
 			onAddComment={onAddComment}
 			onAddRangeComment={onAddRangeComment}
 			onAppendComment={onAppendComment}
-			onSetStance={onSetStance}
 			onResolveThread={onResolveThread}
+			onDeleteThread={onDeleteThread}
 			scrollToLine={scrollToLine}
+			scrollToThread={scrollToThread}
 		/>
 	);
 }

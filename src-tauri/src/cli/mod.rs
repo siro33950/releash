@@ -7,15 +7,16 @@
 //! 基準境界）。
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::agent_status::current_timestamp;
 use crate::config::read_config_if_exists;
 use crate::protocol::WorkflowStateView;
 use crate::review_comments::{
-    ReviewActor, ReviewCommentStore, ReviewStanceValue, ReviewTarget, ReviewThreadFilter,
-    ReviewThreadState,
+    AuthorScope, ReviewActor, ReviewCommentStore, ReviewStanceValue, ReviewTarget,
+    ReviewThreadFilter, ReviewThreadState,
 };
 use crate::session::{SessionState, SessionStore};
 use crate::workflow::command_input::{
@@ -168,8 +169,6 @@ enum ReviewSubcommand {
     /// review Thread 一覧を表示する。
     List {
         #[arg(long)]
-        worktree: String,
-        #[arg(long)]
         session_id: String,
         #[arg(long)]
         file: Option<String>,
@@ -178,11 +177,11 @@ enum ReviewSubcommand {
         #[arg(long)]
         author: Option<String>,
         #[arg(long)]
-        author_key: Option<String>,
+        stance: Option<String>,
         #[arg(long)]
-        my_stance: Option<String>,
-        #[arg(long)]
-        updated_after: Option<f64>,
+        unread: Option<String>,
+        #[arg(long = "thread-id")]
+        thread_id: Vec<String>,
         #[arg(long)]
         json: bool,
     },
@@ -190,16 +189,12 @@ enum ReviewSubcommand {
     Get {
         thread_id: String,
         #[arg(long)]
-        worktree: String,
-        #[arg(long)]
         session_id: String,
         #[arg(long)]
         json: bool,
     },
     /// 初回 Comment とともに review Thread を作成する。
     Create {
-        #[arg(long)]
-        worktree: String,
         #[arg(long)]
         session_id: String,
         #[arg(long)]
@@ -210,6 +205,10 @@ enum ReviewSubcommand {
         line: Option<u32>,
         #[arg(long)]
         end_line: Option<u32>,
+        /// 作成者の初期 Stance を atomic に設定する (agree | disagree | none)。
+        /// 未指定なら従来通り `none` で開始する。
+        #[arg(long)]
+        stance: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -217,31 +216,19 @@ enum ReviewSubcommand {
     Comment {
         thread_id: String,
         #[arg(long)]
-        worktree: String,
-        #[arg(long)]
         session_id: String,
         #[arg(long)]
         content: String,
+        /// 同 actor の Stance を atomic に表明する (agree | disagree | none)。
+        /// 未指定なら現在 Stance を維持。
         #[arg(long)]
-        json: bool,
-    },
-    /// Thread 単位の Stance を設定する。
-    Stance {
-        thread_id: String,
-        #[arg(long)]
-        worktree: String,
-        #[arg(long)]
-        session_id: String,
-        #[arg(long)]
-        value: String,
+        stance: Option<String>,
         #[arg(long)]
         json: bool,
     },
     /// 作成者 Agent として open Thread を resolve する。
     Resolve {
         thread_id: String,
-        #[arg(long)]
-        worktree: String,
         #[arg(long)]
         session_id: String,
         #[arg(long)]
@@ -255,12 +242,20 @@ enum ReviewSubcommand {
     History {
         thread_id: String,
         #[arg(long)]
-        worktree: String,
-        #[arg(long)]
         session_id: String,
         #[arg(long)]
         json: bool,
     },
+}
+
+/// Releash CLI の long help 文字列を返す（OnceLock キャッシュ）。
+///
+/// Agent backend 起動時に system_prompt へ append される単一ソース。
+/// clap derive 由来の help を使うため、CLI 定義の追加・変更に自動追従する。
+/// （Issue #1022 / spec [09]: Agent process environment contract / Agent backend orchestration 責務）
+pub fn render_long_help() -> &'static str {
+    static CACHE: OnceLock<String> = OnceLock::new();
+    CACHE.get_or_init(|| Cli::command().render_long_help().to_string())
 }
 
 /// CLI のエントリーポイント。`std::process::exit` 用の終了コードを返す。
@@ -649,34 +644,6 @@ fn review_actor(data_dir: &Path, session_id: &str) -> Result<ReviewActor, CliErr
     review_actor_and_worktree(data_dir, session_id).map(|(actor, _)| actor)
 }
 
-#[cfg(test)]
-fn review_actor_for_worktree(
-    data_dir: &Path,
-    session_id: &str,
-    worktree: &str,
-) -> Result<ReviewActor, CliError> {
-    review_actor_and_review_worktree(data_dir, session_id, worktree).map(|(actor, _)| actor)
-}
-
-fn review_actor_and_review_worktree(
-    data_dir: &Path,
-    session_id: &str,
-    worktree: &str,
-) -> Result<(ReviewActor, String), CliError> {
-    let (actor, session_worktree) = review_actor_and_worktree(data_dir, session_id)?;
-    if session_worktree == worktree
-        || Path::new(&session_worktree)
-            .file_name()
-            .and_then(|name| name.to_str())
-            == Some(worktree)
-    {
-        return Ok((actor, session_worktree));
-    }
-    Err(CliError::InvalidInput(format!(
-        "Session worktree does not match --worktree: session={session_worktree}, requested={worktree}"
-    )))
-}
-
 fn review_actor_and_worktree(
     data_dir: &Path,
     session_id: &str,
@@ -742,6 +709,28 @@ fn parse_optional_review_stance(
     value.as_deref().map(parse_review_stance_value).transpose()
 }
 
+fn parse_optional_author_scope(value: Option<String>) -> Result<Option<AuthorScope>, CliError> {
+    match value.as_deref() {
+        None | Some("") => Ok(None),
+        Some("self") => Ok(Some(AuthorScope::Mine)),
+        Some("other") => Ok(Some(AuthorScope::Other)),
+        Some(other) => Err(CliError::InvalidInput(format!(
+            "Invalid --author value: {other} (expected: self | other)"
+        ))),
+    }
+}
+
+fn parse_optional_unread(value: Option<String>) -> Result<Option<bool>, CliError> {
+    match value.as_deref() {
+        None | Some("") => Ok(None),
+        Some("true") => Ok(Some(true)),
+        Some("false") => Ok(Some(false)),
+        Some(other) => Err(CliError::InvalidInput(format!(
+            "Invalid --unread value: {other} (expected: true | false)"
+        ))),
+    }
+}
+
 fn review_error_to_cli_error(error: crate::review_comments::ReviewError) -> CliError {
     match error {
         crate::review_comments::ReviewError::InvalidInput(msg) => CliError::InvalidInput(msg),
@@ -795,24 +784,23 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
     let store = ReviewCommentStore::default();
     match command {
         ReviewSubcommand::List {
-            worktree,
             session_id,
             file,
             state,
             author,
-            author_key,
-            my_stance,
-            updated_after,
+            stance,
+            unread,
+            thread_id,
             json,
         } => {
-            let (actor, review_worktree) =
-                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
             let filter = ReviewThreadFilter {
-                file_path: file,
+                file,
                 state: parse_review_state(state)?,
-                author_key: author_key.or(author),
-                my_stance: parse_optional_review_stance(my_stance)?,
-                updated_after,
+                author: parse_optional_author_scope(author)?,
+                stance: parse_optional_review_stance(stance)?,
+                unread: parse_optional_unread(unread)?,
+                thread_id,
             };
             let threads = store
                 .list_threads(data_dir, &review_worktree, Some(filter), actor)
@@ -842,77 +830,65 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
         }
         ReviewSubcommand::Get {
             thread_id,
-            worktree,
             session_id,
             json,
         } => {
-            let (actor, review_worktree) =
-                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
             let thread = store
                 .get_thread(data_dir, &review_worktree, &thread_id, actor)
                 .map_err(review_error_to_cli_error)?;
             print_review_thread(&thread, json)
         }
         ReviewSubcommand::Create {
-            worktree,
             session_id,
             content,
             file,
             line,
             end_line,
+            stance,
             json,
         } => {
-            let (actor, review_worktree) =
-                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
             let target = ReviewTarget {
                 file_path: file,
                 line_number: line,
                 end_line,
             };
+            let stance = parse_optional_review_stance(stance)?;
             let thread = store
-                .create_thread(data_dir, &review_worktree, actor, target, content)
+                .create_thread(data_dir, &review_worktree, actor, target, content, stance)
                 .map_err(review_error_to_cli_error)?;
             print_review_thread(&thread, json)
         }
         ReviewSubcommand::Comment {
             thread_id,
-            worktree,
             session_id,
             content,
+            stance,
             json,
         } => {
-            let (actor, review_worktree) =
-                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
+            let stance = parse_optional_review_stance(stance)?;
             let thread = store
-                .append_comment(data_dir, &review_worktree, actor, &thread_id, content)
-                .map_err(review_error_to_cli_error)?;
-            print_review_thread(&thread, json)
-        }
-        ReviewSubcommand::Stance {
-            thread_id,
-            worktree,
-            session_id,
-            value,
-            json,
-        } => {
-            let (actor, review_worktree) =
-                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
-            let value = parse_review_stance_value(&value)?;
-            let thread = store
-                .set_stance(data_dir, &review_worktree, actor, &thread_id, value)
+                .append_comment(
+                    data_dir,
+                    &review_worktree,
+                    actor,
+                    &thread_id,
+                    content,
+                    stance,
+                )
                 .map_err(review_error_to_cli_error)?;
             print_review_thread(&thread, json)
         }
         ReviewSubcommand::Resolve {
             thread_id,
-            worktree,
             session_id,
             outcome,
             summary,
             json,
         } => {
-            let (actor, review_worktree) =
-                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
             let thread = store
                 .resolve_thread(
                     data_dir,
@@ -927,12 +903,10 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
         }
         ReviewSubcommand::History {
             thread_id,
-            worktree,
             session_id,
             json,
         } => {
-            let (_actor, review_worktree) =
-                review_actor_and_review_worktree(data_dir, &session_id, &worktree)?;
+            let (_actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
             let events = store
                 .history(data_dir, &review_worktree, &thread_id)
                 .map_err(review_error_to_cli_error)?;
@@ -1482,20 +1456,6 @@ models = ["opus"]
     }
 
     #[test]
-    fn review_actor_for_worktree_rejects_session_worktree_mismatch() {
-        let tmp = TempDir::new().unwrap();
-        write_review_config(tmp.path());
-        let session_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
-
-        let actor = review_actor_for_worktree(tmp.path(), &session_id, "repo").unwrap();
-        assert_eq!(actor.display_name, "codex/gpt-5");
-
-        let mismatch = review_actor_for_worktree(tmp.path(), &session_id, "other");
-        assert!(matches!(mismatch, Err(CliError::InvalidInput(_))));
-    }
-
-    #[test]
     fn review_cli_rejects_mutation_for_closed_session() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
@@ -1508,12 +1468,12 @@ models = ["opus"]
         let closed = cmd_review(
             tmp.path(),
             ReviewSubcommand::Create {
-                worktree: "/repo".to_string(),
                 session_id,
                 content: "Claim".to_string(),
                 file: None,
                 line: None,
                 end_line: None,
+                stance: None,
                 json: true,
             },
         );
@@ -1529,8 +1489,6 @@ models = ["opus"]
             "releash",
             "review",
             "create",
-            "--worktree",
-            "/repo",
             "--session-id",
             "session-1",
             "--content",
@@ -1543,20 +1501,36 @@ models = ["opus"]
             TopCommand::Review {
                 command:
                     ReviewSubcommand::Create {
-                        worktree,
                         session_id,
                         content,
                         json,
                         ..
                     },
             } => {
-                assert_eq!(worktree, "/repo");
                 assert_eq!(session_id, "session-1");
                 assert_eq!(content, "Claim");
                 assert!(json);
             }
             _ => panic!("expected review create command"),
         }
+    }
+
+    /// `--worktree` フラグは spec design.md L37 で「提供しない」と明示されたため
+    /// 受け付けない（session_id から worktree を解決する）。
+    #[test]
+    fn review_cli_parser_rejects_worktree_flag() {
+        let result = Cli::try_parse_from([
+            "releash",
+            "review",
+            "create",
+            "--worktree",
+            "/repo",
+            "--session-id",
+            "session-1",
+            "--content",
+            "Claim",
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1569,12 +1543,12 @@ models = ["opus"]
         cmd_review(
             tmp.path(),
             ReviewSubcommand::Create {
-                worktree: "repo".to_string(),
                 session_id: session_id.clone(),
                 content: "Claim".to_string(),
                 file: None,
                 line: None,
                 end_line: None,
+                stance: None,
                 json: true,
             },
         )
@@ -1592,14 +1566,13 @@ models = ["opus"]
         cmd_review(
             tmp.path(),
             ReviewSubcommand::List {
-                worktree: "/repo".to_string(),
                 session_id: session_id.clone(),
                 file: None,
                 state: Some("open".to_string()),
                 author: None,
-                author_key: None,
-                my_stance: None,
-                updated_after: None,
+                stance: None,
+                unread: None,
+                thread_id: Vec::new(),
                 json: true,
             },
         )
@@ -1608,7 +1581,6 @@ models = ["opus"]
             tmp.path(),
             ReviewSubcommand::Get {
                 thread_id: threads[0].id.clone(),
-                worktree: "repo".to_string(),
                 session_id,
                 json: true,
             },
@@ -1628,12 +1600,12 @@ models = ["opus"]
         cmd_review(
             tmp.path(),
             ReviewSubcommand::Create {
-                worktree: "/repo".to_string(),
                 session_id: owner_session.clone(),
                 content: "Claim".to_string(),
                 file: Some("src/main.rs".to_string()),
                 line: Some(3),
                 end_line: Some(5),
+                stance: None,
                 json: true,
             },
         )
@@ -1649,20 +1621,20 @@ models = ["opus"]
             tmp.path(),
             ReviewSubcommand::Comment {
                 thread_id: thread_id.clone(),
-                worktree: "/repo".to_string(),
                 session_id: owner_session.clone(),
                 content: "Follow-up".to_string(),
+                stance: None,
                 json: true,
             },
         )
         .unwrap();
         cmd_review(
             tmp.path(),
-            ReviewSubcommand::Stance {
+            ReviewSubcommand::Comment {
                 thread_id: thread_id.clone(),
-                worktree: "/repo".to_string(),
                 session_id: owner_session.clone(),
-                value: "agree".to_string(),
+                content: "Taking agree stance".to_string(),
+                stance: Some("agree".to_string()),
                 json: true,
             },
         )
@@ -1671,7 +1643,6 @@ models = ["opus"]
             tmp.path(),
             ReviewSubcommand::History {
                 thread_id: thread_id.clone(),
-                worktree: "/repo".to_string(),
                 session_id: owner_session.clone(),
                 json: true,
             },
@@ -1682,7 +1653,6 @@ models = ["opus"]
             tmp.path(),
             ReviewSubcommand::Resolve {
                 thread_id: thread_id.clone(),
-                worktree: "/repo".to_string(),
                 session_id: other_session,
                 outcome: "accepted".to_string(),
                 summary: "not owner".to_string(),
@@ -1698,7 +1668,6 @@ models = ["opus"]
             tmp.path(),
             ReviewSubcommand::Resolve {
                 thread_id: thread_id.clone(),
-                worktree: "/repo".to_string(),
                 session_id: owner_session.clone(),
                 outcome: "accepted".to_string(),
                 summary: "done".to_string(),
@@ -1710,9 +1679,9 @@ models = ["opus"]
             tmp.path(),
             ReviewSubcommand::Comment {
                 thread_id: thread_id.clone(),
-                worktree: "/repo".to_string(),
                 session_id: owner_session.clone(),
                 content: "late".to_string(),
+                stance: None,
                 json: true,
             },
         );
@@ -1725,7 +1694,6 @@ models = ["opus"]
             tmp.path(),
             ReviewSubcommand::History {
                 thread_id: "missing-thread".to_string(),
-                worktree: "/repo".to_string(),
                 session_id: owner_session.clone(),
                 json: true,
             },
@@ -1735,12 +1703,12 @@ models = ["opus"]
         let invalid_target = cmd_review(
             tmp.path(),
             ReviewSubcommand::Create {
-                worktree: "/repo".to_string(),
                 session_id: owner_session,
                 content: "Bad target".to_string(),
                 file: Some("../secret".to_string()),
                 line: Some(1),
                 end_line: None,
+                stance: None,
                 json: true,
             },
         );
@@ -1757,12 +1725,12 @@ models = ["opus"]
         cmd_review(
             tmp.path(),
             ReviewSubcommand::Create {
-                worktree: "/repo".to_string(),
                 session_id: session_id.clone(),
                 content: "Claim".to_string(),
                 file: None,
                 line: None,
                 end_line: None,
+                stance: None,
                 json: true,
             },
         )
@@ -1776,11 +1744,11 @@ models = ["opus"]
 
         let invalid = cmd_review(
             tmp.path(),
-            ReviewSubcommand::Stance {
+            ReviewSubcommand::Comment {
                 thread_id: thread_id.clone(),
-                worktree: "/repo".to_string(),
                 session_id: session_id.clone(),
-                value: "maybe".to_string(),
+                content: "trying invalid stance".to_string(),
+                stance: Some("maybe".to_string()),
                 json: true,
             },
         );
@@ -1800,31 +1768,6 @@ models = ["opus"]
         assert_eq!(thread.my_stance, ReviewStanceValue::None);
         assert_eq!(thread.stances.len(), 1);
         assert_eq!(thread.stances[0].value, ReviewStanceValue::None);
-    }
-
-    #[test]
-    fn cmd_review_rejects_unowned_worktree() {
-        let tmp = TempDir::new().unwrap();
-        write_review_config(tmp.path());
-        let session_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
-
-        let result = cmd_review(
-            tmp.path(),
-            ReviewSubcommand::List {
-                worktree: "/other".to_string(),
-                session_id,
-                file: None,
-                state: None,
-                author: None,
-                author_key: None,
-                my_stance: None,
-                updated_after: None,
-                json: false,
-            },
-        );
-
-        assert!(matches!(result, Err(CliError::InvalidInput(_))));
     }
 
     /// Rule: 観測対象として存在しない run_id は明示的に「該当 run なし」として扱われる
@@ -3243,6 +3186,37 @@ models = ["opus"]
         assert!(
             matches!(err, CliError::InvalidInput(_)),
             "non-managed input must surface as InvalidInput, got: {err:?}"
+        );
+    }
+
+    /// Issue #1022: Agent process environment contract により、Releash CLI の
+    /// long help が system_prompt 注入用の単一ソースとして取得可能でなければならない。
+    /// 主要サブコマンド名が含まれることで Agent が review/workflow CLI を発見できる。
+    #[test]
+    fn render_long_help_contains_main_subcommands() {
+        let help = super::render_long_help();
+        assert!(
+            help.contains("workflow"),
+            "long help must list `workflow` subcommand, got: {help}"
+        );
+        assert!(
+            help.contains("review"),
+            "long help must list `review` subcommand, got: {help}"
+        );
+        assert!(
+            help.contains("releash"),
+            "long help must mention CLI name `releash`, got: {help}"
+        );
+    }
+
+    /// OnceLock キャッシュにより、再呼び出しでも同じ参照を返すこと。
+    #[test]
+    fn render_long_help_is_cached_across_calls() {
+        let first = super::render_long_help();
+        let second = super::render_long_help();
+        assert!(
+            std::ptr::eq(first.as_ptr(), second.as_ptr()),
+            "render_long_help must return the same cached string instance across calls"
         );
     }
 }

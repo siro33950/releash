@@ -20,13 +20,21 @@ interface FileCommentPopoverTriggerProps {
 	title?: string;
 	addLabel?: string;
 	onAdd: (content: string) => Promise<void>;
-	onAppend: (threadId: string, content: string) => Promise<void>;
-	onSetStance: (threadId: string, value: ReviewStanceValue) => Promise<void>;
+	onAppend: (
+		threadId: string,
+		content: string,
+		stance?: ReviewStanceValue | null,
+	) => Promise<void>;
 	onResolve: (
 		threadId: string,
 		outcome: string,
 		summary: string,
 	) => Promise<void>;
+	onDelete?: (threadId: string) => Promise<void>;
+	/** Controlled mode: 親が open 状態を制御する場合に指定 */
+	open?: boolean;
+	/** Controlled mode: open 状態が変化したときのコールバック */
+	onOpenChange?: (open: boolean) => void;
 }
 
 export function FileCommentPopoverTrigger({
@@ -36,8 +44,10 @@ export function FileCommentPopoverTrigger({
 	addLabel = "Add file comment",
 	onAdd,
 	onAppend,
-	onSetStance,
 	onResolve,
+	onDelete,
+	open,
+	onOpenChange,
 }: FileCommentPopoverTriggerProps) {
 	const [showInput, setShowInput] = useState(false);
 
@@ -49,7 +59,7 @@ export function FileCommentPopoverTrigger({
 	const hasComments = fileComments.length > 0;
 
 	return (
-		<Popover>
+		<Popover open={open} onOpenChange={onOpenChange}>
 			<PopoverTrigger asChild>
 				<Button
 					variant="ghost"
@@ -80,8 +90,8 @@ export function FileCommentPopoverTrigger({
 							key={comment.id}
 							comment={comment}
 							onAppend={onAppend}
-							onSetStance={onSetStance}
 							onResolve={onResolve}
+							onDelete={onDelete}
 						/>
 					))}
 					{showInput ? (

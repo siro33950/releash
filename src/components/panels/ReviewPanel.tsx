@@ -35,6 +35,7 @@ import { useReviewPanel } from "@/hooks/useReviewPanel";
 import { isImageFile } from "@/lib/imageUtils";
 import { isMarkdownFile } from "@/lib/markdownUtils";
 import { cn } from "@/lib/utils";
+import type { ThreadNavigationTarget } from "@/types/diffComment";
 import type { MentionReference } from "@/types/session";
 import type { DiffBase, DiffMode, DiffSection } from "@/types/settings";
 import { Breadcrumb } from "./Breadcrumb";
@@ -51,7 +52,7 @@ interface ReviewPanelProps {
 	defaultDiffMode?: DiffMode;
 	diffOnlyMode: boolean;
 	onDiffOnlyModeChange: (enabled: boolean) => void;
-	navigateToFile?: { path: string; line?: number } | null;
+	navigateToThread?: ThreadNavigationTarget | null;
 	onSendToAgent?: (
 		message: string,
 		mentions?: MentionReference[],
@@ -124,7 +125,7 @@ export function ReviewPanel({
 	defaultDiffMode,
 	diffOnlyMode,
 	onDiffOnlyModeChange,
-	navigateToFile,
+	navigateToThread,
 	initialSelectedFile,
 	onSelectedFileChange,
 }: ReviewPanelProps) {
@@ -226,13 +227,26 @@ export function ReviewPanel({
 	);
 
 	const [scrollToLine, setScrollToLine] = useState<number | null>(null);
+	const [scrollToThread, setScrollToThread] = useState<string | null>(null);
+	const [openFileCommentsForFile, setOpenFileCommentsForFile] = useState<
+		string | null
+	>(null);
 
 	useEffect(() => {
-		if (!navigateToFile) return;
-		const section = determineSectionForFile(navigateToFile.path);
-		selectFile(navigateToFile.path, section);
-		setScrollToLine(navigateToFile.line ?? null);
-	}, [navigateToFile, determineSectionForFile, selectFile]);
+		if (!navigateToThread) return;
+		const { filePath, threadId, lineNumber, isFileComment } = navigateToThread;
+		const section = determineSectionForFile(filePath);
+		selectFile(filePath, section);
+		if (isFileComment) {
+			setScrollToLine(null);
+			setScrollToThread(null);
+			setOpenFileCommentsForFile(filePath);
+		} else {
+			setOpenFileCommentsForFile(null);
+			setScrollToLine(lineNumber ?? null);
+			setScrollToThread(threadId);
+		}
+	}, [navigateToThread, determineSectionForFile, selectFile]);
 
 	const handleGoToPrevFile = useCallback(() => {
 		const prev = goToPrevFile();
@@ -282,8 +296,8 @@ export function ReviewPanel({
 		comments: allComments,
 		addComment,
 		appendComment,
-		setStance,
 		resolveThread,
+		deleteThread,
 		getCommentsForFile,
 	} = useDiffComments({ worktreeName });
 
@@ -471,8 +485,8 @@ export function ReviewPanel({
 							addLabel="Add general thread"
 							onAdd={handleAddGeneralComment}
 							onAppend={appendComment}
-							onSetStance={setStance}
 							onResolve={resolveThread}
+							onDelete={deleteThread}
 						/>
 						<DiffBaseToggle
 							diffBase={diffBase}
@@ -542,8 +556,8 @@ export function ReviewPanel({
 						addLabel="Add general thread"
 						onAdd={handleAddGeneralComment}
 						onAppend={appendComment}
-						onSetStance={setStance}
 						onResolve={resolveThread}
+						onDelete={deleteThread}
 					/>
 					<DiffBaseToggle
 						diffBase={diffBase}
@@ -616,8 +630,16 @@ export function ReviewPanel({
 												filePath={selectedFile}
 												onAdd={handleAddFileComment}
 												onAppend={appendComment}
-												onSetStance={setStance}
 												onResolve={resolveThread}
+												onDelete={deleteThread}
+												open={openFileCommentsForFile === selectedFile}
+												onOpenChange={(o) => {
+													if (o && selectedFile) {
+														setOpenFileCommentsForFile(selectedFile);
+													} else {
+														setOpenFileCommentsForFile(null);
+													}
+												}}
 											/>
 										)}
 									</Breadcrumb>
@@ -693,9 +715,10 @@ export function ReviewPanel({
 											onAddComment={handleAddLineComment}
 											onAddRangeComment={handleAddRangeComment}
 											onAppendComment={appendComment}
-											onSetStance={setStance}
 											onResolveThread={resolveThread}
+											onDeleteThread={deleteThread}
 											scrollToLine={scrollToLine}
+											scrollToThread={scrollToThread}
 										/>
 									</div>
 									<DiffToolbar

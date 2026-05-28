@@ -215,4 +215,22 @@ Feature: Agent と人間が共有するレビュー議論基盤
       Given Releash 上にレビュー議論が存在している
       When 参加者が Thread、Comment、Stance、または Resolve を操作する
       Then その操作は Releash ローカルのレビュー議論として扱われ、外部サービスのレビューコメント操作としては扱われない
+
+  Rule: 人間は Diff ビュー上の Thread を現在の Agent との対話に共有できる
+    Scenario: 人間が active な Agent との対話に Thread を共有する
+      Given Diff ビューに Thread が表示され、人間が active な AgentChat 対話を行っている
+      When 人間がその Thread を Agent との対話に共有する
+      Then Agent は共有された Thread を指す参照情報を対話の入力として受け取る
+      And Agent は受け取った参照情報からその Thread の議論内容を確認できる
+
+    Scenario: 人間が active な Agent との対話がない状態で Thread を共有しようとする
+      Given Diff ビューに Thread が表示され、人間が active な AgentChat 対話を持っていない
+      When 人間が Thread を Agent との対話に共有しようとする
+      Then 共有は実行できない
+
+  Rule: Agent は Releash 上で起動した時点でレビュー議論操作の方法を把握している
+    Scenario: Agent が Releash 上で起動を完了する
+      Given Agent が Releash 上で起動しようとしている
+      When Agent が対話を開始できる状態になる
+      Then Agent はそれ以降の対話で Releash 上のレビュー議論操作の方法を把握している
 ```

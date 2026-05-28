@@ -104,22 +104,16 @@ export function useRemoteReviewThreads({
 	);
 
 	const appendComment = useCallback(
-		(threadId: string, content: string) => {
+		(threadId: string, content: string, stance?: ReviewStanceValue | null) => {
 			if (!worktreeName) return;
 			send({
 				type: "review_append_comment_request",
-				payload: { worktreeName, threadId, content },
-			});
-		},
-		[worktreeName, send],
-	);
-
-	const setStance = useCallback(
-		(threadId: string, value: ReviewStanceValue) => {
-			if (!worktreeName) return;
-			send({
-				type: "review_set_stance_request",
-				payload: { worktreeName, threadId, value },
+				payload: {
+					worktreeName,
+					threadId,
+					content,
+					stance: stance ?? null,
+				},
 			});
 		},
 		[worktreeName, send],
@@ -151,7 +145,6 @@ export function useRemoteReviewThreads({
 		refresh,
 		createThread,
 		appendComment,
-		setStance,
 		resolveThread,
 	};
 }

@@ -129,8 +129,6 @@ pub enum WsMessage {
     ReviewCreateRequest(ReviewCreateRequest),
     #[serde(rename = "review_append_comment_request")]
     ReviewAppendCommentRequest(ReviewAppendCommentRequest),
-    #[serde(rename = "review_set_stance_request")]
-    ReviewSetStanceRequest(ReviewSetStanceRequest),
     #[serde(rename = "review_resolve_request")]
     ReviewResolveRequest(ReviewResolveRequest),
     #[serde(rename = "review_history_request")]

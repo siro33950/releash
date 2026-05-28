@@ -55,7 +55,6 @@ function renderPanel(
 		onRefresh: vi.fn(),
 		onCreateThread: vi.fn(),
 		onAppendComment: vi.fn(),
-		onSetStance: vi.fn(),
 		onResolveThread: vi.fn(),
 		...overrides,
 	};
@@ -129,19 +128,38 @@ describe("RemoteReviewPanel", () => {
 		expect(resolve).toBeDisabled();
 	});
 
-	it("calls onSetStance with agree, disagree, and none for the selected thread", () => {
+	it("appends a comment with selected stance via Reply form radio", () => {
 		const props = renderPanel();
 
-		fireEvent.click(screen.getByRole("button", { name: "agree" }));
-		fireEvent.click(screen.getByRole("button", { name: "disagree" }));
-		fireEvent.click(screen.getByRole("button", { name: "none" }));
+		fireEvent.change(screen.getByPlaceholderText("Reply..."), {
+			target: { value: "Now I agree" },
+		});
+		fireEvent.click(screen.getByRole("radio", { name: "agree" }));
+		fireEvent.click(screen.getByText("Reply"));
 
-		expect(props.onSetStance).toHaveBeenNthCalledWith(1, "t1", "agree");
-		expect(props.onSetStance).toHaveBeenNthCalledWith(2, "t1", "disagree");
-		expect(props.onSetStance).toHaveBeenNthCalledWith(3, "t1", "none");
+		expect(props.onAppendComment).toHaveBeenCalledWith(
+			"t1",
+			"Now I agree",
+			"agree",
+		);
 	});
 
-	it("disables stance controls for resolved threads", () => {
+	it("appends a comment without changing stance when 'keep' radio remains selected", () => {
+		const props = renderPanel();
+
+		fireEvent.change(screen.getByPlaceholderText("Reply..."), {
+			target: { value: "Just a reply" },
+		});
+		fireEvent.click(screen.getByText("Reply"));
+
+		expect(props.onAppendComment).toHaveBeenCalledWith(
+			"t1",
+			"Just a reply",
+			null,
+		);
+	});
+
+	it("does not show a Reply form for resolved threads", () => {
 		renderPanel({
 			selectedThread: makeThread({
 				state: "resolved",
@@ -149,8 +167,6 @@ describe("RemoteReviewPanel", () => {
 			}),
 		});
 
-		expect(screen.getByRole("button", { name: "agree" })).toBeDisabled();
-		expect(screen.getByRole("button", { name: "disagree" })).toBeDisabled();
-		expect(screen.getByRole("button", { name: "none" })).toBeDisabled();
+		expect(screen.queryByPlaceholderText("Reply...")).not.toBeInTheDocument();
 	});
 });

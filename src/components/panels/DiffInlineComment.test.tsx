@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ReviewThreadHandoffContext } from "@/contexts/ReviewThreadHandoffContext";
 import type { ReviewDiscussionThread } from "@/types/diffComment";
 import { DiffInlineComment, DiffInlineCommentInput } from "./DiffInlineComment";
 
@@ -39,7 +40,6 @@ const makeComment = (
 describe("DiffInlineComment", () => {
 	const defaultProps = {
 		onAppend: vi.fn().mockResolvedValue(undefined),
-		onSetStance: vi.fn().mockResolvedValue(undefined),
 		onResolve: vi.fn().mockResolvedValue(undefined),
 	};
 
@@ -126,14 +126,84 @@ describe("DiffInlineComment", () => {
 			/>,
 		);
 
-		expect(screen.getByText("human · Human")).toBeInTheDocument();
+		// コメント author の displayName/kind は別要素として表示される
+		expect(screen.getAllByText("Human").length).toBeGreaterThan(0);
+		expect(screen.getAllByText("human").length).toBeGreaterThan(0);
 		expect(screen.getByText("codex/gpt-5")).toBeInTheDocument();
 		expect(screen.getAllByText("disagree").length).toBeGreaterThan(0);
-		expect(screen.getByRole("button", { name: "agree" })).toHaveClass(
-			"bg-primary",
-		);
-		expect(screen.getByText("resolved by human · Human")).toBeInTheDocument();
+		// 現在 Stance は Reply フォーム内に "(current: agree)" として表示される
+		expect(screen.getByText(/current: agree/)).toBeInTheDocument();
+		// Resolve メタ情報（アイコンと同じ flex div 内に連続テキストとして配置）
+		expect(screen.getByText(/resolved by human · Human/)).toBeInTheDocument();
+		// resolve.summary は DiffCommentBody 経由で Markdown レンダリングされる
 		expect(screen.getByText("Fixed")).toBeInTheDocument();
+	});
+
+	it("renders comment content as markdown (bold, code, list)", () => {
+		render(
+			<DiffInlineComment
+				comment={makeComment({
+					comments: [
+						{
+							id: "c-md",
+							threadId: "c1",
+							author: { kind: "human", displayName: "Human" },
+							content: "**bold** and `inline` and\n- item",
+							createdAt: Date.now(),
+						},
+					],
+				})}
+				{...defaultProps}
+			/>,
+		);
+		expect(screen.getByText("bold").tagName).toBe("STRONG");
+		expect(screen.getByText("inline").tagName).toBe("CODE");
+		expect(screen.getByRole("listitem")).toHaveTextContent("item");
+	});
+
+	it("renders author icon by kind (human → User, agent → Bot)", () => {
+		render(
+			<DiffInlineComment
+				comment={makeComment({
+					comments: [
+						{
+							id: "ch",
+							threadId: "c1",
+							author: { kind: "human", displayName: "Human" },
+							content: "hi",
+							createdAt: Date.now(),
+						},
+						{
+							id: "ca",
+							threadId: "c1",
+							author: { kind: "agent", displayName: "Agent" },
+							content: "yo",
+							createdAt: Date.now(),
+						},
+					],
+				})}
+				{...defaultProps}
+			/>,
+		);
+		expect(screen.getByTestId("author-icon-human")).toBeInTheDocument();
+		expect(screen.getByTestId("author-icon-agent")).toBeInTheDocument();
+	});
+
+	it("renders resolve summary as markdown", () => {
+		render(
+			<DiffInlineComment
+				comment={makeComment({
+					resolve: {
+						actor: { kind: "human", displayName: "Human" },
+						outcome: "resolved",
+						summary: "Fixed **all** issues",
+						resolvedAt: 1,
+					},
+				})}
+				{...defaultProps}
+			/>,
+		);
+		expect(screen.getByText("all").tagName).toBe("STRONG");
 	});
 
 	it("does not render legacy edit, delete, or send controls", () => {
@@ -148,26 +218,137 @@ describe("DiffInlineComment", () => {
 		expect(screen.queryByTitle("Send to Agent")).not.toBeInTheDocument();
 	});
 
-	it("wires stance, reply, and resolve actions to thread operations", async () => {
+	it("does not render delete button when onDelete is not provided", () => {
+		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
+		expect(screen.queryByLabelText("Delete thread")).not.toBeInTheDocument();
+	});
+
+	it("renders delete button when onDelete is provided", () => {
+		render(
+			<DiffInlineComment
+				comment={makeComment()}
+				{...defaultProps}
+				onDelete={vi.fn().mockResolvedValue(undefined)}
+			/>,
+		);
+		expect(screen.getByLabelText("Delete thread")).toBeInTheDocument();
+	});
+
+	it("does not call onDelete when the confirmation dialog is cancelled", async () => {
+		const onDelete = vi.fn().mockResolvedValue(undefined);
+		const user = userEvent.setup();
+		render(
+			<DiffInlineComment
+				comment={makeComment()}
+				{...defaultProps}
+				onDelete={onDelete}
+			/>,
+		);
+
+		await user.click(screen.getByLabelText("Delete thread"));
+		expect(
+			screen.getByRole("alertdialog", { name: "Delete this thread?" }),
+		).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Cancel" }));
+		expect(onDelete).not.toHaveBeenCalled();
+	});
+
+	it("calls onDelete with the thread id when the confirmation is accepted", async () => {
+		const onDelete = vi.fn().mockResolvedValue(undefined);
+		const user = userEvent.setup();
+		render(
+			<DiffInlineComment
+				comment={makeComment({ id: "thread-xyz" })}
+				{...defaultProps}
+				onDelete={onDelete}
+			/>,
+		);
+
+		await user.click(screen.getByLabelText("Delete thread"));
+		await user.click(screen.getByRole("button", { name: "Delete" }));
+		expect(onDelete).toHaveBeenCalledWith("thread-xyz");
+	});
+
+	it("wires reply, stance radio, and resolve actions to thread operations", async () => {
 		const user = userEvent.setup();
 		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 
-		await user.click(screen.getByRole("button", { name: "agree" }));
+		// Reply without changing stance (keep is default → null stance passed)
 		await user.type(screen.getByPlaceholderText("Reply..."), "Looks fixed");
 		await user.click(screen.getByRole("button", { name: "Reply" }));
+		expect(defaultProps.onAppend).toHaveBeenLastCalledWith(
+			"c1",
+			"Looks fixed",
+			null,
+		);
+
+		// Reply while selecting agree stance
+		await user.type(screen.getByPlaceholderText("Reply..."), "Now I agree");
+		await user.click(screen.getByRole("radio", { name: "agree" }));
+		await user.click(screen.getByRole("button", { name: "Reply" }));
+		expect(defaultProps.onAppend).toHaveBeenLastCalledWith(
+			"c1",
+			"Now I agree",
+			"agree",
+		);
+
 		await user.type(
 			screen.getByPlaceholderText("Resolution summary"),
 			"Resolved by change",
 		);
 		await user.click(screen.getByTitle("Resolve"));
 
-		expect(defaultProps.onSetStance).toHaveBeenCalledWith("c1", "agree");
-		expect(defaultProps.onAppend).toHaveBeenCalledWith("c1", "Looks fixed");
 		expect(defaultProps.onResolve).toHaveBeenCalledWith(
 			"c1",
 			"resolved",
 			"Resolved by change",
 		);
+	});
+
+	// spec issues-1022 "Thread handoff contract": Diff Thread を active な AgentChat
+	// session に共有するボタンが、active session の有無に応じて活性 / 非活性を切り替え、
+	// 押下時に thread id 付きで sendThreadToAgent が呼ばれる。
+	describe("send-to-agent button", () => {
+		const sendToAgentLabel = "Diff Thread を現在の Agent に送信";
+		const noActiveLabel = "アクティブな Agent セッションがありません";
+
+		it("is disabled and shows no-active-session tooltip when no active session", () => {
+			render(
+				<ReviewThreadHandoffContext.Provider
+					value={{
+						canSend: false,
+						sendThreadToAgent: vi.fn(),
+					}}
+				>
+					<DiffInlineComment comment={makeComment()} {...defaultProps} />
+				</ReviewThreadHandoffContext.Provider>,
+			);
+			const button = screen.getByRole("button", { name: noActiveLabel });
+			expect(button).toBeDisabled();
+		});
+
+		it("dispatches sendThreadToAgent with thread id when clicked", async () => {
+			const sendThreadToAgent = vi.fn().mockResolvedValue(undefined);
+			render(
+				<ReviewThreadHandoffContext.Provider
+					value={{ canSend: true, sendThreadToAgent }}
+				>
+					<DiffInlineComment comment={makeComment()} {...defaultProps} />
+				</ReviewThreadHandoffContext.Provider>,
+			);
+			const user = userEvent.setup();
+			const button = screen.getByRole("button", { name: sendToAgentLabel });
+			expect(button).toBeEnabled();
+			await user.click(button);
+			expect(sendThreadToAgent).toHaveBeenCalledWith("c1");
+		});
+
+		it("is disabled (alongside other actions) when thread is busy with another action", () => {
+			// 既存テストと同じく、provider 不在の場合は no-op fallback により canSend=false。
+			render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
+			const button = screen.getByRole("button", { name: noActiveLabel });
+			expect(button).toBeDisabled();
+		});
 	});
 });
 
