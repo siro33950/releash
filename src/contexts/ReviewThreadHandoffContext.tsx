@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createContext, useContext, useMemo } from "react";
 import { useAgentChatContext } from "@/contexts/AgentChatContext";
-import { useDisplayedActiveSession } from "@/hooks/useDisplayedActiveSession";
 
 /**
  * spec issues-1022 "Thread handoff contract" / "Human-to-agent thread handoff flow":
@@ -11,7 +10,9 @@ import { useDisplayedActiveSession } from "@/hooks/useDisplayedActiveSession";
  * シグネチャで sendThreadToAgent を呼べる。
  *
  * - メッセージ本文の整形は Rust 側 (`build_review_thread_handoff` Tauri command) が owner
- * - 送信先 session は `useDisplayedActiveSession` と同じ規則 (workflow step session を除外)
+ * - 送信先 session は AgentChat の active session そのもの。workflow step session を
+ *   開いている場合でも、その session 自身に送付できる (ユーザーが「現在開いている Agent」
+ *   に対するハンドオフ操作として観測する)。
  * - active session が存在しない場合 `canSend` が `false` となり、UI 側はボタンを disabled にする
  */
 export interface ReviewThreadHandoffContextValue {
@@ -35,8 +36,7 @@ export function ReviewThreadHandoffProvider({
 	worktreeName,
 	children,
 }: ProviderProps) {
-	const activeSession = useDisplayedActiveSession();
-	const { sendMessage } = useAgentChatContext();
+	const { activeSession, sendMessage } = useAgentChatContext();
 
 	const value = useMemo<ReviewThreadHandoffContextValue>(() => {
 		const activeSessionId = activeSession?.id ?? null;
