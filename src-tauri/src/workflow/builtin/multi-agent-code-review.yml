@@ -126,7 +126,7 @@ nodes:
   # posts the conclusion to the Thread (fix-policy Comment or rationale-backed
   # Resolve). All actions require explicit human approval.
   - name: review-summary
-    type: agent
+    type: approval
     model: default
     permission: edit
     policy: multi-agent-summary
