@@ -35,7 +35,7 @@
 		"@sentry/react": "^10",
 		"@shikijs/langs": "^4.0.2",
 		"@shikijs/themes": "^4.0.2",
-		"@tanstack/react-virtual": "^3.13.24",
+		"@tanstack/react-virtual": "^3.13.26",
 		"@tauri-apps/api": "^2.11.0",
 		"@tauri-apps/plugin-autostart": "^2.5.1",
 		"@tauri-apps/plugin-dialog": "^2.7.1",
