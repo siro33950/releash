@@ -166,8 +166,15 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     let broadcaster_for_forward = state.broadcaster.clone();
 
     // --- 初期データ送信: worktreeリストのみ（PTYはworktree選択後に送信） ---
+    // worktree 一覧（repository ローカル情報のみ）を先に送り、PR ステータスは
+    // broadcaster 経由で後追い配信する（一覧表示 / PR 表示の 2 段階化）。
     if !state.get_repo_paths().is_empty() {
-        let worktrees = super::handlers::build_all_worktrees(state).await;
+        let worktrees =
+            crate::adaptor::controller::handler::repository::worktree::build_all_worktrees(
+                state.get_repo_paths(),
+                std::sync::Arc::clone(state.repository_usecase()),
+            )
+            .await;
         let worktree_msg = WsMessage::WorktreeListResponse(WorktreeListResponse { worktrees });
         write
             .send(Message::text(
@@ -175,6 +182,12 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
             ))
             .await
             .map_err(|e| format!("Failed to send worktree list: {e}"))?;
+        crate::adaptor::controller::handler::repository::worktree::push_worktree_pr_status(
+            state.get_repo_paths(),
+            std::sync::Arc::clone(state.pr_cache()),
+            std::sync::Arc::clone(state.repository_usecase()),
+            std::sync::Arc::clone(state.broadcaster()),
+        );
     }
 
     // --- 初期データ送信: 全 SessionStatus を AgentStateSync 互換形式で送信 ---

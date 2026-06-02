@@ -1,9 +1,14 @@
-use super::error::GitError;
-use super::types::CommitInfo;
-use git2::{Repository, Sort};
+//! commit・log 責務の gateway 実装。git2 による履歴読み取りを封じ込める。
 
-pub fn get_git_log(repo_path: String, limit: Option<usize>) -> Result<Vec<CommitInfo>, GitError> {
-    let repo = Repository::open(&repo_path)?;
+use crate::domain::repository::{Commit, LogRepository, RepositoryError};
+use crate::infrastructure::git::client;
+use git2::Sort;
+
+pub(crate) fn get_git_log(
+    repo_path: &str,
+    limit: Option<usize>,
+) -> Result<Vec<Commit>, RepositoryError> {
+    let repo = client::open(repo_path)?;
     let limit = limit.unwrap_or(50);
 
     let head = match repo.head() {
@@ -15,7 +20,7 @@ pub fn get_git_log(repo_path: String, limit: Option<usize>) -> Result<Vec<Commit
     let mut revwalk = repo.revwalk()?;
     revwalk.push(
         head.target()
-            .ok_or_else(|| GitError::Custom("HEAD has no target".to_string()))?,
+            .ok_or_else(|| RepositoryError::rule("HEAD has no target"))?,
     )?;
     revwalk.set_sorting(Sort::TIME)?;
 
@@ -28,7 +33,7 @@ pub fn get_git_log(repo_path: String, limit: Option<usize>) -> Result<Vec<Commit
         let commit = repo.find_commit(oid)?;
         let hash = oid.to_string();
         let short_hash = hash[..7.min(hash.len())].to_string();
-        commits.push(CommitInfo {
+        commits.push(Commit {
             hash,
             short_hash,
             message: commit.message().unwrap_or("").to_string(),
@@ -41,19 +46,28 @@ pub fn get_git_log(repo_path: String, limit: Option<usize>) -> Result<Vec<Commit
     Ok(commits)
 }
 
+/// `LogRepository` の git2 実装。
+pub struct LogGateway;
+
+impl LogRepository for LogGateway {
+    fn log(&self, repo_path: &str, limit: Option<usize>) -> Result<Vec<Commit>, RepositoryError> {
+        get_git_log(repo_path, limit)
+    }
+}
+
 #[cfg(test)]
-mod tests {
+mod log_gateway_tests {
     use super::*;
     use crate::git::test_helpers::*;
 
     #[test]
-    fn test_get_git_log() {
+    fn test_コミット履歴取得() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "a.txt", "a", "second commit");
         add_and_commit(&repo, "b.txt", "b", "third commit");
 
-        let result = get_git_log(dir.path().to_str().unwrap().to_string(), None).unwrap();
+        let result = get_git_log(dir.path().to_str().unwrap(), None).unwrap();
         assert_eq!(result.len(), 3);
 
         let messages: Vec<&str> = result.iter().map(|c| c.message.as_str()).collect();
@@ -66,20 +80,20 @@ mod tests {
     }
 
     #[test]
-    fn test_get_git_log_with_limit() {
+    fn test_コミット履歴取得_limit指定() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "a.txt", "a", "second");
 
-        let result = get_git_log(dir.path().to_str().unwrap().to_string(), Some(1)).unwrap();
+        let result = get_git_log(dir.path().to_str().unwrap(), Some(1)).unwrap();
         assert_eq!(result.len(), 1);
     }
 
     #[test]
-    fn test_get_git_log_empty_repo() {
+    fn test_コミット履歴取得_空リポジトリ() {
         let (dir, _repo) = create_test_repo();
 
-        let result = get_git_log(dir.path().to_str().unwrap().to_string(), None).unwrap();
+        let result = get_git_log(dir.path().to_str().unwrap(), None).unwrap();
         assert!(result.is_empty());
     }
 }

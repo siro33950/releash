@@ -1245,7 +1245,10 @@ fn canonicalize_cli_worktree_filter_path(
         }
         None => Vec::new(),
     };
-    canonicalize_managed_worktree_path_inner(repo_paths, worktree_path.to_string())
+    // CLI は独立したエントリポイント（composition root）として repository usecase を
+    // 組み立て、Tauri 経路と同一ロジックで検証する。
+    let usecase = crate::adaptor::controller::wiring::build_repository_usecase();
+    canonicalize_managed_worktree_path_inner(&usecase, repo_paths, worktree_path.to_string())
         .map_err(CliError::InvalidInput)
 }
 

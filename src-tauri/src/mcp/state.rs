@@ -5,6 +5,7 @@ use parking_lot::RwLock;
 
 use crate::config::AppConfig;
 use crate::pty::PtyManager;
+use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::ws_bridge::WsBroadcaster;
 
 #[derive(Clone)]
@@ -17,6 +18,8 @@ pub struct McpSharedState {
     pub broadcaster: Arc<WsBroadcaster>,
     #[allow(dead_code)] // Retained: may be needed by future MCP tools
     pub app_data_dir: Option<PathBuf>,
+    /// repository 責務の usecase（worktree 読み取り・作成等の唯一の入口）。
+    pub repository_usecase: Arc<RepositoryUsecase>,
 }
 
 #[cfg(test)]
@@ -38,6 +41,9 @@ mod tests {
             app_config,
             broadcaster,
             app_data_dir: None,
+            repository_usecase: Arc::new(
+                crate::adaptor::controller::wiring::build_repository_usecase(),
+            ),
         }
     }
 

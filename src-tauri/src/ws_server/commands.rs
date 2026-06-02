@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use tauri::{Emitter, Manager};
 
+use crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths;
 use crate::config::AppConfig;
-use crate::repo_registry::SharedRepoPaths;
 use crate::ws_bridge::WsBroadcaster;
 
 use super::http::start_ws_server;
@@ -77,6 +77,10 @@ pub async fn start_server_core(
             .map(|d| d.join("generated").join("remote"))
     };
     let backend_registry = app.state::<Arc<crate::backends::AgentBackendRegistry>>();
+    // composition root（lib.rs）で組み立てた単一 RepositoryUsecase を注入する。
+    // ws_server は routing/transport state に閉じ、DI 配線は持たない。
+    let repository_usecase =
+        app.state::<Arc<crate::usecase::repository_usecase::RepositoryUsecase>>();
     let server_state = Arc::new(WsServerState::new(
         remote_dir,
         Arc::clone(&broadcaster),
@@ -87,6 +91,7 @@ pub async fn start_server_core(
         cfg.server.tls.enabled,
         Arc::clone(&pr_cache),
         Arc::clone(backend_registry.inner()),
+        Arc::clone(repository_usecase.inner()),
     ));
 
     start_ws_server(&cfg, Arc::clone(&server_state), shutdown_rx).await?;

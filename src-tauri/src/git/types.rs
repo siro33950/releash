@@ -1,48 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Debug, Clone)]
-pub struct BranchInfo {
-    pub name: String,
-    pub is_remote: bool,
-}
-
-#[derive(Serialize)]
-pub struct GitFileStatus {
-    pub path: String,
-    pub index_status: String,
-    pub worktree_status: String,
-}
-
-#[derive(Serialize, Debug, Clone)]
-pub struct StatusFileStat {
-    pub path: String,
-    pub index_additions: u32,
-    pub index_deletions: u32,
-    pub wt_additions: u32,
-    pub wt_deletions: u32,
-}
-
-#[derive(Serialize)]
-pub struct CommitInfo {
-    pub hash: String,
-    pub short_hash: String,
-    pub message: String,
-    pub author_name: String,
-    pub author_email: String,
-    pub timestamp: i64,
-}
-
-#[derive(Serialize, Debug, Clone)]
-pub struct WorktreeEntry {
-    pub name: String,
-    pub path: String,
-    pub branch: String,
-    pub is_main: bool,
-    pub is_locked: bool,
-    pub dirty_count: u32,
-    pub base_branch: Option<String>,
-}
-
 // ── Hunk / ChangeGroup (diff calculation) ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,20 +51,4 @@ pub struct VisibleBlock {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deleted_content: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct WorktreeBranch {
-    pub name: String,
-    pub is_main_worktree: bool,
-    pub worktree_path: Option<String>,
-    pub dirty_count: usize,
-    pub is_merged: bool,
-    pub has_pr: bool,
-    pub pr_number: Option<u64>,
-    pub pr_url: Option<String>,
-    pub ahead: usize,
-    pub behind: usize,
-    pub has_upstream: bool,
-    pub base_ahead: usize,
 }

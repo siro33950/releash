@@ -6,6 +6,7 @@
 - 外部ライブラリ（`git2`, `reqwest`, `tokio` 等）の呼び出しは Gateway 内に閉じる
 - ドメイン型 ↔ 外部システム型の変換を Gateway 内で完結させる
 - CQRS に従い、Command（書き込み）と Query（読み込み）を別ファイルに分離
+- **gateway は単一集約に対する純粋な I/O プリミティブを提供する**: 複数集約をまたぐオーケストレーションや操作の順序制御（業務手順）は usecase の責務であり、gateway に潰し込まない（[USECASE.md](./USECASE.md)）
 
 ## ディレクトリ構造
 
@@ -115,6 +116,10 @@ impl NotifyGateway for NotifyGatewayImpl {
 | `service_models.rs` | 外部 API のリクエスト / レスポンス型 + ドメイン型変換 |
 
 ドメイン型に外部システムの詳細を漏らさない。変換はすべてこのレイヤーで行う。
+
+**`query_models` は read model であり、domain の Entity ではない。** Query 側（`query_service_impl`）は、集約・JOIN・表示集計を伴う読み取りで、Entity を経由せずデータソースから `query_models` を直接組み立てて返す。Entity を生成する Repository を再利用して `Entity → DTO` に詰め替えるのは、単純な 1:1 写像の読み取りに限った最適化であり、集約読み取りの既定手段にしない（[USECASE.md](./USECASE.md) QueryService）。
+
+read model か Entity かの判定は「**誰の都合でその形が決まっているか**」で行う。表示・転送（フロントの都合）のためにその形が必要なら read model（`query_models` / DTO）であり、domain に置かない（[DOMAIN.md](./DOMAIN.md)「Entity か DTO か」）。
 
 ## エラー変換
 

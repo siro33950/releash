@@ -1,6 +1,8 @@
-use super::error::GitError;
-use super::types::{GitFileStatus, StatusFileStat};
-use git2::{ErrorCode, Repository, StatusOptions};
+//! status 責務の gateway 実装。git2 による作業ツリー状態取得を封じ込める。
+
+use crate::domain::repository::{FileDiffStat, FileStatus, RepositoryError, StatusRepository};
+use crate::infrastructure::git::client;
+use git2::{ErrorCode, StatusOptions};
 use std::collections::HashMap;
 
 fn index_status_from_flags(status: git2::Status) -> &'static str {
@@ -41,8 +43,8 @@ fn worktree_status_from_flags(status: git2::Status) -> &'static str {
     }
 }
 
-pub fn get_git_status(repo_path: String) -> Result<Vec<GitFileStatus>, GitError> {
-    let repo = Repository::open(&repo_path)?;
+pub(crate) fn get_git_status(repo_path: &str) -> Result<Vec<FileStatus>, RepositoryError> {
+    let repo = client::open(repo_path)?;
 
     let mut opts = StatusOptions::new();
     opts.include_untracked(true)
@@ -51,7 +53,7 @@ pub fn get_git_status(repo_path: String) -> Result<Vec<GitFileStatus>, GitError>
 
     let statuses = repo.statuses(Some(&mut opts))?;
 
-    let result: Vec<GitFileStatus> = statuses
+    let result: Vec<FileStatus> = statuses
         .iter()
         .filter_map(|entry| {
             let path = entry.path().ok()?.to_string();
@@ -62,7 +64,7 @@ pub fn get_git_status(repo_path: String) -> Result<Vec<GitFileStatus>, GitError>
             if idx == "none" && wt == "none" {
                 return None;
             }
-            Some(GitFileStatus {
+            Some(FileStatus {
                 path,
                 index_status: idx.to_string(),
                 worktree_status: wt.to_string(),
@@ -120,8 +122,8 @@ fn collect_diff_stats(diff: &git2::Diff) -> HashMap<String, (u32, u32)> {
     map
 }
 
-pub fn get_status_diff_stats(repo_path: String) -> Result<Vec<StatusFileStat>, GitError> {
-    let repo = Repository::open(&repo_path)?;
+pub(crate) fn get_status_diff_stats(repo_path: &str) -> Result<Vec<FileDiffStat>, RepositoryError> {
+    let repo = client::open(repo_path)?;
 
     // HEAD tree (may not exist for unborn branch)
     let head_tree = match repo.head() {
@@ -157,7 +159,7 @@ pub fn get_status_diff_stats(repo_path: String) -> Result<Vec<StatusFileStat>, G
         .map(|path| {
             let (ia, id) = index_stats.get(&path).copied().unwrap_or((0, 0));
             let (wa, wd) = wt_stats.get(&path).copied().unwrap_or((0, 0));
-            StatusFileStat {
+            FileDiffStat {
                 path,
                 index_additions: ia,
                 index_deletions: id,
@@ -170,20 +172,32 @@ pub fn get_status_diff_stats(repo_path: String) -> Result<Vec<StatusFileStat>, G
     Ok(result)
 }
 
+/// `StatusRepository` の git2 実装。
+pub struct StatusGateway;
+
+impl StatusRepository for StatusGateway {
+    fn status(&self, repo_path: &str) -> Result<Vec<FileStatus>, RepositoryError> {
+        get_git_status(repo_path)
+    }
+    fn diff_stats(&self, repo_path: &str) -> Result<Vec<FileDiffStat>, RepositoryError> {
+        get_status_diff_stats(repo_path)
+    }
+}
+
 #[cfg(test)]
-mod tests {
+mod status_gateway_tests {
     use super::*;
     use crate::git::test_helpers::*;
     use std::fs;
     use std::path::Path;
 
     #[test]
-    fn test_get_git_status_untracked() {
+    fn test_状態取得_未追跡ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("new_file.txt"), "hello").unwrap();
 
-        let result = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let result = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path, "new_file.txt");
         assert_eq!(result[0].worktree_status, "new");
@@ -191,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_git_status_staged() {
+    fn test_状態取得_ステージ済み() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
 
@@ -200,36 +214,36 @@ mod tests {
         index.add_path(Path::new("staged.txt")).unwrap();
         index.write().unwrap();
 
-        let result = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let result = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path, "staged.txt");
         assert_eq!(result[0].index_status, "new");
     }
 
     #[test]
-    fn test_get_git_status_modified() {
+    fn test_状態取得_変更済み() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "file.txt", "original", "add file");
 
         fs::write(dir.path().join("file.txt"), "modified content").unwrap();
 
-        let result = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let result = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path, "file.txt");
         assert_eq!(result[0].worktree_status, "modified");
     }
 
     #[test]
-    fn test_get_git_status_empty_repo() {
+    fn test_状態取得_空リポジトリ() {
         let (dir, _repo) = create_test_repo();
 
-        let result = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let result = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert!(result.is_empty());
     }
 
     #[test]
-    fn test_get_git_status_ignored_file() {
+    fn test_状態取得_無視ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
 
@@ -248,7 +262,7 @@ mod tests {
         fs::create_dir(dir.path().join("build")).unwrap();
         fs::write(dir.path().join("build").join("output.js"), "built").unwrap();
 
-        let result = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let result = get_git_status(dir.path().to_str().unwrap()).unwrap();
 
         let ignored_file = result.iter().find(|e| e.path == "ignored.txt");
         assert!(
@@ -264,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_diff_stats_staged_new_file() {
+    fn test_差分統計_ステージ済み新規ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
 
@@ -273,7 +287,7 @@ mod tests {
         index.add_path(Path::new("new.txt")).unwrap();
         index.write().unwrap();
 
-        let stats = get_status_diff_stats(dir.path().to_str().unwrap().to_string()).unwrap();
+        let stats = get_status_diff_stats(dir.path().to_str().unwrap()).unwrap();
         let file = stats.iter().find(|s| s.path == "new.txt").unwrap();
         assert_eq!(file.index_additions, 3);
         assert_eq!(file.index_deletions, 0);
@@ -282,14 +296,14 @@ mod tests {
     }
 
     #[test]
-    fn test_status_diff_stats_worktree_modified() {
+    fn test_差分統計_作業ツリー変更() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "file.txt", "original\n", "add file");
 
         fs::write(dir.path().join("file.txt"), "original\nmodified\n").unwrap();
 
-        let stats = get_status_diff_stats(dir.path().to_str().unwrap().to_string()).unwrap();
+        let stats = get_status_diff_stats(dir.path().to_str().unwrap()).unwrap();
         let file = stats.iter().find(|s| s.path == "file.txt").unwrap();
         assert_eq!(file.index_additions, 0);
         assert_eq!(file.index_deletions, 0);
@@ -298,21 +312,19 @@ mod tests {
     }
 
     #[test]
-    fn test_status_diff_stats_both_staged_and_worktree() {
+    fn test_差分統計_ステージと作業ツリー両方() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "file.txt", "line1\nline2\n", "add file");
 
-        // Stage a change
         fs::write(dir.path().join("file.txt"), "line1\nline2\nline3\n").unwrap();
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("file.txt")).unwrap();
         index.write().unwrap();
 
-        // Then modify again in worktree
         fs::write(dir.path().join("file.txt"), "line1\nline2\nline3\nline4\n").unwrap();
 
-        let stats = get_status_diff_stats(dir.path().to_str().unwrap().to_string()).unwrap();
+        let stats = get_status_diff_stats(dir.path().to_str().unwrap()).unwrap();
         let file = stats.iter().find(|s| s.path == "file.txt").unwrap();
         assert_eq!(file.index_additions, 1); // line3 staged
         assert_eq!(file.index_deletions, 0);
@@ -321,14 +333,13 @@ mod tests {
     }
 
     #[test]
-    fn test_status_diff_stats_untracked_new_file() {
+    fn test_差分統計_未追跡新規ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
 
-        // Untracked file (not staged)
         fs::write(dir.path().join("new.txt"), "line1\nline2\n").unwrap();
 
-        let stats = get_status_diff_stats(dir.path().to_str().unwrap().to_string()).unwrap();
+        let stats = get_status_diff_stats(dir.path().to_str().unwrap()).unwrap();
         let file = stats.iter().find(|s| s.path == "new.txt").unwrap();
         assert_eq!(file.index_additions, 0);
         assert_eq!(file.index_deletions, 0);
@@ -337,11 +348,11 @@ mod tests {
     }
 
     #[test]
-    fn test_status_diff_stats_empty() {
+    fn test_差分統計_空() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
 
-        let stats = get_status_diff_stats(dir.path().to_str().unwrap().to_string()).unwrap();
+        let stats = get_status_diff_stats(dir.path().to_str().unwrap()).unwrap();
         assert!(stats.is_empty());
     }
 }

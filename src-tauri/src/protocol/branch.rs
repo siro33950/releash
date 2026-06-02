@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::git::types::WorktreeBranch;
+use crate::usecase::repository_dto::BranchCardDto;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchCardMsg {
@@ -11,12 +11,6 @@ pub struct BranchCardMsg {
     pub dirty_count: usize,
     pub is_merged: bool,
     #[serde(default)]
-    pub has_pr: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pr_number: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pr_url: Option<String>,
-    #[serde(default)]
     pub ahead: usize,
     #[serde(default)]
     pub behind: usize,
@@ -26,17 +20,14 @@ pub struct BranchCardMsg {
     pub base_ahead: usize,
 }
 
-impl From<WorktreeBranch> for BranchCardMsg {
-    fn from(b: WorktreeBranch) -> Self {
+impl From<BranchCardDto> for BranchCardMsg {
+    fn from(b: BranchCardDto) -> Self {
         Self {
             name: b.name,
             is_main_worktree: b.is_main_worktree,
             worktree_path: b.worktree_path,
             dirty_count: b.dirty_count,
             is_merged: b.is_merged,
-            has_pr: b.has_pr,
-            pr_number: b.pr_number,
-            pr_url: b.pr_url,
             ahead: b.ahead,
             behind: b.behind,
             has_upstream: b.has_upstream,

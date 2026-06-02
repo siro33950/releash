@@ -173,7 +173,7 @@ pub fn git_unstage_hunk(repo_path: String, patch: String) -> Result<(), GitError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::status::get_git_status;
+    use crate::adaptor::gateway::repository::status::get_git_status;
     use crate::git::test_helpers::*;
     use std::fs;
 
@@ -189,7 +189,7 @@ mod tests {
         )
         .unwrap();
 
-        let statuses = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0].index_status, "new");
         assert_eq!(statuses[0].worktree_status, "none");
@@ -204,7 +204,7 @@ mod tests {
 
         git_stage(dir.path().to_str().unwrap().to_string(), vec![]).unwrap();
 
-        let statuses = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(statuses.len(), 2);
         for s in &statuses {
             assert_eq!(s.index_status, "new");
@@ -225,7 +225,7 @@ mod tests {
         )
         .unwrap();
 
-        let statuses = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0].index_status, "deleted");
         assert_eq!(statuses[0].worktree_status, "none");
@@ -237,7 +237,7 @@ mod tests {
         create_initial_commit(&repo);
         fs::write(dir.path().join("untracked.txt"), "data").unwrap();
 
-        let before = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let before = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(before[0].worktree_status, "new");
 
         git_stage(
@@ -246,7 +246,7 @@ mod tests {
         )
         .unwrap();
 
-        let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let after = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(after[0].index_status, "new");
         assert_eq!(after[0].worktree_status, "none");
     }
@@ -268,7 +268,7 @@ mod tests {
         )
         .unwrap();
 
-        let statuses = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0].worktree_status, "new");
         assert_eq!(statuses[0].index_status, "none");
@@ -284,7 +284,7 @@ mod tests {
 
         git_unstage(dir.path().to_str().unwrap().to_string(), vec![]).unwrap();
 
-        let statuses = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         for s in &statuses {
             assert_eq!(s.index_status, "none");
             assert_eq!(s.worktree_status, "new");
@@ -301,7 +301,7 @@ mod tests {
         )
         .unwrap();
 
-        let before = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let before = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(before[0].index_status, "new");
 
         git_unstage(
@@ -310,7 +310,7 @@ mod tests {
         )
         .unwrap();
 
-        let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let after = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(after[0].index_status, "none");
         assert_eq!(after[0].worktree_status, "new");
     }
@@ -328,7 +328,7 @@ mod tests {
 
         git_stage_hunk(dir.path().to_str().unwrap().to_string(), patch.to_string()).unwrap();
 
-        let statuses = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert!(statuses.iter().any(|s| s.index_status == "modified"));
     }
 
@@ -345,14 +345,14 @@ mod tests {
         )
         .unwrap();
 
-        let before = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let before = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert!(before.iter().any(|s| s.index_status == "modified"));
 
         let patch =
             "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+modified\n line3\n";
         git_unstage_hunk(dir.path().to_str().unwrap().to_string(), patch.to_string()).unwrap();
 
-        let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let after = get_git_status(dir.path().to_str().unwrap()).unwrap();
         let file_status = after.iter().find(|s| s.path == "file.txt").unwrap();
         assert_eq!(file_status.worktree_status, "modified");
         assert_eq!(file_status.index_status, "none");

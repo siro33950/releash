@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::{AppConfig, ReleashConfig};
+use crate::usecase::repository_usecase::RepositoryUsecase;
 
 fn configured_repo_paths(config: &ReleashConfig) -> Vec<String> {
     let mut paths = config.app.last_repo_paths.clone();
@@ -26,11 +27,14 @@ pub(crate) fn normalize_worktree_filter_path(worktree_path: &str) -> Result<Stri
 }
 
 pub(crate) fn canonicalize_managed_worktree_path_inner(
+    usecase: &RepositoryUsecase,
     repo_paths: Vec<String>,
     worktree_path: String,
 ) -> Result<String, String> {
     let requested_normalized = normalize_worktree_filter_path(&worktree_path)?;
     let requested = PathBuf::from(&requested_normalized);
+    // usecase は composition root（lib.rs）で組み立てたものを注入で受け取り、
+    // 各 repo_path の反復で再利用する（controller 配線を workflow へ漏らさない）。
     for repo_path in repo_paths {
         let Ok(repo_path) = PathBuf::from(&repo_path).canonicalize() else {
             continue;
@@ -39,7 +43,7 @@ pub(crate) fn canonicalize_managed_worktree_path_inner(
             .to_str()
             .ok_or_else(|| "configured repo path has invalid encoding".to_string())?
             .to_string();
-        let Ok(worktrees) = crate::git::list_worktrees(repo_path_str) else {
+        let Ok(worktrees) = usecase.list_worktrees(&repo_path_str) else {
             continue;
         };
         for worktree in worktrees {
@@ -55,12 +59,13 @@ pub(crate) fn canonicalize_managed_worktree_path_inner(
 }
 
 pub(crate) async fn canonicalize_managed_worktree_path(
+    usecase: Arc<RepositoryUsecase>,
     config: Arc<AppConfig>,
     worktree_path: String,
 ) -> Result<String, String> {
     let repo_paths = configured_repo_paths(&config.get_config()?);
     tokio::task::spawn_blocking(move || {
-        canonicalize_managed_worktree_path_inner(repo_paths, worktree_path)
+        canonicalize_managed_worktree_path_inner(&usecase, repo_paths, worktree_path)
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
@@ -70,6 +75,10 @@ pub(crate) async fn canonicalize_managed_worktree_path(
 mod tests {
     use super::*;
 
+    fn test_usecase() -> RepositoryUsecase {
+        crate::adaptor::controller::wiring::build_repository_usecase()
+    }
+
     #[test]
     fn canonicalize_managed_worktree_path_accepts_configured_git_worktree_only() {
         let (repo_dir, repo) = crate::git::test_helpers::create_test_repo();
@@ -78,8 +87,10 @@ mod tests {
         let worktree_path = worktree_parent.path().join("managed-wt");
         repo.worktree("managed-wt", &worktree_path, None).unwrap();
 
+        let usecase = test_usecase();
         let canonical = worktree_path.canonicalize().unwrap();
         let accepted = canonicalize_managed_worktree_path_inner(
+            &usecase,
             vec![repo_dir.path().to_string_lossy().to_string()],
             worktree_path.join(".").to_string_lossy().to_string(),
         )
@@ -89,6 +100,7 @@ mod tests {
         let outside = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(outside.path()).unwrap();
         let err = canonicalize_managed_worktree_path_inner(
+            &usecase,
             vec![repo_dir.path().to_string_lossy().to_string()],
             outside.path().to_string_lossy().to_string(),
         )

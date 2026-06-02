@@ -58,14 +58,23 @@ src-tauri/src/
 ### 依存方向
 
 ```
-infrastructure → adaptor/gateway → domain ← usecase ← adaptor/controller
+infrastructure → adaptor（controller / gateway / presenter）→ usecase → domain
 ```
 
-- ドメインは外側を一切知らない
-- usecase は domain の trait のみに依存
-- adaptor/gateway は domain の trait を実装する
+依存は内向き（外側の層が内側の層に依存する）にのみ許される。
+
+- ドメインは外側を一切知らない（依存を持たない）
+- usecase は domain にのみ依存する
+- adaptor（gateway / controller / presenter）は usecase と domain に依存してよい（依存は内向き）
+- adaptor/gateway は domain が定義する trait（repository 等）を実装し、集約読み取り等では usecase の DTO / query ポートにも依存してよい
 - adaptor/controller は usecase を呼ぶ
 - infrastructure は外部ライブラリの薄いラッパーに徹する
+
+**逆依存（内側の層が外側の層に依存すること）に例外はない。** 例えば domain → usecase、usecase → adaptor のような向きは禁止する。利便性（例:「ステートレスだから任意のエントリポイントから生成できる」）は逆依存を正当化しない。逆依存したくなった場合は、設計自体に問題があるサインとして扱う。なお DI 配線（composition root）は controller の責務とし、gateway や任意のエントリポイントへ配線責務を漏らさない。
+
+## 横断的な設計原則
+
+- **同じ操作の実装は 1 つに集約する。** 同一の操作（例: dirty count 算出、worktree 列挙）が複数箇所に実装されていること自体が問題であり、設定差異・挙動差はその症状にすぎない。単一の関数・イテレータに集約し、結果の一致を構造的に保証する。
 
 ## ドメイン一覧（15個）
 

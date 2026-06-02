@@ -5,7 +5,10 @@
 - **アプリケーション固有の業務手順**を表現する
 - ドメイン層の trait のみに依存（具体実装は知らない）
 - 外部依存禁止（`tauri`, `git2` 等を直接 `use` しない）
-- CQRS に従い、Command と Query を別ファイルで分離
+- CQRS に従い、Command（Usecase）と Query（QueryService）を別ファイルで分離する
+- **QueryService は Usecase ではない。** Usecase はアプリケーション固有の業務手順（オーケストレーション）を表現する唯一の単位であり、QueryService は読み取りクエリのサービスにすぎない。「ユースケース」と呼んでよいのは Usecase のみ。QueryService を「Query 側ユースケース」等と呼んで usecase 扱いしない
+
+> **CQRS は「Command/Query のサービス分離」であって、「Repository を read 用 / write 用の trait に分割すること」ではない。** Repository は読み書きを問わず Entity を生成・取得する単位であり、read メソッドを持つこと自体は CQRS 違反ではない。Query 専用のテストダブルが未使用の write メソッドを実装させられる程度のことは、trait 分割の理由にならない。
 
 ## ディレクトリ構造
 
@@ -27,9 +30,9 @@ src-tauri/src/usecase/<domain>/
 └── dto.rs
 ```
 
-## Usecase（Command 側）
+## Usecase
 
-書き込み・状態変更を伴う操作。Repository / Gateway を組み合わせて業務手順を実行する。
+書き込み・状態変更を伴う操作。Repository / Gateway を組み合わせて業務手順を実行する。アプリケーション層で唯一「ユースケース」と呼べる単位であり、読み取りと書き込みを跨ぐオーケストレーション（例: 一覧取得後にそのタイミングで GC を実行する等）もここに集約する。QueryService 等の読み取り部品は Usecase から呼ぶ協力者であって、Usecase ではない。
 
 ```rust
 // src/usecase/repository_usecase.rs
@@ -60,16 +63,16 @@ impl RepositoryUsecase {
 }
 ```
 
+**複数の集約・Repository をまたぐオーケストレーションは usecase の業務手順である。** 操作の順序制御も usecase が持つ。例: 「ブランチ削除前に、紐づく worktree を先に削除する」——これは git の機構的制約（checkout 中ブランチは削除不可）に由来する順序だが、複数集約をまたぐ手順なので usecase の責務とする。gateway は単一集約に対する純粋な I/O プリミティブ（`branch.delete` / `worktree.remove` 等）に分解し、業務手順を gateway に潰し込まない。usecase が肥大化した場合は domain サービスの導入を検討する（[DOMAIN.md](./DOMAIN.md) ドメインサービス）。
+
 ## QueryService（Query 側）
 
-読み込み専用操作。表示向けに整形した DTO を返す。
+読み込み専用のクエリサービス。**Usecase ではない**（「Query 側ユースケース」ではない）。表示向けに整形した DTO を返す。
+
+**Query 側は、集約・JOIN・表示集計を伴う読み取りでは、Entity を経由せずデータソースから read model（DTO / `query_models`）を直接組み立てる。** Entity を生成する Repository を再利用して `Entity → DTO` に詰め替えるのは、単純な 1:1 写像の読み取りに限って許容される最適化であり、集約読み取りの既定手段ではない。表示・集計向けの読み取り専用モデルは `adaptor/gateway` の `query_models`（[GATEWAY.md](./GATEWAY.md)）として QueryService 実装（`query_service_impl`）が直接構築する。
 
 ```rust
-// src/usecase/repository_query_service.rs
-pub struct RepositoryQueryService {
-    branch_repo: Arc<dyn BranchRepository>,
-}
-
+// 単純な 1:1 写像に限り Entity 経由の map を許容する
 impl RepositoryQueryService {
     pub async fn list_branches(
         &self,
@@ -80,6 +83,8 @@ impl RepositoryQueryService {
     }
 }
 ```
+
+集約・表示集計（例: ブランチ + worktree 配置 + ahead/behind + マージ状態をまとめた一覧）では、Entity を構築して詰め替えるのではなく、`query_service_impl` がデータソースから `query_models`（read model）を直接組み立てて返す。read model は domain の Entity ではない（[DOMAIN.md](./DOMAIN.md)「Entity か DTO か」）。
 
 ## DTO
 

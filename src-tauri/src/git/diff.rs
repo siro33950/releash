@@ -82,7 +82,7 @@ fn find_merge_base_commit(repo: &Repository) -> Result<git2::Commit<'_>, GitErro
 
     let config = repo.config().ok();
     let base_branch_name =
-        match super::config::resolve_branch_base(repo, config.as_ref(), branch_name) {
+        match crate::git::base::resolve_branch_base(repo, config.as_ref(), branch_name) {
             Some(name) => name,
             None => return Ok(repo.find_commit(current_oid)?),
         };
