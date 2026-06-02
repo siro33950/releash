@@ -42,9 +42,19 @@ export function useRemoteWorktrees({
 		return subscribe((msg) => {
 			if (msg.type === "worktree_list_response") {
 				setBaseWorktrees(msg.payload.worktrees);
-				// 新しい一覧の PR は後追いの worktree_pr_status_sync で届くため、
-				// 古い PR を一旦クリアして PR が解消された worktree に残らないようにする。
-				setPrByPath({});
+				// 新しい一覧に存在しなくなった worktree の PR のみ整理する。
+				// 既存 PR は保持して後追いの worktree_pr_status_sync で差し替えるため、
+				// 一覧返却 → PR 同期の間にバッジが一時的に消えるちらつきを防ぐ。
+				const livePaths = new Set(msg.payload.worktrees.map((wt) => wt.path));
+				setPrByPath((prev) => {
+					const next: Record<string, WorktreePrEntry> = {};
+					for (const [path, entry] of Object.entries(prev)) {
+						if (livePaths.has(path)) {
+							next[path] = entry;
+						}
+					}
+					return next;
+				});
 				setLoading(false);
 			}
 			if (msg.type === "worktree_pr_status_sync") {
