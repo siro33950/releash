@@ -17,6 +17,7 @@ use crate::permission::PermissionMode;
 use crate::protocol::WorkflowStateView;
 use crate::session::OpenTabRegistry;
 use crate::session::{resolve_data_dir, SessionStore};
+use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::workflow::session_errors::redacted_workflow_tab_error;
 use std::path::Path;
 use std::sync::Arc;
@@ -645,6 +646,7 @@ fn validate_run_id(run_id: &str) -> Result<(), String> {
 /// 当該 caller から閉じる（spec [05] L104-108 観測経路の認可境界 / L182
 /// worktree-scoped Tauri 認証依拠）。
 async fn authorize_run_for_caller(
+    usecase: &Arc<RepositoryUsecase>,
     engine: &Arc<WorkflowEngine>,
     config: &Arc<AppConfig>,
     run_id: &str,
@@ -653,6 +655,7 @@ async fn authorize_run_for_caller(
         return Ok(None);
     };
     match super::worktree::canonicalize_managed_worktree_path(
+        usecase.clone(),
         config.clone(),
         summary.worktree_path.clone(),
     )
@@ -669,6 +672,7 @@ async fn authorize_run_for_caller(
 /// 認可境界）。`status` は optional な filter。
 #[tauri::command]
 pub async fn list_workflow_runs(
+    repository: tauri::State<'_, Arc<RepositoryUsecase>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     config: tauri::State<'_, Arc<AppConfig>>,
     status: Option<String>,
@@ -680,9 +684,12 @@ pub async fn list_workflow_runs(
         Some("terminal") => Some(RunStatusFilter::Terminal),
         Some(other) => return Err(format!("Invalid status filter: {other}")),
     };
-    let worktree_path =
-        super::worktree::canonicalize_managed_worktree_path(config.inner().clone(), worktree_path)
-            .await?;
+    let worktree_path = super::worktree::canonicalize_managed_worktree_path(
+        repository.inner().clone(),
+        config.inner().clone(),
+        worktree_path,
+    )
+    .await?;
     Ok(engine
         .list_runs(RunListFilter {
             status,
@@ -697,12 +704,13 @@ pub async fn list_workflow_runs(
 /// （spec [05] L104-108 / L182）。
 #[tauri::command]
 pub async fn get_workflow_run(
+    repository: tauri::State<'_, Arc<RepositoryUsecase>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     config: tauri::State<'_, Arc<AppConfig>>,
     run_id: String,
 ) -> Result<Option<WorkflowRunSummary>, String> {
     validate_run_id(&run_id)?;
-    authorize_run_for_caller(engine.inner(), config.inner(), &run_id).await
+    authorize_run_for_caller(repository.inner(), engine.inner(), config.inner(), &run_id).await
 }
 
 /// spec issues-1023: 永続化 event の timestamp は engine 内 `current_timestamp()`
@@ -720,27 +728,41 @@ pub use super::event_projection::WorkflowEventView;
 #[tauri::command]
 pub async fn get_workflow_run_log(
     app: tauri::AppHandle,
+    repository: tauri::State<'_, Arc<RepositoryUsecase>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     config: tauri::State<'_, Arc<AppConfig>>,
     worktree_path: String,
     run_id: String,
 ) -> Result<Option<Vec<WorkflowEventView>>, String> {
-    get_workflow_run_log_inner(&app, engine.inner(), config.inner(), worktree_path, run_id).await
+    get_workflow_run_log_inner(
+        &app,
+        repository.inner(),
+        engine.inner(),
+        config.inner(),
+        worktree_path,
+        run_id,
+    )
+    .await
 }
 
 /// [05] generic 入口: テストで MockRuntime AppHandle を渡せるように runtime を generic 化する
 /// 内部経路。`#[tauri::command]` 側は Wry に固定して本関数に委譲する。
 async fn get_workflow_run_log_inner<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    usecase: &Arc<RepositoryUsecase>,
     engine: &Arc<WorkflowEngine>,
     config: &Arc<AppConfig>,
     worktree_path: String,
     run_id: String,
 ) -> Result<Option<Vec<WorkflowEventView>>, String> {
     validate_run_id(&run_id)?;
-    let canonical =
-        super::worktree::canonicalize_managed_worktree_path(config.clone(), worktree_path).await?;
-    let summary = match authorize_run_for_caller(engine, config, &run_id).await? {
+    let canonical = super::worktree::canonicalize_managed_worktree_path(
+        usecase.clone(),
+        config.clone(),
+        worktree_path,
+    )
+    .await?;
+    let summary = match authorize_run_for_caller(usecase, engine, config, &run_id).await? {
         Some(s) => s,
         None => return Ok(None),
     };
@@ -774,27 +796,41 @@ async fn get_workflow_run_log_inner<R: tauri::Runtime>(
 #[tauri::command]
 pub async fn get_workflow_run_state(
     app: tauri::AppHandle,
+    repository: tauri::State<'_, Arc<RepositoryUsecase>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     config: tauri::State<'_, Arc<AppConfig>>,
     worktree_path: String,
     run_id: String,
 ) -> Result<Option<WorkflowStateView>, String> {
-    get_workflow_run_state_inner(&app, engine.inner(), config.inner(), worktree_path, run_id).await
+    get_workflow_run_state_inner(
+        &app,
+        repository.inner(),
+        engine.inner(),
+        config.inner(),
+        worktree_path,
+        run_id,
+    )
+    .await
 }
 
 /// [05] generic 入口: テストで MockRuntime AppHandle を渡せるように runtime を generic 化する
 /// 内部経路。`#[tauri::command]` 側は Wry に固定して本関数に委譲する。
 async fn get_workflow_run_state_inner<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    usecase: &Arc<RepositoryUsecase>,
     engine: &Arc<WorkflowEngine>,
     config: &Arc<AppConfig>,
     worktree_path: String,
     run_id: String,
 ) -> Result<Option<WorkflowStateView>, String> {
     validate_run_id(&run_id)?;
-    let canonical =
-        super::worktree::canonicalize_managed_worktree_path(config.clone(), worktree_path).await?;
-    let summary = match authorize_run_for_caller(engine, config, &run_id).await? {
+    let canonical = super::worktree::canonicalize_managed_worktree_path(
+        usecase.clone(),
+        config.clone(),
+        worktree_path,
+    )
+    .await?;
+    let summary = match authorize_run_for_caller(usecase, engine, config, &run_id).await? {
         Some(s) => s,
         None => return Ok(None),
     };
@@ -824,8 +860,10 @@ async fn get_workflow_run_state_inner<R: tauri::Runtime>(
 pub use super::event_projection::WorkflowStepDetailView;
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn get_workflow_step_detail(
     app: tauri::AppHandle,
+    repository: tauri::State<'_, Arc<RepositoryUsecase>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     config: tauri::State<'_, Arc<AppConfig>>,
     worktree_path: String,
@@ -835,6 +873,7 @@ pub async fn get_workflow_step_detail(
 ) -> Result<Option<WorkflowStepDetailView>, String> {
     get_workflow_step_detail_inner(
         &app,
+        repository.inner(),
         engine.inner(),
         config.inner(),
         worktree_path,
@@ -845,8 +884,10 @@ pub async fn get_workflow_step_detail(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn get_workflow_step_detail_inner<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    usecase: &Arc<RepositoryUsecase>,
     engine: &Arc<WorkflowEngine>,
     config: &Arc<AppConfig>,
     worktree_path: String,
@@ -855,9 +896,13 @@ async fn get_workflow_step_detail_inner<R: tauri::Runtime>(
     run_index: Option<u32>,
 ) -> Result<Option<WorkflowStepDetailView>, String> {
     validate_run_id(&run_id)?;
-    let canonical =
-        super::worktree::canonicalize_managed_worktree_path(config.clone(), worktree_path).await?;
-    let summary = match authorize_run_for_caller(engine, config, &run_id).await? {
+    let canonical = super::worktree::canonicalize_managed_worktree_path(
+        usecase.clone(),
+        config.clone(),
+        worktree_path,
+    )
+    .await?;
+    let summary = match authorize_run_for_caller(usecase, engine, config, &run_id).await? {
         Some(s) => s,
         None => return Ok(None),
     };
@@ -931,15 +976,20 @@ pub async fn delete_facet(kind: String, key: String) -> Result<(), String> {
 /// 認可外 worktree / 不存在 run のいずれも `Workflow run not found` 同表現で
 /// 拒否し、存在情報を漏らさない（spec [08] L169 / L182）。
 async fn authorize_output_run_access(
+    usecase: &Arc<RepositoryUsecase>,
     engine: &Arc<WorkflowEngine>,
     config: &Arc<AppConfig>,
     worktree_path: String,
     run_id: &str,
 ) -> Result<(), String> {
     validate_run_id(run_id)?;
-    let canonical =
-        super::worktree::canonicalize_managed_worktree_path(config.clone(), worktree_path).await?;
-    let summary = match authorize_run_for_caller(engine, config, run_id).await? {
+    let canonical = super::worktree::canonicalize_managed_worktree_path(
+        usecase.clone(),
+        config.clone(),
+        worktree_path,
+    )
+    .await?;
+    let summary = match authorize_run_for_caller(usecase, engine, config, run_id).await? {
         Some(s) => s,
         None => return Err(format!("Workflow run not found: {run_id}")),
     };
@@ -960,6 +1010,7 @@ async fn authorize_output_run_access(
 #[allow(clippy::too_many_arguments)]
 pub async fn workflow_submit_output(
     app: tauri::AppHandle,
+    repository: tauri::State<'_, Arc<RepositoryUsecase>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     session_store: tauri::State<'_, Arc<SessionStore>>,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
@@ -970,7 +1021,14 @@ pub async fn workflow_submit_output(
     contract: String,
     structured_output: serde_json::Value,
 ) -> Result<(), String> {
-    authorize_output_run_access(engine.inner(), config.inner(), worktree_path, &run_id).await?;
+    authorize_output_run_access(
+        repository.inner(),
+        engine.inner(),
+        config.inner(),
+        worktree_path,
+        &run_id,
+    )
+    .await?;
     let command = WorkflowCommand::SubmitOutput {
         run_id: run_id.clone(),
         step_name,
@@ -1001,8 +1059,10 @@ pub async fn workflow_submit_output(
 /// 「run_id と step_name を主語に CLI/API 経由で engine に提出できる」境界。
 /// caller 指定の contract 文字列を信用しない）。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn workflow_validate_output(
     app: tauri::AppHandle,
+    repository: tauri::State<'_, Arc<RepositoryUsecase>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     config: tauri::State<'_, Arc<AppConfig>>,
     worktree_path: String,
@@ -1010,7 +1070,14 @@ pub async fn workflow_validate_output(
     step_name: String,
     structured_output: serde_json::Value,
 ) -> Result<WorkflowValidateOutputResponse, String> {
-    authorize_output_run_access(engine.inner(), config.inner(), worktree_path, &run_id).await?;
+    authorize_output_run_access(
+        repository.inner(),
+        engine.inner(),
+        config.inner(),
+        worktree_path,
+        &run_id,
+    )
+    .await?;
     let data_dir = resolve_data_dir(&app).map_err(|e| e.to_string())?;
     let events = WorkflowEventLog::new(&data_dir)
         .read_log(&run_id)
@@ -1052,13 +1119,21 @@ pub async fn workflow_validate_output(
 #[tauri::command]
 pub async fn workflow_get_output(
     app: tauri::AppHandle,
+    repository: tauri::State<'_, Arc<RepositoryUsecase>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     config: tauri::State<'_, Arc<AppConfig>>,
     worktree_path: String,
     run_id: String,
     step_name: String,
 ) -> Result<WorkflowGetOutputResponse, String> {
-    authorize_output_run_access(engine.inner(), config.inner(), worktree_path, &run_id).await?;
+    authorize_output_run_access(
+        repository.inner(),
+        engine.inner(),
+        config.inner(),
+        worktree_path,
+        &run_id,
+    )
+    .await?;
     let data_dir = resolve_data_dir(&app).map_err(|e| e.to_string())?;
     let events = WorkflowEventLog::new(&data_dir)
         .read_log(&run_id)
@@ -1205,13 +1280,17 @@ pub async fn render_facet_preview(
 /// worktree_path から active な run_id を解決する（双方向 lookup の一方向）。
 #[tauri::command]
 pub async fn resolve_active_run_by_worktree(
+    repository: tauri::State<'_, Arc<RepositoryUsecase>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     config: tauri::State<'_, Arc<AppConfig>>,
     worktree_path: String,
 ) -> Result<Option<String>, String> {
-    let worktree_path =
-        super::worktree::canonicalize_managed_worktree_path(config.inner().clone(), worktree_path)
-            .await?;
+    let worktree_path = super::worktree::canonicalize_managed_worktree_path(
+        repository.inner().clone(),
+        config.inner().clone(),
+        worktree_path,
+    )
+    .await?;
     Ok(engine.run_id_for_worktree(&worktree_path).await)
 }
 
@@ -3141,6 +3220,10 @@ mod tests {
         let engine = make_adapter_engine();
         let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
         app.manage(engine.clone());
+        // workflow コマンドは repository usecase を State 注入で受け取る。
+        app.manage(Arc::new(
+            crate::adaptor::controller::wiring::build_repository_usecase(),
+        ));
         (app, engine, data_dir)
     }
 
@@ -3230,9 +3313,15 @@ mod tests {
 
         let engine_state = app.state::<Arc<WorkflowEngine>>();
         let config_state = app.state::<Arc<AppConfig>>();
-        let all = list_workflow_runs(engine_state, config_state, None, worktree_path.clone())
-            .await
-            .expect("list_workflow_runs must succeed");
+        let all = list_workflow_runs(
+            app.state::<Arc<RepositoryUsecase>>(),
+            engine_state,
+            config_state,
+            None,
+            worktree_path.clone(),
+        )
+        .await
+        .expect("list_workflow_runs must succeed");
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].status, RunStatus::Running);
         assert_eq!(all[1].status, RunStatus::Completed);
@@ -3240,6 +3329,7 @@ mod tests {
         let engine_state = app.state::<Arc<WorkflowEngine>>();
         let config_state = app.state::<Arc<AppConfig>>();
         let terminal = list_workflow_runs(
+            app.state::<Arc<RepositoryUsecase>>(),
             engine_state,
             config_state,
             Some("terminal".to_string()),
@@ -3253,6 +3343,7 @@ mod tests {
         let engine_state = app.state::<Arc<WorkflowEngine>>();
         let config_state = app.state::<Arc<AppConfig>>();
         let bad = list_workflow_runs(
+            app.state::<Arc<RepositoryUsecase>>(),
             engine_state,
             config_state,
             Some("garbage".to_string()),
@@ -3302,9 +3393,15 @@ mod tests {
         let trailing = format!("{canonical_str}/");
         let engine_state = app.state::<Arc<WorkflowEngine>>();
         let config_state = app.state::<Arc<AppConfig>>();
-        let runs = list_workflow_runs(engine_state, config_state, None, trailing)
-            .await
-            .expect("list_workflow_runs with trailing slash must canonicalize and match");
+        let runs = list_workflow_runs(
+            app.state::<Arc<RepositoryUsecase>>(),
+            engine_state,
+            config_state,
+            None,
+            trailing,
+        )
+        .await
+        .expect("list_workflow_runs with trailing slash must canonicalize and match");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].run_id, target_id);
         assert_eq!(runs[0].worktree_path, canonical_str);
@@ -3314,6 +3411,7 @@ mod tests {
         let config_state = app.state::<Arc<AppConfig>>();
         let outside = TempDir::new().unwrap();
         let bad = list_workflow_runs(
+            app.state::<Arc<RepositoryUsecase>>(),
             engine_state,
             config_state,
             None,
@@ -3349,6 +3447,7 @@ mod tests {
         let engine_state = app.state::<Arc<WorkflowEngine>>();
         let config_state = app.state::<Arc<AppConfig>>();
         let result = list_workflow_runs(
+            app.state::<Arc<RepositoryUsecase>>(),
             engine_state,
             config_state,
             None,
@@ -3377,9 +3476,14 @@ mod tests {
 
         let engine_state = app.state::<Arc<WorkflowEngine>>();
         let config_state = app.state::<Arc<AppConfig>>();
-        let found = get_workflow_run(engine_state, config_state, run_id.clone())
-            .await
-            .expect("get_workflow_run must succeed");
+        let found = get_workflow_run(
+            app.state::<Arc<RepositoryUsecase>>(),
+            engine_state,
+            config_state,
+            run_id.clone(),
+        )
+        .await
+        .expect("get_workflow_run must succeed");
         let found = found.expect("run must be found");
         assert_eq!(found.run_id, run_id);
         assert_eq!(found.worktree_path, worktree_path);
@@ -3387,14 +3491,25 @@ mod tests {
 
         let engine_state = app.state::<Arc<WorkflowEngine>>();
         let config_state = app.state::<Arc<AppConfig>>();
-        let missing = get_workflow_run(engine_state, config_state, read_only_test_uuid(99))
-            .await
-            .expect("get_workflow_run for unknown run_id must Ok(None)");
+        let missing = get_workflow_run(
+            app.state::<Arc<RepositoryUsecase>>(),
+            engine_state,
+            config_state,
+            read_only_test_uuid(99),
+        )
+        .await
+        .expect("get_workflow_run for unknown run_id must Ok(None)");
         assert!(missing.is_none());
 
         let engine_state = app.state::<Arc<WorkflowEngine>>();
         let config_state = app.state::<Arc<AppConfig>>();
-        let invalid = get_workflow_run(engine_state, config_state, "not-a-uuid".to_string()).await;
+        let invalid = get_workflow_run(
+            app.state::<Arc<RepositoryUsecase>>(),
+            engine_state,
+            config_state,
+            "not-a-uuid".to_string(),
+        )
+        .await;
         assert!(invalid.is_err(), "non-UUID run_id must be rejected");
     }
 
@@ -3435,9 +3550,14 @@ mod tests {
 
         let engine_state = app.state::<Arc<WorkflowEngine>>();
         let config_state = app.state::<Arc<AppConfig>>();
-        let summary = get_workflow_run(engine_state, config_state, run_id.clone())
-            .await
-            .expect("get_workflow_run must succeed");
+        let summary = get_workflow_run(
+            app.state::<Arc<RepositoryUsecase>>(),
+            engine_state,
+            config_state,
+            run_id.clone(),
+        )
+        .await
+        .expect("get_workflow_run must succeed");
         assert!(
             summary.is_none(),
             "unauthorized run summary must not be observable"
@@ -3447,6 +3567,7 @@ mod tests {
         let config_state = app.state::<Arc<AppConfig>>();
         let log = get_workflow_run_log_inner(
             app.handle(),
+            app.state::<Arc<RepositoryUsecase>>().inner(),
             &engine,
             &config_state,
             unauthorized_wt.to_string(),
@@ -3461,6 +3582,7 @@ mod tests {
         let config_state = app.state::<Arc<AppConfig>>();
         let state = get_workflow_run_state_inner(
             app.handle(),
+            app.state::<Arc<RepositoryUsecase>>().inner(),
             &engine,
             &config_state,
             unauthorized_wt.to_string(),
@@ -3506,6 +3628,7 @@ mod tests {
         let config_state = app.state::<Arc<AppConfig>>();
         let events = get_workflow_run_log_inner(
             app.handle(),
+            app.state::<Arc<RepositoryUsecase>>().inner(),
             &engine,
             &config_state,
             worktree_path.clone(),
@@ -3527,6 +3650,7 @@ mod tests {
         let config_state = app.state::<Arc<AppConfig>>();
         let missing = get_workflow_run_log_inner(
             app.handle(),
+            app.state::<Arc<RepositoryUsecase>>().inner(),
             &engine,
             &config_state,
             worktree_path.clone(),
@@ -3565,6 +3689,7 @@ mod tests {
         let config_state = app.state::<Arc<AppConfig>>();
         let view = get_workflow_run_state_inner(
             app.handle(),
+            app.state::<Arc<RepositoryUsecase>>().inner(),
             &engine,
             &config_state,
             worktree_path.clone(),
@@ -3583,6 +3708,7 @@ mod tests {
         let config_state = app.state::<Arc<AppConfig>>();
         let missing = get_workflow_run_state_inner(
             app.handle(),
+            app.state::<Arc<RepositoryUsecase>>().inner(),
             &engine,
             &config_state,
             worktree_path.clone(),
@@ -3658,6 +3784,7 @@ mod tests {
         // 現 worktree からの invoke は detail を返す
         let ok = get_workflow_step_detail_inner(
             app.handle(),
+            app.state::<Arc<RepositoryUsecase>>().inner(),
             &engine,
             &config_state,
             worktree_path.clone(),
@@ -3675,6 +3802,7 @@ mod tests {
         let outside = tempfile::TempDir::new().unwrap();
         let result = get_workflow_step_detail_inner(
             app.handle(),
+            app.state::<Arc<RepositoryUsecase>>().inner(),
             &engine,
             &config_state,
             outside.path().to_string_lossy().to_string(),

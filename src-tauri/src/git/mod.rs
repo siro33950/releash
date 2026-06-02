@@ -1,22 +1,14 @@
 pub mod error;
 pub mod types;
 
-pub(crate) mod branch;
+pub(crate) mod base;
 pub(crate) mod branch_diff;
 pub(crate) mod commands;
-pub(crate) mod config;
 pub(crate) mod diff;
 pub(crate) mod diff_tree;
 pub(crate) mod hunk;
 pub(crate) mod lang;
-pub(crate) mod log;
 pub(crate) mod stage;
-pub(crate) mod status;
-pub(crate) mod util;
-pub(crate) mod worktree;
-
-pub(crate) use branch::get_current_branch;
-pub(crate) use worktree::{get_main_repo_path, list_branches_with_status, list_worktrees};
 
 #[cfg(test)]
 pub(crate) mod test_helpers {

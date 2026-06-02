@@ -1,7 +1,7 @@
 mod auth;
 pub(crate) mod commands;
 pub(crate) mod gateway;
-mod handlers;
+pub(crate) mod handlers;
 mod http;
 mod rate_limit;
 mod routing;
@@ -78,6 +78,9 @@ pub(crate) struct WsServerState {
     tls_enabled: bool,
     pr_cache: Arc<PrCache>,
     backend_registry: Arc<crate::backends::AgentBackendRegistry>,
+    /// repository 責務の usecase（composition root の wiring で1回構築し State が Arc で
+    /// 保持・再利用する）。WS ハンドラはこれを介して worktree / branch を読み書きする。
+    repository_usecase: Arc<crate::usecase::repository_usecase::RepositoryUsecase>,
     /// テスト経路から SessionStore / data_dir を直接注入するためのバックドア。
     /// AppHandle を必要としない統合テスト（Spec issues-947 の AgentSessionStartRequest 正常系等）で
     /// `create_session_with_permission` を AppHandle 無しで走らせる。
@@ -101,6 +104,7 @@ impl WsServerState {
         tls_enabled: bool,
         pr_cache: Arc<PrCache>,
         backend_registry: Arc<crate::backends::AgentBackendRegistry>,
+        repository_usecase: Arc<crate::usecase::repository_usecase::RepositoryUsecase>,
     ) -> Self {
         Self {
             active_connection: Arc::new(Mutex::new(false)),
@@ -115,6 +119,7 @@ impl WsServerState {
             tls_enabled,
             pr_cache,
             backend_registry,
+            repository_usecase,
             #[cfg(test)]
             test_session_deps: None,
             #[cfg(test)]
@@ -199,6 +204,24 @@ impl WsServerState {
         self.repo_paths.read().clone()
     }
 
+    pub(crate) fn repository_usecase(
+        &self,
+    ) -> &Arc<crate::usecase::repository_usecase::RepositoryUsecase> {
+        &self.repository_usecase
+    }
+
+    pub(crate) fn broadcaster(&self) -> &Arc<WsBroadcaster> {
+        &self.broadcaster
+    }
+
+    pub(crate) fn pty_manager(&self) -> Option<&Arc<PtyManager>> {
+        self.pty_manager.as_ref()
+    }
+
+    pub(crate) fn pr_cache(&self) -> &Arc<PrCache> {
+        &self.pr_cache
+    }
+
     pub(crate) fn get_terminal_startup_command(&self) -> String {
         self.terminal_startup_command.read().clone()
     }
@@ -261,6 +284,7 @@ mod tests {
             false,
             Arc::new(crate::git_host::PrCache::new()),
             Arc::new(crate::backends::AgentBackendRegistry::new()),
+            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
         );
         assert_eq!(
             state.get_repo_paths(),

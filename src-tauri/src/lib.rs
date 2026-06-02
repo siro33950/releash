@@ -1,3 +1,4 @@
+mod adaptor;
 mod agent_commands;
 mod agent_message_dispatcher;
 mod agent_sdk;
@@ -12,16 +13,17 @@ mod file_mention;
 mod focus_tracker;
 mod git;
 mod git_host;
+mod infrastructure;
 mod mcp;
 mod menu;
 mod native_drop;
 mod notion;
+mod other;
 mod path_aliases;
 mod permission;
 mod protocol;
 mod pty;
 mod qr_code;
-mod repo_registry;
 mod review_comments;
 mod sentry_integration;
 mod session;
@@ -176,7 +178,9 @@ pub fn run() {
         .manage(Arc::new(git_host::PrCache::new()))
         .manage(Arc::new(git_host::IssueCache::new()))
         .manage(mcp::McpServerHandle::default())
-        .manage::<repo_registry::SharedRepoPaths>(Arc::new(parking_lot::RwLock::new(Vec::new())))
+        .manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
+            parking_lot::RwLock::new(Vec::new()),
+        ))
         .setup(|app| {
             // OneShotPtyManager shares the same PtyManager instance
             let pty_mgr = app.state::<Arc<pty::PtyManager>>();
@@ -203,8 +207,11 @@ pub fn run() {
             app.manage(app_config.clone());
 
             // Initialize shared repo_paths from config
+            let shared_repo_paths = app
+                .state::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>()
+                .inner()
+                .clone();
             {
-                let shared_repo_paths = app.state::<repo_registry::SharedRepoPaths>();
                 if let Ok(cfg) = app_config.get_config() {
                     let paths: Vec<String> = cfg
                         .app
@@ -215,6 +222,38 @@ pub fn run() {
                         .collect();
                     *shared_repo_paths.write() = paths;
                 }
+            }
+
+            // repository ドメインの DI 配線（起動時に AppState を組み立てて manage）。
+            // git ベースの usecase / query service はステートレス、repo_paths は
+            // SharedRepoPaths + AppConfig を共有する。repository usecase は 1 度だけ
+            // 組み立て、AppState・単体 State（workflow コマンド注入用）・watcher・
+            // workflow リゾルバへ Arc 共有する（各エントリは注入で受け取る）。
+            let repository_usecase =
+                Arc::new(adaptor::controller::wiring::build_repository_usecase());
+            app.manage(repository_usecase.clone());
+            {
+                use adaptor::controller::state::AppState;
+                use adaptor::gateway::repository::repo_paths::RepoPathsGateway;
+                use usecase::repo_paths_usecase::RepoPathsUsecase;
+
+                let repo_paths_gateway =
+                    RepoPathsGateway::new(shared_repo_paths.clone(), app_config.clone());
+                // 変更通知（repo-paths-changed）の送信 infra を NotifyGateway として注入。
+                let repo_paths_notifier = Arc::new(
+                    adaptor::gateway::repository::notify::RepoPathsNotifyGateway::new(
+                        app.handle().clone(),
+                    ),
+                );
+                let repo_paths_usecase = Arc::new(RepoPathsUsecase::new(
+                    Arc::new(repo_paths_gateway),
+                    repo_paths_notifier,
+                ));
+
+                app.manage(AppState {
+                    repository_usecase: repository_usecase.clone(),
+                    repo_paths_usecase,
+                });
             }
 
             let focus_tracker =
@@ -262,6 +301,7 @@ pub fn run() {
                 Arc::new(workflow::resolver_adapters::DefaultWorkflowDefinitionResolver),
                 Arc::new(
                     workflow::resolver_adapters::AppConfigManagedWorktreeResolver::new(
+                        repository_usecase.clone(),
                         app_config.clone(),
                     ),
                 ),
@@ -443,35 +483,35 @@ pub fn run() {
             git::commands::generate_group_patch,
             git::commands::get_language_from_path,
             git::commands::get_relative_path,
-            // Git: ブランチ
-            git::commands::list_branches,
-            git::commands::get_current_branch,
-            git::commands::get_default_branch,
-            git::commands::git_create_branch,
-            git::commands::delete_branch,
-            // Git: ステータス
-            git::commands::get_git_status,
-            git::commands::get_status_diff_stats,
-            git::commands::get_git_log,
+            // Git: ブランチ（repository ドメイン）
+            adaptor::controller::command::repository::branch::list_branches,
+            adaptor::controller::command::repository::branch::get_current_branch,
+            adaptor::controller::command::repository::branch::get_default_branch,
+            adaptor::controller::command::repository::branch::git_create_branch,
+            adaptor::controller::command::repository::branch::delete_branch,
+            // Git: ステータス（repository ドメイン）
+            adaptor::controller::command::repository::status::get_git_status,
+            adaptor::controller::command::repository::status::get_status_diff_stats,
+            adaptor::controller::command::repository::log::get_git_log,
             // Git: ステージング
             git::commands::git_stage,
             git::commands::git_unstage,
             git::commands::git_stage_hunk,
             git::commands::git_unstage_hunk,
-            // Git: ワークツリー
-            git::commands::get_main_repo_path,
-            git::commands::get_worktree_dirty_count,
-            git::commands::list_worktrees,
-            git::commands::list_branches_with_status,
-            git::commands::create_worktree,
-            git::commands::remove_worktree,
-            // Git: 設定・ユーティリティ
-            git::commands::get_cwd,
-            git::commands::get_repo_git_dir,
-            git::commands::get_releash_base,
-            git::commands::set_releash_base,
-            git::commands::get_branch_base,
-            git::commands::set_branch_base,
+            // Git: ワークツリー（repository ドメイン）
+            adaptor::controller::command::repository::worktree::get_main_repo_path,
+            adaptor::controller::command::repository::worktree::get_worktree_dirty_count,
+            adaptor::controller::command::repository::worktree::list_worktrees,
+            adaptor::controller::command::repository::worktree::list_branches_with_status,
+            adaptor::controller::command::repository::worktree::create_worktree,
+            adaptor::controller::command::repository::worktree::remove_worktree,
+            // Git: 設定・ユーティリティ（repository ドメイン）
+            adaptor::controller::command::repository::util::get_cwd,
+            adaptor::controller::command::repository::util::get_repo_git_dir,
+            adaptor::controller::command::repository::git_config::get_releash_base,
+            adaptor::controller::command::repository::git_config::set_releash_base,
+            adaptor::controller::command::repository::git_config::get_branch_base,
+            adaptor::controller::command::repository::git_config::set_branch_base,
             // Git Host
             git_host::check_pr_provider_status,
             git_host::fetch_pr_status,
@@ -529,10 +569,10 @@ pub fn run() {
             ws_server::commands::get_server_status,
             ws_server::commands::get_server_info,
             ws_server::commands::update_terminal_startup_command,
-            // Repo registry
-            repo_registry::get_repo_paths,
-            repo_registry::add_repo_path,
-            repo_registry::remove_repo_path,
+            // Repo paths（repository ドメイン）
+            adaptor::controller::command::repository::repo_paths::get_repo_paths,
+            adaptor::controller::command::repository::repo_paths::add_repo_path,
+            adaptor::controller::command::repository::repo_paths::remove_repo_path,
             // MCP Server
             mcp::start_mcp_server,
             mcp::stop_mcp_server,

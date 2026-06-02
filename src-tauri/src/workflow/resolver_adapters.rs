@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::config::AppConfig;
+use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::workflow::resolver::{
     ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
     WorkflowDefinitionResolverError,
@@ -38,12 +39,13 @@ impl WorkflowDefinitionResolver for DefaultWorkflowDefinitionResolver {
 }
 
 pub(crate) struct AppConfigManagedWorktreeResolver {
+    usecase: Arc<RepositoryUsecase>,
     config: Arc<AppConfig>,
 }
 
 impl AppConfigManagedWorktreeResolver {
-    pub(crate) fn new(config: Arc<AppConfig>) -> Self {
-        Self { config }
+    pub(crate) fn new(usecase: Arc<RepositoryUsecase>, config: Arc<AppConfig>) -> Self {
+        Self { usecase, config }
     }
 }
 
@@ -51,6 +53,7 @@ impl AppConfigManagedWorktreeResolver {
 impl ManagedWorktreeResolver for AppConfigManagedWorktreeResolver {
     async fn resolve(&self, worktree_path: String) -> Result<String, ManagedWorktreeResolverError> {
         crate::workflow::worktree::canonicalize_managed_worktree_path(
+            Arc::clone(&self.usecase),
             Arc::clone(&self.config),
             worktree_path,
         )

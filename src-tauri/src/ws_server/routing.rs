@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use crate::adaptor::controller::handler::repository as repository_handler;
 use crate::protocol::*;
 
 use super::handlers::*;
@@ -20,10 +21,38 @@ pub(super) async fn route_message(
         }
         WsMessage::PtyOutputRequest(req) => handle_pty_output_request(req, state),
         WsMessage::PtyKillRequest(req) => handle_pty_kill_request(req, state).await,
-        WsMessage::BranchInfoRequest(_) => handle_branch_info_request(selected_worktree).await,
-        WsMessage::WorktreeListRequest(_) => handle_worktree_list_request(state).await,
+        WsMessage::BranchInfoRequest(_) => {
+            repository_handler::branch::handle_branch_info_request(
+                state.repository_usecase(),
+                selected_worktree,
+            )
+            .await
+        }
+        WsMessage::WorktreeListRequest(_) => {
+            // worktree 一覧（repository ローカル情報のみ）を先に返し、PR ステータスは
+            // 後追いで別メッセージ（WorktreePrStatusSync）として配信する（2 段階化）。
+            repository_handler::worktree::push_worktree_pr_status(
+                state.get_repo_paths(),
+                Arc::clone(state.pr_cache()),
+                Arc::clone(state.repository_usecase()),
+                Arc::clone(state.broadcaster()),
+            );
+            repository_handler::worktree::handle_worktree_list_request(
+                state.get_repo_paths(),
+                Arc::clone(state.repository_usecase()),
+            )
+            .await
+        }
         WsMessage::WorktreeSelectRequest(req) => {
-            handle_worktree_select_request(req, state, selected_worktree).await
+            repository_handler::worktree::handle_worktree_select_request(
+                req,
+                state.get_repo_paths(),
+                Arc::clone(state.repository_usecase()),
+                state.broadcaster(),
+                state.pty_manager(),
+                selected_worktree,
+            )
+            .await
         }
         WsMessage::BackendListRequest(_) => handle_backend_list_request(state),
         WsMessage::AgentSessionStartRequest(req) => {
@@ -89,6 +118,7 @@ mod tests {
             false,
             Arc::new(crate::git_host::PrCache::new()),
             Arc::new(crate::backends::AgentBackendRegistry::new()),
+            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
         )
     }
 
@@ -258,6 +288,7 @@ mod tests {
             false,
             Arc::new(crate::git_host::PrCache::new()),
             Arc::new(registry),
+            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
         )
     }
 

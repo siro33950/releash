@@ -223,7 +223,8 @@ fn build_mcp_state(app: &tauri::AppHandle) -> Result<McpSharedState, String> {
     let pty_manager = app.state::<Arc<crate::pty::PtyManager>>();
     let app_config = app.state::<Arc<crate::config::AppConfig>>();
     let broadcaster = app.state::<Arc<crate::ws_bridge::WsBroadcaster>>();
-    let shared_repo_paths = app.state::<crate::repo_registry::SharedRepoPaths>();
+    let shared_repo_paths =
+        app.state::<crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths>();
 
     let app_data_dir = app.path().app_data_dir().ok();
 
@@ -233,6 +234,9 @@ fn build_mcp_state(app: &tauri::AppHandle) -> Result<McpSharedState, String> {
         app_config: Arc::clone(app_config.inner()),
         broadcaster: Arc::clone(&broadcaster),
         app_data_dir,
+        repository_usecase: Arc::new(
+            crate::adaptor::controller::wiring::build_repository_usecase(),
+        ),
     })
 }
 

@@ -6,10 +6,10 @@ import {
 	RefreshCw,
 } from "lucide-react";
 import { useMemo } from "react";
-import type { WorktreeEntryMsg } from "@/types/protocol";
+import type { RemoteWorktree } from "@/remote/hooks/useRemoteWorktrees";
 
 interface RemoteDashboardProps {
-	worktrees: WorktreeEntryMsg[];
+	worktrees: RemoteWorktree[];
 	loading: boolean;
 	onRefresh: () => void;
 	onSelect?: (worktreePath: string) => void;
@@ -23,7 +23,7 @@ function WorktreeCard({
 	wt,
 	onSelect,
 }: {
-	wt: WorktreeEntryMsg;
+	wt: RemoteWorktree;
 	onSelect?: (path: string) => void;
 }) {
 	return (
@@ -67,7 +67,7 @@ export function RemoteDashboard({
 	onSelect,
 }: RemoteDashboardProps) {
 	const grouped = useMemo(() => {
-		const map = new Map<string, WorktreeEntryMsg[]>();
+		const map = new Map<string, RemoteWorktree[]>();
 		for (const wt of worktrees) {
 			const key = wt.repo_path ?? "";
 			const list = map.get(key);

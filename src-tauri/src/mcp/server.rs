@@ -110,11 +110,11 @@ impl ReleashMcpServer {
             return Err(McpError::invalid_params("No repositories configured", None));
         }
 
+        let usecase = &self.state.repository_usecase;
         for repo_path in repo_paths.iter() {
-            let worktrees =
-                crate::git::worktree::list_worktrees(repo_path.clone()).map_err(|e| {
-                    McpError::internal_error(format!("Failed to list worktrees: {e}"), None)
-                })?;
+            let worktrees = usecase.list_worktrees(repo_path).map_err(|e| {
+                McpError::internal_error(format!("Failed to list worktrees: {e}"), None)
+            })?;
             if worktrees.iter().any(|w| w.path == requested) {
                 return Ok(requested.to_string());
             }
@@ -140,10 +140,11 @@ impl ReleashMcpServer {
             return Err(McpError::invalid_params("No repositories configured", None));
         }
 
+        let usecase = Arc::clone(&self.state.repository_usecase);
         let entries = tokio::task::spawn_blocking(move || {
             let mut all = Vec::new();
             for repo_path in &repo_paths {
-                if let Ok(entries) = crate::git::worktree::list_worktrees(repo_path.clone()) {
+                if let Ok(entries) = usecase.list_worktrees(repo_path) {
                     all.extend(entries);
                 }
             }
@@ -194,12 +195,13 @@ impl ReleashMcpServer {
         let branch = params.branch.clone();
         let base = params.base_branch.clone();
 
+        let usecase = Arc::clone(&self.state.repository_usecase);
         let entry = tokio::task::spawn_blocking(move || {
-            crate::git::worktree::create_worktree(repo, wt_path, branch, true, base)
+            usecase.create_worktree(&repo, &wt_path, &branch, true, base.as_deref())
         })
         .await
         .map_err(WorktreeError::from)?
-        .map_err(WorktreeError::from)?;
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let json = serde_json::to_string_pretty(&entry).map_err(WorktreeError::from)?;
 
@@ -285,6 +287,9 @@ mod tests {
             app_config,
             broadcaster,
             app_data_dir: None,
+            repository_usecase: Arc::new(
+                crate::adaptor::controller::wiring::build_repository_usecase(),
+            ),
         };
         ReleashMcpServer::new(state)
     }

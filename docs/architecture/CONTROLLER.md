@@ -4,7 +4,7 @@
 
 - **外部入力の受け口**として薄く保つ
 - 引数のシリアライズ／デシリアライズと型変換のみ
-- 業務ロジックを書かない（usecase を呼ぶだけ）
+- 業務ロジックを書かない（Usecase を呼ぶだけ。QueryService や Repository を controller から直接呼ばない）
 - 2系統の入口を分離：
   - `controller/command/` — Tauri コマンド（`#[tauri::command]`）
   - `controller/handler/` — WebSocket ハンドラ
@@ -34,14 +34,13 @@ use std::sync::Arc;
 
 pub struct AppState {
     pub repository_usecase: Arc<RepositoryUsecase>,
-    pub repository_query: Arc<RepositoryQueryService>,
     pub code_usecase: Arc<CodeUsecase>,
-    pub code_query: Arc<CodeQueryService>,
     // ...
 }
 ```
 
-- `Arc<T>` または `Arc<dyn Trait>` で各ユースケースを保持
+- `Arc<T>` または `Arc<dyn Trait>` で各 Usecase を保持する
+- **QueryService は AppState に直接持たせない。** 読み取りクエリサービスは各 Usecase が内部に保持する協力者であり、`lib.rs`（composition root）で Usecase に注入する。controller は QueryService を保持・直呼びしない
 - `lib.rs` で組み立てて `builder.manage(AppState { ... })` 一発
 
 ## Tauri コマンド
@@ -57,7 +56,9 @@ pub async fn list_branches(
     state: State<'_, AppState>,
     repo_path: String,
 ) -> Result<Vec<BranchListItemDto>, AppError> {
-    state.repository_query.list_branches(Path::new(&repo_path)).await
+    // controller は Usecase のみを呼ぶ。読み取りも Usecase 経由で行い、
+    // Usecase が内部の QueryService に委譲する。
+    state.repository_usecase.list_branches(Path::new(&repo_path)).await
         .map_err(AppError::from)
 }
 ```
@@ -117,7 +118,7 @@ pub async fn handle_list_branches(
     state: Arc<AppState>,
     req: ListBranchesRequest,
 ) -> Result<ListBranchesResponse, AppError> {
-    let branches = state.repository_query
+    let branches = state.repository_usecase
         .list_branches(Path::new(&req.repo_path)).await?;
     Ok(ListBranchesResponse { branches })
 }

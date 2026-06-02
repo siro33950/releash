@@ -5,10 +5,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::adaptor::controller::state::AppState;
 use crate::protocol::{BranchCardMsg, BranchListSync, WsMessage};
+use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::ws_bridge::WsBroadcaster;
 
 struct GitWatchPaths {
@@ -19,8 +22,12 @@ struct GitWatchPaths {
     worktrees_dir: PathBuf,
 }
 
-fn resolve_git_watch_paths(repo_path: &str) -> Result<GitWatchPaths, String> {
-    let main_repo = crate::git::get_main_repo_path(repo_path.to_string())
+fn resolve_git_watch_paths(
+    usecase: &RepositoryUsecase,
+    repo_path: &str,
+) -> Result<GitWatchPaths, String> {
+    let main_repo = usecase
+        .get_main_repo_path(repo_path)
         .map_err(|e| format!("Failed to resolve main repo: {e}"))?;
     let git_dir = git2::Repository::open(&main_repo)
         .map_err(|e| format!("Failed to open repo: {e}"))?
@@ -159,8 +166,10 @@ fn classify_git_dir_events(events: &[notify_debouncer_mini::DebouncedEvent]) -> 
     (has_branch_change, has_index_change)
 }
 
-fn build_branch_list_sync(repo_path: &str) -> Option<WsMessage> {
-    let branches = crate::git::list_branches_with_status(repo_path.to_string()).ok()?;
+fn build_branch_list_sync(usecase: &RepositoryUsecase, repo_path: &str) -> Option<WsMessage> {
+    // ブランチ一覧取得後の GC（現存しないブランチの releash-base 掃除）は
+    // usecase の list_branches_with_status が内包する。
+    let branches = usecase.list_branches_with_status(repo_path).ok()?;
     let branch_msgs: Vec<BranchCardMsg> = branches.into_iter().map(BranchCardMsg::from).collect();
     Some(WsMessage::BranchListSync(BranchListSync {
         branches: branch_msgs,
@@ -174,7 +183,12 @@ pub fn start_git_dir_watching(
     repo_path: String,
 ) -> Result<u64, String> {
     let watcher_id = generate_watcher_id();
-    let paths = resolve_git_watch_paths(&repo_path)?;
+
+    // composition root（lib.rs）で組み立てた repository usecase を AppState から
+    // 受け取って再利用する（controller 配線を watcher へ漏らさない）。
+    let usecase = app.state::<AppState>().repository_usecase.clone();
+
+    let paths = resolve_git_watch_paths(&usecase, &repo_path)?;
 
     if !paths.refs_heads.exists() {
         return Err(format!(
@@ -186,6 +200,7 @@ pub fn start_git_dir_watching(
     let app_clone = app.clone();
     let main_repo_clone = paths.main_repo.clone();
     let repo_path_clone = repo_path;
+    let usecase_for_events: Arc<RepositoryUsecase> = usecase;
 
     let debouncer = new_debouncer(
         Duration::from_millis(500),
@@ -203,7 +218,9 @@ pub fn start_git_dir_watching(
             let (has_branch_change, has_index_change) = classify_git_dir_events(&events);
 
             if has_branch_change {
-                if let Some(sync_msg) = build_branch_list_sync(&main_repo_clone) {
+                if let Some(sync_msg) =
+                    build_branch_list_sync(&usecase_for_events, &main_repo_clone)
+                {
                     let _ = app_clone.emit("branch-list-sync", ());
                     if let Some(ws) = app_clone.try_state::<std::sync::Arc<WsBroadcaster>>() {
                         ws.try_send(sync_msg);
@@ -271,13 +288,17 @@ mod tests {
     use notify_debouncer_mini::DebouncedEvent;
     use std::path::PathBuf;
 
+    fn test_usecase() -> RepositoryUsecase {
+        crate::adaptor::controller::wiring::build_repository_usecase()
+    }
+
     #[test]
     fn test_resolve_git_watch_paths_main_repo() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
 
         let repo_path = dir.path().to_str().unwrap();
-        let paths = resolve_git_watch_paths(repo_path).unwrap();
+        let paths = resolve_git_watch_paths(&test_usecase(), repo_path).unwrap();
 
         assert_eq!(
             PathBuf::from(&paths.main_repo).canonicalize().unwrap(),
@@ -309,7 +330,7 @@ mod tests {
         let (wt_name, _wt_path, _wt_dir) = create_worktree(&repo);
 
         let repo_path = dir.path().to_str().unwrap();
-        let paths = resolve_git_watch_paths(repo_path).unwrap();
+        let paths = resolve_git_watch_paths(&test_usecase(), repo_path).unwrap();
 
         assert!(paths.worktrees_dir.exists());
         assert!(paths.worktrees_dir.join(&wt_name).exists());
@@ -324,7 +345,8 @@ mod tests {
         let (_wt_name, wt_path, _wt_dir) = create_worktree(&repo);
 
         let main_repo_path = dir.path().to_str().unwrap();
-        let paths_from_wt = resolve_git_watch_paths(wt_path.to_str().unwrap()).unwrap();
+        let paths_from_wt =
+            resolve_git_watch_paths(&test_usecase(), wt_path.to_str().unwrap()).unwrap();
 
         assert_eq!(
             PathBuf::from(&paths_from_wt.main_repo)
@@ -337,7 +359,7 @@ mod tests {
 
     #[test]
     fn test_resolve_git_watch_paths_invalid() {
-        let result = resolve_git_watch_paths("/nonexistent/path");
+        let result = resolve_git_watch_paths(&test_usecase(), "/nonexistent/path");
         assert!(result.is_err());
     }
 

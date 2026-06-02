@@ -199,7 +199,7 @@ pub(crate) fn find_base_commit<'a>(
         let branch_name = head.shorthand()?;
 
         let config = repo.config().ok();
-        super::config::resolve_branch_base(repo, config.as_ref(), branch_name)
+        crate::git::base::resolve_branch_base(repo, config.as_ref(), branch_name)
     };
 
     let base_branch_name = match base_branch_name {

@@ -86,13 +86,21 @@ export interface WorktreeEntryMsg {
 	dirty_count: number;
 	base_branch: string | null;
 	repo_path?: string;
-	has_pr?: boolean;
-	pr_number?: number;
-	pr_url?: string;
 }
 
 export interface WorktreeListResponse {
 	worktrees: WorktreeEntryMsg[];
+}
+
+// PR ステータスは worktree 一覧の返却後に後追い配信される（2 段階化）。
+export interface WorktreePrEntry {
+	path: string;
+	pr_number: number;
+	pr_url: string;
+}
+
+export interface WorktreePrStatusSync {
+	entries: WorktreePrEntry[];
 }
 
 export interface WorktreeSelectRequest {
@@ -113,9 +121,6 @@ interface BranchCardMsg {
 	worktree_path: string | null;
 	dirty_count: number;
 	is_merged: boolean;
-	has_pr?: boolean;
-	pr_number?: number;
-	pr_url?: string;
 	ahead: number;
 	behind: number;
 	has_upstream: boolean;
@@ -419,6 +424,7 @@ export type WsMessage =
 	| { type: "worktree_list_response"; payload: WorktreeListResponse }
 	| { type: "worktree_select_request"; payload: WorktreeSelectRequest }
 	| { type: "worktree_select_response"; payload: WorktreeSelectResponse }
+	| { type: "worktree_pr_status_sync"; payload: WorktreePrStatusSync }
 	| { type: "branch_info_request"; payload: BranchInfoRequest }
 	| { type: "branch_info_response"; payload: BranchInfoResponse }
 	| { type: "branch_list_sync"; payload: BranchListSync }

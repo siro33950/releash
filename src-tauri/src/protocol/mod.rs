@@ -71,6 +71,8 @@ pub enum WsMessage {
     WorktreeSelectRequest(WorktreeSelectRequest),
     #[serde(rename = "worktree_select_response")]
     WorktreeSelectResponse(WorktreeSelectResponse),
+    #[serde(rename = "worktree_pr_status_sync")]
+    WorktreePrStatusSync(WorktreePrStatusSync),
 
     // ブランチリスト同期
     #[serde(rename = "branch_list_sync")]
@@ -316,9 +318,6 @@ mod tests {
                     dirty_count: 0,
                     base_branch: None,
                     repo_path: Some("/repo".to_string()),
-                    has_pr: false,
-                    pr_number: None,
-                    pr_url: None,
                 }],
             }),
             WsMessage::WorktreeSelectRequest(WorktreeSelectRequest {
@@ -336,9 +335,6 @@ mod tests {
                     worktree_path: Some("/repo-worktrees/feature-test".to_string()),
                     dirty_count: 2,
                     is_merged: false,
-                    has_pr: true,
-                    pr_number: Some(42),
-                    pr_url: Some("https://github.com/owner/repo/pull/42".to_string()),
                     ahead: 3,
                     behind: 1,
                     has_upstream: true,
