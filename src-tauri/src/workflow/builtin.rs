@@ -5,6 +5,7 @@ use super::schema::{Summary, Workflow};
 use super::validation::{self, ValidationError};
 
 const BUILTIN_SPEC_AUTHORING: &str = include_str!("builtin/spec-authoring.yml");
+const BUILTIN_SPEC_IMPLEMENT: &str = include_str!("builtin/spec-implement.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
@@ -21,6 +22,11 @@ const BUILTINS: &[BuiltinEntry] = &[
         filename: "spec-authoring.yml",
         content: BUILTIN_SPEC_AUTHORING,
         description: "Spec authoring workflow (interactive requirements → behavior → design → consistency finalize)",
+    },
+    BuiltinEntry {
+        filename: "spec-implement.yml",
+        content: BUILTIN_SPEC_IMPLEMENT,
+        description: "Spec を元に実装し、軽量レビューループ（最大 2 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。",
     },
 ];
 
@@ -206,6 +212,26 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::Instruction,
         key: "implement",
         content: include_str!("builtin_facets/instructions/implement.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "review-spec",
+        content: include_str!("builtin_facets/instructions/review-spec.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "review-design",
+        content: include_str!("builtin_facets/instructions/review-design.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "fix",
+        content: include_str!("builtin_facets/instructions/fix.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "report",
+        content: include_str!("builtin_facets/instructions/report.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
