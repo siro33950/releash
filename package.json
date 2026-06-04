@@ -5,6 +5,7 @@
 	"license": "(MIT OR Apache-2.0)",
 	"type": "module",
 	"scripts": {
+		"predev": "pnpm build:bridge",
 		"dev": "concurrently --kill-others \"vite build --watch --config vite.config.remote.ts\" \"vite\"",
 		"build": "tsc && vite build && pnpm build:remote && pnpm build:bridge",
 		"build:bridge": "node scripts/build-bridge.mjs",

@@ -1,6 +1,10 @@
-{{project_name}} プロジェクトの Spec ディレクトリを作成し、`requirements.md` を作成または更新する。
+{{project_name}} プロジェクトの Spec ディレクトリを作成し、`requirements.md` をユーザーとの対話で作成または更新する。
 
-タスク: {{task}}
+## 入力
+
+解決したい課題は次の通り。この課題を起点として、ユーザーと対話しながら要件を具体化する。
+
+{{task}}
 
 ## 目的
 
@@ -17,22 +21,42 @@ docs/specs/<spec-id>/
 
 本ステップでは `requirements.md` だけを作成・更新する。`behavior.md` と `design.md` は作成しない。
 
+## 進め方
+
+### 走査順（セクション）
+
+`requirements.md` のセクション順は次の通り。この順で上から消化する。重要度や難易度で順番を入れ替えない。
+
+Goal → Background → Users / Actors → Requirements → Constraints → Scope → Non-goals
+
+各セクションには複数の論点が含まれうる（例: Requirements は複数の要求項目、Scope は複数の対象範囲）。1 セクションあたり 1 質問で済ませず、そのセクション内のすべての論点を消化してから次のセクションに進む。「このセクションは他に確認すべき点はありますか」とユーザーに尋ねて、無いと確認できてから次へ移る。
+
+### 最初のターン
+
+1. Spec ディレクトリを決定・作成する。
+2. `requirements.md` に空のセクション見出しだけの雛形を用意する。
+3. 入力本文を読み、Goal セクションについて、入力からの解釈と確認質問を 1 つだけ提示する。
+
+### 2 ターン目以降
+
+1. ユーザーの回答を該当セクションに追記・更新する。
+2. 同じセクション内にまだ消化していない論点が残っていれば、その中の 1 つを質問する。残っていなければ、ユーザーに「このセクションは他に確認すべき点はありますか」と尋ねる。無いと確認できたら、次のセクションの最初の論点を質問する。
+
+### 完了条件
+
+全セクションが埋まったら、ユーザーに最終確認を促す。承認をもって本ステップを完了とする。
+
 ## Spec ディレクトリ決定
 
-1. issue 番号が分かる場合: `docs/specs/issues-XXX`
-2. PJT 番号が分かる場合: `docs/specs/PJT-XXXX`
-3. どちらも分からない場合: `docs/specs/workflow-{execution_id}`
+`docs/specs/{{project_name}}` を使う。
 
 ## requirements.md に書くこと
 
 ```markdown
 # Requirements
 
-## Type
-新機能 / 改善 / バグ修正 / リファクタリング
-
 ## Goal
-何を実現するか。完了時にどうなっていれば成功か。
+何を実現するか。達成したい状態と、達成したと判定する条件をセットで書く。
 
 ## Background
 なぜこの変更が必要か。どんな課題を解決するか。
@@ -40,23 +64,17 @@ docs/specs/<spec-id>/
 ## Users / Actors
 誰が関わるか。人間ユーザー、Agent、外部 system など。
 
-## Scope
-今回含めること。
-
-## Non-goals
-今回含めないこと。
-
 ## Requirements
 満たすべき要求。
 
 ## Constraints
 守るべき制約。技術実装ではなく要求上の制約だけを書く。
 
-## Success Criteria
-完了と判断する条件。
+## Scope
+Requirements のうち今回含めること。
 
-## Open Questions
-未決定事項。未決定事項が残る場合は具体的な質問として残す。
+## Non-goals
+Requirements のうち今回含めないこと。
 ```
 
 ## 書かないこと

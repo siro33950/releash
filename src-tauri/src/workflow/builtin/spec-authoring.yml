@@ -1,0 +1,45 @@
+name: spec-authoring
+description: Spec authoring workflow (interactive requirements → behavior → design → consistency finalize)
+builtin: true
+
+nodes:
+  - name: write_requirements
+    type: approval
+    model: claude-opus-4-8
+    permission: edit
+    instruction: write-requirements
+    policy: planning
+    output_contract: spec-directory
+
+  - name: write_behavior
+    type: approval
+    model: claude-opus-4-8
+    permission: edit
+    instruction: write-behavior
+    policy: planning
+    input_contracts:
+      - spec-directory
+    pass_output_from:
+      - write_requirements
+
+  - name: write_design
+    type: approval
+    model: claude-opus-4-8
+    permission: edit
+    instruction: write-design
+    policy: planning
+    input_contracts:
+      - spec-directory
+    pass_output_from:
+      - write_requirements
+
+  - name: spec_finalize
+    type: approval
+    model: claude-opus-4-8
+    permission: edit
+    instruction: spec-finalize
+    policy: planning
+    input_contracts:
+      - spec-directory
+    pass_output_from:
+      - write_requirements
