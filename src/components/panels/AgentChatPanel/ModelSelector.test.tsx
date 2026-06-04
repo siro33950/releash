@@ -6,18 +6,34 @@ import { ModelSelector } from "./ModelSelector";
 const models = [{ value: "claude-4" }, { value: "claude-3.5" }];
 
 describe("ModelSelector", () => {
-	it("shows fallback label when no model is selected", () => {
+	it("shows the current model id as the trigger label", () => {
 		render(
 			<ModelSelector
 				models={models}
-				currentModelId={null}
+				currentModelId="claude-3.5"
 				onModelChange={vi.fn()}
 				disabled={false}
 			/>,
 		);
 		expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent(
-			"Unset",
+			"claude-3.5",
 		);
+	});
+
+	it("does not show an Unset option in the dropdown", async () => {
+		const user = userEvent.setup();
+		render(
+			<ModelSelector
+				models={models}
+				currentModelId="claude-4"
+				onModelChange={vi.fn()}
+				disabled={false}
+			/>,
+		);
+
+		await user.click(screen.getByTestId("model-selector-trigger"));
+		expect(screen.queryByText("Unset")).toBeNull();
+		expect(screen.queryByTestId("model-selector-clear")).toBeNull();
 	});
 
 	it("shows selected model value when a model is selected", () => {
@@ -40,7 +56,7 @@ describe("ModelSelector", () => {
 		render(
 			<ModelSelector
 				models={models}
-				currentModelId={null}
+				currentModelId="claude-3.5"
 				onModelChange={onModelChange}
 				disabled={false}
 			/>,
@@ -51,11 +67,31 @@ describe("ModelSelector", () => {
 		expect(onModelChange).toHaveBeenCalledWith("claude-4");
 	});
 
+	it("never calls onModelChange with null (no unset path)", async () => {
+		const user = userEvent.setup();
+		const onModelChange = vi.fn();
+		render(
+			<ModelSelector
+				models={models}
+				currentModelId="claude-4"
+				onModelChange={onModelChange}
+				disabled={false}
+			/>,
+		);
+
+		await user.click(screen.getByTestId("model-selector-trigger"));
+		await user.click(screen.getByText("claude-3.5"));
+		expect(onModelChange).toHaveBeenCalledWith("claude-3.5");
+		for (const call of onModelChange.mock.calls) {
+			expect(call[0]).not.toBeNull();
+		}
+	});
+
 	it("enables trigger when models list is non-empty", () => {
 		render(
 			<ModelSelector
 				models={models}
-				currentModelId={null}
+				currentModelId="claude-4"
 				onModelChange={vi.fn()}
 				disabled={false}
 			/>,
@@ -80,43 +116,11 @@ describe("ModelSelector", () => {
 		expect(screen.queryByText("Auto")).toBeNull();
 	});
 
-	it("calls onModelChange with null when the unset option is selected", async () => {
-		const user = userEvent.setup();
-		const onModelChange = vi.fn();
-		render(
-			<ModelSelector
-				models={models}
-				currentModelId="claude-4"
-				onModelChange={onModelChange}
-				disabled={false}
-			/>,
-		);
-
-		await user.click(screen.getByTestId("model-selector-trigger"));
-		await user.click(screen.getByTestId("model-selector-clear"));
-		expect(onModelChange).toHaveBeenCalledWith(null);
-	});
-
-	it("does not show the unset option when no model is currently selected", async () => {
-		const user = userEvent.setup();
-		render(
-			<ModelSelector
-				models={models}
-				currentModelId={null}
-				onModelChange={vi.fn()}
-				disabled={false}
-			/>,
-		);
-
-		await user.click(screen.getByTestId("model-selector-trigger"));
-		expect(screen.queryByTestId("model-selector-clear")).toBeNull();
-	});
-
 	it("disables trigger when disabled prop is true", () => {
 		render(
 			<ModelSelector
 				models={models}
-				currentModelId={null}
+				currentModelId="claude-4"
 				onModelChange={vi.fn()}
 				disabled={true}
 			/>,
@@ -128,7 +132,7 @@ describe("ModelSelector", () => {
 		render(
 			<ModelSelector
 				models={[]}
-				currentModelId={null}
+				currentModelId=""
 				onModelChange={vi.fn()}
 				disabled={false}
 			/>,
@@ -142,7 +146,7 @@ describe("ModelSelector", () => {
 		render(
 			<ModelSelector
 				models={[]}
-				currentModelId={null}
+				currentModelId=""
 				onModelChange={vi.fn()}
 				disabled={false}
 			/>,

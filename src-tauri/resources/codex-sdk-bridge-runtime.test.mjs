@@ -136,7 +136,7 @@ describe("CodexBridgeRuntime", () => {
 			approvalPolicy: "never",
 			sandboxMode: "workspace-write",
 		});
-		// Codex のモデル一覧は起動時 CLI 同期で config.toml に反映するため、
+		// Codex のモデル一覧は Rust 側の固定定数で完全固定するため、
 		// bridge からは supported_models を emit しない。
 		expect(
 			emitted.some((m) => m.type === "supported_models"),

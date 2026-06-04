@@ -309,7 +309,10 @@ mod tests {
                     .iter()
                     .map(|m| m.value.as_str())
                     .collect();
-                assert_eq!(values, vec!["opus-4", "haiku"]);
+                // モデル一覧は config ではなく registry の fixed_models() が供給元。
+                let expected: Vec<&str> =
+                    crate::domain::agent_session::CLAUDE_FIXED_MODELS.to_vec();
+                assert_eq!(values, expected);
             }
             _ => panic!("expected BackendListResponse"),
         }

@@ -79,7 +79,7 @@ nodes:
 
   - name: fix_policy
     type: agent
-    model: default
+    model: claude-opus-4-8
     permission: ask
     instruction: fix-policy-auto
     policy: coding
@@ -92,7 +92,7 @@ nodes:
 
   - name: fix
     type: agent
-    model: default
+    model: claude-opus-4-8
     permission: edit
     instruction: implement-fix
     policy: coding
@@ -112,7 +112,7 @@ nodes:
 
   - name: review_summary
     type: agent
-    model: default
+    model: claude-opus-4-8
     permission: ask
     instruction: review-summary
     policy: review

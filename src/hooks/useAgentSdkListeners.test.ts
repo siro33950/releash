@@ -138,7 +138,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		}
 	});
 
-	it("registers listeners for agent-sdk-message, agent-session-state-changed, agent-streaming-updated, agent-pending-message-consumed, agent-permission-mode-changed, agent-models-updated, agent-backend-models-updated", () => {
+	it("registers listeners for agent-sdk-message, agent-session-state-changed, agent-streaming-updated, agent-pending-message-consumed, agent-permission-mode-changed, agent-models-updated", () => {
 		listenResolvers = [];
 		const refs = makeRefs();
 
@@ -151,7 +151,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		expect(eventNames).toContain("agent-pending-message-consumed");
 		expect(eventNames).toContain("agent-permission-mode-changed");
 		expect(eventNames).toContain("agent-models-updated");
-		expect(eventNames).toContain("agent-backend-models-updated");
+		expect(eventNames).not.toContain("agent-backend-models-updated");
 		expect(eventNames).not.toContain("agent-streaming-started");
 		expect(eventNames).not.toContain("agent-query-completed");
 	});
@@ -939,7 +939,10 @@ describe("agent-models-updated event", () => {
 		});
 	});
 
-	it("dispatches SET_SESSION_MODEL with null when no model is selected", () => {
+	it("dispatches SET_SESSION_MODEL with the non-null default model from Rust", () => {
+		// 契約: agent-models-updated の selected_model は常に非 null（Rust が既存
+		// セッションの None をデフォルトに解決してから送る）。null を SET_SESSION_MODEL
+		// に流す経路は存在しない。
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -951,100 +954,21 @@ describe("agent-models-updated event", () => {
 		cb?.({
 			payload: {
 				chat_session_id: "session-1",
-				available_models: [],
-				selected_model: null,
+				available_models: [{ value: "claude-opus-4-8" }],
+				selected_model: "claude-opus-4-8",
 			},
 		});
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "SET_SESSION_MODEL",
 			sessionId: "session-1",
-			modelId: null,
+			modelId: "claude-opus-4-8",
 		});
-	});
-});
-
-describe("agent-backend-models-updated event", () => {
-	it("dispatches SET_BACKEND_MODELS for backend-wide model updates", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-backend-models-updated");
-		expect(cb).toBeDefined();
-
-		const models = [{ value: "gpt-5.5" }, { value: "o3" }];
-
-		cb?.({
-			payload: {
-				backend_id: "codex",
-				available_models: models,
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "SET_BACKEND_MODELS",
-			backendId: "codex",
-			models,
-		});
-		// session 単位の payload と異なり、SET_SESSION_MODEL は dispatch しない。
-		const sessionModelCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) =>
-				(call[0] as { type: string }).type === "SET_SESSION_MODEL",
+		const sessionModelCalls = (refs.dispatch.mock.calls as unknown[][]).filter(
+			(call) => (call[0] as { type: string }).type === "SET_SESSION_MODEL",
 		);
-		expect(sessionModelCalls).toHaveLength(0);
-	});
-
-	it("keeps backend-wide updates even when another active session backend is selected", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		setViewable(refs, "session-1");
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-backend-models-updated");
-		expect(cb).toBeDefined();
-
-		cb?.({
-			payload: {
-				backend_id: "codex",
-				available_models: [{ value: "gpt-5.5" }],
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "SET_BACKEND_MODELS",
-			backendId: "codex",
-			models: [{ value: "gpt-5.5" }],
-		});
-	});
-
-	it("keeps backend-wide updates when no active session is set", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		clearViewable(refs);
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-backend-models-updated");
-		cb?.({
-			payload: {
-				backend_id: "codex",
-				available_models: [{ value: "gpt-5.5" }],
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "SET_BACKEND_MODELS",
-			backendId: "codex",
-			models: [{ value: "gpt-5.5" }],
-		});
+		for (const call of sessionModelCalls) {
+			expect((call[0] as { modelId: unknown }).modelId).not.toBeNull();
+		}
 	});
 });

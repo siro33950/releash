@@ -8,7 +8,7 @@ nodes:
     parallel_children:
       - name: review-acceptance-opus
         type: agent
-        model: default
+        model: claude-opus-4-8
         permission: edit
         policy: multi-agent-reviewer
         knowledge: releash-thread-cli
@@ -22,7 +22,7 @@ nodes:
         instruction: mar-review-acceptance
       - name: review-structure-opus
         type: agent
-        model: default
+        model: claude-opus-4-8
         permission: edit
         policy: multi-agent-reviewer
         knowledge: releash-thread-cli
@@ -36,7 +36,7 @@ nodes:
         instruction: mar-review-structure
       - name: review-quality-opus
         type: agent
-        model: default
+        model: claude-opus-4-8
         permission: edit
         policy: multi-agent-reviewer
         knowledge: releash-thread-cli
@@ -50,7 +50,7 @@ nodes:
         instruction: mar-review-quality
       - name: review-test-opus
         type: agent
-        model: default
+        model: claude-opus-4-8
         permission: edit
         policy: multi-agent-reviewer
         knowledge: releash-thread-cli
@@ -64,7 +64,7 @@ nodes:
         instruction: mar-review-test
       - name: review-security-opus
         type: agent
-        model: default
+        model: claude-opus-4-8
         permission: edit
         policy: multi-agent-reviewer
         knowledge: releash-thread-cli
@@ -78,7 +78,7 @@ nodes:
         instruction: mar-review-security
       - name: review-architecture-opus
         type: agent
-        model: default
+        model: claude-opus-4-8
         permission: edit
         policy: multi-agent-reviewer
         knowledge: releash-thread-cli
@@ -104,7 +104,7 @@ nodes:
     parallel_children:
       - name: verify-opus
         type: agent
-        model: default
+        model: claude-opus-4-8
         permission: edit
         policy: multi-agent-reviewer
         knowledge: releash-thread-cli
@@ -127,7 +127,7 @@ nodes:
   # Resolve). All actions require explicit human approval.
   - name: review-summary
     type: approval
-    model: default
+    model: claude-opus-4-8
     permission: edit
     policy: multi-agent-summary
     knowledge: releash-thread-cli

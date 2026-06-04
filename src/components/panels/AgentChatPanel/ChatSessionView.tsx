@@ -228,7 +228,7 @@ export interface ChatSessionViewProps {
 	error: string | null;
 	permissionMode: PermissionMode;
 	availableModels: ModelInfo[];
-	selectedModel: string | null;
+	selectedModel: string;
 	backends: BackendInfo[];
 	selectedBackendId: string | null;
 	canChangeBackend: boolean;
@@ -241,7 +241,7 @@ export interface ChatSessionViewProps {
 	) => Promise<void>;
 	onInterrupt: () => void;
 	onPermissionModeChange: (mode: PermissionMode) => void;
-	onModelChange: (modelId: string | null) => void;
+	onModelChange: (modelId: string) => void;
 	onBackendChange: (backendId: string | null) => void;
 	onRespondPermission: (
 		requestId: string,

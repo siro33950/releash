@@ -91,8 +91,6 @@ pub enum WsMessage {
     BackendListRequest(BackendListRequest),
     #[serde(rename = "backend_list_response")]
     BackendListResponse(BackendListResponse),
-    #[serde(rename = "backend_models_updated")]
-    BackendModelsUpdated(BackendModelsUpdated),
 
     // エージェントセッション
     #[serde(rename = "agent_session_start_request")]
@@ -401,12 +399,6 @@ mod tests {
                 }],
                 default_id: Some("claude".to_string()),
             }),
-            WsMessage::BackendModelsUpdated(BackendModelsUpdated {
-                backend_id: "claude".to_string(),
-                available_models: vec![ModelInfoMsg {
-                    value: "opus-4".to_string(),
-                }],
-            }),
             WsMessage::AgentSessionStartRequest(AgentSessionStartRequest {
                 worktree_path: "/repo".to_string(),
                 backend_id: Some("claude".to_string()),
@@ -443,7 +435,7 @@ mod tests {
             }),
             WsMessage::AgentModelSetRequest(AgentModelSetRequest {
                 session_id: "sess-1".to_string(),
-                model_id: Some("gpt-5.4".to_string()),
+                model_id: "gpt-5.4".to_string(),
             }),
             WsMessage::AgentModelSetResponse(AgentModelSetResponse {
                 success: true,

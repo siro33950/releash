@@ -6,7 +6,6 @@ import {
 	RefreshCw,
 	Send,
 	Square,
-	X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { BackendInfoMsg, WsMessage } from "@/types/protocol";
@@ -199,6 +198,15 @@ export function RemoteAgentPanel({
 		null;
 	const selectedBackendModels = selectedBackend?.available_models ?? [];
 
+	// モデル未選択(null/Unset)状態は廃止。session 起動後にモデル候補があれば
+	// デフォルト = 先頭モデルを選択状態にしておき、null を送る経路を残さない。
+	useEffect(() => {
+		if (!startedSession) return;
+		if (modelId.length > 0) return;
+		const first = selectedBackendModels[0]?.value;
+		if (first) setModelId(first);
+	}, [startedSession, modelId, selectedBackendModels]);
+
 	const startSession = () => {
 		if (status !== "connected" || !selectedBackend) return;
 		setStarting(true);
@@ -252,17 +260,6 @@ export function RemoteAgentPanel({
 			payload: {
 				session_id: startedSession.sessionId,
 				model_id: modelId,
-			},
-		});
-	};
-
-	const clearModel = () => {
-		if (!startedSession) return;
-		send({
-			type: "agent_model_set_request",
-			payload: {
-				session_id: startedSession.sessionId,
-				model_id: null,
 			},
 		});
 	};
@@ -389,14 +386,6 @@ export function RemoteAgentPanel({
 							className="px-3 h-9 rounded border border-border text-sm"
 						>
 							Set
-						</button>
-						<button
-							type="button"
-							onClick={clearModel}
-							className="inline-flex items-center justify-center h-9 w-9 rounded border border-border"
-							aria-label="Clear model"
-						>
-							<X className="size-4" />
 						</button>
 					</div>
 				)}

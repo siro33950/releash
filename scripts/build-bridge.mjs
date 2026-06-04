@@ -5,10 +5,6 @@ const outputDir = "src-tauri/generated/bridges";
 
 const bridges = [
 	["claude-sdk-bridge.mjs", "claude-sdk-bridge.bundled.mjs"],
-	[
-		"claude-sdk-bridge-list-models.mjs",
-		"claude-sdk-bridge-list-models.bundled.mjs",
-	],
 	["codex-sdk-bridge.mjs", "codex-sdk-bridge.bundled.mjs"],
 ];
 

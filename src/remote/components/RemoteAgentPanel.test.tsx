@@ -425,9 +425,19 @@ describe("RemoteAgentPanel", () => {
 		expect(screen.queryByRole("option", { name: "gpt-5.4" })).toBeNull();
 	});
 
-	it("sends null model_id only through the clear model action", async () => {
+	it("never sends a null model_id and offers no clear-model control", async () => {
 		const user = userEvent.setup();
-		const { send, emit } = renderPanel();
+		const { send, emit } = renderPanel({
+			backends: [
+				{ id: "claude", name: "Claude", available: true, available_models: [] },
+				{
+					id: "codex",
+					name: "Codex",
+					available: true,
+					available_models: [{ value: "gpt-5.5" }],
+				},
+			],
+		});
 		emit({
 			type: "agent_session_start_response",
 			payload: {
@@ -437,12 +447,19 @@ describe("RemoteAgentPanel", () => {
 			},
 		});
 
-		await user.click(screen.getByLabelText("Clear model"));
+		// Unset 相当の clear-model UI は廃止済み。
+		expect(screen.queryByLabelText("Clear model")).toBeNull();
 
-		expect(send).toHaveBeenCalledWith({
-			type: "agent_model_set_request",
-			payload: { session_id: "session-1", model_id: null },
-		});
+		await user.click(screen.getByText("Set"));
+
+		const modelSetCalls = send.mock.calls.filter(
+			(call) => (call[0] as WsMessage).type === "agent_model_set_request",
+		);
+		expect(modelSetCalls.length).toBeGreaterThan(0);
+		for (const call of modelSetCalls) {
+			const payload = (call[0] as { payload: { model_id: unknown } }).payload;
+			expect(payload.model_id).not.toBeNull();
+		}
 	});
 
 	it("sends permission mode updates for an active remote session", async () => {

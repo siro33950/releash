@@ -52,17 +52,6 @@ export function useRemoteBackends({
 							: null)
 					);
 				});
-			} else if (msg.type === "backend_models_updated") {
-				setBackends((current) =>
-					current.map((backend) =>
-						backend.id === msg.payload.backend_id
-							? {
-									...backend,
-									available_models: msg.payload.available_models,
-								}
-							: backend,
-					),
-				);
 			}
 		});
 	}, [subscribe]);

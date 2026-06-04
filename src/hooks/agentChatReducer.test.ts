@@ -617,40 +617,6 @@ describe("agentChatReducer", () => {
 		});
 	});
 
-	describe("SET_BACKEND_MODELS", () => {
-		it("stores backend models and updates visible models for current backend", () => {
-			const models = [{ value: "gpt-5.5" }];
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				selectedBackendId: "codex",
-			};
-			const next = reducer(state, {
-				type: "SET_BACKEND_MODELS",
-				backendId: "codex",
-				models,
-			});
-			expect(next.availableModels).toBe(models);
-			expect(next.availableModelsByBackend.codex).toBe(models);
-		});
-
-		it("stores backend models without changing visible models for another backend", () => {
-			const visible = [{ value: "claude-4" }];
-			const codexModels = [{ value: "gpt-5.5" }];
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				selectedBackendId: "claude",
-				availableModels: visible,
-			};
-			const next = reducer(state, {
-				type: "SET_BACKEND_MODELS",
-				backendId: "codex",
-				models: codexModels,
-			});
-			expect(next.availableModels).toBe(visible);
-			expect(next.availableModelsByBackend.codex).toBe(codexModels);
-		});
-	});
-
 	describe("SET_SESSION_MODEL", () => {
 		it("sets selected model for a session", () => {
 			const next = reducer(INITIAL_STATE, {
@@ -661,7 +627,7 @@ describe("agentChatReducer", () => {
 			expect(next.sessionModels.s1).toBe("claude-4");
 		});
 
-		it("clears model selection with null (SDK default)", () => {
+		it("overwrites an existing model with another model (no null/unset path)", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				sessionModels: { s1: "claude-4" },
@@ -669,9 +635,9 @@ describe("agentChatReducer", () => {
 			const next = reducer(state, {
 				type: "SET_SESSION_MODEL",
 				sessionId: "s1",
-				modelId: null,
+				modelId: "claude-3.5",
 			});
-			expect(next.sessionModels.s1).toBeNull();
+			expect(next.sessionModels.s1).toBe("claude-3.5");
 		});
 
 		it("stores models for multiple sessions independently", () => {
@@ -703,7 +669,7 @@ describe("agentChatReducer", () => {
 						tool_use_id: "toolu_001",
 					},
 				},
-				sessionModels: { s1: "claude-4", s2: null },
+				sessionModels: { s1: "claude-4", s2: "claude-3.5" },
 			};
 			const next = reducer(state, {
 				type: "CLEANUP_SESSION",
@@ -711,7 +677,7 @@ describe("agentChatReducer", () => {
 			});
 			expect(next.turnPhases).toEqual({ s2: "idle" });
 			expect(next.pendingPermissions).toEqual({});
-			expect(next.sessionModels).toEqual({ s2: null });
+			expect(next.sessionModels).toEqual({ s2: "claude-3.5" });
 		});
 
 		it("is a no-op when session ID does not exist in any Record", () => {

@@ -100,7 +100,7 @@ export async function listSessions(
 export interface GetSessionResponse {
 	session: ChatSession;
 	turnPhase: TurnPhase;
-	selectedModel: string | null;
+	selectedModel: string;
 	availableModels: ModelInfo[];
 }
 
@@ -115,7 +115,7 @@ interface RawGetSessionResponse {
 	agentSessionId?: string | null;
 	permissionMode: string;
 	backendId?: string | null;
-	selectedModel?: string | null;
+	selectedModel: string;
 	availableModels?: ModelInfo[];
 	workflowStepSession?: boolean;
 	turnPhase: TurnPhase;
@@ -138,7 +138,7 @@ function convertRawGetSessionResponse(
 			workflowStepSession: raw.workflowStepSession,
 		}),
 		turnPhase: raw.turnPhase,
-		selectedModel: raw.selectedModel ?? null,
+		selectedModel: raw.selectedModel,
 		availableModels: raw.availableModels ?? [],
 	};
 }

@@ -91,7 +91,7 @@ export interface UseAgentChatResult {
 	) => void;
 	availableModels: ModelInfo[];
 	selectedModel: string | null;
-	setModel: (sessionId: string, modelId: string | null) => void;
+	setModel: (sessionId: string, modelId: string) => void;
 	backends: BackendInfo[];
 	selectedBackendId: string | null;
 	setBackend: (sessionId: string | null, backendId: string | null) => void;
@@ -131,7 +131,7 @@ function dispatchSessionMeta(
 	response: {
 		session: { permissionMode?: PermissionMode; backendId?: string | null };
 		turnPhase: TurnPhase;
-		selectedModel: string | null;
+		selectedModel: string;
 		availableModels: ModelInfo[];
 	},
 ) {
@@ -574,7 +574,7 @@ export function useAgentChat(
 		[],
 	);
 
-	const setModel = useCallback((sessionId: string, modelId: string | null) => {
+	const setModel = useCallback((sessionId: string, modelId: string) => {
 		if (!sessionId) return;
 		invoke("set_agent_model", {
 			chatSessionId: sessionId,

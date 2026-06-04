@@ -14701,6 +14701,11 @@ mod tests {
 #[cfg(test)]
 mod dispatch_boundary_tests {
     use super::*;
+    use crate::backends::{
+        AgentBackend, AgentBackendRegistry, AgentMessage as BackendAgentMessage,
+        PermissionResponse as BackendPermissionResponse, SessionConfig as BackendSessionConfig,
+        SessionHandle as BackendSessionHandle,
+    };
     use crate::workflow::command::{WorkflowCommand, WorkflowCommandResult};
     use crate::workflow::command_input::MAX_APPROVAL_COMMENT_CHARS;
     use crate::workflow::event::{ApprovalDecisionRecord, WorkflowEvent};
@@ -14708,8 +14713,60 @@ mod dispatch_boundary_tests {
     use crate::workflow::run::{RunStatus, TerminalRunStatus, TriggerSource, WorkflowRun};
     use crate::workflow::schema::{NodeDefinition, NodeType, TransitionRule, Workflow};
     use crate::workflow::state::WorkflowExecutionState;
+    use async_trait::async_trait;
     use tauri::Manager;
     use tempfile::TempDir;
+
+    /// 実バックエンドと同じ供給経路（`fixed_models()`）でモデル一覧を返す
+    /// dispatch テスト用 backend。claude / codex の固定モデル定数をそのまま供給し、
+    /// builtin workflow が使う `claude-opus-4-8` / `gpt-5.5` を production と同一経路で
+    /// 解決できるようにする（dispatch フロー検証の本来意図を維持）。
+    struct DispatchMockBackend {
+        backend_id: String,
+        fixed_models: Vec<String>,
+    }
+
+    #[async_trait]
+    impl AgentBackend for DispatchMockBackend {
+        fn id(&self) -> &str {
+            &self.backend_id
+        }
+        fn name(&self) -> &str {
+            "Mock"
+        }
+        fn fixed_models(&self) -> Option<Vec<String>> {
+            Some(self.fixed_models.clone())
+        }
+        async fn start_session(
+            &self,
+            cfg: BackendSessionConfig,
+        ) -> Result<BackendSessionHandle, String> {
+            Ok(BackendSessionHandle {
+                chat_session_id: cfg.chat_session_id,
+                backend_id: self.backend_id.clone(),
+            })
+        }
+        async fn send_message(
+            &self,
+            _s: &BackendSessionHandle,
+            _m: BackendAgentMessage,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn interrupt(&self, _s: &BackendSessionHandle) -> Result<(), String> {
+            Ok(())
+        }
+        async fn respond_permission(
+            &self,
+            _s: &BackendSessionHandle,
+            _r: BackendPermissionResponse,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn close_session(&self, _s: &BackendSessionHandle) -> Result<(), String> {
+            Ok(())
+        }
+    }
 
     fn dispatch_data_dir(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> std::path::PathBuf {
         crate::session::resolve_data_dir(app).expect("mock app data dir must resolve")
@@ -14795,13 +14852,32 @@ mod dispatch_boundary_tests {
     fn make_dispatch_app() -> DispatchTestApp {
         let mut config = crate::config::ReleashConfig::default();
         config.app.last_repo_paths = Vec::new();
-        config.agents.codex.models = vec!["default".to_string(), "gpt-5.5".to_string()];
         config.agents.default = Some("codex".to_string());
         let app_config = Arc::new(crate::config::AppConfig::new(
             config,
             TempDir::new().unwrap().path().join("config.toml"),
         ));
-        let registry = Arc::new(crate::backends::build_registry(Arc::clone(&app_config)));
+        // 実 backend と同じ供給経路（fixed_models()）で claude / codex の固定モデルを
+        // 供給する mock backend を登録する。builtin workflow が使う claude-opus-4-8 /
+        // gpt-5.5 が production と同一経路で解決され、dispatch フロー検証を維持できる。
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(DispatchMockBackend {
+            backend_id: "claude".to_string(),
+            fixed_models: crate::domain::agent_session::CLAUDE_FIXED_MODELS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        }));
+        registry.register(Arc::new(DispatchMockBackend {
+            backend_id: "codex".to_string(),
+            fixed_models: crate::domain::agent_session::CODEX_FIXED_MODELS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        }));
+        registry.set_default(Some("codex".to_string()));
+        registry.set_config(Arc::clone(&app_config));
+        let registry = Arc::new(registry);
         let data_dir =
             std::env::temp_dir().join(format!("releash-dispatch-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).unwrap();

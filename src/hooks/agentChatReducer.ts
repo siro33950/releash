@@ -29,7 +29,7 @@ export interface AgentChatState {
 	pendingPermissions: Record<string, PermissionRequest>;
 	availableModels: ModelInfo[];
 	availableModelsByBackend: Record<string, ModelInfo[]>;
-	sessionModels: Record<string, string | null>;
+	sessionModels: Record<string, string>;
 	backends: BackendInfo[];
 	selectedBackendId: string | null;
 }
@@ -71,11 +71,10 @@ export type AgentChatAction =
 			models: ModelInfo[];
 			backendId?: string | null;
 	  }
-	| { type: "SET_BACKEND_MODELS"; backendId: string; models: ModelInfo[] }
 	| {
 			type: "SET_SESSION_MODEL";
 			sessionId: string;
-			modelId: string | null;
+			modelId: string;
 	  }
 	| { type: "CLEANUP_SESSION"; sessionId: string }
 	| { type: "SET_BACKENDS"; backends: BackendInfo[]; defaultId: string | null }
@@ -259,8 +258,6 @@ export function reducer(
 			if (!backendId) return { ...state, availableModels: action.models };
 			return withBackendModels(state, backendId, action.models);
 		}
-		case "SET_BACKEND_MODELS":
-			return withBackendModels(state, action.backendId, action.models);
 		case "SET_SESSION_MODEL":
 			return {
 				...state,

@@ -76,8 +76,8 @@ interface MessageInputProps {
 	mode: PermissionMode;
 	onModeChange: (mode: PermissionMode) => void;
 	models: ModelInfo[];
-	currentModelId: string | null;
-	onModelChange: (modelId: string | null) => void;
+	currentModelId: string;
+	onModelChange: (modelId: string) => void;
 	backends: BackendInfo[];
 	currentBackendId: string | null;
 	onBackendChange: (backendId: string | null) => void;

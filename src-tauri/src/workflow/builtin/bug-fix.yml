@@ -9,7 +9,7 @@ nodes:
   # 1. 原因調査（agent、ask）
   - name: bug_investigation
     type: agent
-    model: default
+    model: claude-opus-4-8
     permission: ask
     instruction: bug-investigation
     policy: planning
@@ -18,7 +18,7 @@ nodes:
   # 2. 原因・修正方針の承認（approval）
   - name: bug_fix_policy
     type: approval
-    model: default
+    model: claude-opus-4-8
     permission: ask
     instruction: bug-fix-policy
     policy: planning
@@ -34,7 +34,7 @@ nodes:
   # 3. 初回修正（agent、edit）
   - name: bug_fix
     type: agent
-    model: default
+    model: claude-opus-4-8
     permission: edit
     instruction: bug-apply-fix
     policy: coding
@@ -93,7 +93,7 @@ nodes:
   # 6. 追加修正方針確認（approval）
   - name: bug_fix_loop_policy
     type: approval
-    model: default
+    model: claude-opus-4-8
     permission: ask
     instruction: bug-fix-loop-policy
     policy: coding
@@ -112,7 +112,7 @@ nodes:
   # 7. 追加修正（agent、edit、cycle_guard）
   - name: bug_fix_loop
     type: agent
-    model: default
+    model: claude-opus-4-8
     permission: edit
     instruction: bug-fix-loop
     policy: coding
@@ -134,7 +134,7 @@ nodes:
   # 8. 最終承認（approval）
   - name: bug_final_approval
     type: approval
-    model: default
+    model: claude-opus-4-8
     permission: ask
     instruction: bug-final-approval
     policy: coding

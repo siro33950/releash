@@ -1,6 +1,5 @@
 mod auth;
 pub(crate) mod commands;
-pub(crate) mod gateway;
 pub(crate) mod handlers;
 mod http;
 mod rate_limit;

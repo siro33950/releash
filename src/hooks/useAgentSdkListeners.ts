@@ -61,12 +61,7 @@ interface PendingMessageConsumed {
 interface ModelsUpdated {
 	chat_session_id: string;
 	available_models: ModelInfo[];
-	selected_model: string | null;
-}
-
-interface BackendModelsUpdated {
-	backend_id: string;
-	available_models: ModelInfo[];
+	selected_model: string;
 }
 
 /**
@@ -431,32 +426,4 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			unlisten?.();
 		};
 	}, [dispatch, viewableRegistry]);
-
-	// Listen to agent-backend-models-updated (backend 全体向け候補更新通知)
-	// 全 backend の候補を保持し、表示対象 backend_id と一致する場合のみ現在候補にも反映する。
-	// session 単位の payload とは event 名を分離しており、選択モデルへの dispatch は行わない。
-	useEffect(() => {
-		let unlisten: UnlistenFn | null = null;
-		let cancelled = false;
-
-		listen<BackendModelsUpdated>("agent-backend-models-updated", (event) => {
-			const { backend_id, available_models } = event.payload;
-			dispatch({
-				type: "SET_BACKEND_MODELS",
-				backendId: backend_id,
-				models: available_models,
-			});
-		}).then((fn) => {
-			if (cancelled) {
-				fn();
-			} else {
-				unlisten = fn;
-			}
-		});
-
-		return () => {
-			cancelled = true;
-			unlisten?.();
-		};
-	}, [dispatch]);
 }
