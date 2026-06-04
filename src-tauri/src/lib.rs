@@ -52,42 +52,6 @@ use tauri::Manager;
 use tauri_plugin_aptabase::EventTracker;
 use tokio::sync::Mutex;
 
-/// 起動時の初期モデル整合性チェック。
-/// `agents.<backend>.model` が `agents.<backend>.models` に含まれない場合は
-/// 警告ログのみ出し、書き換えは行わない（暗黙のフォールバックを避ける）。
-fn warn_on_unregistered_initial_models(
-    registry: &backends::AgentBackendRegistry,
-    backend_ids: &[&str],
-) {
-    for backend_id in backend_ids {
-        if let Some(message) = initial_model_resolution_warning(
-            backend_id,
-            &registry.initial_model_resolution_for(backend_id),
-        ) {
-            log::warn!("{message}");
-        }
-    }
-}
-
-fn initial_model_resolution_warning(
-    backend_id: &str,
-    resolution: &backends::InitialModelResolution,
-) -> Option<String> {
-    match resolution {
-        backends::InitialModelResolution::Invalid { model, reason } => Some(format!(
-            "backend '{backend_id}' initial model {} is invalid ({reason}); treating as unset",
-            domain::agent_session::escaped_for_log(model)
-        )),
-        backends::InitialModelResolution::Unregistered { model } => Some(format!(
-            "backend '{backend_id}' initial model {} is not in agents.{backend_id}.models; treating as unset",
-            domain::agent_session::escaped_for_log(model)
-        )),
-        backends::InitialModelResolution::Registered(_) | backends::InitialModelResolution::Unset => {
-            None
-        }
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _sentry_guard = sentry_integration::init_sentry();
@@ -288,16 +252,6 @@ pub fn run() {
                 session_store,
             ));
             app.manage(registry.clone());
-
-            // 起動時の初期モデル整合性チェック（agents.<backend>.model が登録一覧に
-            // 含まれない場合は警告のみ。書き換えは行わない）
-            warn_on_unregistered_initial_models(
-                &registry,
-                &[
-                    backends::bridge_common::CLAUDE_BACKEND_ID,
-                    backends::bridge_common::CODEX_BACKEND_ID,
-                ],
-            );
 
             // [06] CLI mutating CLI 経路の file watcher を起動する。初回 pickup は
             // setup 済みの engine / AgentBackendRegistry を前提に dispatch するため、
@@ -641,9 +595,6 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::sync::Arc as StdArc;
-
     #[test]
     fn tokio_runtime_context_is_available_after_setup() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -655,64 +606,5 @@ mod tests {
         let handle = tokio::spawn(async { 42 });
         let result = runtime.block_on(handle).unwrap();
         assert_eq!(result, 42);
-    }
-
-    #[test]
-    fn warn_on_unregistered_initial_models_does_not_mutate_config() {
-        use crate::config::ReleashConfig;
-        let mut cfg = ReleashConfig::default();
-        cfg.agents.claude.model = Some("missing-from-registry".to_string());
-        cfg.agents.claude.models = vec!["sonnet".to_string()];
-        cfg.agents.codex.model = Some("o3".to_string());
-        cfg.agents.codex.models = vec!["o3".to_string()];
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let app_config = StdArc::new(AppConfig::new(cfg, tmp.path().to_path_buf()));
-        let registry = backends::build_registry(app_config.clone());
-
-        warn_on_unregistered_initial_models(&registry, &["claude", "codex"]);
-
-        // 書き換えは行わない（暗黙のフォールバック禁止）
-        let after = app_config.get_config().unwrap();
-        assert_eq!(
-            after.agents.claude.model.as_deref(),
-            Some("missing-from-registry")
-        );
-        assert_eq!(after.agents.codex.model.as_deref(), Some("o3"));
-    }
-
-    #[test]
-    fn initial_model_warning_messages_are_traceable() {
-        assert_eq!(
-            initial_model_resolution_warning(
-                "claude",
-                &backends::InitialModelResolution::Unregistered {
-                    model: "missing-from-registry".to_string(),
-                },
-            ),
-            Some(
-                "backend 'claude' initial model \"missing-from-registry\" is not in agents.claude.models; treating as unset"
-                    .to_string()
-            )
-        );
-        assert_eq!(
-            initial_model_resolution_warning(
-                "codex",
-                &backends::InitialModelResolution::Invalid {
-                    model: "bad model".to_string(),
-                    reason: "contains whitespace".to_string(),
-                },
-            ),
-            Some(
-                "backend 'codex' initial model \"bad model\" is invalid (contains whitespace); treating as unset"
-                    .to_string()
-            )
-        );
-        assert_eq!(
-            initial_model_resolution_warning(
-                "codex",
-                &backends::InitialModelResolution::Registered("o3".to_string()),
-            ),
-            None
-        );
     }
 }

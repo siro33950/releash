@@ -451,12 +451,11 @@ fn build_new_session(
     }
 }
 
-/// 新規セッションを作成し、当該 backend の登録済み初期モデルがあれば
-/// `selected_model` に永続化する。
+/// 新規セッションを作成し、当該 backend の既定モデルを `selected_model` に永続化する。
 ///
-/// 「selected_model=None」を「明示的に未指定」の意味に固定するため、初期モデルは
-/// セッション作成時にのみ書き込む。以後の spawn 経路では `selected_model` が None
-/// なら暗黙の既定モデルへフォールバックさせない。
+/// モデル「未選択（None）」状態は廃止したため、新規セッションは常に backend の既定モデル
+/// （[`crate::backends::AgentBackendRegistry::default_model_for`] = 固定リスト先頭）を
+/// `selected_model` に持つ。既定モデルが解決できない場合はセッション作成エラーとする。
 ///
 /// `permission_mode` は検証済みの抽象 [`crate::permission::PermissionMode`] を要求し、
 /// 初回保存で確定する（Spec issues-947: セッション保存層が permission_mode の正典）。
@@ -468,12 +467,12 @@ pub fn create_session_with_initial_model(
     backend_id: String,
     permission_mode: crate::permission::PermissionMode,
 ) -> Result<ChatSession, String> {
-    let initial_model = registry.initial_model_for(&backend_id);
+    let default_model = registry.default_model_for(&backend_id)?;
     let session = build_new_session(
         worktree_path,
         Some(backend_id),
         permission_mode,
-        initial_model,
+        Some(default_model),
         false,
     );
     session_store.save_session(data_dir, &session)?;
@@ -1720,23 +1719,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn create_session_with_initial_model_persists_when_registered() {
-        // spec: 既定モデルが現行の一覧に含まれる場合は初期モデルとして使われる。
-        // セッション作成時に解決して `selected_model` に永続化する。
-        // 一覧の供給元は registry の fixed_models() なので、固定一覧内のモデルを使う。
-        let store = SessionStore::default();
-        let dir = tempfile::tempdir().unwrap();
-
-        let registered_model = crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string();
-        let mut cfg = crate::config::ReleashConfig::default();
-        cfg.agents.claude.model = Some(registered_model.clone());
+    fn fixed_model_registry() -> crate::backends::AgentBackendRegistry {
+        let cfg = crate::config::ReleashConfig::default();
         let cfg_tmp = tempfile::NamedTempFile::new().unwrap();
         let config = std::sync::Arc::new(crate::config::AppConfig::new(
             cfg,
             cfg_tmp.path().to_path_buf(),
         ));
-
         let mut registry = crate::backends::AgentBackendRegistry::new();
         registry.register(std::sync::Arc::new(
             crate::backends::claude::ClaudeBackend::new(),
@@ -1745,47 +1734,18 @@ mod tests {
             crate::backends::codex::CodexBackend::new(),
         ));
         registry.set_config(config);
-
-        let session = create_session_with_initial_model(
-            &store,
-            &registry,
-            dir.path(),
-            "/repo",
-            "claude".to_string(),
-            crate::permission::PermissionMode::Edit,
-        )
-        .unwrap();
-        assert_eq!(session.selected_model, Some(registered_model.clone()));
-
-        // 永続化されている (on-disk から再ロードしても保持される)
-        let reloaded = store.get_session(dir.path(), &session.id).unwrap().unwrap();
-        assert_eq!(reloaded.selected_model, Some(registered_model));
+        registry
     }
 
     #[test]
-    fn create_session_with_initial_model_keeps_none_when_unregistered() {
-        // spec: 既定モデルが現行の一覧に含まれない場合は未指定として扱う。
-        // 暗黙のフォールバックは行わない。
+    fn create_session_with_initial_model_persists_default_for_claude() {
+        // spec: モデル未選択状態は廃止。新規セッションは常に backend の既定モデル
+        // （固定リスト先頭）を selected_model に持ち、永続化される。
         let store = SessionStore::default();
         let dir = tempfile::tempdir().unwrap();
+        let registry = fixed_model_registry();
 
-        let mut cfg = crate::config::ReleashConfig::default();
-        cfg.agents.claude.models = vec!["haiku".to_string()];
-        cfg.agents.claude.model = Some("opus-4".to_string());
-        let cfg_tmp = tempfile::NamedTempFile::new().unwrap();
-        let config = std::sync::Arc::new(crate::config::AppConfig::new(
-            cfg,
-            cfg_tmp.path().to_path_buf(),
-        ));
-
-        let mut registry = crate::backends::AgentBackendRegistry::new();
-        registry.register(std::sync::Arc::new(
-            crate::backends::claude::ClaudeBackend::new(),
-        ));
-        registry.register(std::sync::Arc::new(
-            crate::backends::codex::CodexBackend::new(),
-        ));
-        registry.set_config(config);
+        let default_model = crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string();
 
         let session = create_session_with_initial_model(
             &store,
@@ -1796,7 +1756,32 @@ mod tests {
             crate::permission::PermissionMode::Edit,
         )
         .unwrap();
-        assert_eq!(session.selected_model, None);
+        assert_eq!(session.selected_model, Some(default_model.clone()));
+
+        // 永続化されている (on-disk から再ロードしても保持される)
+        let reloaded = store.get_session(dir.path(), &session.id).unwrap().unwrap();
+        assert_eq!(reloaded.selected_model, Some(default_model));
+    }
+
+    #[test]
+    fn create_session_with_initial_model_persists_default_for_codex() {
+        // spec: codex バックエンドも固定リスト先頭が既定モデルになる。
+        let store = SessionStore::default();
+        let dir = tempfile::tempdir().unwrap();
+        let registry = fixed_model_registry();
+
+        let default_model = crate::domain::agent_session::CODEX_FIXED_MODELS[0].to_string();
+
+        let session = create_session_with_initial_model(
+            &store,
+            &registry,
+            dir.path(),
+            "/repo",
+            "codex".to_string(),
+            crate::permission::PermissionMode::Edit,
+        )
+        .unwrap();
+        assert_eq!(session.selected_model, Some(default_model));
     }
 
     #[test]

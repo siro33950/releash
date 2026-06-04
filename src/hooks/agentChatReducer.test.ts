@@ -627,7 +627,7 @@ describe("agentChatReducer", () => {
 			expect(next.sessionModels.s1).toBe("claude-4");
 		});
 
-		it("clears model selection with null (SDK default)", () => {
+		it("overwrites an existing model with another model (no null/unset path)", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				sessionModels: { s1: "claude-4" },
@@ -635,9 +635,9 @@ describe("agentChatReducer", () => {
 			const next = reducer(state, {
 				type: "SET_SESSION_MODEL",
 				sessionId: "s1",
-				modelId: null,
+				modelId: "claude-3.5",
 			});
-			expect(next.sessionModels.s1).toBeNull();
+			expect(next.sessionModels.s1).toBe("claude-3.5");
 		});
 
 		it("stores models for multiple sessions independently", () => {
@@ -669,7 +669,7 @@ describe("agentChatReducer", () => {
 						tool_use_id: "toolu_001",
 					},
 				},
-				sessionModels: { s1: "claude-4", s2: null },
+				sessionModels: { s1: "claude-4", s2: "claude-3.5" },
 			};
 			const next = reducer(state, {
 				type: "CLEANUP_SESSION",
@@ -677,7 +677,7 @@ describe("agentChatReducer", () => {
 			});
 			expect(next.turnPhases).toEqual({ s2: "idle" });
 			expect(next.pendingPermissions).toEqual({});
-			expect(next.sessionModels).toEqual({ s2: null });
+			expect(next.sessionModels).toEqual({ s2: "claude-3.5" });
 		});
 
 		it("is a no-op when session ID does not exist in any Record", () => {

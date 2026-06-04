@@ -29,7 +29,7 @@ export interface AgentChatState {
 	pendingPermissions: Record<string, PermissionRequest>;
 	availableModels: ModelInfo[];
 	availableModelsByBackend: Record<string, ModelInfo[]>;
-	sessionModels: Record<string, string | null>;
+	sessionModels: Record<string, string>;
 	backends: BackendInfo[];
 	selectedBackendId: string | null;
 }
@@ -74,7 +74,7 @@ export type AgentChatAction =
 	| {
 			type: "SET_SESSION_MODEL";
 			sessionId: string;
-			modelId: string | null;
+			modelId: string;
 	  }
 	| { type: "CLEANUP_SESSION"; sessionId: string }
 	| { type: "SET_BACKENDS"; backends: BackendInfo[]; defaultId: string | null }

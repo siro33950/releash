@@ -12,7 +12,6 @@ use tauri::State;
 use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
-use crate::domain::agent_session::{escaped_for_log, ModelId};
 use crate::session::SessionStore;
 
 /// Backend-specific runtime values consumed by the generic bridge process runner.
@@ -36,14 +35,6 @@ pub struct BackendInfo {
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub value: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InitialModelResolution {
-    Unset,
-    Registered(String),
-    Invalid { model: String, reason: String },
-    Unregistered { model: String },
 }
 
 /// 画像添付（共通型）。全バックエンドで使用する。
@@ -159,50 +150,16 @@ impl AgentBackendRegistry {
         self.config = Some(config);
     }
 
-    /// 指定 backend の config 由来の初期モデルを返す。
-    /// `agents.<backend>.model` が `agents.<backend>.models` に含まれる場合のみ採用する。
-    /// 未紐付け／schema 未対応／未登録の場合は `None` を返す。
-    pub fn initial_model_for(&self, backend_id: &str) -> Option<String> {
-        match self.initial_model_resolution_for(backend_id) {
-            InitialModelResolution::Registered(model) => Some(model),
-            InitialModelResolution::Invalid { model, reason } => {
-                let model = escaped_for_log(&model);
-                log::warn!(
-                    "backend '{backend_id}' configured initial model {model} is invalid and will be ignored: {reason}"
-                );
-                None
-            }
-            InitialModelResolution::Unregistered { model } => {
-                let model = escaped_for_log(&model);
-                log::warn!(
-                    "backend '{backend_id}' configured initial model {model} is not registered in current models and will be ignored"
-                );
-                None
-            }
-            InitialModelResolution::Unset => None,
-        }
-    }
-
-    /// 起動時警告とセッション作成で共有する初期モデル整合性判定。
-    /// 判定のみを返し、ログ出力や config 書き換えは行わない。
-    pub fn initial_model_resolution_for(&self, backend_id: &str) -> InitialModelResolution {
-        let Some(config) = self.config.as_ref() else {
-            return InitialModelResolution::Unset;
-        };
-        let Some(model) = config.configured_initial_model_for_backend(backend_id) else {
-            return InitialModelResolution::Unset;
-        };
-        if let Err(reason) = ModelId::parse(model.clone()) {
-            return InitialModelResolution::Invalid { model, reason };
-        }
-        let Ok(models) = self.config_models_for(backend_id) else {
-            return InitialModelResolution::Unset;
-        };
-        if models.iter().any(|value| value == &model) {
-            InitialModelResolution::Registered(model)
-        } else {
-            InitialModelResolution::Unregistered { model }
-        }
+    /// 指定 backend の既定モデルを返す。
+    /// モデル一覧（`config_models_for` = backend の `fixed_models()` 先頭）の先頭要素を採用する。
+    /// 一覧取得に失敗した場合、または一覧が空の場合は `Err` を返す。
+    /// 「モデル未選択」状態を廃止するため、新規セッション・既存セッションの lazy 解決の
+    /// 双方でこの既定モデルを使う。
+    pub fn default_model_for(&self, backend_id: &str) -> Result<String, String> {
+        let models = self.config_models_for(backend_id)?;
+        models.into_iter().next().ok_or_else(|| {
+            format!("バックエンド '{backend_id}' に既定モデルがありません（モデル一覧が空）")
+        })
     }
 
     /// 指定バックエンドのモデルID一覧を取得する。
@@ -508,27 +465,6 @@ mod tests {
         Arc::new(AppConfig::new(cfg, tmp.path().to_path_buf()))
     }
 
-    fn make_test_app_config_with_initial_model(
-        backend_id: &str,
-        model: Option<&str>,
-        models: &[&str],
-    ) -> Arc<AppConfig> {
-        let mut cfg = crate::config::ReleashConfig::default();
-        match backend_id {
-            "claude" => {
-                cfg.agents.claude.model = model.map(str::to_string);
-                cfg.agents.claude.models = models.iter().map(|s| s.to_string()).collect();
-            }
-            "codex" => {
-                cfg.agents.codex.model = model.map(str::to_string);
-                cfg.agents.codex.models = models.iter().map(|s| s.to_string()).collect();
-            }
-            _ => {}
-        }
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        Arc::new(AppConfig::new(cfg, tmp.path().to_path_buf()))
-    }
-
     #[test]
     fn registry_starts_empty() {
         let reg = AgentBackendRegistry::new();
@@ -547,71 +483,37 @@ mod tests {
     }
 
     #[test]
-    fn initial_model_for_returns_some_when_registered() {
-        let config =
-            make_test_app_config_with_initial_model("claude", Some("opus-4"), &["opus-4", "haiku"]);
+    fn default_model_for_returns_first_claude_fixed_model() {
         let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend("claude", "Claude"));
-        reg.set_config(config);
-
-        assert_eq!(reg.initial_model_for("claude"), Some("opus-4".to_string()));
-    }
-
-    #[test]
-    fn initial_model_for_returns_none_when_unregistered() {
-        let config = make_test_app_config_with_initial_model("claude", Some("opus-4"), &["haiku"]);
-        let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend("claude", "Claude"));
-        reg.set_config(config);
-
-        assert_eq!(reg.initial_model_for("claude"), None);
-    }
-
-    #[test]
-    fn initial_model_resolution_reports_unregistered_model() {
-        let config = make_test_app_config_with_initial_model("claude", Some("opus-4"), &["haiku"]);
-        let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend("claude", "Claude"));
-        reg.set_config(config);
+        reg.register(Arc::new(claude::ClaudeBackend::new()));
+        reg.set_config(make_test_app_config());
 
         assert_eq!(
-            reg.initial_model_resolution_for("claude"),
-            InitialModelResolution::Unregistered {
-                model: "opus-4".to_string()
-            }
+            reg.default_model_for("claude").unwrap(),
+            crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string()
         );
     }
 
     #[test]
-    fn initial_model_for_returns_none_when_configured_model_is_invalid() {
-        let config =
-            make_test_app_config_with_initial_model("claude", Some("bad\u{0001}model"), &[]);
+    fn default_model_for_returns_first_codex_fixed_model() {
         let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend("claude", "Claude"));
-        reg.set_config(config);
+        reg.register(Arc::new(codex::CodexBackend::new()));
+        reg.set_config(make_test_app_config());
 
-        assert_eq!(reg.initial_model_for("claude"), None);
+        assert_eq!(
+            reg.default_model_for("codex").unwrap(),
+            crate::domain::agent_session::CODEX_FIXED_MODELS[0].to_string()
+        );
     }
 
     #[test]
-    fn initial_model_for_returns_none_when_configured_model_is_too_long() {
-        let model = "x".repeat(129);
-        let config = make_test_app_config_with_initial_model("claude", Some(&model), &[]);
+    fn default_model_for_errors_when_model_list_empty() {
+        // fixed_models を持たない mock backend + 空の config では既定モデルが無くエラー。
         let mut reg = AgentBackendRegistry::new();
         reg.register(mock_backend("claude", "Claude"));
-        reg.set_config(config);
+        reg.set_config(make_test_app_config());
 
-        assert_eq!(reg.initial_model_for("claude"), None);
-    }
-
-    #[test]
-    fn initial_model_for_returns_none_when_model_unset() {
-        let config = make_test_app_config_with_initial_model("claude", None, &["opus-4"]);
-        let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend("claude", "Claude"));
-        reg.set_config(config);
-
-        assert_eq!(reg.initial_model_for("claude"), None);
+        assert!(reg.default_model_for("claude").is_err());
     }
 
     #[test]

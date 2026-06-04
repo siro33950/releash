@@ -11,8 +11,8 @@ import type { ModelInfo } from "@/types/session";
 
 interface ModelSelectorProps {
 	models: ModelInfo[];
-	currentModelId: string | null;
-	onModelChange: (modelId: string | null) => void;
+	currentModelId: string;
+	onModelChange: (modelId: string) => void;
 	disabled: boolean;
 }
 
@@ -23,9 +23,7 @@ export function ModelSelector({
 	disabled,
 }: ModelSelectorProps) {
 	const currentLabel =
-		models.find((m) => m.value === currentModelId)?.value ??
-		currentModelId ??
-		"Unset";
+		models.find((m) => m.value === currentModelId)?.value ?? currentModelId;
 
 	return (
 		<DropdownMenu>
@@ -43,18 +41,9 @@ export function ModelSelector({
 			</DropdownMenuTrigger>
 			<DropdownMenuContent side="top" align="start">
 				<DropdownMenuRadioGroup
-					value={currentModelId ?? ""}
-					onValueChange={(v) => onModelChange(v === "" ? null : v)}
+					value={currentModelId}
+					onValueChange={(v) => onModelChange(v)}
 				>
-					{currentModelId !== null && (
-						<DropdownMenuRadioItem
-							key="__unset__"
-							value=""
-							data-testid="model-selector-clear"
-						>
-							Unset
-						</DropdownMenuRadioItem>
-					)}
 					{models.map((m) => (
 						<DropdownMenuRadioItem key={m.value} value={m.value}>
 							{m.value}

@@ -371,10 +371,10 @@ describe("useAgentChat", () => {
 					permissionMode: "edit",
 				},
 				turnPhase: "idle",
-				selectedModel: null,
+				selectedModel: "claude-opus-4-8",
 				availableModels: [],
 			},
-		});
+		} as never);
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
@@ -795,7 +795,7 @@ describe("useAgentChat", () => {
 		});
 	});
 
-	it("setModel invokes set_agent_model with null modelId for Auto selection", async () => {
+	it("setModel always sends a non-null modelId (no unset/null path)", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 
@@ -811,13 +811,22 @@ describe("useAgentChat", () => {
 		mockInvoke.mockClear();
 
 		act(() => {
-			result.current.setModel(result.current.activeSession?.id ?? "", null);
+			result.current.setModel(
+				result.current.activeSession?.id ?? "",
+				"claude-opus-4-8",
+			);
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("set_agent_model", {
 			chatSessionId: "s1",
-			modelId: null,
+			modelId: "claude-opus-4-8",
 		});
+		const setModelCalls = mockInvoke.mock.calls.filter(
+			(call) => call[0] === "set_agent_model",
+		);
+		for (const call of setModelCalls) {
+			expect((call[1] as { modelId: unknown }).modelId).not.toBeNull();
+		}
 	});
 
 	it("sendMessage after setModel invokes sendAgentMessage for the active session", async () => {

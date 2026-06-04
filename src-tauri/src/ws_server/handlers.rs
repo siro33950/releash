@@ -997,7 +997,7 @@ fn agent_model_set_response(req: &AgentModelSetRequest, result: Result<(), Strin
     WsMessage::AgentModelSetResponse(AgentModelSetResponse {
         success: result.is_ok(),
         session_id: req.session_id.clone(),
-        model_id: req.model_id.clone(),
+        model_id: Some(req.model_id.clone()),
         error: result.err(),
     })
 }
@@ -1254,7 +1254,7 @@ mod tests {
         registry: &Arc<crate::backends::AgentBackendRegistry>,
         data_dir: &std::path::Path,
         session_id: &str,
-        model_id: Option<String>,
+        model_id: String,
     ) -> AgentModelSetResponse {
         let req = AgentModelSetRequest {
             session_id: session_id.to_string(),
@@ -1294,7 +1294,7 @@ mod tests {
             &registry,
             temp.path(),
             &session.id,
-            Some("claude-4".to_string()),
+            "claude-4".to_string(),
         )
         .await;
 
@@ -1322,7 +1322,7 @@ mod tests {
             &registry,
             temp.path(),
             &session.id,
-            Some("unknown".to_string()),
+            "unknown".to_string(),
         )
         .await;
 
@@ -1350,7 +1350,7 @@ mod tests {
             &registry,
             temp.path(),
             &session.id,
-            Some("gpt-5".to_string()),
+            "gpt-5".to_string(),
         )
         .await;
 
@@ -1377,47 +1377,13 @@ mod tests {
             &registry,
             temp.path(),
             &session.id,
-            Some("bad\u{0001}model".to_string()),
+            "bad\u{0001}model".to_string(),
         )
         .await;
 
         assert!(!resp.success);
         assert_eq!(resp.model_id.as_deref(), Some("bad\u{0001}model"));
         assert!(resp.error.unwrap().contains("制御文字"));
-    }
-
-    #[tokio::test]
-    async fn handle_agent_model_set_request_accepts_null_model_as_clear_ws_response() {
-        let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::session::SessionStore::default());
-        let mut session = crate::session::create_session_internal(
-            &session_store,
-            temp.path(),
-            "/repo",
-            Some("claude".to_string()),
-        )
-        .unwrap();
-        session.selected_model = Some("claude-4".to_string());
-        session_store.save_session(temp.path(), &session).unwrap();
-        let registry = make_model_registry(&["claude-4"], &[]);
-
-        let resp = call_agent_model_set_for_test(
-            &session_store,
-            &registry,
-            temp.path(),
-            &session.id,
-            None,
-        )
-        .await;
-
-        assert!(resp.success);
-        assert_eq!(resp.model_id, None);
-        assert_eq!(resp.error, None);
-        let after = session_store
-            .get_session(temp.path(), &session.id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(after.selected_model, None);
     }
 
     #[tokio::test]

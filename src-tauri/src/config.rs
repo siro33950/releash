@@ -55,7 +55,6 @@ pub struct WorkflowSection {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClaudeAgentSection {
-    pub model: Option<String>,
     /// registry の `fixed_models()` が優先されるため通常未使用（互換用に残す）。
     #[serde(default)]
     pub models: Vec<String>,
@@ -63,7 +62,6 @@ pub struct ClaudeAgentSection {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CodexAgentSection {
-    pub model: Option<String>,
     pub cli_path: Option<String>,
     /// registry の `fixed_models()` が優先されるため通常未使用（互換用に残す）。
     #[serde(default)]
@@ -295,20 +293,6 @@ impl AppConfig {
             _ => Err(format!(
                 "config schema にバックエンド '{backend_id}' のモデル一覧が存在しません"
             )),
-        }
-    }
-
-    /// 指定バックエンドの `agents.<backend>.model`（生の設定値）を返す。
-    /// 登録判定は行わない。lib.rs から起動時整合性チェックの「設定値が
-    /// 登録一覧に含まれているか」を判定するために、schema 構造を漏らさず
-    /// 生値だけを問い合わせる経路として使う。
-    /// スキーマ未対応のバックエンドは `None`。
-    pub fn configured_initial_model_for_backend(&self, backend_id: &str) -> Option<String> {
-        let config = self.config.lock().ok()?;
-        match backend_id {
-            "claude" => config.agents.claude.model.clone(),
-            "codex" => config.agents.codex.model.clone(),
-            _ => None,
         }
     }
 }
@@ -1712,7 +1696,6 @@ token = "existing_token_value_here_with_enough_length_!!"
     fn agents_section_defaults() {
         let agents = AgentsSection::default();
         assert!(agents.default.is_none());
-        assert!(agents.codex.model.is_none());
         assert!(agents.codex.cli_path.is_none());
     }
 
@@ -1732,19 +1715,17 @@ token = "existing_token_value_here_with_enough_length_!!"
     }
 
     #[test]
-    fn agents_codex_model_roundtrip() {
+    fn agents_codex_cli_path_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
 
         let mut config = ReleashConfig::default();
         config.server.token = generate_token();
-        config.agents.codex.model = Some("gpt-5.4".to_string());
         config.agents.codex.cli_path = Some("/opt/bin/codex".to_string());
         write_config(&path, &config).unwrap();
 
         let reloaded = fs::read_to_string(&path).unwrap();
         let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
-        assert_eq!(reloaded.agents.codex.model, Some("gpt-5.4".to_string()));
         assert_eq!(
             reloaded.agents.codex.cli_path,
             Some("/opt/bin/codex".to_string())
@@ -1766,7 +1747,7 @@ token = "existing_token_value_here_with_enough_length_!!"
 
         let config = load_or_create_config(&path).unwrap();
         assert!(config.agents.default.is_none());
-        assert!(config.agents.codex.model.is_none());
+        assert!(config.agents.codex.cli_path.is_none());
     }
 
     #[test]

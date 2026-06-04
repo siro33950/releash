@@ -202,7 +202,7 @@ export interface AgentInterruptResponse {
 
 export interface AgentModelSetRequest {
 	session_id: string;
-	model_id?: string | null;
+	model_id: string;
 }
 
 export interface AgentModelSetResponse {

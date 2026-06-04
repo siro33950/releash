@@ -118,7 +118,7 @@ export function BoundSessionChat({
 	);
 
 	const handleModelChange = useCallback(
-		(modelId: string | null) => {
+		(modelId: string) => {
 			if (!sessionId) return;
 			setModel(sessionId, modelId);
 		},
@@ -146,7 +146,11 @@ export function BoundSessionChat({
 
 	if (!session) return null;
 
-	const selectedModel = getSessionSelectedModel(session.id);
+	// 契約: Rust から届いた後の selected_model は常に非 null。session meta が
+	// 反映される前の transient な null は、デフォルト（固定リスト先頭 = 表示中
+	// backend の available models[0]）に解決して常に string を伝播する。
+	const selectedModel =
+		getSessionSelectedModel(session.id) ?? availableModels[0]?.value ?? "";
 	const canChangeBackend =
 		session.messages.length === 0 && !session.agentSessionId && !isStreaming;
 

@@ -435,7 +435,7 @@ mod tests {
             }),
             WsMessage::AgentModelSetRequest(AgentModelSetRequest {
                 session_id: "sess-1".to_string(),
-                model_id: Some("gpt-5.4".to_string()),
+                model_id: "gpt-5.4".to_string(),
             }),
             WsMessage::AgentModelSetResponse(AgentModelSetResponse {
                 success: true,

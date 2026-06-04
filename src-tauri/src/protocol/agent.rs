@@ -185,8 +185,9 @@ pub struct AgentInterruptResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentModelSetRequest {
     pub session_id: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub model_id: Option<String>,
+    /// モデルは必須（モデル未選択状態は廃止）。リモートクライアントはデスクトップ同梱物のため
+    /// 互換問題はない。
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -24,8 +24,8 @@ const defaultProps = {
 	isStreaming: false,
 	mode: "edit" as const,
 	onModeChange: vi.fn(),
-	models: [],
-	currentModelId: null,
+	models: [{ value: "claude-opus-4-8" }],
+	currentModelId: "claude-opus-4-8",
 	onModelChange: vi.fn(),
 	backends: [],
 	currentBackendId: null,
@@ -181,7 +181,7 @@ describe("MessageInput", () => {
 		render(<MessageInput {...defaultProps} />);
 		expect(screen.getByTestId("model-selector-trigger")).toBeDefined();
 		expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent(
-			"Unset",
+			"claude-opus-4-8",
 		);
 	});
 

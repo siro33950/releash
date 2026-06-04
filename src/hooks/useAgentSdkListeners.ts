@@ -61,7 +61,7 @@ interface PendingMessageConsumed {
 interface ModelsUpdated {
 	chat_session_id: string;
 	available_models: ModelInfo[];
-	selected_model: string | null;
+	selected_model: string;
 }
 
 /**

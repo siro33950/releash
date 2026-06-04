@@ -295,6 +295,56 @@ fn available_models_for_backend(
     }
 }
 
+/// 既存セッションの `selected_model` を「常に非 null」へ解決する lazy migration ヘルパ。
+///
+/// モデル「未選択（None）」状態は廃止されたが、`ChatSession.selected_model` の永続化型は
+/// 既存 JSON 互換のため `Option<String>` のまま。応答・Bridge 送信時に `None` を backend の
+/// 既定モデル（[`crate::backends::AgentBackendRegistry::default_model_for`]）へ解決してから使う。
+///
+/// - `Some(model)`: そのまま採用する。
+/// - `None` + registry あり: 既定モデルに解決する。registry 取得失敗時は warn を残し `None` を返す
+///   （表示専用・emit 経路で UI 描画を妨げないため）。
+/// - `None` + registry なし（テスト等）: `None` のまま。
+fn resolve_selected_model(
+    selected_model: Option<String>,
+    backend_id: &str,
+    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+) -> Option<String> {
+    if selected_model.is_some() {
+        return selected_model;
+    }
+    let registry = registry?;
+    match registry.default_model_for(backend_id) {
+        Ok(model) => Some(model),
+        Err(e) => {
+            log::warn!("selected_model の既定解決に失敗（backend '{backend_id}'）: {e}");
+            None
+        }
+    }
+}
+
+/// 応答（[`GetSessionResponse`]）向けの厳格な `selected_model` 解決。
+///
+/// 契約: `GetSessionResponse.selected_model`（`ChatSession` から flatten）は常に非 null で
+/// シリアライズされる。`ChatSession.selected_model` は `skip_serializing_if = Option::is_none`
+/// のため、`None` のまま応答へ載せると JSON からフィールドが脱落し、フロントの必須 `string`
+/// 契約に反する。registry が与えられている本番経路では既定モデルへ解決できない場合に `Err` を
+/// 返し、フィールド脱落を防ぐ。registry 未指定（テスト等）では `None` のままとし、緩い
+/// [`resolve_selected_model`] と挙動を合わせる。
+fn resolve_selected_model_for_response(
+    selected_model: Option<String>,
+    backend_id: &str,
+    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+) -> Result<Option<String>, String> {
+    if selected_model.is_some() {
+        return Ok(selected_model);
+    }
+    let Some(registry) = registry else {
+        return Ok(None);
+    };
+    registry.default_model_for(backend_id).map(Some)
+}
+
 impl AgentProcess {
     /// Reset per-turn streaming state (cumulative parts, coalescing buffer,
     /// last-emit timestamp, retained message id, task id map). Called on every
@@ -322,15 +372,19 @@ impl AgentProcess {
             .await
             .map_err(|e| format!("Failed to flush setMode: {e}"))?;
 
-        let model_data = build_set_model_command(self.selected_model.as_deref());
-        self.stdin
-            .write_all(model_data.as_bytes())
-            .await
-            .map_err(|e| format!("Failed to write setModel: {e}"))?;
-        self.stdin
-            .flush()
-            .await
-            .map_err(|e| format!("Failed to flush setModel: {e}"))?;
+        // モデルは spawn 時に lazy 解決され常に非 null だが、フィールド型は互換のため
+        // Option のまま。万一 None の場合は setModel を送らず Bridge 既定に委ねる。
+        if let Some(model) = self.selected_model.as_deref() {
+            let model_data = build_set_model_command(model);
+            self.stdin
+                .write_all(model_data.as_bytes())
+                .await
+                .map_err(|e| format!("Failed to write setModel: {e}"))?;
+            self.stdin
+                .flush()
+                .await
+                .map_err(|e| format!("Failed to flush setModel: {e}"))?;
+        }
 
         Ok(())
     }
@@ -1370,7 +1424,7 @@ fn bridge_permission_fields(
     }
 }
 
-fn build_set_model_command(model_id: Option<&str>) -> String {
+fn build_set_model_command(model_id: &str) -> String {
     let cmd = serde_json::json!({
         "type": "setModel",
         "modelId": model_id,
@@ -2858,14 +2912,26 @@ async fn get_session_internal_with_data_dir(
             // 維持される）。
             // get_session は表示専用経路のため、infrastructure 故障で取得に失敗した場合は
             // warn を残して空一覧を返し、上位の UI 描画を妨げない。
-            let backend_id = session.backend_id.as_deref().unwrap_or(CLAUDE_BACKEND_ID);
+            let backend_id = session
+                .backend_id
+                .clone()
+                .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string());
             let available_models =
-                available_models_for_backend(backend_id, registry).unwrap_or_else(|e| {
+                available_models_for_backend(&backend_id, registry).unwrap_or_else(|e| {
                     log::warn!(
                         "get_session: backend '{backend_id}' のモデル一覧取得に失敗（空一覧で応答）: {e}"
                     );
                     Vec::new()
                 });
+
+            // モデル未選択状態は廃止。既存セッションの None は既定モデルへ解決して返す。
+            // 応答の selected_model は常に非 null（flatten + skip_serializing_if のため、
+            // None だとフィールドが脱落しフロントの必須 string 契約に反する）。
+            session.selected_model = resolve_selected_model_for_response(
+                session.selected_model.take(),
+                &backend_id,
+                registry,
+            )?;
 
             Ok(Some(GetSessionResponse {
                 session,
@@ -2960,7 +3026,7 @@ async fn set_session_backend_internal(
         ));
     }
 
-    session.selected_model = registry.initial_model_for(&resolved_backend_id);
+    session.selected_model = Some(registry.default_model_for(&resolved_backend_id)?);
     session.backend_id = Some(resolved_backend_id);
     session.updated_at = now_timestamp();
     session_store.save_session(data_dir, &session)?;
@@ -3018,10 +3084,10 @@ pub async fn get_session(
 
 /// Retrieve persisted session fields needed for spawning a Bridge process.
 ///
-/// `selected_model` は永続化されている値をそのまま採用する。
-/// 初期モデルはセッション作成時 (`create_session_with_initial_model`) に解決して
-/// 永続化されているため、spawn 経路では「`selected_model == None` は常に
-/// 明示的に未指定」を意味する。暗黙の既定モデルへのフォールバックはしない。
+/// モデル「未選択（None）」状態は廃止されたが、`ChatSession.selected_model` の永続化型は
+/// 既存 JSON 互換のため `Option<String>` のまま。spawn 経路では `None` を backend の
+/// 既定モデル（[`crate::backends::AgentBackendRegistry::default_model_for`]）へ lazy 解決して
+/// から Bridge へ渡す。
 fn get_persisted_spawn_info<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_store: &SessionStore,
@@ -3029,17 +3095,21 @@ fn get_persisted_spawn_info<R: tauri::Runtime>(
 ) -> Result<(Option<String>, Option<String>, String), String> {
     let data_dir = resolve_data_dir(app)?;
     let persisted = session_store.get_session(&data_dir, chat_session_id)?;
-    Ok(resolve_spawn_info(persisted))
+    let registry = app.try_state::<Arc<crate::backends::AgentBackendRegistry>>();
+    Ok(resolve_spawn_info(persisted, registry.as_deref()))
 }
 
 /// 永続化セッションから spawn 情報を組み立てる純粋関数。
 ///
-/// `selected_model == None` は「明示的に未指定」を意味し、初期モデルへのフォールバックは
-/// この関数では行わない（fallback はセッション作成時にのみ適用される）。
+/// `selected_model == None` は registry の既定モデルへ解決する（モデル未選択状態は廃止）。
+/// registry 未指定（テスト等）では `None` のままとする。
 pub(crate) fn resolve_spawn_info(
     persisted: Option<ChatSession>,
+    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
 ) -> (Option<String>, Option<String>, String) {
-    persisted_spawn_info_from_session(persisted)
+    let (resume_sid, selected_model, backend_id) = persisted_spawn_info_from_session(persisted);
+    let selected_model = resolve_selected_model(selected_model, &backend_id, registry);
+    (resume_sid, selected_model, backend_id)
 }
 
 fn persisted_spawn_info_from_session(
@@ -3714,7 +3784,7 @@ pub async fn set_agent_model(
     session_store: tauri::State<'_, Arc<SessionStore>>,
     registry: tauri::State<'_, Arc<crate::backends::AgentBackendRegistry>>,
     chat_session_id: String,
-    model_id: Option<String>,
+    model_id: String,
 ) -> Result<(), String> {
     set_agent_model_internal(
         &app,
@@ -3730,9 +3800,9 @@ pub async fn set_agent_model(
 pub(crate) async fn set_active_process_model(
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
-    model_id: Option<String>,
+    model_id: String,
 ) -> Result<(), String> {
-    let data = build_set_model_command(model_id.as_deref());
+    let data = build_set_model_command(&model_id);
     let mut map = handles.lock().await;
     if let Some(proc) = map.get_mut(chat_session_id) {
         proc.stdin
@@ -3743,7 +3813,7 @@ pub(crate) async fn set_active_process_model(
             .flush()
             .await
             .map_err(|e| format!("Failed to flush setModel: {e}"))?;
-        proc.selected_model = model_id;
+        proc.selected_model = Some(model_id);
     }
     Ok(())
 }
@@ -3754,7 +3824,7 @@ pub(crate) async fn set_agent_model_internal(
     session_store: &Arc<SessionStore>,
     registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
     chat_session_id: &str,
-    model_id: Option<String>,
+    model_id: String,
 ) -> Result<(), String> {
     let data_dir = resolve_data_dir(app)?;
     set_agent_model_internal_with_data_dir(
@@ -3779,7 +3849,7 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
     registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
     data_dir: &Path,
     chat_session_id: &str,
-    model_id: Option<String>,
+    model_id: String,
 ) -> Result<(), String> {
     let mut session = session_store
         .get_session(data_dir, chat_session_id)?
@@ -3789,39 +3859,38 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
         .clone()
         .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string());
 
-    // 非 null のみ検証。`model_id=None` は選択解除として受け入れ、暗黙のフォールバックは行わない。
-    if let Some(model) = model_id.as_deref() {
-        crate::domain::agent_session::ModelId::parse(model)?;
-        if let Some(reg) = registry {
-            let session_models: Vec<String> = reg.config_models_for(&backend_id).map_err(|e| {
-                log::warn!(
-                    "set_agent_model: backend '{backend_id}' の登録済みモデル一覧取得に失敗: {e}"
-                );
-                format!("バックエンド '{backend_id}' の登録済みモデル一覧を取得できません: {e}")
-            })?;
-            if !session_models.iter().any(|v| v == model) {
-                // 「未登録」を伝える前に、別バックエンドに登録されていないかを問い合わせる。
-                // - Ok(Some(other)) かつ other != current backend: backend mismatch として返す
-                // - Ok(Some(same)) / Ok(None): 当該 backend への未登録として返す
-                // - Err: infrastructure 故障。warn を残して当該 backend への未登録として返す
-                //   （別バックエンドに登録されているかは判定できないため、ヒントは付けない）
-                match reg.resolve_backend_for_model(model) {
-                    Ok(Some(bid)) if bid != backend_id => {
-                        return Err(format!(
-                            "モデル '{model}' はバックエンド '{backend_id}' に登録されていません (別バックエンド '{bid}' に登録)"
-                        ));
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        log::warn!(
-                            "set_agent_model: モデル '{model}' の所属バックエンド解決に失敗（未登録として扱う）: {e}"
-                        );
-                    }
+    // モデルは必須。常に形式検証 + 固定リスト照合を通す（モデル未選択状態は廃止）。
+    let model = model_id.as_str();
+    crate::domain::agent_session::ModelId::parse(model)?;
+    if let Some(reg) = registry {
+        let session_models: Vec<String> = reg.config_models_for(&backend_id).map_err(|e| {
+            log::warn!(
+                "set_agent_model: backend '{backend_id}' の登録済みモデル一覧取得に失敗: {e}"
+            );
+            format!("バックエンド '{backend_id}' の登録済みモデル一覧を取得できません: {e}")
+        })?;
+        if !session_models.iter().any(|v| v == model) {
+            // 「未登録」を伝える前に、別バックエンドに登録されていないかを問い合わせる。
+            // - Ok(Some(other)) かつ other != current backend: backend mismatch として返す
+            // - Ok(Some(same)) / Ok(None): 当該 backend への未登録として返す
+            // - Err: infrastructure 故障。warn を残して当該 backend への未登録として返す
+            //   （別バックエンドに登録されているかは判定できないため、ヒントは付けない）
+            match reg.resolve_backend_for_model(model) {
+                Ok(Some(bid)) if bid != backend_id => {
+                    return Err(format!(
+                        "モデル '{model}' はバックエンド '{backend_id}' に登録されていません (別バックエンド '{bid}' に登録)"
+                    ));
                 }
-                return Err(format!(
-                    "モデル '{model}' はバックエンド '{backend_id}' に登録されていません"
-                ));
+                Ok(_) => {}
+                Err(e) => {
+                    log::warn!(
+                        "set_agent_model: モデル '{model}' の所属バックエンド解決に失敗（未登録として扱う）: {e}"
+                    );
+                }
             }
+            return Err(format!(
+                "モデル '{model}' はバックエンド '{backend_id}' に登録されていません"
+            ));
         }
     }
 
@@ -3839,7 +3908,7 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
     set_active_process_model(handles, chat_session_id, model_id.clone()).await?;
 
     // 2. Persist to ChatSession
-    session.selected_model = model_id.clone();
+    session.selected_model = Some(model_id.clone());
     session.updated_at = now_timestamp();
     session_store.save_session(data_dir, &session)?;
 
@@ -3852,7 +3921,7 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
             build_agent_models_updated_payload(
                 chat_session_id,
                 &models_from_config,
-                model_id.as_deref(),
+                Some(model_id.as_str()),
             ),
         );
     }
@@ -6423,14 +6492,11 @@ mod tests {
     async fn prepare_send_persists_selected_permission_mode_for_new_session() {
         // Spec issues-947: 新規セッション作成時、選択された抽象モードがそのまま
         // ChatSession.permission_mode に保存される（PreparedAgentTurn と乖離しない）。
+        // モデル未選択状態は廃止されたため、新規セッションは backend の既定モデル解決を
+        // 必要とする。fixed_models を持つ実 backend registry を使う。
         let data_dir = tempfile::tempdir().unwrap();
         let session_store = Arc::new(SessionStore::default());
-        let mut registry = AgentBackendRegistry::new();
-        registry.register(Arc::new(MockModelBackend {
-            backend_id: "mock".to_string(),
-            models: vec![],
-        }));
-        let registry = Arc::new(registry);
+        let registry = make_fixed_model_registry();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let worktree_path = "/repo".to_string();
 
@@ -6443,7 +6509,7 @@ mod tests {
             worktree_path.clone(),
             "hi".to_string(),
             crate::permission::PermissionMode::Ask,
-            Some("mock".to_string()),
+            Some(CLAUDE_BACKEND_ID.to_string()),
             None,
             None,
         )
@@ -6777,7 +6843,6 @@ mod tests {
 
         let mut cfg = crate::config::ReleashConfig::default();
         cfg.agents.claude.models = vec!["a-model".to_string()];
-        cfg.agents.codex.model = Some("b-model".to_string());
         cfg.agents.codex.models = vec!["b-model".to_string()];
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
@@ -6810,6 +6875,7 @@ mod tests {
             response.session.backend_id,
             Some(CODEX_BACKEND_ID.to_string())
         );
+        // backend 切替後は新 backend の既定モデル（一覧先頭）へ解決される。
         assert_eq!(response.session.selected_model, Some("b-model".to_string()));
         assert_eq!(response.available_models.len(), 1);
         assert_eq!(response.available_models[0].value, "b-model");
@@ -7437,18 +7503,10 @@ mod tests {
 
     #[test]
     fn set_model_command_format() {
-        let result = build_set_model_command(Some("claude-opus"));
+        let result = build_set_model_command("claude-opus");
         let cmd: serde_json::Value = serde_json::from_str(result.trim()).unwrap();
         assert_eq!(cmd["type"], "setModel");
         assert_eq!(cmd["modelId"], "claude-opus");
-    }
-
-    #[test]
-    fn set_model_command_with_none() {
-        let result = build_set_model_command(None);
-        let cmd: serde_json::Value = serde_json::from_str(result.trim()).unwrap();
-        assert_eq!(cmd["type"], "setModel");
-        assert!(cmd["modelId"].is_null());
     }
 
     #[test]
@@ -9851,7 +9909,7 @@ mod tests {
                 map.insert("session-1".to_string(), proc);
             }
 
-            set_active_process_model(&handles, "session-1", Some("gpt-5.4".to_string()))
+            set_active_process_model(&handles, "session-1", "gpt-5.4".to_string())
                 .await
                 .unwrap();
 
@@ -9872,7 +9930,7 @@ mod tests {
             let handles = Arc::new(Mutex::new(HashMap::new()));
 
             // 該当 session が無くてもエラーにせず Ok(()) を返す（active 不在は no-op）。
-            set_active_process_model(&handles, "missing", Some("gpt-5.4".to_string()))
+            set_active_process_model(&handles, "missing", "gpt-5.4".to_string())
                 .await
                 .unwrap();
         }
@@ -10063,7 +10121,7 @@ mod tests {
             Some(&registry),
             temp.path(),
             &session.id,
-            Some("claude-4".to_string()),
+            "claude-4".to_string(),
         )
         .await
         .unwrap();
@@ -10097,7 +10155,7 @@ mod tests {
             Some(&registry),
             temp.path(),
             &session.id,
-            Some(model.to_string()),
+            model.to_string(),
         )
         .await
         .unwrap();
@@ -10133,7 +10191,7 @@ mod tests {
             Some(&registry),
             temp.path(),
             &session.id,
-            Some("unknown".to_string()),
+            "unknown".to_string(),
         )
         .await;
         assert!(err.is_err());
@@ -10167,7 +10225,7 @@ mod tests {
             Some(&registry),
             temp.path(),
             &session.id,
-            Some("gpt-5".to_string()),
+            "gpt-5".to_string(),
         )
         .await
         .unwrap_err();
@@ -10182,7 +10240,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_agent_model_accepts_none_as_selection_clear() {
+    async fn set_agent_model_rejects_empty_model() {
+        // モデルは必須。空文字は形式不正として登録判定の前に拒否する。
         let temp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(SessionStore::default());
         let mut session = create_session_internal(
@@ -10198,24 +10257,24 @@ mod tests {
         let registry = make_test_registry_with_models(&["claude-4"], &[]);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
 
-        set_agent_model_internal_with_data_dir(
+        let err = set_agent_model_internal_with_data_dir(
             None,
             &handles,
             &session_store,
             Some(&registry),
             temp.path(),
             &session.id,
-            None,
+            String::new(),
         )
-        .await
-        .unwrap();
+        .await;
+        assert!(err.is_err());
 
+        // 拒否時は既存の selected_model を維持
         let after = session_store
             .get_session(temp.path(), &session.id)
             .unwrap()
             .unwrap();
-        // 選択解除（未指定状態）として保存される
-        assert_eq!(after.selected_model, None);
+        assert_eq!(after.selected_model, Some("claude-4".to_string()));
     }
 
     // --- set_agent_model: 実 backend の固定リスト検証 ---
@@ -10255,7 +10314,7 @@ mod tests {
             Some(&registry),
             temp.path(),
             &session.id,
-            Some(model.clone()),
+            model.clone(),
         )
         .await
         .unwrap();
@@ -10288,7 +10347,7 @@ mod tests {
             Some(&registry),
             temp.path(),
             &session.id,
-            Some("not-a-fixed-claude-model".to_string()),
+            "not-a-fixed-claude-model".to_string(),
         )
         .await;
         assert!(err.is_err());
@@ -10322,7 +10381,7 @@ mod tests {
             Some(&registry),
             temp.path(),
             &session.id,
-            Some(model.clone()),
+            model.clone(),
         )
         .await
         .unwrap();
@@ -10355,7 +10414,7 @@ mod tests {
             Some(&registry),
             temp.path(),
             &session.id,
-            Some("not-a-fixed-codex-model".to_string()),
+            "not-a-fixed-codex-model".to_string(),
         )
         .await;
         assert!(err.is_err());
@@ -10392,9 +10451,10 @@ mod tests {
     }
 
     #[test]
-    fn build_agent_models_updated_payload_serializes_unset_as_null() {
-        let payload = build_agent_models_updated_payload("sess-2", &[], None);
-        assert!(payload["selected_model"].is_null());
+    fn build_agent_models_updated_payload_carries_selected_model_non_null() {
+        // モデル未選択状態は廃止。set_agent_model は常に非 null の selected_model を emit する。
+        let payload = build_agent_models_updated_payload("sess-2", &[], Some("claude-opus-4-8"));
+        assert_eq!(payload["selected_model"], "claude-opus-4-8");
         assert_eq!(payload["available_models"].as_array().unwrap().len(), 0);
     }
 
@@ -10421,42 +10481,53 @@ mod tests {
     }
 
     #[test]
-    fn resolve_spawn_info_returns_none_for_unstarted_session_without_persisted_model() {
-        // spec: selected_model=None は常に「明示的に未指定」を意味する。
-        // 未起動セッションで selected_model 未指定でも spawn 経路で暗黙の
-        // 既定モデルへフォールバックさせない（初期モデルはセッション作成時にのみ反映される）。
+    fn resolve_spawn_info_without_registry_keeps_none() {
+        // registry 未指定（テスト等）では selected_model=None は None のまま。
         let session = make_chat_session_for_spawn(None, None, CODEX_BACKEND_ID);
-        let info = resolve_spawn_info(Some(session));
+        let info = resolve_spawn_info(Some(session), None);
         assert_eq!(info.0, None); // resume_sid
-        assert_eq!(info.1, None); // selected_model — fallback しない
+        assert_eq!(info.1, None); // selected_model
         assert_eq!(info.2, CODEX_BACKEND_ID.to_string());
     }
 
     #[test]
-    fn resolve_spawn_info_does_not_reinject_default_after_explicit_clear() {
-        // 既に一度起動済み（agent_session_id Some）で selected_model を None に戻した場合、
-        // 次回 spawn でも None のまま。
-        let session =
-            make_chat_session_for_spawn(Some("sdk-id".to_string()), None, CODEX_BACKEND_ID);
-        let info = resolve_spawn_info(Some(session));
-        assert!(info.1.is_none());
+    fn resolve_spawn_info_resolves_none_to_default_with_registry() {
+        // モデル未選択状態は廃止。selected_model=None は registry の既定モデルへ解決する。
+        let registry = make_fixed_model_registry();
+        let session = make_chat_session_for_spawn(None, None, CODEX_BACKEND_ID);
+        let info = resolve_spawn_info(Some(session), Some(&registry));
+        assert_eq!(
+            info.1,
+            Some(crate::domain::agent_session::CODEX_FIXED_MODELS[0].to_string())
+        );
     }
 
     #[test]
     fn resolve_spawn_info_preserves_existing_selected_model() {
-        // 永続化済みの selected_model はそのまま採用する。
-        let session =
-            make_chat_session_for_spawn(None, Some("user-picked".to_string()), CODEX_BACKEND_ID);
-        let info = resolve_spawn_info(Some(session));
-        assert_eq!(info.1, Some("user-picked".to_string()));
+        // 永続化済みの selected_model はそのまま採用する（既定で上書きしない）。
+        let registry = make_fixed_model_registry();
+        let session = make_chat_session_for_spawn(
+            None,
+            Some(crate::domain::agent_session::CODEX_FIXED_MODELS[1].to_string()),
+            CODEX_BACKEND_ID,
+        );
+        let info = resolve_spawn_info(Some(session), Some(&registry));
+        assert_eq!(
+            info.1,
+            Some(crate::domain::agent_session::CODEX_FIXED_MODELS[1].to_string())
+        );
     }
 
     #[test]
     fn resolve_spawn_info_uses_default_backend_when_session_missing() {
         // 永続化セッションが存在しない場合は新規セッション扱い。
-        // backend_id は claude（既定）にフォールバックする。selected_model は None。
-        let info = resolve_spawn_info(None);
-        assert!(info.1.is_none());
+        // backend_id は claude（既定）にフォールバックし、selected_model も claude の既定へ解決する。
+        let registry = make_fixed_model_registry();
+        let info = resolve_spawn_info(None, Some(&registry));
+        assert_eq!(
+            info.1,
+            Some(crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string())
+        );
         assert_eq!(info.2, CLAUDE_BACKEND_ID.to_string());
     }
 
@@ -10510,6 +10581,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_session_resolves_none_selected_model_to_default() {
+        // spec: モデル未選択状態は廃止。selected_model=None の既存セッションを get_session
+        // すると、応答の selected_model は backend の既定モデル（固定リスト先頭）へ解決される。
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let mut session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        // 旧フォーマット（未選択）を模して None を永続化する。
+        session.selected_model = None;
+        session_store.save_session(temp.path(), &session).unwrap();
+
+        let registry = make_fixed_model_registry();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        let response = get_session_internal_with_data_dir(
+            &session_store,
+            &handles,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+        )
+        .await
+        .unwrap()
+        .expect("session should exist");
+
+        assert_eq!(
+            response.session.selected_model,
+            Some(crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn get_session_errors_when_default_model_unresolvable() {
+        // 契約: 応答の selected_model は常に非 null。registry が在りつつ既定モデルへ解決
+        // できない場合（fixed_models 無し + config 空）、フィールド脱落を防ぐため Err を返す。
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let mut session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        session.selected_model = None;
+        session_store.save_session(temp.path(), &session).unwrap();
+
+        // claude/codex とも fixed_models を持たない mock backend + 空 config → 既定モデル無し。
+        let registry = make_test_registry_with_models(&[], &[]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        let result = get_session_internal_with_data_dir(
+            &session_store,
+            &handles,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_selected_model_for_response_keeps_existing_value() {
+        let registry = make_test_registry_with_models(&[], &[]);
+        let resolved = resolve_selected_model_for_response(
+            Some("explicit-model".to_string()),
+            CLAUDE_BACKEND_ID,
+            Some(&registry),
+        )
+        .unwrap();
+        assert_eq!(resolved, Some("explicit-model".to_string()));
+    }
+
+    #[test]
+    fn resolve_selected_model_for_response_resolves_default_when_none() {
+        let registry = make_fixed_model_registry();
+        let resolved =
+            resolve_selected_model_for_response(None, CLAUDE_BACKEND_ID, Some(&registry)).unwrap();
+        assert_eq!(
+            resolved,
+            Some(crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_selected_model_for_response_errors_when_unresolvable() {
+        let registry = make_test_registry_with_models(&[], &[]);
+        let result = resolve_selected_model_for_response(None, CLAUDE_BACKEND_ID, Some(&registry));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_selected_model_for_response_keeps_none_without_registry() {
+        let resolved = resolve_selected_model_for_response(None, CLAUDE_BACKEND_ID, None).unwrap();
+        assert_eq!(resolved, None);
+    }
+
+    #[tokio::test]
     async fn set_agent_model_syncs_active_process_available_models_from_config() {
         // active process が居る状態で set_agent_model を呼ぶと、proc.available_models が
         // config 由来の最新値で同期される（spec: モデル選択候補は config 単一 owner、
@@ -10543,7 +10719,7 @@ mod tests {
             Some(&registry),
             temp.path(),
             &session.id,
-            Some("claude-4".to_string()),
+            "claude-4".to_string(),
         )
         .await
         .unwrap();
@@ -10575,7 +10751,7 @@ mod tests {
         let registry = make_test_registry_with_models(&["claude-4"], &[]);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
 
-        // 空文字（形式不正）は登録判定に進む前に拒否
+        // 制御文字（形式不正）は登録判定に進む前に拒否
         let err = set_agent_model_internal_with_data_dir(
             None,
             &handles,
@@ -10583,7 +10759,7 @@ mod tests {
             Some(&registry),
             temp.path(),
             &session.id,
-            Some("".to_string()),
+            "bad\u{0001}model".to_string(),
         )
         .await;
         assert!(err.is_err());

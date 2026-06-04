@@ -939,7 +939,10 @@ describe("agent-models-updated event", () => {
 		});
 	});
 
-	it("dispatches SET_SESSION_MODEL with null when no model is selected", () => {
+	it("dispatches SET_SESSION_MODEL with the non-null default model from Rust", () => {
+		// 契約: agent-models-updated の selected_model は常に非 null（Rust が既存
+		// セッションの None をデフォルトに解決してから送る）。null を SET_SESSION_MODEL
+		// に流す経路は存在しない。
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -951,15 +954,21 @@ describe("agent-models-updated event", () => {
 		cb?.({
 			payload: {
 				chat_session_id: "session-1",
-				available_models: [],
-				selected_model: null,
+				available_models: [{ value: "claude-opus-4-8" }],
+				selected_model: "claude-opus-4-8",
 			},
 		});
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "SET_SESSION_MODEL",
 			sessionId: "session-1",
-			modelId: null,
+			modelId: "claude-opus-4-8",
 		});
+		const sessionModelCalls = (refs.dispatch.mock.calls as unknown[][]).filter(
+			(call) => (call[0] as { type: string }).type === "SET_SESSION_MODEL",
+		);
+		for (const call of sessionModelCalls) {
+			expect((call[0] as { modelId: unknown }).modelId).not.toBeNull();
+		}
 	});
 });

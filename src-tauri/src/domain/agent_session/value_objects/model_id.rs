@@ -39,10 +39,6 @@ impl ModelId {
     }
 }
 
-pub(crate) fn escaped_for_log(value: &str) -> String {
-    format!("{value:?}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,10 +82,5 @@ mod tests {
     fn model_id_accepts_exact_max_length() {
         let id: String = "x".repeat(MAX_MODEL_ID_LEN);
         assert!(ModelId::parse(id).is_ok());
-    }
-
-    #[test]
-    fn escaped_for_log_escapes_control_characters() {
-        assert_eq!(escaped_for_log("bad\nmodel"), "\"bad\\nmodel\"");
     }
 }
