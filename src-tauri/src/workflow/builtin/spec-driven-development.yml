@@ -5,7 +5,7 @@ builtin: true
 nodes:
   - name: write_requirements
     type: approval
-    model: default
+    model: claude-opus-4-8
     permission: edit
     instruction: write-requirements
     policy: planning
@@ -13,7 +13,7 @@ nodes:
 
   - name: write_behavior
     type: approval
-    model: default
+    model: claude-opus-4-8
     permission: edit
     instruction: write-behavior
     policy: planning
@@ -24,7 +24,7 @@ nodes:
 
   - name: write_design
     type: approval
-    model: default
+    model: claude-opus-4-8
     permission: edit
     instruction: write-design
     policy: planning
@@ -91,7 +91,7 @@ nodes:
 
   - name: spec_fix_policy
     type: approval
-    model: default
+    model: claude-opus-4-8
     permission: ask
     instruction: spec-fix-policy
     policy: planning
@@ -109,7 +109,7 @@ nodes:
 
   - name: spec_fix
     type: agent
-    model: default
+    model: claude-opus-4-8
     permission: edit
     instruction: spec-fix
     policy: planning
@@ -130,7 +130,7 @@ nodes:
 
   - name: approve_spec
     type: approval
-    model: default
+    model: claude-opus-4-8
     permission: ask
     instruction: spec-approval
     policy: planning
@@ -148,7 +148,7 @@ nodes:
 
   - name: implement
     type: agent
-    model: default
+    model: claude-opus-4-8
     permission: edit
     instruction: implement
     policy: coding
@@ -239,7 +239,7 @@ nodes:
 
   - name: implementation_fix_policy
     type: approval
-    model: default
+    model: claude-opus-4-8
     permission: ask
     instruction: implementation-fix-policy
     policy: coding
@@ -257,7 +257,7 @@ nodes:
 
   - name: fix
     type: agent
-    model: default
+    model: claude-opus-4-8
     permission: edit
     instruction: implement-fix
     policy: coding
@@ -278,7 +278,7 @@ nodes:
 
   - name: implementation_approval
     type: approval
-    model: default
+    model: claude-opus-4-8
     permission: ask
     instruction: implementation-approval
     policy: coding

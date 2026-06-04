@@ -75,59 +75,16 @@ fn initial_model_resolution_warning(
 ) -> Option<String> {
     match resolution {
         backends::InitialModelResolution::Invalid { model, reason } => Some(format!(
-            "backend '{backend_id}' initial model {} is invalid ({reason}); treating as unset until refreshed",
+            "backend '{backend_id}' initial model {} is invalid ({reason}); treating as unset",
             domain::agent_session::escaped_for_log(model)
         )),
         backends::InitialModelResolution::Unregistered { model } => Some(format!(
-            "backend '{backend_id}' initial model {} is not in agents.{backend_id}.models; treating as unset until refreshed",
+            "backend '{backend_id}' initial model {} is not in agents.{backend_id}.models; treating as unset",
             domain::agent_session::escaped_for_log(model)
         )),
         backends::InitialModelResolution::Registered(_) | backends::InitialModelResolution::Unset => {
             None
         }
-    }
-}
-
-/// 起動時のバックエンド単位のモデル一覧同期 spawn。
-/// バックエンドごとに独立した `tokio::spawn` を発行し、片方の失敗・遅延は
-/// もう片方の spawn に影響しない。アプリ起動は spawn 後即時続行する。
-fn spawn_startup_model_refresh_for_backends(
-    app: tauri::AppHandle,
-    handles: Arc<Mutex<agent_sdk::AgentProcessMap>>,
-    registry: Arc<backends::AgentBackendRegistry>,
-    backend_ids: &[&str],
-) {
-    spawn_startup_model_refresh_with(backend_ids, |backend_id| {
-        let registry_clone = registry.clone();
-        let handles_clone = handles.clone();
-        let app_clone = app.clone();
-        async move {
-            backends::model_catalog_sync::refresh_models_for_backend_and_propagate(
-                app_clone,
-                handles_clone,
-                registry_clone,
-                backend_id,
-            )
-            .await;
-        }
-    });
-}
-
-/// 内部ヘルパー: backend_id ごとに独立 task を spawn する純粋ループ。
-/// 各 backend の `task_factory` 呼び出し結果は独立した `tokio::spawn` に渡され、
-/// 片方のタスクが完了・遅延・panic しても他方は影響を受けない。
-///
-/// テストでは `task_factory` に副作用カウンタを返すクロージャを渡して、
-/// 「複数 backend が独立に spawn されること」「ある backend のクロージャが
-/// panic しても他の backend は影響を受けないこと」を検証する。
-fn spawn_startup_model_refresh_with<F, Fut>(backend_ids: &[&str], mut task_factory: F)
-where
-    F: FnMut(String) -> Fut,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
-{
-    for backend_id in backend_ids {
-        let fut = task_factory(backend_id.to_string());
-        tokio::spawn(fut);
     }
 }
 
@@ -146,8 +103,6 @@ pub fn run() {
     let _ = fix_path_env::fix();
 
     let ws_broadcaster = Arc::new(ws_bridge::WsBroadcaster::default());
-    let backend_models_notifier =
-        ws_server::gateway::WsBackendModelsUpdateNotifier::new(Arc::clone(&ws_broadcaster));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -167,9 +122,6 @@ pub fn run() {
         .manage(Arc::new(pty::PtyManager::default()))
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::clone(&ws_broadcaster))
-        .manage::<usecase::backend_models::BackendModelsUpdateNotifierState>(Arc::new(
-            backend_models_notifier,
-        ))
         .manage(Arc::new(tokio::sync::Mutex::new(
             agent_sdk::AgentProcessMap::new(),
         )))
@@ -341,21 +293,6 @@ pub fn run() {
             // 含まれない場合は警告のみ。書き換えは行わない）
             warn_on_unregistered_initial_models(
                 &registry,
-                &[
-                    backends::bridge_common::CLAUDE_BACKEND_ID,
-                    backends::bridge_common::CODEX_BACKEND_ID,
-                ],
-            );
-
-            // 起動時バックグラウンドモデル一覧同期（バックエンド単位で独立、起動をブロックしない）
-            let handles_for_refresh = app
-                .state::<Arc<Mutex<agent_sdk::AgentProcessMap>>>()
-                .inner()
-                .clone();
-            spawn_startup_model_refresh_for_backends(
-                app.handle().clone(),
-                handles_for_refresh,
-                registry.clone(),
                 &[
                     backends::bridge_common::CLAUDE_BACKEND_ID,
                     backends::bridge_common::CODEX_BACKEND_ID,
@@ -705,9 +642,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Arc as StdArc;
-    use std::sync::Mutex as StdMutex;
 
     #[test]
     fn tokio_runtime_context_is_available_after_setup() {
@@ -720,68 +655,6 @@ mod tests {
         let handle = tokio::spawn(async { 42 });
         let result = runtime.block_on(handle).unwrap();
         assert_eq!(result, 42);
-    }
-
-    #[tokio::test]
-    async fn spawn_startup_model_refresh_schedules_independent_task_per_backend() {
-        let scheduled: StdArc<StdMutex<Vec<String>>> = StdArc::new(StdMutex::new(Vec::new()));
-        let completed = StdArc::new(AtomicUsize::new(0));
-
-        let scheduled_clone = scheduled.clone();
-        let completed_clone = completed.clone();
-        spawn_startup_model_refresh_with(&["claude", "codex"], move |backend_id| {
-            scheduled_clone.lock().unwrap().push(backend_id.clone());
-            let completed_inner = completed_clone.clone();
-            async move {
-                completed_inner.fetch_add(1, AtomicOrdering::SeqCst);
-                let _ = backend_id; // 各 task は独立して動く
-            }
-        });
-
-        // factory は backend_id ごとに呼ばれ、戻り値の future が個別 task として spawn される。
-        let scheduled_now = scheduled.lock().unwrap().clone();
-        assert_eq!(
-            scheduled_now,
-            vec!["claude".to_string(), "codex".to_string()]
-        );
-
-        // 各 task が独立して完走する（短い処理なのですぐに完了する）。
-        for _ in 0..50 {
-            if completed.load(AtomicOrdering::SeqCst) == 2 {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        panic!(
-            "spawned tasks did not complete in time: completed={}",
-            completed.load(AtomicOrdering::SeqCst)
-        );
-    }
-
-    #[tokio::test]
-    async fn spawn_startup_model_refresh_isolates_one_failure_from_others() {
-        // 片方の backend は task 内で panic、もう片方は成功する。
-        let other_completed = StdArc::new(AtomicUsize::new(0));
-        let other_completed_clone = other_completed.clone();
-
-        spawn_startup_model_refresh_with(&["claude", "codex"], move |backend_id| {
-            let counter = other_completed_clone.clone();
-            async move {
-                if backend_id == "claude" {
-                    panic!("simulated refresh failure for claude");
-                }
-                counter.fetch_add(1, AtomicOrdering::SeqCst);
-            }
-        });
-
-        // claude 側の panic は codex 側の spawn・完了を妨げない。
-        for _ in 0..50 {
-            if other_completed.load(AtomicOrdering::SeqCst) == 1 {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        panic!("non-failing backend task did not complete despite peer failure");
     }
 
     #[test]
@@ -817,7 +690,7 @@ mod tests {
                 },
             ),
             Some(
-                "backend 'claude' initial model \"missing-from-registry\" is not in agents.claude.models; treating as unset until refreshed"
+                "backend 'claude' initial model \"missing-from-registry\" is not in agents.claude.models; treating as unset"
                     .to_string()
             )
         );
@@ -830,7 +703,7 @@ mod tests {
                 },
             ),
             Some(
-                "backend 'codex' initial model \"bad model\" is invalid (contains whitespace); treating as unset until refreshed"
+                "backend 'codex' initial model \"bad model\" is invalid (contains whitespace); treating as unset"
                     .to_string()
             )
         );

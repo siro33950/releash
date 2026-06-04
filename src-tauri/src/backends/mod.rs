@@ -1,9 +1,7 @@
 pub mod bridge_common;
 pub mod claude;
 pub mod codex;
-pub(crate) mod model_catalog_sync;
 mod permission_flags;
-pub(crate) mod process_io;
 pub mod runtime_coordinator;
 
 use async_trait::async_trait;
@@ -14,7 +12,7 @@ use tauri::State;
 use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
-use crate::domain::agent_session::{escaped_for_log, ModelId, ModelIdList};
+use crate::domain::agent_session::{escaped_for_log, ModelId};
 use crate::session::SessionStore;
 
 /// Backend-specific runtime values consumed by the generic bridge process runner.
@@ -121,20 +119,12 @@ pub trait AgentBackend: Send + Sync {
         response: PermissionResponse,
     ) -> Result<(), String>;
 
-    /// 起動時の CLI 由来モデル一覧取得をサポートするか。
-    /// `false` を返すバックエンドは `refresh_models_to_config_for` から skip され、
-    /// `fetch_models_from_cli` は呼ばれない。
-    fn supports_cli_model_fetch(&self) -> bool {
-        true
-    }
-
-    /// バックエンドCLIから生のモデル識別子リストを取得する。
-    /// 検証・永続化は呼び出し側（Registry）で行うため、本メソッドは
-    /// 取得した生の値を返すだけで config を書き換えない。
-    ///
-    /// `supports_cli_model_fetch()` が `false` のバックエンドでは呼ばれない。
-    async fn fetch_models_from_cli(&self) -> Result<Vec<String>, String> {
-        Err("このバックエンドは起動時CLIモデル取得をサポートしていません".to_string())
+    /// バックエンドが選択肢として提供する固定モデル一覧。
+    /// `Some` を返すバックエンドは config.toml を参照せず、この一覧を
+    /// 表示・検証・モデル解決の供給元とする（完全固定）。
+    /// `None`（デフォルト）の場合は config.toml の `agents.<backend>.models` を参照する。
+    fn fixed_models(&self) -> Option<Vec<String>> {
+        None
     }
 
     /// Bridge 起動時に必要なバックエンド固有の設定を返す。
@@ -215,56 +205,22 @@ impl AgentBackendRegistry {
         }
     }
 
-    /// config に保存されているバックエンドごとのモデルID一覧を取得する。
+    /// 指定バックエンドのモデルID一覧を取得する。
+    /// backend が `fixed_models()` で `Some` を返す場合は config.toml を参照せず
+    /// その固定一覧を返す。`None` の場合のみ config 由来の一覧へフォールバックする。
     /// config 未紐付け／未知バックエンドの場合は `Err` を返し、登録済みモデルが
     /// 0 件の場合と区別できるようにする。
     pub fn config_models_for(&self, backend_id: &str) -> Result<Vec<String>, String> {
+        if let Some(backend) = self.get(backend_id) {
+            if let Some(fixed) = backend.fixed_models() {
+                return Ok(fixed);
+            }
+        }
         let config = self
             .config
             .as_ref()
             .ok_or_else(|| "AppConfig not attached to registry".to_string())?;
         config.models_for_backend(backend_id)
-    }
-
-    /// config の `agents.<backend>.models` を入力検証 → 重複除去した上で原子的に書き換える。
-    /// 検証に失敗した場合・config schema に当該バックエンドが存在しない場合は
-    /// config を変更せず `Err` を返す。他バックエンドの一覧は影響を受けない。
-    pub fn write_models_to_config(
-        &self,
-        backend_id: &str,
-        models: Vec<String>,
-    ) -> Result<Vec<String>, String> {
-        let validated = ModelIdList::parse_many(&models)?.into_strings();
-        let Some(config) = &self.config else {
-            return Err("AppConfig not attached to registry".to_string());
-        };
-        if self.get(backend_id).is_none() {
-            return Err(format!(
-                "バックエンド '{backend_id}' がレジストリに登録されていません"
-            ));
-        }
-        config.set_models_for_backend(backend_id, validated.clone())?;
-        Ok(validated)
-    }
-
-    /// 指定バックエンドのCLIへ問い合わせて結果を config に反映する。
-    /// 失敗時は config を変更せず Err を返す。他バックエンドの一覧には影響を与えない。
-    /// `supports_cli_model_fetch()` が `false` のバックエンドは `Ok(None)` を返す。
-    pub async fn refresh_models_to_config_for(
-        &self,
-        backend_id: &str,
-    ) -> Result<Option<Vec<String>>, String> {
-        let backend = self.get(backend_id).ok_or_else(|| {
-            format!("バックエンド '{backend_id}' がレジストリに登録されていません")
-        })?;
-        if !backend.supports_cli_model_fetch() {
-            return Ok(None);
-        }
-        let raw = backend.fetch_models_from_cli().await?;
-        if raw.is_empty() {
-            return Err("CLI 取得結果が空です".to_string());
-        }
-        self.write_models_to_config(backend_id, raw).map(Some)
     }
 
     /// バックエンドを登録する。同一IDの重複登録は無視する。
@@ -314,7 +270,8 @@ impl AgentBackendRegistry {
             .map(|(_, b, _)| Arc::clone(b))
     }
 
-    /// 指定バックエンドのモデル一覧を返す。供給元は config.toml の
+    /// 指定バックエンドのモデル一覧を返す。供給元は backend の `fixed_models()`
+    /// が `Some` ならその固定一覧、`None` の場合のみ config.toml の
     /// `agents.<backend>.models`（順序保持）。
     /// config 未紐付け／schema 未対応／lock 失敗は `Err` として伝播し、
     /// 「登録済みモデルが 0 件」と区別できるようにする。
@@ -487,8 +444,6 @@ mod tests {
     struct MockBackend {
         backend_id: String,
         backend_name: String,
-        cli_models: Result<Vec<String>, String>,
-        supports_cli_fetch: bool,
     }
 
     #[async_trait]
@@ -522,12 +477,6 @@ mod tests {
         ) -> Result<(), String> {
             Ok(())
         }
-        fn supports_cli_model_fetch(&self) -> bool {
-            self.supports_cli_fetch
-        }
-        async fn fetch_models_from_cli(&self) -> Result<Vec<String>, String> {
-            self.cli_models.clone()
-        }
         async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
             Ok(())
         }
@@ -537,30 +486,6 @@ mod tests {
         Arc::new(MockBackend {
             backend_id: id.to_string(),
             backend_name: name.to_string(),
-            cli_models: Ok(Vec::new()),
-            supports_cli_fetch: true,
-        })
-    }
-
-    fn mock_backend_with_cli(
-        id: &str,
-        name: &str,
-        cli_models: Result<Vec<String>, String>,
-    ) -> Arc<dyn AgentBackend> {
-        Arc::new(MockBackend {
-            backend_id: id.to_string(),
-            backend_name: name.to_string(),
-            cli_models,
-            supports_cli_fetch: true,
-        })
-    }
-
-    fn mock_backend_unsupported_cli(id: &str, name: &str) -> Arc<dyn AgentBackend> {
-        Arc::new(MockBackend {
-            backend_id: id.to_string(),
-            backend_name: name.to_string(),
-            cli_models: Err("never called".to_string()),
-            supports_cli_fetch: false,
         })
     }
 
@@ -912,290 +837,65 @@ mod tests {
         assert_eq!(reg.resolve_backend_for_model("opus-4").unwrap(), None);
     }
 
+    // --- 固定モデル一覧（fixed_models）優先の検証 ---
+
     #[test]
-    fn write_models_to_config_dedupes_and_persists() {
-        let config = make_test_app_config();
+    fn config_models_for_returns_fixed_list_for_real_claude_backend() {
         let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend("claude", "Claude"));
-        reg.set_config(config.clone());
-        let stored = reg
-            .write_models_to_config(
-                "claude",
-                vec!["a".to_string(), "b".to_string(), "a".to_string()],
-            )
-            .unwrap();
-        assert_eq!(stored, vec!["a".to_string(), "b".to_string()]);
-        let cfg = config.get_config().unwrap();
-        assert_eq!(
-            cfg.agents.claude.models,
-            vec!["a".to_string(), "b".to_string()]
-        );
+        reg.register(Arc::new(claude::ClaudeBackend::new()));
+        reg.set_config(make_test_app_config());
+
+        let expected: Vec<String> = crate::domain::agent_session::CLAUDE_FIXED_MODELS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(reg.config_models_for("claude").unwrap(), expected);
     }
 
     #[test]
-    fn write_models_to_config_rejects_invalid_without_changing_state() {
-        let config = make_test_app_config_with_models(&["existing"], &[]);
+    fn config_models_for_returns_fixed_list_for_real_codex_backend() {
         let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend("claude", "Claude"));
-        reg.set_config(config.clone());
-        let err = reg.write_models_to_config("claude", vec!["valid".to_string(), "".to_string()]);
-        assert!(err.is_err());
-        // 既存値は維持されること
-        let cfg = config.get_config().unwrap();
-        assert_eq!(cfg.agents.claude.models, vec!["existing".to_string()]);
+        reg.register(Arc::new(codex::CodexBackend::new()));
+        reg.set_config(make_test_app_config());
+
+        let expected: Vec<String> = crate::domain::agent_session::CODEX_FIXED_MODELS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(reg.config_models_for("codex").unwrap(), expected);
     }
 
     #[test]
-    fn write_models_to_config_rejects_unregistered_backend() {
-        let config = make_test_app_config();
+    fn available_models_returns_fixed_list_and_ignores_config_override() {
+        // config の agents.*.models に別値を入れても固定一覧が優先される。
+        let config = make_test_app_config_with_models(&["should-be-ignored"], &["also-ignored"]);
         let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend("claude", "Claude"));
-        reg.set_config(config.clone());
-        let err = reg.write_models_to_config("nonexistent", vec!["a".to_string()]);
-        assert!(err.is_err());
-        // config が変更されていない（unknown backend は no-op success にならない）
-        let cfg = config.get_config().unwrap();
-        assert!(cfg.agents.claude.models.is_empty());
-        assert!(cfg.agents.codex.models.is_empty());
-    }
+        reg.register(Arc::new(claude::ClaudeBackend::new()));
+        reg.register(Arc::new(codex::CodexBackend::new()));
+        reg.set_config(config);
 
-    #[test]
-    fn write_models_to_config_does_not_affect_other_backend() {
-        let config = make_test_app_config_with_models(&["c1"], &["x1", "x2"]);
-        let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend("claude", "Claude"));
-        reg.register(mock_backend("codex", "Codex"));
-        reg.set_config(config.clone());
-        reg.write_models_to_config("claude", vec!["c2".to_string()])
-            .unwrap();
-        let cfg = config.get_config().unwrap();
-        assert_eq!(cfg.agents.claude.models, vec!["c2".to_string()]);
-        assert_eq!(
-            cfg.agents.codex.models,
-            vec!["x1".to_string(), "x2".to_string()]
-        );
-    }
+        let claude_values: Vec<String> = reg
+            .available_models("claude")
+            .unwrap()
+            .into_iter()
+            .map(|m| m.value)
+            .collect();
+        let expected_claude: Vec<String> = crate::domain::agent_session::CLAUDE_FIXED_MODELS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(claude_values, expected_claude);
 
-    // --- refresh_models_to_config_for: 仕様の中核 Rule の回帰防止テスト ---
-
-    #[tokio::test]
-    async fn refresh_updates_config_on_cli_success() {
-        let config = make_test_app_config_with_models(&[], &["stale"]);
-        let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend_with_cli(
-            "codex",
-            "Codex",
-            Ok(vec!["gpt-5.5".to_string(), "o3".to_string()]),
-        ));
-        reg.set_config(config.clone());
-
-        let result = reg.refresh_models_to_config_for("codex").await.unwrap();
-        assert_eq!(result, Some(vec!["gpt-5.5".to_string(), "o3".to_string()]));
-        let cfg = config.get_config().unwrap();
-        assert_eq!(
-            cfg.agents.codex.models,
-            vec!["gpt-5.5".to_string(), "o3".to_string()]
-        );
-    }
-
-    #[tokio::test]
-    async fn refresh_keeps_existing_models_on_cli_failure() {
-        let config = make_test_app_config_with_models(&[], &["existing"]);
-        let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend_with_cli(
-            "codex",
-            "Codex",
-            Err("CLI が見つかりません".to_string()),
-        ));
-        reg.set_config(config.clone());
-
-        let err = reg.refresh_models_to_config_for("codex").await;
-        assert!(err.is_err());
-        // 失敗時は config を変更しない
-        let cfg = config.get_config().unwrap();
-        assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn refresh_rejects_invalid_cli_results_without_changing_state() {
-        let config = make_test_app_config_with_models(&[], &["existing"]);
-        let mut reg = AgentBackendRegistry::new();
-        // 空文字を含む → 検証失敗
-        reg.register(mock_backend_with_cli(
-            "codex",
-            "Codex",
-            Ok(vec!["valid".to_string(), "".to_string()]),
-        ));
-        reg.set_config(config.clone());
-
-        let err = reg.refresh_models_to_config_for("codex").await;
-        assert!(err.is_err());
-        let cfg = config.get_config().unwrap();
-        assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn refresh_one_backend_does_not_affect_others() {
-        let config = make_test_app_config_with_models(&["c-existing"], &["x-existing"]);
-        let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend_with_cli(
-            "claude",
-            "Claude",
-            Ok(vec!["c-new".to_string()]),
-        ));
-        reg.register(mock_backend_with_cli(
-            "codex",
-            "Codex",
-            Err("fail".to_string()),
-        ));
-        reg.set_config(config.clone());
-
-        let _ = reg.refresh_models_to_config_for("claude").await.unwrap();
-        let _ = reg.refresh_models_to_config_for("codex").await;
-
-        let cfg = config.get_config().unwrap();
-        // 成功側だけ更新、失敗側の既存値は維持
-        assert_eq!(cfg.agents.claude.models, vec!["c-new".to_string()]);
-        assert_eq!(cfg.agents.codex.models, vec!["x-existing".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn refresh_skips_when_backend_does_not_support_cli_fetch() {
-        let config = make_test_app_config_with_models(&["existing"], &[]);
-        let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend_unsupported_cli("claude", "Claude"));
-        reg.set_config(config.clone());
-
-        let result = reg.refresh_models_to_config_for("claude").await.unwrap();
-        assert_eq!(result, None);
-        // CLI 未対応バックエンドは fetch を呼ばないので config は変わらない
-        let cfg = config.get_config().unwrap();
-        assert_eq!(cfg.agents.claude.models, vec!["existing".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn refresh_concurrent_backends_complete_independently() {
-        // 起動時に各バックエンドを並行 spawn しても、片方の遅延/失敗が他方を
-        // ブロックしないこと（spec: 起動シーケンスはモデル取得完了を待たない）。
-        use std::sync::Arc as StdArc;
-        use std::time::Duration;
-        use tokio::sync::Mutex as TokioMutex;
-
-        struct SlowBackend {
-            backend_id: String,
-            delay_ms: u64,
-            result: Result<Vec<String>, String>,
-        }
-
-        #[async_trait]
-        impl AgentBackend for SlowBackend {
-            fn id(&self) -> &str {
-                &self.backend_id
-            }
-            fn name(&self) -> &str {
-                "Slow"
-            }
-            async fn start_session(&self, _config: SessionConfig) -> Result<SessionHandle, String> {
-                Ok(SessionHandle {
-                    chat_session_id: "x".to_string(),
-                    backend_id: self.backend_id.clone(),
-                })
-            }
-            async fn send_message(
-                &self,
-                _session: &SessionHandle,
-                _message: AgentMessage,
-            ) -> Result<(), String> {
-                Ok(())
-            }
-            async fn interrupt(&self, _session: &SessionHandle) -> Result<(), String> {
-                Ok(())
-            }
-            async fn respond_permission(
-                &self,
-                _session: &SessionHandle,
-                _response: PermissionResponse,
-            ) -> Result<(), String> {
-                Ok(())
-            }
-            async fn fetch_models_from_cli(&self) -> Result<Vec<String>, String> {
-                tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
-                self.result.clone()
-            }
-            async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
-                Ok(())
-            }
-        }
-
-        let config = make_test_app_config_with_models(&["c-existing"], &["x-existing"]);
-        let mut registry = AgentBackendRegistry::new();
-        // claude: 即時失敗
-        registry.register(StdArc::new(SlowBackend {
-            backend_id: bridge_common::CLAUDE_BACKEND_ID.to_string(),
-            delay_ms: 0,
-            result: Err("fail".to_string()),
-        }));
-        // codex: 遅延あり成功
-        registry.register(StdArc::new(SlowBackend {
-            backend_id: bridge_common::CODEX_BACKEND_ID.to_string(),
-            delay_ms: 200,
-            result: Ok(vec!["gpt-5.5".to_string()]),
-        }));
-        registry.set_config(config.clone());
-        let registry = Arc::new(registry);
-
-        // 起動シーケンスを模擬: 並行 spawn
-        let r1 = Arc::clone(&registry);
-        let r2 = Arc::clone(&registry);
-        let started = std::time::Instant::now();
-        let setup_completed = StdArc::new(TokioMutex::new(false));
-        let setup_completed_clone = StdArc::clone(&setup_completed);
-
-        let claude_task = tokio::spawn(async move {
-            r1.refresh_models_to_config_for(bridge_common::CLAUDE_BACKEND_ID)
-                .await
-        });
-        let codex_task = tokio::spawn(async move {
-            r2.refresh_models_to_config_for(bridge_common::CODEX_BACKEND_ID)
-                .await
-        });
-
-        // 起動シーケンスは spawn 後に即時続行する
-        {
-            let mut flag = setup_completed_clone.lock().await;
-            *flag = true;
-        }
-        let setup_elapsed = started.elapsed();
-        // setup 自体は遅い backend の完了を待たない（200ms 未満で完了する想定）
-        assert!(
-            setup_elapsed < Duration::from_millis(150),
-            "startup should not wait for slow backend; took {:?}",
-            setup_elapsed
-        );
-        assert!(*setup_completed.lock().await);
-
-        // 片方が失敗、もう片方は遅延の末に成功する。最終的に両方 join できる。
-        let claude_result = claude_task.await.unwrap();
-        let codex_result = codex_task.await.unwrap();
-        assert!(claude_result.is_err());
-        assert_eq!(codex_result.unwrap(), Some(vec!["gpt-5.5".to_string()]));
-
-        // 成功側だけ反映、失敗側は config 既存値を維持
-        let cfg = config.get_config().unwrap();
-        assert_eq!(cfg.agents.claude.models, vec!["c-existing".to_string()]);
-        assert_eq!(cfg.agents.codex.models, vec!["gpt-5.5".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn refresh_rejects_empty_cli_result() {
-        let config = make_test_app_config_with_models(&[], &["existing"]);
-        let mut reg = AgentBackendRegistry::new();
-        reg.register(mock_backend_with_cli("codex", "Codex", Ok(Vec::new())));
-        reg.set_config(config.clone());
-
-        let err = reg.refresh_models_to_config_for("codex").await;
-        assert!(err.is_err());
-        let cfg = config.get_config().unwrap();
-        assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);
+        let codex_values: Vec<String> = reg
+            .available_models("codex")
+            .unwrap()
+            .into_iter()
+            .map(|m| m.value)
+            .collect();
+        let expected_codex: Vec<String> = crate::domain::agent_session::CODEX_FIXED_MODELS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(codex_values, expected_codex);
     }
 }

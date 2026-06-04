@@ -1724,12 +1724,13 @@ mod tests {
     fn create_session_with_initial_model_persists_when_registered() {
         // spec: 既定モデルが現行の一覧に含まれる場合は初期モデルとして使われる。
         // セッション作成時に解決して `selected_model` に永続化する。
+        // 一覧の供給元は registry の fixed_models() なので、固定一覧内のモデルを使う。
         let store = SessionStore::default();
         let dir = tempfile::tempdir().unwrap();
 
+        let registered_model = crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string();
         let mut cfg = crate::config::ReleashConfig::default();
-        cfg.agents.claude.models = vec!["opus-4".to_string(), "haiku".to_string()];
-        cfg.agents.claude.model = Some("opus-4".to_string());
+        cfg.agents.claude.model = Some(registered_model.clone());
         let cfg_tmp = tempfile::NamedTempFile::new().unwrap();
         let config = std::sync::Arc::new(crate::config::AppConfig::new(
             cfg,
@@ -1754,11 +1755,11 @@ mod tests {
             crate::permission::PermissionMode::Edit,
         )
         .unwrap();
-        assert_eq!(session.selected_model, Some("opus-4".to_string()));
+        assert_eq!(session.selected_model, Some(registered_model.clone()));
 
         // 永続化されている (on-disk から再ロードしても保持される)
         let reloaded = store.get_session(dir.path(), &session.id).unwrap().unwrap();
-        assert_eq!(reloaded.selected_model, Some("opus-4".to_string()));
+        assert_eq!(reloaded.selected_model, Some(registered_model));
     }
 
     #[test]
@@ -1898,9 +1899,6 @@ mod tests {
                 _response: PermissionResponse,
             ) -> Result<(), String> {
                 Ok(())
-            }
-            async fn fetch_models_from_cli(&self) -> Result<Vec<String>, String> {
-                Ok(vec![])
             }
             async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
                 Ok(())

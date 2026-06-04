@@ -235,18 +235,6 @@ async function handleInit(cmd) {
 						`bridge: supportedCommands failed: ${e instanceof Error ? e.message : String(e)}\n`,
 					);
 				});
-			currentQuery
-				.initializationResult()
-				.then((result) => {
-					if (result && result.models) {
-						emit({ type: "supported_models", models: result.models });
-					}
-				})
-				.catch((e) => {
-					process.stderr.write(
-						`bridge: initializationResult failed: ${e instanceof Error ? e.message : String(e)}\n`,
-					);
-				});
 		}
 
 		if (currentModelId) {

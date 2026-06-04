@@ -50,14 +50,6 @@ impl From<crate::backends::ModelInfo> for ModelInfoMsg {
     }
 }
 
-impl From<&crate::backends::ModelInfo> for ModelInfoMsg {
-    fn from(info: &crate::backends::ModelInfo) -> Self {
-        Self {
-            value: info.value.clone(),
-        }
-    }
-}
-
 impl From<crate::backends::BackendInfo> for BackendInfoMsg {
     fn from(info: crate::backends::BackendInfo) -> Self {
         Self {
@@ -71,12 +63,6 @@ impl From<crate::backends::BackendInfo> for BackendInfoMsg {
                 .collect(),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackendModelsUpdated {
-    pub backend_id: String,
-    pub available_models: Vec<ModelInfoMsg>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

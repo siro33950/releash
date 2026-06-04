@@ -131,8 +131,8 @@ export class CodexBridgeRuntime {
 		this.currentThreadId = this.initialResumeThreadId;
 		this.currentThread = this.createThread();
 
-		// Codex のモデル一覧は起動時 CLI 同期（`codex debug models`）で config.toml に
-		// 反映するため、bridge からは supported_models を emit しない（ハードコード一覧の撤去）。
+		// Codex のモデル一覧は Rust 側の固定定数（CODEX_FIXED_MODELS）で完全固定するため、
+		// bridge からは supported_models を emit しない（自動取得・CLI同期は撤去済み）。
 		this.emit({
 			type: "session_ready",
 			session_id: this.currentThreadId,

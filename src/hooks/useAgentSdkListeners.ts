@@ -64,11 +64,6 @@ interface ModelsUpdated {
 	selected_model: string | null;
 }
 
-interface BackendModelsUpdated {
-	backend_id: string;
-	available_models: ModelInfo[];
-}
-
 /**
  * SDK listener gating のための「現在 UI 上で表示中の session id 集合」を引く registry。
  * 各 panel が表示開始時に register、unmount/離脱時に cleanup を呼ぶ。listener は本 set に
@@ -431,32 +426,4 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			unlisten?.();
 		};
 	}, [dispatch, viewableRegistry]);
-
-	// Listen to agent-backend-models-updated (backend 全体向け候補更新通知)
-	// 全 backend の候補を保持し、表示対象 backend_id と一致する場合のみ現在候補にも反映する。
-	// session 単位の payload とは event 名を分離しており、選択モデルへの dispatch は行わない。
-	useEffect(() => {
-		let unlisten: UnlistenFn | null = null;
-		let cancelled = false;
-
-		listen<BackendModelsUpdated>("agent-backend-models-updated", (event) => {
-			const { backend_id, available_models } = event.payload;
-			dispatch({
-				type: "SET_BACKEND_MODELS",
-				backendId: backend_id,
-				models: available_models,
-			});
-		}).then((fn) => {
-			if (cancelled) {
-				fn();
-			} else {
-				unlisten = fn;
-			}
-		});
-
-		return () => {
-			cancelled = true;
-			unlisten?.();
-		};
-	}, [dispatch]);
 }

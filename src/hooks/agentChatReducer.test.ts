@@ -617,40 +617,6 @@ describe("agentChatReducer", () => {
 		});
 	});
 
-	describe("SET_BACKEND_MODELS", () => {
-		it("stores backend models and updates visible models for current backend", () => {
-			const models = [{ value: "gpt-5.5" }];
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				selectedBackendId: "codex",
-			};
-			const next = reducer(state, {
-				type: "SET_BACKEND_MODELS",
-				backendId: "codex",
-				models,
-			});
-			expect(next.availableModels).toBe(models);
-			expect(next.availableModelsByBackend.codex).toBe(models);
-		});
-
-		it("stores backend models without changing visible models for another backend", () => {
-			const visible = [{ value: "claude-4" }];
-			const codexModels = [{ value: "gpt-5.5" }];
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				selectedBackendId: "claude",
-				availableModels: visible,
-			};
-			const next = reducer(state, {
-				type: "SET_BACKEND_MODELS",
-				backendId: "codex",
-				models: codexModels,
-			});
-			expect(next.availableModels).toBe(visible);
-			expect(next.availableModelsByBackend.codex).toBe(codexModels);
-		});
-	});
-
 	describe("SET_SESSION_MODEL", () => {
 		it("sets selected model for a session", () => {
 			const next = reducer(INITIAL_STATE, {

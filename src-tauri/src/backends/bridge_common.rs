@@ -13,9 +13,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex;
 
-use crate::backends::model_catalog_sync::{
-    build_agent_models_updated_payload, handle_supported_models_message,
-};
 use crate::backends::runtime_coordinator::{
     acquire_spawn_session_guard, clear_pending_turn_starting, clear_session_closing,
     is_pending_turn_starting, mark_pending_turn_starting, mark_session_closing,
@@ -2127,18 +2124,6 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         }
                         let _ = app_stdout.emit("agent-sdk-message", &msg);
                     }
-                    "supported_models" => {
-                        let registry_state =
-                            app_stdout.try_state::<Arc<crate::backends::AgentBackendRegistry>>();
-                        handle_supported_models_message(
-                            Some(&app_stdout),
-                            &handles_stdout,
-                            registry_state.as_deref().map(|arc| arc.as_ref()),
-                            &csid_stdout,
-                            &msg,
-                        )
-                        .await;
-                    }
                     "session_cleared" => {
                         {
                             let mut map = handles_stdout.lock().await;
@@ -3708,6 +3693,20 @@ pub(crate) async fn set_agent_permission_mode_internal(
     Ok(())
 }
 
+/// `agent-models-updated` イベントの payload を組み立てる。
+/// session 単位の available_models / selected_model を frontend へ同期するために使う。
+pub(crate) fn build_agent_models_updated_payload(
+    chat_session_id: &str,
+    available_models: &[ModelInfo],
+    selected_model: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "chat_session_id": chat_session_id,
+        "available_models": available_models,
+        "selected_model": selected_model,
+    })
+}
+
 #[tauri::command]
 pub async fn set_agent_model(
     app: tauri::AppHandle,
@@ -4596,7 +4595,6 @@ pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backends::model_catalog_sync::*;
     use crate::backends::{
         AgentBackend, AgentBackendRegistry, AgentMessage, PermissionResponse, SessionConfig,
         SessionHandle,
@@ -4613,6 +4611,7 @@ mod tests {
 
     struct MockModelBackend {
         backend_id: String,
+        #[allow(dead_code)]
         models: Vec<String>,
     }
 
@@ -4651,10 +4650,6 @@ mod tests {
             _response: PermissionResponse,
         ) -> Result<(), String> {
             Ok(())
-        }
-
-        async fn fetch_models_from_cli(&self) -> Result<Vec<String>, String> {
-            Ok(self.models.clone())
         }
 
         async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
@@ -10023,73 +10018,6 @@ mod tests {
         }
     }
 
-    // --- extract_model_ids_from_supported_models: all-or-nothing 検証 ---
-
-    #[test]
-    fn extract_model_ids_accepts_value_field() {
-        let v = serde_json::json!({
-            "models": [{"value": "a"}, {"value": "b"}]
-        });
-        let result = extract_model_ids_from_supported_models(&v).unwrap();
-        assert_eq!(result, vec!["a".to_string(), "b".to_string()]);
-    }
-
-    #[test]
-    fn extract_model_ids_accepts_id_field_fallback() {
-        let v = serde_json::json!({
-            "models": [{"id": "a"}, {"value": "b"}]
-        });
-        let result = extract_model_ids_from_supported_models(&v).unwrap();
-        assert_eq!(result, vec!["a".to_string(), "b".to_string()]);
-    }
-
-    #[test]
-    fn extract_model_ids_rejects_missing_models_array() {
-        let v = serde_json::json!({"foo": "bar"});
-        assert!(extract_model_ids_from_supported_models(&v).is_err());
-    }
-
-    #[test]
-    fn extract_model_ids_rejects_entry_without_value_or_id() {
-        // all-or-nothing: 不正要素を 1 件でも含めば Err。silent drop しない。
-        let v = serde_json::json!({
-            "models": [{"value": "a"}, {"name": "missing"}]
-        });
-        assert!(extract_model_ids_from_supported_models(&v).is_err());
-    }
-
-    #[test]
-    fn extract_model_ids_rejects_non_string_value() {
-        let v = serde_json::json!({
-            "models": [{"value": 123}]
-        });
-        assert!(extract_model_ids_from_supported_models(&v).is_err());
-    }
-
-    #[test]
-    fn supported_models_log_messages_are_traceable() {
-        assert_eq!(
-            supported_models_empty_payload_log(CODEX_BACKEND_ID),
-            "supported_models 受信内容のモデル配列が空のため 'codex' のモデル一覧は更新しません"
-        );
-        assert_eq!(
-            supported_models_write_failed_log(CODEX_BACKEND_ID, "write failed"),
-            "supported_models から 'codex' のモデル一覧を反映できませんでした: write failed"
-        );
-        assert_eq!(
-            supported_models_invalid_payload_log(CODEX_BACKEND_ID, "bad payload"),
-            "supported_models 受信内容が不正のため 'codex' のモデル一覧は更新しません: bad payload"
-        );
-        assert_eq!(
-            supported_models_fallback_read_failed_log(CODEX_BACKEND_ID, "read failed"),
-            "supported_models フォールバック読み出し失敗 (backend='codex'): read failed - proc キャッシュと emit は維持"
-        );
-        assert_eq!(
-            startup_model_refresh_failed_log(CODEX_BACKEND_ID, "cli timed out"),
-            "backend 'codex' model refresh failed: cli timed out"
-        );
-    }
-
     // --- set_agent_model_internal: 仕様の中核 Rule の回帰防止テスト ---
 
     fn make_test_registry_with_models(
@@ -10290,92 +10218,153 @@ mod tests {
         assert_eq!(after.selected_model, None);
     }
 
-    // --- supported_models 受信経路の統合テスト ---
+    // --- set_agent_model: 実 backend の固定リスト検証 ---
 
-    fn make_registry_with_config(
-        claude_models: &[&str],
-        codex_models: &[&str],
-    ) -> (Arc<AgentBackendRegistry>, Arc<crate::config::AppConfig>) {
-        let mut cfg = crate::config::ReleashConfig::default();
-        cfg.agents.claude.models = claude_models.iter().map(|s| s.to_string()).collect();
-        cfg.agents.codex.models = codex_models.iter().map(|s| s.to_string()).collect();
+    fn make_fixed_model_registry() -> Arc<AgentBackendRegistry> {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+        let config = Arc::new(crate::config::AppConfig::new(
+            crate::config::ReleashConfig::default(),
+            tmp.path().to_path_buf(),
+        ));
         let mut registry = AgentBackendRegistry::new();
-        registry.register(Arc::new(MockModelBackend {
-            backend_id: CLAUDE_BACKEND_ID.to_string(),
-            models: vec![],
-        }));
-        registry.register(Arc::new(MockModelBackend {
-            backend_id: CODEX_BACKEND_ID.to_string(),
-            models: vec![],
-        }));
-        registry.set_config(config.clone());
-        (Arc::new(registry), config)
+        registry.register(Arc::new(crate::backends::claude::ClaudeBackend::new()));
+        registry.register(Arc::new(crate::backends::codex::CodexBackend::new()));
+        registry.set_config(config);
+        Arc::new(registry)
     }
 
-    #[test]
-    fn apply_supported_models_writes_config_and_returns_config_derived() {
-        let (registry, config) = make_registry_with_config(&[], &["stale"]);
-        let msg = serde_json::json!({
-            "type": "supported_models",
-            "models": [{"value": "gpt-5.5"}, {"value": "o3"}]
-        });
+    #[tokio::test]
+    async fn set_agent_model_accepts_claude_fixed_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let registry = make_fixed_model_registry();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let model = crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string();
 
-        let models = apply_supported_models_to_config(Some(&*registry), CODEX_BACKEND_ID, &msg)
-            .expect("models should be returned on success");
+        set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            Some(model.clone()),
+        )
+        .await
+        .unwrap();
 
-        // 戻り値が config 由来（書き込み後）の最新一覧であること
-        let values: Vec<String> = models.iter().map(|m| m.value.clone()).collect();
-        assert_eq!(values, vec!["gpt-5.5".to_string(), "o3".to_string()]);
-        // config が書き換わっていること
-        let cfg = config.get_config().unwrap();
-        assert_eq!(
-            cfg.agents.codex.models,
-            vec!["gpt-5.5".to_string(), "o3".to_string()]
-        );
+        let updated = session_store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.selected_model, Some(model));
     }
 
-    #[test]
-    fn apply_supported_models_keeps_config_on_invalid_payload() {
-        let (registry, config) = make_registry_with_config(&[], &["existing"]);
-        // models 配列無し → all-or-nothing で拒否
-        let msg = serde_json::json!({"type": "supported_models"});
+    #[tokio::test]
+    async fn set_agent_model_rejects_model_outside_claude_fixed_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let registry = make_fixed_model_registry();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
 
-        let models = apply_supported_models_to_config(Some(&*registry), CODEX_BACKEND_ID, &msg)
-            .expect("config 読み出しに成功するため Some が返る");
+        let err = set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            Some("not-a-fixed-claude-model".to_string()),
+        )
+        .await;
+        assert!(err.is_err());
 
-        // 拒否時は現在 config に登録されている値が返る（暗黙のフォールバックは無し）
-        let values: Vec<String> = models.iter().map(|m| m.value.clone()).collect();
-        assert_eq!(values, vec!["existing".to_string()]);
-        // config は変更されない
-        let cfg = config.get_config().unwrap();
-        assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);
+        let after = session_store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.selected_model, None);
     }
 
-    #[test]
-    fn apply_supported_models_keeps_config_when_entry_invalid() {
-        let (registry, config) = make_registry_with_config(&[], &["existing"]);
-        // 制御文字含み → 形式検証で拒否
-        let msg = serde_json::json!({
-            "models": [{"value": "valid"}, {"value": "bad\u{0001}id"}]
-        });
+    #[tokio::test]
+    async fn set_agent_model_accepts_codex_fixed_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CODEX_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let registry = make_fixed_model_registry();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let model = crate::domain::agent_session::CODEX_FIXED_MODELS[0].to_string();
 
-        let models = apply_supported_models_to_config(Some(&*registry), CODEX_BACKEND_ID, &msg)
-            .expect("config 読み出しに成功するため Some が返る");
+        set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            Some(model.clone()),
+        )
+        .await
+        .unwrap();
 
-        let values: Vec<String> = models.iter().map(|m| m.value.clone()).collect();
-        assert_eq!(values, vec!["existing".to_string()]);
-        let cfg = config.get_config().unwrap();
-        assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);
+        let updated = session_store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.selected_model, Some(model));
     }
 
-    #[test]
-    fn apply_supported_models_returns_none_when_registry_unavailable() {
-        let msg = serde_json::json!({"models": [{"value": "a"}]});
-        let models = apply_supported_models_to_config(None, CODEX_BACKEND_ID, &msg);
-        // registry 未紐付け時は更新指示なし (None) — 呼び出し側は cache/emit を上書きしない
-        assert!(models.is_none());
+    #[tokio::test]
+    async fn set_agent_model_rejects_model_outside_codex_fixed_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CODEX_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let registry = make_fixed_model_registry();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        let err = set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            Some("not-a-fixed-codex-model".to_string()),
+        )
+        .await;
+        assert!(err.is_err());
+
+        let after = session_store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.selected_model, None);
     }
 
     #[test]
@@ -10407,229 +10396,6 @@ mod tests {
         let payload = build_agent_models_updated_payload("sess-2", &[], None);
         assert!(payload["selected_model"].is_null());
         assert_eq!(payload["available_models"].as_array().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn build_agent_backend_models_updated_payload_includes_backend_id_and_models() {
-        // spec: backend 全体向け通知は backend_id を含み、session 単位 payload とは
-        // 分離された event 名 (`agent-backend-models-updated`) で配信される。
-        let models = vec![
-            ModelInfo {
-                value: "gpt-5.5".to_string(),
-            },
-            ModelInfo {
-                value: "o3".to_string(),
-            },
-        ];
-        let payload = build_agent_backend_models_updated_payload(CODEX_BACKEND_ID, &models);
-
-        assert_eq!(payload["backend_id"], CODEX_BACKEND_ID);
-        // chat_session_id / selected_model フィールドは含めない（session 単位の責務）。
-        assert!(payload.get("chat_session_id").is_none());
-        assert!(payload.get("selected_model").is_none());
-        let values: Vec<String> = payload["available_models"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v["value"].as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(values, vec!["gpt-5.5".to_string(), "o3".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn sync_active_processes_for_backend_noops_when_no_active_session() {
-        // spec: active session が 0 件のとき、対象バックエンドに紐づく更新先が無いため
-        // cache 同期は no-op になり、呼び出し側は backend-wide 通知のみを emit する。
-        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
-        sync_active_processes_for_backend(
-            &handles,
-            CODEX_BACKEND_ID,
-            &[ModelInfo {
-                value: "gpt-5.5".to_string(),
-            }],
-        )
-        .await;
-        assert!(handles.lock().await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn sync_active_processes_for_backend_updates_only_matched_backend() {
-        // spec: 起動時 CLI 同期で取得した一覧は、対象バックエンドの active session
-        // にのみ反映され、他バックエンドの session は影響を受けない。
-        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
-        {
-            let mut map = handles.lock().await;
-            let mut codex_proc = make_test_agent_process();
-            codex_proc.backend_id = CODEX_BACKEND_ID.to_string();
-            codex_proc.available_models = vec![ModelInfo {
-                value: "stale".to_string(),
-            }];
-            codex_proc.selected_model = Some("user-pick".to_string());
-            map.insert("codex-sess".to_string(), codex_proc);
-
-            let mut claude_proc = make_test_agent_process();
-            claude_proc.backend_id = CLAUDE_BACKEND_ID.to_string();
-            claude_proc.available_models = vec![ModelInfo {
-                value: "claude-original".to_string(),
-            }];
-            map.insert("claude-sess".to_string(), claude_proc);
-        }
-
-        let new_models = vec![
-            ModelInfo {
-                value: "gpt-5.5".to_string(),
-            },
-            ModelInfo {
-                value: "o3".to_string(),
-            },
-        ];
-        sync_active_processes_for_backend(&handles, CODEX_BACKEND_ID, &new_models).await;
-
-        let map = handles.lock().await;
-        let codex = map.get("codex-sess").unwrap();
-        assert_eq!(codex.selected_model, Some("user-pick".to_string()));
-        let codex_values: Vec<String> = codex
-            .available_models
-            .iter()
-            .map(|m| m.value.clone())
-            .collect();
-        assert_eq!(codex_values, vec!["gpt-5.5".to_string(), "o3".to_string()]);
-
-        // claude 側は影響を受けない
-        let claude = map.get("claude-sess").unwrap();
-        let claude_values: Vec<String> = claude
-            .available_models
-            .iter()
-            .map(|m| m.value.clone())
-            .collect();
-        assert_eq!(claude_values, vec!["claude-original".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn handle_supported_models_message_updates_proc_cache_from_config() {
-        // 受信→config 書き換え→proc.available_models 更新までを実関数経路で検証。
-        // spec Rule: 既に動いているバックエンドからの一覧通知も同じ規準で取り込まれ、
-        // ユーザーが見ているモデル選択候補も最新化された内容に追従する。
-        let (registry, config) = make_registry_with_config(&[], &["stale"]);
-        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
-        {
-            let mut map = handles.lock().await;
-            let mut proc = make_test_agent_process();
-            proc.backend_id = CODEX_BACKEND_ID.to_string();
-            proc.available_models = vec![ModelInfo {
-                value: "stale".to_string(),
-            }];
-            map.insert("sess-1".to_string(), proc);
-        }
-
-        let msg = serde_json::json!({
-            "type": "supported_models",
-            "models": [{"value": "gpt-5.5"}, {"value": "o3"}]
-        });
-
-        handle_supported_models_message(
-            None::<&tauri::AppHandle>,
-            &handles,
-            Some(&*registry),
-            "sess-1",
-            &msg,
-        )
-        .await;
-
-        // config に書き込まれている
-        let cfg = config.get_config().unwrap();
-        assert_eq!(
-            cfg.agents.codex.models,
-            vec!["gpt-5.5".to_string(), "o3".to_string()]
-        );
-        // proc.available_models が config 由来の最新値に同期されている
-        let map = handles.lock().await;
-        let proc = map.get("sess-1").unwrap();
-        let values: Vec<String> = proc
-            .available_models
-            .iter()
-            .map(|m| m.value.clone())
-            .collect();
-        assert_eq!(values, vec!["gpt-5.5".to_string(), "o3".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn handle_supported_models_message_keeps_proc_cache_aligned_with_config_on_invalid() {
-        // 不正 payload の場合、config は変更されず proc.available_models は
-        // 現在 config に登録されている値に揃う（暗黙のフォールバックは無し）。
-        let (registry, config) = make_registry_with_config(&[], &["existing"]);
-        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
-        {
-            let mut map = handles.lock().await;
-            let mut proc = make_test_agent_process();
-            proc.backend_id = CODEX_BACKEND_ID.to_string();
-            proc.available_models = vec![ModelInfo {
-                value: "stale".to_string(),
-            }];
-            map.insert("sess-1".to_string(), proc);
-        }
-
-        // models 配列無し → all-or-nothing で拒否
-        let msg = serde_json::json!({"type": "supported_models"});
-        handle_supported_models_message(
-            None::<&tauri::AppHandle>,
-            &handles,
-            Some(&*registry),
-            "sess-1",
-            &msg,
-        )
-        .await;
-
-        let cfg = config.get_config().unwrap();
-        assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);
-        let map = handles.lock().await;
-        let proc = map.get("sess-1").unwrap();
-        let values: Vec<String> = proc
-            .available_models
-            .iter()
-            .map(|m| m.value.clone())
-            .collect();
-        assert_eq!(values, vec!["existing".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn handle_supported_models_message_rejects_empty_models_array() {
-        // spec Rule: 起動時 CLI 同期と同じ受け入れ規準。`models: []` は空一覧として
-        // 受け入れず、当該 backend の config は既存値のまま維持される。proc.available_models
-        // も config 由来の既存値に揃う。
-        let (registry, config) = make_registry_with_config(&[], &["existing"]);
-        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
-        {
-            let mut map = handles.lock().await;
-            let mut proc = make_test_agent_process();
-            proc.backend_id = CODEX_BACKEND_ID.to_string();
-            proc.available_models = vec![ModelInfo {
-                value: "stale".to_string(),
-            }];
-            map.insert("sess-1".to_string(), proc);
-        }
-
-        let msg = serde_json::json!({"type": "supported_models", "models": []});
-        handle_supported_models_message(
-            None::<&tauri::AppHandle>,
-            &handles,
-            Some(&*registry),
-            "sess-1",
-            &msg,
-        )
-        .await;
-
-        let cfg = config.get_config().unwrap();
-        assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);
-        let map = handles.lock().await;
-        let proc = map.get("sess-1").unwrap();
-        let values: Vec<String> = proc
-            .available_models
-            .iter()
-            .map(|m| m.value.clone())
-            .collect();
-        // 空配列を proc キャッシュに上書きせず、config 由来の既存値に揃う。
-        assert_eq!(values, vec!["existing".to_string()]);
     }
 
     // --- get_persisted_spawn_info: 新規未起動セッションと選択解除後の区別 ---
@@ -10707,7 +10473,7 @@ mod tests {
             Some(CODEX_BACKEND_ID.to_string()),
         )
         .unwrap();
-        let (registry, _config) = make_registry_with_config(&[], &["from-config"]);
+        let registry = make_test_registry_with_models(&[], &["from-config"]);
 
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         // active process の stale キャッシュ

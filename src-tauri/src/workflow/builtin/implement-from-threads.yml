@@ -5,7 +5,7 @@ builtin: true
 nodes:
   - name: implement
     type: approval
-    model: default
+    model: claude-opus-4-8
     permission: edit
     instruction: implement-from-threads
     policy: coding

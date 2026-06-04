@@ -160,11 +160,6 @@ export interface BackendListResponse {
 	default_id: string | null;
 }
 
-export interface BackendModelsUpdated {
-	backend_id: string;
-	available_models: ModelInfo[];
-}
-
 export interface AgentSessionStartRequest {
 	worktree_path: string;
 	backend_id?: string | null;
@@ -431,7 +426,6 @@ export type WsMessage =
 	| { type: "agent_state_sync"; payload: AgentStateSync }
 	| { type: "backend_list_request"; payload: BackendListRequest }
 	| { type: "backend_list_response"; payload: BackendListResponse }
-	| { type: "backend_models_updated"; payload: BackendModelsUpdated }
 	| { type: "agent_session_start_request"; payload: AgentSessionStartRequest }
 	| { type: "agent_session_start_response"; payload: AgentSessionStartResponse }
 	| { type: "agent_message_request"; payload: AgentMessageRequest }

@@ -71,7 +71,6 @@ export type AgentChatAction =
 			models: ModelInfo[];
 			backendId?: string | null;
 	  }
-	| { type: "SET_BACKEND_MODELS"; backendId: string; models: ModelInfo[] }
 	| {
 			type: "SET_SESSION_MODEL";
 			sessionId: string;
@@ -259,8 +258,6 @@ export function reducer(
 			if (!backendId) return { ...state, availableModels: action.models };
 			return withBackendModels(state, backendId, action.models);
 		}
-		case "SET_BACKEND_MODELS":
-			return withBackendModels(state, action.backendId, action.models);
 		case "SET_SESSION_MODEL":
 			return {
 				...state,
