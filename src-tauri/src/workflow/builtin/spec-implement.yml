@@ -16,14 +16,14 @@ nodes:
       - name: review_spec
         type: agent
         model: gpt-5.4-mini
-        permission: edit
+        permission: full
         instruction: spec-implement-review-spec
         policy: spec-implement-reviewer
         knowledge: releash-thread-cli
       - name: review_design
         type: agent
         model: gpt-5.4-mini
-        permission: edit
+        permission: full
         instruction: spec-implement-review-design
         policy: spec-implement-reviewer
         knowledge: releash-thread-cli
@@ -35,7 +35,7 @@ nodes:
   - name: fix
     type: agent
     model: gpt-5.5
-    permission: edit
+    permission: full
     instruction: spec-implement-fix
     policy: coding
     knowledge: releash-thread-cli
@@ -49,6 +49,6 @@ nodes:
   - name: report
     type: approval
     model: gpt-5.5
-    permission: ask
+    permission: full
     instruction: spec-implement-report
     knowledge: releash-thread-cli
