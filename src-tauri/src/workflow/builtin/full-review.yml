@@ -1,5 +1,6 @@
-name: multi-agent-code-review
-description: Multi-agent collaborative code review workflow. 12 reviewer agents (6 viewpoints × 2 backends) post review Threads. 2 verifier agents independently verify each Thread with tool execution and assign one of four states (VERIFIED / REFUTED / MANUAL_JUDGMENT / INFORMATIONAL). A Summary agent then walks through each Thread interactively with the human, discussing findings until an explicit policy is agreed, then posts the conclusion to the Thread as a fix-policy Comment or a rationale-backed Resolve.
+name: full-review
+description: 全観点を claude-opus-4-8 / gpt-5.5 でレビューし、モデル単位の妥当性チェックを行う。Summary 段で人間が各指摘を逐次確認して判断する。
+builtin: true
 
 nodes:
   # ===== Posting phase: 6 viewpoints × 2 backends = 12 reviewers in parallel =====
@@ -10,86 +11,86 @@ nodes:
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-review-acceptance
+        instruction: full-review-review-acceptance
       - name: review-acceptance-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-review-acceptance
+        instruction: full-review-review-acceptance
       - name: review-structure-opus
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-review-structure
+        instruction: full-review-review-structure
       - name: review-structure-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-review-structure
+        instruction: full-review-review-structure
       - name: review-quality-opus
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-review-quality
+        instruction: full-review-review-quality
       - name: review-quality-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-review-quality
+        instruction: full-review-review-quality
       - name: review-test-opus
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-review-test
+        instruction: full-review-review-test
       - name: review-test-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-review-test
+        instruction: full-review-review-test
       - name: review-security-opus
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-review-security
+        instruction: full-review-review-security
       - name: review-security-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-review-security
+        instruction: full-review-review-security
       - name: review-architecture-opus
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-review-architecture
+        instruction: full-review-review-architecture
       - name: review-architecture-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-review-architecture
+        instruction: full-review-review-architecture
     aggregate:
       all_match: ".*"
       then: verify-and-classify
@@ -106,16 +107,16 @@ nodes:
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-verify-and-classify
+        instruction: full-review-verify-and-classify
       - name: verify-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: multi-agent-reviewer
+        policy: full-review-reviewer
         knowledge: releash-thread-cli
-        instruction: mar-verify-and-classify
+        instruction: full-review-verify-and-classify
     aggregate:
       all_match: ".*"
       then: review-summary
@@ -123,12 +124,12 @@ nodes:
 
   # ===== Summary: terminal step. Walks through each Thread interactively with
   # the human, discussing findings until an explicit policy is agreed, then
-  # posts the conclusion to the Thread (fix-policy Comment or rationale-backed
+  # posts the conclusion to the Thread (policy Comment or rationale-backed
   # Resolve). All actions require explicit human approval.
   - name: review-summary
     type: approval
     model: claude-opus-4-8
     permission: edit
-    policy: multi-agent-summary
+    policy: full-review-summary
     knowledge: releash-thread-cli
-    instruction: mar-summary
+    instruction: full-review-summary

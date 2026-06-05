@@ -1,4 +1,4 @@
-{{project_name}} プロジェクトの Open Thread を集約して必要な実装を行い、各 Thread に対応反映（resolve または申し送り Comment）まで完結させる。
+{{project_name}} プロジェクトのフルレビューで残った Open Thread を集約して必要な実装を行い、各 Thread を resolve するか Open のまま残すかまで判断する。
 
 ## 入力
 
@@ -10,7 +10,7 @@
 - 推測で結論しない。Thread の `review get` / `review history` 出力を実際に読み、根拠を持って判断する
 - ロジックは Rust 側に配置し、フロントエンドはインターフェースに徹する
 - 実装着手前に必ず実装計画を人間に提示し、合意を得る。合意なしに編集を開始しない
-- Thread の対応見送り判断は必ず根拠を1文以上添えて申し送り Comment を投稿する（無言で resolve / 放置しない）
+- Thread の最終状態は Open / resolve の二択とする。対応済み・対応見送りはいずれも根拠を添えて resolve し、後で対応するもの・対応中のものは Open のまま残す
 - 既存仕様（Spec ファイル・既存テスト）と矛盾する Thread 要求があれば、矛盾を計画で明示し人間判断を仰ぐ
 
 ## プロセス
@@ -46,8 +46,12 @@
 - ...
 
 ### 対応見送り Thread
-- `<thread-id>`: <見送る理由（implement step で申し送り Comment を投稿する根拠）>
+- `<thread-id>`: <見送る理由（resolve する根拠）>
 - 見送りがなければ `なし`
+
+### Open のまま残す Thread
+- `<thread-id>`: <後で対応する / 対応中として残す理由>
+- なければ `なし`
 
 ### Thread 間の衝突 / 依存
 - <衝突点とその解消方針、または依存関係に基づく実装順序>
@@ -65,8 +69,9 @@
 ### 5. Thread への対応反映
 
 - 要求を満たした → `{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome <outcome> --summary "<対応要約>" --json`
-- 対応見送り / 部分対応 → `{{path_alias.releash}} review comment <thread-id> --session-id "$RELEASH_SESSION_ID" --content "<申し送り内容>" --json`
-- 申し送り Comment は根拠を1文以上含める
+- 対応を見送る → `{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome <outcome> --summary "<見送る理由>" --json`
+- 後で対応する / 対応中 → 状態変更せず Open のまま残す
+- 申し送り Comment は投稿しない
 
 ### 6. 処理結果サマリの出力
 
@@ -82,17 +87,18 @@
 - ...
 
 ### Thread 処理結果
-| thread-id | action | outcome / 申し送り |
+| thread-id | action | outcome / 理由 |
 |---|---|---|
 | `<id>` | `resolved` | `<outcome>` / `<summary>` |
-| `<id>` | `commented` | `<申し送り内容>` |
+| `<id>` | `left_open` | `<Open のまま残す理由>` |
 
-### 残課題 / 申し送り
-- <次フェーズへの引き継ぎがあれば>
+### 残 Open Thread
+- <後で対応する / 対応中の Thread があれば理由付きで列挙>
 - なければ `なし`
 ```
 
 ## 注意事項
 
 - `outcome` の値は Thread の解決状況を表す自由文（例: `resolved`, `wontfix`, `duplicate`）。Thread の文脈に合わせて適切なものを選ぶ
-- 同意・異議は専用フラグではなく Comment 本文で表現する
+- 対応見送りも resolve として扱い、根拠を `--summary` に含める
+- 後で対応する Thread や対応中の Thread は Open のまま残す

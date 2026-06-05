@@ -1,13 +1,54 @@
 name: spec-implement
-description: Spec-driven implementation workflow (implement from an approved Spec directory)
+description: Spec を元に実装し、軽量レビューループ（最大 2 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。
 builtin: true
 
 nodes:
   - name: implement
     type: agent
-    model: claude-opus-4-8
+    model: gpt-5.5
     permission: edit
     instruction: implement
     policy: coding
-    input_contracts:
-      - spec-directory
+
+  - name: review_parallel
+    type: parallel
+    parallel_children:
+      - name: review_spec
+        type: agent
+        model: gpt-5.4-mini
+        permission: edit
+        instruction: spec-implement-review-spec
+        policy: spec-implement-reviewer
+        knowledge: releash-thread-cli
+      - name: review_design
+        type: agent
+        model: gpt-5.4-mini
+        permission: edit
+        instruction: spec-implement-review-design
+        policy: spec-implement-reviewer
+        knowledge: releash-thread-cli
+    aggregate:
+      all_match: LGTM
+      then: report
+      else: fix
+
+  - name: fix
+    type: agent
+    model: gpt-5.5
+    permission: edit
+    instruction: spec-implement-fix
+    policy: coding
+    knowledge: releash-thread-cli
+    rules:
+      - match: ".*"
+        next: review_parallel
+    cycle_guard:
+      max_iterations: 2
+      on_exhausted: report
+
+  - name: report
+    type: approval
+    model: gpt-5.5
+    permission: ask
+    instruction: spec-implement-report
+    knowledge: releash-thread-cli

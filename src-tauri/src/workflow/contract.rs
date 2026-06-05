@@ -364,102 +364,6 @@ mod tests {
     // ---- [08] validate_contract_value: pure validator (CLI / engine 共通入口) ----
 
     #[test]
-    fn validate_contract_value_accepts_compliant_review_verdict_lgtm() {
-        match validate_contract_value("review-verdict", json!({"verdict": "LGTM"})) {
-            ContractValidationResult::Valid {
-                result,
-                structured_output,
-            } => {
-                assert_eq!(result, Some("LGTM".to_string()));
-                assert_eq!(structured_output["verdict"], "LGTM");
-            }
-            other => panic!("expected Valid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_contract_value_accepts_compliant_review_verdict_needs_fix() {
-        match validate_contract_value(
-            "review-verdict",
-            json!({"verdict": "NEEDS_FIX", "findings": [{"severity": "error", "message": "bug"}]}),
-        ) {
-            ContractValidationResult::Valid { result, .. } => {
-                assert_eq!(result, Some("NEEDS_FIX".to_string()));
-            }
-            other => panic!("expected Valid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_contract_value_rejects_review_verdict_missing_verdict() {
-        match validate_contract_value("review-verdict", json!({"summary": "looks ok"})) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "missing_field");
-            }
-            other => panic!("expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_contract_value_rejects_invalid_verdict() {
-        match validate_contract_value("review-verdict", json!({"verdict": "MAYBE"})) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_enum");
-            }
-            other => panic!("expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_contract_value_rejects_needs_fix_without_findings() {
-        match validate_contract_value("review-verdict", json!({"verdict": "NEEDS_FIX"})) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "missing_array");
-            }
-            other => panic!("expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_contract_value_rejects_needs_fix_with_empty_findings() {
-        match validate_contract_value(
-            "review-verdict",
-            json!({"verdict": "NEEDS_FIX", "findings": []}),
-        ) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "missing_array");
-            }
-            other => panic!("expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_contract_value_rejects_finding_missing_severity() {
-        match validate_contract_value(
-            "review-verdict",
-            json!({"verdict": "NEEDS_FIX", "findings": [{"message": "bug"}]}),
-        ) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_array_item");
-            }
-            other => panic!("expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_contract_value_rejects_finding_missing_message() {
-        match validate_contract_value(
-            "review-verdict",
-            json!({"verdict": "NEEDS_FIX", "findings": [{"severity": "error"}]}),
-        ) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_array_item");
-            }
-            other => panic!("expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn validate_contract_value_accepts_fix_result_statuses() {
         let definition = r#"
 ```contract-validation
@@ -587,90 +491,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_contract_value_accepts_approved_fix_policy() {
-        let input = json!({
-            "policy": "Fix only NEEDS_FIX findings.",
-            "review_step": "code_review_parallel",
-            "findings": [],
-            "extra": {"nested": "value"}
-        });
-        match validate_contract_value("approved-fix-policy", input.clone()) {
-            ContractValidationResult::Valid {
-                result,
-                structured_output,
-            } => {
-                assert_eq!(result, Some("approved".to_string()));
-                assert_eq!(structured_output, input);
-            }
-            other => panic!("expected Valid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_contract_value_rejects_approved_fix_policy_missing_fields() {
-        match validate_contract_value(
-            "approved-fix-policy",
-            json!({"review_step": "code_review_parallel", "findings": []}),
-        ) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "missing_field");
-            }
-            other => panic!("expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_contract_value_rejects_approved_fix_policy_invalid_review_step() {
-        match validate_contract_value(
-            "approved-fix-policy",
-            json!({
-                "policy": "Fix only approved findings.",
-                "review_step": "unknown_parallel",
-                "findings": []
-            }),
-        ) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_enum");
-            }
-            other => panic!("expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_contract_value_rejects_approved_fix_policy_non_array_findings() {
-        match validate_contract_value(
-            "approved-fix-policy",
-            json!({
-                "policy": "Fix only approved findings.",
-                "review_step": "code_review_parallel",
-                "findings": "none"
-            }),
-        ) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_array");
-            }
-            other => panic!("expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_contract_value_rejects_approved_fix_policy_malformed_finding() {
-        match validate_contract_value(
-            "approved-fix-policy",
-            json!({
-                "policy": "Fix only approved findings.",
-                "review_step": "code_review_parallel",
-                "findings": [{"severity": "error", "message": "bug", "action": "fix"}]
-            }),
-        ) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_array_item");
-            }
-            other => panic!("expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn validate_contract_value_rejects_non_string_spec_dir() {
         match validate_contract_value("spec-directory", json!({"spec_dir": 123})) {
             ContractValidationResult::Invalid(v) => {
@@ -724,11 +544,11 @@ mod tests {
     #[test]
     fn resolve_step_output_contract_from_events_resolves_compliant_contract() {
         let events = vec![run_started_event(workflow_with_review_contract(Some(
-            "review-verdict",
+            "spec-directory",
         )))];
         let contract = resolve_step_output_contract_from_events(&events, "review")
             .expect("contract should be resolved");
-        assert_eq!(contract, "review-verdict");
+        assert_eq!(contract, "spec-directory");
     }
 
     /// spec [08]: RunStarted event がない event 列は `RunNotFound`。

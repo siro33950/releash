@@ -8009,32 +8009,34 @@ mod tests {
         }
     }
 
-    fn make_spec_driven_spec_fix_policy_exec(
-        execution_id: &str,
-        current_session_id: &str,
-    ) -> WorkflowExecution {
-        make_spec_driven_fix_policy_exec(execution_id, current_session_id, "spec_fix_policy")
-    }
-
-    fn make_spec_driven_fix_policy_exec(
+    fn make_minimal_approval_exec(
         execution_id: &str,
         current_session_id: &str,
         step_name: &str,
     ) -> WorkflowExecution {
-        let workflow =
-            crate::workflow::builtin::load_builtin_workflow_resolved("spec-driven-development")
-                .expect("builtin workflow must load")
-                .expect("builtin workflow exists");
-        let current_step_index = workflow
-            .nodes
-            .iter()
-            .position(|step| step.name == step_name)
-            .unwrap_or_else(|| panic!("{step_name} step exists"));
+        let workflow = Workflow {
+            variables: Default::default(),
+            name: "test-workflow".to_string(),
+            description: "minimal approval fixture".to_string(),
+            builtin: false,
+            nodes: vec![
+                NodeDefinition {
+                    name: step_name.to_string(),
+                    node_type: NodeType::Approval,
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "next-step".to_string(),
+                    node_type: NodeType::Agent,
+                    ..Default::default()
+                },
+            ],
+        };
         WorkflowExecution {
             id: execution_id.to_string(),
             workflow,
             state: WorkflowExecutionState::WaitingApproval,
-            current_step_index,
+            current_step_index: 0,
             step_execution_counts: HashMap::from([(step_name.to_string(), 1)]),
             step_history: Vec::new(),
             started_at: 1000.0,
@@ -9654,9 +9656,10 @@ mod tests {
     #[test]
     fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut exec = make_spec_driven_spec_fix_policy_exec(
+        let mut exec = make_minimal_approval_exec(
             "00000000-0000-0000-0000-000000000917",
             "policy-session",
+            "approval-step",
         );
         let secret_env_value = "MY_TOKEN_VALUE_123456".to_string();
         let mut structured = serde_json::json!({
@@ -9681,13 +9684,13 @@ mod tests {
         let entry = exec
             .step_history
             .iter()
-            .find(|entry| entry.step_name == "spec_fix_policy")
+            .find(|entry| entry.step_name == "approval-step")
             .unwrap();
         let log = WorkflowEventLog::new(tmp.path());
         log.append(&WorkflowEvent::RunStarted {
             run_id: exec.id.clone(),
             workflow_name: exec.workflow.name.clone(),
-            workflow_file_stem: "spec-driven-development".to_string(),
+            workflow_file_stem: "test-workflow".to_string(),
             worktree_path: "/repo".to_string(),
             workflow_definition: exec.workflow.clone(),
             timestamp: 1000.0,
@@ -11995,175 +11998,6 @@ mod tests {
     }
 
     #[test]
-    fn spec_driven_spec_fix_policy_approve_records_policy_and_starts_spec_fix_once() {
-        // [08] prose 抽出経路は廃止済み。テストでは CLI submit 経由で確定する想定の
-        // structured_output と effective_result を直接組み立てて apply_approval_application
-        // の遷移挙動を検証する（spec [08] Rule 4 / [05] internal node command 境界）。
-        let mut exec =
-            make_spec_driven_spec_fix_policy_exec("exec-plan-approve", "plan-policy-session");
-        let structured_output = serde_json::json!({
-            "policy": "Update the spec only for the approved plan review finding.",
-            "review_step": "spec_review_parallel",
-            "findings": []
-        });
-        let effective_result = "approved".to_string();
-
-        let outcome = WorkflowEngine::apply_approval_application(
-            &mut exec,
-            &ApprovalDecision::Approve,
-            ApprovalApplication {
-                effective_result,
-                structured_output: Some(structured_output),
-                output_contract: Some("approved-fix-policy".to_string()),
-            },
-        )
-        .unwrap();
-
-        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
-        assert_eq!(
-            exec.workflow.nodes[exec.current_step_index].name,
-            "spec_fix"
-        );
-        assert_eq!(exec.step_execution_counts.get("spec_fix"), Some(&1));
-        assert_eq!(
-            exec.step_history
-                .iter()
-                .filter(|entry| entry.step_name == "spec_fix_policy")
-                .count(),
-            1
-        );
-        assert_eq!(
-            exec.step_outputs
-                .get("spec_fix_policy")
-                .and_then(|output| output.structured_output.as_ref())
-                .and_then(|output| output.get("policy"))
-                .and_then(|policy| policy.as_str()),
-            Some("Update the spec only for the approved plan review finding.")
-        );
-        assert_eq!(
-            exec.step_outputs
-                .get("spec_fix_policy")
-                .and_then(|output| output.output_contract.as_deref()),
-            Some("approved-fix-policy")
-        );
-
-        let duplicate = WorkflowEngine::apply_approval_application(
-            &mut exec,
-            &ApprovalDecision::Approve,
-            ApprovalApplication {
-                effective_result: "approved".to_string(),
-                structured_output: Some(serde_json::json!({
-                    "policy": "Duplicate",
-                    "review_step": "spec_review_parallel",
-                    "findings": []
-                })),
-                output_contract: Some("approved-fix-policy".to_string()),
-            },
-        );
-        assert!(matches!(
-            duplicate,
-            Err(WorkflowEngineError::InvalidState(_))
-        ));
-        assert_eq!(
-            exec.step_history
-                .iter()
-                .filter(|entry| entry.step_name == "spec_fix_policy")
-                .count(),
-            1
-        );
-        assert_eq!(exec.step_execution_counts.get("spec_fix"), Some(&1));
-    }
-
-    #[test]
-    fn spec_driven_spec_fix_policy_reject_returns_to_plan_approval_without_approved_policy_or_spec_fix(
-    ) {
-        let mut exec =
-            make_spec_driven_spec_fix_policy_exec("exec-plan-reject", "plan-policy-session");
-        let decision = ApprovalDecision::Reject {
-            comment: "Revise the spec policy first.".to_string(),
-        };
-
-        let outcome = WorkflowEngine::apply_approval_application(
-            &mut exec,
-            &decision,
-            ApprovalApplication {
-                effective_result: "reject".to_string(),
-                structured_output: Some(WorkflowEngine::reject_structured_output(
-                    "Revise the spec policy first.",
-                    &[],
-                )),
-                output_contract: None,
-            },
-        )
-        .unwrap();
-
-        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
-        assert_eq!(
-            exec.workflow.nodes[exec.current_step_index].name,
-            "approve_spec"
-        );
-        assert_eq!(exec.step_execution_counts.get("spec_fix"), None);
-        assert!(!exec
-            .step_outputs
-            .values()
-            .any(|output| output.output_contract.as_deref() == Some("approved-fix-policy")));
-        assert_eq!(
-            exec.step_outputs
-                .get("spec_fix_policy")
-                .and_then(|output| output.structured_output.as_ref())
-                .and_then(|output| output.get("decision"))
-                .and_then(|decision| decision.as_str()),
-            Some("reject")
-        );
-    }
-
-    #[test]
-    fn spec_driven_implementation_fix_policy_reject_returns_to_implementation_approval_without_approved_policy_or_fix(
-    ) {
-        let mut exec = make_spec_driven_fix_policy_exec(
-            "exec-implementation-reject",
-            "implementation-policy-session",
-            "implementation_fix_policy",
-        );
-        let decision = ApprovalDecision::Reject {
-            comment: "Revise the implementation policy first.".to_string(),
-        };
-
-        let outcome = WorkflowEngine::apply_approval_application(
-            &mut exec,
-            &decision,
-            ApprovalApplication {
-                effective_result: "reject".to_string(),
-                structured_output: Some(WorkflowEngine::reject_structured_output(
-                    "Revise the implementation policy first.",
-                    &[],
-                )),
-                output_contract: None,
-            },
-        )
-        .unwrap();
-
-        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
-        assert_eq!(
-            exec.workflow.nodes[exec.current_step_index].name,
-            "implementation_approval"
-        );
-        assert_eq!(exec.step_execution_counts.get("fix"), None);
-        assert!(!exec
-            .step_outputs
-            .values()
-            .any(|output| output.output_contract.as_deref() == Some("approved-fix-policy")));
-        assert_eq!(
-            exec.step_outputs
-                .get("implementation_fix_policy")
-                .and_then(|output| output.structured_output.as_ref())
-                .and_then(|output| output.get("decision"))
-                .and_then(|decision| decision.as_str()),
-            Some("reject")
-        );
-    }
-
-    #[test]
     fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
         let mut exec = WorkflowExecution {
             id: "exec-auto-approve".to_string(),
@@ -12418,163 +12252,6 @@ mod tests {
         assert!(exec
             .step_outputs
             .get("implementation_fix_policy")
-            .and_then(|output| output.structured_output.as_ref())
-            .is_none());
-    }
-
-    #[tokio::test]
-    async fn execute_outcome_auto_approve_plan_policy_starts_spec_fix_once() {
-        let engine = WorkflowEngine::new_for_test();
-        let worktree_path = "/repo";
-        let policy_session_id = uuid::Uuid::new_v4().to_string();
-        let exec =
-            make_spec_driven_spec_fix_policy_exec("exec-plan-auto-approve", &policy_session_id);
-        let snapshot = exec.to_workflow_state();
-        let run_id = exec.id.clone();
-        engine.executions.lock().await.insert(run_id.clone(), exec);
-        engine.session_workflow_refs.lock().await.insert(
-            policy_session_id,
-            SessionWorkflowRef {
-                run_id: run_id.clone(),
-            },
-        );
-
-        let outcome = engine
-            .execute_outcome_persist_auto_approve_for_test(worktree_path, &snapshot)
-            .await
-            .unwrap()
-            .unwrap();
-
-        let execs = engine.executions.lock().await;
-        let (_, exec) = find_by_worktree(&execs, worktree_path).unwrap();
-        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
-        assert_eq!(
-            exec.workflow.nodes[exec.current_step_index].name,
-            "spec_fix"
-        );
-        assert_eq!(exec.step_execution_counts.get("spec_fix"), Some(&1));
-        assert_eq!(
-            exec.step_history
-                .iter()
-                .filter(|entry| entry.step_name == "spec_fix_policy")
-                .count(),
-            1
-        );
-        // [08] prose 抽出経路は廃止済み（spec [08] Rule 4）。
-        assert!(exec
-            .step_outputs
-            .get("spec_fix_policy")
-            .and_then(|output| output.structured_output.as_ref())
-            .is_none());
-    }
-
-    #[tokio::test]
-    async fn auto_approve_and_manual_approve_race_starts_spec_fix_once() {
-        let engine = Arc::new(WorkflowEngine::new_for_test());
-        let worktree_path = "/repo";
-        let policy_session_id = uuid::Uuid::new_v4().to_string();
-        let exec =
-            make_spec_driven_spec_fix_policy_exec("exec-plan-approve-race", &policy_session_id);
-        let snapshot = exec.to_workflow_state();
-        let run_id = exec.id.clone();
-        engine.executions.lock().await.insert(run_id.clone(), exec);
-        engine.session_workflow_refs.lock().await.insert(
-            policy_session_id,
-            SessionWorkflowRef {
-                run_id: run_id.clone(),
-            },
-        );
-
-        let barrier = Arc::new(tokio::sync::Barrier::new(2));
-        let expected_execution_id = snapshot.execution_id.clone();
-        let expected_step_name = snapshot.current_step_name.clone();
-        let auto_snapshot = snapshot.clone();
-
-        let auto_engine = Arc::clone(&engine);
-        let auto_barrier = Arc::clone(&barrier);
-        let auto_worktree_path = worktree_path.to_string();
-        let auto_expected_execution_id = expected_execution_id.clone();
-        let auto_expected_step_name = expected_step_name.clone();
-        let auto = async move {
-            {
-                let execs = auto_engine.executions.lock().await;
-                let (_, exec) = find_by_worktree(&execs, &auto_worktree_path).unwrap();
-                WorkflowEngine::validate_approval_target_snapshot(
-                    exec,
-                    Some(&auto_expected_execution_id),
-                    Some(&auto_expected_step_name),
-                )
-                .unwrap();
-            }
-            auto_barrier.wait().await;
-            auto_engine
-                .execute_outcome_persist_auto_approve_for_test(&auto_worktree_path, &auto_snapshot)
-                .await
-                .and_then(|outcome| {
-                    outcome.ok_or_else(|| {
-                        WorkflowEngineError::InvalidState(
-                            "auto approve did not target waiting approval".to_string(),
-                        )
-                    })
-                })
-        };
-
-        let manual_engine = Arc::clone(&engine);
-        let manual_barrier = Arc::clone(&barrier);
-        let manual_worktree_path = worktree_path.to_string();
-        let manual = async move {
-            {
-                let execs = manual_engine.executions.lock().await;
-                let (_, exec) = find_by_worktree(&execs, &manual_worktree_path).unwrap();
-                WorkflowEngine::validate_approval_target_snapshot(
-                    exec,
-                    Some(&expected_execution_id),
-                    Some(&expected_step_name),
-                )
-                .unwrap();
-            }
-            manual_barrier.wait().await;
-            manual_engine
-                .handle_approval_with_output_for_test(
-                    &manual_worktree_path,
-                    ApprovalDecision::Approve,
-                    Some(&expected_execution_id),
-                    Some(&expected_step_name),
-                )
-                .await
-        };
-
-        let (auto_result, manual_result) = tokio::join!(auto, manual);
-        let results = [&auto_result, &manual_result];
-        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
-        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
-        assert!(results
-            .iter()
-            .any(|result| matches!(result, Ok(StepOutcome::TransitionAndStart(_)))));
-        assert!(results.iter().any(|result| matches!(
-            result,
-            Err(WorkflowEngineError::InvalidState(_))
-                | Err(WorkflowEngineError::UnauthorizedApprovalTarget(_))
-        )));
-
-        let execs = engine.executions.lock().await;
-        let (_, exec) = find_by_worktree(&execs, worktree_path).unwrap();
-        assert_eq!(
-            exec.workflow.nodes[exec.current_step_index].name,
-            "spec_fix"
-        );
-        assert_eq!(exec.step_execution_counts.get("spec_fix"), Some(&1));
-        assert_eq!(
-            exec.step_history
-                .iter()
-                .filter(|entry| entry.step_name == "spec_fix_policy")
-                .count(),
-            1
-        );
-        // [08] prose 抽出経路は廃止済み（spec [08] Rule 4）。
-        assert!(exec
-            .step_outputs
-            .get("spec_fix_policy")
             .and_then(|output| output.structured_output.as_ref())
             .is_none());
     }
@@ -16296,7 +15973,11 @@ mod dispatch_boundary_tests {
         let (session_store, handles) = make_dispatch_deps();
         let (repo_parent, _worktree_parent, worktree_path) = make_managed_worktree();
         configure_managed_repo(&app, repo_parent.path().join("repo").as_path());
-        let stem = "spec-driven-development".to_string();
+        let stem = crate::workflow::builtin::list_builtin_workflows()
+            .into_iter()
+            .next()
+            .expect("at least one builtin workflow must exist")
+            .name;
 
         let result = engine
             .dispatch(
@@ -16356,13 +16037,18 @@ mod dispatch_boundary_tests {
         let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_logs");
         std::fs::write(&log_dir_path, b"not a directory").unwrap();
 
+        let stem = crate::workflow::builtin::list_builtin_workflows()
+            .into_iter()
+            .next()
+            .expect("at least one builtin workflow must exist")
+            .name;
         let result = engine
             .dispatch(
                 app.handle(),
                 &session_store,
                 &handles,
                 WorkflowCommand::StartRun {
-                    workflow_file_stem: "spec-driven-development".to_string(),
+                    workflow_file_stem: stem,
                     worktree_path: worktree.clone(),
                     task: Some("start with append failure".to_string()),
                     trigger_source: TriggerSource::DesktopUi,
@@ -17620,10 +17306,12 @@ mod dispatch_boundary_tests {
         let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
+        let mut workflow = make_submit_output_workflow();
+        workflow.nodes[0].output_contract = Some("spec-directory".to_string());
         engine
             .seed_active_execution_for_test(
                 run_id.clone(),
-                make_submit_output_workflow(),
+                workflow,
                 WorkflowExecutionState::Running,
                 "/wt/submit-invalid".to_string(),
                 TriggerSource::DesktopUi,
@@ -17635,8 +17323,8 @@ mod dispatch_boundary_tests {
             app.handle(),
             &run_id,
             "review",
-            "review-verdict",
-            serde_json::json!({"verdict": "MAYBE"}),
+            "spec-directory",
+            serde_json::json!({"spec_dir": "/not/relative"}),
             None,
             None,
         )

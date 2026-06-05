@@ -766,11 +766,13 @@ mod tests {
         engine.set_run_store_data_dir(data_dir).await;
         let (session_store, handles) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
+        let mut workflow = make_submit_output_workflow();
+        workflow.nodes[0].output_contract = Some("spec-directory".to_string());
         seed_running_agent(
             &engine,
             &run_id,
             "/wt/pending-dispatcher-submit-invalid",
-            make_submit_output_workflow(),
+            workflow,
         )
         .await;
 
@@ -778,8 +780,8 @@ mod tests {
             run_id.clone(),
             CliRequestPayload::SubmitOutput {
                 step_name: "review".to_string(),
-                contract: "review-verdict".to_string(),
-                structured_output: serde_json::json!({"verdict": "MAYBE"}),
+                contract: "spec-directory".to_string(),
+                structured_output: serde_json::json!({"spec_dir": "/not/relative"}),
             },
             960.0,
         );
@@ -822,7 +824,7 @@ mod tests {
                 contract,
             } => {
                 assert_eq!(step_name, "review");
-                assert_eq!(contract, "review-verdict");
+                assert_eq!(contract, "spec-directory");
             }
             other => panic!("expected SubmitOutput request record, got: {other:?}"),
         }
