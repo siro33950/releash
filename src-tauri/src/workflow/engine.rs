@@ -11997,7 +11997,6 @@ mod tests {
         assert_eq!(*exec.step_execution_counts.get("fix").unwrap(), 1);
     }
 
-
     #[test]
     fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
         let mut exec = WorkflowExecution {
@@ -12256,7 +12255,6 @@ mod tests {
             .and_then(|output| output.structured_output.as_ref())
             .is_none());
     }
-
 
     #[test]
     fn execute_outcome_persist_path_builds_auto_approve_target_for_current_step() {
@@ -17308,10 +17306,12 @@ mod dispatch_boundary_tests {
         let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
+        let mut workflow = make_submit_output_workflow();
+        workflow.nodes[0].output_contract = Some("spec-directory".to_string());
         engine
             .seed_active_execution_for_test(
                 run_id.clone(),
-                make_submit_output_workflow(),
+                workflow,
                 WorkflowExecutionState::Running,
                 "/wt/submit-invalid".to_string(),
                 TriggerSource::DesktopUi,
@@ -17323,8 +17323,8 @@ mod dispatch_boundary_tests {
             app.handle(),
             &run_id,
             "review",
-            "review-verdict",
-            serde_json::json!({"verdict": "MAYBE"}),
+            "spec-directory",
+            serde_json::json!({"spec_dir": "/not/relative"}),
             None,
             None,
         )

@@ -1130,8 +1130,8 @@ mod tests {
         .unwrap();
 
         let summaries = list_facet_summaries(FacetKind::Policy, tmp.path()).unwrap();
-        // 6 builtin policies (coding/review/planning/plan-review/multi-agent-reviewer/multi-agent-summary) + 1 custom
-        assert_eq!(summaries.len(), 7);
+        let builtin_count = builtin::list_builtin_facet_keys(FacetKind::Policy).len();
+        assert_eq!(summaries.len(), builtin_count + 1);
 
         let custom = summaries.iter().find(|s| s.key == "custom-policy").unwrap();
         assert!(!custom.builtin);

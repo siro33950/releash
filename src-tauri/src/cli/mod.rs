@@ -2590,14 +2590,14 @@ models = ["opus"]
             &run_id,
             "/wt/submit-violation",
             "review",
-            "review-verdict",
+            "spec-directory",
         );
         let err = cmd_output_submit(
             tmp.path(),
             &run_id,
             "review",
-            "review-verdict",
-            Some("{\"verdict\":\"MAYBE\"}".to_string()),
+            "spec-directory",
+            Some("{\"spec_dir\":\"/not/relative\"}".to_string()),
             None,
         )
         .unwrap_err();
@@ -2623,7 +2623,7 @@ models = ["opus"]
             nodes: vec![crate::workflow::schema::NodeDefinition {
                 name: "review".to_string(),
                 node_type: crate::workflow::schema::NodeType::Agent,
-                output_contract: Some("review-verdict".to_string()),
+                output_contract: Some("spec-directory".to_string()),
                 ..Default::default()
             }],
         };
@@ -2654,7 +2654,7 @@ models = ["opus"]
         })
         .unwrap();
         let input_file = tmp.path().join("input.json");
-        std::fs::write(&input_file, b"{\"verdict\":\"LGTM\"}").unwrap();
+        std::fs::write(&input_file, b"{\"spec_dir\":\"docs/specs/issues-123\"}").unwrap();
 
         let run_file_path = tmp
             .path()
@@ -2701,7 +2701,7 @@ models = ["opus"]
             nodes: vec![crate::workflow::schema::NodeDefinition {
                 name: "review".to_string(),
                 node_type: crate::workflow::schema::NodeType::Agent,
-                output_contract: Some("review-verdict".to_string()),
+                output_contract: Some("spec-directory".to_string()),
                 ..Default::default()
             }],
         };
@@ -2720,7 +2720,7 @@ models = ["opus"]
         })
         .unwrap();
         let input_file = tmp.path().join("input.json");
-        std::fs::write(&input_file, b"{\"verdict\":\"MAYBE\"}").unwrap();
+        std::fs::write(&input_file, b"{\"spec_dir\":\"/not/relative\"}").unwrap();
 
         let err = cmd_output_validate(tmp.path(), &run_id, "review", &input_file).unwrap_err();
         assert!(matches!(err, CliError::InvalidInput(_)));

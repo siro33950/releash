@@ -1,0 +1,12 @@
+name: full-review-fix
+description: フルレビューで残った Open Thread を元に、人間の承認を挟みながら修正する。Thread は resolve するか Open のまま残す。
+builtin: true
+
+nodes:
+  - name: implement
+    type: approval
+    model: claude-opus-4-8
+    permission: edit
+    instruction: full-review-fix
+    policy: coding
+    knowledge: releash-thread-cli

@@ -6,6 +6,8 @@ use super::validation::{self, ValidationError};
 
 const BUILTIN_SPEC_AUTHORING: &str = include_str!("builtin/spec-authoring.yml");
 const BUILTIN_SPEC_IMPLEMENT: &str = include_str!("builtin/spec-implement.yml");
+const BUILTIN_FULL_REVIEW: &str = include_str!("builtin/full-review.yml");
+const BUILTIN_FULL_REVIEW_FIX: &str = include_str!("builtin/full-review-fix.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
@@ -21,12 +23,22 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "spec-authoring.yml",
         content: BUILTIN_SPEC_AUTHORING,
-        description: "Spec authoring workflow (interactive requirements → behavior → design → consistency finalize)",
+        description: "ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書を構築する。レビューループは行わない。",
     },
     BuiltinEntry {
         filename: "spec-implement.yml",
         content: BUILTIN_SPEC_IMPLEMENT,
         description: "Spec を元に実装し、軽量レビューループ（最大 2 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。",
+    },
+    BuiltinEntry {
+        filename: "full-review.yml",
+        content: BUILTIN_FULL_REVIEW,
+        description: "全観点を claude-opus-4-8 / gpt-5.5 でレビューし、モデル単位の妥当性チェックを行う。Summary 段で人間が各指摘を逐次確認して判断する。",
+    },
+    BuiltinEntry {
+        filename: "full-review-fix.yml",
+        content: BUILTIN_FULL_REVIEW_FIX,
+        description: "フルレビューで残った Open Thread を元に、人間の承認を挟みながら修正する。Thread は resolve するか Open のまま残す。",
     },
 ];
 
@@ -158,28 +170,23 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
-        key: "review",
-        content: include_str!("builtin_facets/policies/review.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Policy,
         key: "planning",
         content: include_str!("builtin_facets/policies/planning.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
-        key: "plan-review",
-        content: include_str!("builtin_facets/policies/plan-review.md"),
+        key: "spec-implement-reviewer",
+        content: include_str!("builtin_facets/policies/spec-implement-reviewer.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
-        key: "multi-agent-reviewer",
-        content: include_str!("builtin_facets/policies/multi-agent-reviewer.md"),
+        key: "full-review-reviewer",
+        content: include_str!("builtin_facets/policies/full-review-reviewer.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
-        key: "multi-agent-summary",
-        content: include_str!("builtin_facets/policies/multi-agent-summary.md"),
+        key: "full-review-summary",
+        content: include_str!("builtin_facets/policies/full-review-summary.md"),
     },
     // --- Knowledge facets ---
     BuiltinFacetEntry {
@@ -187,7 +194,7 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         key: "releash-thread-cli",
         content: include_str!("builtin_facets/knowledge/releash-thread-cli.md"),
     },
-    // --- Spec-driven development workflow instructions ---
+    // --- spec-authoring / spec-implement instructions ---
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "write-requirements",
@@ -215,73 +222,23 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "review-spec",
-        content: include_str!("builtin_facets/instructions/review-spec.md"),
+        key: "spec-implement-review-spec",
+        content: include_str!("builtin_facets/instructions/spec-implement-review-spec.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "review-design",
-        content: include_str!("builtin_facets/instructions/review-design.md"),
+        key: "spec-implement-review-design",
+        content: include_str!("builtin_facets/instructions/spec-implement-review-design.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "fix",
-        content: include_str!("builtin_facets/instructions/fix.md"),
+        key: "spec-implement-fix",
+        content: include_str!("builtin_facets/instructions/spec-implement-fix.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "report",
-        content: include_str!("builtin_facets/instructions/report.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "review-acceptance",
-        content: include_str!("builtin_facets/instructions/review-acceptance.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "review-structure",
-        content: include_str!("builtin_facets/instructions/review-structure.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "review-quality",
-        content: include_str!("builtin_facets/instructions/review-quality.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "review-test",
-        content: include_str!("builtin_facets/instructions/review-test.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "review-security",
-        content: include_str!("builtin_facets/instructions/review-security.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "review-architecture",
-        content: include_str!("builtin_facets/instructions/review-architecture.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "implement-fix",
-        content: include_str!("builtin_facets/instructions/implement-fix.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "implementation-fix-policy",
-        content: include_str!("builtin_facets/instructions/implementation-fix-policy.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "implementation-approval",
-        content: include_str!("builtin_facets/instructions/implementation-approval.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Contract,
-        key: "review-verdict",
-        content: include_str!("builtin_facets/contracts/review-verdict.md"),
+        key: "spec-implement-report",
+        content: include_str!("builtin_facets/instructions/spec-implement-report.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Contract,
@@ -289,120 +246,49 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         content: include_str!("builtin_facets/contracts/spec-directory.md"),
     },
     BuiltinFacetEntry {
-        kind: FacetKind::Contract,
-        key: "approved-fix-policy",
-        content: include_str!("builtin_facets/contracts/approved-fix-policy.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Contract,
-        key: "bug-investigation-result",
-        content: include_str!("builtin_facets/contracts/bug-investigation-result.md"),
-    },
-    // --- spec-review-auto workflow dedicated instructions ---
-    // 旧 `*-from-task` 系 11 instruction は [02] Contract 双方向化により
-    // 非 from-task 版 + `input_contracts` 宣言に統合された。
-    BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "fix-policy-auto",
-        content: include_str!("builtin_facets/instructions/fix-policy-auto.md"),
+        key: "full-review-review-acceptance",
+        content: include_str!("builtin_facets/instructions/full-review-review-acceptance.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "review-summary",
-        content: include_str!("builtin_facets/instructions/review-summary.md"),
-    },
-    // --- bug-fix workflow dedicated instructions ---
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "bug-investigation",
-        content: include_str!("builtin_facets/instructions/bug-investigation.md"),
+        key: "full-review-review-structure",
+        content: include_str!("builtin_facets/instructions/full-review-review-structure.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "bug-fix-policy",
-        content: include_str!("builtin_facets/instructions/bug-fix-policy.md"),
+        key: "full-review-review-quality",
+        content: include_str!("builtin_facets/instructions/full-review-review-quality.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "bug-apply-fix",
-        content: include_str!("builtin_facets/instructions/bug-apply-fix.md"),
+        key: "full-review-review-test",
+        content: include_str!("builtin_facets/instructions/full-review-review-test.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "bug-review-acceptance",
-        content: include_str!("builtin_facets/instructions/bug-review-acceptance.md"),
+        key: "full-review-review-security",
+        content: include_str!("builtin_facets/instructions/full-review-review-security.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "bug-review-quality",
-        content: include_str!("builtin_facets/instructions/bug-review-quality.md"),
+        key: "full-review-review-architecture",
+        content: include_str!("builtin_facets/instructions/full-review-review-architecture.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "bug-review-test",
-        content: include_str!("builtin_facets/instructions/bug-review-test.md"),
+        key: "full-review-verify-and-classify",
+        content: include_str!("builtin_facets/instructions/full-review-verify-and-classify.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "bug-fix-loop-policy",
-        content: include_str!("builtin_facets/instructions/bug-fix-loop-policy.md"),
+        key: "full-review-summary",
+        content: include_str!("builtin_facets/instructions/full-review-summary.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "bug-fix-loop",
-        content: include_str!("builtin_facets/instructions/bug-fix-loop.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "bug-final-approval",
-        content: include_str!("builtin_facets/instructions/bug-final-approval.md"),
-    },
-    // --- multi-agent-code-review workflow dedicated instructions / contracts ---
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "mar-review-acceptance",
-        content: include_str!("builtin_facets/instructions/mar-review-acceptance.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "mar-review-structure",
-        content: include_str!("builtin_facets/instructions/mar-review-structure.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "mar-review-quality",
-        content: include_str!("builtin_facets/instructions/mar-review-quality.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "mar-review-test",
-        content: include_str!("builtin_facets/instructions/mar-review-test.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "mar-review-security",
-        content: include_str!("builtin_facets/instructions/mar-review-security.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "mar-review-architecture",
-        content: include_str!("builtin_facets/instructions/mar-review-architecture.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "mar-verify-and-classify",
-        content: include_str!("builtin_facets/instructions/mar-verify-and-classify.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "mar-summary",
-        content: include_str!("builtin_facets/instructions/mar-summary.md"),
-    },
-    // --- implement-from-threads workflow dedicated instructions ---
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "implement-from-threads",
-        content: include_str!("builtin_facets/instructions/implement-from-threads.md"),
+        key: "full-review-fix",
+        content: include_str!("builtin_facets/instructions/full-review-fix.md"),
     },
 ];
 
@@ -536,10 +422,19 @@ mod tests {
 
     #[test]
     fn is_builtin_workflow_works() {
-        let names: Vec<String> = list_builtin_workflows().into_iter().map(|s| s.name).collect();
-        assert!(!names.is_empty(), "at least one builtin workflow must exist");
+        let names: Vec<String> = list_builtin_workflows()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert!(
+            !names.is_empty(),
+            "at least one builtin workflow must exist"
+        );
         for name in &names {
-            assert!(is_builtin_workflow(name), "listed workflow '{name}' must pass is_builtin_workflow");
+            assert!(
+                is_builtin_workflow(name),
+                "listed workflow '{name}' must pass is_builtin_workflow"
+            );
         }
         assert!(!is_builtin_workflow("custom-workflow"));
     }
@@ -832,7 +727,11 @@ mod tests {
                 .unwrap_or_else(|err| panic!("builtin '{name}' load must succeed: {err}"))
                 .unwrap_or_else(|| panic!("builtin '{name}' must exist"));
 
-            for node in wf.nodes.iter().filter(|n| n.input_contracts.is_none() && n.instruction.is_some()) {
+            for node in wf
+                .nodes
+                .iter()
+                .filter(|n| n.input_contracts.is_none() && n.instruction.is_some())
+            {
                 let (_sys, prompt) = WorkflowEngine::build_step_prompt(
                     node,
                     "00000000-0000-0000-0000-000000000000",
@@ -905,110 +804,6 @@ mod tests {
         );
     }
 
-    /// bug-* instruction 本文（bug-investigation 除く）が、前段 step 名・pass_output_from
-    /// の経路表現・`{{task}}` テンプレ展開を一切含まないことを固定する。これらは
-    /// Spec の「instruction ↔ 入力経路の分離」境界違反として明示的に排除する対象。
-    /// engine + step 定義が経路情報を扱い、instruction はビジネス手順だけを記述する。
-    #[test]
-    fn bug_instructions_do_not_leak_route_information() {
-        // bug_investigation は task 自由文を `{{task}}` で受ける既存パターンを許容するため対象外
-        let instruction_keys: &[&str] = &[
-            "bug-apply-fix",
-            "bug-fix-policy",
-            "bug-review-acceptance",
-            "bug-review-quality",
-            "bug-review-test",
-            "bug-fix-loop-policy",
-            "bug-fix-loop",
-            "bug-final-approval",
-        ];
-        // 経路情報として禁止する文字列
-        let forbidden_route_substrings: &[&str] = &["の出力経由", "から渡された", "{{task}}"];
-        // 前段 step 名そのものの埋め込み禁止
-        let forbidden_step_names: &[&str] = &[
-            "bug_investigation",
-            "bug_fix_policy",
-            "bug_fix_loop_policy",
-            "bug_review_parallel",
-            "bug_fix",
-            "bug_fix_loop",
-        ];
-
-        for key in instruction_keys {
-            let body = facet::load_facet(
-                FacetKind::Instruction,
-                key,
-                std::path::Path::new("/__nonexistent__"),
-            )
-            .unwrap_or_else(|e| panic!("builtin instruction '{key}' must load: {e}"));
-
-            for forbidden in forbidden_route_substrings {
-                assert!(
-                    !body.contains(forbidden),
-                    "instruction '{key}' must not contain route phrase '{forbidden}'. body={body}"
-                );
-            }
-            for step_name in forbidden_step_names {
-                // approved-fix-policy の `review_step` フィールド値選定の説明として
-                // step 名が出てくる場合は許容する（Contract 仕様の値定義であり経路情報ではない）。
-                // 「`<step_name>` を指定する」「`<step_name>` に戻して再調査させる」のような
-                // 経路情報的な文脈で出ることを禁止するため、JSON フィールド値の引用形式
-                // (`"<step_name>"` ダブルクオート囲み) のみ許容する。
-                let plain_form = format!("`{step_name}`");
-                let quoted_form = format!("\"{step_name}\"");
-                let occurrences = body.matches(&plain_form).count();
-                let allowed = body.matches(&quoted_form).count();
-                assert!(
-                    occurrences <= allowed,
-                    "instruction '{key}' must not embed step name '{step_name}' as route info. occurrences={occurrences}, allowed_quoted={allowed}, body={body}"
-                );
-            }
-        }
-    }
-
-    /// bug-investigation instruction が output_contract の具体名に依存しない
-    /// 出力指示のみを持つことを固定する。
-    /// [08] CLI/Tauri 経由の `SubmitOutput` を唯一の構造化出力確定経路に揃える
-    /// 不変条件として、`<workflow_output>` envelope の出力指示は禁止する。
-    /// 提出コマンドの案内は instruction ではなく output Contract preamble に集約する。
-    #[test]
-    fn bug_investigation_instruction_aligns_with_contract() {
-        let body = facet::load_facet(
-            FacetKind::Instruction,
-            "bug-investigation",
-            std::path::Path::new("/__nonexistent__"),
-        )
-        .expect("bug-investigation must load");
-
-        // [08] prose 抽出経路 (`<workflow_output>` envelope) は廃止済みのため、
-        // それを出力する指示も、それを禁止する古い表現も instruction に残さない。
-        let forbidden_phrases: &[&str] = &[
-            "## 出力フォーマット",
-            "`<workflow_output>` ブロックは出力しない",
-            "<workflow_output>",
-        ];
-        for forbidden in forbidden_phrases {
-            assert!(
-                !body.contains(forbidden),
-                "bug-investigation instruction must not contain '{forbidden}' (contradicts spec [08] Rule 4). body={body}"
-            );
-        }
-
-        assert!(
-            body.contains("出力Contract側の定義"),
-            "bug-investigation instruction must defer output shape to the provided output Contract. body={body}"
-        );
-        assert!(
-            !body.contains("bug-investigation-result"),
-            "bug-investigation instruction must not hard-code output Contract name. body={body}"
-        );
-        assert!(
-            !body.contains("releash workflow output submit"),
-            "bug-investigation instruction must not duplicate submit command guidance. body={body}"
-        );
-    }
-
-
     /// [08] prose 抽出経路は廃止済み。ビルトイン instruction は旧
     /// `<workflow_output>` envelope を案内せず、Contract 提出は CLI / typed API
     /// 経由の `SubmitOutput` に寄せる。
@@ -1031,10 +826,8 @@ mod tests {
                 entry.content
             );
             for phrase in [
-                "`review-verdict` Contract に従う",
-                "`approved-fix-policy` Contract に従う",
-                "`bug-investigation-result` Contract に従う",
-                "`spec-directory` Contract に従って",
+                "Contract に従う",
+                "Contract に従って",
                 "構造化出力を出す",
                 "構造化出力する",
                 "JSON を組み立てる",

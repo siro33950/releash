@@ -17,15 +17,15 @@ nodes:
         type: agent
         model: gpt-5.4-mini
         permission: edit
-        instruction: review-spec
-        policy: review
+        instruction: spec-implement-review-spec
+        policy: spec-implement-reviewer
         knowledge: releash-thread-cli
       - name: review_design
         type: agent
         model: gpt-5.4-mini
         permission: edit
-        instruction: review-design
-        policy: review
+        instruction: spec-implement-review-design
+        policy: spec-implement-reviewer
         knowledge: releash-thread-cli
     aggregate:
       all_match: LGTM
@@ -36,7 +36,7 @@ nodes:
     type: agent
     model: gpt-5.5
     permission: edit
-    instruction: fix
+    instruction: spec-implement-fix
     policy: coding
     knowledge: releash-thread-cli
     rules:
@@ -47,8 +47,8 @@ nodes:
       on_exhausted: report
 
   - name: report
-    type: approval
+    type: agent
     model: gpt-5.5
     permission: ask
-    instruction: report
+    instruction: spec-implement-report
     knowledge: releash-thread-cli
