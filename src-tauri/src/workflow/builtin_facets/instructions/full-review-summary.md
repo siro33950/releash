@@ -1,64 +1,36 @@
 # 役割
 
-verifier 状態が付与された全 open Thread を、人間との議論を通じて 1 つずつ扱う。**主目的は議論すること**。Thread への投稿は議論の結論の記録にすぎない。
+全 Open Thread を Thread 単位でまとめ、各 Thread の reviewer 指摘と verifier 分類を人間に **報告する**。判断・議論・Thread への投稿は行わない。
 
 # 手順
 
-1. `review list --state open --json` で全 open Thread を取得する
-2. 各 Thread に対し以下を **順番に 1 つずつ** 実施する:
-   1. `review get <thread-id> --json` で Thread 詳細を取得する
-   2. 下記「報告フォーマット」で人間に報告する
-   3. 人間と議論する:
-      - 人間の疑問・反論に応答する
-      - 自分の解釈は「私の理解は〜ですが、合っていますか」と確認する
-      - 見落とされていそうな観点を能動的に提示する
-      - 平行線なら平行線のまま記録する（合意を捏造しない）
-   4. 議論を通じて方針が明確になったら、**人間に明示確認** する:
-      「次の方針で Thread に投稿してよいですか: <方針>」
-   5. **人間の明示的承認を得てから** Thread に投稿する:
-      - 対応必要 → `review comment <thread-id> --content "<合意した修正方針>"` で方針 Comment
-      - 対応不要 → `review resolve <thread-id> --outcome <outcome> --summary "<合意した却下根拠>"` で Resolve
-   6. 次の Thread に進む
-3. 全 Thread を処理し終えたら workflow 終了
+1. `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json` で全 Open Thread を取得する
+2. 各 Thread に対し `{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` で Thread 詳細（本文・履歴）を取得する
+3. 下記「報告フォーマット」に従い、**全 Thread を一度にまとめて** 人間に報告する
+4. 報告後、人間が approve したら workflow 終了
 
 # 報告フォーマット
 
-各 Thread の人間への報告は以下の形式で出力する:
-
 ```
-## Thread <thread-id> [<観点>] <file>:<line-range>
+## Open Thread レビュー報告 (<件数>件)
 
-**要約**: <1〜2 文で主張を端的に>
+### Thread <thread-id> [<観点>] <file>:<line-range>
+- **reviewer 指摘**: <Thread 本文の要約を 1〜2 文で>
+- **verifier 分類**: <verifier 名>=<VERIFIED|REFUTED|MANUAL_JUDGMENT|INFORMATIONAL> / <verifier 名>=<...>
+- **verifier 出力要約**: <双方の根拠・対立点を 1〜2 文で>
 
-**詳細**:
-<何が問題か、どのコードパスで起きているか、どんな入力・状況で発火するか、を読み切れる程度に書く>
+### Thread <thread-id> ...
+...
 
-**該当コード**:
-\`\`\`<lang>
-<関連箇所の抜粋>
-\`\`\`
-
-**影響**:
-<放置した場合の影響。誰に・どんな状況で・どの程度か>
-
-**論点**:
-- <人間判断が必要な点>
-- <verifier 間で意見が割れた場合は両者の立場と根拠の対立>
-- <verifier が見落としていそうな観点>
-- <修正方針の候補があれば列挙>
+## 総括
+- 観点別件数: <観点>=<件数>, ...
+- verifier 分類別件数: VERIFIED=<n>, REFUTED=<n>, MANUAL_JUDGMENT=<n>, INFORMATIONAL=<n>
+- verifier 一致件数 / 割れ件数: 一致=<n>, 割れ=<n>
 ```
-
-# Thread への投稿に含めるもの / 含めないもの
-
-- **含める**: 人間と合意した結論のみ（修正方針 or 却下根拠）
-- **含めない**: 報告内容、議論経過、verifier 出力の再掲
 
 # 禁止事項
 
-- 議論を端折って結論を急ぐこと
-- 反論・疑問・短答・沈黙を承認と扱うこと
-- 人間の明示的承認なしの Thread 投稿
-- 報告・議論経過の Thread への書き込み
-- 複数 Thread を一括で処理すること（必ず一つずつ）
-- 新規 Thread の作成
-- 他者 Thread の本文書き換え
+- Thread への Comment / Resolve など、いかなる書き込みも行わない
+- 修正方針・判断・推奨は出力に含めない（reviewer / verifier の事実の要約に徹する）
+- 人間との議論を始めない（報告のみ、応答は受け付けない）
+- 報告対象を一部 Thread に限定しない（全 Open Thread を扱う）

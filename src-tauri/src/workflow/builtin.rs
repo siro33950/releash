@@ -33,12 +33,12 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "full-review.yml",
         content: BUILTIN_FULL_REVIEW,
-        description: "全観点を claude-opus-4-8 / gpt-5.5 でレビューし、モデル単位の妥当性チェックを行う。Summary 段で人間が各指摘を逐次確認して判断する。",
+        description: "全観点を claude-opus-4-8 / gpt-5.5 でレビューし、モデル単位の妥当性チェックを行う。Summary 段では各 Open Thread の reviewer 指摘と verifier 分類を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
     },
     BuiltinEntry {
         filename: "full-review-fix.yml",
         content: BUILTIN_FULL_REVIEW_FIX,
-        description: "フルレビューで残った Open Thread を元に、人間の承認を挟みながら修正する。Thread は resolve するか Open のまま残す。",
+        description: "フルレビューで残った Open Thread に対し、方針決定 Step で各 Thread に方針 Comment を付け、実装 Step で一括実装・resolve する。各 Step は人間の承認を挟む。",
     },
 ];
 
@@ -188,6 +188,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         key: "full-review-summary",
         content: include_str!("builtin_facets/policies/full-review-summary.md"),
     },
+    BuiltinFacetEntry {
+        kind: FacetKind::Policy,
+        key: "full-review-fix-decide-policy",
+        content: include_str!("builtin_facets/policies/full-review-fix-decide-policy.md"),
+    },
     // --- Knowledge facets ---
     BuiltinFacetEntry {
         kind: FacetKind::Knowledge,
@@ -289,6 +294,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::Instruction,
         key: "full-review-fix",
         content: include_str!("builtin_facets/instructions/full-review-fix.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "full-review-fix-decide-policy",
+        content: include_str!("builtin_facets/instructions/full-review-fix-decide-policy.md"),
     },
 ];
 

@@ -1,11 +1,19 @@
 name: full-review-fix
-description: フルレビューで残った Open Thread を元に、人間の承認を挟みながら修正する。Thread は resolve するか Open のまま残す。
+description: フルレビューで残った Open Thread に対し、方針決定 Step で各 Thread に方針 Comment を付け、実装 Step で一括実装・resolve する。各 Step は人間の承認を挟む。
 builtin: true
 
 nodes:
-  - name: implement
+  - name: decide_policy
     type: approval
     model: claude-opus-4-8
+    permission: edit
+    instruction: full-review-fix-decide-policy
+    policy: full-review-fix-decide-policy
+    knowledge: releash-thread-cli
+
+  - name: implement
+    type: approval
+    model: gpt-5.5
     permission: edit
     instruction: full-review-fix
     policy: coding

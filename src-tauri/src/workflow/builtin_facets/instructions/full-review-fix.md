@@ -1,35 +1,27 @@
-{{project_name}} プロジェクトのフルレビューで残った Open Thread を集約して必要な実装を行い、各 Thread を resolve するか Open のまま残すかまで判断する。
+{{project_name}} のフルレビューで残った全 Open Thread を、**方針決定 Step（decide_policy）で各 Thread に付与された方針 Comment** に従って実装し、各 Thread を resolve する。
 
 ## 入力
 
 - タスク（任意の自由文。実装対象の絞り込み等の補足指示があれば）: {{task}}
-- Open Thread 一覧: 後述の手順で `review list` から取得する
+- 全 Open Thread と各 Thread に付いた方針 Comment（既に decide_policy Step で投稿済み）
 
-## 基本方針
+## 前提
 
-- 推測で結論しない。Thread の `review get` / `review history` 出力を実際に読み、根拠を持って判断する
-- ロジックは Rust 側に配置し、フロントエンドはインターフェースに徹する
-- 実装着手前に必ず実装計画を人間に提示し、合意を得る。合意なしに編集を開始しない
-- Thread の最終状態は Open / resolve の二択とする。対応済み・対応見送りはいずれも根拠を添えて resolve し、後で対応するもの・対応中のものは Open のまま残す
-- 既存仕様（Spec ファイル・既存テスト）と矛盾する Thread 要求があれば、矛盾を計画で明示し人間判断を仰ぐ
+- 本 Step は **方針決定 Step の後段** に位置する。各 Open Thread には方針決定 Step が投稿した方針 Comment（方針＋根拠）が必ず付いている
+- 本 Step では **新たに方針を決め直さない**。方針 Comment の内容を実装に翻訳することに徹する
+- 方針 Comment と矛盾する実装が必要だと判断した場合は、計画提示の「確認事項」で明示し人間判断を仰ぐ（独断で方針を変更しない）
 
 ## プロセス
 
-### 1. Open Thread 一覧の取得
+### 1. Open Thread と方針 Comment の取得
 
 - `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json`
-- 必要に応じて `{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json`
-- 必要に応じて `{{path_alias.releash}} review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json`
+- 各 Thread に対し `{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` で本文・履歴を取得
+- **history の中から方針 Comment（`方針：` `根拠：` を含む）を必ず特定する**
 
-### 2. 実装方針の集約
+### 2. 実装計画の提示と合意取得
 
-- 各 Thread の `review get` 出力（本文・対象範囲・履歴）を踏まえる
-- 複数 Thread の衝突・依存関係を整理する
-
-### 3. 実装計画の提示と合意取得
-
-- 以下のテンプレートに従って実装計画を出力する
-- 出力後、人間の合意が取れるまで実装には着手しない
+- 下記テンプレートで計画を提示し、人間が approve するまで実装に着手しない
 - 修正指示があれば計画を改訂して再提示する
 
 #### 実装計画テンプレート
@@ -37,47 +29,36 @@
 ```markdown
 ## 実装計画
 
-### 全体方針
-<Open Thread を集約した実装方針を 1〜3 文で>
-
-### 変更対象
-- `<対象ファイル / モジュール>`: <変更内容の要点>
-  - 満たす Thread: `<thread-id>` ... (複数可)
+### 各 Thread の方針 Comment と実装対応
+- `<thread-id>` / `<file>:<line-range>`
+  - 方針 Comment（要約）: <方針 Comment の方針部分を 1 文で>
+  - 実装内容: <対象ファイル・モジュール / 具体的な変更点>
 - ...
 
-### 対応見送り Thread
-- `<thread-id>`: <見送る理由（resolve する根拠）>
-- 見送りがなければ `なし`
-
-### Open のまま残す Thread
-- `<thread-id>`: <後で対応する / 対応中として残す理由>
-- なければ `なし`
+### 実装順序
+- <Thread 間の依存・衝突に基づく実装順序、または「順不同」>
 
 ### Thread 間の衝突 / 依存
-- <衝突点とその解消方針、または依存関係に基づく実装順序>
+- <衝突点と解消方針 / 依存関係>
 - なければ `なし`
 
 ### 確認事項
-- <人間に明示的に判断を求めたい点があれば列挙>
+- <方針 Comment と整合しない実装が必要、追加情報が必要、など人間判断を求めたい点があれば列挙>
 - なければ `なし`
 ```
 
-### 4. 実装
+### 3. 実装
 
-- 合意済み計画に沿って実装する
+- 合意済み計画に沿って一括実装する
 
-### 5. Thread への対応反映
+### 4. 各 Thread を resolve
 
-- 要求を満たした → `{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome <outcome> --summary "<対応要約>" --json`
-- 対応を見送る → `{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome <outcome> --summary "<見送る理由>" --json`
-- 後で対応する / 対応中 → 状態変更せず Open のまま残す
+- 各 Thread を `{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome <outcome> --summary "<対応要約>" --json` で resolve する
+- `--outcome` は解決状況を表す自由文（例: `resolved`, `wontfix`, `duplicate`）
+- 「対応見送り」も resolve として扱い、根拠を `--summary` に含める
 - 申し送り Comment は投稿しない
 
-### 6. 処理結果サマリの出力
-
-以下のテンプレートで最後に実装と Thread 対応の最終報告を出力する。
-
-#### 処理結果サマリテンプレート
+### 5. 処理結果サマリの出力
 
 ```markdown
 ## 処理結果サマリ
@@ -87,18 +68,13 @@
 - ...
 
 ### Thread 処理結果
-| thread-id | action | outcome / 理由 |
+| thread-id | outcome | summary |
 |---|---|---|
-| `<id>` | `resolved` | `<outcome>` / `<summary>` |
-| `<id>` | `left_open` | `<Open のまま残す理由>` |
-
-### 残 Open Thread
-- <後で対応する / 対応中の Thread があれば理由付きで列挙>
-- なければ `なし`
+| `<id>` | `<outcome>` | `<summary>` |
 ```
 
-## 注意事項
+## 禁止事項
 
-- `outcome` の値は Thread の解決状況を表す自由文（例: `resolved`, `wontfix`, `duplicate`）。Thread の文脈に合わせて適切なものを選ぶ
-- 対応見送りも resolve として扱い、根拠を `--summary` に含める
-- 後で対応する Thread や対応中の Thread は Open のまま残す
+- 方針 Comment を読まずに実装を開始しない
+- 方針 Comment と矛盾する実装を、計画提示・合意なしに行わない
+- Thread を Open のまま残さない（全 Thread を resolve する。方針 Comment が「対応見送り」を示している場合も resolve）
