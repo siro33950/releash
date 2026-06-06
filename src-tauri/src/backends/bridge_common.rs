@@ -59,7 +59,7 @@ pub struct PendingMessage {
     pub permission_mode: String,
     pub images: Vec<ImageAttachment>,
     pub worktree_path: String,
-    pub mentions: Vec<crate::file_mention::MentionReference>,
+    pub mentions: Vec<crate::domain::code::MentionReference>,
 }
 
 pub struct AgentProcess {
@@ -2032,7 +2032,14 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
     // spec issues-1022 "Agent process environment contract": agent process 自身が
     // 自分の chat_session_id を env 経由で参照できるよう、session 固有 env を
     // pure helper 経由で組み立てて設置する。
-    let base_branch = crate::git::branch_diff::resolve_base_branch_name(cwd);
+    // 周辺入口（agent bridge）は gateway 実装へ直接依存せず、composition root が AppState へ
+    // 配線した code usecase を取得して base 名を解決する。エラーは移行前と同じく None に倒す。
+    let base_branch = app
+        .state::<crate::adaptor::controller::state::AppState>()
+        .code_usecase
+        .resolve_effective_base_branch_name(cwd)
+        .ok()
+        .flatten();
     for (k, v) in session_specific_env_overrides(chat_session_id, base_branch.as_deref()) {
         cmd.env(k, v);
     }
@@ -3497,11 +3504,10 @@ async fn start_pending_message_turn<R: tauri::Runtime>(
         );
     }
 
-    let resolved_prompt = crate::file_mention::resolve_mentions_or_fallback(
-        &pending.worktree_path,
-        &pending.content,
-        &pending.mentions,
-    );
+    let resolved_prompt = app
+        .state::<crate::adaptor::controller::state::AppState>()
+        .code_usecase
+        .resolve_mentions_or_fallback(&pending.worktree_path, &pending.content, &pending.mentions);
 
     if let Err(_e) = start_agent_turn(
         app,
@@ -4059,6 +4065,7 @@ struct PreparedAgentTurn {
 
 #[allow(clippy::too_many_arguments)]
 async fn prepare_send_agent_message_internal(
+    code_usecase: &crate::usecase::code_usecase::CodeUsecase,
     session_store: &Arc<SessionStore>,
     registry: &Arc<crate::backends::AgentBackendRegistry>,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -4069,7 +4076,7 @@ async fn prepare_send_agent_message_internal(
     permission_mode: crate::permission::PermissionMode,
     backend_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
-    mentions: Option<Vec<crate::file_mention::MentionReference>>,
+    mentions: Option<Vec<crate::domain::code::MentionReference>>,
 ) -> Result<(SendMessageResponse, Option<PreparedAgentTurn>), String> {
     let pm = permission_mode.as_str().to_string();
     let images = images.unwrap_or_default();
@@ -4192,11 +4199,8 @@ async fn prepare_send_agent_message_internal(
             None,
             None,
         )?;
-        let resolved_prompt = crate::file_mention::resolve_mentions_or_fallback(
-            &session_worktree_path,
-            &content,
-            &mentions,
-        );
+        let resolved_prompt =
+            code_usecase.resolve_mentions_or_fallback(&session_worktree_path, &content, &mentions);
         let turn = PreparedAgentTurn {
             session_id: sid.clone(),
             worktree_path: session_worktree_path.clone(),
@@ -4239,16 +4243,21 @@ pub async fn send_agent_message_internal(
     permission_mode: crate::permission::PermissionMode,
     backend_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
-    mentions: Option<Vec<crate::file_mention::MentionReference>>,
+    mentions: Option<Vec<crate::domain::code::MentionReference>>,
 ) -> Result<SendMessageResponse, String> {
     let lock_key = chat_session_id
         .as_deref()
         .map(str::to_string)
         .unwrap_or_else(|| format!("new-session:{worktree_path}"));
     let data_dir = resolve_data_dir(app)?;
+    let code_usecase = Arc::clone(
+        &app.state::<crate::adaptor::controller::state::AppState>()
+            .code_usecase,
+    );
     let (response, prepared_turn) = {
         let _send_guard = acquire_session_runtime_lock(&lock_key).await;
         prepare_send_agent_message_internal(
+            &code_usecase,
             session_store,
             registry,
             handles,
@@ -6356,6 +6365,7 @@ mod tests {
             .unwrap();
 
         let result = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
             &session_store,
             &registry,
             &handles,
@@ -6459,6 +6469,7 @@ mod tests {
         .await;
 
         let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
             &session_store,
             &registry,
             &handles,
@@ -6501,6 +6512,7 @@ mod tests {
         let worktree_path = "/repo".to_string();
 
         let (response, prepared_turn) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
             &session_store,
             &registry,
             &handles,
@@ -6552,6 +6564,7 @@ mod tests {
             .unwrap();
 
         let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
             &session_store,
             &registry,
             &handles,
@@ -7071,6 +7084,7 @@ mod tests {
         );
 
         let (response, prepared_turn) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
             &session_store,
             &registry,
             &handles,
@@ -9353,6 +9367,7 @@ mod tests {
             .unwrap();
 
         let (response, _prepared_turn) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
             &session_store,
             &registry,
             &handles,

@@ -1,0 +1,291 @@
+//! code ユースケースの read model（DTO）。
+//!
+//! フロントへ返す転送表現を所有する層。domain の値オブジェクトは serde 非依存であり、
+//! Query 経路（QueryService）が domain の純粋ロジック結果（VO）を本 DTO へ詰め替えて返す。
+//! serialize 表現（フィールド名・camelCase・省略）は移行前の各型と等価に保つ。
+//!
+//! branch diff のサマリは git2 の diff 結果を denormalize した表示・転送向けモデルで
+//! あり domain Entity ではない。Query 経路（[`BranchDiffQuery`](super::code_query_service::BranchDiffQuery)）の
+//! gateway 実装がデータソース（git2）から直接組み立てる。
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffStatsDto {
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangedFileDto {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: String,
+    pub binary: bool,
+    pub stats: DiffStatsDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchDiffSummaryDto {
+    pub base_branch: String,
+    pub changed_files: Vec<ChangedFileDto>,
+    pub stats: DiffStatsDto,
+}
+
+// ── hunk / patch / range（Query が domain サービスの算出結果を詰め替えて返す） ──
+
+/// 単一の diff hunk の転送表現。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HunkDto {
+    pub index: u32,
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub lines: Vec<String>,
+}
+
+/// hunk 内の変更ブロック（Approve 単位）の転送表現。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeGroupDto {
+    pub group_index: u32,
+    pub hunk_index: u32,
+    pub new_start: u32,
+    pub new_end: u32,
+    pub line_offset_start: u32,
+    pub line_offset_end: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_staged: Option<bool>,
+}
+
+/// diff hunk 計算結果の転送表現。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffHunksResultDto {
+    pub hunks: Vec<HunkDto>,
+    pub change_groups: Vec<ChangeGroupDto>,
+}
+
+/// diff-only 表示で折り畳む行範囲の転送表現。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenRangeDto {
+    pub start_line: u32,
+    pub end_line: u32,
+    pub hidden_count: u32,
+}
+
+/// Markdown diff-only 表示で可視にする行ブロックの転送表現。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisibleBlockDto {
+    pub start_line: u32,
+    pub end_line: u32,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_content: Option<String>,
+}
+
+// ── diff_tree（フィールド名は snake_case のまま＝移行前と等価） ──
+
+/// diff ファイルツリーのノードの転送表現。
+#[derive(Debug, Clone, Serialize)]
+pub struct DiffTreeNodeDto {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub node_type: String,
+    pub status: Option<String>,
+    pub additions: Option<u32>,
+    pub deletions: Option<u32>,
+    pub children: Vec<DiffTreeNodeDto>,
+}
+
+/// ファイルナビゲーション情報の転送表現。
+#[derive(Debug, Clone, Serialize)]
+pub struct FileNavigationResultDto {
+    pub current_index: usize,
+    pub total: usize,
+    pub prev_file: Option<String>,
+    pub next_file: Option<String>,
+}
+
+#[cfg(test)]
+mod code_dto_serialize_tests {
+    //! DTO の serialize 表現（フィールド名・camelCase / snake_case・省略）が移行前の各型と
+    //! 等価であることを golden で固定する。フロント／リモートが依存する転送契約の回帰防止。
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_hunk_dtoはcamelcaseで出力する() {
+        let dto = HunkDto {
+            index: 0,
+            old_start: 1,
+            old_lines: 2,
+            new_start: 3,
+            new_lines: 4,
+            lines: vec!["-a".to_string(), "+b".to_string()],
+        };
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap(),
+            json!({
+                "index": 0,
+                "oldStart": 1,
+                "oldLines": 2,
+                "newStart": 3,
+                "newLines": 4,
+                "lines": ["-a", "+b"]
+            })
+        );
+    }
+
+    #[test]
+    fn test_change_group_dto_is_staged_noneは省略する() {
+        let dto = ChangeGroupDto {
+            group_index: 0,
+            hunk_index: 1,
+            new_start: 2,
+            new_end: 3,
+            line_offset_start: 4,
+            line_offset_end: 5,
+            is_staged: None,
+        };
+        let v = serde_json::to_value(&dto).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "groupIndex": 0,
+                "hunkIndex": 1,
+                "newStart": 2,
+                "newEnd": 3,
+                "lineOffsetStart": 4,
+                "lineOffsetEnd": 5
+            })
+        );
+        assert!(v.get("isStaged").is_none());
+    }
+
+    #[test]
+    fn test_change_group_dto_is_staged_someは出力する() {
+        let dto = ChangeGroupDto {
+            group_index: 0,
+            hunk_index: 1,
+            new_start: 2,
+            new_end: 3,
+            line_offset_start: 4,
+            line_offset_end: 5,
+            is_staged: Some(true),
+        };
+        let v = serde_json::to_value(&dto).unwrap();
+        assert_eq!(v.get("isStaged"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn test_hidden_range_dtoはcamelcaseで出力する() {
+        let dto = HiddenRangeDto {
+            start_line: 1,
+            end_line: 2,
+            hidden_count: 3,
+        };
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap(),
+            json!({"startLine": 1, "endLine": 2, "hiddenCount": 3})
+        );
+    }
+
+    #[test]
+    fn test_visible_block_dto_deleted_contentの省略と出力() {
+        let none = VisibleBlockDto {
+            start_line: 1,
+            end_line: 2,
+            content: "x".to_string(),
+            deleted_content: None,
+        };
+        let v = serde_json::to_value(&none).unwrap();
+        assert_eq!(v, json!({"startLine": 1, "endLine": 2, "content": "x"}));
+        assert!(v.get("deletedContent").is_none());
+
+        let some = VisibleBlockDto {
+            start_line: 1,
+            end_line: 2,
+            content: "x".to_string(),
+            deleted_content: Some("d".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&some).unwrap().get("deletedContent"),
+            Some(&json!("d"))
+        );
+    }
+
+    #[test]
+    fn test_diff_hunks_result_dtoはcamelcaseで出力する() {
+        let dto = DiffHunksResultDto {
+            hunks: vec![],
+            change_groups: vec![],
+        };
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap(),
+            json!({"hunks": [], "changeGroups": []})
+        );
+    }
+
+    #[test]
+    fn test_diff_tree_node_dtoはsnake_caseで再帰出力する() {
+        let child = DiffTreeNodeDto {
+            id: "c".to_string(),
+            name: "child".to_string(),
+            path: "a/child".to_string(),
+            node_type: "file".to_string(),
+            status: Some("modified".to_string()),
+            additions: Some(1),
+            deletions: Some(2),
+            children: vec![],
+        };
+        let parent = DiffTreeNodeDto {
+            id: "p".to_string(),
+            name: "a".to_string(),
+            path: "a".to_string(),
+            node_type: "directory".to_string(),
+            status: None,
+            additions: None,
+            deletions: None,
+            children: vec![child],
+        };
+        let v = serde_json::to_value(&parent).unwrap();
+        // フィールド名は snake_case（移行前と等価）、children は再帰。
+        assert_eq!(v["node_type"], json!("directory"));
+        assert_eq!(v["status"], json!(null));
+        assert_eq!(v["children"][0]["node_type"], json!("file"));
+        assert_eq!(v["children"][0]["status"], json!("modified"));
+        assert_eq!(v["children"][0]["additions"], json!(1));
+    }
+
+    #[test]
+    fn test_branch_diff_summary_dtoはsnake_caseで出力する() {
+        let dto = BranchDiffSummaryDto {
+            base_branch: "main".to_string(),
+            changed_files: vec![ChangedFileDto {
+                path: "f.rs".to_string(),
+                old_path: Some("g.rs".to_string()),
+                status: "renamed".to_string(),
+                binary: false,
+                stats: DiffStatsDto {
+                    additions: 1,
+                    deletions: 2,
+                },
+            }],
+            stats: DiffStatsDto {
+                additions: 1,
+                deletions: 2,
+            },
+        };
+        let v = serde_json::to_value(&dto).unwrap();
+        assert_eq!(v["base_branch"], json!("main"));
+        assert_eq!(v["changed_files"][0]["old_path"], json!("g.rs"));
+        assert_eq!(v["changed_files"][0]["stats"]["additions"], json!(1));
+        assert_eq!(v["changed_files"][0]["binary"], json!(false));
+    }
+}

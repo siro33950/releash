@@ -15,7 +15,7 @@ use super::state::McpSharedState;
 #[derive(Debug)]
 enum WorktreeError {
     JoinError(tokio::task::JoinError),
-    Git(crate::git::error::GitError),
+    Code(crate::domain::code::CodeError),
     Serialize(serde_json::Error),
     Io(std::io::Error),
 }
@@ -26,9 +26,9 @@ impl From<tokio::task::JoinError> for WorktreeError {
     }
 }
 
-impl From<crate::git::error::GitError> for WorktreeError {
-    fn from(e: crate::git::error::GitError) -> Self {
-        Self::Git(e)
+impl From<crate::domain::code::CodeError> for WorktreeError {
+    fn from(e: crate::domain::code::CodeError) -> Self {
+        Self::Code(e)
     }
 }
 
@@ -48,7 +48,7 @@ impl From<WorktreeError> for McpError {
     fn from(e: WorktreeError) -> Self {
         match e {
             WorktreeError::JoinError(e) => McpError::internal_error(e.to_string(), None),
-            WorktreeError::Git(e) => McpError::internal_error(e.to_string(), None),
+            WorktreeError::Code(e) => McpError::internal_error(e.to_string(), None),
             WorktreeError::Serialize(e) => McpError::internal_error(e.to_string(), None),
             WorktreeError::Io(e) => McpError::internal_error(e.to_string(), None),
         }
@@ -222,22 +222,30 @@ impl ReleashMcpServer {
         let worktree_path = self.resolve_worktree(&params.worktree)?;
         let file_path = params.file_path.clone();
         let git_ref = params.git_ref.clone();
+        let code_usecase = Arc::clone(&self.state.code_usecase);
 
         let (content, line_count) = tokio::task::spawn_blocking(move || {
             crate::ws_server::validation::validate_relative_path(&file_path, &worktree_path)
-                .map_err(crate::git::error::GitError::Custom)?;
+                .map_err(crate::domain::code::CodeError::Rule)?;
             let full_path = std::path::Path::new(&worktree_path).join(&file_path);
             let full_path_str = full_path.to_string_lossy().to_string();
 
+            // 周辺入口（MCP）は gateway 実装やファイル I/O へ直接依存せず、code usecase の
+            // 公開 API 経由でファイル内容参照を行う。CodeUsecaseError は内包する CodeError を
+            // 取り出し、既存のエラー表現（文字列）を等価に保つ。
             let content = if let Some(ref git_ref) = git_ref {
-                crate::git::diff::get_file_at_ref(full_path_str, git_ref.clone())?
+                code_usecase
+                    .get_file_at_ref(&full_path_str, git_ref)
+                    .map_err(|crate::usecase::code_error::CodeUsecaseError::Code(c)| c)?
             } else {
-                std::fs::read_to_string(&full_path).map_err(crate::git::error::GitError::Io)?
+                code_usecase
+                    .get_file_in_worktree(&full_path_str)
+                    .map_err(|crate::usecase::code_error::CodeUsecaseError::Code(c)| c)?
             };
 
             let line_count = content.lines().count();
 
-            Ok::<_, crate::git::error::GitError>((content, line_count))
+            Ok::<_, crate::domain::code::CodeError>((content, line_count))
         })
         .await
         .map_err(WorktreeError::from)?
@@ -290,6 +298,7 @@ mod tests {
             repository_usecase: Arc::new(
                 crate::adaptor::controller::wiring::build_repository_usecase(),
             ),
+            code_usecase: Arc::new(crate::adaptor::controller::wiring::build_code_usecase()),
         };
         ReleashMcpServer::new(state)
     }
@@ -347,5 +356,111 @@ mod tests {
         );
         let mcp_err: McpError = err.into();
         assert!(!mcp_err.message.is_empty());
+    }
+
+    // ── read_file tool（MCP アクター経路のファイル内容参照が移行前後で等価） ──
+    // read_file は CodeUsecase 経由でファイル内容を返す。behavior.md「ファイル内容の
+    // 参照結果は移行前後で等価」「リモートクライアントから見た振る舞いも等価」を担保する。
+
+    /// `CallToolResult` の text content から、read_file が返す内部レスポンス JSON を取り出す。
+    fn read_file_response(result: &CallToolResult) -> serde_json::Value {
+        let v = serde_json::to_value(result).expect("CallToolResult should serialize");
+        let text = v["content"][0]["text"]
+            .as_str()
+            .expect("text content should be present");
+        serde_json::from_str(text).expect("inner response should be json")
+    }
+
+    #[tokio::test]
+    async fn read_file_通常ファイルを作業ツリーから読む() {
+        use crate::git::test_helpers::{create_initial_commit, create_test_repo};
+
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let repo_path = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        std::fs::write(
+            std::path::Path::new(&repo_path).join("hello.txt"),
+            "working tree\n",
+        )
+        .unwrap();
+
+        let server = make_server(vec![repo_path.clone()]);
+        let params = ReadFileParams {
+            worktree: repo_path,
+            file_path: "hello.txt".to_string(),
+            git_ref: None,
+        };
+        let result = server.read_file(Parameters(params)).await.unwrap();
+        let body = read_file_response(&result);
+        assert_eq!(body["content"], serde_json::json!("working tree\n"));
+        assert_eq!(body["line_count"], serde_json::json!(1));
+        assert_eq!(body["file_path"], serde_json::json!("hello.txt"));
+    }
+
+    #[tokio::test]
+    async fn read_file_git_ref指定でコミット時点の内容を読む() {
+        use crate::git::test_helpers::{add_and_commit, create_initial_commit, create_test_repo};
+
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(
+            &repo,
+            "committed.txt",
+            "committed content\n",
+            "add committed",
+        );
+        let repo_path = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        // 作業ツリーを変更しても git_ref=HEAD はコミット時点の内容を返す。
+        std::fs::write(
+            std::path::Path::new(&repo_path).join("committed.txt"),
+            "modified working copy\n",
+        )
+        .unwrap();
+
+        let server = make_server(vec![repo_path.clone()]);
+        let params = ReadFileParams {
+            worktree: repo_path,
+            file_path: "committed.txt".to_string(),
+            git_ref: Some("HEAD".to_string()),
+        };
+        let result = server.read_file(Parameters(params)).await.unwrap();
+        let body = read_file_response(&result);
+        assert_eq!(body["content"], serde_json::json!("committed content\n"));
+    }
+
+    #[tokio::test]
+    async fn read_file_不正な相対パスを拒否する() {
+        use crate::git::test_helpers::{create_initial_commit, create_test_repo};
+
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let repo_path = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let server = make_server(vec![repo_path.clone()]);
+        let params = ReadFileParams {
+            worktree: repo_path,
+            file_path: "../outside.txt".to_string(),
+            git_ref: None,
+        };
+        let result = server.read_file(Parameters(params)).await;
+        assert!(result.is_err(), "path traversal should be rejected");
     }
 }

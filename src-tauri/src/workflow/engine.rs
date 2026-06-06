@@ -14558,12 +14558,39 @@ mod dispatch_boundary_tests {
         let data_dir =
             std::env::temp_dir().join(format!("releash-dispatch-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).unwrap();
+        let repository_usecase =
+            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase());
+        let shared_repo_paths =
+            <crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths>::default();
+        let repo_paths_gateway =
+            crate::adaptor::gateway::repository::repo_paths::RepoPathsGateway::new(
+                shared_repo_paths,
+                Arc::clone(&app_config),
+            );
+        // テスト用 stub: 通知は no-op で受け流す。
+        let repo_paths_notifier = Arc::new(NoopRepoPathsNotifier);
+        let repo_paths_usecase =
+            Arc::new(crate::usecase::repo_paths_usecase::RepoPathsUsecase::new(
+                Arc::new(repo_paths_gateway),
+                repo_paths_notifier,
+            ));
+        let code_usecase = Arc::new(crate::adaptor::controller::wiring::build_code_usecase());
         tauri::test::mock_builder()
             .manage(crate::session::TestDataDir(data_dir))
             .manage(app_config)
             .manage(registry)
+            .manage(crate::adaptor::controller::state::AppState {
+                repository_usecase,
+                repo_paths_usecase,
+                code_usecase,
+            })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("tauri mock test app must build")
+    }
+
+    struct NoopRepoPathsNotifier;
+    impl crate::domain::repository::RepoPathsNotifier for NoopRepoPathsNotifier {
+        fn notify_changed(&self, _paths: Vec<String>) {}
     }
 
     fn make_dispatch_deps() -> (

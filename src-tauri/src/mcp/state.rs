@@ -5,6 +5,7 @@ use parking_lot::RwLock;
 
 use crate::config::AppConfig;
 use crate::pty::PtyManager;
+use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::ws_bridge::WsBroadcaster;
 
@@ -20,6 +21,8 @@ pub struct McpSharedState {
     pub app_data_dir: Option<PathBuf>,
     /// repository 責務の usecase（worktree 読み取り・作成等の唯一の入口）。
     pub repository_usecase: Arc<RepositoryUsecase>,
+    /// code 責務の usecase（read_file のファイル内容参照の唯一の入口）。
+    pub code_usecase: Arc<CodeUsecase>,
 }
 
 #[cfg(test)]
@@ -44,6 +47,7 @@ mod tests {
             repository_usecase: Arc::new(
                 crate::adaptor::controller::wiring::build_repository_usecase(),
             ),
+            code_usecase: Arc::new(crate::adaptor::controller::wiring::build_code_usecase()),
         }
     }
 

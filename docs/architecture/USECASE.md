@@ -69,17 +69,18 @@ impl RepositoryUsecase {
 
 読み込み専用のクエリサービス。**Usecase ではない**（「Query 側ユースケース」ではない）。表示向けに整形した DTO を返す。
 
-**Query 側は、集約・JOIN・表示集計を伴う読み取りでは、Entity を経由せずデータソースから read model（DTO / `query_models`）を直接組み立てる。** Entity を生成する Repository を再利用して `Entity → DTO` に詰め替えるのは、単純な 1:1 写像の読み取りに限って許容される最適化であり、集約読み取りの既定手段ではない。表示・集計向けの読み取り専用モデルは `adaptor/gateway` の `query_models`（[GATEWAY.md](./GATEWAY.md)）として QueryService 実装（`query_service_impl`）が直接構築する。
+**Query 側は読み取り要求に応えて、データソースから read model（DTO / `query_models`）を直接組み立てて返す。** DTO は読み取り要求の出力仕様であり、その形は要求の都合で決まる。Entity を生成する Repository を再利用して `Entity → DTO` に詰め替えてはならない——向きが逆である（DTO は要求起点であって Entity 起点ではない）。1:1 写像に見える場合も例外ではない。表示・集計向けの読み取り専用モデルは `adaptor/gateway` の `query_models`（[GATEWAY.md](./GATEWAY.md)）として QueryService 実装（`query_service_impl`）が直接構築する。
 
 ```rust
-// 単純な 1:1 写像に限り Entity 経由の map を許容する
+// QueryService 実装はデータソースから read model を直接組み立てる。
+// Entity を経由した詰め替え（map(Dto::from)）は行わない。
 impl RepositoryQueryService {
     pub async fn list_branches(
         &self,
         repo_path: &Path,
     ) -> Result<Vec<BranchListItemDto>, UsecaseError> {
-        let branches = self.branch_repo.list(repo_path).await?;
-        Ok(branches.into_iter().map(BranchListItemDto::from).collect())
+        // query_service_impl がデータソースから BranchListItemDto を直接構築する
+        self.query_service.list_branches(repo_path).await
     }
 }
 ```
@@ -88,31 +89,29 @@ impl RepositoryQueryService {
 
 ## DTO
 
-- ユースケースの入出力に使う構造体
-- `serde::{Serialize, Deserialize}` を実装してフロントへの返却に流用できる
-- ドメイン型 ↔ DTO の変換ロジックを `<domain>_dto.rs` に集約
+- DTO は **QueryService（Query 側）が返す Response** である。読み取り要求（ユースケース／画面）の
+  出力仕様であり、その形は要求の都合だけで決まる。
+- ドメイン（Entity）から導かれない。QueryService がデータソースから直接組み立てる read model で
+  あり、**「ドメイン型 ↔ DTO の変換」という工程は存在しない**。`From<Entity> for Dto` を書きたく
+  なったら、向き（ドメイン起点）が誤っているサイン。
+- `serde` を実装しフロントへ返す。表示・転送の形（`camelCase` 等）はこの Response が持つ。
+- **Command 側 Use Case の入出力ではない。** Command はドメイン（Entity）を操作する。
+- 配置: `usecase/<domain>_dto.rs`。
 
 ```rust
 // src/usecase/repository_dto.rs
 use serde::Serialize;
-use crate::domain::repository::Branch;
 
+// 読み取り要求「ブランチ一覧に出す項目」の出力仕様。Entity ではなく要求が形を決める。
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BranchListItemDto {
     pub name: String,
     pub is_current: bool,
     pub upstream: Option<String>,
 }
 
-impl From<Branch> for BranchListItemDto {
-    fn from(b: Branch) -> Self {
-        Self {
-            name: b.name,
-            is_current: b.is_head,
-            upstream: b.upstream,
-        }
-    }
-}
+// From<Branch> は定義しない。QueryService 実装が query_models から直接この形を構築する。
 ```
 
 ## DI への組み込み

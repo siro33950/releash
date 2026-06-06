@@ -1,25 +1,8 @@
-use serde::{Deserialize, Serialize};
+//! diff ファイルツリーの構築とナビゲーション算出（純粋ロジック）。
+
 use std::collections::{BTreeMap, HashSet};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiffFileEntry {
-    pub path: String,
-    pub status: String,
-    pub additions: u32,
-    pub deletions: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiffTreeNode {
-    pub id: String,
-    pub name: String,
-    pub path: String,
-    pub node_type: String,
-    pub status: Option<String>,
-    pub additions: Option<u32>,
-    pub deletions: Option<u32>,
-    pub children: Vec<DiffTreeNode>,
-}
+use crate::domain::code::value_objects::{DiffFileEntry, DiffTreeNode, FileNavigationResult};
 
 /// Intermediate tree used during construction.
 struct TreeBuilder {
@@ -131,14 +114,6 @@ fn collapse_single_child_folder(
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct FileNavigationResult {
-    pub current_index: usize,
-    pub total: usize,
-    pub prev_file: Option<String>,
-    pub next_file: Option<String>,
-}
-
 /// Flatten tree nodes into an ordered list of unique file paths (depth-first).
 /// Duplicates are skipped (keeps first occurrence), which is important when
 /// the input contains multiple trees (e.g. staged + unstaged combined).
@@ -212,7 +187,7 @@ pub fn build_tree(entries: Vec<DiffFileEntry>) -> Vec<DiffTreeNode> {
 }
 
 #[cfg(test)]
-mod tests {
+mod diff_tree_service_tests {
     use super::*;
 
     fn entry(path: &str, status: &str) -> DiffFileEntry {
@@ -234,13 +209,13 @@ mod tests {
     }
 
     #[test]
-    fn empty_input_returns_empty_tree() {
+    fn test_ツリー構築_空入力は空ツリー() {
         let result = build_tree(vec![]);
         assert!(result.is_empty());
     }
 
     #[test]
-    fn single_file_at_root() {
+    fn test_ツリー構築_ルート直下のファイル() {
         let entries = vec![entry("README.md", "modified")];
         let tree = build_tree(entries);
         assert_eq!(tree.len(), 1);
@@ -251,11 +226,10 @@ mod tests {
     }
 
     #[test]
-    fn single_child_directory_collapsing() {
+    fn test_ツリー構築_単一子ディレクトリの折り畳み() {
         let entries = vec![entry("src/components/panels/Review.tsx", "new")];
         let tree = build_tree(entries);
         assert_eq!(tree.len(), 1);
-        // All single-child folders should be collapsed
         assert_eq!(tree[0].name, "src/components/panels");
         assert_eq!(tree[0].node_type, "folder");
         assert_eq!(tree[0].children.len(), 1);
@@ -264,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_files_in_same_directory() {
+    fn test_ツリー構築_同一ディレクトリ複数ファイル() {
         let entries = vec![
             entry("src/hooks/useA.ts", "modified"),
             entry("src/hooks/useB.ts", "new"),
@@ -277,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn no_collapsing_when_multiple_children() {
+    fn test_ツリー構築_複数子は折り畳まない() {
         let entries = vec![
             entry("src/a.ts", "modified"),
             entry("src/b.ts", "deleted"),
@@ -285,35 +259,32 @@ mod tests {
         ];
         let tree = build_tree(entries);
         assert_eq!(tree.len(), 2); // lib, src
-                                   // Both should be folders with file children
         for node in &tree {
             assert_eq!(node.node_type, "folder");
         }
     }
 
     #[test]
-    fn deep_nesting() {
+    fn test_ツリー構築_深いネスト() {
         let entries = vec![
             entry("a/b/c/d/e.txt", "modified"),
             entry("a/b/c/d/f.txt", "new"),
         ];
         let tree = build_tree(entries);
         assert_eq!(tree.len(), 1);
-        // a/b/c/d should be collapsed into single folder
         assert_eq!(tree[0].name, "a/b/c/d");
         assert_eq!(tree[0].node_type, "folder");
         assert_eq!(tree[0].children.len(), 2);
     }
 
     #[test]
-    fn mixed_depths() {
+    fn test_ツリー構築_混在する深さ() {
         let entries = vec![
             entry("Cargo.toml", "modified"),
             entry("src/main.rs", "modified"),
             entry("src/git/diff.rs", "new"),
         ];
         let tree = build_tree(entries);
-        // Root level: Cargo.toml (file) + src (folder)
         assert_eq!(tree.len(), 2);
 
         let cargo = tree.iter().find(|n| n.name == "Cargo.toml").unwrap();
@@ -321,12 +292,11 @@ mod tests {
 
         let src = tree.iter().find(|n| n.name == "src").unwrap();
         assert_eq!(src.node_type, "folder");
-        // src has two children: main.rs and git (folder)
         assert_eq!(src.children.len(), 2);
     }
 
     #[test]
-    fn stats_propagated_to_tree_node() {
+    fn test_ツリー構築_統計がノードへ伝播() {
         let entries = vec![entry_with_stats("file.rs", "modified", 10, 3)];
         let tree = build_tree(entries);
         assert_eq!(tree.len(), 1);
@@ -335,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_has_no_stats() {
+    fn test_ツリー構築_フォルダは統計を持たない() {
         let entries = vec![
             entry_with_stats("src/a.ts", "modified", 5, 2),
             entry_with_stats("src/b.ts", "new", 20, 0),
@@ -344,15 +314,12 @@ mod tests {
         assert_eq!(tree[0].node_type, "folder");
         assert_eq!(tree[0].additions, None);
         assert_eq!(tree[0].deletions, None);
-        // Children have stats
         assert_eq!(tree[0].children[0].additions, Some(5));
         assert_eq!(tree[0].children[1].additions, Some(20));
     }
 
-    // ── get_file_navigation tests ──
-
     #[test]
-    fn nav_empty_tree() {
+    fn test_ナビゲーション_空ツリー() {
         let tree = build_tree(vec![]);
         let result = get_file_navigation(&tree, "anything.rs");
         assert_eq!(result.total, 0);
@@ -362,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_single_file() {
+    fn test_ナビゲーション_単一ファイル() {
         let tree = build_tree(vec![entry("README.md", "modified")]);
         let result = get_file_navigation(&tree, "README.md");
         assert_eq!(result.total, 1);
@@ -372,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_first_file_has_no_prev() {
+    fn test_ナビゲーション_先頭ファイルはprevなし() {
         let tree = build_tree(vec![
             entry("a.rs", "modified"),
             entry("b.rs", "modified"),
@@ -386,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_last_file_has_no_next() {
+    fn test_ナビゲーション_末尾ファイルはnextなし() {
         let tree = build_tree(vec![
             entry("a.rs", "modified"),
             entry("b.rs", "modified"),
@@ -400,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_middle_file() {
+    fn test_ナビゲーション_中間ファイル() {
         let tree = build_tree(vec![
             entry("a.rs", "modified"),
             entry("b.rs", "new"),
@@ -414,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_nested_folders() {
+    fn test_ナビゲーション_ネストフォルダ() {
         let tree = build_tree(vec![
             entry("src/a.ts", "modified"),
             entry("src/b.ts", "new"),
@@ -429,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_current_file_not_found() {
+    fn test_ナビゲーション_現在ファイルが見つからない() {
         let tree = build_tree(vec![entry("a.rs", "modified"), entry("b.rs", "new")]);
         let result = get_file_navigation(&tree, "nonexistent.rs");
         assert_eq!(result.total, 2);
@@ -439,9 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_combined_trees_deduplicates() {
-        // When combining staged + changes trees, the same file may appear in both.
-        // Navigation should deduplicate and count each file only once.
+    fn test_ナビゲーション_結合ツリーで重複排除() {
         let staged = build_tree(vec![entry("a.rs", "modified"), entry("b.rs", "modified")]);
         let changes = build_tree(vec![entry("b.rs", "modified"), entry("c.rs", "new")]);
         let combined: Vec<_> = staged.into_iter().chain(changes).collect();
@@ -454,8 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn file_directory_replacement_preserves_both() {
-        // Scenario: "foo" is deleted (file) and "foo/bar.rs" is added (nested in dir)
+    fn test_ツリー構築_ファイルとディレクトリ置換を両方保持() {
         let entries = vec![entry("foo", "deleted"), entry("foo/bar.rs", "new")];
         let tree = build_tree(entries);
 

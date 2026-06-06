@@ -14,7 +14,7 @@ pub struct AgentMessageDispatchRequest {
     pub permission_mode: PermissionMode,
     pub backend_id: Option<String>,
     pub images: Option<Vec<ImageAttachment>>,
-    pub mentions: Option<Vec<crate::file_mention::MentionReference>>,
+    pub mentions: Option<Vec<crate::domain::code::MentionReference>>,
 }
 
 pub struct AgentMessageDispatchContext<'a> {

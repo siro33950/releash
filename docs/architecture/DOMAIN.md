@@ -51,7 +51,7 @@ impl Branch {
 
 - **フロント（クライアント）の都合をドメインに漏らしてはならない。** 表示・転送のためにその形が必要な型は DTO（read model）であり、`usecase`（DTO）や `adaptor/gateway`（`query_models`）側に置く。
 - フロントの都合でデータ型が必要になったら DTO を作る。domain の Entity を表示用に歪めない。
-- 補足的なサイン: 振る舞い（`impl` のメソッド）・不変条件・識別子を持たず「生成して即 DTO へ詰め替えるだけ」の型は、Entity ではなく read model の疑いが強い。ただし `impl` の有無は症状であって判定の本質ではない（本質は上記の「誰の都合か」）。
+- 補足的なサイン: 振る舞い（`impl` のメソッド）・不変条件・識別子を持たず、表示・転送のためだけに生成される型は、Entity ではなく read model（DTO）の疑いが強い。ただし `impl` の有無は症状であって判定の本質ではない（本質は上記の「誰の都合か」）。
 
 → Query 側のモデル構築は [GATEWAY.md](./GATEWAY.md) の `query_models`、[USECASE.md](./USECASE.md) の QueryService を参照。
 

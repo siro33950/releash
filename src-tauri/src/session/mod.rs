@@ -161,8 +161,11 @@ pub struct ChatMessage {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub parts: Option<Vec<MessagePart>>,
     pub timestamp: f64,
+    /// 永続化／フロント転送向けの表現。domain VO は serde 非依存（純粋データ）のため、
+    /// 転送境界に置く本フィールドは adaptor の入出力型を保持する。serialize 表現
+    /// （camelCase・行範囲省略）は移行前と等価。
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub mentions: Option<Vec<crate::file_mention::MentionReference>>,
+    pub mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -487,12 +490,19 @@ pub fn add_message_internal(
     role: MessageRole,
     content: &str,
     parts: Option<Vec<MessagePart>>,
-    mentions: Option<Vec<crate::file_mention::MentionReference>>,
+    mentions: Option<Vec<crate::domain::code::MentionReference>>,
 ) -> Result<ChatMessage, String> {
     let mut session = session_store
         .get_session(data_dir, session_id)?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
     let now = now_timestamp();
+    // 永続化境界（ChatMessage の serde JSON）では adaptor の Input 型へ詰め替える。
+    // serialize 表現（camelCase・行範囲省略）は移行前と等価。
+    let mentions_for_persist = mentions.map(|v| {
+        v.into_iter()
+            .map(crate::adaptor::protocol::mention::MentionReferenceInput::from_domain)
+            .collect::<Vec<_>>()
+    });
     let message = ChatMessage {
         id: uuid::Uuid::new_v4().to_string(),
         role,
@@ -501,7 +511,7 @@ pub fn add_message_internal(
         activities: None,
         parts,
         timestamp: now,
-        mentions,
+        mentions: mentions_for_persist,
     };
     session.messages.push(message.clone());
     session.updated_at = now;
@@ -662,6 +672,52 @@ mod tests {
     use crate::workflow::state::{
         StepHistoryEntry, TokenUsage, WorkflowExecutionState, WorkflowState,
     };
+
+    #[test]
+    fn chat_message_mentions_persist_serializeは移行前のcamelcase等価() {
+        // domain VO `MentionReference` から serde を剥がしたため、永続化境界（ChatMessage）
+        // の `mentions` は adaptor の `MentionReferenceInput` を保持する。serialize 表現
+        // （camelCase / 行範囲省略）が移行前と等価であることを担保する。
+        use crate::adaptor::protocol::mention::MentionReferenceInput;
+
+        let msg = ChatMessage {
+            id: "m1".to_string(),
+            role: MessageRole::Human,
+            content: "hello".to_string(),
+            thinking: None,
+            activities: None,
+            parts: None,
+            timestamp: 1.0,
+            mentions: Some(vec![
+                MentionReferenceInput {
+                    file_path: "src/a.rs".to_string(),
+                    start_line: None,
+                    end_line: None,
+                },
+                MentionReferenceInput {
+                    file_path: "src/b.rs".to_string(),
+                    start_line: Some(3),
+                    end_line: Some(5),
+                },
+            ]),
+        };
+        let v = serde_json::to_value(&msg).unwrap();
+        let mentions = &v["mentions"];
+        assert_eq!(mentions[0]["filePath"], serde_json::json!("src/a.rs"));
+        assert!(mentions[0].get("startLine").is_none());
+        assert!(mentions[0].get("endLine").is_none());
+        assert_eq!(mentions[1]["filePath"], serde_json::json!("src/b.rs"));
+        assert_eq!(mentions[1]["startLine"], serde_json::json!(3));
+        assert_eq!(mentions[1]["endLine"], serde_json::json!(5));
+
+        // None の場合は mentions キー自体が省略される（移行前と等価）。
+        let msg_none = ChatMessage {
+            mentions: None,
+            ..msg
+        };
+        let v = serde_json::to_value(&msg_none).unwrap();
+        assert!(v.get("mentions").is_none());
+    }
 
     #[test]
     fn chat_session_missing_permission_mode_rejected_on_deserialize() {

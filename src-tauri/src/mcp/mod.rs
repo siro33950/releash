@@ -237,6 +237,7 @@ fn build_mcp_state(app: &tauri::AppHandle) -> Result<McpSharedState, String> {
         repository_usecase: Arc::new(
             crate::adaptor::controller::wiring::build_repository_usecase(),
         ),
+        code_usecase: Arc::new(crate::adaptor::controller::wiring::build_code_usecase()),
     })
 }
 

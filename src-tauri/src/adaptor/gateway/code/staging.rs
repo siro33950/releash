@@ -1,10 +1,14 @@
-use super::error::GitError;
+//! staging（差分 Approve）責務の gateway 実装。git2 index 操作と `git apply --cached`
+//! を封じ込める。
+
 use git2::{ErrorCode, Repository, StatusOptions};
 use std::path::Path;
 use std::process::Command;
 
-pub fn git_stage(repo_path: String, paths: Vec<String>) -> Result<(), GitError> {
-    let repo = Repository::open(&repo_path)?;
+use crate::domain::code::{CodeError, StagingRepository};
+
+pub(crate) fn git_stage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
+    let repo = Repository::open(repo_path)?;
     let mut index = repo.index()?;
 
     let targets: Vec<String> = if paths.is_empty() {
@@ -35,7 +39,7 @@ pub fn git_stage(repo_path: String, paths: Vec<String>) -> Result<(), GitError> 
 
     let workdir = repo
         .workdir()
-        .ok_or_else(|| GitError::Custom("bare repository".to_string()))?;
+        .ok_or_else(|| CodeError::Rule("bare repository".to_string()))?;
 
     for p in &targets {
         let full_path = workdir.join(p);
@@ -50,8 +54,8 @@ pub fn git_stage(repo_path: String, paths: Vec<String>) -> Result<(), GitError> 
     Ok(())
 }
 
-pub fn git_unstage(repo_path: String, paths: Vec<String>) -> Result<(), GitError> {
-    let repo = Repository::open(&repo_path)?;
+pub(crate) fn git_unstage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
+    let repo = Repository::open(repo_path)?;
 
     let head_result = repo.head();
     let is_unborn = matches!(&head_result, Err(e) if e.code() == ErrorCode::UnbornBranch);
@@ -100,94 +104,108 @@ pub fn git_unstage(repo_path: String, paths: Vec<String>) -> Result<(), GitError
     Ok(())
 }
 
-pub fn git_stage_hunk(repo_path: String, patch: String) -> Result<(), GitError> {
-    Repository::open(&repo_path)?;
+pub(crate) fn git_stage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeError> {
+    Repository::open(repo_path)?;
 
     let mut child = Command::new("git")
         .args(["apply", "--cached"])
-        .current_dir(&repo_path)
+        .current_dir(repo_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| GitError::Custom(format!("Failed to execute git apply: {e}")))?;
+        .map_err(|e| CodeError::Rule(format!("Failed to execute git apply: {e}")))?;
 
     {
         use std::io::Write;
         let stdin = child
             .stdin
             .as_mut()
-            .ok_or_else(|| GitError::Custom("Failed to open stdin for git apply".to_string()))?;
+            .ok_or_else(|| CodeError::Rule("Failed to open stdin for git apply".to_string()))?;
         stdin
             .write_all(patch.as_bytes())
-            .map_err(|e| GitError::Custom(format!("Failed to write patch: {e}")))?;
+            .map_err(|e| CodeError::Rule(format!("Failed to write patch: {e}")))?;
     }
 
     let output = child
         .wait_with_output()
-        .map_err(|e| GitError::Custom(format!("Failed to wait for git apply: {e}")))?;
+        .map_err(|e| CodeError::Rule(format!("Failed to wait for git apply: {e}")))?;
 
     if output.status.success() {
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(GitError::Custom(stderr.trim().to_string()))
+        Err(CodeError::Rule(stderr.trim().to_string()))
     }
 }
 
-pub fn git_unstage_hunk(repo_path: String, patch: String) -> Result<(), GitError> {
-    Repository::open(&repo_path)?;
+pub(crate) fn git_unstage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeError> {
+    Repository::open(repo_path)?;
 
     let mut child = Command::new("git")
         .args(["apply", "--cached", "--reverse"])
-        .current_dir(&repo_path)
+        .current_dir(repo_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| GitError::Custom(format!("Failed to execute git apply: {e}")))?;
+        .map_err(|e| CodeError::Rule(format!("Failed to execute git apply: {e}")))?;
 
     {
         use std::io::Write;
         let stdin = child
             .stdin
             .as_mut()
-            .ok_or_else(|| GitError::Custom("Failed to open stdin for git apply".to_string()))?;
+            .ok_or_else(|| CodeError::Rule("Failed to open stdin for git apply".to_string()))?;
         stdin
             .write_all(patch.as_bytes())
-            .map_err(|e| GitError::Custom(format!("Failed to write patch: {e}")))?;
+            .map_err(|e| CodeError::Rule(format!("Failed to write patch: {e}")))?;
     }
 
     let output = child
         .wait_with_output()
-        .map_err(|e| GitError::Custom(format!("Failed to wait for git apply: {e}")))?;
+        .map_err(|e| CodeError::Rule(format!("Failed to wait for git apply: {e}")))?;
 
     if output.status.success() {
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(GitError::Custom(stderr.trim().to_string()))
+        Err(CodeError::Rule(stderr.trim().to_string()))
+    }
+}
+
+/// `StagingRepository` の git2 / git CLI 実装。
+pub struct StagingGateway;
+
+impl StagingRepository for StagingGateway {
+    fn stage(&self, repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
+        git_stage(repo_path, paths)
+    }
+    fn unstage(&self, repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
+        git_unstage(repo_path, paths)
+    }
+    fn stage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError> {
+        git_stage_hunk(repo_path, patch)
+    }
+    fn unstage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError> {
+        git_unstage_hunk(repo_path, patch)
     }
 }
 
 #[cfg(test)]
-mod tests {
+mod staging_gateway_tests {
     use super::*;
     use crate::adaptor::gateway::repository::status::get_git_status;
     use crate::git::test_helpers::*;
     use std::fs;
 
     #[test]
-    fn test_stage_specific_file() {
+    fn test_stage_特定ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("new.txt"), "hello").unwrap();
 
-        git_stage(
-            dir.path().to_str().unwrap().to_string(),
-            vec!["new.txt".to_string()],
-        )
-        .unwrap();
+        git_stage(dir.path().to_str().unwrap(), vec!["new.txt".to_string()]).unwrap();
 
         let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(statuses.len(), 1);
@@ -196,13 +214,13 @@ mod tests {
     }
 
     #[test]
-    fn test_stage_all_files() {
+    fn test_stage_全ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("a.txt"), "a").unwrap();
         fs::write(dir.path().join("b.txt"), "b").unwrap();
 
-        git_stage(dir.path().to_str().unwrap().to_string(), vec![]).unwrap();
+        git_stage(dir.path().to_str().unwrap(), vec![]).unwrap();
 
         let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(statuses.len(), 2);
@@ -213,17 +231,13 @@ mod tests {
     }
 
     #[test]
-    fn test_stage_deleted_file() {
+    fn test_stage_削除ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "file.txt", "content", "add file");
         fs::remove_file(dir.path().join("file.txt")).unwrap();
 
-        git_stage(
-            dir.path().to_str().unwrap().to_string(),
-            vec!["file.txt".to_string()],
-        )
-        .unwrap();
+        git_stage(dir.path().to_str().unwrap(), vec!["file.txt".to_string()]).unwrap();
 
         let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(statuses.len(), 1);
@@ -232,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stage_untracked_file() {
+    fn test_stage_未追跡ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("untracked.txt"), "data").unwrap();
@@ -241,7 +255,7 @@ mod tests {
         assert_eq!(before[0].worktree_status, "new");
 
         git_stage(
-            dir.path().to_str().unwrap().to_string(),
+            dir.path().to_str().unwrap(),
             vec!["untracked.txt".to_string()],
         )
         .unwrap();
@@ -252,21 +266,13 @@ mod tests {
     }
 
     #[test]
-    fn test_unstage_specific_file() {
+    fn test_unstage_特定ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("file.txt"), "content").unwrap();
-        git_stage(
-            dir.path().to_str().unwrap().to_string(),
-            vec!["file.txt".to_string()],
-        )
-        .unwrap();
+        git_stage(dir.path().to_str().unwrap(), vec!["file.txt".to_string()]).unwrap();
 
-        git_unstage(
-            dir.path().to_str().unwrap().to_string(),
-            vec!["file.txt".to_string()],
-        )
-        .unwrap();
+        git_unstage(dir.path().to_str().unwrap(), vec!["file.txt".to_string()]).unwrap();
 
         let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(statuses.len(), 1);
@@ -275,14 +281,14 @@ mod tests {
     }
 
     #[test]
-    fn test_unstage_all_files() {
+    fn test_unstage_全ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("a.txt"), "a").unwrap();
         fs::write(dir.path().join("b.txt"), "b").unwrap();
-        git_stage(dir.path().to_str().unwrap().to_string(), vec![]).unwrap();
+        git_stage(dir.path().to_str().unwrap(), vec![]).unwrap();
 
-        git_unstage(dir.path().to_str().unwrap().to_string(), vec![]).unwrap();
+        git_unstage(dir.path().to_str().unwrap(), vec![]).unwrap();
 
         let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         for s in &statuses {
@@ -295,20 +301,12 @@ mod tests {
     fn test_unstage_unborn_branch() {
         let (dir, _repo) = create_test_repo();
         fs::write(dir.path().join("file.txt"), "content").unwrap();
-        git_stage(
-            dir.path().to_str().unwrap().to_string(),
-            vec!["file.txt".to_string()],
-        )
-        .unwrap();
+        git_stage(dir.path().to_str().unwrap(), vec!["file.txt".to_string()]).unwrap();
 
         let before = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(before[0].index_status, "new");
 
-        git_unstage(
-            dir.path().to_str().unwrap().to_string(),
-            vec!["file.txt".to_string()],
-        )
-        .unwrap();
+        git_unstage(dir.path().to_str().unwrap(), vec!["file.txt".to_string()]).unwrap();
 
         let after = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(after[0].index_status, "none");
@@ -326,7 +324,7 @@ mod tests {
         let patch =
             "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+modified\n line3\n";
 
-        git_stage_hunk(dir.path().to_str().unwrap().to_string(), patch.to_string()).unwrap();
+        git_stage_hunk(dir.path().to_str().unwrap(), patch).unwrap();
 
         let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert!(statuses.iter().any(|s| s.index_status == "modified"));
@@ -339,18 +337,14 @@ mod tests {
         add_and_commit(&repo, "file.txt", "line1\nline2\nline3\n", "add file");
 
         fs::write(dir.path().join("file.txt"), "line1\nmodified\nline3\n").unwrap();
-        git_stage(
-            dir.path().to_str().unwrap().to_string(),
-            vec!["file.txt".to_string()],
-        )
-        .unwrap();
+        git_stage(dir.path().to_str().unwrap(), vec!["file.txt".to_string()]).unwrap();
 
         let before = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert!(before.iter().any(|s| s.index_status == "modified"));
 
         let patch =
             "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+modified\n line3\n";
-        git_unstage_hunk(dir.path().to_str().unwrap().to_string(), patch.to_string()).unwrap();
+        git_unstage_hunk(dir.path().to_str().unwrap(), patch).unwrap();
 
         let after = get_git_status(dir.path().to_str().unwrap()).unwrap();
         let file_status = after.iter().find(|s| s.path == "file.txt").unwrap();
