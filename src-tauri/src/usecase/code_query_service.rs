@@ -133,6 +133,10 @@ impl CodeQueryService {
         Ok(self.file_content.binary_staged_content(file_path)?)
     }
 
+    pub fn get_file_in_worktree(&self, file_path: &str) -> Result<String, CodeUsecaseError> {
+        Ok(self.file_content.file_in_worktree(file_path)?)
+    }
+
     // ── branch diff ──
 
     pub fn get_branch_diff_summary(
@@ -378,6 +382,9 @@ mod code_query_service_tests {
         }
         fn binary_staged_content(&self, _file_path: &str) -> Result<String, CodeError> {
             Ok("c3RhZ2Vk".to_string())
+        }
+        fn file_in_worktree(&self, _file_path: &str) -> Result<String, CodeError> {
+            Ok("worktree".to_string())
         }
     }
 

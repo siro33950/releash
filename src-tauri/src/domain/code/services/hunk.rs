@@ -199,7 +199,7 @@ pub fn generate_group_patch(file_path: &str, hunk: &Hunk, group: &ChangeGroup) -
     output.push(format!("+++ b/{file_path}"));
     output.push(format!(
         "@@ -{},{old_lines} +{},{new_lines} @@",
-        hunk.old_start, hunk.old_start
+        hunk.old_start, hunk.new_start
     ));
     output.extend(result_lines);
 

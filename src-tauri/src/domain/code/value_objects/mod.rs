@@ -5,9 +5,10 @@
 //! `FileNavigationResult`）、メンション参照（`MentionReference`）を保持する。
 //! いずれも純粋なデータであり、外部リソースに依存しない。
 //!
-//! diff / hunk / range / diff_tree 系の値オブジェクトは serde 非依存（転送表現は
-//! usecase の DTO と controller 入口の入力型が保持する）。`MentionReference` は
-//! agent / backends / workflow / session が prompt 解決で利用する公開型のため serde を維持する。
+//! いずれの値オブジェクトも serde 非依存（転送表現は usecase の DTO と controller
+//! 入口の入力型が保持する）。`MentionReference` も同様に serde 非依存とし、agent /
+//! backends / workflow / session は domain 型として受け渡し、転送表現は adaptor 側の
+//! 入力型が保持する。
 
 pub mod diff_tree;
 pub mod hunk;

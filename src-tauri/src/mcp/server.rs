@@ -230,15 +230,17 @@ impl ReleashMcpServer {
             let full_path = std::path::Path::new(&worktree_path).join(&file_path);
             let full_path_str = full_path.to_string_lossy().to_string();
 
+            // 周辺入口（MCP）は gateway 実装やファイル I/O へ直接依存せず、code usecase の
+            // 公開 API 経由でファイル内容参照を行う。CodeUsecaseError は内包する CodeError を
+            // 取り出し、既存のエラー表現（文字列）を等価に保つ。
             let content = if let Some(ref git_ref) = git_ref {
-                // 周辺入口（MCP）は gateway 実装へ直接依存せず、code usecase の公開 API 経由で
-                // ファイル内容参照を行う。CodeUsecaseError は内包する CodeError を取り出し、
-                // 既存のエラー表現（文字列）を等価に保つ。
                 code_usecase
                     .get_file_at_ref(&full_path_str, git_ref)
                     .map_err(|crate::usecase::code_error::CodeUsecaseError::Code(c)| c)?
             } else {
-                std::fs::read_to_string(&full_path).map_err(crate::domain::code::CodeError::from)?
+                code_usecase
+                    .get_file_in_worktree(&full_path_str)
+                    .map_err(|crate::usecase::code_error::CodeUsecaseError::Code(c)| c)?
             };
 
             let line_count = content.lines().count();

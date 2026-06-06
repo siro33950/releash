@@ -2,17 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 static GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-/// agent bridge 用の `CodeUsecase` を hot path 毎に構築せず、起動時に 1 度だけ組み立てて
-/// 共有保持する（wiring.rs の「いずれの gateway もステートレスのため起動時に 1 度だけ
-/// 組み立てて Arc 共有する」方針、および他エントリ（AppState / MCP）の State 保持と整合）。
-/// `CodeUsecase` は ZST gateway の `Arc` 包みで内部可変状態を持たないため static 共有で安全。
-static SHARED_CODE_USECASE: LazyLock<crate::usecase::code_usecase::CodeUsecase> =
-    LazyLock::new(crate::adaptor::controller::wiring::build_code_usecase);
 
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -2039,9 +2032,11 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
     // spec issues-1022 "Agent process environment contract": agent process 自身が
     // 自分の chat_session_id を env 経由で参照できるよう、session 固有 env を
     // pure helper 経由で組み立てて設置する。
-    // 周辺入口（agent bridge）は gateway 実装へ直接依存せず、composition root が組み立てた
-    // code usecase の公開 API 経由で base 名を解決する。エラーは移行前と同じく None に倒す。
-    let base_branch = SHARED_CODE_USECASE
+    // 周辺入口（agent bridge）は gateway 実装へ直接依存せず、composition root が AppState へ
+    // 配線した code usecase を取得して base 名を解決する。エラーは移行前と同じく None に倒す。
+    let base_branch = app
+        .state::<crate::adaptor::controller::state::AppState>()
+        .code_usecase
         .resolve_effective_base_branch_name(cwd)
         .ok()
         .flatten();
@@ -3509,11 +3504,10 @@ async fn start_pending_message_turn<R: tauri::Runtime>(
         );
     }
 
-    let resolved_prompt = SHARED_CODE_USECASE.resolve_mentions_or_fallback(
-        &pending.worktree_path,
-        &pending.content,
-        &pending.mentions,
-    );
+    let resolved_prompt = app
+        .state::<crate::adaptor::controller::state::AppState>()
+        .code_usecase
+        .resolve_mentions_or_fallback(&pending.worktree_path, &pending.content, &pending.mentions);
 
     if let Err(_e) = start_agent_turn(
         app,
@@ -4071,6 +4065,7 @@ struct PreparedAgentTurn {
 
 #[allow(clippy::too_many_arguments)]
 async fn prepare_send_agent_message_internal(
+    code_usecase: &crate::usecase::code_usecase::CodeUsecase,
     session_store: &Arc<SessionStore>,
     registry: &Arc<crate::backends::AgentBackendRegistry>,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -4204,11 +4199,8 @@ async fn prepare_send_agent_message_internal(
             None,
             None,
         )?;
-        let resolved_prompt = SHARED_CODE_USECASE.resolve_mentions_or_fallback(
-            &session_worktree_path,
-            &content,
-            &mentions,
-        );
+        let resolved_prompt =
+            code_usecase.resolve_mentions_or_fallback(&session_worktree_path, &content, &mentions);
         let turn = PreparedAgentTurn {
             session_id: sid.clone(),
             worktree_path: session_worktree_path.clone(),
@@ -4258,9 +4250,14 @@ pub async fn send_agent_message_internal(
         .map(str::to_string)
         .unwrap_or_else(|| format!("new-session:{worktree_path}"));
     let data_dir = resolve_data_dir(app)?;
+    let code_usecase = Arc::clone(
+        &app.state::<crate::adaptor::controller::state::AppState>()
+            .code_usecase,
+    );
     let (response, prepared_turn) = {
         let _send_guard = acquire_session_runtime_lock(&lock_key).await;
         prepare_send_agent_message_internal(
+            &code_usecase,
             session_store,
             registry,
             handles,
@@ -6368,6 +6365,7 @@ mod tests {
             .unwrap();
 
         let result = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
             &session_store,
             &registry,
             &handles,
@@ -6471,6 +6469,7 @@ mod tests {
         .await;
 
         let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
             &session_store,
             &registry,
             &handles,
@@ -6513,6 +6512,7 @@ mod tests {
         let worktree_path = "/repo".to_string();
 
         let (response, prepared_turn) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
             &session_store,
             &registry,
             &handles,
@@ -6564,6 +6564,7 @@ mod tests {
             .unwrap();
 
         let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
             &session_store,
             &registry,
             &handles,
@@ -7083,6 +7084,7 @@ mod tests {
         );
 
         let (response, prepared_turn) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
             &session_store,
             &registry,
             &handles,
@@ -9365,6 +9367,7 @@ mod tests {
             .unwrap();
 
         let (response, _prepared_turn) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
             &session_store,
             &registry,
             &handles,

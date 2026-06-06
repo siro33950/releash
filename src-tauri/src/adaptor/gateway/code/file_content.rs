@@ -123,6 +123,10 @@ pub(crate) fn get_binary_staged_content(file_path: &str) -> Result<String, CodeE
     Ok(STANDARD.encode(blob_staged(file_path)?))
 }
 
+pub(crate) fn get_file_in_worktree(file_path: &str) -> Result<String, CodeError> {
+    Ok(std::fs::read_to_string(file_path)?)
+}
+
 /// `FileContentRepository` の git2 実装。
 pub struct FileContentGateway;
 
@@ -152,6 +156,9 @@ impl FileContentRepository for FileContentGateway {
     }
     fn binary_staged_content(&self, file_path: &str) -> Result<String, CodeError> {
         get_binary_staged_content(file_path)
+    }
+    fn file_in_worktree(&self, file_path: &str) -> Result<String, CodeError> {
+        get_file_in_worktree(file_path)
     }
 }
 
