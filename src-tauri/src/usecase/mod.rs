@@ -1,3 +1,7 @@
+pub(crate) mod code_dto;
+pub(crate) mod code_error;
+pub(crate) mod code_query_service;
+pub(crate) mod code_usecase;
 pub(crate) mod repo_paths_usecase;
 pub(crate) mod repository_dto;
 pub(crate) mod repository_error;

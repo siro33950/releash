@@ -547,12 +547,14 @@ pub async fn send_workflow_approval_chat_message(
     content: String,
     permission_mode: Option<String>,
     images: Option<Vec<ImageAttachment>>,
-    mentions: Option<Vec<crate::file_mention::MentionReference>>,
+    mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
 ) -> Result<crate::agent_sdk::SendMessageResponse, String> {
     // Spec issues-1011 line 121: 起動以外の workflow 操作 API は run_id を主語に取る。
     // chat_session_id / worktree_path は run_id から engine が解決する。
     validate_run_id(&run_id)?;
     let permission_mode = parse_workflow_approval_permission_mode(permission_mode)?;
+    // 境界（Tauri 引数）で受けた転送表現を domain VO へ詰め替える。
+    let mentions = mentions.map(crate::adaptor::protocol::mention::into_domain_vec);
 
     let (chat_session_id, worktree_path) = engine
         .resolve_chat_session_for_approval(&run_id)

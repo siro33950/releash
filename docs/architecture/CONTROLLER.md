@@ -126,9 +126,9 @@ pub async fn handle_list_branches(
 
 WebSocket ルーティングは `handler/mod.rs` で `protocol/` のメッセージ型をディスパッチする。
 
-## protocol/（DTO）
+## protocol/（リクエスト／レスポンス・メッセージ型）
 
-WebSocket メッセージや Tauri コマンドの引数として使う構造体は `adaptor/protocol/` に配置する。これは DTO であり、ドメイン型ではない。
+WebSocket メッセージや Tauri コマンドの引数として使う構造体は `adaptor/protocol/` に配置する。これらは外部入口のメッセージ型（Tauri コマンド引数・WS リクエスト／レスポンス）であって、ドメイン型でも DTO でもない。DTO は QueryService の Response（[USECASE.md](./USECASE.md)）を指し、別物である。読み取り結果を返す場合は、usecase の DTO をこのメッセージ型に内包して載せる。
 
 ```rust
 // src/adaptor/protocol/branch.rs

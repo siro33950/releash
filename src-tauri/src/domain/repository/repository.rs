@@ -87,6 +87,30 @@ pub trait GitConfigRepository: Send + Sync {
         repo_path: &str,
         existing_branches: &[String],
     ) -> Result<(), RepositoryError>;
+    /// `path_hint`（repo パスまたはファイルパス）から現在ブランチのベースブランチ名を
+    /// 解決する（per-branch override → global → default branch）。detached HEAD /
+    /// unborn / 解決不可は `None`。ref 存在検証・merge-base 計算は行わない。
+    fn resolve_current_base_branch(
+        &self,
+        path_hint: &str,
+    ) -> Result<Option<String>, RepositoryError>;
+    /// 現在ブランチの実効ベースブランチ名を返す（agent プロセスへ渡す
+    /// `RELEASH_BASE_BRANCH` 用）。`resolve_current_base_branch` の解決結果に加え、
+    /// base が local/remote ref として実在し、かつ現在 HEAD と merge-base が計算できる
+    /// ことを検証する。解決不可・detached・unborn・ref 不在・merge-base 不成立は `None`。
+    fn resolve_effective_base_branch(
+        &self,
+        repo_path: &str,
+    ) -> Result<Option<String>, RepositoryError>;
+    /// `path_hint` 配下のリポジトリで `base_name` の ref（local `refs/heads/<name>` →
+    /// remote `refs/remotes/origin/<name>` の順）を解決し、base コミットの OID(hex) を返す。
+    /// ref が実在しない場合は `None`。base ref → コミット OID の解決ルールを所有し、
+    /// 呼び出し側（`code` ドメインの merge-base 計算）が ref 解決を重複実装しないようにする。
+    fn resolve_base_commit_oid(
+        &self,
+        path_hint: &str,
+        base_name: &str,
+    ) -> Result<Option<String>, RepositoryError>;
 }
 
 /// リポジトリパスの解決ユーティリティ。

@@ -10,6 +10,12 @@
 
 use std::sync::Arc;
 
+use crate::adaptor::gateway::code::branch_base::BranchBaseResolverGateway;
+use crate::adaptor::gateway::code::branch_diff::BranchDiffGateway;
+use crate::adaptor::gateway::code::diff_compute::DiffComputerGateway;
+use crate::adaptor::gateway::code::file_content::FileContentGateway;
+use crate::adaptor::gateway::code::mention::MentionGateway;
+use crate::adaptor::gateway::code::staging::StagingGateway;
 use crate::adaptor::gateway::repository::branch::BranchGateway;
 use crate::adaptor::gateway::repository::branch_card::BranchCardGateway;
 use crate::adaptor::gateway::repository::git_config::GitConfigGateway;
@@ -17,6 +23,8 @@ use crate::adaptor::gateway::repository::log::LogGateway;
 use crate::adaptor::gateway::repository::status::StatusGateway;
 use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
+use crate::usecase::code_query_service::CodeQueryService;
+use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::repository_query_service::RepositoryQueryService;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 
@@ -34,4 +42,19 @@ pub(crate) fn build_repository_usecase() -> RepositoryUsecase {
         Arc::new(RepoLocatorGateway),
         query,
     )
+}
+
+/// code usecase を既定の gateway 実装で構築する。
+/// staging（書き込み）は Command 側 Usecase が、ファイル内容参照・diff バッファ計算・
+/// branch diff・mention 候補列挙（読み取り）は `CodeQueryService` が各 gateway へ委譲する。
+/// いずれの gateway もステートレスのため、起動時に 1 度だけ組み立てて Arc 共有する。
+pub(crate) fn build_code_usecase() -> CodeUsecase {
+    let query = CodeQueryService::new(
+        Arc::new(FileContentGateway),
+        Arc::new(DiffComputerGateway),
+        Arc::new(BranchDiffGateway),
+        Arc::new(MentionGateway),
+        Arc::new(BranchBaseResolverGateway::new(Arc::new(GitConfigGateway))),
+    );
+    CodeUsecase::new(Arc::new(StagingGateway), query)
 }

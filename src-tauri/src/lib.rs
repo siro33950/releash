@@ -9,7 +9,6 @@ mod cli_install;
 mod config;
 mod domain;
 mod external_editor;
-mod file_mention;
 mod focus_tracker;
 mod git;
 mod git_host;
@@ -166,9 +165,13 @@ pub fn run() {
                     repo_paths_notifier,
                 ));
 
+                // code ドメインの DI 配線（gateway 実装はステートレス）。
+                let code_usecase = Arc::new(adaptor::controller::wiring::build_code_usecase());
+
                 app.manage(AppState {
                     repository_usecase: repository_usecase.clone(),
                     repo_paths_usecase,
+                    code_usecase,
                 });
             }
 
@@ -356,24 +359,24 @@ pub fn run() {
             watcher::start_watching,
             watcher::start_git_dir_watching,
             watcher::stop_watching,
-            // Git: diff/content
-            git::commands::get_file_at_ref,
-            git::commands::get_staged_content,
-            git::commands::get_binary_staged_content,
-            git::commands::get_file_at_branch_base,
-            git::commands::get_binary_file_at_branch_base,
-            git::commands::get_binary_file_at_ref,
-            git::commands::get_branch_diff_summary,
-            git::commands::build_diff_file_tree,
-            git::commands::get_file_navigation,
-            // Git: hunk/patch
-            git::commands::compute_diff_hunks,
-            git::commands::compute_hidden_ranges,
-            git::commands::compute_hidden_ranges_from_content,
-            git::commands::compute_visible_markdown_blocks,
-            git::commands::generate_group_patch,
-            git::commands::get_language_from_path,
-            git::commands::get_relative_path,
+            // Git: diff/content（code ドメイン）
+            adaptor::controller::command::code::file_content::get_file_at_ref,
+            adaptor::controller::command::code::file_content::get_staged_content,
+            adaptor::controller::command::code::file_content::get_binary_staged_content,
+            adaptor::controller::command::code::file_content::get_file_at_branch_base,
+            adaptor::controller::command::code::file_content::get_binary_file_at_branch_base,
+            adaptor::controller::command::code::file_content::get_binary_file_at_ref,
+            adaptor::controller::command::code::diff::get_branch_diff_summary,
+            adaptor::controller::command::code::diff::build_diff_file_tree,
+            adaptor::controller::command::code::diff::get_file_navigation,
+            // Git: hunk/patch（code ドメイン）
+            adaptor::controller::command::code::hunk::compute_diff_hunks,
+            adaptor::controller::command::code::hunk::compute_hidden_ranges,
+            adaptor::controller::command::code::hunk::compute_hidden_ranges_from_content,
+            adaptor::controller::command::code::hunk::compute_visible_markdown_blocks,
+            adaptor::controller::command::code::hunk::generate_group_patch,
+            adaptor::controller::command::code::language::get_language_from_path,
+            adaptor::controller::command::code::diff::get_relative_path,
             // Git: ブランチ（repository ドメイン）
             adaptor::controller::command::repository::branch::list_branches,
             adaptor::controller::command::repository::branch::get_current_branch,
@@ -384,11 +387,11 @@ pub fn run() {
             adaptor::controller::command::repository::status::get_git_status,
             adaptor::controller::command::repository::status::get_status_diff_stats,
             adaptor::controller::command::repository::log::get_git_log,
-            // Git: ステージング
-            git::commands::git_stage,
-            git::commands::git_unstage,
-            git::commands::git_stage_hunk,
-            git::commands::git_unstage_hunk,
+            // Git: ステージング（code ドメイン）
+            adaptor::controller::command::code::staging::git_stage,
+            adaptor::controller::command::code::staging::git_unstage,
+            adaptor::controller::command::code::staging::git_stage_hunk,
+            adaptor::controller::command::code::staging::git_unstage_hunk,
             // Git: ワークツリー（repository ドメイン）
             adaptor::controller::command::repository::worktree::get_main_repo_path,
             adaptor::controller::command::repository::worktree::get_worktree_dirty_count,
@@ -492,8 +495,8 @@ pub fn run() {
             pty::oneshot::get_oneshot_pty_status,
             pty::oneshot::list_oneshot_ptys,
             pty::oneshot::find_oneshot_pty,
-            // File Mention
-            file_mention::list_mentionable_files,
+            // File Mention（code ドメイン）
+            adaptor::controller::command::code::mention::list_mentionable_files,
             // Agent Backend Registry
             backends::list_agent_backends,
             // Agent SDK

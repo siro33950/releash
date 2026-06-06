@@ -1,51 +1,49 @@
-use super::error::GitError;
+//! branch diff 責務の gateway 実装。git2 による merge-base diff を封じ込め、
+//! read model（`BranchDiffSummaryDto`）を直接組み立てる。
+//!
+//! ベースブランチ名の解決ルール（`branch.<name>.releash-base` → `releash.base` →
+//! `detect_default_branch()`）は `repository` ドメインが所有する。本モジュールは
+//! usecase の orchestration（`CodeQueryService` が `BranchBaseResolver` 越しに
+//! repository へ委譲）で解決済みの base 名を受け取り、merge-base diff の計算のみを担う。
+
 use git2::Repository;
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiffStats {
-    pub additions: u32,
-    pub deletions: u32,
+use crate::domain::code::CodeError;
+use crate::usecase::code_dto::{BranchDiffSummaryDto, ChangedFileDto, DiffStatsDto};
+use crate::usecase::code_query_service::BranchDiffQuery;
+
+/// リポジトリにまだコミットが無い（HEAD が unborn branch を指す）場合に true。
+fn is_unborn_branch(repo: &Repository) -> Result<bool, CodeError> {
+    match repo.head() {
+        Ok(_) => Ok(false),
+        Err(e) if e.code() == git2::ErrorCode::UnbornBranch => Ok(true),
+        Err(e) => Err(CodeError::from(e)),
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChangedFile {
-    pub path: String,
-    pub old_path: Option<String>,
-    pub status: String,
-    pub binary: bool,
-    pub stats: DiffStats,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BranchDiffSummary {
-    pub base_branch: String,
-    pub changed_files: Vec<ChangedFile>,
-    pub stats: DiffStats,
-}
-
-/// Returns a summary of files changed between the merge-base of the current branch
-/// and the working tree (including staged changes, including untracked files).
-/// Used by the Source Control panel to show a flat file list in "branch-base" diff mode.
+/// 現在ブランチの merge-base と作業ツリー（staged・untracked 含む）の差分サマリ。
 ///
-/// For an unborn branch (initial commit not yet created), returns an empty summary
-/// so callers can display a consistent empty state instead of propagating an error.
-pub fn get_branch_diff_summary(
+/// unborn branch の場合は空サマリを返し、呼び出し側が一貫した空状態を表示できるようにする。
+pub(crate) fn get_branch_diff_summary(
     repo_path: &str,
-    base_branch: Option<&str>,
-) -> Result<BranchDiffSummary, GitError> {
+    base_name: Option<&str>,
+    base_commit_oid: Option<&str>,
+) -> Result<BranchDiffSummaryDto, CodeError> {
     let repo = Repository::open(repo_path)?;
     if is_unborn_branch(&repo)? {
-        return Ok(BranchDiffSummary {
+        return Ok(BranchDiffSummaryDto {
             base_branch: String::new(),
             changed_files: Vec::new(),
-            stats: DiffStats {
+            stats: DiffStatsDto {
                 additions: 0,
                 deletions: 0,
             },
         });
     }
-    let (base_ref, base_commit) = find_base_commit(&repo, base_branch)?;
+    // base 名タグ（表示用）は usecase が解決済みの名前から。merge-base コミットは
+    // 解決済み base OID から計算する（`None` は detached / 未設定で HEAD フォールバック）。
+    let base_ref = base_name.unwrap_or("HEAD").to_string();
+    let base_commit = super::resolve_merge_base_commit(&repo, base_commit_oid)?;
     let base_tree = base_commit.tree()?;
 
     let mut opts = git2::DiffOptions::new();
@@ -64,12 +62,12 @@ pub fn get_branch_diff_summary(
     let total_deletions = stats.deletions() as u32;
 
     let num_deltas = diff.deltas().len();
-    let mut changed_files: Vec<ChangedFile> = Vec::with_capacity(num_deltas);
+    let mut changed_files: Vec<ChangedFileDto> = Vec::with_capacity(num_deltas);
 
     for i in 0..num_deltas {
         let delta = diff
             .get_delta(i)
-            .ok_or_else(|| GitError::Custom(format!("invalid delta index: {i}")))?;
+            .ok_or_else(|| CodeError::Rule(format!("invalid delta index: {i}")))?;
 
         let new_path = delta
             .new_file()
@@ -82,7 +80,7 @@ pub fn get_branch_diff_summary(
         let path = new_path
             .clone()
             .or_else(|| old_path.clone())
-            .ok_or_else(|| GitError::Custom(format!("delta {i} has no file path")))?;
+            .ok_or_else(|| CodeError::Rule(format!("delta {i} has no file path")))?;
 
         let status = match delta.status() {
             git2::Delta::Added | git2::Delta::Untracked => "added",
@@ -122,117 +120,44 @@ pub fn get_branch_diff_summary(
             _ => None,
         };
 
-        changed_files.push(ChangedFile {
+        changed_files.push(ChangedFileDto {
             path,
             old_path: old_path_opt,
             status: status.to_string(),
             binary,
-            stats: DiffStats {
+            stats: DiffStatsDto {
                 additions,
                 deletions,
             },
         });
     }
 
-    Ok(BranchDiffSummary {
+    Ok(BranchDiffSummaryDto {
         base_branch: base_ref,
         changed_files,
-        stats: DiffStats {
+        stats: DiffStatsDto {
             additions: total_additions,
             deletions: total_deletions,
         },
     })
 }
 
-/// Returns true when the repository has no commits yet (HEAD points to an unborn branch).
-fn is_unborn_branch(repo: &Repository) -> Result<bool, GitError> {
-    match repo.head() {
-        Ok(_) => Ok(false),
-        Err(e) if e.code() == git2::ErrorCode::UnbornBranch => Ok(true),
-        Err(e) => Err(GitError::from(e)),
+/// `BranchDiffQuery` の git2 実装。
+pub struct BranchDiffGateway;
+
+impl BranchDiffQuery for BranchDiffGateway {
+    fn summary(
+        &self,
+        repo_path: &str,
+        base_name: Option<&str>,
+        base_commit_oid: Option<&str>,
+    ) -> Result<BranchDiffSummaryDto, CodeError> {
+        get_branch_diff_summary(repo_path, base_name, base_commit_oid)
     }
-}
-
-/// Returns the base branch name resolved from worktree config / git config.
-///
-/// Used to expose the base branch as an env var to agent processes
-/// (`RELEASH_BASE_BRANCH`) so reviewer agents can diff against it.
-/// Returns `None` when the repository cannot be opened, has no commits yet,
-/// HEAD is detached, or no base branch is configured.
-pub fn resolve_base_branch_name(repo_path: &str) -> Option<String> {
-    let repo = Repository::open(repo_path).ok()?;
-    if is_unborn_branch(&repo).unwrap_or(true) {
-        return None;
-    }
-    let (name, _) = find_base_commit(&repo, None).ok()?;
-    if name == "HEAD" {
-        None
-    } else {
-        Some(name)
-    }
-}
-
-pub(crate) fn find_base_commit<'a>(
-    repo: &'a Repository,
-    base_branch: Option<&str>,
-) -> Result<(String, git2::Commit<'a>), GitError> {
-    let head = repo.head().map_err(|e| {
-        if e.code() == git2::ErrorCode::UnbornBranch {
-            GitError::Custom("unborn branch: no commits yet".to_string())
-        } else {
-            GitError::from(e)
-        }
-    })?;
-
-    let current_oid = head
-        .target()
-        .ok_or_else(|| GitError::Custom("HEAD has no target".to_string()))?;
-
-    let base_branch_name = if let Some(base) = base_branch {
-        Some(base.to_string())
-    } else {
-        if !head.is_branch() {
-            let commit = repo.find_commit(current_oid)?;
-            return Ok(("HEAD".to_string(), commit));
-        }
-
-        let branch_name = head.shorthand()?;
-
-        let config = repo.config().ok();
-        crate::git::base::resolve_branch_base(repo, config.as_ref(), branch_name)
-    };
-
-    let base_branch_name = match base_branch_name {
-        Some(name) => name,
-        None => {
-            let commit = repo.find_commit(current_oid)?;
-            return Ok(("HEAD".to_string(), commit));
-        }
-    };
-
-    let base_ref = format!("refs/heads/{base_branch_name}");
-    let base_oid = match repo.revparse_single(&base_ref) {
-        Ok(obj) => obj.peel_to_commit().map(|c| c.id()),
-        Err(_) => {
-            let remote_ref = format!("refs/remotes/origin/{base_branch_name}");
-            repo.revparse_single(&remote_ref)
-                .map_err(|_| {
-                    GitError::Custom(format!("base branch '{base_branch_name}' not found"))
-                })?
-                .peel_to_commit()
-                .map(|c| c.id())
-        }
-    }
-    .map_err(|e| GitError::Custom(format!("failed to resolve base branch: {e}")))?;
-
-    let merge_base_oid = repo.merge_base(current_oid, base_oid)?;
-    let commit = repo.find_commit(merge_base_oid)?;
-
-    Ok((base_branch_name, commit))
 }
 
 #[cfg(test)]
-mod tests {
+mod branch_diff_gateway_tests {
     use super::*;
     use crate::git::test_helpers::*;
     use git2::build::CheckoutBuilder;
@@ -241,23 +166,27 @@ mod tests {
         repo.workdir().unwrap().to_str().unwrap().to_string()
     }
 
-    fn setup_feature_branch(repo: &Repository) {
+    /// feature ブランチを作成・チェックアウトし、分岐元（base）の (ブランチ名, コミット OID)
+    /// を返す。base 名解決と ref→OID 解決は repository ドメインの責務に移ったため、gateway の
+    /// merge-base 計算テストは解決済みの base 名タグと base コミット OID を明示的に渡す。
+    fn setup_feature_branch(repo: &Repository) -> (String, String) {
+        let base = repo.head().unwrap().shorthand().unwrap().to_string();
         let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let base_oid = head.id().to_string();
         repo.branch("feature", &head, false).unwrap();
         repo.set_head("refs/heads/feature").unwrap();
         repo.checkout_head(Some(CheckoutBuilder::new().force()))
             .unwrap();
+        (base, base_oid)
     }
 
-    // --- Tests for get_branch_diff_summary ---
-
     #[test]
-    fn test_get_branch_diff_summary_single_modified_file() {
+    fn test_branch_diff_単一変更ファイル() {
         let (_dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "file.txt", "line1\nline2\nline3\n", "add file");
 
-        setup_feature_branch(&repo);
+        let (base, base_oid) = setup_feature_branch(&repo);
         add_and_commit(
             &repo,
             "file.txt",
@@ -265,7 +194,8 @@ mod tests {
             "modify line2",
         );
 
-        let summary = get_branch_diff_summary(&repo_path_str(&repo), None).unwrap();
+        let summary =
+            get_branch_diff_summary(&repo_path_str(&repo), Some(&base), Some(&base_oid)).unwrap();
         assert_eq!(summary.changed_files.len(), 1);
         assert_eq!(summary.changed_files[0].path, "file.txt");
         assert_eq!(summary.changed_files[0].status, "modified");
@@ -273,15 +203,16 @@ mod tests {
     }
 
     #[test]
-    fn test_get_branch_diff_summary_added_file() {
+    fn test_branch_diff_追加ファイル() {
         let (_dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "existing.txt", "content\n", "add existing");
 
-        setup_feature_branch(&repo);
+        let (base, base_oid) = setup_feature_branch(&repo);
         add_and_commit(&repo, "new.txt", "new\n", "add new file");
 
-        let summary = get_branch_diff_summary(&repo_path_str(&repo), None).unwrap();
+        let summary =
+            get_branch_diff_summary(&repo_path_str(&repo), Some(&base), Some(&base_oid)).unwrap();
         let added = summary
             .changed_files
             .iter()
@@ -291,30 +222,31 @@ mod tests {
     }
 
     #[test]
-    fn test_get_branch_diff_summary_no_changes() {
+    fn test_branch_diff_変更なし() {
         let (_dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "file.txt", "content\n", "add file");
 
-        setup_feature_branch(&repo);
-        let summary = get_branch_diff_summary(&repo_path_str(&repo), None).unwrap();
+        let (base, base_oid) = setup_feature_branch(&repo);
+        let summary =
+            get_branch_diff_summary(&repo_path_str(&repo), Some(&base), Some(&base_oid)).unwrap();
         assert!(summary.changed_files.is_empty());
         assert_eq!(summary.stats.additions, 0);
         assert_eq!(summary.stats.deletions, 0);
     }
 
     #[test]
-    fn test_get_branch_diff_summary_includes_untracked_file() {
+    fn test_branch_diff_未追跡ファイルを含む() {
         let (_dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "existing.txt", "content\n", "add existing");
 
-        setup_feature_branch(&repo);
-        // Create an untracked file (no index add, no commit)
+        let (base, base_oid) = setup_feature_branch(&repo);
         let workdir = repo.workdir().unwrap();
         std::fs::write(workdir.join("untracked.txt"), "hello\n").unwrap();
 
-        let summary = get_branch_diff_summary(&repo_path_str(&repo), None).unwrap();
+        let summary =
+            get_branch_diff_summary(&repo_path_str(&repo), Some(&base), Some(&base_oid)).unwrap();
         let untracked = summary
             .changed_files
             .iter()
@@ -324,13 +256,31 @@ mod tests {
     }
 
     #[test]
-    fn test_get_branch_diff_summary_unborn_branch_returns_empty() {
+    fn test_branch_diff_unborn_branchは空() {
         let (_dir, repo) = create_test_repo();
-        // No initial commit: HEAD points to an unborn branch
-        let summary = get_branch_diff_summary(&repo_path_str(&repo), None).unwrap();
+        let summary = get_branch_diff_summary(&repo_path_str(&repo), None, None).unwrap();
         assert!(summary.changed_files.is_empty());
         assert_eq!(summary.stats.additions, 0);
         assert_eq!(summary.stats.deletions, 0);
         assert_eq!(summary.base_branch, "");
+    }
+
+    #[test]
+    fn test_branch_diff_base未指定_headフォールバック() {
+        // base 名が None（detached / base 未設定）の場合、merge-base ではなく HEAD と
+        // workdir の差分になる。ここではコミット済みのため変更なし、untracked のみ検出される。
+        let (_dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "file.txt", "content\n", "add file");
+        let workdir = repo.workdir().unwrap();
+        std::fs::write(workdir.join("untracked.txt"), "hello\n").unwrap();
+
+        let summary = get_branch_diff_summary(&repo_path_str(&repo), None, None).unwrap();
+        assert_eq!(summary.base_branch, "HEAD");
+        assert!(summary
+            .changed_files
+            .iter()
+            .any(|f| f.path == "untracked.txt"));
+        assert!(!summary.changed_files.iter().any(|f| f.path == "file.txt"));
     }
 }

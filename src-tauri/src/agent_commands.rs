@@ -230,9 +230,11 @@ pub async fn send_agent_message(
     permission_mode: Option<String>,
     backend_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
-    mentions: Option<Vec<crate::file_mention::MentionReference>>,
+    mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
 ) -> Result<crate::agent_sdk::SendMessageResponse, String> {
     let permission_mode = validate_invoke_permission_mode(permission_mode)?;
+    // 境界（Tauri 引数）で受けた転送表現を domain VO へ詰め替える。
+    let mentions = mentions.map(crate::adaptor::protocol::mention::into_domain_vec);
     let response = dispatch_agent_message(
         AgentMessageDispatchContext {
             app: &app,

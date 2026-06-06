@@ -474,6 +474,25 @@ mod repository_usecase_tests {
             self.prune_calls.lock().push(existing_branches.to_vec());
             Ok(())
         }
+        fn resolve_current_base_branch(
+            &self,
+            _path_hint: &str,
+        ) -> Result<Option<String>, RepositoryError> {
+            Ok(self.branch_base.clone())
+        }
+        fn resolve_effective_base_branch(
+            &self,
+            _repo_path: &str,
+        ) -> Result<Option<String>, RepositoryError> {
+            Ok(self.branch_base.clone())
+        }
+        fn resolve_base_commit_oid(
+            &self,
+            _path_hint: &str,
+            _base_name: &str,
+        ) -> Result<Option<String>, RepositoryError> {
+            Ok(None)
+        }
     }
 
     impl RepoLocator for FakeRepo {

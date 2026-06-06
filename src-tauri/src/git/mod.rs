@@ -1,14 +1,9 @@
-pub mod error;
-pub mod types;
-
-pub(crate) mod base;
-pub(crate) mod branch_diff;
-pub(crate) mod commands;
-pub(crate) mod diff;
-pub(crate) mod diff_tree;
-pub(crate) mod hunk;
-pub(crate) mod lang;
-pub(crate) mod stage;
+//! git リポジトリ操作のテストヘルパー（code / repository 両ドメインのテストで共有）。
+//!
+//! issue 974 の移行で code 責務（diff / diff_tree / branch_diff / hunk / lang / stage、
+//! 共有 util／型）は `domain::code` / `usecase` / `adaptor::gateway::code` /
+//! `adaptor::controller::command::code` へ移設済み。本モジュールはドメイン横断で利用される
+//! テスト用フィクスチャのみを保持する。
 
 #[cfg(test)]
 pub(crate) mod test_helpers {

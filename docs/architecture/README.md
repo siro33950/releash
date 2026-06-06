@@ -44,7 +44,7 @@ src-tauri/src/
 │   │       ├── query_models.rs
 │   │       └── service_models.rs
 │   ├── presenter/                      # レスポンス整形
-│   └── protocol/                       # WebSocketメッセージ等のDTO
+│   └── protocol/                       # WebSocketメッセージ等（リクエスト／レスポンス型）
 ├── infrastructure/                     # 外部リソースクライアント
 │   ├── external/                       # GitHub, Notion, Webhook(Slack/Discord), MCP
 │   ├── middleware/
