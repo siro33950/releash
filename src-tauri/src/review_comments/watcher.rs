@@ -69,7 +69,6 @@ pub fn spawn_review_comments_watcher<R: tauri::Runtime + 'static>(
     }
 
     let emit_app = app.clone();
-    let watched_dir = dir.clone();
     let debouncer_result = new_debouncer(
         Duration::from_millis(500),
         move |res: Result<
@@ -80,12 +79,11 @@ pub fn spawn_review_comments_watcher<R: tauri::Runtime + 'static>(
                 // `*.events.json` の変更のみを emit 対象にする（lock ファイル等の
                 // 副次更新は無視）。
                 let relevant = events.iter().any(|event| {
-                    event.path == watched_dir
-                        || event
-                            .path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .is_some_and(|name| name.ends_with(".events.json"))
+                    event
+                        .path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".events.json"))
                 });
                 if !relevant {
                     return;
