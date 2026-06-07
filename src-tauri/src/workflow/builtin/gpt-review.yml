@@ -1,0 +1,63 @@
+name: gpt-review
+description: 全観点をGPT系モデルでレビューし、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。
+builtin: true
+
+nodes:
+  # ===== Posting phase: 6 viewpoints × 1 GPT backend = 6 reviewers in parallel =====
+  - name: review-parallel
+    type: parallel
+    parallel_children:
+      - name: review-acceptance-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-acceptance
+      - name: review-structure-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-structure
+      - name: review-quality-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-quality
+      - name: review-test-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-test
+      - name: review-security-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-security
+      - name: review-architecture-gpt55
+        type: agent
+        model: gpt-5.5
+        permission: full
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-architecture
+    aggregate:
+      all_match: ".*"
+      then: reporting
+      else: reporting
+
+  - name: reporting
+    type: approval
+    model: gpt-5.5
+    permission: edit
+    policy: reporting
+    knowledge: releash-thread-cli
+    instruction: review-summary

@@ -1,5 +1,5 @@
-name: spec-authoring
-description: ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書を構築する。レビューループは行わない。
+name: claude-spec-authoring
+description: ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をClaude系モデルで構築する。レビューループは行わない。
 builtin: true
 
 nodes:
@@ -7,7 +7,7 @@ nodes:
     type: approval
     model: claude-opus-4-8
     permission: edit
-    instruction: write-requirements
+    instruction: spec-authoring-write-requirements
     policy: planning
     output_contract: spec-directory
 
@@ -15,7 +15,7 @@ nodes:
     type: approval
     model: claude-opus-4-8
     permission: edit
-    instruction: write-behavior
+    instruction: spec-authoring-write-behavior
     policy: planning
     input_contracts:
       - spec-directory
@@ -26,7 +26,7 @@ nodes:
     type: approval
     model: claude-opus-4-8
     permission: edit
-    instruction: write-design
+    instruction: spec-authoring-write-design
     policy: planning
     input_contracts:
       - spec-directory
@@ -37,7 +37,7 @@ nodes:
     type: approval
     model: claude-opus-4-8
     permission: edit
-    instruction: spec-finalize
+    instruction: spec-authoring-finalize
     policy: planning
     input_contracts:
       - spec-directory
