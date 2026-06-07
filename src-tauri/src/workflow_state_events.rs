@@ -91,21 +91,9 @@ pub(crate) async fn emit_workflow_state<R: tauri::Runtime>(
     handles: &Arc<Mutex<AgentProcessMap>>,
     open_tabs: &OpenTabRegistry,
 ) {
-    let execution_id = state.execution_id.clone();
-    let workflow_agent_state =
-        crate::agent_status::AgentStatusCenter::workflow_execution_state_to_agent_state(
-            &state.state,
-        );
-    let updated_at = state.updated_at;
     let view = build_workflow_state_view(state, handles, open_tabs).await;
     if let Some(center) = app.try_state::<Arc<crate::agent_status::AgentStatusCenter>>() {
         center.emit_workflow_state_changed(worktree_path, &view);
-        center.update_workflow_snapshot(
-            worktree_path,
-            &execution_id,
-            workflow_agent_state,
-            updated_at,
-        );
     }
 }
 
@@ -163,15 +151,4 @@ pub(crate) async fn emit_workflow_state_snapshot<R: tauri::Runtime>(
             center.update_session(updated);
         }
     }
-
-    let workflow_agent_state =
-        crate::agent_status::AgentStatusCenter::workflow_execution_state_to_agent_state(
-            &workflow_state.state,
-        );
-    center.update_workflow_snapshot(
-        worktree_path,
-        &workflow_state.execution_id,
-        workflow_agent_state,
-        workflow_state.updated_at,
-    );
 }

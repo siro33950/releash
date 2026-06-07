@@ -14,11 +14,36 @@
 //! debounce は 500ms。`src-tauri/src/watcher.rs` の `start_git_dir_watching`
 //! と同じ値を採用している。
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode};
 use tauri::Emitter;
+
+fn review_events_signature(dir: &Path) -> Vec<(String, u64, Option<SystemTime>)> {
+    let mut signature = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return signature;
+    };
+
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if !file_name.ends_with(".events.json") {
+            continue;
+        }
+
+        let metadata = entry.metadata().ok();
+        let len = metadata.as_ref().map_or(0, std::fs::Metadata::len);
+        let modified = metadata.and_then(|m| m.modified().ok());
+        signature.push((file_name.to_string(), len, modified));
+    }
+
+    signature.sort_by(|a, b| a.0.cmp(&b.0));
+    signature
+}
 
 /// `review-comments` ディレクトリの file watcher を起動する。
 ///
@@ -91,11 +116,23 @@ pub fn spawn_review_comments_watcher<R: tauri::Runtime + 'static>(
 
     // debouncer は drop されるまで OS watch を保つ。tokio タスクが debouncer の
     // 所有権を握り、アプリ終了時に runtime が落ちるタイミングで drop される。
+    let poll_app = app.clone();
+    let poll_dir = dir.clone();
     let task = async move {
         let _retained_debouncer = debouncer;
-        // 永続的に待機する。シグナル処理は debouncer 内のコールバックが直接 emit
-        // するため、本タスクは debouncer をアプリ寿命と同じだけ生かすことだけが目的。
-        std::future::pending::<()>().await;
+        let mut last_signature = review_events_signature(&poll_dir);
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+
+        loop {
+            interval.tick().await;
+            let next_signature = review_events_signature(&poll_dir);
+            if next_signature != last_signature {
+                last_signature = next_signature;
+                if let Err(e) = poll_app.emit("review-comments-changed", "*") {
+                    log::warn!("Failed to emit review-comments-changed from poll fallback: {e}");
+                }
+            }
+        }
     };
     #[cfg(test)]
     tokio::spawn(task);
@@ -142,15 +179,20 @@ mod tests {
         let app = make_app();
         let received = install_listener(app.handle());
 
+        app.emit("review-comments-changed", "*").unwrap();
+        assert!(
+            !received.lock().unwrap().is_empty(),
+            "mock app listener must receive direct review-comments-changed emit"
+        );
+        received.lock().unwrap().clear();
+
         spawn_review_comments_watcher(app.handle().clone(), data_dir.path().to_path_buf());
         // watcher の watch 開始が反映されるまで少し待つ
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let target = super::super::state_dir(data_dir.path()).join("dummy.events.json");
-        std::fs::write(&target, b"[]").unwrap();
-
-        // debounce 500ms + 余裕
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+        let mut attempt = 0usize;
         loop {
             if !received.lock().unwrap().is_empty() {
                 break;
@@ -159,7 +201,9 @@ mod tests {
                 tokio::time::Instant::now() < deadline,
                 "watcher did not emit review-comments-changed within deadline"
             );
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            std::fs::write(&target, format!("[{attempt}]")).unwrap();
+            attempt += 1;
+            tokio::time::sleep(Duration::from_millis(700)).await;
         }
 
         let payloads = received.lock().unwrap().clone();
