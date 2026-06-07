@@ -4,10 +4,16 @@ use super::facet::{self, FacetError, FacetKind};
 use super::schema::{Summary, Workflow};
 use super::validation::{self, ValidationError};
 
-const BUILTIN_SPEC_AUTHORING: &str = include_str!("builtin/spec-authoring.yml");
-const BUILTIN_SPEC_IMPLEMENT: &str = include_str!("builtin/spec-implement.yml");
+const BUILTIN_GPT_SPEC_AUTHORING: &str = include_str!("builtin/gpt-spec-authoring.yml");
+const BUILTIN_CLAUDE_SPEC_AUTHORING: &str = include_str!("builtin/claude-spec-authoring.yml");
+const BUILTIN_GPT_SPEC_IMPLEMENT: &str = include_str!("builtin/gpt-spec-implement.yml");
+const BUILTIN_CLAUDE_SPEC_IMPLEMENT: &str = include_str!("builtin/claude-spec-implement.yml");
 const BUILTIN_FULL_REVIEW: &str = include_str!("builtin/full-review.yml");
-const BUILTIN_FULL_REVIEW_FIX: &str = include_str!("builtin/full-review-fix.yml");
+const BUILTIN_GPT_REVIEW: &str = include_str!("builtin/gpt-review.yml");
+const BUILTIN_CLAUDE_REVIEW: &str = include_str!("builtin/claude-review.yml");
+const BUILTIN_REVIEW_FIX: &str = include_str!("builtin/review-fix.yml");
+const BUILTIN_GPT_REVIEW_FIX: &str = include_str!("builtin/gpt-review-fix.yml");
+const BUILTIN_CLAUDE_REVIEW_FIX: &str = include_str!("builtin/claude-review-fix.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
@@ -21,14 +27,24 @@ struct BuiltinEntry {
 
 const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
-        filename: "spec-authoring.yml",
-        content: BUILTIN_SPEC_AUTHORING,
-        description: "ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書を構築する。レビューループは行わない。",
+        filename: "gpt-spec-authoring.yml",
+        content: BUILTIN_GPT_SPEC_AUTHORING,
+        description: "ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をGPT系モデルで構築する。レビューループは行わない。",
     },
     BuiltinEntry {
-        filename: "spec-implement.yml",
-        content: BUILTIN_SPEC_IMPLEMENT,
-        description: "Spec を元に実装し、軽量レビューループ（最大 2 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。",
+        filename: "claude-spec-authoring.yml",
+        content: BUILTIN_CLAUDE_SPEC_AUTHORING,
+        description: "ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をClaude系モデルで構築する。レビューループは行わない。",
+    },
+    BuiltinEntry {
+        filename: "gpt-spec-implement.yml",
+        content: BUILTIN_GPT_SPEC_IMPLEMENT,
+        description: "Spec を元にGPT系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。",
+    },
+    BuiltinEntry {
+        filename: "claude-spec-implement.yml",
+        content: BUILTIN_CLAUDE_SPEC_IMPLEMENT,
+        description: "Spec を元にClaude系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。",
     },
     BuiltinEntry {
         filename: "full-review.yml",
@@ -36,9 +52,29 @@ const BUILTINS: &[BuiltinEntry] = &[
         description: "全観点を claude-opus-4-8 / gpt-5.5 でレビューし、モデル単位の妥当性チェックを行う。Summary 段では各 Open Thread の reviewer 指摘と verifier 分類を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
     },
     BuiltinEntry {
-        filename: "full-review-fix.yml",
-        content: BUILTIN_FULL_REVIEW_FIX,
-        description: "フルレビューで残った Open Thread に対し、方針決定 Step で各 Thread に方針 Comment を付け、実装 Step で一括実装・resolve する。各 Step は人間の承認を挟む。",
+        filename: "gpt-review.yml",
+        content: BUILTIN_GPT_REVIEW,
+        description: "全観点をGPT系モデルでレビューし、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
+    },
+    BuiltinEntry {
+        filename: "claude-review.yml",
+        content: BUILTIN_CLAUDE_REVIEW,
+        description: "全観点をClaude系モデルでレビューし、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
+    },
+    BuiltinEntry {
+        filename: "review-fix.yml",
+        content: BUILTIN_REVIEW_FIX,
+        description: "フルレビューで残った Open Thread に対し、Claude系モデルで方針 Comment を付け、GPT系モデルで一括実装・resolve を行う。各 Step は人間の承認を挟む。",
+    },
+    BuiltinEntry {
+        filename: "gpt-review-fix.yml",
+        content: BUILTIN_GPT_REVIEW_FIX,
+        description: "フルレビューで残った Open Thread に対し、GPT系モデルで方針 Comment 付けと一括実装・resolve を行う。各 Step は人間の承認を挟む。",
+    },
+    BuiltinEntry {
+        filename: "claude-review-fix.yml",
+        content: BUILTIN_CLAUDE_REVIEW_FIX,
+        description: "フルレビューで残った Open Thread に対し、Claude系モデルで方針 Comment 付けと一括実装・resolve を行う。各 Step は人間の承認を挟む。",
     },
 ];
 
@@ -175,25 +211,19 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
-        key: "spec-implement-reviewer",
-        content: include_str!("builtin_facets/policies/spec-implement-reviewer.md"),
+        key: "reviewing",
+        content: include_str!("builtin_facets/policies/reviewing.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
-        key: "full-review-reviewer",
-        content: include_str!("builtin_facets/policies/full-review-reviewer.md"),
+        key: "reporting",
+        content: include_str!("builtin_facets/policies/reporting.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
-        key: "full-review-summary",
-        content: include_str!("builtin_facets/policies/full-review-summary.md"),
+        key: "triage",
+        content: include_str!("builtin_facets/policies/triage.md"),
     },
-    BuiltinFacetEntry {
-        kind: FacetKind::Policy,
-        key: "full-review-fix-decide-policy",
-        content: include_str!("builtin_facets/policies/full-review-fix-decide-policy.md"),
-    },
-    // --- Knowledge facets ---
     BuiltinFacetEntry {
         kind: FacetKind::Knowledge,
         key: "releash-thread-cli",
@@ -202,23 +232,23 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     // --- spec-authoring / spec-implement instructions ---
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "write-requirements",
-        content: include_str!("builtin_facets/instructions/write-requirements.md"),
+        key: "spec-authoring-write-requirements",
+        content: include_str!("builtin_facets/instructions/spec-authoring-write-requirements.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "write-behavior",
-        content: include_str!("builtin_facets/instructions/write-behavior.md"),
+        key: "spec-authoring-write-behavior",
+        content: include_str!("builtin_facets/instructions/spec-authoring-write-behavior.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "write-design",
-        content: include_str!("builtin_facets/instructions/write-design.md"),
+        key: "spec-authoring-write-design",
+        content: include_str!("builtin_facets/instructions/spec-authoring-write-design.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "spec-finalize",
-        content: include_str!("builtin_facets/instructions/spec-finalize.md"),
+        key: "spec-authoring-finalize",
+        content: include_str!("builtin_facets/instructions/spec-authoring-finalize.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -252,33 +282,33 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "full-review-review-acceptance",
-        content: include_str!("builtin_facets/instructions/full-review-review-acceptance.md"),
+        key: "review-acceptance",
+        content: include_str!("builtin_facets/instructions/review-acceptance.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "full-review-review-structure",
-        content: include_str!("builtin_facets/instructions/full-review-review-structure.md"),
+        key: "review-structure",
+        content: include_str!("builtin_facets/instructions/review-structure.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "full-review-review-quality",
-        content: include_str!("builtin_facets/instructions/full-review-review-quality.md"),
+        key: "review-quality",
+        content: include_str!("builtin_facets/instructions/review-quality.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "full-review-review-test",
-        content: include_str!("builtin_facets/instructions/full-review-review-test.md"),
+        key: "review-test",
+        content: include_str!("builtin_facets/instructions/review-test.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "full-review-review-security",
-        content: include_str!("builtin_facets/instructions/full-review-review-security.md"),
+        key: "review-security",
+        content: include_str!("builtin_facets/instructions/review-security.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "full-review-review-architecture",
-        content: include_str!("builtin_facets/instructions/full-review-review-architecture.md"),
+        key: "review-architecture",
+        content: include_str!("builtin_facets/instructions/review-architecture.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -292,13 +322,18 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "full-review-fix",
-        content: include_str!("builtin_facets/instructions/full-review-fix.md"),
+        key: "review-summary",
+        content: include_str!("builtin_facets/instructions/review-summary.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "full-review-fix-decide-policy",
-        content: include_str!("builtin_facets/instructions/full-review-fix-decide-policy.md"),
+        key: "review-fix",
+        content: include_str!("builtin_facets/instructions/review-fix.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "review-fix-decide-policy",
+        content: include_str!("builtin_facets/instructions/review-fix-decide-policy.md"),
     },
 ];
 

@@ -1,5 +1,5 @@
-name: spec-implement
-description: Spec を元に実装し、軽量レビューループ（最大 2 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。
+name: gpt-spec-implement
+description: Spec を元にGPT系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。
 builtin: true
 
 nodes:
@@ -15,17 +15,17 @@ nodes:
     parallel_children:
       - name: review_spec
         type: agent
-        model: gpt-5.4-mini
+        model: gpt-5.3-codex-spark
         permission: full
         instruction: spec-implement-review-spec
-        policy: spec-implement-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
       - name: review_design
         type: agent
-        model: gpt-5.4-mini
+        model: gpt-5.3-codex-spark
         permission: full
         instruction: spec-implement-review-design
-        policy: spec-implement-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
     aggregate:
       all_match: LGTM
@@ -43,7 +43,7 @@ nodes:
       - match: ".*"
         next: review_parallel
     cycle_guard:
-      max_iterations: 2
+      max_iterations: 5
       on_exhausted: report
 
   - name: report

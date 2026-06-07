@@ -1,0 +1,20 @@
+name: gpt-review-fix
+description: フルレビューで残った Open Thread に対し、GPT系モデルで方針 Comment 付けと一括実装・resolve を行う。各 Step は人間の承認を挟む。
+builtin: true
+
+nodes:
+  - name: decide_policy
+    type: approval
+    model: gpt-5.5
+    permission: edit
+    instruction: review-fix-decide-policy
+    policy: triage
+    knowledge: releash-thread-cli
+
+  - name: implement
+    type: approval
+    model: gpt-5.5
+    permission: edit
+    instruction: review-fix
+    policy: coding
+    knowledge: releash-thread-cli

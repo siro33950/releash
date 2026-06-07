@@ -1,0 +1,45 @@
+name: gpt-spec-authoring
+description: ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をGPT系モデルで構築する。レビューループは行わない。
+builtin: true
+
+nodes:
+  - name: write_requirements
+    type: approval
+    model: gpt-5.5
+    permission: edit
+    instruction: spec-authoring-write-requirements
+    policy: planning
+    output_contract: spec-directory
+
+  - name: write_behavior
+    type: approval
+    model: gpt-5.5
+    permission: edit
+    instruction: spec-authoring-write-behavior
+    policy: planning
+    input_contracts:
+      - spec-directory
+    pass_output_from:
+      - write_requirements
+
+  - name: write_design
+    type: approval
+    model: gpt-5.5
+    permission: edit
+    instruction: spec-authoring-write-design
+    policy: planning
+    input_contracts:
+      - spec-directory
+    pass_output_from:
+      - write_requirements
+
+  - name: spec_finalize
+    type: approval
+    model: gpt-5.5
+    permission: edit
+    instruction: spec-authoring-finalize
+    policy: planning
+    input_contracts:
+      - spec-directory
+    pass_output_from:
+      - write_requirements

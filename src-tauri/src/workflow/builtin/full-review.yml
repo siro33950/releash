@@ -11,86 +11,86 @@ nodes:
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
-        instruction: full-review-review-acceptance
+        instruction: review-acceptance
       - name: review-acceptance-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
-        instruction: full-review-review-acceptance
+        instruction: review-acceptance
       - name: review-structure-opus
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
-        instruction: full-review-review-structure
+        instruction: review-structure
       - name: review-structure-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
-        instruction: full-review-review-structure
+        instruction: review-structure
       - name: review-quality-opus
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
-        instruction: full-review-review-quality
+        instruction: review-quality
       - name: review-quality-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
-        instruction: full-review-review-quality
+        instruction: review-quality
       - name: review-test-opus
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
-        instruction: full-review-review-test
+        instruction: review-test
       - name: review-test-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
-        instruction: full-review-review-test
+        instruction: review-test
       - name: review-security-opus
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
-        instruction: full-review-review-security
+        instruction: review-security
       - name: review-security-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
-        instruction: full-review-review-security
+        instruction: review-security
       - name: review-architecture-opus
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
-        instruction: full-review-review-architecture
+        instruction: review-architecture
       - name: review-architecture-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
-        instruction: full-review-review-architecture
+        instruction: review-architecture
     aggregate:
       all_match: ".*"
       then: verify-and-classify
@@ -107,29 +107,29 @@ nodes:
         type: agent
         model: claude-opus-4-8
         permission: edit
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
         instruction: full-review-verify-and-classify
       - name: verify-gpt55
         type: agent
         model: gpt-5.5
         permission: full
-        policy: full-review-reviewer
+        policy: reviewing
         knowledge: releash-thread-cli
         instruction: full-review-verify-and-classify
     aggregate:
       all_match: ".*"
-      then: review-summary
-      else: review-summary
+      then: reporting
+      else: reporting
 
   # ===== Summary: terminal step. Walks through each Thread interactively with
   # the human, discussing findings until an explicit policy is agreed, then
   # posts the conclusion to the Thread (policy Comment or rationale-backed
   # Resolve). All actions require explicit human approval.
-  - name: review-summary
+  - name: reporting
     type: approval
     model: claude-opus-4-8
     permission: edit
-    policy: full-review-summary
+    policy: reporting
     knowledge: releash-thread-cli
     instruction: full-review-summary
