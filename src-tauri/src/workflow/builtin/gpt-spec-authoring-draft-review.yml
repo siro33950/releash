@@ -1,0 +1,35 @@
+name: gpt-spec-authoring-draft-review
+description: requirements / behavior / design を文書ごとにGPT系モデルで一括作成し、Open Questions 解消後に人間のレビューを待つ。
+builtin: true
+
+nodes:
+  - name: write_requirements
+    type: approval
+    model: gpt-5.5
+    permission: edit
+    instruction: spec-authoring-draft-requirements
+    policy: planning
+    output_contract: spec-directory
+
+  - name: write_behavior
+    type: approval
+    model: gpt-5.5
+    permission: edit
+    instruction: spec-authoring-draft-behavior
+    policy: planning
+    input_contracts:
+      - spec-directory
+    pass_output_from:
+      - write_requirements
+
+  - name: write_design
+    type: approval
+    model: gpt-5.5
+    permission: edit
+    instruction: spec-authoring-draft-design
+    policy: planning
+    input_contracts:
+      - spec-directory
+    pass_output_from:
+      - write_requirements
+      - write_behavior

@@ -6,6 +6,10 @@ use super::validation::{self, ValidationError};
 
 const BUILTIN_GPT_SPEC_AUTHORING: &str = include_str!("builtin/gpt-spec-authoring.yml");
 const BUILTIN_CLAUDE_SPEC_AUTHORING: &str = include_str!("builtin/claude-spec-authoring.yml");
+const BUILTIN_GPT_SPEC_AUTHORING_DRAFT_REVIEW: &str =
+    include_str!("builtin/gpt-spec-authoring-draft-review.yml");
+const BUILTIN_CLAUDE_SPEC_AUTHORING_DRAFT_REVIEW: &str =
+    include_str!("builtin/claude-spec-authoring-draft-review.yml");
 const BUILTIN_GPT_SPEC_IMPLEMENT: &str = include_str!("builtin/gpt-spec-implement.yml");
 const BUILTIN_CLAUDE_SPEC_IMPLEMENT: &str = include_str!("builtin/claude-spec-implement.yml");
 const BUILTIN_FULL_REVIEW: &str = include_str!("builtin/full-review.yml");
@@ -35,6 +39,16 @@ const BUILTINS: &[BuiltinEntry] = &[
         filename: "claude-spec-authoring.yml",
         content: BUILTIN_CLAUDE_SPEC_AUTHORING,
         description: "ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をClaude系モデルで構築する。レビューループは行わない。",
+    },
+    BuiltinEntry {
+        filename: "gpt-spec-authoring-draft-review.yml",
+        content: BUILTIN_GPT_SPEC_AUTHORING_DRAFT_REVIEW,
+        description: "requirements / behavior / design を文書ごとにGPT系モデルで一括作成し、Open Questions 解消後に人間のレビューを待つ。",
+    },
+    BuiltinEntry {
+        filename: "claude-spec-authoring-draft-review.yml",
+        content: BUILTIN_CLAUDE_SPEC_AUTHORING_DRAFT_REVIEW,
+        description: "requirements / behavior / design を文書ごとにClaude系モデルで一括作成し、Open Questions 解消後に人間のレビューを待つ。",
     },
     BuiltinEntry {
         filename: "gpt-spec-implement.yml",
@@ -252,6 +266,21 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
+        key: "spec-authoring-draft-requirements",
+        content: include_str!("builtin_facets/instructions/spec-authoring-draft-requirements.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "spec-authoring-draft-behavior",
+        content: include_str!("builtin_facets/instructions/spec-authoring-draft-behavior.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "spec-authoring-draft-design",
+        content: include_str!("builtin_facets/instructions/spec-authoring-draft-design.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
         key: "implement",
         content: include_str!("builtin_facets/instructions/implement.md"),
     },
@@ -393,6 +422,41 @@ mod tests {
         let result = load_builtin_workflow_resolved("nonexistent")
             .expect("lookup itself must not fail for unknown");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn spec_authoring_draft_review_workflows_are_document_steps() {
+        for name in [
+            "gpt-spec-authoring-draft-review",
+            "claude-spec-authoring-draft-review",
+        ] {
+            let wf = load_builtin_workflow_resolved(name)
+                .unwrap_or_else(|err| panic!("builtin '{name}' must load: {err}"))
+                .unwrap_or_else(|| panic!("builtin '{name}' must exist"));
+
+            let node_names: Vec<_> = wf.nodes.iter().map(|node| node.name.as_str()).collect();
+            assert_eq!(
+                node_names,
+                vec!["write_requirements", "write_behavior", "write_design"],
+                "draft-review spec authoring must stay document-step based"
+            );
+
+            for node in &wf.nodes {
+                assert_eq!(
+                    node.node_type,
+                    crate::workflow::schema::NodeType::Approval,
+                    "node '{}' must write the document and then wait for human review",
+                    node.name
+                );
+                assert!(
+                    node.instruction
+                        .as_deref()
+                        .is_some_and(|instruction| instruction.starts_with("spec-authoring-draft-")),
+                    "node '{}' must use draft-review instruction facets",
+                    node.name
+                );
+            }
+        }
     }
 
     #[test]
