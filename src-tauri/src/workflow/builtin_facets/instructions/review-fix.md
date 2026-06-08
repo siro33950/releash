@@ -1,13 +1,11 @@
-{{project_name}} のフルレビューで残った全 Open Thread を、**方針決定 Step（decide_policy）で各 Thread に付与された方針 Comment** に従って実装し、各 Thread を resolve する。
+{{project_name}} のフルレビューで残った Open Thread のうち、**方針決定 Step（decide_policy）で対応する方針 Comment が付与された Thread** に従って実装し、各 Thread を resolve する。
 
 ## 入力
 
 - タスク（任意の自由文。実装対象の絞り込み等の補足指示があれば）: {{task}}
-- 全 Open Thread と各 Thread に付いた方針 Comment（既に decide_policy Step で投稿済み）
 
 ## 前提
 
-- 本 Step は **方針決定 Step の後段** に位置する。各 Open Thread には方針決定 Step が投稿した方針 Comment（方針＋根拠）が必ず付いている
 - 本 Step では **新たに方針を決め直さない**。方針 Comment の内容を実装に翻訳することに徹する
 - 方針 Comment と矛盾する実装が必要だと判断した場合は、計画提示の「確認事項」で明示し人間判断を仰ぐ（独断で方針を変更しない）
 
@@ -53,9 +51,9 @@
 
 ### 4. 各 Thread を resolve
 
-- 各 Thread を `{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome <outcome> --summary "<対応要約>" --json` で resolve する
+- 実装対象の各 Thread を `{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome <outcome> --summary "<対応要約>" --json` で resolve する
 - `--outcome` は解決状況を表す自由文（例: `resolved`, `wontfix`, `duplicate`）
-- 「対応見送り」も resolve として扱い、根拠を `--summary` に含める
+- 対応見送り方針の Thread は decide_policy Step で resolve 済みのため、本 Step では resolve しない
 - 申し送り Comment は投稿しない
 
 ### 5. 処理結果サマリの出力
@@ -77,4 +75,5 @@
 
 - 方針 Comment を読まずに実装を開始しない
 - 方針 Comment と矛盾する実装を、計画提示・合意なしに行わない
-- Thread を Open のまま残さない（全 Thread を resolve する。方針 Comment が「対応見送り」を示している場合も resolve）
+- 実装対象の Thread を Open のまま残さない
+- 対応見送り方針で decide_policy Step が resolve 済みの Thread を再処理しない

@@ -1,4 +1,4 @@
-{{project_name}} のフルレビューで残った全 Open Thread に対し、**各 Thread の修正方針を決定し、方針 Comment として Thread に投稿する**。実装は次の Step（implement）で行うため、本 Step では実装に着手しない。
+{{project_name}} のフルレビューで残った全 Open Thread に対し、**各 Thread の修正方針を決定する**。対応する方針の Thread には方針 Comment を投稿し、対応見送り方針の Thread は resolve 理由に方針と根拠を含めて本 Step で resolve する。実装は次の Step（implement）で行うため、本 Step では実装に着手しない。
 
 ## 入力
 
@@ -7,7 +7,8 @@
 
 ## 出力
 
-- 各 Open Thread に方針 Comment（方針＋根拠）が投稿された状態
+- 対応する方針の Thread に方針 Comment（方針＋根拠）が投稿された状態
+- 対応見送り方針の Thread が resolve 理由（方針＋根拠）付きで resolve された状態
 - 全 Thread に投稿し終えたら approve で次 Step（implement）へ進む
 
 ## プロセス
@@ -37,9 +38,12 @@ Open Thread を次の3つに分類する。
 
 #### 2-1. 除外グループ
 
-既に明確な方針 Comment があり、実装 Step が判断できる Thread。
+既に明確な対応する方針 Comment があり、実装 Step が判断できる Thread。
 
 このグループは、以降の方針案提示・議論・投稿の対象にしない。
+
+既存方針 Comment が対応見送りを示している Open Thread は、方針案提示・議論の対象にしない。
+既存方針 Comment の内容を resolve summary に使い、この Step で resolve する。
 
 #### 2-2. 一致グループ
 
@@ -88,11 +92,11 @@ Open Thread を次の3つに分類する。
 - Thread 単位の reject
 - 方針案の修正指示
 
-#### 3-3. 合意後の投稿
+#### 3-3. 合意後の反映
 
-一括 approve された Thread には、提示した方針案どおりに方針 Comment を投稿する。
+一括 approve された Thread には、提示した方針案どおりに処理する。
 
-投稿する Comment は、各 Thread の方針案から次の形式で作る。
+方針が対応する場合は、方針 Comment を投稿し、この Step では resolve しない。
 
 ```text
 方針：<採用する方針>
@@ -100,10 +104,18 @@ Open Thread を次の3つに分類する。
 対応しない範囲：<対応しない範囲>
 ```
 
+方針が対応見送りの場合は、方針 Comment を投稿せず、この Step で Thread を resolve する。
+
+```sh
+{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome wontfix --summary "<対応見送りの理由>" --json
+```
+
+resolve summary には、採用した方針、採用理由、対応しない範囲を含める。
+
 Thread 単位で reject されたもの、または修正指示が出たものには投稿しない。
 それらの Thread は、一致グループから外して個別検討に回す。
 
-approve されていない Thread に方針 Comment を投稿してはならない。
+approve されていない Thread に方針 Comment 投稿や resolve を行ってはならない。
 
 ### 4. 割れグループの逐次処理
 
@@ -159,11 +171,11 @@ reject、疑問、反論、追加確認の指示があった場合は、方針 C
 - 対応範囲をどこまでにするか
 - 対応しない範囲をどう切るか
 
-#### 4-3. 合意後の投稿
+#### 4-3. 合意後の反映
 
-議論の結果、approve された Thread にだけ方針 Comment を投稿する。
+議論の結果、approve された Thread にだけ合意内容を反映する。
 
-投稿する Comment は、合意した内容から次の形式で作る。
+方針が対応する場合は、方針 Comment を投稿し、この Step では resolve しない。
 
 ```text
 方針：<合意した方針>
@@ -171,38 +183,62 @@ reject、疑問、反論、追加確認の指示があった場合は、方針 C
 対応しない範囲：<合意した対応しない範囲>
 ```
 
-approve されていない Thread に方針 Comment を投稿してはならない。
+方針が対応見送りの場合は、方針 Comment を投稿せず、この Step で Thread を resolve する。
+
+```sh
+{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome wontfix --summary "<対応見送りの理由>" --json
+```
+
+resolve summary には、合意した方針、合意理由、対応しない範囲を含める。
+
+approve されていない Thread に方針 Comment 投稿や resolve を行ってはならない。
 
 ### 5. 完了確認
 
-#### 5-1. Open Thread の再取得
+#### 5-1. Thread 状態の再取得
 
-Open 状態の全 Thread を再取得する。
+最初に取得した全 Thread の現在状態を再取得する。
 
-#### 5-2. 方針 Comment の確認
+#### 5-2. 方針反映の確認
 
-再取得した全 Thread について、方針 Comment が投稿済みであることを確認する。
+再取得した全 Thread について、方針の反映結果と Thread 状態を確認する。
 
-方針 Comment には、次の3項目が含まれていなければならない。
+対応する方針の Thread には、次の3項目を含む方針 Comment が投稿されていなければならない。
 
 - 方針
 - 根拠
 - 対応しない範囲
 
-#### 5-3. 未投稿がある場合
+対応見送り方針の Thread は resolve 済みで、resolve summary に次の3項目が含まれていなければならない。
 
-方針 Comment が未投稿の Thread が1件でもある場合、完了として扱ってはならない。
+- 方針
+- 根拠
+- 対応しない範囲
 
-未投稿 Thread を特定し、該当する処理に戻る。
+Thread 状態は次の条件を満たしていなければならない。
+
+- 対応する方針の Thread: Open のまま残っている
+- 対応見送り方針の Thread: resolve 済みである
+- 除外グループの Thread: 既存方針 Comment が存在する
+
+#### 5-3. 未完了がある場合
+
+対応する方針の Thread の方針 Comment 未投稿、または対応見送り Thread の未resolve が1件でもある場合、完了として扱ってはならない。
+
+未完了 Thread を特定し、該当する処理に戻る。
 
 - 一致グループの合意前なら `3-2. 合意確認`
-- 一致グループの approve 済みなら `3-3. 合意後の投稿`
+- 一致グループの approve 済みなら `3-3. 合意後の反映`
 - 割れグループの議論中なら `4-2. 合意確認と議論`
-- 割れグループの approve 済みなら `4-3. 合意後の投稿`
+- 割れグループの approve 済みなら `4-3. 合意後の反映`
 
 #### 5-4. 完了報告
 
-全 Open Thread に方針 Comment が存在する場合だけ、完了報告を出す。
+全 Thread が次の条件を満たす場合だけ、完了報告を出す。
+
+- 対応する方針の Thread には方針 Comment があり、Open のまま残っている
+- 対応見送り方針の Thread は resolve summary に方針と根拠があり、resolve 済みである
+- 除外グループの Thread には既存方針 Comment がある
 
 ```text
 ## 方針決定 完了
@@ -211,17 +247,29 @@ Open 状態の全 Thread を再取得する。
 除外グループ: <件数>件
 一致グループで投稿: <件数>件
 割れグループで投稿: <件数>件
-方針 Comment 未投稿: 0件
+対応見送りとして resolve: <件数>件
+未完了: 0件
 ```
 
-## 方針 Comment のフォーマット
+## 方針 Comment / resolve summary のフォーマット
 
-方針 Comment は、合意済みの方針案から作成する。
-合意前の内容、未承認の方針案、議論途中の内容を投稿してはならない。
+対応する方針の Thread には、合意済みの方針案から方針 Comment を作成する。
+対応見送り方針の Thread には、方針 Comment を投稿せず、resolve summary に方針と根拠を含める。
+合意前の内容、未承認の方針案、議論途中の内容を Comment または resolve summary に使ってはならない。
+
+対応する方針の Thread に投稿する方針 Comment:
 
 ```text
 方針：<合意した方針>
 根拠：<reviewer指摘・verifier判定・verifier修正方針・議論内容を踏まえた採用理由>
+対応しない範囲：<この Thread では扱わないこと。なければ `なし`>
+```
+
+対応見送り方針の Thread に使う resolve summary:
+
+```text
+方針：<対応見送りの方針>
+根拠：<reviewer指摘・verifier判定・verifier修正方針・議論内容を踏まえた対応見送り理由>
 対応しない範囲：<この Thread では扱わないこと。なければ `なし`>
 ```
 
@@ -246,12 +294,15 @@ Open 状態の全 Thread を再取得する。
 ## 禁止事項
 
 - 実装の着手・コード変更
-- Thread の `review resolve`（resolve は実装 Step の責務）
 - 方針 Comment 以外の Comment 投稿
 - Open Thread の一部だけを対象にして進めること
 - 方針未決の Thread を残したまま完了扱いにすること
 - approve 前の方針案を方針 Comment として投稿すること
-- 合意済み方針と異なる内容を方針 Comment に書くこと
+- approve 前に Thread を resolve すること
+- 対応見送り以外の方針で Thread を resolve すること
+- 対応見送り方針の Thread に方針 Comment を投稿して Open のまま残すこと
+- 対応する方針の Thread をこの Step で resolve すること
+- 合意済み方針と異なる内容を方針 Comment または resolve summary に書くこと
 - verifier判定だけを見て、verifier修正方針を見ないこと
 - 「対応する」「対応見送り」だけの雑な方針を書くこと
 - コードレベルの実装手順、変更箇所候補、具体的な修正方法を書くこと
