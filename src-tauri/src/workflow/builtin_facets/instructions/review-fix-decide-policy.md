@@ -3,7 +3,7 @@
 ## 入力
 
 - タスク（任意の自由文。方針決定の補足指示があれば）: {{task}}
-- 全 Open Thread（reviewer 指摘 + verifier 分類）
+- 全 Open Thread（reviewer 指摘 + verifier判定 + verifier修正方針 + 既存方針Comment）
 
 ## 出力
 
@@ -12,84 +12,246 @@
 
 ## プロセス
 
-### 1. Open Thread の取得とグルーピング
+### 1. 対象 Thread の収集
 
-- `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json`
-- 各 Thread に対し `{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` で本文・履歴を取得
-- 各 Thread の verifier 分類（複数 verifier 出力）を比較し、以下の 2 グループに分ける：
-  - **一致グループ**：両 verifier が同分類で、かつ方針が自明な Thread（例: 両者 VERIFIED で対応 / 両者 REFUTED で wontfix）
-  - **割れグループ**：verifier 間で分類が割れている、または同一分類でも判断要素を含む Thread
+Open 状態の全 Thread を取得し、次の項目で一覧化する。
 
-### 2. 一致グループの一括処理
+| thread_id | file | line | reviewer指摘 | verifier判定 | verifier修正方針 | 既存方針Comment |
+|---|---|---|---|---|---|---|
 
-- 一致グループの全 Thread を一覧で提示する：
+各列の内容:
+- `thread_id`: Thread ID
+- `file`: 指摘対象ファイル
+- `line`: 指摘対象行または範囲
+- `reviewer指摘`: reviewer の主張を1文で要約
+- `verifier判定`: verifier / classifier の判定があれば記載、なければ `なし`
+- `verifier修正方針`: verifier が提案している対応内容。対応要否だけでなく、何をどう扱うべきとしているかを書く。なければ `なし`
+- `既存方針Comment`: 既に方針 Comment があれば要約、なければ `なし`
 
-  ```
-  ## 一致グループ方針案 (<件数>件)
+この一覧には、取得できた Open Thread を必ず全件含める。
+この一覧に載っていない Thread は、以降の分類・方針案提示・議論・投稿の対象にしてはならない。
 
-  ### Thread <thread-id> [<観点>] <file>:<line-range>
-  - verifier 分類: <双方 一致した分類>
-  - 方針案: <1 文>
-  - 根拠: <verifier 出力の要約 1〜2 文>
+### 2. Open Thread の分類
 
-  ### Thread <thread-id> ...
-  ```
+Open Thread を次の3つに分類する。
 
-- 人間が **一括 approve** したら、各 Thread に方針 Comment を投稿する：
-  - `{{path_alias.releash}} review comment <thread-id> --session-id "$RELEASH_SESSION_ID" --content "方針：<決定した方針>\n根拠：<verifier 判定要約>" --json`
-- 一致グループでも個別に reject されたものがあれば、その Thread は割れグループに回す
+#### 2-1. 除外グループ
 
-### 3. 割れグループの逐次処理
+既に明確な方針 Comment があり、実装 Step が判断できる Thread。
 
-- 割れグループは Thread を **1 件ずつ** 提示する：
+このグループは、以降の方針案提示・議論・投稿の対象にしない。
 
-  ```
-  ## 割れ Thread <thread-id> [<観点>] <file>:<line-range>
-  - reviewer 指摘: <Thread 本文の要約>
-  - verifier 出力: <verifier 名>=<分類> / <根拠要約> / <verifier 名>=<分類> / <根拠要約>
-  - 論点: <verifier 間の対立点 / 判断要素>
-  - 方針案: <1 文>
-  - 根拠: <提案する根拠>
-  ```
+#### 2-2. 一致グループ
 
-- 人間と必要に応じて議論し、合意（approve）を得てから、その Thread に方針 Comment を投稿する：
-  - `{{path_alias.releash}} review comment <thread-id> --session-id "$RELEASH_SESSION_ID" --content "方針：<決定した方針>\n根拠：<議論を踏まえた根拠>" --json`
-- 投稿後、次の割れ Thread に進む
+方針 Comment が未投稿、または既存方針 Comment が再検討を要する Thread のうち、次を満たすもの。
 
-### 4. 完了確認
+- verifier判定が一致している
+- verifier修正方針も実質的に一致している
+- 方針 Comment を同じ判断軸で書ける
 
-- 全 Open Thread に方針 Comment が投稿されたことを確認する：
-  - `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json` で再取得
-  - 各 Thread の history に方針 Comment（`方針：` `根拠：` を含む）が存在することを確認
-- 完了報告：
+#### 2-3. 割れグループ
 
-  ```
-  ## 方針決定 完了
+方針 Comment が未投稿、または既存方針 Comment が再検討を要する Thread のうち、次のいずれかに当てはまるもの。
 
-  ### 一致グループで一括処理した Thread (<件数>件)
-  - `<thread-id>`: <方針 1 文>
-  - ...
+- verifier判定が割れている
+- verifier判定は一致しているが、verifier修正方針が異なる
+- verifier修正方針が抽象的で、そのまま採用できない
+- reviewer指摘と verifier修正方針の対応関係が不明
+- 既存方針 Comment が曖昧・不足・矛盾している
 
-  ### 割れグループで個別処理した Thread (<件数>件)
-  - `<thread-id>`: <方針 1 文>
-  - ...
-  ```
+### 3. 一致グループの一括処理
 
-- 人間が approve したら次 Step（implement）へ進む
+#### 3-1. 方針案の提示
+
+一致グループの全 Thread を、方針案として一覧で提示する。
+この時点では方針 Comment を投稿しない。
+
+```text
+## 一致グループ方針案 (<件数>件)
+
+### Thread <thread-id> [<観点>] <file>:<line-range>
+- reviewer指摘: <reviewer の主張を1文で要約>
+- verifier判定: <一致した判定>
+- verifier修正方針: <一致した修正方針>
+- 採用する方針: <この Thread の扱い方>
+- 採用理由: <reviewer指摘・verifier判定・verifier修正方針を踏まえた理由>
+- 対応しない範囲: <この Thread では扱わないこと。なければ `なし`>
+
+### Thread <thread-id> ...
+```
+
+#### 3-2. 合意確認
+
+提示した方針案について、人間に次のいずれかを求める。
+
+- 一括 approve
+- Thread 単位の reject
+- 方針案の修正指示
+
+#### 3-3. 合意後の投稿
+
+一括 approve された Thread には、提示した方針案どおりに方針 Comment を投稿する。
+
+投稿する Comment は、各 Thread の方針案から次の形式で作る。
+
+```text
+方針：<採用する方針>
+根拠：<採用理由>
+対応しない範囲：<対応しない範囲>
+```
+
+Thread 単位で reject されたもの、または修正指示が出たものには投稿しない。
+それらの Thread は、一致グループから外して個別検討に回す。
+
+approve されていない Thread に方針 Comment を投稿してはならない。
+
+### 4. 割れグループの逐次処理
+
+#### 4-1. 方針案の提示
+
+割れグループの Thread は、1件ずつ方針案を提示する。
+この時点では方針 Comment を投稿しない。
+
+```text
+## 割れ Thread 方針案 <thread-id> [<観点>] <file>:<line-range>
+
+reviewer指摘:
+<reviewer の主張を要約>
+
+verifier比較:
+| verifier | 指摘解釈 | 判定 | 影響範囲 | 修正方針 | 対応範囲 | 根拠 |
+|---|---|---|---|---|---|---|
+| <verifier名> | <解釈> | <判定> | <影響範囲> | <修正方針> | <対応範囲> | <根拠要約> |
+| <verifier名> | <解釈> | <判定> | <影響範囲> | <修正方針> | <対応範囲> | <根拠要約> |
+
+割れている点:
+- <判定 / 指摘解釈 / 影響範囲 / 修正方針 / 対応範囲 / 根拠のうち、割れている内容>
+
+一致している点:
+- <一致している内容。なければ `なし`>
+
+方針案:
+<どの解釈・判定・修正方針を採用するか>
+
+方針案の根拠:
+<その方針案を提案する理由>
+
+対応しない範囲:
+<この Thread では扱わないこと。なければ `なし`>
+```
+
+#### 4-2. 合意確認と議論
+
+提示した方針案について、人間に次のいずれかを求める。
+
+- approve
+- reject
+- 方針案への疑問・反論
+- 追加確認の指示
+
+reject、疑問、反論、追加確認の指示があった場合は、方針 Comment を投稿せず、人間と議論する。
+
+議論では次を明確にする。
+
+- どの解釈が妥当か
+- どの verifier判定を採用するか
+- どの修正方針を採用するか
+- 対応範囲をどこまでにするか
+- 対応しない範囲をどう切るか
+
+#### 4-3. 合意後の投稿
+
+議論の結果、approve された Thread にだけ方針 Comment を投稿する。
+
+投稿する Comment は、合意した内容から次の形式で作る。
+
+```text
+方針：<合意した方針>
+根拠：<合意理由>
+対応しない範囲：<合意した対応しない範囲>
+```
+
+approve されていない Thread に方針 Comment を投稿してはならない。
+
+### 5. 完了確認
+
+#### 5-1. Open Thread の再取得
+
+Open 状態の全 Thread を再取得する。
+
+#### 5-2. 方針 Comment の確認
+
+再取得した全 Thread について、方針 Comment が投稿済みであることを確認する。
+
+方針 Comment には、次の3項目が含まれていなければならない。
+
+- 方針
+- 根拠
+- 対応しない範囲
+
+#### 5-3. 未投稿がある場合
+
+方針 Comment が未投稿の Thread が1件でもある場合、完了として扱ってはならない。
+
+未投稿 Thread を特定し、該当する処理に戻る。
+
+- 一致グループの合意前なら `3-2. 合意確認`
+- 一致グループの approve 済みなら `3-3. 合意後の投稿`
+- 割れグループの議論中なら `4-2. 合意確認と議論`
+- 割れグループの approve 済みなら `4-3. 合意後の投稿`
+
+#### 5-4. 完了報告
+
+全 Open Thread に方針 Comment が存在する場合だけ、完了報告を出す。
+
+```text
+## 方針決定 完了
+
+対象 Open Thread: <件数>件
+除外グループ: <件数>件
+一致グループで投稿: <件数>件
+割れグループで投稿: <件数>件
+方針 Comment 未投稿: 0件
+```
 
 ## 方針 Comment のフォーマット
 
-```
-方針：<決定した方針を 1 文または数文で>
-根拠：<verifier 判定要約 / 議論で出た論点 / 採用理由>
+方針 Comment は、合意済みの方針案から作成する。
+合意前の内容、未承認の方針案、議論途中の内容を投稿してはならない。
+
+```text
+方針：<合意した方針>
+根拠：<reviewer指摘・verifier判定・verifier修正方針・議論内容を踏まえた採用理由>
+対応しない範囲：<この Thread では扱わないこと。なければ `なし`>
 ```
 
-- 「対応する」も「対応見送り」も方針として明示する。「resolve するか Open に残すか」ではなく「実装でどう扱うか」を書く
-- 実装ヒント（変更箇所候補・具体的手法）は含めない。実装 Step の判断領域
+各項目の内容:
+- `方針`: 実装 Step でその Thread をどう扱うかを書く
+- `根拠`: なぜその方針を採用したかを書く
+- `対応しない範囲`: 余計な修正や解釈を防ぐため、この Thread で扱わないことを書く
+
+許可:
+- 実装 Step でその Thread をどう扱うか
+- 実装後に満たすべき状態
+- 対応範囲
+- 対応しない範囲
+
+禁止:
+- 「対応する」「対応見送り」だけで終わる方針
+- reviewer指摘の要約だけで根拠を省略すること
+- verifier判定だけを根拠にして、verifier修正方針を無視すること
+- 合意した方針案と異なる内容を投稿すること
+- 実装手順、変更箇所候補、具体的なコード変更方法を書くこと
 
 ## 禁止事項
 
 - 実装の着手・コード変更
 - Thread の `review resolve`（resolve は実装 Step の責務）
 - 方針 Comment 以外の Comment 投稿
-- 方針未決の Thread を残したまま approve に進む
+- Open Thread の一部だけを対象にして進めること
+- 方針未決の Thread を残したまま完了扱いにすること
+- approve 前の方針案を方針 Comment として投稿すること
+- 合意済み方針と異なる内容を方針 Comment に書くこと
+- verifier判定だけを見て、verifier修正方針を見ないこと
+- 「対応する」「対応見送り」だけの雑な方針を書くこと
+- コードレベルの実装手順、変更箇所候補、具体的な修正方法を書くこと
