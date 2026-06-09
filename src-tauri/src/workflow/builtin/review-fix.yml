@@ -1,20 +1,46 @@
 name: review-fix
-description: フルレビューで残った Open Thread に対し、Claude系モデルで方針 Comment を付け、GPT系モデルで一括実装・resolve を行う。各 Step は人間の承認を挟む。
+description: フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。
 builtin: true
 
 nodes:
-  - name: decide_policy
-    type: approval
-    model: claude-opus-4-8
-    permission: edit
-    instruction: review-fix-decide-policy
-    policy: triage
-    knowledge: releash-thread-cli
-
   - name: implement
-    type: approval
+    type: agent
     model: gpt-5.5
     permission: edit
     instruction: review-fix
     policy: coding
+    knowledge: releash-thread-cli
+
+  - name: policy_match_review
+    type: agent
+    model: claude-sonnet-4-6
+    permission: edit
+    instruction: review-fix-policy-match
+    policy: reviewing
+    knowledge: releash-thread-cli
+    rules:
+      - match: NEEDS_FIX
+        next: rework
+      - match: LGTM
+        next: report
+
+  - name: rework
+    type: agent
+    model: gpt-5.5
+    permission: edit
+    instruction: review-fix
+    policy: coding
+    knowledge: releash-thread-cli
+    rules:
+      - match: ".*"
+        next: policy_match_review
+    cycle_guard:
+      max_iterations: 5
+      on_exhausted: report
+
+  - name: report
+    type: approval
+    model: claude-opus-4-8
+    permission: edit
+    instruction: review-fix-report
     knowledge: releash-thread-cli

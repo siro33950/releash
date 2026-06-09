@@ -15,6 +15,7 @@ const BUILTIN_CLAUDE_SPEC_IMPLEMENT: &str = include_str!("builtin/claude-spec-im
 const BUILTIN_FULL_REVIEW: &str = include_str!("builtin/full-review.yml");
 const BUILTIN_GPT_REVIEW: &str = include_str!("builtin/gpt-review.yml");
 const BUILTIN_CLAUDE_REVIEW: &str = include_str!("builtin/claude-review.yml");
+const BUILTIN_REVIEW_FIX_POLICY: &str = include_str!("builtin/review-fix-policy.yml");
 const BUILTIN_REVIEW_FIX: &str = include_str!("builtin/review-fix.yml");
 const BUILTIN_GPT_REVIEW_FIX: &str = include_str!("builtin/gpt-review-fix.yml");
 const BUILTIN_CLAUDE_REVIEW_FIX: &str = include_str!("builtin/claude-review-fix.yml");
@@ -76,19 +77,24 @@ const BUILTINS: &[BuiltinEntry] = &[
         description: "全観点をClaude系モデルでレビューし、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
     },
     BuiltinEntry {
+        filename: "review-fix-policy.yml",
+        content: BUILTIN_REVIEW_FIX_POLICY,
+        description: "フルレビューで残った Open Thread の修正方針を決定し、承認済み方針の整合性を確認する。",
+    },
+    BuiltinEntry {
         filename: "review-fix.yml",
         content: BUILTIN_REVIEW_FIX,
-        description: "フルレビューで残った Open Thread に対し、Claude系モデルで方針 Comment を付け、GPT系モデルで一括実装・resolve を行う。各 Step は人間の承認を挟む。",
+        description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。",
     },
     BuiltinEntry {
         filename: "gpt-review-fix.yml",
         content: BUILTIN_GPT_REVIEW_FIX,
-        description: "フルレビューで残った Open Thread に対し、GPT系モデルで方針 Comment 付けと一括実装・resolve を行う。各 Step は人間の承認を挟む。",
+        description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って GPT 系モデルで実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。",
     },
     BuiltinEntry {
         filename: "claude-review-fix.yml",
         content: BUILTIN_CLAUDE_REVIEW_FIX,
-        description: "フルレビューで残った Open Thread に対し、Claude系モデルで方針 Comment 付けと一括実装・resolve を行う。各 Step は人間の承認を挟む。",
+        description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って Claude 系モデルで実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。",
     },
 ];
 
@@ -363,6 +369,21 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::Instruction,
         key: "review-fix-decide-policy",
         content: include_str!("builtin_facets/instructions/review-fix-decide-policy.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "review-fix-policy-consistency",
+        content: include_str!("builtin_facets/instructions/review-fix-policy-consistency.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "review-fix-policy-match",
+        content: include_str!("builtin_facets/instructions/review-fix-policy-match.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "review-fix-report",
+        content: include_str!("builtin_facets/instructions/review-fix-report.md"),
     },
 ];
 

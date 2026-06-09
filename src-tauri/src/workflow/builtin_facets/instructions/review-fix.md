@@ -1,79 +1,64 @@
-{{project_name}} のフルレビューで残った Open Thread のうち、**方針決定 Step（decide_policy）で対応する方針 Comment が付与された Thread** に従って実装し、各 Thread を resolve する。
+# 役割
 
-## 入力
+{{project_name}} のフルレビューで残った Open Thread のうち、`[FIX_POLICY_APPROVED]` Comment が付与された Thread に対し、その**修正方針・受入条件**に従って実装する。直前ノードの方針一致レビュー（`policy_match_review`）が指摘を出している場合は、その指摘も併せて反映する。
 
+# 入力
+
+- 環境変数 `RELEASH_SESSION_ID`: review CLI 呼び出し時に使う
 - タスク（任意の自由文。実装対象の絞り込み等の補足指示があれば）: {{task}}
+- 直前ノードの出力（あれば `policy_match_review` の指摘リスト。なければ初回実装）
 
-## 前提
+# 前提
 
-- 本 Step では **新たに方針を決め直さない**。方針 Comment の内容を実装に翻訳することに徹する
-- 方針 Comment と矛盾する実装が必要だと判断した場合は、計画提示の「確認事項」で明示し人間判断を仰ぐ（独断で方針を変更しない）
+- 本 Step では **新たに方針を決め直さない**。`[FIX_POLICY_APPROVED]` Comment の修正方針・受入条件を実装に翻訳することに徹する
+- 方針 Comment と矛盾する実装が必要だと判明した場合は、実装を中断し、その旨を出力に明示する（独断で方針を変更しない）
+- 本 Step では Thread を resolve しない。resolve は後段の report Step で行う
 
-## プロセス
+# プロセス
 
-### 1. Open Thread と方針 Comment の取得
+## 1. Open Thread と `[FIX_POLICY_APPROVED]` Comment の取得
 
-- `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json`
-- 各 Thread に対し `{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` で本文・履歴を取得
-- **history の中から方針 Comment（`方針：` `根拠：` を含む）を必ず特定する**
+- `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json` で全 Open Thread を取得
+- 各 Thread に対し `{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` と `{{path_alias.releash}} review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json` で本文・履歴を取得
+- history の中から、最新の `[FIX_POLICY_APPROVED]` Comment を必ず特定する（最新の `[FIX_POLICY_CHANGE_REQUEST]` より後にあるもの）
 
-### 2. 実装計画の提示と合意取得
+## 2. 直前ノード出力の確認
 
-- 下記テンプレートで計画を提示し、人間が approve するまで実装に着手しない
-- 修正指示があれば計画を改訂して再提示する
+直前ノードの出力に `policy_match_review` の指摘リスト（`thread-id` / `file` / `問題` / `期待` / `現状`）がある場合は読み取り、対象 Thread と指摘内容を抽出する。直前出力が無い、または指摘リストが含まれない場合は、初回実装として扱い、全 Open Thread を対象にする。
 
-#### 実装計画テンプレート
+## 3. 全体設計
 
-```markdown
-## 実装計画
+- 対象 Thread の `[FIX_POLICY_APPROVED]` を読み、修正方針を設計する
+- 直前指摘がある場合は、その指摘内容と `[FIX_POLICY_APPROVED]` の修正方針・受入条件が両立するように整理する
+- Thread 間の依存・衝突があれば、各 `[FIX_POLICY_APPROVED]` に明記された「実装順序」「対応しない範囲」に従って整理する
 
-### 各 Thread の方針 Comment と実装対応
-- `<thread-id>` / `<file>:<line-range>`
-  - 方針 Comment（要約）: <方針 Comment の方針部分を 1 文で>
-  - 実装内容: <対象ファイル・モジュール / 具体的な変更点>
-- ...
+## 4. 実装
 
-### 実装順序
-- <Thread 間の依存・衝突に基づく実装順序、または「順不同」>
+- 設計に沿って実装する
+- 各 Thread の `[FIX_POLICY_APPROVED]` に記載された「修正方針」と「受入条件」を満たすように実装する
+- 直前指摘がある場合は、指摘箇所を `[FIX_POLICY_APPROVED]` に合致する状態へ修正する
 
-### Thread 間の衝突 / 依存
-- <衝突点と解消方針 / 依存関係>
-- なければ `なし`
+# 出力
 
-### 確認事項
-- <方針 Comment と整合しない実装が必要、追加情報が必要、など人間判断を求めたい点があれば列挙>
-- なければ `なし`
-```
-
-### 3. 実装
-
-- 合意済み計画に沿って一括実装する
-
-### 4. 各 Thread を resolve
-
-- 実装対象の各 Thread を `{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome <outcome> --summary "<対応要約>" --json` で resolve する
-- `--outcome` は解決状況を表す自由文（例: `resolved`, `wontfix`, `duplicate`）
-- 対応見送り方針の Thread は decide_policy Step で resolve 済みのため、本 Step では resolve しない
-- 申し送り Comment は投稿しない
-
-### 5. 処理結果サマリの出力
+実装完了後、対応した Thread の一覧と実装内容を出力する。
 
 ```markdown
-## 処理結果サマリ
+## 実装結果
 
 ### 実装内容
 - `<変更したファイル>`: <変更内容>
 - ...
 
-### Thread 処理結果
-| thread-id | outcome | summary |
-|---|---|---|
-| `<id>` | `<outcome>` | `<summary>` |
+### 対応 Thread
+| thread-id | file:line | 修正方針（要約） | 実装対応 |
+|---|---|---|---|
+| `<id>` | `<file>:<line>` | <方針要約> | <実装で何をしたか> |
 ```
 
-## 禁止事項
+# 禁止事項
 
-- 方針 Comment を読まずに実装を開始しない
-- 方針 Comment と矛盾する実装を、計画提示・合意なしに行わない
-- 実装対象の Thread を Open のまま残さない
-- 対応見送り方針で decide_policy Step が resolve 済みの Thread を再処理しない
+- `[FIX_POLICY_APPROVED]` Comment を読まずに実装を開始しない
+- `[FIX_POLICY_APPROVED]` と矛盾する実装を独断で行わない
+- Thread の resolve / comment / 状態変更は行わない（後段の report Step で実施する）
+- 担当範囲外（Open Thread の `[FIX_POLICY_APPROVED]` で扱われていない箇所）の修正は行わない
+- 直前指摘がある場合、指摘されていない Thread の実装を新たに変更しない

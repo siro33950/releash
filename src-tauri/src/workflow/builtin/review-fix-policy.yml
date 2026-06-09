@@ -1,0 +1,23 @@
+name: review-fix-policy
+description: フルレビューで残った Open Thread の修正方針を決定し、承認済み方針の整合性を確認する。
+builtin: true
+
+nodes:
+  - name: decide_policy
+    type: approval
+    model: claude-opus-4-8
+    permission: edit
+    instruction: review-fix-decide-policy
+    policy: triage
+    knowledge: releash-thread-cli
+
+  - name: policy_consistency_review
+    type: agent
+    model: gpt-5.5
+    permission: edit
+    instruction: review-fix-policy-consistency
+    policy: reviewing
+    knowledge: releash-thread-cli
+    rules:
+      - match: NEEDS_FIX
+        next: decide_policy
