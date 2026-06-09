@@ -19,37 +19,6 @@ export interface AgentConfig {
 	modelFlag: string;
 }
 
-export const AGENT_MODELS: Record<
-	AgentType,
-	{ value: string; label: string }[]
-> = {
-	none: [],
-	claude: [
-		{ value: "", label: "Default" },
-		{ value: "claude-opus-4-6", label: "Opus 4.6" },
-		{ value: "claude-sonnet-4-5-20250929", label: "Sonnet 4.5" },
-		{ value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
-	],
-	codex: [
-		{ value: "", label: "Default" },
-		{ value: "gpt-5.3-codex", label: "gpt-5.3-codex" },
-		{ value: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
-	],
-	gemini: [
-		{ value: "", label: "Default" },
-		{ value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-		{ value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-	],
-	aider: [{ value: "", label: "Default" }],
-	cursor: [
-		{ value: "", label: "Default" },
-		{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-		{ value: "claude-opus-4-6", label: "Opus 4.6" },
-		{ value: "gpt-5.3-codex", label: "gpt-5.3-codex" },
-	],
-	custom: [],
-};
-
 export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 	none: {
 		command: "",

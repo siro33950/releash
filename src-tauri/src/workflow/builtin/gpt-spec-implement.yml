@@ -15,14 +15,14 @@ nodes:
     parallel_children:
       - name: review_spec
         type: agent
-        model: gpt-5.3-codex-spark
+        model: gpt-5.4-mini
         permission: full
         instruction: spec-implement-review-spec
         policy: reviewing
         knowledge: releash-thread-cli
       - name: review_design
         type: agent
-        model: gpt-5.3-codex-spark
+        model: gpt-5.4-mini
         permission: full
         instruction: spec-implement-review-design
         policy: reviewing
