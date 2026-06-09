@@ -6,7 +6,7 @@ nodes:
   - name: implement
     type: agent
     model: gpt-5.5
-    permission: edit
+    permission: full
     instruction: review-fix
     policy: coding
     knowledge: releash-thread-cli
@@ -14,7 +14,7 @@ nodes:
   - name: policy_match_review
     type: agent
     model: gpt-5.5
-    permission: edit
+    permission: full
     instruction: review-fix-policy-match
     policy: reviewing
     knowledge: releash-thread-cli
@@ -27,7 +27,7 @@ nodes:
   - name: rework
     type: agent
     model: gpt-5.5
-    permission: edit
+    permission: full
     instruction: review-fix
     policy: coding
     knowledge: releash-thread-cli
@@ -41,6 +41,6 @@ nodes:
   - name: report
     type: approval
     model: gpt-5.5
-    permission: edit
+    permission: full
     instruction: review-fix-report
     knowledge: releash-thread-cli
