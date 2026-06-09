@@ -31,6 +31,8 @@ nodes:
     instruction: review-fix
     policy: coding
     knowledge: releash-thread-cli
+    pass_output_from:
+      - policy_match_review
     rules:
       - match: ".*"
         next: policy_match_review

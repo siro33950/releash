@@ -170,7 +170,15 @@ pub async fn get_workflow(name: String) -> Result<Workflow, String> {
         super::validation::validate_name(&name).map_err(validation_error_string)?;
         let file_path = dir.join(format!("{name}.yml"));
         if file_path.exists() {
-            return storage::load_workflow(&file_path, &facets_base).map_err(|e| e.to_string());
+            match storage::load_workflow(&file_path, &facets_base) {
+                Ok(wf) => return Ok(wf),
+                Err(e) if builtin::is_builtin_workflow(&name) => {
+                    log::warn!(
+                        "user-side workflow '{name}' failed to load ({e}); falling back to builtin"
+                    );
+                }
+                Err(e) => return Err(e.to_string()),
+            }
         }
         builtin::load_builtin_workflow_resolved(&name)
             .map_err(|e| e.to_string())?

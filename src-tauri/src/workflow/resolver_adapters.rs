@@ -19,17 +19,27 @@ impl WorkflowDefinitionResolver for DefaultWorkflowDefinitionResolver {
             let facets_base = crate::workflow::facet::facets_base_dir();
             let file_path = dir.join(format!("{load_stem}.yml"));
             if file_path.exists() {
-                crate::workflow::storage::load_workflow(&file_path, &facets_base)
-                    .map_err(|e| WorkflowDefinitionResolverError::InvalidWorkflow(e.to_string()))
-            } else {
-                crate::workflow::builtin::load_builtin_workflow_resolved(&load_stem)
-                    .map_err(|e| WorkflowDefinitionResolverError::InvalidWorkflow(e.to_string()))?
-                    .ok_or_else(|| {
-                        WorkflowDefinitionResolverError::InvalidWorkflow(format!(
-                            "ワークフロー '{load_stem}' が見つかりません"
-                        ))
-                    })
+                match crate::workflow::storage::load_workflow(&file_path, &facets_base) {
+                    Ok(wf) => return Ok(wf),
+                    Err(e) if crate::workflow::builtin::is_builtin_workflow(&load_stem) => {
+                        log::warn!(
+                            "user-side workflow '{load_stem}' failed to load ({e}); falling back to builtin"
+                        );
+                    }
+                    Err(e) => {
+                        return Err(WorkflowDefinitionResolverError::InvalidWorkflow(
+                            e.to_string(),
+                        ));
+                    }
+                }
             }
+            crate::workflow::builtin::load_builtin_workflow_resolved(&load_stem)
+                .map_err(|e| WorkflowDefinitionResolverError::InvalidWorkflow(e.to_string()))?
+                .ok_or_else(|| {
+                    WorkflowDefinitionResolverError::InvalidWorkflow(format!(
+                        "ワークフロー '{load_stem}' が見つかりません"
+                    ))
+                })
         })
         .await
         .map_err(|e| {
