@@ -123,8 +123,8 @@ mod tests {
     use std::sync::Mutex as StdMutex;
     use tokio::sync::Mutex;
 
-    use crate::agent_sdk::AgentProcessMap;
-    use crate::session::{OpenTabRegistry, SessionState, SessionStore};
+    use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+    use crate::usecase::agent_session::session::{OpenTabRegistry, SessionState, SessionStore};
     use crate::workflow_step_lifecycle_adapters::{
         close_resolved_step_tab_state, close_step_session_tab_state,
         hydrate_open_workflow_step_tabs, open_step_session_tab_state,
@@ -170,13 +170,15 @@ mod tests {
         .await;
     }
 
-    fn workflow_step_session_for_test(session_id: &str) -> crate::session::ChatSession {
-        crate::session::ChatSession {
+    fn workflow_step_session_for_test(
+        session_id: &str,
+    ) -> crate::usecase::agent_session::session::ChatSession {
+        crate::usecase::agent_session::session::ChatSession {
             id: session_id.to_string(),
             worktree_path: "/repo".to_string(),
-            messages: vec![crate::session::ChatMessage {
+            messages: vec![crate::usecase::agent_session::session::ChatMessage {
                 id: "msg-1".to_string(),
-                role: crate::session::MessageRole::Agent,
+                role: crate::usecase::agent_session::session::MessageRole::Agent,
                 content: "history".to_string(),
                 thinking: None,
                 activities: None,
@@ -190,7 +192,9 @@ mod tests {
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
             selected_model: None,
-            backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),
+            backend_id: Some(
+                crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
+            ),
             workflow_step_session: true,
         }
     }
@@ -456,7 +460,7 @@ mod tests {
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         handles.lock().await.insert(
             "step".to_string(),
-            crate::agent_sdk::make_test_agent_process(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
 
         assert!(should_release_runtime_on_tab_close(&handles, "step").await);
@@ -465,30 +469,33 @@ mod tests {
     #[tokio::test]
     async fn tab_close_runtime_policy_keeps_busy_runtime() {
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
-        let mut proc = crate::agent_sdk::make_test_agent_process();
-        proc.state = crate::agent_sdk::BridgeState::Streaming;
+        let mut proc = crate::infrastructure::agent_session::runtime::make_test_agent_process();
+        proc.state = crate::infrastructure::agent_session::runtime::BridgeState::Streaming;
         handles.lock().await.insert("step".to_string(), proc);
         assert!(!should_release_runtime_on_tab_close(&handles, "step").await);
 
         {
             let mut map = handles.lock().await;
             let proc = map.get_mut("step").unwrap();
-            proc.state = crate::agent_sdk::BridgeState::Ready;
-            proc.turn_phase = crate::agent_sdk::TurnPhase::WaitingPermission;
+            proc.state = crate::infrastructure::agent_session::runtime::BridgeState::Ready;
+            proc.turn_phase =
+                crate::infrastructure::agent_session::runtime::TurnPhase::WaitingPermission;
         }
         assert!(!should_release_runtime_on_tab_close(&handles, "step").await);
 
         {
             let mut map = handles.lock().await;
             let proc = map.get_mut("step").unwrap();
-            proc.turn_phase = crate::agent_sdk::TurnPhase::Idle;
-            proc.pending_message = Some(crate::agent_sdk::PendingMessage {
-                content: "next".to_string(),
-                permission_mode: "edit".to_string(),
-                images: Vec::new(),
-                worktree_path: "/repo".to_string(),
-                mentions: Vec::new(),
-            });
+            proc.turn_phase = crate::infrastructure::agent_session::runtime::TurnPhase::Idle;
+            proc.pending_message = Some(
+                crate::infrastructure::agent_session::runtime::PendingMessage {
+                    content: "next".to_string(),
+                    permission_mode: "edit".to_string(),
+                    images: Vec::new(),
+                    worktree_path: "/repo".to_string(),
+                    mentions: Vec::new(),
+                },
+            );
         }
         assert!(!should_release_runtime_on_tab_close(&handles, "step").await);
     }
@@ -506,7 +513,7 @@ mod tests {
         open_tabs.add(&session_id);
         handles.lock().await.insert(
             session_id.clone(),
-            crate::agent_sdk::make_test_agent_process(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
         let close_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -553,8 +560,8 @@ mod tests {
             .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
             .unwrap();
         open_tabs.add(&session_id);
-        let mut proc = crate::agent_sdk::make_test_agent_process();
-        proc.state = crate::agent_sdk::BridgeState::Streaming;
+        let mut proc = crate::infrastructure::agent_session::runtime::make_test_agent_process();
+        proc.state = crate::infrastructure::agent_session::runtime::BridgeState::Streaming;
         handles.lock().await.insert(session_id.clone(), proc);
         let close_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -601,7 +608,7 @@ mod tests {
             .unwrap();
         handles.lock().await.insert(
             session_id.clone(),
-            crate::agent_sdk::make_test_agent_process(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
         let close_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -682,7 +689,7 @@ mod tests {
         open_tabs.add(&session_id);
         handles.lock().await.insert(
             session_id.clone(),
-            crate::agent_sdk::make_test_agent_process(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
 
         let result = close_resolved_step_tab_state(
@@ -735,7 +742,7 @@ mod tests {
         open_tabs.add(&session_id);
         handles.lock().await.insert(
             session_id.clone(),
-            crate::agent_sdk::make_test_agent_process(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
         let close_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -892,7 +899,7 @@ mod tests {
         open_tabs.add(&session_id);
         handles.lock().await.insert(
             session_id.clone(),
-            crate::agent_sdk::make_test_agent_process(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
 
         release_on_step_done_for_test(
@@ -934,7 +941,7 @@ mod tests {
         session_store.save_session(tmp.path(), &session).unwrap();
         handles.lock().await.insert(
             session_id.clone(),
-            crate::agent_sdk::make_test_agent_process(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
 
         release_on_step_done_for_test(
@@ -975,14 +982,16 @@ mod tests {
             .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
             .unwrap();
         open_tabs.add(&session_id);
-        let mut proc = crate::agent_sdk::make_test_agent_process();
-        proc.pending_message = Some(crate::agent_sdk::PendingMessage {
-            content: "continue".to_string(),
-            permission_mode: "edit".to_string(),
-            images: Vec::new(),
-            worktree_path: "/repo".to_string(),
-            mentions: Vec::new(),
-        });
+        let mut proc = crate::infrastructure::agent_session::runtime::make_test_agent_process();
+        proc.pending_message = Some(
+            crate::infrastructure::agent_session::runtime::PendingMessage {
+                content: "continue".to_string(),
+                permission_mode: "edit".to_string(),
+                images: Vec::new(),
+                worktree_path: "/repo".to_string(),
+                mentions: Vec::new(),
+            },
+        );
         handles.lock().await.insert(session_id.clone(), proc);
 
         release_on_step_done_for_test(
@@ -1017,7 +1026,7 @@ mod tests {
         open_tabs.add(&session_id);
         handles.lock().await.insert(
             session_id.clone(),
-            crate::agent_sdk::make_test_agent_process(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
 
         release_on_step_done_for_test(
@@ -1055,7 +1064,7 @@ mod tests {
         session_store.save_session(tmp.path(), &session).unwrap();
         handles.lock().await.insert(
             session_id.clone(),
-            crate::agent_sdk::make_test_agent_process(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
 
         open_step_session_tab_state(&session_store, tmp.path(), &open_tabs, &session_id).unwrap();
@@ -1083,10 +1092,10 @@ mod tests {
             .save_session(tmp.path(), &workflow_step_session_for_test(&step_id))
             .unwrap();
         open_tabs.add(&step_id);
-        handles
-            .lock()
-            .await
-            .insert(step_id.clone(), crate::agent_sdk::make_test_agent_process());
+        handles.lock().await.insert(
+            step_id.clone(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
+        );
 
         // Non-workflow session (different id, workflow_step_session=false)
         let non_workflow_id = uuid::Uuid::new_v4().to_string();
@@ -1125,7 +1134,7 @@ mod tests {
         open_tabs.add(&session_id);
         handles.lock().await.insert(
             session_id.clone(),
-            crate::agent_sdk::make_test_agent_process(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
 
         let close_count = Arc::new(AtomicUsize::new(0));
@@ -1138,7 +1147,11 @@ mod tests {
             let close_count = Arc::clone(&close_count);
             let data_dir = data_dir.clone();
             async move {
-                let _guard = crate::agent_sdk::acquire_session_runtime_lock(&session_id).await;
+                let _guard =
+                    crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(
+                        &session_id,
+                    )
+                    .await;
                 let _ = close_resolved_step_tab_state(
                     &session_store,
                     &data_dir,
@@ -1169,7 +1182,11 @@ mod tests {
             let close_count = Arc::clone(&close_count);
             let data_dir = data_dir.clone();
             async move {
-                let _guard = crate::agent_sdk::acquire_session_runtime_lock(&session_id).await;
+                let _guard =
+                    crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(
+                        &session_id,
+                    )
+                    .await;
                 release_step_runtime_on_done_state(
                     &session_store,
                     &data_dir,
@@ -1215,7 +1232,7 @@ mod tests {
             .unwrap();
         handles.lock().await.insert(
             other_id.clone(),
-            crate::agent_sdk::make_test_agent_process(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
 
         // Trigger failure: open_step_session_tab_state on a session that does not exist in store

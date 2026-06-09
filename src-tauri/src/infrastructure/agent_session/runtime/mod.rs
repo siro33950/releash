@@ -4,6 +4,8 @@ pub mod codex;
 mod permission_flags;
 pub mod runtime_coordinator;
 
+pub(crate) use bridge_common::*;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -12,7 +14,35 @@ use tauri::State;
 use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
-use crate::session::SessionStore;
+use crate::usecase::agent_session::session::SessionStore;
+
+impl From<ModelInfo> for crate::usecase::agent_session::session::ModelInfo {
+    fn from(info: ModelInfo) -> Self {
+        Self { value: info.value }
+    }
+}
+
+impl From<TurnPhase> for crate::usecase::agent_session::status::TurnPhase {
+    fn from(phase: TurnPhase) -> Self {
+        match phase {
+            TurnPhase::Idle => Self::Idle,
+            TurnPhase::Streaming => Self::Streaming,
+            TurnPhase::WaitingPermission => Self::WaitingPermission,
+        }
+    }
+}
+
+impl From<crate::usecase::agent_session::status::TurnPhase> for TurnPhase {
+    fn from(phase: crate::usecase::agent_session::status::TurnPhase) -> Self {
+        match phase {
+            crate::usecase::agent_session::status::TurnPhase::Idle => Self::Idle,
+            crate::usecase::agent_session::status::TurnPhase::Streaming => Self::Streaming,
+            crate::usecase::agent_session::status::TurnPhase::WaitingPermission => {
+                Self::WaitingPermission
+            }
+        }
+    }
+}
 
 /// Backend-specific runtime values consumed by the generic bridge process runner.
 #[derive(Debug, Clone, Default)]
@@ -393,6 +423,24 @@ fn build_registry_inner(
     registry.set_config(config);
 
     registry
+}
+
+impl crate::usecase::agent_session::session::SessionBackendResolver for AgentBackendRegistry {
+    fn resolve_backend_id(&self, backend_id: Option<String>) -> Result<String, String> {
+        AgentBackendRegistry::resolve_backend_id(self, backend_id)
+    }
+
+    fn default_model_for(&self, backend_id: &str) -> Result<String, String> {
+        AgentBackendRegistry::default_model_for(self, backend_id)
+    }
+
+    fn backend_exists(&self, backend_id: &str) -> bool {
+        self.get(backend_id).is_some()
+    }
+
+    fn resolve_default_id(&self) -> Result<String, String> {
+        AgentBackendRegistry::resolve_default_id(self)
+    }
 }
 
 #[cfg(test)]

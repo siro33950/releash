@@ -9,10 +9,10 @@ use regex::RegexBuilder;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
-use crate::agent_sdk::AgentProcessMap;
-use crate::agent_status::current_timestamp;
+use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::permission::PermissionMode;
-use crate::session::{ChatSession, SessionStore};
+use crate::usecase::agent_session::session::{ChatSession, SessionStore};
+use crate::usecase::agent_session::status::current_timestamp;
 use crate::workflow::command::{WorkflowCommand, WorkflowCommandResult};
 use crate::workflow::command_input::{
     validate_optional_comment_text, validate_reject_reason_text, validate_required_comment_text,
@@ -111,7 +111,7 @@ impl<'a, R: tauri::Runtime> SessionStartGate for RealSessionStartGate<'a, R> {
         permission_mode: Option<String>,
         system_prompt: Option<String>,
     ) -> Result<(), String> {
-        crate::agent_sdk::start_agent_session_internal(
+        crate::infrastructure::agent_session::runtime::start_agent_session_internal(
             self.app,
             self.handles,
             self.session_store,
@@ -214,7 +214,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         step_permission: Option<String>,
         workflow_defaults: WorkflowDefaults,
     ) -> Result<StepSessionInfo, WorkflowEngineError> {
-        let data_dir = crate::session::resolve_data_dir(self.app)
+        let data_dir = crate::app_data_dir::resolve_data_dir(self.app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let step_session = self
             .engine
@@ -276,7 +276,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         permission_mode: &str,
         prompt: &str,
     ) -> Result<(), WorkflowEngineError> {
-        crate::agent_sdk::start_agent_turn_internal_locked(
+        crate::infrastructure::agent_session::runtime::start_agent_turn_internal_locked(
             self.app,
             self.handles,
             self.session_store,
@@ -1414,7 +1414,7 @@ impl WorkflowEngine {
         model: &str,
     ) -> Result<Option<String>, WorkflowEngineError> {
         let registry = app
-            .try_state::<Arc<crate::backends::AgentBackendRegistry>>()
+            .try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>()
             .ok_or_else(|| {
                 WorkflowEngineError::InvalidWorkflow(format!(
                     "cannot resolve model '{model}': backend registry is unavailable"
@@ -1427,7 +1427,7 @@ impl WorkflowEngine {
 /// 形式検証＋登録判定をレジストリ単体で行う、ワークフロー経路用の解決関数。
 /// `resolve_backend_for_step_model` の実体ロジックで、テストではこちらを直接呼ぶ。
 pub(crate) fn resolve_step_model_with_registry(
-    registry: &crate::backends::AgentBackendRegistry,
+    registry: &crate::infrastructure::agent_session::runtime::AgentBackendRegistry,
     model: &str,
 ) -> Result<String, WorkflowEngineError> {
     crate::domain::agent_session::ModelId::parse(model).map_err(|e| {
@@ -1475,16 +1475,17 @@ impl WorkflowEngine {
         // 抽象モード不一致のセッションが残らないようにする。
         let permission_mode = crate::permission::PermissionMode::parse(&settings.permission_mode)
             .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
-        let step_session = crate::session::create_session_internal_with_attributes(
-            session_store,
-            data_dir,
-            worktree_path,
-            settings.backend_id,
-            permission_mode,
-            settings.selected_model,
-            true,
-        )
-        .map_err(|e| WorkflowEngineError::SessionStore(format!("create step session: {e}")))?;
+        let step_session =
+            crate::usecase::agent_session::session::create_session_internal_with_attributes(
+                session_store,
+                data_dir,
+                worktree_path,
+                settings.backend_id,
+                permission_mode,
+                settings.selected_model,
+                true,
+            )
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("create step session: {e}")))?;
 
         Ok(step_session)
     }
@@ -1520,7 +1521,7 @@ impl WorkflowEngine {
         // 2) model 検証: 各 model から所属 backend を一意に解決する。
         //    registry 未登録自体を InvalidWorkflow として即時失敗にする（検証スキップを避ける）。
         let registry = app
-            .try_state::<Arc<crate::backends::AgentBackendRegistry>>()
+            .try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>()
             .ok_or_else(|| {
                 WorkflowEngineError::InvalidWorkflow(
                     "AgentBackendRegistry is not registered".to_string(),
@@ -1535,7 +1536,7 @@ impl WorkflowEngine {
         // Spec issues-1011 finding 5/8: 並行起動でも parent ChatSession を孤立させないために
         // Run Store reservation を「最初の副作用」にする。reservation が失敗（同一 worktree
         // への並行起動）した場合は AlreadyActive として返り、他の副作用は走らない。
-        let data_dir = crate::session::resolve_data_dir(app)
+        let data_dir = crate::app_data_dir::resolve_data_dir(app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let now = current_timestamp();
         let run_id = self
@@ -1777,8 +1778,8 @@ impl WorkflowEngine {
         uuid::Uuid::parse_str(request_id).map_err(|_| {
             WorkflowEngineError::ValidationError("SubmitOutput request_id must be UUID".to_string())
         })?;
-        let data_dir =
-            crate::session::resolve_data_dir(app).map_err(WorkflowEngineError::SessionStore)?;
+        let data_dir = crate::app_data_dir::resolve_data_dir(app)
+            .map_err(WorkflowEngineError::SessionStore)?;
         let log = WorkflowEventLog::new(&data_dir);
         let events = log
             .read_log(run_id)
@@ -2223,8 +2224,8 @@ impl WorkflowEngine {
         uuid::Uuid::parse_str(request_id).map_err(|_| {
             WorkflowEngineError::ValidationError("CLI mutation request_id must be UUID".to_string())
         })?;
-        let data_dir =
-            crate::session::resolve_data_dir(app).map_err(WorkflowEngineError::SessionStore)?;
+        let data_dir = crate::app_data_dir::resolve_data_dir(app)
+            .map_err(WorkflowEngineError::SessionStore)?;
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(run_id)
             .map_err(WorkflowEngineError::SessionStore)?;
@@ -2270,8 +2271,8 @@ impl WorkflowEngine {
             )));
         }
 
-        let data_dir =
-            crate::session::resolve_data_dir(app).map_err(WorkflowEngineError::SessionStore)?;
+        let data_dir = crate::app_data_dir::resolve_data_dir(app)
+            .map_err(WorkflowEngineError::SessionStore)?;
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(run_id)
             .map_err(WorkflowEngineError::SessionStore)?;
@@ -2804,7 +2805,7 @@ impl WorkflowEngine {
         handles: &Arc<Mutex<AgentProcessMap>>,
         session_id: &str,
         exit_code: i64,
-        final_parts: &[crate::session::MessagePart],
+        final_parts: &[crate::usecase::agent_session::session::MessagePart],
         token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError> {
         // session_id からSessionWorkflowRefを解決（ワークフロー既終了なら何もしない）
@@ -3603,7 +3604,7 @@ impl WorkflowEngine {
         session_id: &str,
         parent_step_name: &str,
         exit_code: i64,
-        final_parts: &[crate::session::MessagePart],
+        final_parts: &[crate::usecase::agent_session::session::MessagePart],
         token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError> {
         // [08] parallel child の構造化出力は CLI / Tauri 経由の `SubmitOutput` で確定する。
@@ -4073,7 +4074,7 @@ impl WorkflowEngine {
         &self,
         app: &tauri::AppHandle<R>,
         handles: &Arc<Mutex<AgentProcessMap>>,
-        open_tabs: &crate::session::OpenTabRegistry,
+        open_tabs: &crate::usecase::agent_session::session::OpenTabRegistry,
         worktree_path: &str,
     ) {
         let Some(state) = self.get_state(worktree_path).await else {
@@ -4132,8 +4133,8 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         run_id: &str,
         node_name: &str,
     ) -> Result<u32, WorkflowEngineError> {
-        let data_dir =
-            crate::session::resolve_data_dir(app).map_err(WorkflowEngineError::SessionStore)?;
+        let data_dir = crate::app_data_dir::resolve_data_dir(app)
+            .map_err(WorkflowEngineError::SessionStore)?;
         let log = WorkflowEventLog::new(&data_dir);
         let events = log
             .read_log(run_id)
@@ -4198,8 +4199,8 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
                 .await;
         }
 
-        let data_dir =
-            crate::session::resolve_data_dir(app).map_err(WorkflowEngineError::SessionStore)?;
+        let data_dir = crate::app_data_dir::resolve_data_dir(app)
+            .map_err(WorkflowEngineError::SessionStore)?;
         let Some(session) = session_store
             .get_session(&data_dir, session_id)
             .map_err(WorkflowEngineError::SessionStore)?
@@ -4243,8 +4244,10 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
             contract,
             contract_definition.as_deref(),
         );
-        let _runtime_guard = crate::agent_sdk::acquire_session_runtime_lock(session_id).await;
-        crate::agent_sdk::start_agent_turn_internal_locked(
+        let _runtime_guard =
+            crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(session_id)
+                .await;
+        crate::infrastructure::agent_session::runtime::start_agent_turn_internal_locked(
             app,
             handles,
             session_store,
@@ -4474,14 +4477,16 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
     }
 
     fn validate_approval_turn_phase(
-        turn_phase: Option<crate::agent_sdk::TurnPhase>,
+        turn_phase: Option<crate::infrastructure::agent_session::runtime::TurnPhase>,
     ) -> Result<(), WorkflowEngineError> {
         match turn_phase {
-            Some(crate::agent_sdk::TurnPhase::Streaming)
-            | Some(crate::agent_sdk::TurnPhase::WaitingPermission) => Err(
-                WorkflowEngineError::ValidationError("approval output is not complete".to_string()),
-            ),
-            Some(crate::agent_sdk::TurnPhase::Idle) | None => Ok(()),
+            Some(crate::infrastructure::agent_session::runtime::TurnPhase::Streaming)
+            | Some(crate::infrastructure::agent_session::runtime::TurnPhase::WaitingPermission) => {
+                Err(WorkflowEngineError::ValidationError(
+                    "approval output is not complete".to_string(),
+                ))
+            }
+            Some(crate::infrastructure::agent_session::runtime::TurnPhase::Idle) | None => Ok(()),
         }
     }
 
@@ -4816,7 +4821,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         worktree_path: &str,
-        final_parts: &[crate::session::MessagePart],
+        final_parts: &[crate::usecase::agent_session::session::MessagePart],
         rules: &[TransitionRule],
         step_name: &str,
     ) -> Result<(), WorkflowEngineError> {
@@ -4974,10 +4979,13 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
     }
 
     /// MessagePartからテキストを抽出して結合する。
-    fn extract_text_from_parts(parts: &[crate::session::MessagePart]) -> String {
+    fn extract_text_from_parts(
+        parts: &[crate::usecase::agent_session::session::MessagePart],
+    ) -> String {
         let mut text = String::new();
         for part in parts {
-            if let crate::session::MessagePart::Text { content, .. } = part {
+            if let crate::usecase::agent_session::session::MessagePart::Text { content, .. } = part
+            {
                 if !text.is_empty() {
                     text.push('\n');
                 }
@@ -5092,7 +5100,11 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
             );
         }
 
-        let _runtime_guard = crate::agent_sdk::acquire_session_runtime_lock(&step_session_id).await;
+        let _runtime_guard =
+            crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(
+                &step_session_id,
+            )
+            .await;
 
         // 合成済み system_prompt を AgentSession 起動経路へ受け渡す。
         deps.dispatch_session_start(&step_session_id, worktree_path, None, system_prompt)
@@ -5517,13 +5529,13 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
     /// 経路で「最後の Agent メッセージ本文」を取り出すテスト用 fixture としてのみ残す。
     #[cfg(test)]
     fn extract_last_assistant_text_from_session(
-        session: &crate::session::ChatSession,
+        session: &crate::usecase::agent_session::session::ChatSession,
     ) -> Option<String> {
         let agent_msg = session
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == crate::session::MessageRole::Agent)?;
+            .find(|m| m.role == crate::usecase::agent_session::session::MessageRole::Agent)?;
 
         let text = if let Some(ref parts) = agent_msg.parts {
             Self::extract_text_from_parts(parts)
@@ -5848,7 +5860,8 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         handles: &Arc<Mutex<AgentProcessMap>>,
         session_id: &str,
     ) {
-        let open_tabs_state = app.try_state::<Arc<crate::session::OpenTabRegistry>>();
+        let open_tabs_state =
+            app.try_state::<Arc<crate::usecase::agent_session::session::OpenTabRegistry>>();
         let open_tabs = open_tabs_state.as_ref().map(|state| state.inner().as_ref());
         crate::workflow_step_lifecycle_adapters::release_step_runtime_on_done(
             app,
@@ -6538,7 +6551,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
                         reduce_strategy: format!("{:?}", collect_config_clone.reduce),
                         reduce_result: reduce_result.result.clone(),
                         reduce_structured_output: reduce_result.structured_output.clone(),
-                        timestamp: crate::session::now_timestamp(),
+                        timestamp: crate::usecase::agent_session::session::now_timestamp(),
                     },
                 );
 
@@ -6647,7 +6660,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         }
 
         // 各子ステップのセッション生成 + AgentSession起動
-        let data_dir = crate::session::resolve_data_dir(app)
+        let data_dir = crate::app_data_dir::resolve_data_dir(app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
 
         // step_outputsとworkflow_variablesのスナップショットをロック外で取得
@@ -6778,17 +6791,21 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         let mut runtime_guards = Vec::new();
         for cs in &child_setups {
             let runtime_guard =
-                crate::agent_sdk::acquire_session_runtime_lock(&cs.session_id).await;
-            if let Err(e) = crate::agent_sdk::start_agent_session_internal(
-                app,
-                handles,
-                session_store,
-                &cs.session_id,
-                worktree_path,
-                None,
-                cs.system_prompt.clone(),
-            )
-            .await
+                crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(
+                    &cs.session_id,
+                )
+                .await;
+            if let Err(e) =
+                crate::infrastructure::agent_session::runtime::start_agent_session_internal(
+                    app,
+                    handles,
+                    session_store,
+                    &cs.session_id,
+                    worktree_path,
+                    None,
+                    cs.system_prompt.clone(),
+                )
+                .await
             {
                 // 作成済みセッションを中断してからエラーを返す
                 for sid in &created_session_ids {
@@ -6800,7 +6817,9 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
                 )));
             }
             runtime_guards.push(runtime_guard);
-            if let Some(open_tabs) = app.try_state::<Arc<crate::session::OpenTabRegistry>>() {
+            if let Some(open_tabs) =
+                app.try_state::<Arc<crate::usecase::agent_session::session::OpenTabRegistry>>()
+            {
                 open_tabs.add(&cs.session_id);
                 self.emit_workflow_runtime_projection(app, handles, &open_tabs, worktree_path)
                     .await;
@@ -6811,16 +6830,17 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         // Phase 3b: 全子ターン開始（ここが実際のAgent作業トリガー）
         for (i, cs) in child_setups.iter().enumerate() {
             let runtime_guard = runtime_guards.remove(0);
-            if let Err(e) = crate::agent_sdk::start_agent_turn_internal_locked(
-                app,
-                handles,
-                session_store,
-                &cs.session_id,
-                worktree_path,
-                &cs.permission_mode,
-                &cs.user_message,
-            )
-            .await
+            if let Err(e) =
+                crate::infrastructure::agent_session::runtime::start_agent_turn_internal_locked(
+                    app,
+                    handles,
+                    session_store,
+                    &cs.session_id,
+                    worktree_path,
+                    &cs.permission_mode,
+                    &cs.user_message,
+                )
+                .await
             {
                 // 全作成済みセッションを中断してからエラーを返す
                 for sid in &created_session_ids {
@@ -7239,7 +7259,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
         {
             return Err("injected required event append failure".to_string());
         }
-        if let Ok(data_dir) = crate::session::resolve_data_dir(app) {
+        if let Ok(data_dir) = crate::app_data_dir::resolve_data_dir(app) {
             let log = WorkflowEventLog::new(&data_dir);
             return log.append_batch(events);
         }
@@ -7561,12 +7581,12 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backends::{
+    use crate::infrastructure::agent_session::runtime::{
         AgentBackend, AgentBackendRegistry, AgentMessage as BackendAgentMessage,
         PermissionResponse, SessionConfig as BackendSessionConfig,
         SessionHandle as BackendSessionHandle,
     };
-    use crate::session::MessagePart;
+    use crate::usecase::agent_session::session::MessagePart;
     use crate::workflow::command_input::MAX_APPROVAL_COMMENT_CHARS;
     use async_trait::async_trait;
 
@@ -7686,18 +7706,20 @@ mod tests {
         worktree_path: &str,
         _workflow_state: Option<WorkflowState>,
         workflow_step_session: bool,
-    ) -> crate::session::ChatSession {
-        crate::session::ChatSession {
+    ) -> crate::usecase::agent_session::session::ChatSession {
+        crate::usecase::agent_session::session::ChatSession {
             id: id.to_string(),
             worktree_path: worktree_path.to_string(),
             messages: vec![],
-            state: crate::session::SessionState::Idle,
+            state: crate::usecase::agent_session::session::SessionState::Idle,
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
             selected_model: None,
-            backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),
+            backend_id: Some(
+                crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
+            ),
             workflow_step_session,
         }
     }
@@ -7705,25 +7727,27 @@ mod tests {
     fn chat_session_with_message_for_test(
         id: &str,
         worktree_path: &str,
-    ) -> crate::session::ChatSession {
+    ) -> crate::usecase::agent_session::session::ChatSession {
         let mut session = chat_session_for_test(id, worktree_path, None, true);
-        session.messages.push(crate::session::ChatMessage {
-            id: "msg-1".to_string(),
-            role: crate::session::MessageRole::Agent,
-            content: "history".to_string(),
-            thinking: None,
-            activities: None,
-            parts: None,
-            timestamp: 1.0,
-            mentions: None,
-        });
+        session
+            .messages
+            .push(crate::usecase::agent_session::session::ChatMessage {
+                id: "msg-1".to_string(),
+                role: crate::usecase::agent_session::session::MessageRole::Agent,
+                content: "history".to_string(),
+                thinking: None,
+                activities: None,
+                parts: None,
+                timestamp: 1.0,
+                mentions: None,
+            });
         session
     }
 
     #[test]
     fn workflow_step_summary_uses_persisted_session_flag() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = crate::session::SessionStore::default();
+        let store = crate::usecase::agent_session::session::SessionStore::default();
 
         store
             .save_session(
@@ -7759,8 +7783,9 @@ mod tests {
     #[test]
     fn step_session_tab_cleanup_closes_session_and_preserves_history() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = crate::session::SessionStore::default();
-        let open_tabs = Arc::new(crate::session::OpenTabRegistry::default());
+        let store = crate::usecase::agent_session::session::SessionStore::default();
+        let open_tabs =
+            Arc::new(crate::usecase::agent_session::session::OpenTabRegistry::default());
         let session_id = uuid::Uuid::new_v4().to_string();
 
         store
@@ -7783,7 +7808,10 @@ mod tests {
             .get_session(tmp.path(), &session_id)
             .unwrap()
             .expect("session remains");
-        assert_eq!(session.state, crate::session::SessionState::Closed);
+        assert_eq!(
+            session.state,
+            crate::usecase::agent_session::session::SessionState::Closed
+        );
         assert_eq!(session.agent_session_id.as_deref(), Some("sdk-session"));
         assert_eq!(session.messages.len(), 1);
     }
@@ -10728,7 +10756,9 @@ mod tests {
             {
                 let lock_attempt = tokio::time::timeout(
                     std::time::Duration::from_millis(20),
-                    crate::agent_sdk::acquire_session_runtime_lock(step_session_id),
+                    crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(
+                        step_session_id,
+                    ),
                 )
                 .await;
                 self.runtime_lock_was_held_during_start
@@ -11452,17 +11482,17 @@ mod tests {
     #[test]
     fn validate_approval_turn_phase_rejects_unfinished_turns() {
         assert!(WorkflowEngine::validate_approval_turn_phase(Some(
-            crate::agent_sdk::TurnPhase::Streaming
+            crate::infrastructure::agent_session::runtime::TurnPhase::Streaming
         ))
         .unwrap_err()
         .to_string()
         .starts_with("validation_error:"));
         assert!(WorkflowEngine::validate_approval_turn_phase(Some(
-            crate::agent_sdk::TurnPhase::WaitingPermission
+            crate::infrastructure::agent_session::runtime::TurnPhase::WaitingPermission
         ))
         .is_err());
         assert!(WorkflowEngine::validate_approval_turn_phase(Some(
-            crate::agent_sdk::TurnPhase::Idle
+            crate::infrastructure::agent_session::runtime::TurnPhase::Idle
         ))
         .is_ok());
     }
@@ -11699,13 +11729,13 @@ mod tests {
 
     #[test]
     fn latest_assistant_output_after_approval_chat_adjustment_is_selected() {
-        let session = crate::session::ChatSession {
+        let session = crate::usecase::agent_session::session::ChatSession {
             id: "policy-session".to_string(),
             worktree_path: "/repo".to_string(),
             messages: vec![
-                crate::session::ChatMessage {
+                crate::usecase::agent_session::session::ChatMessage {
                     id: "m1".to_string(),
-                    role: crate::session::MessageRole::Agent,
+                    role: crate::usecase::agent_session::session::MessageRole::Agent,
                     content: "old policy".to_string(),
                     thinking: None,
                     activities: None,
@@ -11713,9 +11743,9 @@ mod tests {
                     timestamp: 1.0,
                     mentions: None,
                 },
-                crate::session::ChatMessage {
+                crate::usecase::agent_session::session::ChatMessage {
                     id: "m2".to_string(),
-                    role: crate::session::MessageRole::Human,
+                    role: crate::usecase::agent_session::session::MessageRole::Human,
                     content: "Narrow the fix policy".to_string(),
                     thinking: None,
                     activities: None,
@@ -11723,21 +11753,23 @@ mod tests {
                     timestamp: 2.0,
                     mentions: None,
                 },
-                crate::session::ChatMessage {
+                crate::usecase::agent_session::session::ChatMessage {
                     id: "m3".to_string(),
-                    role: crate::session::MessageRole::Agent,
+                    role: crate::usecase::agent_session::session::MessageRole::Agent,
                     content: String::new(),
                     thinking: None,
                     activities: None,
-                    parts: Some(vec![crate::session::MessagePart::Text {
-                        content: "latest approved policy".to_string(),
-                        parent_tool_use_id: None,
-                    }]),
+                    parts: Some(vec![
+                        crate::usecase::agent_session::session::MessagePart::Text {
+                            content: "latest approved policy".to_string(),
+                            parent_tool_use_id: None,
+                        },
+                    ]),
                     timestamp: 3.0,
                     mentions: None,
                 },
             ],
-            state: crate::session::SessionState::Idle,
+            state: crate::usecase::agent_session::session::SessionState::Idle,
             created_at: 1.0,
             updated_at: 3.0,
             agent_session_id: None,
@@ -13083,7 +13115,7 @@ mod tests {
     #[test]
     fn step_session_persists_permission_workflow_flag_and_model_on_initial_save() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = crate::session::SessionStore::default();
+        let store = crate::usecase::agent_session::session::SessionStore::default();
 
         let settings = resolve_step_settings(
             Some("opus-4".to_string()),
@@ -13096,16 +13128,17 @@ mod tests {
         );
         let permission_mode =
             crate::permission::PermissionMode::parse(&settings.permission_mode).unwrap();
-        let session = crate::session::create_session_internal_with_attributes(
-            &store,
-            tmp.path(),
-            "/repo",
-            settings.backend_id.clone(),
-            permission_mode,
-            settings.selected_model.clone(),
-            true,
-        )
-        .unwrap();
+        let session =
+            crate::usecase::agent_session::session::create_session_internal_with_attributes(
+                &store,
+                tmp.path(),
+                "/repo",
+                settings.backend_id.clone(),
+                permission_mode,
+                settings.selected_model.clone(),
+                true,
+            )
+            .unwrap();
 
         // 初回保存で permission_mode / workflow_step_session / selected_model / backend_id が確定。
         assert_eq!(session.permission_mode, "edit");
@@ -13114,7 +13147,7 @@ mod tests {
         assert_eq!(session.backend_id.as_deref(), Some("claude"));
 
         // 別インスタンスから読み直しても同じ値で復元される（永続化が確定値で書かれている）。
-        let store2 = crate::session::SessionStore::default();
+        let store2 = crate::usecase::agent_session::session::SessionStore::default();
         let loaded = store2
             .get_session(tmp.path(), &session.id)
             .unwrap()
@@ -13130,7 +13163,7 @@ mod tests {
     #[test]
     fn step_session_inherits_parent_permission_and_backend_on_initial_save() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = crate::session::SessionStore::default();
+        let store = crate::usecase::agent_session::session::SessionStore::default();
 
         let settings = resolve_step_settings(
             None,
@@ -13143,16 +13176,17 @@ mod tests {
         );
         let permission_mode =
             crate::permission::PermissionMode::parse(&settings.permission_mode).unwrap();
-        let session = crate::session::create_session_internal_with_attributes(
-            &store,
-            tmp.path(),
-            "/repo",
-            settings.backend_id,
-            permission_mode,
-            settings.selected_model,
-            true,
-        )
-        .unwrap();
+        let session =
+            crate::usecase::agent_session::session::create_session_internal_with_attributes(
+                &store,
+                tmp.path(),
+                "/repo",
+                settings.backend_id,
+                permission_mode,
+                settings.selected_model,
+                true,
+            )
+            .unwrap();
 
         assert_eq!(session.permission_mode, "full");
         assert!(session.workflow_step_session);
@@ -14378,7 +14412,7 @@ mod tests {
 #[cfg(test)]
 mod dispatch_boundary_tests {
     use super::*;
-    use crate::backends::{
+    use crate::infrastructure::agent_session::runtime::{
         AgentBackend, AgentBackendRegistry, AgentMessage as BackendAgentMessage,
         PermissionResponse as BackendPermissionResponse, SessionConfig as BackendSessionConfig,
         SessionHandle as BackendSessionHandle,
@@ -14446,7 +14480,7 @@ mod dispatch_boundary_tests {
     }
 
     fn dispatch_data_dir(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> std::path::PathBuf {
-        crate::session::resolve_data_dir(app).expect("mock app data dir must resolve")
+        crate::app_data_dir::resolve_data_dir(app).expect("mock app data dir must resolve")
     }
 
     fn make_approval_only_workflow() -> Workflow {
@@ -14576,7 +14610,7 @@ mod dispatch_boundary_tests {
             ));
         let code_usecase = Arc::new(crate::adaptor::controller::wiring::build_code_usecase());
         tauri::test::mock_builder()
-            .manage(crate::session::TestDataDir(data_dir))
+            .manage(crate::app_data_dir::TestDataDir(data_dir))
             .manage(app_config)
             .manage(registry)
             .manage(crate::adaptor::controller::state::AppState {
@@ -14594,11 +14628,11 @@ mod dispatch_boundary_tests {
     }
 
     fn make_dispatch_deps() -> (
-        Arc<crate::session::SessionStore>,
+        Arc<crate::usecase::agent_session::session::SessionStore>,
         Arc<Mutex<AgentProcessMap>>,
     ) {
         (
-            Arc::new(crate::session::SessionStore::default()),
+            Arc::new(crate::usecase::agent_session::session::SessionStore::default()),
             Arc::new(Mutex::new(AgentProcessMap::new())),
         )
     }
@@ -17230,7 +17264,7 @@ mod dispatch_boundary_tests {
     }
 
     fn read_submit_output_events(app: &DispatchTestApp, run_id: &str) -> Vec<WorkflowEvent> {
-        let data_dir = crate::session::resolve_data_dir(app.handle()).expect("data_dir");
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).expect("data_dir");
         WorkflowEventLog::new(&data_dir)
             .read_log(run_id)
             .unwrap_or_default()
@@ -17255,7 +17289,7 @@ mod dispatch_boundary_tests {
     async fn submit_output_persists_step_output_and_appends_event_when_contract_satisfied() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowEngine::new_for_test());
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
@@ -17330,7 +17364,7 @@ mod dispatch_boundary_tests {
     async fn submit_output_rejects_invalid_contract_without_side_effects() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowEngine::new_for_test());
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let mut workflow = make_submit_output_workflow();
@@ -17373,7 +17407,7 @@ mod dispatch_boundary_tests {
     async fn submit_output_rejects_unknown_step_without_side_effects() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowEngine::new_for_test());
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
@@ -17410,7 +17444,7 @@ mod dispatch_boundary_tests {
     async fn submit_output_rejects_unknown_run() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowEngine::new_for_test());
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
 
@@ -17435,7 +17469,7 @@ mod dispatch_boundary_tests {
     async fn submit_output_rejects_contract_type_mismatch() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowEngine::new_for_test());
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
@@ -17471,7 +17505,7 @@ mod dispatch_boundary_tests {
     async fn submit_output_step_output_carries_contract_for_downstream_reference() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowEngine::new_for_test());
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
@@ -17513,7 +17547,7 @@ mod dispatch_boundary_tests {
     async fn submit_output_applies_contract_variables_for_spec_dir() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowEngine::new_for_test());
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
@@ -17570,7 +17604,7 @@ mod dispatch_boundary_tests {
     async fn submit_output_rejects_non_accepting_step_without_side_effects() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowEngine::new_for_test());
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
@@ -17653,11 +17687,11 @@ mod dispatch_boundary_tests {
     /// OutputSubmitted event も追記されない（prose 抽出経路の完全廃止）。
     #[tokio::test]
     async fn agent_free_text_workflow_output_block_does_not_confirm_step_output() {
-        use crate::session::MessagePart;
+        use crate::usecase::agent_session::session::MessagePart;
 
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowEngine::new_for_test());
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
@@ -17770,7 +17804,7 @@ mod dispatch_boundary_tests {
     async fn submit_output_rolls_back_state_when_event_append_fails() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowEngine::new_for_test());
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {

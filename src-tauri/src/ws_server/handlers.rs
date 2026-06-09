@@ -708,13 +708,34 @@ pub(super) fn handle_backend_list_request(state: &WsServerState) -> Option<WsMes
     let backends = registry
         .list()
         .into_iter()
-        .map(BackendInfoMsg::from)
+        .map(runtime_backend_info_to_msg)
         .collect();
     let default_id = registry.resolve_default_id().ok();
     Some(WsMessage::BackendListResponse(BackendListResponse {
         backends,
         default_id,
     }))
+}
+
+fn runtime_model_info_to_msg(
+    info: crate::infrastructure::agent_session::runtime::ModelInfo,
+) -> ModelInfoMsg {
+    ModelInfoMsg { value: info.value }
+}
+
+fn runtime_backend_info_to_msg(
+    info: crate::infrastructure::agent_session::runtime::BackendInfo,
+) -> BackendInfoMsg {
+    BackendInfoMsg {
+        id: info.id,
+        name: info.name,
+        available: info.available,
+        available_models: info
+            .available_models
+            .into_iter()
+            .map(runtime_model_info_to_msg)
+            .collect(),
+    }
 }
 
 /// repository ハンドラの worktree 検証に委譲する（agent セッション系ハンドラ向け薄いラッパー）。
@@ -749,7 +770,7 @@ fn agent_message_error(req: &AgentMessageRequest, error: impl Into<String>) -> W
 
 fn effective_agent_message_worktree(
     req: &AgentMessageRequest,
-    persisted_session: Option<&crate::session::ChatSession>,
+    persisted_session: Option<&crate::usecase::agent_session::session::ChatSession>,
 ) -> Result<String, String> {
     if let Some(session_id) = req.session_id.as_deref() {
         let session =
@@ -846,10 +867,10 @@ pub(super) async fn handle_agent_message_request(
     };
 
     let session_store = app
-        .state::<Arc<crate::session::SessionStore>>()
+        .state::<Arc<crate::usecase::agent_session::session::SessionStore>>()
         .inner()
         .clone();
-    let data_dir = match crate::session::resolve_data_dir(app) {
+    let data_dir = match crate::app_data_dir::resolve_data_dir(app) {
         Ok(data_dir) => data_dir,
         Err(e) => return Some(agent_message_error(req, e)),
     };
@@ -873,7 +894,7 @@ pub(super) async fn handle_agent_message_request(
     }
 
     let handles = app
-        .state::<Arc<tokio::sync::Mutex<crate::agent_sdk::AgentProcessMap>>>()
+        .state::<Arc<tokio::sync::Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>>()
         .inner()
         .clone();
     let registry = state.get_backend_registry().clone();
@@ -882,15 +903,17 @@ pub(super) async fn handle_agent_message_request(
         .inner()
         .clone();
     let open_tabs = app
-        .state::<Arc<crate::session::OpenTabRegistry>>()
+        .state::<Arc<crate::usecase::agent_session::session::OpenTabRegistry>>()
         .inner()
         .clone();
     let response = crate::agent_message_dispatcher::dispatch_agent_message(
         crate::agent_message_dispatcher::AgentMessageDispatchContext {
-            app,
-            session_store: &session_store,
-            registry: &registry,
-            handles: &handles,
+            gateway: crate::infrastructure::agent_session::runtime_gateway::AgentRuntimeGateway {
+                app,
+                session_store: &session_store,
+                registry: &registry,
+                handles: &handles,
+            },
         },
         crate::agent_message_dispatcher::AgentMessageDispatchRequest {
             chat_session_id: typed.session_id.clone(),
@@ -934,11 +957,13 @@ pub(super) async fn handle_agent_interrupt_request(
     use tauri::Manager;
 
     let result = if let Some(app) = &state.app_handle {
-        let handles = app
-            .state::<Arc<tokio::sync::Mutex<crate::agent_sdk::AgentProcessMap>>>()
+        let handles =
+            app.state::<Arc<
+                tokio::sync::Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>,
+            >>()
             .inner()
             .clone();
-        crate::backends::bridge_common::write_bridge_command(
+        crate::infrastructure::agent_session::runtime::bridge_common::write_bridge_command(
             &handles,
             &req.session_id,
             serde_json::json!({"type": "interrupt"}),
@@ -955,6 +980,23 @@ pub(super) async fn handle_agent_interrupt_request(
     }))
 }
 
+#[cfg(test)]
+async fn agent_interrupt_response_from_gateway<F, Fut>(
+    req: &AgentInterruptRequest,
+    interrupt: F,
+) -> Option<WsMessage>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let result = interrupt().await;
+    Some(WsMessage::AgentInterruptResponse(AgentInterruptResponse {
+        success: result.is_ok(),
+        session_id: req.session_id.clone(),
+        error: result.err(),
+    }))
+}
+
 pub(super) async fn handle_agent_model_set_request(
     req: &AgentModelSetRequest,
     state: &WsServerState,
@@ -963,14 +1005,16 @@ pub(super) async fn handle_agent_model_set_request(
 
     if let Some(app) = &state.app_handle {
         let session_store = app
-            .state::<Arc<crate::session::SessionStore>>()
+            .state::<Arc<crate::usecase::agent_session::session::SessionStore>>()
             .inner()
             .clone();
-        let handles = app
-            .state::<Arc<tokio::sync::Mutex<crate::agent_sdk::AgentProcessMap>>>()
+        let handles =
+            app.state::<Arc<
+                tokio::sync::Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>,
+            >>()
             .inner()
             .clone();
-        let data_dir = match crate::session::resolve_data_dir(app) {
+        let data_dir = match crate::app_data_dir::resolve_data_dir(app) {
             Ok(data_dir) => data_dir,
             Err(e) => {
                 return Some(agent_model_set_response(req, Err(e)));
@@ -1005,21 +1049,24 @@ fn agent_model_set_response(req: &AgentModelSetRequest, result: Result<(), Strin
 async fn handle_agent_model_set_request_with_data_dir(
     req: &AgentModelSetRequest,
     app: Option<&tauri::AppHandle>,
-    handles: &Arc<tokio::sync::Mutex<crate::agent_sdk::AgentProcessMap>>,
-    session_store: &Arc<crate::session::SessionStore>,
-    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+    handles: &Arc<
+        tokio::sync::Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>,
+    >,
+    session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+    registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
     data_dir: &std::path::Path,
 ) -> Option<WsMessage> {
-    let result = crate::agent_sdk::set_agent_model_internal_with_data_dir(
-        app,
-        handles,
-        session_store,
-        registry,
-        data_dir,
-        &req.session_id,
-        req.model_id.clone(),
-    )
-    .await;
+    let result =
+        crate::infrastructure::agent_session::runtime::set_agent_model_internal_with_data_dir(
+            app,
+            handles,
+            session_store,
+            registry,
+            data_dir,
+            &req.session_id,
+            req.model_id.clone(),
+        )
+        .await;
 
     Some(agent_model_set_response(req, result))
 }
@@ -1046,16 +1093,18 @@ pub(super) async fn handle_agent_permission_mode_set_request(
 
     let result = if let Some(app) = &state.app_handle {
         let session_store = app
-            .state::<Arc<crate::session::SessionStore>>()
+            .state::<Arc<crate::usecase::agent_session::session::SessionStore>>()
             .inner()
             .clone();
-        let handles = app
-            .state::<Arc<tokio::sync::Mutex<crate::agent_sdk::AgentProcessMap>>>()
+        let handles =
+            app.state::<Arc<
+                tokio::sync::Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>,
+            >>()
             .inner()
             .clone();
-        match crate::session::resolve_data_dir(app) {
+        match crate::app_data_dir::resolve_data_dir(app) {
             Ok(data_dir) => {
-                crate::agent_sdk::set_agent_permission_mode_internal(
+                crate::infrastructure::agent_session::runtime::set_agent_permission_mode_internal(
                     &session_store,
                     &handles,
                     &data_dir,
@@ -1069,6 +1118,48 @@ pub(super) async fn handle_agent_permission_mode_set_request(
     } else {
         Err("App handle not available".to_string())
     };
+
+    Some(WsMessage::AgentPermissionModeSetResponse(
+        AgentPermissionModeSetResponse {
+            success: result.is_ok(),
+            session_id: typed.session_id,
+            permission_mode: typed.permission_mode.as_str().to_string(),
+            error: result.err(),
+        },
+    ))
+}
+
+#[cfg(test)]
+async fn handle_agent_permission_mode_set_request_with_data_dir(
+    req: &AgentPermissionModeSetRequest,
+    handles: &Arc<
+        tokio::sync::Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>,
+    >,
+    session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+    data_dir: &std::path::Path,
+) -> Option<WsMessage> {
+    let typed = match AgentPermissionModeSetHandlerRequest::try_from(req) {
+        Ok(typed) => typed,
+        Err(e) => {
+            return Some(WsMessage::AgentPermissionModeSetResponse(
+                AgentPermissionModeSetResponse {
+                    success: false,
+                    session_id: req.session_id.clone(),
+                    permission_mode: req.permission_mode.clone(),
+                    error: Some(e.to_string()),
+                },
+            ));
+        }
+    };
+
+    let result = crate::infrastructure::agent_session::runtime::set_agent_permission_mode_internal(
+        session_store,
+        handles,
+        data_dir,
+        &typed.session_id,
+        typed.permission_mode.as_str(),
+    )
+    .await;
 
     Some(WsMessage::AgentPermissionModeSetResponse(
         AgentPermissionModeSetResponse {
@@ -1116,7 +1207,7 @@ pub(super) async fn handle_pty_kill_request(
 mod tests {
     use super::*;
     use crate::git::test_helpers::{add_and_commit, create_initial_commit, create_test_repo};
-    use crate::session::{ChatSession, SessionState};
+    use crate::usecase::agent_session::session::{ChatSession, SessionState};
     use crate::ws_bridge::WsBroadcaster;
     use tempfile::TempDir;
 
@@ -1135,7 +1226,9 @@ mod tests {
             None,
             false,
             std::sync::Arc::new(crate::git_host::PrCache::new()),
-            std::sync::Arc::new(crate::backends::AgentBackendRegistry::new()),
+            std::sync::Arc::new(
+                crate::infrastructure::agent_session::runtime::AgentBackendRegistry::new(),
+            ),
             std::sync::Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
         )
     }
@@ -1180,7 +1273,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::backends::AgentBackend for MockBackend {
+    impl crate::infrastructure::agent_session::runtime::AgentBackend for MockBackend {
         fn id(&self) -> &str {
             &self.backend_id
         }
@@ -1191,37 +1284,42 @@ mod tests {
 
         async fn start_session(
             &self,
-            _config: crate::backends::SessionConfig,
-        ) -> Result<crate::backends::SessionHandle, String> {
-            Ok(crate::backends::SessionHandle {
-                chat_session_id: "test".to_string(),
-                backend_id: self.backend_id.clone(),
-            })
+            _config: crate::infrastructure::agent_session::runtime::SessionConfig,
+        ) -> Result<crate::infrastructure::agent_session::runtime::SessionHandle, String> {
+            Ok(
+                crate::infrastructure::agent_session::runtime::SessionHandle {
+                    chat_session_id: "test".to_string(),
+                    backend_id: self.backend_id.clone(),
+                },
+            )
         }
 
         async fn send_message(
             &self,
-            _session: &crate::backends::SessionHandle,
-            _message: crate::backends::AgentMessage,
+            _session: &crate::infrastructure::agent_session::runtime::SessionHandle,
+            _message: crate::infrastructure::agent_session::runtime::AgentMessage,
         ) -> Result<(), String> {
             Ok(())
         }
 
-        async fn interrupt(&self, _session: &crate::backends::SessionHandle) -> Result<(), String> {
+        async fn interrupt(
+            &self,
+            _session: &crate::infrastructure::agent_session::runtime::SessionHandle,
+        ) -> Result<(), String> {
             Ok(())
         }
 
         async fn respond_permission(
             &self,
-            _session: &crate::backends::SessionHandle,
-            _response: crate::backends::PermissionResponse,
+            _session: &crate::infrastructure::agent_session::runtime::SessionHandle,
+            _response: crate::infrastructure::agent_session::runtime::PermissionResponse,
         ) -> Result<(), String> {
             Ok(())
         }
 
         async fn close_session(
             &self,
-            _session: &crate::backends::SessionHandle,
+            _session: &crate::infrastructure::agent_session::runtime::SessionHandle,
         ) -> Result<(), String> {
             Ok(())
         }
@@ -1230,13 +1328,14 @@ mod tests {
     fn make_model_registry(
         claude_models: &[&str],
         codex_models: &[&str],
-    ) -> Arc<crate::backends::AgentBackendRegistry> {
+    ) -> Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry> {
         let mut cfg = crate::config::ReleashConfig::default();
         cfg.agents.claude.models = claude_models.iter().map(|s| s.to_string()).collect();
         cfg.agents.codex.models = codex_models.iter().map(|s| s.to_string()).collect();
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
-        let mut registry = crate::backends::AgentBackendRegistry::new();
+        let mut registry =
+            crate::infrastructure::agent_session::runtime::AgentBackendRegistry::new();
         registry.register(Arc::new(MockBackend {
             backend_id: "claude".to_string(),
             backend_name: "Claude".to_string(),
@@ -1250,8 +1349,8 @@ mod tests {
     }
 
     async fn call_agent_model_set_for_test(
-        session_store: &Arc<crate::session::SessionStore>,
-        registry: &Arc<crate::backends::AgentBackendRegistry>,
+        session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+        registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
         data_dir: &std::path::Path,
         session_id: &str,
         model_id: String,
@@ -1260,7 +1359,9 @@ mod tests {
             session_id: session_id.to_string(),
             model_id,
         };
-        let handles = Arc::new(Mutex::new(crate::agent_sdk::AgentProcessMap::new()));
+        let handles = Arc::new(Mutex::new(
+            crate::infrastructure::agent_session::runtime::AgentProcessMap::new(),
+        ));
         match handle_agent_model_set_request_with_data_dir(
             &req,
             None,
@@ -1279,8 +1380,9 @@ mod tests {
     #[tokio::test]
     async fn handle_agent_model_set_request_accepts_registered_model_as_ws_response() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::session::SessionStore::default());
-        let session = crate::session::create_session_internal(
+        let session_store =
+            Arc::new(crate::usecase::agent_session::session::SessionStore::default());
+        let session = crate::usecase::agent_session::session::create_session_internal(
             &session_store,
             temp.path(),
             "/repo",
@@ -1307,8 +1409,9 @@ mod tests {
     #[tokio::test]
     async fn handle_agent_model_set_request_rejects_unregistered_model_as_ws_response() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::session::SessionStore::default());
-        let session = crate::session::create_session_internal(
+        let session_store =
+            Arc::new(crate::usecase::agent_session::session::SessionStore::default());
+        let session = crate::usecase::agent_session::session::create_session_internal(
             &session_store,
             temp.path(),
             "/repo",
@@ -1335,8 +1438,9 @@ mod tests {
     #[tokio::test]
     async fn handle_agent_model_set_request_rejects_other_backend_model_as_ws_response() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::session::SessionStore::default());
-        let session = crate::session::create_session_internal(
+        let session_store =
+            Arc::new(crate::usecase::agent_session::session::SessionStore::default());
+        let session = crate::usecase::agent_session::session::create_session_internal(
             &session_store,
             temp.path(),
             "/repo",
@@ -1362,8 +1466,9 @@ mod tests {
     #[tokio::test]
     async fn handle_agent_model_set_request_rejects_invalid_model_as_ws_response() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::session::SessionStore::default());
-        let session = crate::session::create_session_internal(
+        let session_store =
+            Arc::new(crate::usecase::agent_session::session::SessionStore::default());
+        let session = crate::usecase::agent_session::session::create_session_internal(
             &session_store,
             temp.path(),
             "/repo",
@@ -1384,6 +1489,168 @@ mod tests {
         assert!(!resp.success);
         assert_eq!(resp.model_id.as_deref(), Some("bad\u{0001}model"));
         assert!(resp.error.unwrap().contains("制御文字"));
+    }
+
+    async fn call_agent_interrupt_for_test(
+        session_id: &str,
+        result: Result<(), String>,
+    ) -> AgentInterruptResponse {
+        let req = AgentInterruptRequest {
+            session_id: session_id.to_string(),
+        };
+        match agent_interrupt_response_from_gateway(&req, || async move { result }).await {
+            Some(WsMessage::AgentInterruptResponse(resp)) => resp,
+            other => panic!("expected AgentInterruptResponse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_interrupt_response_returns_success_when_gateway_interrupts() {
+        let resp = call_agent_interrupt_for_test("session-1", Ok(())).await;
+
+        assert!(resp.success);
+        assert_eq!(resp.session_id, "session-1");
+        assert_eq!(resp.error, None);
+    }
+
+    #[tokio::test]
+    async fn agent_interrupt_response_returns_error_when_no_active_process() {
+        let resp =
+            call_agent_interrupt_for_test("session-1", Err("No active process".to_string())).await;
+
+        assert!(!resp.success);
+        assert_eq!(resp.session_id, "session-1");
+        assert!(resp.error.unwrap().contains("No active process"));
+    }
+
+    #[tokio::test]
+    async fn agent_interrupt_response_returns_error_when_gateway_fails() {
+        let resp = call_agent_interrupt_for_test(
+            "session-1",
+            Err("failed to write interrupt command".to_string()),
+        )
+        .await;
+
+        assert!(!resp.success);
+        assert_eq!(resp.session_id, "session-1");
+        assert!(resp.error.unwrap().contains("failed to write interrupt"));
+    }
+
+    async fn call_agent_permission_mode_set_for_test(
+        session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+        data_dir: &std::path::Path,
+        session_id: &str,
+        permission_mode: &str,
+    ) -> AgentPermissionModeSetResponse {
+        let req = AgentPermissionModeSetRequest {
+            session_id: session_id.to_string(),
+            permission_mode: permission_mode.to_string(),
+        };
+        let handles = Arc::new(Mutex::new(
+            crate::infrastructure::agent_session::runtime::AgentProcessMap::new(),
+        ));
+        match handle_agent_permission_mode_set_request_with_data_dir(
+            &req,
+            &handles,
+            session_store,
+            data_dir,
+        )
+        .await
+        {
+            Some(WsMessage::AgentPermissionModeSetResponse(resp)) => resp,
+            other => panic!("expected AgentPermissionModeSetResponse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_agent_permission_mode_set_request_accepts_valid_modes_as_ws_response() {
+        for mode in ["ask", "edit", "full"] {
+            let temp = tempfile::tempdir().unwrap();
+            let session_store =
+                Arc::new(crate::usecase::agent_session::session::SessionStore::default());
+            let session = crate::usecase::agent_session::session::create_session_internal(
+                &session_store,
+                temp.path(),
+                "/repo",
+                Some("claude".to_string()),
+            )
+            .unwrap();
+
+            let resp = call_agent_permission_mode_set_for_test(
+                &session_store,
+                temp.path(),
+                &session.id,
+                mode,
+            )
+            .await;
+
+            assert!(
+                resp.success,
+                "mode={mode}: expected success, got {:?}",
+                resp.error
+            );
+            assert_eq!(resp.session_id, session.id);
+            assert_eq!(resp.permission_mode, mode);
+            assert_eq!(resp.error, None);
+            let persisted = session_store
+                .get_session(temp.path(), &resp.session_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(persisted.permission_mode, mode);
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_agent_permission_mode_set_request_rejects_invalid_without_mutating_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store =
+            Arc::new(crate::usecase::agent_session::session::SessionStore::default());
+        let session = crate::usecase::agent_session::session::create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+        let before = session.permission_mode.clone();
+
+        let resp = call_agent_permission_mode_set_for_test(
+            &session_store,
+            temp.path(),
+            &session.id,
+            "invalid",
+        )
+        .await;
+
+        assert!(!resp.success);
+        assert_eq!(resp.session_id, session.id);
+        assert_eq!(resp.permission_mode, "invalid");
+        assert!(resp.error.unwrap().contains("ask, edit, full"));
+        let persisted = session_store
+            .get_session(temp.path(), &resp.session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.permission_mode, before);
+    }
+
+    #[tokio::test]
+    async fn handle_agent_permission_mode_set_request_unknown_session_returns_error_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store =
+            Arc::new(crate::usecase::agent_session::session::SessionStore::default());
+
+        let resp = call_agent_permission_mode_set_for_test(
+            &session_store,
+            temp.path(),
+            "missing-session",
+            "ask",
+        )
+        .await;
+
+        assert!(!resp.success);
+        assert_eq!(resp.session_id, "missing-session");
+        assert_eq!(resp.permission_mode, "ask");
+        assert!(resp.error.unwrap().contains("Session not found"));
     }
 
     #[tokio::test]
@@ -1654,9 +1921,13 @@ mod tests {
     async fn handle_agent_session_start_request_persists_each_abstract_mode() {
         let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
         let tmp_data = TempDir::new().unwrap();
-        let session_store = Arc::new(crate::session::SessionStore::default());
-        let mut registry = crate::backends::AgentBackendRegistry::new();
-        registry.register(Arc::new(crate::backends::claude::ClaudeBackend::new()));
+        let session_store =
+            Arc::new(crate::usecase::agent_session::session::SessionStore::default());
+        let mut registry =
+            crate::infrastructure::agent_session::runtime::AgentBackendRegistry::new();
+        registry.register(Arc::new(
+            crate::infrastructure::agent_session::runtime::claude::ClaudeBackend::new(),
+        ));
         registry.set_default(Some("claude".to_string()));
         let config = crate::config::ReleashConfig::default();
         let app_config = std::sync::Arc::new(crate::config::AppConfig::new(

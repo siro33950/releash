@@ -10,13 +10,14 @@ use super::storage;
 use crate::agent_message_dispatcher::{
     dispatch_agent_message, AgentMessageDispatchContext, AgentMessageDispatchRequest,
 };
-use crate::agent_sdk::AgentProcessMap;
-use crate::backends::{AgentBackendRegistry, ImageAttachment};
+use crate::app_data_dir::resolve_data_dir;
 use crate::config::AppConfig;
+use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::infrastructure::agent_session::runtime::{AgentBackendRegistry, ImageAttachment};
 use crate::permission::PermissionMode;
 use crate::protocol::WorkflowStateView;
-use crate::session::OpenTabRegistry;
-use crate::session::{resolve_data_dir, SessionStore};
+use crate::usecase::agent_session::session::OpenTabRegistry;
+use crate::usecase::agent_session::session::SessionStore;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::workflow::session_errors::redacted_workflow_tab_error;
 use std::path::Path;
@@ -170,15 +171,7 @@ pub async fn get_workflow(name: String) -> Result<Workflow, String> {
         super::validation::validate_name(&name).map_err(validation_error_string)?;
         let file_path = dir.join(format!("{name}.yml"));
         if file_path.exists() {
-            match storage::load_workflow(&file_path, &facets_base) {
-                Ok(wf) => return Ok(wf),
-                Err(e) if builtin::is_builtin_workflow(&name) => {
-                    log::warn!(
-                        "user-side workflow '{name}' failed to load ({e}); falling back to builtin"
-                    );
-                }
-                Err(e) => return Err(e.to_string()),
-            }
+            return storage::load_workflow(&file_path, &facets_base).map_err(|e| e.to_string());
         }
         builtin::load_builtin_workflow_resolved(&name)
             .map_err(|e| e.to_string())?
@@ -556,12 +549,11 @@ pub async fn send_workflow_approval_chat_message(
     permission_mode: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
-) -> Result<crate::agent_sdk::SendMessageResponse, String> {
+) -> Result<crate::infrastructure::agent_session::runtime::SendMessageResponse, String> {
     // Spec issues-1011 line 121: 起動以外の workflow 操作 API は run_id を主語に取る。
     // chat_session_id / worktree_path は run_id から engine が解決する。
     validate_run_id(&run_id)?;
     let permission_mode = parse_workflow_approval_permission_mode(permission_mode)?;
-    // 境界（Tauri 引数）で受けた転送表現を domain VO へ詰め替える。
     let mentions = mentions.map(crate::adaptor::protocol::mention::into_domain_vec);
 
     let (chat_session_id, worktree_path) = engine
@@ -576,10 +568,12 @@ pub async fn send_workflow_approval_chat_message(
 
     let response = dispatch_agent_message(
         AgentMessageDispatchContext {
-            app: &app,
-            session_store: session_store.inner(),
-            registry: registry.inner(),
-            handles: handles.inner(),
+            gateway: crate::infrastructure::agent_session::runtime_gateway::AgentRuntimeGateway {
+                app: &app,
+                session_store: session_store.inner(),
+                registry: registry.inner(),
+                handles: handles.inner(),
+            },
         },
         AgentMessageDispatchRequest {
             chat_session_id: Some(chat_session_id),
@@ -1424,12 +1418,14 @@ mod tests {
             config,
             TempDir::new().unwrap().path().join("config.toml"),
         ));
-        let registry = Arc::new(crate::backends::build_registry(Arc::clone(&app_config)));
+        let registry = Arc::new(
+            crate::infrastructure::agent_session::runtime::build_registry(Arc::clone(&app_config)),
+        );
         let data_dir =
             std::env::temp_dir().join(format!("releash-command-adapter-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).unwrap();
         tauri::test::mock_builder()
-            .manage(crate::session::TestDataDir(data_dir))
+            .manage(crate::app_data_dir::TestDataDir(data_dir))
             .manage(app_config)
             .manage(registry)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -1454,7 +1450,7 @@ mod tests {
         app: &AdapterTestApp,
         engine: &Arc<WorkflowEngine>,
     ) -> std::path::PathBuf {
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine
             .set_run_store_data_dir(data_dir.join("workflow_runs"))
             .await;
@@ -3228,7 +3224,7 @@ mod tests {
     fn make_read_only_app() -> (AdapterTestApp, Arc<WorkflowEngine>, std::path::PathBuf) {
         let app = make_adapter_app();
         let engine = make_adapter_engine();
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         app.manage(engine.clone());
         // workflow コマンドは repository usecase を State 注入で受け取る。
         app.manage(Arc::new(

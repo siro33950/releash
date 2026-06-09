@@ -4,16 +4,17 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 
-use crate::backends::bridge_common::{
+use crate::app_data_dir::resolve_data_dir;
+use crate::domain::agent_session::CODEX_FIXED_MODELS;
+use crate::infrastructure::agent_session::runtime::bridge_common::{
     start_agent_session_internal, start_agent_turn, write_bridge_command, AgentProcessMap,
     CODEX_BACKEND_ID,
 };
-use crate::backends::{
+use crate::infrastructure::agent_session::runtime::{
     AgentBackend, AgentMessage, BackendRuntimeConfig, PermissionResponse, SessionConfig,
     SessionHandle,
 };
-use crate::domain::agent_session::CODEX_FIXED_MODELS;
-use crate::session::{resolve_data_dir, SessionStore};
+use crate::usecase::agent_session::session::SessionStore;
 
 /// Codex SDK Bridge バックエンド。
 /// 実際のプロセス制御は AgentProcess bridge runtime に委譲する。

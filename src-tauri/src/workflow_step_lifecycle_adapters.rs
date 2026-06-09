@@ -4,9 +4,10 @@ use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
-use crate::agent_sdk::AgentProcessMap;
-use crate::session::{
-    now_timestamp, resolve_data_dir, OpenTabRegistry, SessionState, SessionStore,
+use crate::app_data_dir::resolve_data_dir;
+use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::usecase::agent_session::session::{
+    now_timestamp, OpenTabRegistry, SessionState, SessionStore,
 };
 use crate::workflow_step_lifecycle::{
     release_step_runtime_on_done_with_gateways, ResolvedWorkflowStepSession, WorkflowStepLifecycle,
@@ -89,7 +90,11 @@ pub(crate) async fn should_release_runtime_on_tab_close(
     session_id: &str,
 ) -> bool {
     let has_runtime = handles.lock().await.contains_key(session_id);
-    has_runtime && !crate::agent_sdk::is_agent_step_runtime_busy(handles, session_id).await
+    has_runtime
+        && !crate::infrastructure::agent_session::runtime::is_agent_step_runtime_busy(
+            handles, session_id,
+        )
+        .await
 }
 
 pub(crate) fn open_step_session_tab_state(
@@ -215,11 +220,17 @@ impl<R: tauri::Runtime> WorkflowStepRuntimeGateway for TauriWorkflowStepRuntimeG
         &self,
         session_id: &str,
     ) -> Result<(), WorkflowStepLifecycleError> {
-        let _lifecycle_guard = crate::agent_sdk::acquire_session_runtime_lock(session_id).await;
+        let _lifecycle_guard =
+            crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(session_id)
+                .await;
         close_idle_step_runtime_state(self.handles, session_id, || async {
-            crate::agent_sdk::close_agent_session_internal(self.app, self.handles, session_id)
-                .await
-                .map_err(WorkflowStepLifecycleError::AgentSession)
+            crate::infrastructure::agent_session::runtime::close_agent_session_internal(
+                self.app,
+                self.handles,
+                session_id,
+            )
+            .await
+            .map_err(WorkflowStepLifecycleError::AgentSession)
         })
         .await
     }
@@ -228,9 +239,13 @@ impl<R: tauri::Runtime> WorkflowStepRuntimeGateway for TauriWorkflowStepRuntimeG
         &self,
         session_id: &str,
     ) -> Result<(), WorkflowStepLifecycleError> {
-        crate::agent_sdk::close_agent_session_internal(self.app, self.handles, session_id)
-            .await
-            .map_err(WorkflowStepLifecycleError::AgentSession)
+        crate::infrastructure::agent_session::runtime::close_agent_session_internal(
+            self.app,
+            self.handles,
+            session_id,
+        )
+        .await
+        .map_err(WorkflowStepLifecycleError::AgentSession)
     }
 }
 
@@ -343,11 +358,11 @@ pub(crate) async fn release_step_runtime_on_done<R: tauri::Runtime>(
         let runtime = TauriWorkflowStepRuntimeGateway { app, handles };
         release_step_runtime_on_done_with_gateways(&sessions, &runtime, session_id).await;
     }
-    crate::agent_sdk::notify_status_transition(
+    crate::infrastructure::agent_session::runtime::notify_status_transition(
         app,
         session_store,
         session_id,
-        crate::agent_sdk::TurnPhase::Idle,
+        crate::infrastructure::agent_session::runtime::TurnPhase::Idle,
         Some(SessionState::Closed),
     );
 }

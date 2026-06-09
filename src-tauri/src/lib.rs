@@ -1,9 +1,9 @@
 mod adaptor;
 mod agent_commands;
 mod agent_message_dispatcher;
-mod agent_sdk;
-mod agent_status;
-mod backends;
+mod agent_status_commands;
+mod agent_status_events;
+mod app_data_dir;
 pub mod cli;
 mod cli_install;
 mod config;
@@ -25,7 +25,6 @@ mod pty;
 mod qr_code;
 mod review_comments;
 mod sentry_integration;
-mod session;
 mod session_commands;
 mod shell_integration;
 mod tls;
@@ -81,14 +80,18 @@ pub fn run() {
             workspace_state_store::WorkspaceStateStore::default(),
         ))
         .manage(Arc::new(review_comments::ReviewCommentStore::default()))
-        .manage(Arc::new(session::SessionStore::default()))
+        .manage(Arc::new(
+            usecase::agent_session::session::SessionStore::default(),
+        ))
         .manage(Arc::new(pty::PtyManager::default()))
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::clone(&ws_broadcaster))
         .manage(Arc::new(tokio::sync::Mutex::new(
-            agent_sdk::AgentProcessMap::new(),
+            infrastructure::agent_session::runtime::AgentProcessMap::new(),
         )))
-        .manage(Arc::new(session::OpenTabRegistry::default()))
+        .manage(Arc::new(
+            usecase::agent_session::session::OpenTabRegistry::default(),
+        ))
         .manage(ws_server::WsServerHandle::default())
         .manage(Arc::new(git_host::PrCache::new()))
         .manage(Arc::new(git_host::IssueCache::new()))
@@ -198,20 +201,29 @@ pub fn run() {
             }
 
             // AgentStatusCenter を構築・登録
-            let broadcaster = app.state::<Arc<ws_bridge::WsBroadcaster>>().inner().clone();
-            let agent_status_center = Arc::new(agent_status::AgentStatusCenter::new(
-                app.handle().clone(),
-                broadcaster,
-            ));
+            let agent_status_center =
+                Arc::new(usecase::agent_session::status::AgentStatusCenter::new());
             // SessionStore の状態変更通知を購読して、保持している SessionStatus を
             // 最新化＋再集約する。Closed への遷移は aggregate でフィルタされ、
             // Closed → Idle の復帰では再び集約対象に戻る。
             {
                 let center_for_listener = agent_status_center.clone();
-                let session_store_state = app.state::<Arc<session::SessionStore>>().inner().clone();
+                let app_for_status_listener = app.handle().clone();
+                let broadcaster_for_status_listener =
+                    app.state::<Arc<ws_bridge::WsBroadcaster>>().inner().clone();
+                let session_store_state = app
+                    .state::<Arc<usecase::agent_session::session::SessionStore>>()
+                    .inner()
+                    .clone();
                 session_store_state.register_state_change_listener(Arc::new(
                     move |session_id, _worktree_path, new_state| {
-                        center_for_listener.on_session_state_changed(session_id, new_state.clone());
+                        let changes = center_for_listener
+                            .on_session_state_changed(session_id, new_state.clone());
+                        agent_status_events::emit_agent_status_changes(
+                            &app_for_status_listener,
+                            Some(&broadcaster_for_status_listener),
+                            changes,
+                        );
                     },
                 ));
             }
@@ -244,16 +256,21 @@ pub fn run() {
 
             // AgentBackendRegistry を構築・登録
             let agent_handles = app
-                .state::<Arc<Mutex<agent_sdk::AgentProcessMap>>>()
+                .state::<Arc<Mutex<infrastructure::agent_session::runtime::AgentProcessMap>>>()
                 .inner()
                 .clone();
-            let session_store = app.state::<Arc<session::SessionStore>>().inner().clone();
-            let registry = Arc::new(backends::build_registry_with_runtime(
-                app_config.clone(),
-                app.handle().clone(),
-                agent_handles,
-                session_store,
-            ));
+            let session_store = app
+                .state::<Arc<usecase::agent_session::session::SessionStore>>()
+                .inner()
+                .clone();
+            let registry = Arc::new(
+                infrastructure::agent_session::runtime::build_registry_with_runtime(
+                    app_config.clone(),
+                    app.handle().clone(),
+                    agent_handles,
+                    session_store,
+                ),
+            );
             app.manage(registry.clone());
 
             // [06] CLI mutating CLI 経路の file watcher を起動する。初回 pickup は
@@ -334,7 +351,9 @@ pub fn run() {
             {
                 let data_dir_clone = data_dir.clone();
                 let _ = std::thread::spawn(move || {
-                    agent_sdk::cleanup_orphan_processes(&data_dir_clone);
+                    infrastructure::agent_session::runtime::cleanup_orphan_processes(
+                        &data_dir_clone,
+                    );
                 })
                 .join();
             }
@@ -449,10 +468,10 @@ pub fn run() {
             external_editor::open_in_editor,
             external_editor::open_folder_in_editor,
             // Agent Status (Rust 中央管理)
-            agent_status::get_session_status,
-            agent_status::get_workspace_status,
-            agent_status::list_workspace_statuses,
-            agent_status::list_session_statuses,
+            agent_status_commands::get_session_status,
+            agent_status_commands::get_workspace_status,
+            agent_status_commands::list_workspace_statuses,
+            agent_status_commands::list_session_statuses,
             // ネットワーク
             vpn_detect::detect_vpn_tunnel,
             vpn_detect::get_network_info,
@@ -498,30 +517,30 @@ pub fn run() {
             // File Mention（code ドメイン）
             adaptor::controller::command::code::mention::list_mentionable_files,
             // Agent Backend Registry
-            backends::list_agent_backends,
+            infrastructure::agent_session::runtime::list_agent_backends,
             // Agent SDK
             agent_commands::start_agent_session,
-            agent_sdk::interrupt_agent_query,
+            infrastructure::agent_session::runtime::interrupt_agent_query,
             agent_commands::close_agent_session,
-            agent_sdk::set_agent_permission_mode,
-            agent_sdk::set_agent_model,
-            agent_sdk::set_session_backend,
-            agent_sdk::respond_agent_permission,
+            infrastructure::agent_session::runtime::set_agent_permission_mode,
+            infrastructure::agent_session::runtime::set_agent_model,
+            infrastructure::agent_session::runtime::set_session_backend,
+            infrastructure::agent_session::runtime::respond_agent_permission,
             agent_commands::send_agent_message,
-            agent_sdk::init_agent_sessions,
-            agent_sdk::scan_slash_commands,
-            agent_sdk::prepare_image_attachment,
-            agent_sdk::prepare_image_attachments_from_paths,
+            infrastructure::agent_session::runtime::init_agent_sessions,
+            infrastructure::agent_session::runtime::scan_slash_commands,
+            infrastructure::agent_session::runtime::prepare_image_attachment,
+            infrastructure::agent_session::runtime::prepare_image_attachments_from_paths,
             // Session
-            session::list_sessions,
-            agent_sdk::get_session,
-            session::create_session,
+            session_commands::list_sessions,
+            infrastructure::agent_session::runtime::get_session,
+            session_commands::create_session,
             session_commands::close_session,
             session_commands::restore_session,
-            session::list_closed_sessions,
-            session::add_message,
-            session::update_session_state,
-            session::update_session_agent_info,
+            session_commands::list_closed_sessions,
+            session_commands::add_message,
+            session_commands::update_session_state,
+            session_commands::update_session_agent_info,
             // Workflow
             workflow::commands::list_workflows,
             workflow::commands::get_workflow,

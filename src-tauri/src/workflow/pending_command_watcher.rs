@@ -14,9 +14,9 @@ use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode};
 use tauri::Manager;
 use tokio::sync::{mpsc, Mutex};
 
-use crate::agent_sdk::AgentProcessMap;
-use crate::agent_status::current_timestamp;
-use crate::session::SessionStore;
+use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::usecase::agent_session::session::SessionStore;
+use crate::usecase::agent_session::status::current_timestamp;
 use crate::workflow::engine::WorkflowEngine;
 use crate::workflow::pending_command::{
     PendingCommandPayload, PendingCommandStore, DEFAULT_PENDING_TTL_SECS,
@@ -251,7 +251,7 @@ mod tests {
             std::env::temp_dir().join(format!("releash-pending-watcher-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).unwrap();
         tauri::test::mock_builder()
-            .manage(crate::session::TestDataDir(data_dir))
+            .manage(crate::app_data_dir::TestDataDir(data_dir))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("tauri mock test app must build")
     }
@@ -263,7 +263,7 @@ mod tests {
         handles: Arc<Mutex<AgentProcessMap>>,
     ) -> tauri::App<tauri::test::MockRuntime> {
         tauri::test::mock_builder()
-            .manage(crate::session::TestDataDir(data_dir.to_path_buf()))
+            .manage(crate::app_data_dir::TestDataDir(data_dir.to_path_buf()))
             .manage(engine)
             .manage(session_store)
             .manage(handles)

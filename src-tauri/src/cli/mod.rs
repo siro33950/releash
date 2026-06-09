@@ -11,14 +11,14 @@ use std::sync::OnceLock;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
-use crate::agent_status::current_timestamp;
 use crate::config::read_config_if_exists;
 use crate::protocol::WorkflowStateView;
 use crate::review_comments::{
     AuthorScope, ReviewActor, ReviewCommentStore, ReviewTarget, ReviewThreadFilter,
     ReviewThreadState,
 };
-use crate::session::{SessionState, SessionStore};
+use crate::usecase::agent_session::session::{SessionState, SessionStore};
+use crate::usecase::agent_session::status::current_timestamp;
 use crate::workflow::command_input::{
     validate_optional_comment_text, validate_reject_reason_text, CommandInputError,
 };
@@ -1347,11 +1347,11 @@ models = ["opus"]
         model: Option<&str>,
     ) {
         let store = SessionStore::default();
-        let session = crate::session::ChatSession {
+        let session = crate::usecase::agent_session::session::ChatSession {
             id: session_id.to_string(),
             worktree_path: "/repo".to_string(),
             messages: Vec::new(),
-            state: crate::session::SessionState::Active,
+            state: crate::usecase::agent_session::session::SessionState::Active,
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: None,

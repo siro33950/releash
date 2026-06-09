@@ -1,3 +1,4 @@
+pub(crate) mod agent_session;
 pub(crate) mod code_dto;
 pub(crate) mod code_error;
 pub(crate) mod code_query_service;
