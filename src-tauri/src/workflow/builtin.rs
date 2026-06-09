@@ -377,6 +377,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
+        key: "review-fix-policy-summary",
+        content: include_str!("builtin_facets/instructions/review-fix-policy-summary.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
         key: "review-fix-policy-match",
         content: include_str!("builtin_facets/instructions/review-fix-policy-match.md"),
     },

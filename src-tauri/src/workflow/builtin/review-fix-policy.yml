@@ -21,3 +21,12 @@ nodes:
     rules:
       - match: NEEDS_FIX
         next: decide_policy
+      - match: LGTM
+        next: summary
+
+  - name: summary
+    type: approval
+    model: claude-opus-4-8
+    permission: edit
+    instruction: review-fix-policy-summary
+    knowledge: releash-thread-cli
