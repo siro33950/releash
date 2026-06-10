@@ -38,6 +38,81 @@ fn should_skip_close_agent_session(
 }
 
 #[tauri::command]
+pub async fn set_session_backend(
+    app: tauri::AppHandle,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
+    handles: tauri::State<
+        '_,
+        Arc<Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>,
+    >,
+    chat_session_id: String,
+    backend_id: String,
+) -> Result<crate::usecase::agent_session::session::GetSessionResponse, String> {
+    crate::infrastructure::agent_session::runtime::set_session_backend(
+        app,
+        session_store,
+        registry,
+        handles,
+        chat_session_id,
+        backend_id,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_session(
+    state: tauri::State<'_, Arc<SessionStore>>,
+    handles: tauri::State<
+        '_,
+        Arc<Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>,
+    >,
+    registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<Option<crate::usecase::agent_session::session::GetSessionResponse>, String> {
+    crate::infrastructure::agent_session::runtime::get_session(
+        state, handles, registry, app, session_id,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn interrupt_agent_query(
+    handles: tauri::State<
+        '_,
+        Arc<Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>,
+    >,
+    chat_session_id: String,
+) -> Result<(), String> {
+    crate::infrastructure::agent_session::runtime::interrupt_agent_query(handles, chat_session_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn init_agent_sessions(
+    app: tauri::AppHandle,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
+    handles: tauri::State<
+        '_,
+        Arc<Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>,
+    >,
+    open_tabs: tauri::State<'_, Arc<crate::usecase::agent_session::session::OpenTabRegistry>>,
+    worktree_path: String,
+) -> Result<crate::infrastructure::agent_session::runtime::InitSessionsResponse, String> {
+    crate::infrastructure::agent_session::runtime::init_agent_sessions(
+        app,
+        session_store,
+        registry,
+        handles,
+        open_tabs,
+        worktree_path,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn start_agent_session(
     app: tauri::AppHandle,
     handles: tauri::State<

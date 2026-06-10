@@ -1359,11 +1359,8 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
         if let Ok(cfg) = cfg_state.get_config() {
             let notify = cfg.server.notify.clone();
             let url = notify.webhook_url.clone();
-            let agent_state_msg =
-                crate::adaptor::gateway::agent_session::agent_state_to_msg(agent_state.clone());
-            if !url.is_empty()
-                && crate::webhook::should_notify(&notify, &agent_state_msg, &ft_state)
-            {
+            if !url.is_empty() && crate::webhook::should_notify(&notify, &agent_state, &ft_state) {
+                let agent_state_msg = crate::protocol::AgentState::from(agent_state.clone());
                 let sync = crate::protocol::AgentStateSync {
                     worktree_path: worktree_path.clone(),
                     state: agent_state_msg,
@@ -3169,7 +3166,6 @@ async fn set_session_backend_internal(
     .ok_or_else(|| format!("Session not found: {chat_session_id}"))
 }
 
-#[tauri::command]
 pub async fn set_session_backend(
     app: tauri::AppHandle,
     session_store: tauri::State<'_, Arc<SessionStore>>,
@@ -3193,7 +3189,6 @@ pub async fn set_session_backend(
     .await
 }
 
-#[tauri::command]
 pub async fn get_session(
     state: tauri::State<'_, Arc<SessionStore>>,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
@@ -3653,7 +3648,6 @@ async fn start_pending_message_turn<R: tauri::Runtime>(
     clear_pending_turn_starting(chat_session_id).await;
 }
 
-#[tauri::command]
 pub async fn interrupt_agent_query(
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     chat_session_id: String,
@@ -3839,7 +3833,6 @@ pub async fn close_all_agent_sessions(
     let _ = app;
 }
 
-#[tauri::command]
 pub async fn set_agent_permission_mode(
     app: tauri::AppHandle,
     session_store: tauri::State<'_, Arc<SessionStore>>,
@@ -3909,7 +3902,6 @@ pub(crate) fn build_agent_models_updated_payload(
     })
 }
 
-#[tauri::command]
 pub async fn set_agent_model(
     app: tauri::AppHandle,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
@@ -4078,7 +4070,6 @@ async fn sync_active_process_available_models(
     }
 }
 
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn respond_agent_permission(
     app: tauri::AppHandle,
@@ -4430,7 +4421,6 @@ pub struct InitSessionsResponse {
 
 /// Unified command for session initialization: lists sessions, starts Bridge processes,
 /// creates a new session if empty, returns sessions + active session.
-#[tauri::command]
 pub async fn init_agent_sessions(
     app: tauri::AppHandle,
     session_store: tauri::State<'_, Arc<SessionStore>>,
@@ -4544,7 +4534,6 @@ fn parse_skill_frontmatter(content: &str) -> Option<(String, String)> {
 /// 4. `{cwd}/.claude/commands/*.md` — project command
 ///
 /// When the same name appears in multiple sources, the higher-priority entry wins.
-#[tauri::command]
 pub async fn scan_slash_commands(cwd: String) -> Result<Vec<SlashCommandEntry>, String> {
     let mut commands = Vec::new();
     let mut seen = HashSet::new();
@@ -4723,7 +4712,6 @@ fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
 
 /// Tauri command: Validate image bytes and return base64-encoded image attachment.
 /// Called from the frontend after D&D or paste events.
-#[tauri::command]
 pub fn prepare_image_attachment(data: Vec<u8>) -> Result<ImageAttachment, String> {
     if data.is_empty() {
         return Err("Empty image data".to_string());
@@ -4734,7 +4722,6 @@ pub fn prepare_image_attachment(data: Vec<u8>) -> Result<ImageAttachment, String
 /// Tauri command: Read image files from paths and return base64-encoded attachments.
 /// Called from the frontend when files are dropped via native drag-and-drop.
 /// Non-image files are silently skipped.
-#[tauri::command]
 pub async fn prepare_image_attachments_from_paths(
     paths: Vec<String>,
 ) -> Result<Vec<ImageAttachment>, String> {

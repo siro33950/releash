@@ -1,7 +1,5 @@
 mod adaptor;
-mod agent_commands;
 mod agent_message_dispatcher;
-mod agent_status_commands;
 mod agent_status_events;
 mod app_data_dir;
 pub mod cli;
@@ -468,10 +466,10 @@ pub fn run() {
             external_editor::open_in_editor,
             external_editor::open_folder_in_editor,
             // Agent Status (Rust 中央管理)
-            agent_status_commands::get_session_status,
-            agent_status_commands::get_workspace_status,
-            agent_status_commands::list_workspace_statuses,
-            agent_status_commands::list_session_statuses,
+            adaptor::controller::command::agent_session::status::get_session_status,
+            adaptor::controller::command::agent_session::status::get_workspace_status,
+            adaptor::controller::command::agent_session::status::list_workspace_statuses,
+            adaptor::controller::command::agent_session::status::list_session_statuses,
             // ネットワーク
             vpn_detect::detect_vpn_tunnel,
             vpn_detect::get_network_info,
@@ -517,23 +515,23 @@ pub fn run() {
             // File Mention（code ドメイン）
             adaptor::controller::command::code::mention::list_mentionable_files,
             // Agent Backend Registry
-            infrastructure::agent_session::runtime::list_agent_backends,
+            adaptor::controller::command::agent_session::backend::list_agent_backends,
             // Agent SDK
-            agent_commands::start_agent_session,
-            infrastructure::agent_session::runtime::interrupt_agent_query,
-            agent_commands::close_agent_session,
-            infrastructure::agent_session::runtime::set_agent_permission_mode,
-            infrastructure::agent_session::runtime::set_agent_model,
-            infrastructure::agent_session::runtime::set_session_backend,
-            infrastructure::agent_session::runtime::respond_agent_permission,
-            agent_commands::send_agent_message,
-            infrastructure::agent_session::runtime::init_agent_sessions,
-            infrastructure::agent_session::runtime::scan_slash_commands,
-            infrastructure::agent_session::runtime::prepare_image_attachment,
-            infrastructure::agent_session::runtime::prepare_image_attachments_from_paths,
+            adaptor::controller::command::agent_session::session::start_agent_session,
+            adaptor::controller::command::agent_session::session::interrupt_agent_query,
+            adaptor::controller::command::agent_session::session::close_agent_session,
+            adaptor::controller::command::agent_session::model::set_agent_permission_mode,
+            adaptor::controller::command::agent_session::model::set_agent_model,
+            adaptor::controller::command::agent_session::session::set_session_backend,
+            adaptor::controller::command::agent_session::permission::respond_agent_permission,
+            adaptor::controller::command::agent_session::session::send_agent_message,
+            adaptor::controller::command::agent_session::session::init_agent_sessions,
+            adaptor::controller::command::agent_session::slash::scan_slash_commands,
+            adaptor::controller::command::agent_session::image::prepare_image_attachment,
+            adaptor::controller::command::agent_session::image::prepare_image_attachments_from_paths,
             // Session
             session_commands::list_sessions,
-            infrastructure::agent_session::runtime::get_session,
+            adaptor::controller::command::agent_session::session::get_session,
             session_commands::create_session,
             session_commands::close_session,
             session_commands::restore_session,

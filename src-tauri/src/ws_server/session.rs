@@ -202,9 +202,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                 .filter_map(|status| {
                     let sync = AgentStateSync {
                         worktree_path: status.worktree_path,
-                        state: crate::adaptor::gateway::agent_session::agent_state_to_msg(
-                            status.agent_state,
-                        ),
+                        state: status.agent_state.into(),
                         exit_code: None,
                         timestamp: status.last_activity_at,
                         session_id: Some(status.chat_session_id),

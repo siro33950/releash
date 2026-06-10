@@ -369,7 +369,6 @@ pub struct BackendListResult {
     pub default_id: Option<String>,
 }
 
-#[tauri::command]
 pub fn list_agent_backends(registry: State<'_, Arc<AgentBackendRegistry>>) -> BackendListResult {
     BackendListResult {
         backends: registry.list(),

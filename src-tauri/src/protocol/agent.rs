@@ -11,6 +11,17 @@ pub enum AgentState {
     Waiting,
 }
 
+impl From<crate::usecase::agent_session::status::AgentState> for AgentState {
+    fn from(state: crate::usecase::agent_session::status::AgentState) -> Self {
+        match state {
+            crate::usecase::agent_session::status::AgentState::Running => Self::Running,
+            crate::usecase::agent_session::status::AgentState::Done => Self::Done,
+            crate::usecase::agent_session::status::AgentState::Error => Self::Error,
+            crate::usecase::agent_session::status::AgentState::Waiting => Self::Waiting,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentStateSync {
     pub worktree_path: String,
