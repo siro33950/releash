@@ -1,26 +1,24 @@
-use crate::agent_sdk::TurnPhase;
-use crate::protocol::{AgentState, AgentStateSync, WsMessage};
-use crate::session::SessionState;
-use crate::ws_bridge::WsBroadcaster;
+use crate::usecase::agent_session::session::SessionState;
 use parking_lot::RwLock;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, State};
 
-/// Tauri イベントの emit を抽象化するための内部トレイト。
-/// プロダクションでは任意の Tauri `Runtime` を持つ `AppHandle` で実装され、
-/// テストでは noop 実装に差し替えられる。
-trait EventEmitter: Send + Sync {
-    fn emit_event(&self, event: &str, payload: serde_json::Value);
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentState {
+    Running,
+    Done,
+    Error,
+    Waiting,
 }
 
-impl<R: tauri::Runtime> EventEmitter for AppHandle<R> {
-    fn emit_event(&self, event: &str, payload: serde_json::Value) {
-        use tauri::Emitter;
-        let _ = self.emit(event, payload);
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnPhase {
+    Idle,
+    Streaming,
+    WaitingPermission,
 }
 
 /// 1 つの ChatSession に対する状態スナップショット。
@@ -83,31 +81,70 @@ pub struct WorkspaceStatus {
     pub last_activity_at: f64,
 }
 
+/// 各 worktree の「アクティブな Workflow 実行」の集約用スナップショット。
+/// Workspace 集約に Workflow 自体の状態（WaitingApproval 等）を反映するために保持する。
+/// 現状 1 worktree = 1 active run 前提のためフラット HashMap で管理する。
+#[derive(Debug, Clone, PartialEq)]
+struct WorkflowAggSnapshot {
+    execution_id: String,
+    agent_state: Option<AgentState>,
+    last_activity_at: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AgentStatusChanges {
+    pub session: Option<SessionStatus>,
+    pub workspace: Option<WorkspaceStatus>,
+    pub agent_state: Option<AgentStateChange>,
+}
+
+impl AgentStatusChanges {
+    pub fn is_empty(&self) -> bool {
+        self.session.is_none() && self.workspace.is_none() && self.agent_state.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentStateChange {
+    pub worktree_path: String,
+    pub state: AgentState,
+    pub timestamp: f64,
+    pub session_id: Option<String>,
+    pub pty_id: Option<String>,
+}
+
 /// Session / Workspace の状態を集中管理し、フロント・WS にブロードキャストする中央管理。
 pub struct AgentStatusCenter {
     sessions: RwLock<HashMap<String, SessionStatus>>,
     workspaces: RwLock<HashMap<String, WorkspaceStatus>>,
     /// key: worktree_path（= worktree_id と同値で運用）
-    emitter: Arc<dyn EventEmitter>,
-    broadcaster: Arc<WsBroadcaster>,
+    workflows: RwLock<HashMap<String, WorkflowAggSnapshot>>,
 }
 
 impl AgentStatusCenter {
-    pub fn new<R: tauri::Runtime>(
-        app_handle: AppHandle<R>,
-        broadcaster: Arc<WsBroadcaster>,
-    ) -> Self {
-        Self::with_emitter(Arc::new(app_handle), broadcaster)
-    }
-
-    fn with_emitter(emitter: Arc<dyn EventEmitter>, broadcaster: Arc<WsBroadcaster>) -> Self {
+    pub fn new() -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
             workspaces: RwLock::new(HashMap::new()),
-            emitter,
-            broadcaster,
+            workflows: RwLock::new(HashMap::new()),
         }
     }
+
+    /// `WorkflowExecutionState` を Workspace 集約に寄与する `AgentState` にマップする。
+    /// `Aborted` はユーザー意図で停止したものとして「集約対象外（None）」扱いにする。
+    pub fn workflow_execution_state_to_agent_state(
+        state: &crate::workflow::state::WorkflowExecutionState,
+    ) -> Option<AgentState> {
+        use crate::workflow::state::WorkflowExecutionState;
+        match state {
+            WorkflowExecutionState::Running => Some(AgentState::Running),
+            WorkflowExecutionState::WaitingApproval => Some(AgentState::Waiting),
+            WorkflowExecutionState::Failed { .. } => Some(AgentState::Error),
+            WorkflowExecutionState::Completed => Some(AgentState::Done),
+            WorkflowExecutionState::Aborted => None,
+        }
+    }
+
     /// AgentState は turn_phase / session_state から派生する。
     /// Spec line 110 の集約規則対応 (Error > Idle > Active > Done) に揃え、
     /// turn_phase が Idle の場合は session_state=Error → Error、Idle → Waiting、
@@ -160,6 +197,7 @@ impl AgentStatusCenter {
         worktree_id: &str,
         worktree_path: &str,
         sessions: &[&SessionStatus],
+        workflow_state: Option<AgentState>,
         last_activity_at: f64,
     ) -> WorkspaceStatus {
         let open_sessions: Vec<&SessionStatus> = sessions
@@ -180,6 +218,16 @@ impl AgentStatusCenter {
                 AgentState::Done => {}
             }
         }
+
+        if let Some(wf_state) = workflow_state {
+            match wf_state {
+                AgentState::Running => running_count += 1,
+                AgentState::Waiting => waiting_count += 1,
+                AgentState::Error => error_count += 1,
+                AgentState::Done => {}
+            }
+        }
+
         let aggregated_state = if error_count > 0 {
             AgentState::Error
         } else if waiting_count > 0 {
@@ -201,19 +249,58 @@ impl AgentStatusCenter {
             last_activity_at,
         }
     }
+
+    /// Workspace 集約時の `last_activity_at` は、Open session と集約対象 Workflow の最大値にする。
+    /// `agent_state=None` の Workflow snapshot（aborted 等）は集約にも timestamp にも寄与させない。
+    fn aggregate_with_workflow_snapshot(
+        worktree_id: &str,
+        worktree_path: &str,
+        sessions: &[&SessionStatus],
+        workflow_snapshot: Option<&WorkflowAggSnapshot>,
+        fallback_last_activity_at: f64,
+    ) -> WorkspaceStatus {
+        let open_session_last_activity_at = sessions
+            .iter()
+            .copied()
+            .filter(|s| s.session_state != SessionState::Closed)
+            .map(|s| s.last_activity_at)
+            .reduce(f64::max);
+        let workflow_last_activity_at = workflow_snapshot
+            .filter(|snapshot| snapshot.agent_state.is_some())
+            .map(|snapshot| snapshot.last_activity_at);
+        let last_activity_at = open_session_last_activity_at
+            .into_iter()
+            .chain(workflow_last_activity_at)
+            .reduce(f64::max)
+            .unwrap_or(fallback_last_activity_at);
+        let workflow_state = workflow_snapshot.and_then(|snapshot| snapshot.agent_state.clone());
+
+        Self::aggregate(
+            worktree_id,
+            worktree_path,
+            sessions,
+            workflow_state,
+            last_activity_at,
+        )
+    }
+
+    /// 当該 worktree でアクティブな Workflow の集約用 snapshot を取り出す。
+    fn workflow_agg_snapshot_for(&self, worktree_path: &str) -> Option<WorkflowAggSnapshot> {
+        self.workflows.read().get(worktree_path).cloned()
+    }
+
     /// Session 状態を更新する。
     /// 1. dedup（前回と等価なら何もしない）
     /// 2. sessions マップに反映
     /// 3. 同 worktree の全 SessionStatus から WorkspaceStatus を再計算
-    /// 4. session-status-changed / workspace-status-changed / agent-state-changed を emit
-    /// 5. WsMessage::AgentStateSync を broadcast
-    pub fn update_session(&self, status: SessionStatus) {
+    /// 4. 呼び出し側が transport 層で通知できるよう変更結果を返す
+    pub fn update_session(&self, status: SessionStatus) -> AgentStatusChanges {
         // 1. dedup
         {
             let prev = self.sessions.read().get(&status.chat_session_id).cloned();
             if let Some(prev) = prev {
                 if Self::is_session_state_equivalent(&prev, &status) {
-                    return;
+                    return AgentStatusChanges::default();
                 }
             }
         }
@@ -232,16 +319,18 @@ impl AgentStatusCenter {
         }
 
         // 3. workspace 再集約（aggregate 内で Closed は集約対象から除外される）
+        let workflow_snapshot = self.workflow_agg_snapshot_for(&worktree_path);
         let new_workspace = {
             let sessions = self.sessions.read();
             let same_workspace: Vec<&SessionStatus> = sessions
                 .values()
                 .filter(|s| s.worktree_id == worktree_id)
                 .collect();
-            Self::aggregate(
+            Self::aggregate_with_workflow_snapshot(
                 &worktree_id,
                 &worktree_path,
                 &same_workspace,
+                workflow_snapshot.as_ref(),
                 last_activity_at,
             )
         };
@@ -257,37 +346,159 @@ impl AgentStatusCenter {
             changed
         };
 
-        // 4. emit
-        self.emit_session_changed(&status);
-        if workspace_changed {
-            self.emit_workspace_changed(&new_workspace);
+        AgentStatusChanges {
+            session: Some(status),
+            workspace: workspace_changed.then_some(new_workspace),
+            agent_state: Some(AgentStateChange {
+                worktree_path,
+                state: agent_state,
+                timestamp: last_activity_at,
+                session_id: Some(chat_session_id),
+                pty_id,
+            }),
         }
-        self.emit_agent_state_changed_compat(&worktree_path, &agent_state, pty_id.as_deref());
+    }
 
-        // 5. WS broadcast (legacy 互換)
-        self.broadcast_agent_state_sync(
-            &worktree_path,
-            &agent_state,
+    /// Workflow の状態スナップショットを更新する。
+    /// `agent_state` が `None` の場合は集約対象外（pending と等価）として扱う。
+    /// dedup（前回と等価ならスキップ）の上、当該 worktree の WorkspaceStatus を
+    /// 再集約し変化があれば返す。
+    pub fn update_workflow_snapshot(
+        &self,
+        worktree_path: &str,
+        execution_id: &str,
+        agent_state: Option<AgentState>,
+        last_activity_at: f64,
+    ) -> AgentStatusChanges {
+        let new_snapshot = WorkflowAggSnapshot {
+            execution_id: execution_id.to_string(),
+            agent_state: agent_state.clone(),
             last_activity_at,
-            Some(chat_session_id),
-            pty_id,
-        );
+        };
+
+        // 1. dedup（execution_id / agent_state が変わらなければスキップ）
+        {
+            let workflows = self.workflows.read();
+            if let Some(prev) = workflows.get(worktree_path) {
+                if prev.execution_id == new_snapshot.execution_id
+                    && prev.agent_state == new_snapshot.agent_state
+                {
+                    return AgentStatusChanges::default();
+                }
+            }
+        }
+
+        // 2. workflows マップ反映
+        {
+            let mut workflows = self.workflows.write();
+            workflows.insert(worktree_path.to_string(), new_snapshot);
+        }
+
+        // 3. 再集約
+        AgentStatusChanges {
+            workspace: self.reaggregate_workspace(worktree_path, last_activity_at),
+            ..Default::default()
+        }
+    }
+
+    /// 当該 worktree の WorkspaceStatus を再集約し、前回と差分があれば
+    /// 差分があれば更新後の `WorkspaceStatus` を返す。
+    /// Session も Workflow も無い空状態なら workspaces から entry を削除し
+    /// 空 WorkspaceStatus を 1 度だけ送る（`remove_session` と同じ振る舞い）。
+    fn reaggregate_workspace(
+        &self,
+        worktree_path: &str,
+        last_activity_at: f64,
+    ) -> Option<WorkspaceStatus> {
+        let workflow_snapshot = self.workflow_agg_snapshot_for(worktree_path);
+        let (worktree_id, new_workspace) = {
+            let sessions = self.sessions.read();
+            let same_workspace: Vec<&SessionStatus> = sessions
+                .values()
+                .filter(|s| s.worktree_path == worktree_path)
+                .collect();
+            // worktree_id は worktree_path と同値で運用されている。
+            // session が無い場合のフォールバックとしても worktree_path を使う。
+            let worktree_id = same_workspace
+                .first()
+                .map(|s| s.worktree_id.clone())
+                .unwrap_or_else(|| worktree_path.to_string());
+            let workspace = if same_workspace.is_empty()
+                && workflow_snapshot
+                    .as_ref()
+                    .is_none_or(|snapshot| snapshot.agent_state.is_none())
+            {
+                None
+            } else {
+                Some(Self::aggregate_with_workflow_snapshot(
+                    &worktree_id,
+                    worktree_path,
+                    &same_workspace,
+                    workflow_snapshot.as_ref(),
+                    last_activity_at,
+                ))
+            };
+            (worktree_id, workspace)
+        };
+
+        match new_workspace {
+            Some(ws) => {
+                let changed = {
+                    let mut workspaces = self.workspaces.write();
+                    let prev = workspaces.get(&worktree_id).cloned();
+                    let changed = prev
+                        .as_ref()
+                        .map(|p| !Self::is_workspace_state_equivalent(p, &ws))
+                        .unwrap_or(true);
+                    workspaces.insert(worktree_id.clone(), ws.clone());
+                    changed
+                };
+                if changed {
+                    return Some(ws);
+                }
+            }
+            None => {
+                let removed_ws = {
+                    let mut workspaces = self.workspaces.write();
+                    workspaces.remove(&worktree_id)
+                };
+                if removed_ws.is_some() {
+                    let empty = WorkspaceStatus {
+                        worktree_id: worktree_id.clone(),
+                        worktree_path: worktree_path.to_string(),
+                        aggregated_state: AgentState::Done,
+                        running_count: 0,
+                        waiting_count: 0,
+                        error_count: 0,
+                        session_count: 0,
+                        last_activity_at,
+                    };
+                    return Some(empty);
+                }
+            }
+        }
+        None
     }
 
     /// SessionStore からの `SessionState` 変更通知を受け取り、保持している
     /// `SessionStatus` の `session_state` を最新化した上で再集約する。
     /// Closed への遷移は `aggregate` 段階で集約対象から外れ、Closed → 他状態の
     /// 復帰では再び集約対象に戻る。
-    pub fn on_session_state_changed(&self, chat_session_id: &str, new_state: SessionState) {
+    pub fn on_session_state_changed(
+        &self,
+        chat_session_id: &str,
+        new_state: SessionState,
+    ) -> AgentStatusChanges {
         let existing = self.sessions.read().get(chat_session_id).cloned();
         let Some(existing) = existing else {
-            return;
+            return AgentStatusChanges::default();
         };
         if let Some(updated) =
             Self::build_state_transition(&existing, new_state, current_timestamp())
         {
-            self.update_session(updated);
+            return self.update_session(updated);
         }
+        AgentStatusChanges::default()
     }
 
     /// `on_session_state_changed` の中核ロジック。
@@ -321,81 +532,6 @@ impl AgentStatusCenter {
     }
 
     /// Session を削除し、worktree を再集約する。
-    #[allow(dead_code)] // 将来 AgentProcess 明示削除時に使用予定
-    pub fn remove_session(&self, chat_session_id: &str) {
-        let removed = {
-            let mut sessions = self.sessions.write();
-            sessions.remove(chat_session_id)
-        };
-
-        let Some(removed) = removed else { return };
-
-        let worktree_id = removed.worktree_id.clone();
-        let worktree_path = removed.worktree_path.clone();
-        let last_activity_at = current_timestamp();
-        let new_workspace = {
-            let sessions = self.sessions.read();
-            let same_workspace: Vec<&SessionStatus> = sessions
-                .values()
-                .filter(|s| s.worktree_id == worktree_id)
-                .collect();
-            if same_workspace.is_empty() {
-                None
-            } else {
-                Some(Self::aggregate(
-                    &worktree_id,
-                    &worktree_path,
-                    &same_workspace,
-                    last_activity_at,
-                ))
-            }
-        };
-
-        match new_workspace {
-            Some(ws) => {
-                let workspace_changed = {
-                    let mut workspaces = self.workspaces.write();
-                    let prev_ws = workspaces.get(&worktree_id).cloned();
-                    let changed = prev_ws
-                        .as_ref()
-                        .map(|p| !Self::is_workspace_state_equivalent(p, &ws))
-                        .unwrap_or(true);
-                    workspaces.insert(worktree_id.clone(), ws.clone());
-                    changed
-                };
-                if workspace_changed {
-                    self.emit_workspace_changed(&ws);
-                }
-            }
-            None => {
-                let removed_ws = {
-                    let mut workspaces = self.workspaces.write();
-                    workspaces.remove(&worktree_id)
-                };
-                if removed_ws.is_some() {
-                    // workspace が空になった: aggregated_state=Done で送る
-                    let empty = WorkspaceStatus {
-                        worktree_id: worktree_id.clone(),
-                        worktree_path: worktree_path.clone(),
-                        aggregated_state: AgentState::Done,
-                        running_count: 0,
-                        waiting_count: 0,
-                        error_count: 0,
-                        session_count: 0,
-                        last_activity_at,
-                    };
-                    self.emit_workspace_changed(&empty);
-                }
-            }
-        }
-
-        // session-status-changed: 削除も通知（agent_state を Done にしたスナップショットを送る）
-        let mut closed = removed.clone();
-        closed.agent_state = AgentState::Done;
-        closed.last_activity_at = last_activity_at;
-        self.emit_session_changed(&closed);
-    }
-
     pub fn get_session(&self, chat_session_id: &str) -> Option<SessionStatus> {
         self.sessions.read().get(chat_session_id).cloned()
     }
@@ -411,99 +547,6 @@ impl AgentStatusCenter {
     pub fn list_sessions(&self) -> Vec<SessionStatus> {
         self.sessions.read().values().cloned().collect()
     }
-
-    fn emit_session_changed(&self, status: &SessionStatus) {
-        let payload = serde_json::to_value(status).unwrap_or(serde_json::Value::Null);
-        self.emitter.emit_event("session-status-changed", payload);
-    }
-
-    fn emit_workspace_changed(&self, status: &WorkspaceStatus) {
-        let payload = serde_json::to_value(status).unwrap_or(serde_json::Value::Null);
-        self.emitter.emit_event("workspace-status-changed", payload);
-    }
-
-    /// ワークフロー状態変更を通知する（Tauriイベント + WebSocket）。
-    pub fn emit_workflow_state_changed(
-        &self,
-        worktree_path: &str,
-        workflow_state: &crate::protocol::WorkflowStateView,
-    ) {
-        // Tauriイベント（デスクトップUI向け）
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Payload<'a> {
-            worktree_path: &'a str,
-            workflow_state: &'a crate::protocol::WorkflowStateView,
-        }
-        let payload = Payload {
-            worktree_path,
-            workflow_state,
-        };
-        let payload = serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null);
-        self.emitter.emit_event("workflow-state-changed", payload);
-
-        // WebSocketブロードキャスト（リモートアプリ向け）
-        let ws_sync = crate::protocol::WorkflowStateSync {
-            worktree_path: worktree_path.to_string(),
-            workflow_state: workflow_state.clone(),
-        };
-        self.broadcaster
-            .try_send(WsMessage::WorkflowStateSync(Box::new(ws_sync)));
-    }
-
-    /// 既存 frontend / remote が購読している `agent-state-changed` を維持する。
-    fn emit_agent_state_changed_compat(
-        &self,
-        worktree_path: &str,
-        state: &AgentState,
-        pty_id: Option<&str>,
-    ) {
-        let payload = AgentStateSync {
-            worktree_path: worktree_path.to_string(),
-            state: state.clone(),
-            exit_code: None,
-            timestamp: current_timestamp(),
-            session_id: None,
-            pty_id: pty_id.map(|s| s.to_string()),
-        };
-        let payload = serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null);
-        self.emitter.emit_event("agent-state-changed", payload);
-    }
-
-    fn broadcast_agent_state_sync(
-        &self,
-        worktree_path: &str,
-        state: &AgentState,
-        timestamp: f64,
-        session_id: Option<String>,
-        pty_id: Option<String>,
-    ) {
-        let msg = WsMessage::AgentStateSync(Self::build_agent_state_sync(
-            worktree_path,
-            state,
-            timestamp,
-            session_id,
-            pty_id,
-        ));
-        self.broadcaster.try_send(msg);
-    }
-
-    fn build_agent_state_sync(
-        worktree_path: &str,
-        state: &AgentState,
-        timestamp: f64,
-        session_id: Option<String>,
-        pty_id: Option<String>,
-    ) -> AgentStateSync {
-        AgentStateSync {
-            worktree_path: worktree_path.to_string(),
-            state: state.clone(),
-            exit_code: None,
-            timestamp,
-            session_id,
-            pty_id,
-        }
-    }
 }
 
 pub fn current_timestamp() -> f64 {
@@ -511,32 +554,6 @@ pub fn current_timestamp() -> f64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
-}
-
-#[tauri::command]
-pub fn get_session_status(
-    chat_session_id: String,
-    center: State<'_, Arc<AgentStatusCenter>>,
-) -> Option<SessionStatus> {
-    center.get_session(&chat_session_id)
-}
-
-#[tauri::command]
-pub fn get_workspace_status(
-    worktree_id: String,
-    center: State<'_, Arc<AgentStatusCenter>>,
-) -> Option<WorkspaceStatus> {
-    center.get_workspace(&worktree_id)
-}
-
-#[tauri::command]
-pub fn list_workspace_statuses(center: State<'_, Arc<AgentStatusCenter>>) -> Vec<WorkspaceStatus> {
-    center.list_workspaces()
-}
-
-#[tauri::command]
-pub fn list_session_statuses(center: State<'_, Arc<AgentStatusCenter>>) -> Vec<SessionStatus> {
-    center.list_sessions()
 }
 
 #[cfg(test)]
@@ -633,7 +650,7 @@ mod tests {
 
     #[test]
     fn aggregate_empty_sessions_is_done() {
-        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[], 100.0);
+        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[], None, 100.0);
         assert_eq!(ws.aggregated_state, AgentState::Done);
         assert_eq!(ws.session_count, 0);
         assert_eq!(ws.running_count, 0);
@@ -646,7 +663,7 @@ mod tests {
     fn aggregate_only_done_is_done() {
         let s1 = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Done);
         let s2 = mk_session("b", "/repo", TurnPhase::Idle, SessionState::Done);
-        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[&s1, &s2], 0.0);
+        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[&s1, &s2], None, 0.0);
         assert_eq!(ws.aggregated_state, AgentState::Done);
         assert_eq!(ws.session_count, 2);
     }
@@ -655,7 +672,7 @@ mod tests {
     fn aggregate_running_dominates_done() {
         let s1 = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Done);
         let s2 = mk_session("b", "/repo", TurnPhase::Streaming, SessionState::Active);
-        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[&s1, &s2], 0.0);
+        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[&s1, &s2], None, 0.0);
         assert_eq!(ws.aggregated_state, AgentState::Running);
         assert_eq!(ws.running_count, 1);
     }
@@ -669,7 +686,7 @@ mod tests {
             TurnPhase::WaitingPermission,
             SessionState::Active,
         );
-        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[&s1, &s2], 0.0);
+        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[&s1, &s2], None, 0.0);
         assert_eq!(ws.aggregated_state, AgentState::Waiting);
         assert_eq!(ws.waiting_count, 1);
         assert_eq!(ws.running_count, 1);
@@ -689,6 +706,7 @@ mod tests {
             "/repo",
             "/repo",
             &[&open_done, &closed_with_error_history],
+            None,
             0.0,
         );
         assert_eq!(ws.aggregated_state, AgentState::Done);
@@ -701,7 +719,7 @@ mod tests {
         // オープン中 Session が 0 件のとき: session_count=0 で「集約対象なし」を示す
         let closed_a = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Closed);
         let closed_b = mk_session("b", "/repo", TurnPhase::Idle, SessionState::Closed);
-        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[&closed_a, &closed_b], 0.0);
+        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[&closed_a, &closed_b], None, 0.0);
         assert_eq!(ws.session_count, 0);
         assert_eq!(ws.error_count, 0);
         assert_eq!(ws.aggregated_state, AgentState::Done);
@@ -717,6 +735,7 @@ mod tests {
             "/repo",
             "/repo",
             &[&open_error_a, &open_error_b, &closed],
+            None,
             0.0,
         );
         assert_eq!(ws.aggregated_state, AgentState::Error);
@@ -734,7 +753,7 @@ mod tests {
             SessionState::Active,
         );
         let s3 = mk_session("c", "/repo", TurnPhase::Idle, SessionState::Error);
-        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[&s1, &s2, &s3], 0.0);
+        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[&s1, &s2, &s3], None, 0.0);
         assert_eq!(ws.aggregated_state, AgentState::Error);
         assert_eq!(ws.error_count, 1);
         assert_eq!(ws.waiting_count, 1);
@@ -761,7 +780,7 @@ mod tests {
 
     #[test]
     fn workspace_dedup_ignores_last_activity_at() {
-        let mut a = AgentStatusCenter::aggregate("/r", "/r", &[], 100.0);
+        let mut a = AgentStatusCenter::aggregate("/r", "/r", &[], None, 100.0);
         let mut b = a.clone();
         a.last_activity_at = 100.0;
         b.last_activity_at = 999.0;
@@ -843,8 +862,13 @@ mod tests {
         let mut error_session = mk_session("err", "/repo", TurnPhase::Idle, SessionState::Error);
         let done_session = mk_session("done", "/repo", TurnPhase::Idle, SessionState::Done);
 
-        let initial =
-            AgentStatusCenter::aggregate("/repo", "/repo", &[&error_session, &done_session], 0.0);
+        let initial = AgentStatusCenter::aggregate(
+            "/repo",
+            "/repo",
+            &[&error_session, &done_session],
+            None,
+            0.0,
+        );
         assert_eq!(initial.aggregated_state, AgentState::Error);
         assert_eq!(initial.session_count, 2);
 
@@ -853,8 +877,13 @@ mod tests {
                 .expect("transition should produce updated session");
         error_session = closed;
 
-        let after =
-            AgentStatusCenter::aggregate("/repo", "/repo", &[&error_session, &done_session], 0.0);
+        let after = AgentStatusCenter::aggregate(
+            "/repo",
+            "/repo",
+            &[&error_session, &done_session],
+            None,
+            0.0,
+        );
         assert_eq!(after.aggregated_state, AgentState::Done);
         assert_eq!(after.session_count, 1);
         assert_eq!(after.error_count, 0);
@@ -866,7 +895,8 @@ mod tests {
         let mut closed = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Closed);
         let done_session = mk_session("b", "/repo", TurnPhase::Idle, SessionState::Done);
 
-        let before = AgentStatusCenter::aggregate("/repo", "/repo", &[&closed, &done_session], 0.0);
+        let before =
+            AgentStatusCenter::aggregate("/repo", "/repo", &[&closed, &done_session], None, 0.0);
         assert_eq!(before.session_count, 1);
         assert_eq!(before.aggregated_state, AgentState::Done);
 
@@ -874,19 +904,15 @@ mod tests {
             .expect("transition should produce updated session");
         closed = restored;
 
-        let after = AgentStatusCenter::aggregate("/repo", "/repo", &[&closed, &done_session], 0.0);
+        let after =
+            AgentStatusCenter::aggregate("/repo", "/repo", &[&closed, &done_session], None, 0.0);
         assert_eq!(after.session_count, 2);
         assert_eq!(after.aggregated_state, AgentState::Waiting);
         assert_eq!(after.waiting_count, 1);
     }
 
-    struct NoopEmitter;
-    impl EventEmitter for NoopEmitter {
-        fn emit_event(&self, _event: &str, _payload: serde_json::Value) {}
-    }
-
     fn mk_center() -> AgentStatusCenter {
-        AgentStatusCenter::with_emitter(Arc::new(NoopEmitter), Arc::new(WsBroadcaster::default()))
+        AgentStatusCenter::new()
     }
 
     #[test]
@@ -927,17 +953,208 @@ mod tests {
     // ---- Workflow 状態の Workspace 集約への寄与 ----
 
     #[test]
-    fn agent_state_sync_includes_chat_session_id() {
-        let sync = AgentStatusCenter::build_agent_state_sync(
-            "/repo",
-            &AgentState::Running,
-            123.0,
-            Some("chat-session-1".to_string()),
-            None,
+    fn workflow_execution_state_to_agent_state_maps_each_variant() {
+        use crate::workflow::state::WorkflowExecutionState;
+        assert_eq!(
+            AgentStatusCenter::workflow_execution_state_to_agent_state(
+                &WorkflowExecutionState::Running
+            ),
+            Some(AgentState::Running)
+        );
+        assert_eq!(
+            AgentStatusCenter::workflow_execution_state_to_agent_state(
+                &WorkflowExecutionState::WaitingApproval
+            ),
+            Some(AgentState::Waiting)
+        );
+        assert_eq!(
+            AgentStatusCenter::workflow_execution_state_to_agent_state(
+                &WorkflowExecutionState::Failed {
+                    reason: "boom".into()
+                }
+            ),
+            Some(AgentState::Error)
+        );
+        assert_eq!(
+            AgentStatusCenter::workflow_execution_state_to_agent_state(
+                &WorkflowExecutionState::Completed
+            ),
+            Some(AgentState::Done)
+        );
+        assert_eq!(
+            AgentStatusCenter::workflow_execution_state_to_agent_state(
+                &WorkflowExecutionState::Aborted
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn aggregate_with_workflow_waiting_outranks_running_sessions() {
+        // Session=Running、Workflow=Waiting → Workspace=Waiting（Waiting 優先）
+        let s = mk_session("a", "/repo", TurnPhase::Streaming, SessionState::Active);
+        let ws =
+            AgentStatusCenter::aggregate("/repo", "/repo", &[&s], Some(AgentState::Waiting), 0.0);
+        assert_eq!(ws.aggregated_state, AgentState::Waiting);
+        assert_eq!(ws.running_count, 1);
+        assert_eq!(ws.waiting_count, 1);
+        assert_eq!(ws.session_count, 1);
+    }
+
+    #[test]
+    fn aggregate_with_workflow_error_outranks_done_sessions() {
+        // Session=Done、Workflow=Error → Workspace=Error
+        let s = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Done);
+        let ws =
+            AgentStatusCenter::aggregate("/repo", "/repo", &[&s], Some(AgentState::Error), 0.0);
+        assert_eq!(ws.aggregated_state, AgentState::Error);
+        assert_eq!(ws.error_count, 1);
+        // session_count は Workflow を含めない
+        assert_eq!(ws.session_count, 1);
+    }
+
+    #[test]
+    fn aggregate_with_workflow_aborted_is_excluded() {
+        // Workflow=Aborted（None）の場合、Session 状態のみで集約される
+        let s = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Done);
+        let ws = AgentStatusCenter::aggregate("/repo", "/repo", &[&s], None, 0.0);
+        assert_eq!(ws.aggregated_state, AgentState::Done);
+        assert_eq!(ws.session_count, 1);
+        assert_eq!(ws.waiting_count, 0);
+    }
+
+    #[test]
+    fn aggregate_with_only_workflow_waiting_yields_waiting_with_zero_sessions() {
+        // Session が無く Workflow=Waiting のとき、Workspace=Waiting / session_count=0
+        let ws =
+            AgentStatusCenter::aggregate("/repo", "/repo", &[], Some(AgentState::Waiting), 0.0);
+        assert_eq!(ws.aggregated_state, AgentState::Waiting);
+        assert_eq!(ws.session_count, 0);
+        assert_eq!(ws.waiting_count, 1);
+    }
+
+    #[test]
+    fn update_workflow_snapshot_returns_workspace_change_when_only_workflow_changes() {
+        // Session=Done で Workspace=Done の状態から、Workflow=Waiting に更新すると
+        // session 不変でも Workspace 集約は Waiting に変化する。
+        let center = mk_center();
+        let done = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Done);
+        center.update_session(done);
+
+        let before = center.get_workspace("/repo").expect("workspace registered");
+        assert_eq!(before.aggregated_state, AgentState::Done);
+
+        center.update_workflow_snapshot("/repo", "exec-1", Some(AgentState::Waiting), 1.0);
+
+        let after = center
+            .get_workspace("/repo")
+            .expect("workspace still tracked");
+        assert_eq!(after.aggregated_state, AgentState::Waiting);
+        assert_eq!(after.waiting_count, 1);
+        assert_eq!(after.session_count, 1);
+    }
+
+    #[test]
+    fn update_workflow_snapshot_dedup_does_not_change_workspace_when_unchanged() {
+        // 同じ execution_id / agent_state の二度目の update は WorkspaceStatus を変えない。
+        let center = mk_center();
+        let done = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Done);
+        center.update_session(done);
+
+        center.update_workflow_snapshot("/repo", "exec-1", Some(AgentState::Waiting), 1.0);
+        let first = center.get_workspace("/repo").expect("first snapshot");
+
+        // 同一 snapshot → workspace は不変
+        center.update_workflow_snapshot("/repo", "exec-1", Some(AgentState::Waiting), 2.0);
+        let second = center.get_workspace("/repo").expect("second snapshot");
+
+        // last_activity_at 以外のフィールドは等しい
+        assert_eq!(first.aggregated_state, second.aggregated_state);
+        assert_eq!(first.waiting_count, second.waiting_count);
+        assert_eq!(first.last_activity_at, second.last_activity_at);
+    }
+
+    #[test]
+    fn update_workflow_snapshot_to_aborted_releases_workflow_contribution() {
+        // 一度 Waiting にした後、Aborted（None）に更新すると Workflow 寄与が外れる。
+        let center = mk_center();
+        let done = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Done);
+        center.update_session(done);
+
+        center.update_workflow_snapshot("/repo", "exec-1", Some(AgentState::Waiting), 1.0);
+        assert_eq!(
+            center.get_workspace("/repo").unwrap().aggregated_state,
+            AgentState::Waiting
         );
 
-        assert_eq!(sync.session_id, Some("chat-session-1".to_string()));
-        assert_eq!(sync.worktree_path, "/repo");
-        assert_eq!(sync.state, AgentState::Running);
+        center.update_workflow_snapshot("/repo", "exec-1", None, 2.0);
+        let after = center.get_workspace("/repo").expect("workspace tracked");
+        assert_eq!(after.aggregated_state, AgentState::Done);
+        assert_eq!(after.waiting_count, 0);
+    }
+
+    #[test]
+    fn workflow_update_then_older_session_update_does_not_rewind_workspace_last_activity() {
+        let center = mk_center();
+        let mut session = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Done);
+        session.last_activity_at = 60.0;
+        center.update_session(session);
+        center.update_workflow_snapshot("/repo", "exec-1", Some(AgentState::Running), 90.0);
+
+        let mut older_session_update =
+            mk_session("a", "/repo", TurnPhase::Streaming, SessionState::Active);
+        older_session_update.last_activity_at = 50.0;
+        center.update_session(older_session_update);
+
+        let ws = center.get_workspace("/repo").expect("workspace tracked");
+        assert_eq!(ws.aggregated_state, AgentState::Running);
+        assert_eq!(ws.last_activity_at, 90.0);
+    }
+
+    #[test]
+    fn aggregate_excludes_workflow_timestamp_when_aborted() {
+        let center = mk_center();
+        let mut session = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Done);
+        session.last_activity_at = 80.0;
+        center.update_session(session);
+
+        center.update_workflow_snapshot("/repo", "exec-1", None, 999.0);
+
+        let ws = center.get_workspace("/repo").expect("workspace tracked");
+        assert_eq!(ws.aggregated_state, AgentState::Done);
+        assert_eq!(ws.last_activity_at, 80.0);
+    }
+
+    #[test]
+    fn aggregate_excludes_closed_session_timestamp() {
+        let center = mk_center();
+        let mut open_session = mk_session("open", "/repo", TurnPhase::Idle, SessionState::Done);
+        open_session.last_activity_at = 80.0;
+        center.update_session(open_session);
+
+        let mut closed_session =
+            mk_session("closed", "/repo", TurnPhase::Idle, SessionState::Closed);
+        closed_session.last_activity_at = 200.0;
+        center.update_session(closed_session);
+
+        let ws = center.get_workspace("/repo").expect("workspace tracked");
+        assert_eq!(ws.session_count, 1);
+        assert_eq!(ws.last_activity_at, 80.0);
+    }
+
+    #[test]
+    fn update_workflow_snapshot_without_any_sessions_creates_workspace_entry() {
+        // Session が一切登録されていない worktree でも Workflow 状態から WorkspaceStatus を作る。
+        let center = mk_center();
+        center.update_workflow_snapshot("/repo", "exec-1", Some(AgentState::Running), 5.0);
+
+        let ws = center
+            .get_workspace("/repo")
+            .expect("workspace from workflow");
+        assert_eq!(ws.aggregated_state, AgentState::Running);
+        assert_eq!(ws.running_count, 1);
+        assert_eq!(ws.session_count, 0);
+        assert_eq!(ws.worktree_id, "/repo");
+        assert_eq!(ws.worktree_path, "/repo");
     }
 }

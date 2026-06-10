@@ -13,25 +13,28 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex;
 
-use crate::backends::runtime_coordinator::{
+use crate::app_data_dir::resolve_data_dir;
+use crate::infrastructure::agent_session::runtime::runtime_coordinator::{
     acquire_spawn_session_guard, clear_pending_turn_starting, clear_session_closing,
     is_pending_turn_starting, mark_pending_turn_starting, mark_session_closing,
     prune_session_runtime_lock, wait_until_session_close_finished,
 };
-use crate::backends::{BackendRuntimeConfig, ImageAttachment, ModelInfo};
+use crate::infrastructure::agent_session::runtime::{
+    BackendRuntimeConfig, ImageAttachment, ModelInfo,
+};
 #[cfg(test)]
-use crate::session::create_session_internal;
-use crate::session::{
-    add_message_internal, now_timestamp, resolve_data_dir, ChatMessage, ChatSession,
-    GetSessionResponse, MessagePart, MessageRole, SessionStore, SessionSummary,
+use crate::usecase::agent_session::session::create_session_internal;
+use crate::usecase::agent_session::session::{
+    add_message_internal, now_timestamp, ChatMessage, ChatSession, GetSessionResponse, MessagePart,
+    MessageRole, SessionStore, SessionSummary,
 };
 
-pub(crate) use crate::backends::runtime_coordinator::acquire_session_runtime_lock;
+pub(crate) use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
 
 pub const CLAUDE_BACKEND_ID: &str = "claude";
 pub const CODEX_BACKEND_ID: &str = "codex";
 
-use crate::session::errors::session_target_rejected;
+use crate::usecase::agent_session::session::errors::session_target_rejected;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BridgeState {
@@ -264,7 +267,7 @@ fn backend_runtime_config<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     backend_id: &str,
 ) -> BackendRuntimeConfig {
-    app.try_state::<Arc<crate::backends::AgentBackendRegistry>>()
+    app.try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>()
         .and_then(
             |registry| match registry.runtime_config_for(backend_id, app) {
                 Ok(config) => Some(config),
@@ -287,7 +290,7 @@ fn backend_runtime_config<R: tauri::Runtime>(
 /// 永続化に絡む経路は Err をそのまま呼び出し元に伝えること。
 fn available_models_for_backend(
     backend_id: &str,
-    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+    registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
 ) -> Result<Vec<ModelInfo>, String> {
     match registry {
         Some(registry) => registry.available_models(backend_id),
@@ -299,7 +302,7 @@ fn available_models_for_backend(
 ///
 /// モデル「未選択（None）」状態は廃止されたが、`ChatSession.selected_model` の永続化型は
 /// 既存 JSON 互換のため `Option<String>` のまま。応答・Bridge 送信時に `None` を backend の
-/// 既定モデル（[`crate::backends::AgentBackendRegistry::default_model_for`]）へ解決してから使う。
+/// 既定モデル（[`crate::infrastructure::agent_session::runtime::AgentBackendRegistry::default_model_for`]）へ解決してから使う。
 ///
 /// - `Some(model)`: そのまま採用する。
 /// - `None` + registry あり: 既定モデルに解決する。registry 取得失敗時は warn を残し `None` を返す
@@ -308,7 +311,7 @@ fn available_models_for_backend(
 fn resolve_selected_model(
     selected_model: Option<String>,
     backend_id: &str,
-    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+    registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
 ) -> Option<String> {
     if selected_model.is_some() {
         return selected_model;
@@ -334,7 +337,7 @@ fn resolve_selected_model(
 fn resolve_selected_model_for_response(
     selected_model: Option<String>,
     backend_id: &str,
-    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+    registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
 ) -> Result<Option<String>, String> {
     if selected_model.is_some() {
         return Ok(selected_model);
@@ -663,7 +666,8 @@ fn persist_streaming_parts<R: tauri::Runtime>(
         }
     };
     if let Some(msg) = session.messages.iter_mut().find(|m| m.id == message_id) {
-        let (content, thinking, activities) = crate::session::parts_to_legacy(parts);
+        let (content, thinking, activities) =
+            crate::usecase::agent_session::session::parts_to_legacy(parts);
         msg.content = content;
         msg.thinking = thinking;
         msg.activities = activities;
@@ -694,6 +698,102 @@ fn emit_session_state_changed<R: tauri::Runtime>(
 
 /// Emit the cumulative `streaming_parts` payload over both delivery channels.
 ///
+fn to_status_turn_phase(turn_phase: TurnPhase) -> crate::usecase::agent_session::status::TurnPhase {
+    match turn_phase {
+        TurnPhase::Idle => crate::usecase::agent_session::status::TurnPhase::Idle,
+        TurnPhase::Streaming => crate::usecase::agent_session::status::TurnPhase::Streaming,
+        TurnPhase::WaitingPermission => {
+            crate::usecase::agent_session::status::TurnPhase::WaitingPermission
+        }
+    }
+}
+
+fn to_agent_stream_part_msg(part: MessagePart) -> crate::protocol::AgentStreamPartMsg {
+    match part {
+        MessagePart::Thinking {
+            content,
+            parent_tool_use_id,
+        } => crate::protocol::AgentStreamPartMsg::Thinking {
+            content,
+            parent_tool_use_id,
+        },
+        MessagePart::Text {
+            content,
+            parent_tool_use_id,
+        } => crate::protocol::AgentStreamPartMsg::Text {
+            content,
+            parent_tool_use_id,
+        },
+        MessagePart::ToolUse {
+            tool,
+            input,
+            id,
+            parent_tool_use_id,
+        } => crate::protocol::AgentStreamPartMsg::ToolUse {
+            tool,
+            input,
+            id,
+            parent_tool_use_id,
+        },
+        MessagePart::ToolResult {
+            content,
+            is_error,
+            tool_use_id,
+            parent_tool_use_id,
+        } => crate::protocol::AgentStreamPartMsg::ToolResult {
+            content,
+            is_error,
+            tool_use_id,
+            parent_tool_use_id,
+        },
+        MessagePart::Error {
+            content,
+            parent_tool_use_id,
+        } => crate::protocol::AgentStreamPartMsg::Error {
+            content,
+            parent_tool_use_id,
+        },
+        MessagePart::Permission {
+            request,
+            status,
+            answers,
+            parent_tool_use_id,
+        } => crate::protocol::AgentStreamPartMsg::Permission {
+            request,
+            status,
+            answers,
+            parent_tool_use_id,
+        },
+        MessagePart::TaskStatus {
+            task_tool_use_id,
+            status,
+            description,
+            summary,
+        } => crate::protocol::AgentStreamPartMsg::TaskStatus {
+            task_tool_use_id,
+            status,
+            description,
+            summary,
+        },
+        MessagePart::SystemNotification {
+            notification_type,
+            status,
+            label,
+            detail,
+            hook_id,
+        } => crate::protocol::AgentStreamPartMsg::SystemNotification {
+            notification_type,
+            status,
+            label,
+            detail,
+            hook_id,
+        },
+        MessagePart::Image { data, media_type } => {
+            crate::protocol::AgentStreamPartMsg::Image { data, media_type }
+        }
+    }
+}
+
 /// Returns `(tauri_ok, ws_ok)`. `tauri_ok` reflects whether the Tauri event
 /// dispatcher accepted the payload. `ws_ok` is always `true` on the
 /// production broadcaster path: `WsBroadcaster::send_stream_sync` is a
@@ -719,7 +819,7 @@ fn emit_streaming_parts<R: tauri::Runtime>(
         broadcaster.send_stream_sync(crate::protocol::AgentStreamSync {
             session_id: chat_session_id.to_string(),
             message_id: message_id.to_string(),
-            parts,
+            parts: parts.into_iter().map(to_agent_stream_part_msg).collect(),
         });
     }
     (tauri_ok, true)
@@ -1203,11 +1303,13 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
     turn_phase: TurnPhase,
-    session_state_override: Option<crate::session::SessionState>,
+    session_state_override: Option<crate::usecase::agent_session::session::SessionState>,
 ) {
-    use crate::agent_status::{current_timestamp, AgentStatusCenter, SessionStatus, TurnPhaseRepr};
     use crate::config::AppConfig;
     use crate::focus_tracker::FocusTracker;
+    use crate::usecase::agent_session::status::{
+        current_timestamp, AgentStatusCenter, SessionStatus, TurnPhaseRepr,
+    };
 
     let data_dir = match resolve_data_dir(app) {
         Ok(d) => d,
@@ -1220,7 +1322,9 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
     let worktree_path = session.worktree_path.clone();
     let session_state = session_state_override.unwrap_or_else(|| session.state.clone());
 
-    let agent_state = AgentStatusCenter::derive_agent_state(turn_phase, session_state.clone());
+    let status_turn_phase = to_status_turn_phase(turn_phase);
+    let agent_state =
+        AgentStatusCenter::derive_agent_state(status_turn_phase, session_state.clone());
 
     if let Some(center) = app.try_state::<Arc<AgentStatusCenter>>() {
         let (wf_step, wf_state) = center
@@ -1233,14 +1337,18 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
             worktree_path: worktree_path.clone(),
             pty_id: None,
             agent_state: agent_state.clone(),
-            turn_phase: TurnPhaseRepr::from(turn_phase),
+            turn_phase: TurnPhaseRepr::from(status_turn_phase),
             session_state,
             pending_permission: matches!(turn_phase, TurnPhase::WaitingPermission),
             last_activity_at: current_timestamp(),
             workflow_step: wf_step,
             workflow_execution_state: wf_state,
         };
-        center.update_session(status);
+        let changes = center.update_session(status);
+        let broadcaster = app
+            .try_state::<Arc<crate::ws_bridge::WsBroadcaster>>()
+            .map(|state| state.inner().clone());
+        crate::agent_status_events::emit_agent_status_changes(app, broadcaster.as_deref(), changes);
     }
 
     // Webhook 送信（Slack/Discord）
@@ -1252,9 +1360,10 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
             let notify = cfg.server.notify.clone();
             let url = notify.webhook_url.clone();
             if !url.is_empty() && crate::webhook::should_notify(&notify, &agent_state, &ft_state) {
+                let agent_state_msg = crate::protocol::AgentState::from(agent_state.clone());
                 let sync = crate::protocol::AgentStateSync {
                     worktree_path: worktree_path.clone(),
-                    state: agent_state,
+                    state: agent_state_msg,
                     exit_code: None,
                     timestamp: current_timestamp(),
                     session_id: Some(chat_session_id.to_string()),
@@ -1292,12 +1401,19 @@ fn emit_permission_mode_changed<R: tauri::Runtime>(
 async fn handle_sdk_permission_mode_notification<R: tauri::Runtime>(
     sdk_mode: &str,
     app: &tauri::AppHandle<R>,
-    session_store: &std::sync::Arc<crate::session::SessionStore>,
-    handles: &std::sync::Arc<tokio::sync::Mutex<crate::backends::bridge_common::AgentProcessMap>>,
+    session_store: &std::sync::Arc<crate::usecase::agent_session::session::SessionStore>,
+    handles: &std::sync::Arc<
+        tokio::sync::Mutex<
+            crate::infrastructure::agent_session::runtime::bridge_common::AgentProcessMap,
+        >,
+    >,
     chat_session_id: &str,
 ) {
-    let sdk_abstract = crate::backends::permission_flags::mode_from_claude_flag(sdk_mode);
-    let data_dir = match crate::session::resolve_data_dir(app) {
+    let sdk_abstract =
+        crate::infrastructure::agent_session::runtime::permission_flags::mode_from_claude_flag(
+            sdk_mode,
+        );
+    let data_dir = match crate::app_data_dir::resolve_data_dir(app) {
         Ok(dir) => dir,
         Err(e) => {
             log::error!(
@@ -1402,7 +1518,7 @@ fn bridge_permission_fields(
     pm: crate::permission::PermissionMode,
     backend_id: &str,
 ) -> Vec<(String, serde_json::Value)> {
-    use crate::backends::permission_flags::{
+    use crate::infrastructure::agent_session::runtime::permission_flags::{
         claude_flag_from_mode, codex_approval_policy_from_mode, codex_sandbox_mode_from_mode,
     };
     if backend_id == CODEX_BACKEND_ID {
@@ -2336,7 +2452,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                             );
                             // AgentStatusCenter にも通知（exit_code 非0 なら Error 扱い）
                             let override_state = if exit_code != 0 {
-                                Some(crate::session::SessionState::Error)
+                                Some(crate::usecase::agent_session::session::SessionState::Error)
                             } else {
                                 None
                             };
@@ -2373,7 +2489,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                     handle.block_on(async move {
                                         if let Some(engine) = wf_engine {
                                             if engine.is_running(&csid_wf).await {
-                                                match crate::session::resolve_data_dir(&app_wf) {
+                                                match crate::app_data_dir::resolve_data_dir(&app_wf) {
                                                     Ok(data_dir) => {
                                                         let store =
                                                             crate::workflow::pending_command::PendingCommandStore::new(
@@ -2481,7 +2597,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                 &session_store_clone,
                                 &csid_stdout,
                                 TurnPhase::Idle,
-                                Some(crate::session::SessionState::Error),
+                                Some(crate::usecase::agent_session::session::SessionState::Error),
                             );
                         }
                         // Init error → clear stale agent_session_id to prevent infinite resume loop
@@ -2731,7 +2847,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                 &session_store_clone,
                 &csid_stdout,
                 TurnPhase::Idle,
-                Some(crate::session::SessionState::Error),
+                Some(crate::usecase::agent_session::session::SessionState::Error),
             );
         } else if effect.was_initializing {
             notify_status_transition(
@@ -2739,7 +2855,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                 &session_store_clone,
                 &csid_stdout,
                 TurnPhase::Idle,
-                Some(crate::session::SessionState::Error),
+                Some(crate::usecase::agent_session::session::SessionState::Error),
             );
         }
     });
@@ -2855,7 +2971,7 @@ fn spawn_streaming_timer<R: tauri::Runtime>(
 async fn get_session_internal(
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
-    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+    registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
     app: &tauri::AppHandle,
     session_id: &str,
 ) -> Result<Option<GetSessionResponse>, String> {
@@ -2867,7 +2983,7 @@ async fn get_session_internal(
 async fn get_session_internal_with_data_dir(
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
-    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+    registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
     data_dir: &Path,
     session_id: &str,
 ) -> Result<Option<GetSessionResponse>, String> {
@@ -2942,8 +3058,8 @@ async fn get_session_internal_with_data_dir(
 
             Ok(Some(GetSessionResponse {
                 session,
-                turn_phase,
-                available_models,
+                turn_phase: turn_phase.into(),
+                available_models: available_models.into_iter().map(Into::into).collect(),
             }))
         }
     }
@@ -2967,7 +3083,7 @@ fn should_start_agent_process_for_summary(session: &SessionSummary) -> bool {
 
 fn ensure_session_backend_selected(
     session_store: &SessionStore,
-    registry: &crate::backends::AgentBackendRegistry,
+    registry: &crate::infrastructure::agent_session::runtime::AgentBackendRegistry,
     data_dir: &Path,
     mut session: ChatSession,
 ) -> Result<ChatSession, String> {
@@ -3016,7 +3132,7 @@ async fn remove_stale_unstarted_agent_process(
 
 async fn set_session_backend_internal(
     session_store: &Arc<SessionStore>,
-    registry: &Arc<crate::backends::AgentBackendRegistry>,
+    registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     data_dir: &Path,
     chat_session_id: &str,
@@ -3050,11 +3166,13 @@ async fn set_session_backend_internal(
     .ok_or_else(|| format!("Session not found: {chat_session_id}"))
 }
 
-#[tauri::command]
 pub async fn set_session_backend(
     app: tauri::AppHandle,
     session_store: tauri::State<'_, Arc<SessionStore>>,
-    registry: tauri::State<'_, Arc<crate::backends::AgentBackendRegistry>>,
+    registry: tauri::State<
+        '_,
+        Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
+    >,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     chat_session_id: String,
     backend_id: String,
@@ -3071,11 +3189,13 @@ pub async fn set_session_backend(
     .await
 }
 
-#[tauri::command]
 pub async fn get_session(
     state: tauri::State<'_, Arc<SessionStore>>,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
-    registry: tauri::State<'_, Arc<crate::backends::AgentBackendRegistry>>,
+    registry: tauri::State<
+        '_,
+        Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
+    >,
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<Option<GetSessionResponse>, String> {
@@ -3093,7 +3213,7 @@ pub async fn get_session(
 ///
 /// モデル「未選択（None）」状態は廃止されたが、`ChatSession.selected_model` の永続化型は
 /// 既存 JSON 互換のため `Option<String>` のまま。spawn 経路では `None` を backend の
-/// 既定モデル（[`crate::backends::AgentBackendRegistry::default_model_for`]）へ lazy 解決して
+/// 既定モデル（[`crate::infrastructure::agent_session::runtime::AgentBackendRegistry::default_model_for`]）へ lazy 解決して
 /// から Bridge へ渡す。
 fn get_persisted_spawn_info<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -3102,7 +3222,8 @@ fn get_persisted_spawn_info<R: tauri::Runtime>(
 ) -> Result<(Option<String>, Option<String>, String), String> {
     let data_dir = resolve_data_dir(app)?;
     let persisted = session_store.get_session(&data_dir, chat_session_id)?;
-    let registry = app.try_state::<Arc<crate::backends::AgentBackendRegistry>>();
+    let registry =
+        app.try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>();
     Ok(resolve_spawn_info(persisted, registry.as_deref()))
 }
 
@@ -3112,7 +3233,7 @@ fn get_persisted_spawn_info<R: tauri::Runtime>(
 /// registry 未指定（テスト等）では `None` のままとする。
 pub(crate) fn resolve_spawn_info(
     persisted: Option<ChatSession>,
-    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+    registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
 ) -> (Option<String>, Option<String>, String) {
     let (resume_sid, selected_model, backend_id) = persisted_spawn_info_from_session(persisted);
     let selected_model = resolve_selected_model(selected_model, &backend_id, registry);
@@ -3527,7 +3648,6 @@ async fn start_pending_message_turn<R: tauri::Runtime>(
     clear_pending_turn_starting(chat_session_id).await;
 }
 
-#[tauri::command]
 pub async fn interrupt_agent_query(
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     chat_session_id: String,
@@ -3713,7 +3833,6 @@ pub async fn close_all_agent_sessions(
     let _ = app;
 }
 
-#[tauri::command]
 pub async fn set_agent_permission_mode(
     app: tauri::AppHandle,
     session_store: tauri::State<'_, Arc<SessionStore>>,
@@ -3783,12 +3902,14 @@ pub(crate) fn build_agent_models_updated_payload(
     })
 }
 
-#[tauri::command]
 pub async fn set_agent_model(
     app: tauri::AppHandle,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     session_store: tauri::State<'_, Arc<SessionStore>>,
-    registry: tauri::State<'_, Arc<crate::backends::AgentBackendRegistry>>,
+    registry: tauri::State<
+        '_,
+        Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
+    >,
     chat_session_id: String,
     model_id: String,
 ) -> Result<(), String> {
@@ -3828,7 +3949,7 @@ pub(crate) async fn set_agent_model_internal(
     app: &tauri::AppHandle,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
-    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+    registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
     chat_session_id: &str,
     model_id: String,
 ) -> Result<(), String> {
@@ -3852,7 +3973,7 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
     app: Option<&tauri::AppHandle>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
-    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+    registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
     data_dir: &Path,
     chat_session_id: &str,
     model_id: String,
@@ -3949,7 +4070,6 @@ async fn sync_active_process_available_models(
     }
 }
 
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn respond_agent_permission(
     app: tauri::AppHandle,
@@ -4067,7 +4187,7 @@ struct PreparedAgentTurn {
 async fn prepare_send_agent_message_internal(
     code_usecase: &crate::usecase::code_usecase::CodeUsecase,
     session_store: &Arc<SessionStore>,
-    registry: &Arc<crate::backends::AgentBackendRegistry>,
+    registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     data_dir: &Path,
     chat_session_id: Option<String>,
@@ -4105,7 +4225,7 @@ async fn prepare_send_agent_message_internal(
         // 選択値ではない permission_mode で永続化されたセッションが残ってしまうため
         // （Spec issues-947: セッション保存層が permission_mode の正典）、生成 API を一本化する。
         // backend の登録済み初期モデルがあれば selected_model に永続化する（Spec issues-946）。
-        crate::session::create_session_with_initial_model(
+        crate::usecase::agent_session::session::create_session_with_initial_model(
             session_store,
             registry,
             data_dir,
@@ -4235,7 +4355,7 @@ async fn prepare_send_agent_message_internal(
 pub async fn send_agent_message_internal(
     app: &tauri::AppHandle,
     session_store: &Arc<SessionStore>,
-    registry: &Arc<crate::backends::AgentBackendRegistry>,
+    registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: Option<String>,
     worktree_path: String,
@@ -4301,13 +4421,15 @@ pub struct InitSessionsResponse {
 
 /// Unified command for session initialization: lists sessions, starts Bridge processes,
 /// creates a new session if empty, returns sessions + active session.
-#[tauri::command]
 pub async fn init_agent_sessions(
     app: tauri::AppHandle,
     session_store: tauri::State<'_, Arc<SessionStore>>,
-    registry: tauri::State<'_, Arc<crate::backends::AgentBackendRegistry>>,
+    registry: tauri::State<
+        '_,
+        Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
+    >,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
-    open_tabs: tauri::State<'_, Arc<crate::session::OpenTabRegistry>>,
+    open_tabs: tauri::State<'_, Arc<crate::usecase::agent_session::session::OpenTabRegistry>>,
     worktree_path: String,
 ) -> Result<InitSessionsResponse, String> {
     let data_dir = resolve_data_dir(&app)?;
@@ -4412,7 +4534,6 @@ fn parse_skill_frontmatter(content: &str) -> Option<(String, String)> {
 /// 4. `{cwd}/.claude/commands/*.md` — project command
 ///
 /// When the same name appears in multiple sources, the higher-priority entry wins.
-#[tauri::command]
 pub async fn scan_slash_commands(cwd: String) -> Result<Vec<SlashCommandEntry>, String> {
     let mut commands = Vec::new();
     let mut seen = HashSet::new();
@@ -4591,7 +4712,6 @@ fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
 
 /// Tauri command: Validate image bytes and return base64-encoded image attachment.
 /// Called from the frontend after D&D or paste events.
-#[tauri::command]
 pub fn prepare_image_attachment(data: Vec<u8>) -> Result<ImageAttachment, String> {
     if data.is_empty() {
         return Err("Empty image data".to_string());
@@ -4602,7 +4722,6 @@ pub fn prepare_image_attachment(data: Vec<u8>) -> Result<ImageAttachment, String
 /// Tauri command: Read image files from paths and return base64-encoded attachments.
 /// Called from the frontend when files are dropped via native drag-and-drop.
 /// Non-image files are silently skipped.
-#[tauri::command]
 pub async fn prepare_image_attachments_from_paths(
     paths: Vec<String>,
 ) -> Result<Vec<ImageAttachment>, String> {
@@ -4673,7 +4792,7 @@ pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backends::{
+    use crate::infrastructure::agent_session::runtime::{
         AgentBackend, AgentBackendRegistry, AgentMessage, PermissionResponse, SessionConfig,
         SessionHandle,
     };
@@ -4740,7 +4859,7 @@ mod tests {
             id: session_id.to_string(),
             worktree_path: "/repo".to_string(),
             messages: Vec::new(),
-            state: crate::session::SessionState::Closed,
+            state: crate::usecase::agent_session::session::SessionState::Closed,
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: Some("sdk-resume-id".to_string()),
@@ -6436,7 +6555,7 @@ mod tests {
         }));
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
-        let open_tabs = crate::session::OpenTabRegistry::default();
+        let open_tabs = crate::usecase::agent_session::session::OpenTabRegistry::default();
         let worktree_path = "/repo".to_string();
         let regular_session = create_session_internal(
             &session_store,
@@ -7201,7 +7320,7 @@ mod tests {
         let session = SessionSummary {
             id: "empty".to_string(),
             worktree_path: "/repo".to_string(),
-            state: crate::session::SessionState::Active,
+            state: crate::usecase::agent_session::session::SessionState::Active,
             created_at: 1.0,
             updated_at: 1.0,
             first_message: String::new(),
@@ -7220,7 +7339,7 @@ mod tests {
         let mut session = SessionSummary {
             id: "sent".to_string(),
             worktree_path: "/repo".to_string(),
-            state: crate::session::SessionState::Active,
+            state: crate::usecase::agent_session::session::SessionState::Active,
             created_at: 1.0,
             updated_at: 1.0,
             first_message: "hello".to_string(),
@@ -7249,7 +7368,7 @@ mod tests {
             SessionSummary {
                 id: id.to_string(),
                 worktree_path: "/repo".to_string(),
-                state: crate::session::SessionState::Idle,
+                state: crate::usecase::agent_session::session::SessionState::Idle,
                 created_at: 1.0,
                 updated_at: 1.0,
                 first_message: String::new(),
@@ -7286,7 +7405,7 @@ mod tests {
         let session = SessionSummary {
             id: "step".to_string(),
             worktree_path: "/repo".to_string(),
-            state: crate::session::SessionState::Idle,
+            state: crate::usecase::agent_session::session::SessionState::Idle,
             created_at: 1.0,
             updated_at: 1.0,
             first_message: "history".to_string(),
@@ -7428,7 +7547,7 @@ mod tests {
         {
             let _guard = acquire_session_runtime_lock("lock-prune-test").await;
             assert!(
-                crate::backends::runtime_coordinator::session_runtime_lock_exists(
+                crate::infrastructure::agent_session::runtime::runtime_coordinator::session_runtime_lock_exists(
                     "lock-prune-test"
                 )
                 .await
@@ -7436,7 +7555,7 @@ mod tests {
         }
 
         for _ in 0..10 {
-            if !crate::backends::runtime_coordinator::session_runtime_lock_exists("lock-prune-test")
+            if !crate::infrastructure::agent_session::runtime::runtime_coordinator::session_runtime_lock_exists("lock-prune-test")
                 .await
             {
                 return;
@@ -8885,7 +9004,9 @@ mod tests {
 
     #[test]
     fn claude_flag_round_trip_via_permission_flags_module() {
-        use crate::backends::permission_flags::{claude_flag_from_mode, mode_from_claude_flag};
+        use crate::infrastructure::agent_session::runtime::permission_flags::{
+            claude_flag_from_mode, mode_from_claude_flag,
+        };
         use crate::permission::PermissionMode;
         for (abstract_mode, expected_flag) in [
             (PermissionMode::Ask, "default"),
@@ -9186,7 +9307,7 @@ mod tests {
             id: session_id.to_string(),
             worktree_path: "/repo".to_string(),
             messages: Vec::new(),
-            state: crate::session::SessionState::Active,
+            state: crate::usecase::agent_session::session::SessionState::Active,
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: None,
@@ -10301,8 +10422,12 @@ mod tests {
             tmp.path().to_path_buf(),
         ));
         let mut registry = AgentBackendRegistry::new();
-        registry.register(Arc::new(crate::backends::claude::ClaudeBackend::new()));
-        registry.register(Arc::new(crate::backends::codex::CodexBackend::new()));
+        registry.register(Arc::new(
+            crate::infrastructure::agent_session::runtime::claude::ClaudeBackend::new(),
+        ));
+        registry.register(Arc::new(
+            crate::infrastructure::agent_session::runtime::codex::CodexBackend::new(),
+        ));
         registry.set_config(config);
         Arc::new(registry)
     }
@@ -10484,7 +10609,7 @@ mod tests {
             id: "s1".to_string(),
             worktree_path: "/repo".to_string(),
             messages: Vec::new(),
-            state: crate::session::SessionState::Active,
+            state: crate::usecase::agent_session::session::SessionState::Active,
             created_at: 0.0,
             updated_at: 0.0,
             agent_session_id,

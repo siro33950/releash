@@ -210,7 +210,7 @@ impl SessionStore {
             .get_session(app_data_dir, session_id)?
             .ok_or_else(|| format!("Session not found: {session_id}"))?;
         session.state = state;
-        session.updated_at = crate::session::now_timestamp();
+        session.updated_at = crate::usecase::agent_session::session::now_timestamp();
         self.save_session(app_data_dir, &session)
     }
 
@@ -329,7 +329,7 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{ChatMessage, MessageRole, SessionState};
+    use crate::usecase::agent_session::session::{ChatMessage, MessageRole, SessionState};
     use tempfile::TempDir;
 
     const UUID1: &str = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";

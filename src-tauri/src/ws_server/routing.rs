@@ -117,7 +117,7 @@ mod tests {
             None,
             false,
             Arc::new(crate::git_host::PrCache::new()),
-            Arc::new(crate::backends::AgentBackendRegistry::new()),
+            Arc::new(crate::infrastructure::agent_session::runtime::AgentBackendRegistry::new()),
             Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
         )
     }
@@ -275,8 +275,11 @@ mod tests {
             config,
             std::path::PathBuf::from("/tmp/test-releash.toml"),
         ));
-        let mut registry = crate::backends::AgentBackendRegistry::new();
-        registry.register(Arc::new(crate::backends::claude::ClaudeBackend::new()));
+        let mut registry =
+            crate::infrastructure::agent_session::runtime::AgentBackendRegistry::new();
+        registry.register(Arc::new(
+            crate::infrastructure::agent_session::runtime::claude::ClaudeBackend::new(),
+        ));
         registry.set_config(app_config.clone());
         WsServerState::new(
             None,

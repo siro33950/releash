@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 
-use crate::backends::bridge_common::CLAUDE_BACKEND_ID;
-use crate::backends::{
+use crate::domain::agent_session::CLAUDE_FIXED_MODELS;
+use crate::infrastructure::agent_session::runtime::bridge_common::CLAUDE_BACKEND_ID;
+use crate::infrastructure::agent_session::runtime::{
     AgentBackend, AgentMessage, BackendRuntimeConfig, PermissionResponse, SessionConfig,
     SessionHandle,
 };
-use crate::domain::agent_session::CLAUDE_FIXED_MODELS;
 
 /// Claude Agent SDK Bridge バックエンド。
 /// Node.js ブリッジプロセスを経由して Claude Agent SDK と通信する。

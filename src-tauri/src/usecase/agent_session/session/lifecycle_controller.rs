@@ -25,3 +25,33 @@ impl<'a> SessionLifecycleController<'a> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_session_state_marks_session_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::default());
+        let session = super::super::create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+
+        let controller = SessionLifecycleController {
+            session_store: &store,
+            data_dir: temp.path(),
+        };
+        controller.close_session_state(&session.id).unwrap();
+
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.state, SessionState::Closed);
+    }
+}

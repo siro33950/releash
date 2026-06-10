@@ -76,7 +76,7 @@ pub(crate) struct WsServerState {
     app_handle: Option<tauri::AppHandle>,
     tls_enabled: bool,
     pr_cache: Arc<PrCache>,
-    backend_registry: Arc<crate::backends::AgentBackendRegistry>,
+    backend_registry: Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
     /// repository 責務の usecase（composition root の wiring で1回構築し State が Arc で
     /// 保持・再利用する）。WS ハンドラはこれを介して worktree / branch を読み書きする。
     repository_usecase: Arc<crate::usecase::repository_usecase::RepositoryUsecase>,
@@ -84,7 +84,10 @@ pub(crate) struct WsServerState {
     /// AppHandle を必要としない統合テスト（Spec issues-947 の AgentSessionStartRequest 正常系等）で
     /// `create_session_with_permission` を AppHandle 無しで走らせる。
     #[cfg(test)]
-    test_session_deps: Option<(Arc<crate::session::SessionStore>, PathBuf)>,
+    test_session_deps: Option<(
+        Arc<crate::usecase::agent_session::session::SessionStore>,
+        PathBuf,
+    )>,
     #[cfg(test)]
     test_review_deps: Option<(Arc<crate::review_comments::ReviewCommentStore>, PathBuf)>,
     #[cfg(test)]
@@ -102,7 +105,7 @@ impl WsServerState {
         app_handle: Option<tauri::AppHandle>,
         tls_enabled: bool,
         pr_cache: Arc<PrCache>,
-        backend_registry: Arc<crate::backends::AgentBackendRegistry>,
+        backend_registry: Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
         repository_usecase: Arc<crate::usecase::repository_usecase::RepositoryUsecase>,
     ) -> Self {
         Self {
@@ -131,7 +134,7 @@ impl WsServerState {
     #[cfg(test)]
     pub(crate) fn set_test_session_deps(
         &mut self,
-        session_store: Arc<crate::session::SessionStore>,
+        session_store: Arc<crate::usecase::agent_session::session::SessionStore>,
         data_dir: PathBuf,
     ) {
         self.test_session_deps = Some((session_store, data_dir));
@@ -151,7 +154,9 @@ impl WsServerState {
         self.test_review_emit_log.lock().clone()
     }
 
-    pub(crate) fn get_backend_registry(&self) -> &Arc<crate::backends::AgentBackendRegistry> {
+    pub(crate) fn get_backend_registry(
+        &self,
+    ) -> &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry> {
         &self.backend_registry
     }
 
@@ -163,11 +168,11 @@ impl WsServerState {
         worktree_path: &str,
         backend_id: Option<String>,
         permission_mode: crate::permission::PermissionMode,
-    ) -> Result<crate::session::ChatSession, String> {
+    ) -> Result<crate::usecase::agent_session::session::ChatSession, String> {
         #[cfg(test)]
         {
             if let Some((session_store, data_dir)) = &self.test_session_deps {
-                return crate::session::create_session_internal_with_permission(
+                return crate::usecase::agent_session::session::create_session_internal_with_permission(
                     session_store,
                     data_dir,
                     worktree_path,
@@ -178,10 +183,11 @@ impl WsServerState {
         }
         use tauri::Manager;
         let app = self.app_handle.as_ref().ok_or("App handle not available")?;
-        let session_store = app.state::<Arc<crate::session::SessionStore>>();
-        let data_dir = crate::session::resolve_data_dir(app)?;
+        let session_store =
+            app.state::<Arc<crate::usecase::agent_session::session::SessionStore>>();
+        let data_dir = crate::app_data_dir::resolve_data_dir(app)?;
         match backend_id {
-            Some(bid) => crate::session::create_session_with_initial_model(
+            Some(bid) => crate::usecase::agent_session::session::create_session_with_initial_model(
                 &session_store,
                 &self.backend_registry,
                 &data_dir,
@@ -189,13 +195,15 @@ impl WsServerState {
                 bid,
                 permission_mode,
             ),
-            None => crate::session::create_session_internal_with_permission(
-                &session_store,
-                &data_dir,
-                worktree_path,
-                None,
-                permission_mode,
-            ),
+            None => {
+                crate::usecase::agent_session::session::create_session_internal_with_permission(
+                    &session_store,
+                    &data_dir,
+                    worktree_path,
+                    None,
+                    permission_mode,
+                )
+            }
         }
     }
 
@@ -282,7 +290,7 @@ mod tests {
             None,
             false,
             Arc::new(crate::git_host::PrCache::new()),
-            Arc::new(crate::backends::AgentBackendRegistry::new()),
+            Arc::new(crate::infrastructure::agent_session::runtime::AgentBackendRegistry::new()),
             Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
         );
         assert_eq!(

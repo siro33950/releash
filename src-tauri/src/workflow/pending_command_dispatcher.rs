@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::agent_sdk::AgentProcessMap;
-use crate::session::SessionStore;
+use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::usecase::agent_session::session::SessionStore;
 use crate::workflow::command::{WorkflowCommand, WorkflowCommandResult};
 use crate::workflow::engine::{WorkflowEngine, WorkflowEngineError};
 use crate::workflow::event::CliMutationRequestRecord;
@@ -323,14 +323,16 @@ mod tests {
             config,
             TempDir::new().unwrap().path().join("config.toml"),
         ));
-        let registry = Arc::new(crate::backends::build_registry(Arc::clone(&app_config)));
+        let registry = Arc::new(
+            crate::infrastructure::agent_session::runtime::build_registry(Arc::clone(&app_config)),
+        );
         let data_dir = std::env::temp_dir().join(format!(
             "releash-pending-dispatcher-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&data_dir).unwrap();
         tauri::test::mock_builder()
-            .manage(crate::session::TestDataDir(data_dir))
+            .manage(crate::app_data_dir::TestDataDir(data_dir))
             .manage(app_config)
             .manage(registry)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -338,15 +340,15 @@ mod tests {
     }
 
     fn dispatch_data_dir(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> std::path::PathBuf {
-        crate::session::resolve_data_dir(app).expect("mock app data dir must resolve")
+        crate::app_data_dir::resolve_data_dir(app).expect("mock app data dir must resolve")
     }
 
     fn make_dispatch_deps() -> (
-        Arc<crate::session::SessionStore>,
+        Arc<crate::usecase::agent_session::session::SessionStore>,
         Arc<Mutex<AgentProcessMap>>,
     ) {
         (
-            Arc::new(crate::session::SessionStore::default()),
+            Arc::new(crate::usecase::agent_session::session::SessionStore::default()),
             Arc::new(Mutex::new(AgentProcessMap::new())),
         )
     }

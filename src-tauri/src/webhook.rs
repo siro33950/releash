@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use crate::config::{DesktopNotifyMode, NotifySection};
 use crate::focus_tracker::FocusTracker;
-use crate::protocol::{AgentState, AgentStateSync};
+use crate::protocol::{AgentState as ProtocolAgentState, AgentStateSync};
+use crate::usecase::agent_session::status::AgentState;
 
 /// 通知を送出すべきかを判定する。
 /// - state ごとの on_* フラグで有効/無効
@@ -42,16 +43,16 @@ pub fn build_slack_payload(event: &AgentStateSync) -> serde_json::Value {
     let branch = extract_branch(&event.worktree_path);
 
     let text = match event.state {
-        AgentState::Running => format!(":hourglass: Agent started on `{branch}`"),
-        AgentState::Done => {
+        ProtocolAgentState::Running => format!(":hourglass: Agent started on `{branch}`"),
+        ProtocolAgentState::Done => {
             let code = event.exit_code.unwrap_or(0);
             format!(":white_check_mark: Agent completed on `{branch}` (exit code: {code})")
         }
-        AgentState::Error => {
+        ProtocolAgentState::Error => {
             let code = event.exit_code.unwrap_or(1);
             format!(":x: Agent failed on `{branch}` (exit code: {code})")
         }
-        AgentState::Waiting => format!(":bell: Agent waiting for input on `{branch}`"),
+        ProtocolAgentState::Waiting => format!(":bell: Agent waiting for input on `{branch}`"),
     };
 
     serde_json::json!({
@@ -64,25 +65,25 @@ pub fn build_discord_payload(event: &AgentStateSync) -> serde_json::Value {
     let branch = extract_branch(&event.worktree_path);
 
     let (description, color) = match event.state {
-        AgentState::Running => (
+        ProtocolAgentState::Running => (
             format!("\u{23f3} Agent started on `{branch}`"),
             3447003, // 0x3498DB
         ),
-        AgentState::Done => {
+        ProtocolAgentState::Done => {
             let code = event.exit_code.unwrap_or(0);
             (
                 format!("\u{2705} Agent completed on `{branch}` (exit code: {code})"),
                 3066993, // 0x2ECC71
             )
         }
-        AgentState::Error => {
+        ProtocolAgentState::Error => {
             let code = event.exit_code.unwrap_or(1);
             (
                 format!("\u{274c} Agent failed on `{branch}` (exit code: {code})"),
                 15158332, // 0xE74C3C
             )
         }
-        AgentState::Waiting => (
+        ProtocolAgentState::Waiting => (
             format!("\u{1f514} Agent waiting for input on `{branch}`"),
             15965202, // 0xF39C12
         ),
@@ -187,7 +188,7 @@ mod tests {
 
     // --- build_slack_payload ---
 
-    fn make_event(state: AgentState, exit_code: Option<i32>) -> AgentStateSync {
+    fn make_event(state: ProtocolAgentState, exit_code: Option<i32>) -> AgentStateSync {
         AgentStateSync {
             worktree_path: "/repos/worktrees/feature-x".to_string(),
             state,
@@ -200,7 +201,7 @@ mod tests {
 
     #[test]
     fn slack_running_payload() {
-        let event = make_event(AgentState::Running, None);
+        let event = make_event(ProtocolAgentState::Running, None);
         let payload = build_slack_payload(&event);
         let text = payload["text"].as_str().unwrap();
         assert!(text.contains(":hourglass:"));
@@ -210,7 +211,7 @@ mod tests {
 
     #[test]
     fn slack_done_payload() {
-        let event = make_event(AgentState::Done, Some(0));
+        let event = make_event(ProtocolAgentState::Done, Some(0));
         let payload = build_slack_payload(&event);
         let text = payload["text"].as_str().unwrap();
         assert!(text.contains(":white_check_mark:"));
@@ -219,7 +220,7 @@ mod tests {
 
     #[test]
     fn slack_error_payload() {
-        let event = make_event(AgentState::Error, Some(1));
+        let event = make_event(ProtocolAgentState::Error, Some(1));
         let payload = build_slack_payload(&event);
         let text = payload["text"].as_str().unwrap();
         assert!(text.contains(":x:"));
@@ -228,7 +229,7 @@ mod tests {
 
     #[test]
     fn slack_waiting_payload() {
-        let event = make_event(AgentState::Waiting, None);
+        let event = make_event(ProtocolAgentState::Waiting, None);
         let payload = build_slack_payload(&event);
         let text = payload["text"].as_str().unwrap();
         assert!(text.contains(":bell:"));
@@ -239,7 +240,7 @@ mod tests {
 
     #[test]
     fn discord_running_payload() {
-        let event = make_event(AgentState::Running, None);
+        let event = make_event(ProtocolAgentState::Running, None);
         let payload = build_discord_payload(&event);
         let embed = &payload["embeds"][0];
         assert_eq!(embed["color"], 3447003);
@@ -250,7 +251,7 @@ mod tests {
 
     #[test]
     fn discord_done_payload() {
-        let event = make_event(AgentState::Done, Some(0));
+        let event = make_event(ProtocolAgentState::Done, Some(0));
         let payload = build_discord_payload(&event);
         let embed = &payload["embeds"][0];
         assert_eq!(embed["color"], 3066993);
@@ -261,7 +262,7 @@ mod tests {
 
     #[test]
     fn discord_error_payload() {
-        let event = make_event(AgentState::Error, Some(1));
+        let event = make_event(ProtocolAgentState::Error, Some(1));
         let payload = build_discord_payload(&event);
         let embed = &payload["embeds"][0];
         assert_eq!(embed["color"], 15158332);
@@ -272,7 +273,7 @@ mod tests {
 
     #[test]
     fn discord_waiting_payload() {
-        let event = make_event(AgentState::Waiting, None);
+        let event = make_event(ProtocolAgentState::Waiting, None);
         let payload = build_discord_payload(&event);
         let embed = &payload["embeds"][0];
         assert_eq!(embed["color"], 15965202);
@@ -285,7 +286,7 @@ mod tests {
 
     #[test]
     fn dispatches_to_discord_for_discord_url() {
-        let event = make_event(AgentState::Running, None);
+        let event = make_event(ProtocolAgentState::Running, None);
         let payload = build_payload("https://discord.com/api/webhooks/123/abc", &event);
         assert!(payload.get("embeds").is_some());
         assert!(payload.get("text").is_none());
@@ -293,7 +294,7 @@ mod tests {
 
     #[test]
     fn dispatches_to_slack_for_slack_url() {
-        let event = make_event(AgentState::Running, None);
+        let event = make_event(ProtocolAgentState::Running, None);
         let payload = build_payload("https://hooks.slack.com/services/T00/B00/xxx", &event);
         assert!(payload.get("text").is_some());
         assert!(payload.get("embeds").is_none());
@@ -301,7 +302,7 @@ mod tests {
 
     #[test]
     fn dispatches_to_slack_for_generic_url() {
-        let event = make_event(AgentState::Running, None);
+        let event = make_event(ProtocolAgentState::Running, None);
         let payload = build_payload("https://example.com/webhook", &event);
         assert!(payload.get("text").is_some());
         assert!(payload.get("embeds").is_none());
@@ -311,7 +312,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_url_returns_immediately() {
-        let event = make_event(AgentState::Running, None);
+        let event = make_event(ProtocolAgentState::Running, None);
         send_webhook("", &event).await;
     }
 

@@ -5,13 +5,14 @@ use tokio::sync::Mutex;
 use crate::agent_message_dispatcher::{
     dispatch_agent_message, AgentMessageDispatchContext, AgentMessageDispatchRequest,
 };
-use crate::backends::{AgentBackendRegistry, ImageAttachment};
-use crate::session::errors::session_target_rejected;
-use crate::session::{resolve_data_dir, SessionStore};
+use crate::app_data_dir::resolve_data_dir;
+use crate::infrastructure::agent_session::runtime::{AgentBackendRegistry, ImageAttachment};
+use crate::usecase::agent_session::session::errors::session_target_rejected;
+use crate::usecase::agent_session::session::SessionStore;
 use crate::workflow::engine::WorkflowEngine;
 
 fn reject_explicit_start_for_workflow_step_session(
-    session: &crate::session::ChatSession,
+    session: &crate::usecase::agent_session::session::ChatSession,
     cwd: &str,
 ) -> Result<(), String> {
     if session.worktree_path != cwd || session.workflow_step_session {
@@ -30,14 +31,94 @@ fn validate_invoke_permission_mode(
     crate::permission::PermissionMode::parse(&permission_value).map_err(|e| e.to_string())
 }
 
-fn should_skip_close_agent_session(session: Option<&crate::session::ChatSession>) -> bool {
+fn should_skip_close_agent_session(
+    session: Option<&crate::usecase::agent_session::session::ChatSession>,
+) -> bool {
     session.is_some_and(|session| session.workflow_step_session)
+}
+
+#[tauri::command]
+pub async fn set_session_backend(
+    app: tauri::AppHandle,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
+    handles: tauri::State<
+        '_,
+        Arc<Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>,
+    >,
+    chat_session_id: String,
+    backend_id: String,
+) -> Result<crate::usecase::agent_session::session::GetSessionResponse, String> {
+    crate::infrastructure::agent_session::runtime::set_session_backend(
+        app,
+        session_store,
+        registry,
+        handles,
+        chat_session_id,
+        backend_id,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_session(
+    state: tauri::State<'_, Arc<SessionStore>>,
+    handles: tauri::State<
+        '_,
+        Arc<Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>,
+    >,
+    registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<Option<crate::usecase::agent_session::session::GetSessionResponse>, String> {
+    crate::infrastructure::agent_session::runtime::get_session(
+        state, handles, registry, app, session_id,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn interrupt_agent_query(
+    handles: tauri::State<
+        '_,
+        Arc<Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>,
+    >,
+    chat_session_id: String,
+) -> Result<(), String> {
+    crate::infrastructure::agent_session::runtime::interrupt_agent_query(handles, chat_session_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn init_agent_sessions(
+    app: tauri::AppHandle,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
+    handles: tauri::State<
+        '_,
+        Arc<Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>,
+    >,
+    open_tabs: tauri::State<'_, Arc<crate::usecase::agent_session::session::OpenTabRegistry>>,
+    worktree_path: String,
+) -> Result<crate::infrastructure::agent_session::runtime::InitSessionsResponse, String> {
+    crate::infrastructure::agent_session::runtime::init_agent_sessions(
+        app,
+        session_store,
+        registry,
+        handles,
+        open_tabs,
+        worktree_path,
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn start_agent_session(
     app: tauri::AppHandle,
-    handles: tauri::State<'_, Arc<Mutex<crate::agent_sdk::AgentProcessMap>>>,
+    handles: tauri::State<
+        '_,
+        Arc<Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>,
+    >,
     session_store: tauri::State<'_, Arc<SessionStore>>,
     chat_session_id: String,
     cwd: String,
@@ -64,7 +145,7 @@ pub async fn start_agent_session(
         )?;
     }
 
-    crate::agent_sdk::start_agent_session_internal(
+    crate::infrastructure::agent_session::runtime::start_agent_session_internal(
         &app,
         handles.inner(),
         session_store.inner(),
@@ -79,20 +160,24 @@ pub async fn start_agent_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::SessionStore;
+    use crate::usecase::agent_session::session::SessionStore;
 
-    fn session_for_start_guard(workflow_step_session: bool) -> crate::session::ChatSession {
-        crate::session::ChatSession {
+    fn session_for_start_guard(
+        workflow_step_session: bool,
+    ) -> crate::usecase::agent_session::session::ChatSession {
+        crate::usecase::agent_session::session::ChatSession {
             id: uuid::Uuid::new_v4().to_string(),
             worktree_path: "/repo".to_string(),
             messages: Vec::new(),
-            state: crate::session::SessionState::Idle,
+            state: crate::usecase::agent_session::session::SessionState::Idle,
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
             selected_model: None,
-            backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),
+            backend_id: Some(
+                crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
+            ),
             workflow_step_session,
         }
     }
@@ -100,7 +185,7 @@ mod tests {
     #[test]
     fn start_agent_session_guard_rejects_workflow_step_session_before_runtime_start() {
         let session = session_for_start_guard(true);
-        let handles = crate::agent_sdk::AgentProcessMap::new();
+        let handles = crate::infrastructure::agent_session::runtime::AgentProcessMap::new();
 
         let result = reject_explicit_start_for_workflow_step_session(&session, "/repo");
 
@@ -155,21 +240,25 @@ mod tests {
     async fn start_agent_session_invalid_permission_mode_does_not_mutate_persisted_state() {
         let data_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(SessionStore::default());
-        let session = crate::session::ChatSession {
+        let session = crate::usecase::agent_session::session::ChatSession {
             id: uuid::Uuid::new_v4().to_string(),
             worktree_path: "/repo".to_string(),
             messages: Vec::new(),
-            state: crate::session::SessionState::Idle,
+            state: crate::usecase::agent_session::session::SessionState::Idle,
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
             selected_model: None,
-            backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),
+            backend_id: Some(
+                crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
+            ),
             workflow_step_session: false,
         };
         store.save_session(data_dir.path(), &session).unwrap();
-        let handles = Arc::new(Mutex::new(crate::agent_sdk::AgentProcessMap::new()));
+        let handles = Arc::new(Mutex::new(
+            crate::infrastructure::agent_session::runtime::AgentProcessMap::new(),
+        ));
 
         for invalid in [None, Some(String::new()), Some("acceptEdits".to_string())] {
             let result = validate_invoke_permission_mode(invalid.clone());
@@ -187,10 +276,12 @@ mod tests {
     #[tokio::test]
     async fn close_agent_session_guard_keeps_workflow_step_runtime() {
         let session = session_for_start_guard(true);
-        let handles = Arc::new(Mutex::new(crate::agent_sdk::AgentProcessMap::new()));
+        let handles = Arc::new(Mutex::new(
+            crate::infrastructure::agent_session::runtime::AgentProcessMap::new(),
+        ));
         handles.lock().await.insert(
             session.id.clone(),
-            crate::agent_sdk::make_test_agent_process(),
+            crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
 
         assert!(should_skip_close_agent_session(Some(&session)));
@@ -201,7 +292,10 @@ mod tests {
 #[tauri::command]
 pub async fn close_agent_session(
     app: tauri::AppHandle,
-    handles: tauri::State<'_, Arc<Mutex<crate::agent_sdk::AgentProcessMap>>>,
+    handles: tauri::State<
+        '_,
+        Arc<Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>,
+    >,
     session_store: tauri::State<'_, Arc<SessionStore>>,
     chat_session_id: String,
 ) -> Result<(), String> {
@@ -212,18 +306,26 @@ pub async fn close_agent_session(
     if should_skip_close_agent_session(session.as_ref()) {
         return Ok(());
     }
-    crate::agent_sdk::close_agent_session_internal(&app, handles.inner(), &chat_session_id).await
+    crate::infrastructure::agent_session::runtime::close_agent_session_internal(
+        &app,
+        handles.inner(),
+        &chat_session_id,
+    )
+    .await
 }
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn send_agent_message(
     app: tauri::AppHandle,
-    handles: tauri::State<'_, Arc<Mutex<crate::agent_sdk::AgentProcessMap>>>,
+    handles: tauri::State<
+        '_,
+        Arc<Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>,
+    >,
     session_store: tauri::State<'_, Arc<SessionStore>>,
     registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
-    open_tabs: tauri::State<'_, Arc<crate::session::OpenTabRegistry>>,
+    open_tabs: tauri::State<'_, Arc<crate::usecase::agent_session::session::OpenTabRegistry>>,
     chat_session_id: Option<String>,
     worktree_path: String,
     content: String,
@@ -231,16 +333,17 @@ pub async fn send_agent_message(
     backend_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
-) -> Result<crate::agent_sdk::SendMessageResponse, String> {
+) -> Result<crate::infrastructure::agent_session::runtime::SendMessageResponse, String> {
     let permission_mode = validate_invoke_permission_mode(permission_mode)?;
-    // 境界（Tauri 引数）で受けた転送表現を domain VO へ詰め替える。
     let mentions = mentions.map(crate::adaptor::protocol::mention::into_domain_vec);
     let response = dispatch_agent_message(
         AgentMessageDispatchContext {
-            app: &app,
-            session_store: session_store.inner(),
-            registry: registry.inner(),
-            handles: handles.inner(),
+            gateway: crate::infrastructure::agent_session::runtime_gateway::AgentRuntimeGateway {
+                app: &app,
+                session_store: session_store.inner(),
+                registry: registry.inner(),
+                handles: handles.inner(),
+            },
         },
         AgentMessageDispatchRequest {
             chat_session_id,

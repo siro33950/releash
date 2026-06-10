@@ -177,7 +177,6 @@ impl WsBroadcaster {
 mod tests {
     use super::*;
     use crate::protocol::PtyOutputMsg;
-    use crate::session::MessagePart;
 
     #[test]
     fn empty_buffer_returns_empty_string() {
@@ -349,7 +348,7 @@ mod tests {
             session_id: session.to_string(),
             message_id: message.to_string(),
             parts: (0..n)
-                .map(|i| MessagePart::Text {
+                .map(|i| crate::protocol::AgentStreamPartMsg::Text {
                     content: format!("p{i}"),
                     parent_tool_use_id: None,
                 })

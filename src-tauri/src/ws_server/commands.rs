@@ -76,7 +76,8 @@ pub async fn start_server_core(
             .ok()
             .map(|d| d.join("generated").join("remote"))
     };
-    let backend_registry = app.state::<Arc<crate::backends::AgentBackendRegistry>>();
+    let backend_registry =
+        app.state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>();
     // composition root（lib.rs）で組み立てた単一 RepositoryUsecase を注入する。
     // ws_server は routing/transport state に閉じ、DI 配線は持たない。
     let repository_usecase =

@@ -193,14 +193,16 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     // --- 初期データ送信: 全 SessionStatus を AgentStateSync 互換形式で送信 ---
     if let Some(app) = &state.app_handle {
         use tauri::Manager;
-        if let Some(center) = app.try_state::<Arc<crate::agent_status::AgentStatusCenter>>() {
+        if let Some(center) =
+            app.try_state::<Arc<crate::usecase::agent_session::status::AgentStatusCenter>>()
+        {
             let agent_msgs: Vec<String> = center
                 .list_sessions()
                 .into_iter()
                 .filter_map(|status| {
                     let sync = AgentStateSync {
                         worktree_path: status.worktree_path,
-                        state: status.agent_state,
+                        state: status.agent_state.into(),
                         exit_code: None,
                         timestamp: status.last_activity_at,
                         session_id: Some(status.chat_session_id),

@@ -4,14 +4,10 @@ mod open_tabs;
 mod store;
 
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tauri::{Manager, State};
 
+pub use crate::usecase::agent_session::status::TurnPhase;
 pub use open_tabs::OpenTabRegistry;
 pub use store::SessionStore;
-
-#[cfg(test)]
-pub(crate) struct TestDataDir(pub std::path::PathBuf);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -148,6 +144,34 @@ pub enum ActivityEntry {
     },
 }
 
+pub trait SessionBackendResolver {
+    fn resolve_backend_id(&self, backend_id: Option<String>) -> Result<String, String>;
+    fn default_model_for(&self, backend_id: &str) -> Result<String, String>;
+    fn backend_exists(&self, backend_id: &str) -> bool;
+    fn resolve_default_id(&self) -> Result<String, String>;
+}
+
+impl<T> SessionBackendResolver for std::sync::Arc<T>
+where
+    T: SessionBackendResolver + ?Sized,
+{
+    fn resolve_backend_id(&self, backend_id: Option<String>) -> Result<String, String> {
+        self.as_ref().resolve_backend_id(backend_id)
+    }
+
+    fn default_model_for(&self, backend_id: &str) -> Result<String, String> {
+        self.as_ref().default_model_for(backend_id)
+    }
+
+    fn backend_exists(&self, backend_id: &str) -> bool {
+        self.as_ref().backend_exists(backend_id)
+    }
+
+    fn resolve_default_id(&self) -> Result<String, String> {
+        self.as_ref().resolve_default_id()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
@@ -196,8 +220,14 @@ pub struct ChatSession {
 pub struct GetSessionResponse {
     #[serde(flatten)]
     pub session: ChatSession,
-    pub turn_phase: crate::agent_sdk::TurnPhase,
-    pub available_models: Vec<crate::agent_sdk::ModelInfo>,
+    pub turn_phase: TurnPhase,
+    pub available_models: Vec<ModelInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,18 +287,6 @@ impl ChatSession {
             workflow_step_session: self.workflow_step_session,
         }
     }
-}
-
-pub(crate) fn resolve_data_dir<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Result<std::path::PathBuf, String> {
-    #[cfg(test)]
-    if let Some(data_dir) = app.try_state::<TestDataDir>() {
-        return Ok(data_dir.0.clone());
-    }
-    app.path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {e}"))
 }
 
 pub(crate) fn now_timestamp() -> f64 {
@@ -355,16 +373,6 @@ pub fn parts_to_legacy(
         Some(activities)
     };
     (content, thinking, activities)
-}
-
-#[tauri::command]
-pub async fn list_sessions(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
-    worktree_path: String,
-) -> Result<Vec<SessionSummary>, String> {
-    let data_dir = resolve_data_dir(&app)?;
-    state.list_sessions(&data_dir, &worktree_path)
 }
 
 /// Internal (non-command) version of create_session, callable from agent_sdk.
@@ -457,14 +465,14 @@ fn build_new_session(
 /// 新規セッションを作成し、当該 backend の既定モデルを `selected_model` に永続化する。
 ///
 /// モデル「未選択（None）」状態は廃止したため、新規セッションは常に backend の既定モデル
-/// （[`crate::backends::AgentBackendRegistry::default_model_for`] = 固定リスト先頭）を
+/// （[`SessionBackendResolver::default_model_for`] = 固定リスト先頭）を
 /// `selected_model` に持つ。既定モデルが解決できない場合はセッション作成エラーとする。
 ///
 /// `permission_mode` は検証済みの抽象 [`crate::permission::PermissionMode`] を要求し、
 /// 初回保存で確定する（Spec issues-947: セッション保存層が permission_mode の正典）。
 pub fn create_session_with_initial_model(
     session_store: &SessionStore,
-    registry: &crate::backends::AgentBackendRegistry,
+    registry: &impl SessionBackendResolver,
     data_dir: &std::path::Path,
     worktree_path: &str,
     backend_id: String,
@@ -519,9 +527,9 @@ pub fn add_message_internal(
     Ok(message)
 }
 
-fn create_session_command_inner(
+pub(crate) fn create_session_command_inner(
     session_store: &SessionStore,
-    registry: &crate::backends::AgentBackendRegistry,
+    registry: &impl SessionBackendResolver,
     data_dir: &std::path::Path,
     worktree_path: &str,
     permission_mode: &str,
@@ -538,49 +546,6 @@ fn create_session_command_inner(
         resolved_backend_id,
         permission_mode,
     )
-}
-
-#[tauri::command]
-pub fn create_session(
-    state: State<'_, Arc<SessionStore>>,
-    registry: State<'_, Arc<crate::backends::AgentBackendRegistry>>,
-    app: tauri::AppHandle,
-    worktree_path: String,
-    permission_mode: String,
-    backend_id: Option<String>,
-) -> Result<ChatSession, String> {
-    let data_dir = resolve_data_dir(&app)?;
-    create_session_command_inner(
-        state.inner().as_ref(),
-        registry.inner().as_ref(),
-        &data_dir,
-        &worktree_path,
-        &permission_mode,
-        backend_id,
-    )
-}
-
-#[tauri::command]
-pub fn add_message(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
-    session_id: String,
-    role: MessageRole,
-    content: String,
-) -> Result<ChatMessage, String> {
-    let data_dir = resolve_data_dir(&app)?;
-    add_message_internal(&state, &data_dir, &session_id, role, &content, None, None)
-}
-
-#[tauri::command]
-pub fn update_session_state(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
-    session_id: String,
-    new_state: SessionState,
-) -> Result<(), String> {
-    let data_dir = resolve_data_dir(&app)?;
-    update_session_state_in_data_dir(&state, &data_dir, &session_id, new_state)
 }
 
 pub(crate) fn update_session_state_in_data_dir(
@@ -607,10 +572,10 @@ pub(crate) fn update_session_state_in_data_dir(
 /// - backend_id が None → デフォルトを代入して Ok
 pub fn resolve_session_backend(
     session: &mut ChatSession,
-    registry: &crate::backends::AgentBackendRegistry,
+    registry: &impl SessionBackendResolver,
 ) -> Result<(), String> {
     if let Some(ref bid) = session.backend_id {
-        if registry.get(bid).is_none() {
+        if !registry.backend_exists(bid) {
             return Err(format!(
                 "バックエンド '{}' がレジストリに登録されていません",
                 bid
@@ -638,40 +603,66 @@ pub struct RestoreSessionResponse {
     pub restored_workflow_step: bool,
 }
 
-#[tauri::command]
-pub async fn list_closed_sessions(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
-    worktree_path: String,
-) -> Result<Vec<SessionSummary>, String> {
-    let data_dir = resolve_data_dir(&app)?;
-    state.list_closed_sessions(&data_dir, &worktree_path)
-}
-
-#[tauri::command]
-pub fn update_session_agent_info(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
-    session_id: String,
-    agent_session_id: Option<String>,
-) -> Result<(), String> {
-    let data_dir = resolve_data_dir(&app)?;
-    let mut session = state
-        .get_session(&data_dir, &session_id)?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
-    session.agent_session_id = agent_session_id;
-    session.updated_at = now_timestamp();
-    state.save_session(&data_dir, &session)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+
     use crate::workflow::schema::{NodeDefinition, NodeType, Workflow};
     use crate::workflow::state::{
         StepHistoryEntry, TokenUsage, WorkflowExecutionState, WorkflowState,
     };
+
+    #[derive(Default)]
+    struct TestBackendResolver {
+        default_id: Option<String>,
+        models: BTreeMap<String, String>,
+        existing: BTreeSet<String>,
+    }
+
+    impl TestBackendResolver {
+        fn with_backend(mut self, backend_id: &str, default_model: &str) -> Self {
+            self.existing.insert(backend_id.to_string());
+            self.models
+                .insert(backend_id.to_string(), default_model.to_string());
+            self
+        }
+
+        fn with_default(mut self, backend_id: &str) -> Self {
+            self.default_id = Some(backend_id.to_string());
+            self
+        }
+    }
+
+    impl SessionBackendResolver for TestBackendResolver {
+        fn resolve_backend_id(&self, backend_id: Option<String>) -> Result<String, String> {
+            match backend_id {
+                Some(id) if self.backend_exists(&id) => Ok(id),
+                Some(id) => Err(format!(
+                    "Backend '{}' not found. Available backends: claude, codex",
+                    id
+                )),
+                None => self.resolve_default_id(),
+            }
+        }
+
+        fn default_model_for(&self, backend_id: &str) -> Result<String, String> {
+            self.models
+                .get(backend_id)
+                .cloned()
+                .ok_or_else(|| format!("No models configured for backend '{backend_id}'"))
+        }
+
+        fn backend_exists(&self, backend_id: &str) -> bool {
+            self.existing.contains(backend_id)
+        }
+
+        fn resolve_default_id(&self) -> Result<String, String> {
+            self.default_id
+                .clone()
+                .ok_or_else(|| "No default backend configured".to_string())
+        }
+    }
 
     #[test]
     fn chat_message_mentions_persist_serializeは移行前のcamelcase等価() {
@@ -1710,12 +1701,13 @@ mod tests {
         }
     }
 
-    fn test_backend_registry() -> crate::backends::AgentBackendRegistry {
-        let mut registry = crate::backends::AgentBackendRegistry::new();
-        registry.register(std::sync::Arc::new(
-            crate::backends::claude::ClaudeBackend::new(),
-        ));
-        registry
+    fn test_backend_registry() -> TestBackendResolver {
+        TestBackendResolver::default()
+            .with_backend(
+                "claude",
+                crate::domain::agent_session::CLAUDE_FIXED_MODELS[0],
+            )
+            .with_default("claude")
     }
 
     #[test]
@@ -1775,22 +1767,14 @@ mod tests {
         }
     }
 
-    fn fixed_model_registry() -> crate::backends::AgentBackendRegistry {
-        let cfg = crate::config::ReleashConfig::default();
-        let cfg_tmp = tempfile::NamedTempFile::new().unwrap();
-        let config = std::sync::Arc::new(crate::config::AppConfig::new(
-            cfg,
-            cfg_tmp.path().to_path_buf(),
-        ));
-        let mut registry = crate::backends::AgentBackendRegistry::new();
-        registry.register(std::sync::Arc::new(
-            crate::backends::claude::ClaudeBackend::new(),
-        ));
-        registry.register(std::sync::Arc::new(
-            crate::backends::codex::CodexBackend::new(),
-        ));
-        registry.set_config(config);
-        registry
+    fn fixed_model_registry() -> TestBackendResolver {
+        TestBackendResolver::default()
+            .with_backend(
+                "claude",
+                crate::domain::agent_session::CLAUDE_FIXED_MODELS[0],
+            )
+            .with_backend("codex", crate::domain::agent_session::CODEX_FIXED_MODELS[0])
+            .with_default("claude")
     }
 
     #[test]
@@ -1900,51 +1884,6 @@ mod tests {
 
     mod resolve_session_backend_tests {
         use super::*;
-        use crate::backends::{
-            AgentBackend, AgentBackendRegistry, AgentMessage, PermissionResponse, SessionConfig,
-            SessionHandle,
-        };
-        use async_trait::async_trait;
-
-        struct MockBackend {
-            backend_id: String,
-        }
-
-        #[async_trait]
-        impl AgentBackend for MockBackend {
-            fn id(&self) -> &str {
-                &self.backend_id
-            }
-            fn name(&self) -> &str {
-                "Mock"
-            }
-            async fn start_session(&self, _config: SessionConfig) -> Result<SessionHandle, String> {
-                Ok(SessionHandle {
-                    chat_session_id: "test".to_string(),
-                    backend_id: self.backend_id.clone(),
-                })
-            }
-            async fn send_message(
-                &self,
-                _session: &SessionHandle,
-                _message: AgentMessage,
-            ) -> Result<(), String> {
-                Ok(())
-            }
-            async fn interrupt(&self, _session: &SessionHandle) -> Result<(), String> {
-                Ok(())
-            }
-            async fn respond_permission(
-                &self,
-                _session: &SessionHandle,
-                _response: PermissionResponse,
-            ) -> Result<(), String> {
-                Ok(())
-            }
-            async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
-                Ok(())
-            }
-        }
 
         fn make_session(backend_id: Option<&str>) -> ChatSession {
             ChatSession {
@@ -1957,18 +1896,18 @@ mod tests {
                 agent_session_id: None,
                 permission_mode: "edit".to_string(),
                 selected_model: None,
-                backend_id: backend_id.map(|s| s.to_string()),
+                backend_id: backend_id.map(str::to_string),
                 workflow_step_session: false,
             }
         }
 
-        fn make_registry_with_claude() -> AgentBackendRegistry {
-            let mut reg = AgentBackendRegistry::new();
-            reg.register(Arc::new(MockBackend {
-                backend_id: "claude".to_string(),
-            }));
-            reg.set_default(Some("claude".to_string()));
-            reg
+        fn make_registry_with_claude() -> TestBackendResolver {
+            TestBackendResolver::default()
+                .with_backend(
+                    "claude",
+                    crate::domain::agent_session::CLAUDE_FIXED_MODELS[0],
+                )
+                .with_default("claude")
         }
 
         #[test]
@@ -1994,7 +1933,9 @@ mod tests {
             let registry = make_registry_with_claude();
             let mut session = make_session(None);
             assert_eq!(session.backend_id, None);
+
             let result = resolve_session_backend(&mut session, &registry);
+
             assert!(result.is_ok());
             assert_eq!(session.backend_id, Some("claude".to_string()));
         }
