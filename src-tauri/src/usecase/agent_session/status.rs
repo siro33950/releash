@@ -250,12 +250,43 @@ impl AgentStatusCenter {
         }
     }
 
-    /// 当該 worktree でアクティブな Workflow の `AgentState`（集約寄与分）を取り出す。
-    fn workflow_agg_state_for(&self, worktree_path: &str) -> Option<AgentState> {
-        self.workflows
-            .read()
-            .get(worktree_path)
-            .and_then(|s| s.agent_state.clone())
+    /// Workspace 集約時の `last_activity_at` は、Open session と集約対象 Workflow の最大値にする。
+    /// `agent_state=None` の Workflow snapshot（aborted 等）は集約にも timestamp にも寄与させない。
+    fn aggregate_with_workflow_snapshot(
+        worktree_id: &str,
+        worktree_path: &str,
+        sessions: &[&SessionStatus],
+        workflow_snapshot: Option<&WorkflowAggSnapshot>,
+        fallback_last_activity_at: f64,
+    ) -> WorkspaceStatus {
+        let open_session_last_activity_at = sessions
+            .iter()
+            .copied()
+            .filter(|s| s.session_state != SessionState::Closed)
+            .map(|s| s.last_activity_at)
+            .reduce(f64::max);
+        let workflow_last_activity_at = workflow_snapshot
+            .filter(|snapshot| snapshot.agent_state.is_some())
+            .map(|snapshot| snapshot.last_activity_at);
+        let last_activity_at = open_session_last_activity_at
+            .into_iter()
+            .chain(workflow_last_activity_at)
+            .reduce(f64::max)
+            .unwrap_or(fallback_last_activity_at);
+        let workflow_state = workflow_snapshot.and_then(|snapshot| snapshot.agent_state.clone());
+
+        Self::aggregate(
+            worktree_id,
+            worktree_path,
+            sessions,
+            workflow_state,
+            last_activity_at,
+        )
+    }
+
+    /// 当該 worktree でアクティブな Workflow の集約用 snapshot を取り出す。
+    fn workflow_agg_snapshot_for(&self, worktree_path: &str) -> Option<WorkflowAggSnapshot> {
+        self.workflows.read().get(worktree_path).cloned()
     }
 
     /// Session 状態を更新する。
@@ -288,18 +319,18 @@ impl AgentStatusCenter {
         }
 
         // 3. workspace 再集約（aggregate 内で Closed は集約対象から除外される）
-        let workflow_state = self.workflow_agg_state_for(&worktree_path);
+        let workflow_snapshot = self.workflow_agg_snapshot_for(&worktree_path);
         let new_workspace = {
             let sessions = self.sessions.read();
             let same_workspace: Vec<&SessionStatus> = sessions
                 .values()
                 .filter(|s| s.worktree_id == worktree_id)
                 .collect();
-            Self::aggregate(
+            Self::aggregate_with_workflow_snapshot(
                 &worktree_id,
                 &worktree_path,
                 &same_workspace,
-                workflow_state,
+                workflow_snapshot.as_ref(),
                 last_activity_at,
             )
         };
@@ -379,7 +410,7 @@ impl AgentStatusCenter {
         worktree_path: &str,
         last_activity_at: f64,
     ) -> Option<WorkspaceStatus> {
-        let workflow_state = self.workflow_agg_state_for(worktree_path);
+        let workflow_snapshot = self.workflow_agg_snapshot_for(worktree_path);
         let (worktree_id, new_workspace) = {
             let sessions = self.sessions.read();
             let same_workspace: Vec<&SessionStatus> = sessions
@@ -392,14 +423,18 @@ impl AgentStatusCenter {
                 .first()
                 .map(|s| s.worktree_id.clone())
                 .unwrap_or_else(|| worktree_path.to_string());
-            let workspace = if same_workspace.is_empty() && workflow_state.is_none() {
+            let workspace = if same_workspace.is_empty()
+                && workflow_snapshot
+                    .as_ref()
+                    .is_none_or(|snapshot| snapshot.agent_state.is_none())
+            {
                 None
             } else {
-                Some(Self::aggregate(
+                Some(Self::aggregate_with_workflow_snapshot(
                     &worktree_id,
                     worktree_path,
                     &same_workspace,
-                    workflow_state.clone(),
+                    workflow_snapshot.as_ref(),
                     last_activity_at,
                 ))
             };
@@ -1056,6 +1091,55 @@ mod tests {
         let after = center.get_workspace("/repo").expect("workspace tracked");
         assert_eq!(after.aggregated_state, AgentState::Done);
         assert_eq!(after.waiting_count, 0);
+    }
+
+    #[test]
+    fn workflow_update_then_older_session_update_does_not_rewind_workspace_last_activity() {
+        let center = mk_center();
+        let mut session = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Done);
+        session.last_activity_at = 60.0;
+        center.update_session(session);
+        center.update_workflow_snapshot("/repo", "exec-1", Some(AgentState::Running), 90.0);
+
+        let mut older_session_update =
+            mk_session("a", "/repo", TurnPhase::Streaming, SessionState::Active);
+        older_session_update.last_activity_at = 50.0;
+        center.update_session(older_session_update);
+
+        let ws = center.get_workspace("/repo").expect("workspace tracked");
+        assert_eq!(ws.aggregated_state, AgentState::Running);
+        assert_eq!(ws.last_activity_at, 90.0);
+    }
+
+    #[test]
+    fn aggregate_excludes_workflow_timestamp_when_aborted() {
+        let center = mk_center();
+        let mut session = mk_session("a", "/repo", TurnPhase::Idle, SessionState::Done);
+        session.last_activity_at = 80.0;
+        center.update_session(session);
+
+        center.update_workflow_snapshot("/repo", "exec-1", None, 999.0);
+
+        let ws = center.get_workspace("/repo").expect("workspace tracked");
+        assert_eq!(ws.aggregated_state, AgentState::Done);
+        assert_eq!(ws.last_activity_at, 80.0);
+    }
+
+    #[test]
+    fn aggregate_excludes_closed_session_timestamp() {
+        let center = mk_center();
+        let mut open_session = mk_session("open", "/repo", TurnPhase::Idle, SessionState::Done);
+        open_session.last_activity_at = 80.0;
+        center.update_session(open_session);
+
+        let mut closed_session =
+            mk_session("closed", "/repo", TurnPhase::Idle, SessionState::Closed);
+        closed_session.last_activity_at = 200.0;
+        center.update_session(closed_session);
+
+        let ws = center.get_workspace("/repo").expect("workspace tracked");
+        assert_eq!(ws.session_count, 1);
+        assert_eq!(ws.last_activity_at, 80.0);
     }
 
     #[test]
