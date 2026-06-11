@@ -1,4 +1,4 @@
-name: review-fix-policy
+name: 04_review-fix-policy
 description: フルレビューで残った Open Thread の修正方針を決定し、承認済み方針の整合性を確認する。
 builtin: true
 

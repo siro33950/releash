@@ -1,4 +1,4 @@
-name: claude-spec-implement
+name: 02_implement_opus48
 description: Spec を元にClaude系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。
 builtin: true
 

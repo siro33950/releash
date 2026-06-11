@@ -4,96 +4,78 @@ use super::facet::{self, FacetError, FacetKind};
 use super::schema::{Summary, Workflow};
 use super::validation::{self, ValidationError};
 
-const BUILTIN_GPT_SPEC_AUTHORING: &str = include_str!("builtin/gpt-spec-authoring.yml");
-const BUILTIN_CLAUDE_SPEC_AUTHORING: &str = include_str!("builtin/claude-spec-authoring.yml");
-const BUILTIN_GPT_SPEC_AUTHORING_DRAFT_REVIEW: &str =
-    include_str!("builtin/gpt-spec-authoring-draft-review.yml");
-const BUILTIN_CLAUDE_SPEC_AUTHORING_DRAFT_REVIEW: &str =
-    include_str!("builtin/claude-spec-authoring-draft-review.yml");
-const BUILTIN_GPT_SPEC_IMPLEMENT: &str = include_str!("builtin/gpt-spec-implement.yml");
-const BUILTIN_CLAUDE_SPEC_IMPLEMENT: &str = include_str!("builtin/claude-spec-implement.yml");
-const BUILTIN_FULL_REVIEW: &str = include_str!("builtin/full-review.yml");
-const BUILTIN_GPT_REVIEW: &str = include_str!("builtin/gpt-review.yml");
-const BUILTIN_CLAUDE_REVIEW: &str = include_str!("builtin/claude-review.yml");
-const BUILTIN_REVIEW_FIX_POLICY: &str = include_str!("builtin/review-fix-policy.yml");
-const BUILTIN_REVIEW_FIX: &str = include_str!("builtin/review-fix.yml");
-const BUILTIN_GPT_REVIEW_FIX: &str = include_str!("builtin/gpt-review-fix.yml");
-const BUILTIN_CLAUDE_REVIEW_FIX: &str = include_str!("builtin/claude-review-fix.yml");
+const BUILTIN_AUTHORING_GPT55: &str = include_str!("builtin/01_authoring_gpt55.yml");
+const BUILTIN_AUTHORING_OPUS48: &str = include_str!("builtin/01_authoring_opus48.yml");
+const BUILTIN_AUTHORING_FABLE: &str = include_str!("builtin/01_authoring_fable.yml");
+const BUILTIN_IMPLEMENT_GPT55: &str = include_str!("builtin/02_implement_gpt55.yml");
+const BUILTIN_IMPLEMENT_OPUS48: &str = include_str!("builtin/02_implement_opus48.yml");
+const BUILTIN_FULL_REVIEW: &str = include_str!("builtin/03_full-review.yml");
+const BUILTIN_REVIEW: &str = include_str!("builtin/03_review.yml");
+const BUILTIN_REVIEW_FIX_POLICY: &str = include_str!("builtin/04_review-fix-policy.yml");
+const BUILTIN_REVIEW_FIX: &str = include_str!("builtin/05_review-fix.yml");
+const BUILTIN_REVIEW_FIX_GPT55: &str = include_str!("builtin/05_review-fix_gpt55.yml");
+const BUILTIN_REVIEW_FIX_OPUS48: &str = include_str!("builtin/05_review-fix_opus48.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
     content: &'static str,
-    /// YAML 内の `description` フィールドと一致させる。`list_builtin_workflows` で
-    /// YAML を再 parse せずに `Summary` を返すためのメタデータ。
-    /// 同梱 YAML の description と乖離した場合は CI のテストで検知する
-    /// (`builtin_entries_description_matches_yaml`)。
     description: &'static str,
 }
 
 const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
-        filename: "gpt-spec-authoring.yml",
-        content: BUILTIN_GPT_SPEC_AUTHORING,
+        filename: "01_authoring_gpt55.yml",
+        content: BUILTIN_AUTHORING_GPT55,
         description: "ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をGPT系モデルで構築する。レビューループは行わない。",
     },
     BuiltinEntry {
-        filename: "claude-spec-authoring.yml",
-        content: BUILTIN_CLAUDE_SPEC_AUTHORING,
+        filename: "01_authoring_opus48.yml",
+        content: BUILTIN_AUTHORING_OPUS48,
         description: "ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をClaude系モデルで構築する。レビューループは行わない。",
     },
     BuiltinEntry {
-        filename: "gpt-spec-authoring-draft-review.yml",
-        content: BUILTIN_GPT_SPEC_AUTHORING_DRAFT_REVIEW,
-        description: "requirements / behavior / design を文書ごとにGPT系モデルで一括作成し、Open Questions 解消後に人間のレビューを待つ。",
+        filename: "01_authoring_fable.yml",
+        content: BUILTIN_AUTHORING_FABLE,
+        description: "requirements / behavior / design を文書ごとにFableモデルで一括作成し、Open Questions 解消後に人間のレビューを待つ。",
     },
     BuiltinEntry {
-        filename: "claude-spec-authoring-draft-review.yml",
-        content: BUILTIN_CLAUDE_SPEC_AUTHORING_DRAFT_REVIEW,
-        description: "requirements / behavior / design を文書ごとにClaude系モデルで一括作成し、Open Questions 解消後に人間のレビューを待つ。",
-    },
-    BuiltinEntry {
-        filename: "gpt-spec-implement.yml",
-        content: BUILTIN_GPT_SPEC_IMPLEMENT,
+        filename: "02_implement_gpt55.yml",
+        content: BUILTIN_IMPLEMENT_GPT55,
         description: "Spec を元にGPT系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。",
     },
     BuiltinEntry {
-        filename: "claude-spec-implement.yml",
-        content: BUILTIN_CLAUDE_SPEC_IMPLEMENT,
+        filename: "02_implement_opus48.yml",
+        content: BUILTIN_IMPLEMENT_OPUS48,
         description: "Spec を元にClaude系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。",
     },
     BuiltinEntry {
-        filename: "full-review.yml",
+        filename: "03_full-review.yml",
         content: BUILTIN_FULL_REVIEW,
         description: "全観点を claude-opus-4-8 / gpt-5.5 でレビューし、モデル単位の妥当性チェックを行う。Summary 段では各 Open Thread の reviewer 指摘と verifier 分類を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
     },
     BuiltinEntry {
-        filename: "gpt-review.yml",
-        content: BUILTIN_GPT_REVIEW,
-        description: "全観点をGPT系モデルでレビューし、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
+        filename: "03_review.yml",
+        content: BUILTIN_REVIEW,
+        description: "Fable と GPT-5.5 がそれぞれ 6 観点すべてを確認し、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
     },
     BuiltinEntry {
-        filename: "claude-review.yml",
-        content: BUILTIN_CLAUDE_REVIEW,
-        description: "全観点をClaude系モデルでレビューし、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
-    },
-    BuiltinEntry {
-        filename: "review-fix-policy.yml",
+        filename: "04_review-fix-policy.yml",
         content: BUILTIN_REVIEW_FIX_POLICY,
         description: "フルレビューで残った Open Thread の修正方針を決定し、承認済み方針の整合性を確認する。",
     },
     BuiltinEntry {
-        filename: "review-fix.yml",
+        filename: "05_review-fix.yml",
         content: BUILTIN_REVIEW_FIX,
         description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。",
     },
     BuiltinEntry {
-        filename: "gpt-review-fix.yml",
-        content: BUILTIN_GPT_REVIEW_FIX,
+        filename: "05_review-fix_gpt55.yml",
+        content: BUILTIN_REVIEW_FIX_GPT55,
         description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って GPT 系モデルで実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。",
     },
     BuiltinEntry {
-        filename: "claude-review-fix.yml",
-        content: BUILTIN_CLAUDE_REVIEW_FIX,
+        filename: "05_review-fix_opus48.yml",
+        content: BUILTIN_REVIEW_FIX_OPUS48,
         description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って Claude 系モデルで実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。",
     },
 ];
@@ -347,6 +329,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
+        key: "review-all",
+        content: include_str!("builtin_facets/instructions/review-all.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
         key: "full-review-verify-and-classify",
         content: include_str!("builtin_facets/instructions/full-review-verify-and-classify.md"),
     },
@@ -451,37 +438,39 @@ mod tests {
     }
 
     #[test]
-    fn spec_authoring_draft_review_workflows_are_document_steps() {
-        for name in [
-            "gpt-spec-authoring-draft-review",
-            "claude-spec-authoring-draft-review",
-        ] {
-            let wf = load_builtin_workflow_resolved(name)
-                .unwrap_or_else(|err| panic!("builtin '{name}' must load: {err}"))
-                .unwrap_or_else(|| panic!("builtin '{name}' must exist"));
+    fn fable_authoring_workflow_is_document_steps() {
+        let name = "01_authoring_fable";
+        let wf = load_builtin_workflow_resolved(name)
+            .unwrap_or_else(|err| panic!("builtin '{name}' must load: {err}"))
+            .unwrap_or_else(|| panic!("builtin '{name}' must exist"));
 
-            let node_names: Vec<_> = wf.nodes.iter().map(|node| node.name.as_str()).collect();
+        let node_names: Vec<_> = wf.nodes.iter().map(|node| node.name.as_str()).collect();
+        assert_eq!(
+            node_names,
+            vec!["write_requirements", "write_behavior", "write_design"],
+            "fable authoring must stay document-step based"
+        );
+
+        for node in &wf.nodes {
             assert_eq!(
-                node_names,
-                vec!["write_requirements", "write_behavior", "write_design"],
-                "draft-review spec authoring must stay document-step based"
+                node.node_type,
+                crate::workflow::schema::NodeType::Approval,
+                "node '{}' must write the document and wait for human review",
+                node.name
             );
-
-            for node in &wf.nodes {
-                assert_eq!(
-                    node.node_type,
-                    crate::workflow::schema::NodeType::Approval,
-                    "node '{}' must write the document and then wait for human review",
-                    node.name
-                );
-                assert!(
-                    node.instruction
-                        .as_deref()
-                        .is_some_and(|instruction| instruction.starts_with("spec-authoring-draft-")),
-                    "node '{}' must use draft-review instruction facets",
-                    node.name
-                );
-            }
+            assert!(
+                node.instruction
+                    .as_deref()
+                    .is_some_and(|instruction| instruction.starts_with("spec-authoring-draft-")),
+                "node '{}' must use draft-review instruction facets",
+                node.name
+            );
+            assert_eq!(
+                node.model.as_deref(),
+                Some("claude-fable-5"),
+                "node '{}' must use fable model",
+                node.name
+            );
         }
     }
 

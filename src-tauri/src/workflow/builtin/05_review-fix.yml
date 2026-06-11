@@ -1,5 +1,5 @@
-name: gpt-review-fix
-description: フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って GPT 系モデルで実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。
+name: 05_review-fix
+description: フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。
 builtin: true
 
 nodes:
@@ -13,8 +13,8 @@ nodes:
 
   - name: policy_match_review
     type: agent
-    model: gpt-5.5
-    permission: full
+    model: claude-sonnet-4-6
+    permission: edit
     instruction: review-fix-policy-match
     policy: reviewing
     knowledge: releash-thread-cli
@@ -42,7 +42,7 @@ nodes:
 
   - name: report
     type: approval
-    model: gpt-5.5
-    permission: full
+    model: claude-opus-4-8
+    permission: edit
     instruction: review-fix-report
     knowledge: releash-thread-cli

@@ -1,11 +1,11 @@
-name: claude-spec-authoring-draft-review
-description: requirements / behavior / design を文書ごとにClaude系モデルで一括作成し、Open Questions 解消後に人間のレビューを待つ。
+name: 01_authoring_fable
+description: requirements / behavior / design を文書ごとにFableモデルで一括作成し、Open Questions 解消後に人間のレビューを待つ。
 builtin: true
 
 nodes:
   - name: write_requirements
     type: approval
-    model: claude-opus-4-8
+    model: claude-fable-5
     permission: edit
     instruction: spec-authoring-draft-requirements
     policy: planning
@@ -13,7 +13,7 @@ nodes:
 
   - name: write_behavior
     type: approval
-    model: claude-opus-4-8
+    model: claude-fable-5
     permission: edit
     instruction: spec-authoring-draft-behavior
     policy: planning
@@ -24,7 +24,7 @@ nodes:
 
   - name: write_design
     type: approval
-    model: claude-opus-4-8
+    model: claude-fable-5
     permission: edit
     instruction: spec-authoring-draft-design
     policy: planning

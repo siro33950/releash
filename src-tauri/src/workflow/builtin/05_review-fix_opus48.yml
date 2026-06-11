@@ -1,4 +1,4 @@
-name: claude-review-fix
+name: 05_review-fix_opus48
 description: フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って Claude 系モデルで実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。
 builtin: true
 

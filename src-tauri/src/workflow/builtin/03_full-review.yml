@@ -1,4 +1,4 @@
-name: full-review
+name: 03_full-review
 description: 全観点を claude-opus-4-8 / gpt-5.5 でレビューし、モデル単位の妥当性チェックを行う。Summary 段では各 Open Thread の reviewer 指摘と verifier 分類を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。
 builtin: true
 
