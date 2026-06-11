@@ -13,7 +13,7 @@ nodes:
 
   - name: policy_match_review
     type: agent
-    model: claude-sonnet-4-6
+    model: claude-sonnet-4-5
     permission: edit
     instruction: review-fix-policy-match
     policy: reviewing
