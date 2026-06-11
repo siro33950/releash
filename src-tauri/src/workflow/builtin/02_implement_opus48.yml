@@ -15,14 +15,14 @@ nodes:
     parallel_children:
       - name: review_spec
         type: agent
-        model: claude-sonnet-4-5
+        model: gpt-5.5
         permission: edit
         instruction: spec-implement-review-spec
         policy: reviewing
         knowledge: releash-thread-cli
       - name: review_design
         type: agent
-        model: claude-sonnet-4-5
+        model: gpt-5.5
         permission: edit
         instruction: spec-implement-review-design
         policy: reviewing

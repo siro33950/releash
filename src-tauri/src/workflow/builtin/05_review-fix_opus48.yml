@@ -13,9 +13,10 @@ nodes:
 
   - name: policy_match_review
     type: agent
-    model: claude-sonnet-4-5
+    model: gpt-5.5
     permission: edit
     instruction: review-fix-policy-match
+    output_contract: review-fix-policy-match
     policy: reviewing
     knowledge: releash-thread-cli
     rules:
