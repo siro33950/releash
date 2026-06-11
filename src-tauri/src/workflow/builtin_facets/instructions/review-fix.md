@@ -1,64 +1,92 @@
 # 役割
 
-{{project_name}} のフルレビューで残った Open Thread のうち、`[FIX_POLICY_APPROVED]` Comment が付与された Thread に対し、その**修正方針・受入条件**に従って実装する。直前ノードの方針一致レビュー（`policy_match_review`）が指摘を出している場合は、その指摘も併せて反映する。
+{{project_name}} のフルレビュー後修正 Task を実装する。
+
+この Step は、直前 Step から渡された Task だけを実装対象にする。Open Thread や `[FIX_POLICY_APPROVED]` Comment を直接読んではならない。
 
 # 入力
 
-- 環境変数 `RELEASH_SESSION_ID`: review CLI 呼び出し時に使う
-- タスク（任意の自由文。実装対象の絞り込み等の補足指示があれば）: {{task}}
-- 直前ノードの出力（あれば `policy_match_review` の指摘リスト。なければ初回実装）
+直前の `check_and_make_tasks` Step の出力Contract `review-fix-tasks` に含まれる Task 一覧。
 
-# 前提
+# Task の扱い
 
-- 本 Step では **新たに方針を決め直さない**。`[FIX_POLICY_APPROVED]` Comment の修正方針・受入条件を実装に翻訳することに徹する
-- 方針 Comment と矛盾する実装が必要だと判明した場合は、実装を中断し、その旨を出力に明示する（独断で方針を変更しない）
-- 本 Step では Thread を resolve しない。resolve は後段の report Step で行う
+実装対象は、渡された `tasks` 配列に含まれる Task のみ。
+
+各 Task について次を確認する。
+
+- `task_id`
+- `thread_id`
+- `file`
+- `objective`
+- `acceptance_criteria`
+- `non_goals`
+- `source_policy`
+
+`acceptance_criteria` は受入条件であり、実装完了判定に使う。省略、読み替え、独自解釈での置き換えは禁止する。
 
 # プロセス
 
-## 1. Open Thread と `[FIX_POLICY_APPROVED]` Comment の取得
+## 1. Task の逐条確認
 
-- `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json` で全 Open Thread を取得
-- 各 Thread に対し `{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` と `{{path_alias.releash}} review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json` で本文・履歴を取得
-- history の中から、最新の `[FIX_POLICY_APPROVED]` Comment を必ず特定する（最新の `[FIX_POLICY_CHANGE_REQUEST]` より後にあるもの）
+実装前に、渡された全 Task をそのまま一覧化して確認する。
 
-## 2. 直前ノード出力の確認
+```markdown
+## 実装対象 Task
 
-直前ノードの出力に `policy_match_review` の指摘リスト（`thread-id` / `file` / `問題` / `期待` / `現状`）がある場合は読み取り、対象 Thread と指摘内容を抽出する。直前出力が無い、または指摘リストが含まれない場合は、初回実装として扱い、全 Open Thread を対象にする。
+| task_id | thread_id | file | objective |
+| --- | --- | --- | --- |
+| `<task_id>` | `<thread_id>` | `<file>` | <objective> |
 
-## 3. 全体設計
+## 受入条件
 
-- 対象 Thread の `[FIX_POLICY_APPROVED]` を読み、修正方針を設計する
-- 直前指摘がある場合は、その指摘内容と `[FIX_POLICY_APPROVED]` の修正方針・受入条件が両立するように整理する
-- Thread 間の依存・衝突があれば、各 `[FIX_POLICY_APPROVED]` に明記された「実装順序」「対応しない範囲」に従って整理する
+### `<task_id>`
+- <acceptance_criteria>
+```
 
-## 4. 実装
+Task が存在しない場合は、コード変更せず終了する。
 
-- 設計に沿って実装する
-- 各 Thread の `[FIX_POLICY_APPROVED]` に記載された「修正方針」と「受入条件」を満たすように実装する
-- 直前指摘がある場合は、指摘箇所を `[FIX_POLICY_APPROVED]` に合致する状態へ修正する
+## 2. 実装
 
-# 出力
+Task の `objective` と `acceptance_criteria` を満たす最小範囲で実装する。
 
-実装完了後、対応した Thread の一覧と実装内容を出力する。
+守ること:
+
+- `non_goals` に含まれる内容は実装しない。
+- Task に含まれない Thread や指摘は扱わない。
+- 方針が矛盾している、または実装できない場合はコード変更を止め、理由を出力する。
+- 既存の設計、命名、テスト配置に合わせる。
+
+## 3. 検証
+
+変更内容に応じて最小限の検証を行う。
+
+- Rust 変更: 関連する `cargo test` / `cargo fmt --check`
+- フロントエンド変更: 関連する `pnpm test` / `pnpm lint`
+- workflow 定義変更: 関連する builtin workflow / contract の Rust test
+
+検証できない場合は、その理由を明記する。
+
+# 終了時の出力
 
 ```markdown
 ## 実装結果
 
 ### 実装内容
 - `<変更したファイル>`: <変更内容>
-- ...
 
-### 対応 Thread
-| thread-id | file:line | 修正方針（要約） | 実装対応 |
-|---|---|---|---|
-| `<id>` | `<file>:<line>` | <方針要約> | <実装で何をしたか> |
+### 対応 Task
+| task_id | thread_id | file | 実装対応 | 受入条件の確認 |
+| --- | --- | --- | --- | --- |
+| `<task_id>` | `<thread_id>` | `<file>` | <実装で何をしたか> | <満たした受入条件> |
+
+### 検証
+- `<コマンド>`: <結果>
 ```
 
 # 禁止事項
 
-- `[FIX_POLICY_APPROVED]` Comment を読まずに実装を開始しない
-- `[FIX_POLICY_APPROVED]` と矛盾する実装を独断で行わない
-- Thread の resolve / comment / 状態変更は行わない（後段の report Step で実施する）
-- 担当範囲外（Open Thread の `[FIX_POLICY_APPROVED]` で扱われていない箇所）の修正は行わない
-- 直前指摘がある場合、指摘されていない Thread の実装を新たに変更しない
+- Open Thread、`review get`、`review history` を確認しない。
+- `[FIX_POLICY_APPROVED]` を直接読みに行かない。
+- Task にない修正を行わない。
+- Thread の resolve / comment / 状態変更を行わない。
+- Task の方針や受入条件を勝手に変更しない。

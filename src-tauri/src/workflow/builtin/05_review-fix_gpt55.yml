@@ -1,42 +1,33 @@
 name: 05_review-fix_gpt55
-description: フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って GPT 系モデルで実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。
+description: フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針と実装差分を GPT 系モデルで確認して不足を Task 化し、Task 実装ループで方針との合致を保証する。最後に人間が承認した Thread を resolve する。
 builtin: true
 
 nodes:
-  - name: implement
+  - name: check_and_make_tasks
     type: agent
     model: gpt-5.5
     permission: full
-    instruction: review-fix
-    policy: coding
-    knowledge: releash-thread-cli
-
-  - name: policy_match_review
-    type: agent
-    model: gpt-5.5
-    permission: full
-    instruction: review-fix-policy-match
-    output_contract: review-fix-policy-match
+    instruction: review-fix-check-tasks
+    output_contract: review-fix-tasks
     policy: reviewing
     knowledge: releash-thread-cli
     rules:
       - match: NEEDS_FIX
-        next: rework
+        next: implement_tasks
       - match: LGTM
         next: report
 
-  - name: rework
+  - name: implement_tasks
     type: agent
     model: gpt-5.5
     permission: full
     instruction: review-fix
     policy: coding
-    knowledge: releash-thread-cli
     pass_output_from:
-      - policy_match_review
+      - check_and_make_tasks
     rules:
       - match: ".*"
-        next: policy_match_review
+        next: check_and_make_tasks
     cycle_guard:
       max_iterations: 5
       on_exhausted: report

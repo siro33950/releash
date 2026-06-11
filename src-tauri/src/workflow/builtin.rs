@@ -66,17 +66,17 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "05_review-fix.yml",
         content: BUILTIN_REVIEW_FIX,
-        description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。",
+        description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針と実装差分を確認して不足を Task 化し、Task 実装ループで方針との合致を保証する。最後に人間が承認した Thread を resolve する。",
     },
     BuiltinEntry {
         filename: "05_review-fix_gpt55.yml",
         content: BUILTIN_REVIEW_FIX_GPT55,
-        description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って GPT 系モデルで実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。",
+        description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針と実装差分を GPT 系モデルで確認して不足を Task 化し、Task 実装ループで方針との合致を保証する。最後に人間が承認した Thread を resolve する。",
     },
     BuiltinEntry {
         filename: "05_review-fix_opus48.yml",
         content: BUILTIN_REVIEW_FIX_OPUS48,
-        description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針に従って Claude 系モデルで実装し、方針一致レビューループで実装と方針の合致を保証する。最後に人間が承認した Thread を resolve する。",
+        description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針と実装差分を確認して不足を Task 化し、Claude 系モデルで Task を実装するループで方針との合致を保証する。最後に人間が承認した Thread を resolve する。",
     },
 ];
 
@@ -299,8 +299,8 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Contract,
-        key: "review-fix-policy-match",
-        content: include_str!("builtin_facets/contracts/review-fix-policy-match.md"),
+        key: "review-fix-tasks",
+        content: include_str!("builtin_facets/contracts/review-fix-tasks.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -354,6 +354,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
+        key: "review-fix-check-tasks",
+        content: include_str!("builtin_facets/instructions/review-fix-check-tasks.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
         key: "review-fix",
         content: include_str!("builtin_facets/instructions/review-fix.md"),
     },
@@ -371,11 +376,6 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::Instruction,
         key: "review-fix-policy-summary",
         content: include_str!("builtin_facets/instructions/review-fix-policy-summary.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "review-fix-policy-match",
-        content: include_str!("builtin_facets/instructions/review-fix-policy-match.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
