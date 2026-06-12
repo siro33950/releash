@@ -333,7 +333,7 @@ export function useTerminalPanes(
 				if (countLeaves(tab.paneTree) <= 1) return prev;
 
 				const leaf = findNode(tab.paneTree, paneId);
-				if (!leaf || leaf.type !== "leaf") return prev;
+				if (leaf?.type !== "leaf") return prev;
 
 				const newTree = closePane(tab.paneTree, paneId);
 				if (!newTree) return prev;
@@ -382,7 +382,7 @@ export function useTerminalPanes(
 				if (!findNode(tab.paneTree, targetPaneId)) return prev;
 
 				const leaf = findNode(tab.paneTree, paneId);
-				if (!leaf || leaf.type !== "leaf") return prev;
+				if (leaf?.type !== "leaf") return prev;
 
 				const treeAfterRemoval = closePane(tab.paneTree, paneId);
 				if (!treeAfterRemoval) return prev;
