@@ -15,6 +15,7 @@ const BUILTIN_REVIEW_FIX_POLICY: &str = include_str!("builtin/04_review-fix-poli
 const BUILTIN_REVIEW_FIX: &str = include_str!("builtin/05_review-fix.yml");
 const BUILTIN_REVIEW_FIX_GPT55: &str = include_str!("builtin/05_review-fix_gpt55.yml");
 const BUILTIN_REVIEW_FIX_OPUS48: &str = include_str!("builtin/05_review-fix_opus48.yml");
+const BUILTIN_VERIFY_REVIEW_COMMENTS: &str = include_str!("builtin/06_verify-review-comments.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
@@ -77,6 +78,11 @@ const BUILTINS: &[BuiltinEntry] = &[
         filename: "05_review-fix_opus48.yml",
         content: BUILTIN_REVIEW_FIX_OPUS48,
         description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針と実装差分を確認して不足を Task 化し、Claude 系モデルで Task を実装するループで方針との合致を保証する。最後に人間が承認した Thread を resolve する。",
+    },
+    BuiltinEntry {
+        filename: "06_verify-review-comments.yml",
+        content: BUILTIN_VERIFY_REVIEW_COMMENTS,
+        description: "GitHub PR の unresolved review comment を Releash Thread に取り込み、review-fix 相当で対応後、commit/push して PR comment へまとめて返信する。",
     },
 ];
 
@@ -381,6 +387,25 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::Instruction,
         key: "review-fix-report",
         content: include_str!("builtin_facets/instructions/review-fix-report.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "verify-review-comments-import",
+        content: include_str!("builtin_facets/instructions/verify-review-comments-import.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "verify-review-comments-decide-policy",
+        content: include_str!(
+            "builtin_facets/instructions/verify-review-comments-decide-policy.md"
+        ),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "verify-review-comments-commit-push-reply",
+        content: include_str!(
+            "builtin_facets/instructions/verify-review-comments-commit-push-reply.md"
+        ),
     },
 ];
 

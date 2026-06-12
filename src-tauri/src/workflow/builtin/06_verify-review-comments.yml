@@ -1,0 +1,57 @@
+name: 06_verify-review-comments
+description: GitHub PR の unresolved review comment を Releash Thread に取り込み、review-fix 相当で対応後、commit/push して PR comment へまとめて返信する。
+builtin: true
+
+nodes:
+  - name: import_pr_review_comments
+    type: agent
+    model: gpt-5.5
+    permission: full
+    instruction: verify-review-comments-import
+    policy: reviewing
+    knowledge: releash-thread-cli
+
+  - name: decide_pr_review_comment_policy
+    type: approval
+    model: gpt-5.5
+    permission: full
+    instruction: verify-review-comments-decide-policy
+    policy: reporting
+    knowledge: releash-thread-cli
+
+  - name: check_and_make_tasks
+    type: agent
+    model: gpt-5.5
+    permission: full
+    instruction: review-fix-check-tasks
+    output_contract: review-fix-tasks
+    policy: reviewing
+    knowledge: releash-thread-cli
+    rules:
+      - match: NEEDS_FIX
+        next: implement_tasks
+      - match: LGTM
+        next: commit_push_and_reply
+
+  - name: implement_tasks
+    type: agent
+    model: gpt-5.5
+    permission: full
+    instruction: review-fix
+    policy: coding
+    pass_output_from:
+      - check_and_make_tasks
+    rules:
+      - match: ".*"
+        next: check_and_make_tasks
+    cycle_guard:
+      max_iterations: 5
+      on_exhausted: commit_push_and_reply
+
+  - name: commit_push_and_reply
+    type: approval
+    model: gpt-5.5
+    permission: full
+    instruction: verify-review-comments-commit-push-reply
+    policy: reporting
+    knowledge: releash-thread-cli
