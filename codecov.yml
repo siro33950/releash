@@ -13,13 +13,6 @@ coverage:
       default:
         target: 80%
 
-ignore:
-  - ".qlty/**"
-  - "biome.json"
-  - "package.json"
-  - "pnpm-lock.yaml"
-  - "src-tauri/Cargo.lock"
-
 comment:
   layout: reach,diff,flags,components
   behavior: default
