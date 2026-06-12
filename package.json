@@ -54,7 +54,7 @@
 		"highlight.js": "^11.11.1",
 		"html5-qrcode": "^2.3.8",
 		"lucide-react": "^1.17.0",
-		"radix-ui": "^1.4.3",
+		"radix-ui": "^1.5.0",
 		"react": "^19.2.6",
 		"react-dom": "^19.2.6",
 		"react-markdown": "^10.1.0",
