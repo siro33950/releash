@@ -58,14 +58,22 @@ git diff "$(git merge-base "$RELEASH_BASE_BRANCH" HEAD)" HEAD
 
 Task は、次の実装 Step が Thread を読まずに修正できる粒度で書く。
 
-Task には少なくとも次を含める。
+Task は `review-fix-tasks` Contract の exact key で作る。別名で代替しない。
 
-- 元 Thread ID
-- 対象ファイルと行番号
-- 不足している実装内容
-- 満たされていない受入条件
-- 対応しない範囲
-- 現状と期待状態
+各 Task 直下に必ず入れる key:
+
+| key | 値 |
+| --- | --- |
+| `task_id` | workflow 内で安定した Task ID。例: `task-001` |
+| `thread_id` | 元 Thread ID。`source_thread_id` などの別名は禁止 |
+| `file` | 代表の対象ファイルと行番号。複数箇所がある場合も直下の `file` は必ず入れる |
+| `objective` | 次の実装担当が行うべきこと |
+| `acceptance_criteria` | 満たされていない受入条件を省略せず列挙する配列 |
+| `non_goals` | 対応しない範囲を列挙する配列。なければ `[]` |
+| `source_policy` | Task の根拠になった `[FIX_POLICY_APPROVED]` の修正方針 |
+| `problem` | 方針・受入条件に対する不足内容 |
+| `expected` | 方針・受入条件に基づく期待状態 |
+| `actual` | 実コードの現在状態 |
 
 重要:
 
@@ -73,6 +81,48 @@ Task には少なくとも次を含める。
 - 独自の方針を追加しない。
 - 承認済み方針と無関係な改善を Task 化しない。
 - 複数の受入条件がある場合は、同じ Task の `acceptance_criteria` に列挙する。
+- `source_thread_id`、`title`、`locations`、`details` などの補助 key を使ってもよいが、必須 key の代替にはならない。
+
+## 5. Contract 提出前チェック
+
+提出前に、作成した JSON が次の形になっていることを確認する。
+
+不足がある場合:
+
+```json
+{
+  "verdict": "NEEDS_FIX",
+  "tasks": [
+    {
+      "task_id": "task-001",
+      "thread_id": "<thread-id>",
+      "file": "src/foo.rs:120",
+      "objective": "次の実装担当が行うべきこと",
+      "acceptance_criteria": [
+        "満たされていない受入条件"
+      ],
+      "non_goals": [],
+      "source_policy": "[FIX_POLICY_APPROVED] の修正方針",
+      "problem": "不足内容",
+      "expected": "期待状態",
+      "actual": "現在状態"
+    }
+  ],
+  "summary": "不足内容の概要"
+}
+```
+
+不足がない場合:
+
+```json
+{
+  "verdict": "LGTM",
+  "tasks": [],
+  "summary": "承認済み方針と実装差分を確認し、不足はありません。"
+}
+```
+
+`NEEDS_FIX` で提出する場合、各 `tasks[]` に `task_id` / `thread_id` / `file` / `objective` / `source_policy` / `problem` / `expected` / `actual` が直下 key として存在することを確認する。
 
 # 出力
 
@@ -90,9 +140,12 @@ Task には少なくとも次を含める。
 - `tasks` に次回実装すべき Task を 1 件以上入れる
 - `summary` に不足内容の概要を書く
 
+提出直前に、上記の必須 key がすべて exact key で入っていることを確認し、同じ JSON を `{{path_alias.releash}} workflow output submit` で提出する。
+
 # 禁止事項
 
 - コード変更を行わない。
 - Thread への Comment 投稿、resolve、状態変更を行わない。
 - `[FIX_POLICY_APPROVED]` の方針自体の妥当性をレビューしない。
 - 承認済み方針を要約だけで置き換えない。
+- Contract 必須 key を別名で代替しない。
