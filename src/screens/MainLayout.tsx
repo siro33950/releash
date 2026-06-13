@@ -41,7 +41,7 @@ import {
 	GitErrorDialog,
 } from "@/screens/WorktreeViewDialogs";
 import type { ThreadNavigationTarget } from "@/types/diffComment";
-import type { MentionReference } from "@/types/session";
+import type { AgentEditorSelection, MentionReference } from "@/types/session";
 import type { AppSettings } from "@/types/settings";
 import type { WorkspaceState } from "@/types/workspace-state";
 
@@ -87,6 +87,8 @@ function WorktreeContent({
 	const reviewRef = useRef<PanelImperativeHandle>(null);
 	const [navigateToThread, setNavigateToThread] =
 		useState<ThreadNavigationTarget | null>(null);
+	const [activeEditorSelection, setActiveEditorSelection] =
+		useState<AgentEditorSelection | null>(null);
 
 	const worktreeName = rootPath;
 
@@ -104,6 +106,24 @@ function WorktreeContent({
 	const handleThreadClick = useCallback((target: ThreadNavigationTarget) => {
 		setNavigateToThread(target);
 	}, []);
+
+	const handleLineRangeSelected = useCallback(
+		(filePath: string, startLine: number, endLine: number) => {
+			if (!filePath || startLine < 1 || endLine < 1) {
+				setActiveEditorSelection(null);
+				return;
+			}
+			const absolutePath = filePath.startsWith("/")
+				? filePath
+				: `${rootPath}/${filePath}`;
+			setActiveEditorSelection({
+				filePath: absolutePath,
+				startLine: Math.min(startLine, endLine),
+				endLine: Math.max(startLine, endLine),
+			});
+		},
+		[rootPath],
+	);
 
 	const handleToggleRightBottom = useCallback(() => {
 		const panel = rightBottomRef.current;
@@ -143,6 +163,16 @@ function WorktreeContent({
 		initialWorkspaceState,
 		internalStateMapRef,
 	});
+	const editorState = internalStateMapRef.current.get(rootPath);
+	const openEditorPaths = (
+		editorState?.tabs ??
+		initialWorkspaceState?.tabs.editors ??
+		[]
+	).map((tab) => tab.path);
+	const activeEditorPath =
+		editorState?.activeEditorPath ??
+		initialWorkspaceState?.tabs.activeEditorPath ??
+		null;
 
 	return (
 		<AgentChatProvider worktreePath={rootPath}>
@@ -162,6 +192,9 @@ function WorktreeContent({
 							) : (
 								<AgentChatPanel
 									worktreePath={rootPath}
+									activeEditorPath={activeEditorPath}
+									openEditorPaths={openEditorPaths}
+									activeEditorSelection={activeEditorSelection}
 									registerDropZone={s.registerDropZone}
 									sendMessageRef={sendAgentMessageRef}
 								/>
@@ -207,6 +240,7 @@ function WorktreeContent({
 											onSendToAgent={handleSendToAgent}
 											initialSelectedFile={s.selectedDiffFile}
 											onSelectedFileChange={s.setSelectedDiffFile}
+											onLineRangeSelected={handleLineRangeSelected}
 										/>
 									</div>
 								</Panel>

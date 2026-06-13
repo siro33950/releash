@@ -24,6 +24,7 @@ pub struct AgentRuntimeSendRequest {
     pub backend_id: Option<String>,
     pub images: Option<Vec<AgentImageAttachment>>,
     pub mentions: Option<Vec<crate::domain::code::MentionReference>>,
+    pub editor_context: Option<runtime::AgentEditorContext>,
 }
 
 impl AgentRuntimeGateway<'_> {
@@ -43,6 +44,7 @@ impl AgentRuntimeGateway<'_> {
             req.backend_id,
             req.images,
             req.mentions,
+            req.editor_context,
         )
         .await
     }

@@ -2,13 +2,19 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import type { AgentState } from "@/types/protocol";
 import type {
+	AgentEditorContext,
 	BackendInfo,
 	ChatSession,
+	CodexGoal,
+	CodexRuntimeStatus,
 	ImageAttachment,
 	MentionReference,
 	ModelInfo,
 	PermissionMode,
+	QueuedAgentTurn,
 	SessionSummary,
+	SlashCommand,
+	TokenUsage,
 	TurnPhase,
 } from "@/types/session";
 import {
@@ -23,23 +29,34 @@ import {
 } from "./deriveActivityStatus";
 import { useAgentSdkListeners } from "./useAgentSdkListeners";
 import {
+	archiveOpenSession as archiveOpenSessionApi,
+	archiveSession as archiveSessionApi,
+	cancelAgentQueuedTurn,
 	closeSession as closeSessionApi,
 	createSession,
+	forkSession as forkSessionApi,
 	getSession,
 	initAgentSessions,
 	listAgentBackends,
 	listClosedSessions,
 	listSessions,
+	readCodexModelCatalog,
 	restoreSession as restoreSessionApi,
+	rewindSessionToMessage as rewindSessionToMessageApi,
 	sendAgentMessage,
 	sendWorkflowApprovalChatMessage,
 	setSessionBackend,
+	setSessionTitle as setSessionTitleApi,
 } from "./useSessionStore";
 import { useWorktreeSessionStatuses } from "./useWorktreeSessionStatuses";
 
 export type { ActivityStatus } from "./deriveActivityStatus";
 
 type RefreshSessionsOptions = { reconcileActiveSession?: boolean };
+export type SendMessageOptions = {
+	activateNewSession?: boolean;
+	editorContext?: AgentEditorContext;
+};
 
 /**
  * SDK listener gating のために「現在 UI 上で表示中の session id 集合」を購読する registry。
@@ -71,6 +88,7 @@ export interface UseAgentChatResult {
 		content: string,
 		images?: ImageAttachment[],
 		mentions?: MentionReference[],
+		options?: SendMessageOptions,
 	) => Promise<void>;
 	interrupt: (sessionId: string) => void;
 	selectSession: (sessionId: string) => Promise<void>;
@@ -79,7 +97,16 @@ export interface UseAgentChatResult {
 	) => Promise<SessionSummary[] | undefined>;
 	refreshClosedSessions: () => Promise<void>;
 	closeSession: (sessionId: string) => Promise<void>;
+	archiveSession: (sessionId: string) => Promise<void>;
+	archiveOpenSession: (sessionId: string) => Promise<void>;
 	restoreSession: (sessionId: string) => Promise<void>;
+	rewindSessionToMessage: (
+		sessionId: string,
+		messageId: string,
+		options?: { restoreWorktree?: boolean },
+	) => Promise<void>;
+	forkSession: (sessionId: string) => Promise<void>;
+	setSessionTitle: (sessionId: string, title: string | null) => Promise<string>;
 	createNewSession: () => Promise<void>;
 	reorderSessions: (sessionOrder: string[]) => void;
 	setPermissionMode: (sessionId: string | null, mode: PermissionMode) => void;
@@ -109,6 +136,17 @@ export interface UseAgentChatResult {
 	/** per-session lookup（既存）。*/
 	getSessionTurnPhase: (sessionId: string) => TurnPhase;
 	getSessionSelectedModel: (sessionId: string) => string | null;
+	getSessionPendingQueue: (sessionId: string) => QueuedAgentTurn[];
+	getSessionLatestTokenUsage: (sessionId: string) => TokenUsage | null;
+	getSessionCodexGoal: (sessionId: string) => CodexGoal | null;
+	getSessionCodexRuntimeStatus: (
+		sessionId: string,
+	) => CodexRuntimeStatus | null;
+	getSessionRuntimeSlashCommands: (sessionId: string) => SlashCommand[];
+	cancelQueuedTurn: (
+		sessionId: string,
+		queuedTurnId?: string | null,
+	) => Promise<void>;
 }
 
 function startAgentProcess(
@@ -133,6 +171,8 @@ function dispatchSessionMeta(
 		turnPhase: TurnPhase;
 		selectedModel: string;
 		availableModels: ModelInfo[];
+		pendingQueue?: QueuedAgentTurn[];
+		latestTokenUsage?: TokenUsage | null;
 	},
 ) {
 	dispatch({
@@ -155,6 +195,16 @@ function dispatchSessionMeta(
 		type: "SET_AVAILABLE_MODELS",
 		models: response.availableModels,
 		backendId: response.session.backendId,
+	});
+	dispatch({
+		type: "SET_PENDING_QUEUE",
+		sessionId,
+		queue: response.pendingQueue ?? [],
+	});
+	dispatch({
+		type: "SET_LATEST_TOKEN_USAGE",
+		sessionId,
+		usage: response.latestTokenUsage ?? null,
 	});
 }
 
@@ -338,6 +388,7 @@ export function useAgentChat(
 			content: string,
 			images?: ImageAttachment[],
 			mentions?: MentionReference[],
+			options?: SendMessageOptions,
 		) => {
 			const trimmed = content.trim();
 			if (!trimmed && (!images || images.length === 0)) return;
@@ -360,21 +411,37 @@ export function useAgentChat(
 								images,
 								mentions,
 							)
-						: await sendAgentMessage(
-								sessionId,
-								wPath,
-								trimmed,
-								pm,
-								backendId,
-								images,
-								mentions,
-							);
+						: options?.editorContext
+							? await sendAgentMessage(
+									sessionId,
+									wPath,
+									trimmed,
+									pm,
+									backendId,
+									images,
+									mentions,
+									options.editorContext,
+								)
+							: await sendAgentMessage(
+									sessionId,
+									wPath,
+									trimmed,
+									pm,
+									backendId,
+									images,
+									mentions,
+								);
 				const responseSessionId = response.session.id;
 				dispatch({ type: "UPSERT_SESSION", session: response.session });
+				dispatch({
+					type: "SET_PENDING_QUEUE",
+					sessionId: responseSessionId,
+					queue: response.pendingQueue,
+				});
 				// 新規作成 session の場合、active を切り替える（既存 sessionId 指定で送った場合は
 				// active を変更しない — Workflow panel から step session に送ったときに Main の
 				// active を上書きしないため）。
-				if (sessionId === null) {
+				if (sessionId === null && options?.activateNewSession !== false) {
 					dispatch({
 						type: "SET_ACTIVE_SESSION_ID",
 						sessionId: responseSessionId,
@@ -385,6 +452,25 @@ export function useAgentChat(
 				dispatch({
 					type: "SET_ERROR",
 					error: `メッセージ送信に失敗: ${e}`,
+				});
+			}
+		},
+		[],
+	);
+
+	const cancelQueuedTurn = useCallback(
+		async (sessionId: string, queuedTurnId?: string | null) => {
+			try {
+				const response = await cancelAgentQueuedTurn(sessionId, queuedTurnId);
+				dispatch({
+					type: "SET_PENDING_QUEUE",
+					sessionId: response.sessionId,
+					queue: response.pendingQueue,
+				});
+			} catch (e) {
+				dispatch({
+					type: "SET_ERROR",
+					error: `キューのキャンセルに失敗: ${e}`,
 				});
 			}
 		},
@@ -474,6 +560,147 @@ export function useAgentChat(
 					type: "SET_ERROR",
 					error: `セッション復元に失敗: ${e}`,
 				});
+			}
+		},
+		[refreshSessions, refreshClosedSessions],
+	);
+
+	const archiveSessionFn = useCallback(
+		async (sessionId: string) => {
+			try {
+				await archiveSessionApi(sessionId);
+				await refreshClosedSessions();
+			} catch (e) {
+				dispatch({
+					type: "SET_ERROR",
+					error: `セッションアーカイブに失敗: ${e}`,
+				});
+			}
+		},
+		[refreshClosedSessions],
+	);
+
+	const archiveOpenSessionFn = useCallback(
+		async (sessionId: string) => {
+			try {
+				const sessions = sessionsRef.current;
+				const idx = sessions.findIndex((s) => s.id === sessionId);
+				await archiveOpenSessionApi(sessionId);
+				dispatch({ type: "CLEANUP_SESSION", sessionId });
+
+				const isActive = activeSessionIdRef.current === sessionId;
+				if (isActive) {
+					const remaining = sessions.filter(
+						(s) => s.id !== sessionId && !s.workflowStepSession,
+					);
+					const nextSession =
+						remaining.length > 0
+							? remaining[Math.min(idx, remaining.length - 1)]
+							: null;
+					if (nextSession) {
+						const response = await getSession(nextSession.id);
+						if (response) {
+							dispatch({ type: "UPSERT_SESSION", session: response.session });
+							dispatch({
+								type: "SET_ACTIVE_SESSION_ID",
+								sessionId: response.session.id,
+							});
+							dispatchSessionMeta(dispatch, nextSession.id, response);
+						} else {
+							dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
+						}
+					} else {
+						dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
+					}
+				}
+
+				await refreshSessions();
+				await refreshClosedSessions();
+			} catch (e) {
+				dispatch({
+					type: "SET_ERROR",
+					error: `セッションアーカイブに失敗: ${e}`,
+				});
+			}
+		},
+		[refreshSessions, refreshClosedSessions],
+	);
+
+	const rewindSessionToMessageFn = useCallback(
+		async (
+			sessionId: string,
+			messageId: string,
+			options?: { restoreWorktree?: boolean },
+		) => {
+			try {
+				const rewound = await rewindSessionToMessageApi(
+					sessionId,
+					messageId,
+					options,
+				);
+				const response = await getSession(rewound.id);
+				const activeSession = response?.session ?? rewound;
+				dispatch({ type: "UPSERT_SESSION", session: activeSession });
+				dispatch({
+					type: "SET_ACTIVE_SESSION_ID",
+					sessionId: activeSession.id,
+				});
+				if (response) {
+					dispatchSessionMeta(dispatch, activeSession.id, response);
+				}
+				await refreshSessions();
+			} catch (e) {
+				dispatch({
+					type: "SET_ERROR",
+					error: `セッションの巻き戻しに失敗: ${e}`,
+				});
+			}
+		},
+		[refreshSessions],
+	);
+
+	const forkSessionFn = useCallback(
+		async (sessionId: string) => {
+			try {
+				const forked = await forkSessionApi(sessionId);
+				const response = await getSession(forked.id);
+				const activeSession = response?.session ?? forked;
+				dispatch({ type: "UPSERT_SESSION", session: activeSession });
+				dispatch({
+					type: "SET_ACTIVE_SESSION_ID",
+					sessionId: activeSession.id,
+				});
+				dispatch({
+					type: "SET_PERMISSION_MODE",
+					mode: activeSession.permissionMode,
+				});
+				if (response) {
+					dispatchSessionMeta(dispatch, activeSession.id, response);
+				}
+				await refreshSessions();
+			} catch (e) {
+				dispatch({
+					type: "SET_ERROR",
+					error: `セッションのフォークに失敗: ${e}`,
+				});
+			}
+		},
+		[refreshSessions],
+	);
+
+	const setSessionTitleFn = useCallback(
+		async (sessionId: string, title: string | null): Promise<string> => {
+			try {
+				const summary = await setSessionTitleApi(sessionId, title);
+				await refreshSessions();
+				await refreshClosedSessions();
+				return summary.firstMessage || "New session";
+			} catch (e) {
+				dispatch({
+					type: "SET_ERROR",
+					error: `セッションタイトル変更に失敗: ${e}`,
+				});
+				throw e;
 			}
 		},
 		[refreshSessions, refreshClosedSessions],
@@ -649,6 +876,23 @@ export function useAgentChat(
 	const fetchBackends = useCallback(async () => {
 		try {
 			const result = await listAgentBackends();
+			const hasCodex = result.backends.some(
+				(backend) => backend.id === "codex" && backend.available,
+			);
+			if (hasCodex) {
+				try {
+					const models = await readCodexModelCatalog();
+					if (models.length > 0) {
+						result.backends = result.backends.map((backend) =>
+							backend.id === "codex"
+								? { ...backend, availableModels: models }
+								: backend,
+						);
+					}
+				} catch (e) {
+					console.warn("Failed to fetch Codex model catalog:", e);
+				}
+			}
 			dispatch({
 				type: "SET_BACKENDS",
 				backends: result.backends,
@@ -734,6 +978,11 @@ export function useAgentChat(
 
 	const turnPhasesState = state.turnPhases;
 	const sessionModelsState = state.sessionModels;
+	const pendingQueuesState = state.pendingQueues;
+	const latestTokenUsageState = state.latestTokenUsage;
+	const codexGoalsState = state.codexGoals;
+	const codexRuntimeStatusesState = state.codexRuntimeStatuses;
+	const runtimeSlashCommandsState = state.runtimeSlashCommands;
 	const getSessionTurnPhase = useCallback(
 		(sessionId: string): TurnPhase => turnPhasesState[sessionId] ?? "idle",
 		[turnPhasesState],
@@ -741,6 +990,29 @@ export function useAgentChat(
 	const getSessionSelectedModel = useCallback(
 		(sessionId: string): string | null => sessionModelsState[sessionId] ?? null,
 		[sessionModelsState],
+	);
+	const getSessionPendingQueue = useCallback(
+		(sessionId: string): QueuedAgentTurn[] =>
+			pendingQueuesState[sessionId] ?? [],
+		[pendingQueuesState],
+	);
+	const getSessionLatestTokenUsage = useCallback(
+		(sessionId: string): TokenUsage | null =>
+			latestTokenUsageState[sessionId] ?? null,
+		[latestTokenUsageState],
+	);
+	const getSessionCodexGoal = useCallback(
+		(sessionId: string) => codexGoalsState[sessionId] ?? null,
+		[codexGoalsState],
+	);
+	const getSessionCodexRuntimeStatus = useCallback(
+		(sessionId: string) => codexRuntimeStatusesState[sessionId] ?? null,
+		[codexRuntimeStatusesState],
+	);
+	const getSessionRuntimeSlashCommands = useCallback(
+		(sessionId: string): SlashCommand[] =>
+			runtimeSlashCommandsState[sessionId] ?? [],
+		[runtimeSlashCommandsState],
 	);
 
 	const sessionsByIdState = state.sessionsById;
@@ -775,7 +1047,12 @@ export function useAgentChat(
 		refreshSessions,
 		refreshClosedSessions,
 		closeSession: closeSessionFn,
+		archiveSession: archiveSessionFn,
+		archiveOpenSession: archiveOpenSessionFn,
 		restoreSession: restoreSessionFn,
+		rewindSessionToMessage: rewindSessionToMessageFn,
+		forkSession: forkSessionFn,
+		setSessionTitle: setSessionTitleFn,
 		createNewSession,
 		reorderSessions,
 		setPermissionMode,
@@ -793,5 +1070,11 @@ export function useAgentChat(
 		registerViewableSession,
 		getSessionTurnPhase,
 		getSessionSelectedModel,
+		getSessionPendingQueue,
+		getSessionLatestTokenUsage,
+		getSessionCodexGoal,
+		getSessionCodexRuntimeStatus,
+		getSessionRuntimeSlashCommands,
+		cancelQueuedTurn,
 	};
 }

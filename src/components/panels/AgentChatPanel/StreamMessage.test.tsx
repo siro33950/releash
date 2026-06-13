@@ -9,6 +9,38 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 	openUrl: (...args: unknown[]) => mockOpenUrl(...args),
 }));
 
+vi.mock("@tanstack/react-virtual", () => ({
+	useVirtualizer: ({
+		count,
+		estimateSize,
+	}: {
+		count: number;
+		estimateSize: (index: number) => number;
+	}) => {
+		const visibleCount = Math.min(count, 24);
+		return {
+			getVirtualItems: () =>
+				Array.from({ length: visibleCount }, (_, i) => {
+					const size = estimateSize(i);
+					return {
+						index: i,
+						key: i,
+						start: i * size,
+						size,
+						end: (i + 1) * size,
+					};
+				}),
+			getTotalSize: () => {
+				let total = 0;
+				for (let i = 0; i < count; i++) {
+					total += estimateSize(i);
+				}
+				return total;
+			},
+		};
+	},
+}));
+
 const { markdownSpy } = vi.hoisted(() => ({ markdownSpy: vi.fn() }));
 // Wrap react-markdown so we can count how often it is invoked for each render.
 // The wrapper still delegates to the real implementation so unrelated markdown
@@ -56,6 +88,14 @@ describe("StreamMessage", () => {
 		const bold = el.querySelector("strong");
 		expect(bold).not.toBeNull();
 		expect(bold?.textContent).toBe("bold text");
+	});
+
+	it("renders agent messages as plain raw text in raw mode", () => {
+		render(<StreamMessage content="**not bold**" role={agent} rawMode />);
+		const el = screen.getByTestId("stream-message-agent");
+		expect(screen.getByTestId("agent-raw-message")).toBeInTheDocument();
+		expect(el.querySelector("strong")).toBeNull();
+		expect(el.textContent).toContain("**not bold**");
 	});
 
 	it("renders code blocks in agent messages", () => {
@@ -230,6 +270,22 @@ describe("StreamMessage", () => {
 		});
 	});
 
+	it("renders quoted @mention with spaces as badge in human messages", async () => {
+		render(
+			<StreamMessage
+				content={'Check @"docs/my file.md":L3-L7 for details'}
+				role={human}
+				mentions={[{ filePath: "docs/my file.md", startLine: 3, endLine: 7 }]}
+			/>,
+		);
+		const el = screen.getByTestId("stream-message-human");
+		await waitFor(() => {
+			const badge = el.querySelector(".font-mono");
+			expect(badge).not.toBeNull();
+			expect(badge?.textContent).toBe('@"docs/my file.md":L3-L7');
+		});
+	});
+
 	it("renders human message without mentions as plain text", async () => {
 		render(<StreamMessage content="No mentions here" role={human} />);
 		const el = screen.getByTestId("stream-message-human");
@@ -255,6 +311,52 @@ describe("StreamMessage", () => {
 		render(<StreamMessage content="Plain text without table" role={agent} />);
 		const el = screen.getByTestId("stream-message-agent");
 		expect(el.querySelector(".overflow-x-auto")).toBeNull();
+	});
+
+	it("collapses very large agent markdown without invoking markdown until expanded", async () => {
+		const user = userEvent.setup();
+		const largeMarkdown = `${"# Large\n\n"}${"body line\n".repeat(260)}**tail**`;
+
+		render(<StreamMessage content={largeMarkdown} role={agent} />);
+
+		expect(
+			screen.getByTestId("large-agent-message-collapsed"),
+		).toBeInTheDocument();
+		expect(screen.getByText(/Large message collapsed/)).toBeInTheDocument();
+		expect(markdownSpy).not.toHaveBeenCalled();
+
+		await user.click(screen.getByText("Show full message"));
+
+		expect(markdownSpy).toHaveBeenCalled();
+		expect(screen.getByText("Large")).toBeInTheDocument();
+		expect(screen.getByText("tail")).toBeInTheDocument();
+	});
+
+	it("uses line virtualization after expanding extremely large agent output", async () => {
+		const user = userEvent.setup();
+		const hugeOutput = Array.from(
+			{ length: 900 },
+			(_, i) => `line ${i + 1}`,
+		).join("\n");
+
+		render(<StreamMessage content={hugeOutput} role={agent} />);
+
+		expect(
+			screen.getByTestId("large-agent-message-collapsed"),
+		).toBeInTheDocument();
+		expect(markdownSpy).not.toHaveBeenCalled();
+
+		await user.click(screen.getByText("Show full message"));
+
+		expect(
+			screen.getByTestId("large-agent-message-virtualized"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/Virtualized full message: 900 lines/),
+		).toBeInTheDocument();
+		expect(screen.getByText("line 1")).toBeInTheDocument();
+		expect(screen.queryByText("line 900")).not.toBeInTheDocument();
+		expect(markdownSpy).not.toHaveBeenCalled();
 	});
 
 	it("does not re-invoke react-markdown when parent re-renders with identical content/role/images/mentions", () => {

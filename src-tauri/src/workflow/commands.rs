@@ -583,6 +583,7 @@ pub async fn send_workflow_approval_chat_message(
             backend_id: None,
             images,
             mentions,
+            editor_context: None,
         },
     )
     .await?;

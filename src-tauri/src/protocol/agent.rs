@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+use crate::adaptor::protocol::mention::MentionReferenceInput;
+use crate::infrastructure::agent_session::runtime::ImageAttachment;
 use crate::permission::{InvalidPermissionMode, PermissionMode};
+use crate::usecase::agent_session::session::{GetSessionResponse, QueuedAgentTurn, SessionSummary};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -55,6 +58,24 @@ pub struct ModelInfoMsg {
     pub value: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSupportedCommandMsg {
+    pub name: String,
+    pub description: String,
+    #[serde(
+        rename = "argumentHint",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub argument_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSupportedCommandsUpdated {
+    pub chat_session_id: String,
+    pub commands: Vec<AgentSupportedCommandMsg>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSessionStartRequest {
     pub worktree_path: String,
@@ -79,6 +100,37 @@ pub struct AgentSessionStartResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionsRequest {
+    pub worktree_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionsResponse {
+    pub success: bool,
+    pub worktree_path: String,
+    pub sessions: Vec<SessionSummary>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub active_session: Option<GetSessionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionGetRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionGetResponse {
+    pub success: bool,
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session: Option<GetSessionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMessageRequest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub session_id: Option<String>,
@@ -88,6 +140,10 @@ pub struct AgentMessageRequest {
     pub permission_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
+    #[serde(default)]
+    pub images: Vec<ImageAttachment>,
+    #[serde(default)]
+    pub mentions: Vec<MentionReferenceInput>,
 }
 
 /// `AgentSessionStartRequest` の typed 境界変換結果。
@@ -126,6 +182,8 @@ pub struct AgentMessageHandlerRequest {
     pub content: String,
     pub permission_mode: PermissionMode,
     pub backend_id: Option<String>,
+    pub images: Vec<ImageAttachment>,
+    pub mentions: Vec<MentionReferenceInput>,
 }
 
 impl TryFrom<&AgentMessageRequest> for AgentMessageHandlerRequest {
@@ -140,6 +198,8 @@ impl TryFrom<&AgentMessageRequest> for AgentMessageHandlerRequest {
             content: req.content.clone(),
             permission_mode,
             backend_id: req.backend_id.clone(),
+            images: req.images.clone(),
+            mentions: req.mentions.clone(),
         })
     }
 }
@@ -153,6 +213,14 @@ pub struct AgentMessageResponse {
     pub human_message_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub queued_turn_id: Option<String>,
+    #[serde(default)]
+    pub pending_queue: Vec<QueuedAgentTurn>,
+    #[serde(default)]
+    pub pending_queue_count: usize,
+    #[serde(default)]
+    pub sessions: Vec<SessionSummary>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -168,6 +236,108 @@ pub struct AgentInterruptRequest {
 pub struct AgentInterruptResponse {
     pub success: bool,
     pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentQueueCancelRequest {
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub queued_turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentQueueCancelResponse {
+    pub success: bool,
+    pub session_id: String,
+    pub canceled_count: usize,
+    #[serde(default)]
+    pub pending_queue: Vec<QueuedAgentTurn>,
+    #[serde(default)]
+    pub pending_queue_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSlashCommandsRequest {
+    pub worktree_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSlashCommandEntry {
+    pub name: String,
+    pub description: String,
+    #[serde(
+        rename = "argumentHint",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub argument_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSlashCommandsResponse {
+    pub success: bool,
+    pub worktree_path: String,
+    #[serde(default)]
+    pub commands: Vec<AgentSlashCommandEntry>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMentionFilesRequest {
+    pub request_id: String,
+    pub worktree_path: String,
+    pub query: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMentionFilesResponse {
+    pub success: bool,
+    pub request_id: String,
+    pub worktree_path: String,
+    pub query: String,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentImagePrepareRequest {
+    pub request_id: String,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentImagePrepareResponse {
+    pub success: bool,
+    pub request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub attachment: Option<ImageAttachment>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentPermissionResponseRequest {
+    pub session_id: String,
+    pub request_id: String,
+    pub behavior: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub updated_input: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentPermissionResponseResponse {
+    pub success: bool,
+    pub session_id: String,
+    pub request_id: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub error: Option<String>,
 }
@@ -416,6 +586,8 @@ mod tests {
                 content: "hi".to_string(),
                 permission_mode: Some(value.to_string()),
                 backend_id: None,
+                images: Vec::new(),
+                mentions: Vec::new(),
             };
             let typed: AgentMessageHandlerRequest = (&req).try_into().unwrap();
             assert_eq!(typed.permission_mode, PermissionMode::parse(value).unwrap());
@@ -440,6 +612,8 @@ mod tests {
                 content: "hi".to_string(),
                 permission_mode: value.map(str::to_string),
                 backend_id: None,
+                images: Vec::new(),
+                mentions: Vec::new(),
             };
             let err = AgentMessageHandlerRequest::try_from(&req).unwrap_err();
             assert!(

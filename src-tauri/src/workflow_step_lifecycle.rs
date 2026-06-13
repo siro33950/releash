@@ -191,6 +191,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
                 crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
@@ -487,13 +488,16 @@ mod tests {
             let mut map = handles.lock().await;
             let proc = map.get_mut("step").unwrap();
             proc.turn_phase = crate::infrastructure::agent_session::runtime::TurnPhase::Idle;
-            proc.pending_message = Some(
+            proc.pending_messages.push_back(
                 crate::infrastructure::agent_session::runtime::PendingMessage {
+                    id: "queued-1".to_string(),
                     content: "next".to_string(),
+                    created_at: 1.0,
                     permission_mode: "edit".to_string(),
                     images: Vec::new(),
                     worktree_path: "/repo".to_string(),
                     mentions: Vec::new(),
+                    editor_context: None,
                 },
             );
         }
@@ -983,13 +987,16 @@ mod tests {
             .unwrap();
         open_tabs.add(&session_id);
         let mut proc = crate::infrastructure::agent_session::runtime::make_test_agent_process();
-        proc.pending_message = Some(
+        proc.pending_messages.push_back(
             crate::infrastructure::agent_session::runtime::PendingMessage {
+                id: "queued-1".to_string(),
                 content: "continue".to_string(),
+                created_at: 1.0,
                 permission_mode: "edit".to_string(),
                 images: Vec::new(),
                 worktree_path: "/repo".to_string(),
                 mentions: Vec::new(),
+                editor_context: None,
             },
         );
         handles.lock().await.insert(session_id.clone(), proc);

@@ -92,6 +92,8 @@ pub struct AppSection {
     pub last_bind_ip: String,
     #[serde(default)]
     pub external_editor: String,
+    #[serde(default)]
+    pub agent_shortcuts: AgentShortcutSection,
 }
 
 impl Default for AppSection {
@@ -104,8 +106,15 @@ impl Default for AppSection {
             last_repo_paths: Vec::new(),
             last_bind_ip: String::new(),
             external_editor: String::new(),
+            agent_shortcuts: AgentShortcutSection::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentShortcutSection {
+    #[serde(default)]
+    pub overrides: HashMap<String, String>,
 }
 
 fn default_crash_reporting() -> bool {
@@ -265,6 +274,10 @@ impl AppConfig {
             .lock()
             .map_err(|e| format!("ロック取得失敗: {e}"))?;
         Ok(config.clone())
+    }
+
+    pub fn config_path(&self) -> PathBuf {
+        self.config_path.clone()
     }
 
     pub fn with_config_mut<F, R>(&self, f: F) -> Result<R, String>

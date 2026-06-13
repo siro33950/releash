@@ -1,7 +1,104 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PermissionDialog } from "./PermissionDialog";
+
+const mockInvoke = vi.fn().mockResolvedValue(null);
+vi.mock("@tauri-apps/api/core", () => ({
+	invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
+
+function resolvedInvoke<T>(value: T): Promise<T> {
+	return {
+		// biome-ignore lint/suspicious/noThenProperty: Tauri invoke is mocked as a synchronously settled thenable so effect-driven presentation is available during render tests.
+		then: (
+			onFulfilled?: (value: T) => unknown,
+			onRejected?: (reason: unknown) => unknown,
+		) => {
+			try {
+				const nextValue = onFulfilled ? onFulfilled(value) : value;
+				return { catch: () => nextValue };
+			} catch (error) {
+				return { catch: () => onRejected?.(error) };
+			}
+		},
+		catch: () => resolvedInvoke(value),
+	} as unknown as Promise<T>;
+}
+
+function buildPermissionPresentation({
+	toolName,
+	input,
+}: {
+	toolName: string;
+	input?: Record<string, unknown>;
+}) {
+	const source = input ?? {};
+	const edits = Array.isArray(source.edits)
+		? (source.edits as Record<string, unknown>[])
+		: [];
+	const allowedPrompts = Array.isArray(source.allowedPrompts)
+		? source.allowedPrompts
+		: [];
+	const questions = Array.isArray(source.questions) ? source.questions : [];
+	const kind =
+		toolName === "ExitPlanMode"
+			? "exit_plan"
+			: toolName === "AskUserQuestion"
+				? "ask_user_question"
+				: "tool";
+	const directContentKey = toolName === "Write" ? "content" : "new_string";
+	return {
+		kind,
+		canEditInput: ["Edit", "MultiEdit", "Write"].includes(toolName),
+		canEditContent: ["Edit", "Write"].includes(toolName),
+		canEditMultiEditContent: toolName === "MultiEdit",
+		directContentEditLabel:
+			toolName === "Write"
+				? "Edit file content"
+				: toolName === "Edit"
+					? "Edit replacement content"
+					: null,
+		directContent:
+			typeof source[directContentKey] === "string"
+				? source[directContentKey]
+				: "",
+		multiEditReplacementContents: edits.map((edit) =>
+			typeof edit.new_string === "string" ? edit.new_string : "",
+		),
+		multiEditOldStrings: edits.map((edit) =>
+			typeof edit.old_string === "string" ? edit.old_string : "",
+		),
+		hasResolvedDetail:
+			kind === "exit_plan"
+				? Boolean(source.plan) || allowedPrompts.length > 0
+				: kind === "ask_user_question"
+					? questions.length > 0
+					: Object.keys(source).length > 0,
+		plan: typeof source.plan === "string" ? source.plan : "",
+		allowedPrompts,
+		questions,
+	};
+}
+
+function mockPermissionPresentation(command: string, args: unknown) {
+	if (command === "present_agent_permission_request") {
+		return resolvedInvoke(
+			buildPermissionPresentation(
+				args as { toolName: string; input?: Record<string, unknown> },
+			),
+		);
+	}
+	return null;
+}
+
+beforeEach(() => {
+	mockInvoke.mockClear();
+	mockInvoke.mockImplementation(
+		(command: string, args: unknown) =>
+			mockPermissionPresentation(command, args) ?? resolvedInvoke(null),
+	);
+});
 
 const baseRequest = {
 	request_id: "req-001",
@@ -69,6 +166,71 @@ describe("PermissionDialog", () => {
 		});
 	});
 
+	it("shows Rust-built inline diff preview for edit permission requests", async () => {
+		mockInvoke.mockImplementation((command: string, args: unknown) => {
+			const presentation = mockPermissionPresentation(command, args);
+			if (presentation) return presentation;
+			if (command === "build_agent_edited_tool_input") {
+				const input = (args as { input: Record<string, unknown> }).input;
+				return Promise.resolve(input);
+			}
+			if (command === "build_agent_edit_preview") {
+				return Promise.resolve({
+					toolName: "Edit",
+					operation: "Edit first match",
+					filePath: "src/index.ts",
+					hunks: [
+						{
+							oldStart: 1,
+							newStart: 1,
+							lines: [
+								{
+									kind: "removed",
+									oldLine: 1,
+									newLine: null,
+									content: "old",
+								},
+								{ kind: "added", oldLine: null, newLine: 1, content: "new" },
+							],
+						},
+					],
+					warnings: [],
+				});
+			}
+			return Promise.resolve(null);
+		});
+		const request = {
+			...baseRequest,
+			input: {
+				file_path: "src/index.ts",
+				old_string: "old",
+				new_string: "new",
+			},
+		};
+
+		render(
+			<PermissionDialog
+				request={request}
+				worktreePath="/repo"
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith("build_agent_edit_preview", {
+				worktreePath: "/repo",
+				toolName: "Edit",
+				input: request.input,
+			}),
+		);
+		expect(
+			await screen.findByText("Edit first match: src/index.ts"),
+		).toBeInTheDocument();
+		expect(screen.getByText("old")).toBeInTheDocument();
+		expect(screen.getAllByText("new").length).toBeGreaterThan(0);
+	});
+
 	it("hides input section when input is empty", () => {
 		render(
 			<PermissionDialog
@@ -92,6 +254,237 @@ describe("PermissionDialog", () => {
 
 		await userEvent.click(screen.getByText("Allow"));
 		expect(onAllow).toHaveBeenCalledWith("req-001");
+	});
+
+	it("allows an edited tool input for edit permission requests", async () => {
+		const onAllow = vi.fn();
+		render(
+			<PermissionDialog
+				request={{
+					...baseRequest,
+					input: {
+						file_path: "src/index.ts",
+						old_string: "old",
+						new_string: "new",
+					},
+				}}
+				onAllow={onAllow}
+				onDeny={vi.fn()}
+			/>,
+		);
+		const editor = screen.getByLabelText("Edit permission input JSON");
+
+		fireEvent.change(editor, {
+			target: {
+				value: JSON.stringify({
+					file_path: "src/index.ts",
+					old_string: "old",
+					new_string: "edited",
+				}),
+			},
+		});
+		await userEvent.click(screen.getByText("Allow edited"));
+
+		expect(onAllow).toHaveBeenCalledWith("req-001", {
+			file_path: "src/index.ts",
+			old_string: "old",
+			new_string: "edited",
+		});
+	});
+
+	it("allows direct replacement content edits through Rust", async () => {
+		const onAllow = vi.fn();
+		mockInvoke.mockImplementation((command: string, args: unknown) => {
+			const presentation = mockPermissionPresentation(command, args);
+			if (presentation) return presentation;
+			if (command === "build_agent_edited_tool_input") {
+				return Promise.resolve({
+					file_path: "src/index.ts",
+					old_string: "old",
+					new_string: "direct edit",
+				});
+			}
+			return Promise.resolve(null);
+		});
+		render(
+			<PermissionDialog
+				request={{
+					...baseRequest,
+					input: {
+						file_path: "src/index.ts",
+						old_string: "old",
+						new_string: "new",
+					},
+				}}
+				onAllow={onAllow}
+				onDeny={vi.fn()}
+			/>,
+		);
+		const editor = screen.getByLabelText("Edit replacement content");
+
+		fireEvent.change(editor, {
+			target: {
+				value: "direct edit",
+			},
+		});
+		await userEvent.click(screen.getByText("Allow content edit"));
+
+		expect(mockInvoke).toHaveBeenCalledWith("build_agent_edited_tool_input", {
+			toolName: "Edit",
+			input: {
+				file_path: "src/index.ts",
+				old_string: "old",
+				new_string: "new",
+			},
+			editedContent: "direct edit",
+		});
+		expect(onAllow).toHaveBeenCalledWith("req-001", {
+			file_path: "src/index.ts",
+			old_string: "old",
+			new_string: "direct edit",
+		});
+	});
+
+	it("updates inline diff preview after direct replacement content edits", async () => {
+		mockInvoke.mockImplementation(
+			(command: string, args: Record<string, unknown>) => {
+				const presentation = mockPermissionPresentation(command, args);
+				if (presentation) return presentation;
+				if (command === "build_agent_edited_tool_input") {
+					return Promise.resolve({
+						file_path: "src/index.ts",
+						old_string: "old",
+						new_string: args.editedContent,
+					});
+				}
+				if (command === "build_agent_edit_preview") {
+					const input = args.input as Record<string, unknown>;
+					return Promise.resolve({
+						toolName: "Edit",
+						operation: "Edit first match",
+						filePath: "src/index.ts",
+						hunks: [
+							{
+								oldStart: 1,
+								newStart: 1,
+								lines: [
+									{
+										kind: "removed",
+										oldLine: 1,
+										newLine: null,
+										content: "old",
+									},
+									{
+										kind: "added",
+										oldLine: null,
+										newLine: 1,
+										content: String(input.new_string),
+									},
+								],
+							},
+						],
+						warnings: [],
+					});
+				}
+				return Promise.resolve(null);
+			},
+		);
+		render(
+			<PermissionDialog
+				request={{
+					...baseRequest,
+					input: {
+						file_path: "src/index.ts",
+						old_string: "old",
+						new_string: "new",
+					},
+				}}
+				worktreePath="/repo"
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+
+		fireEvent.change(screen.getByLabelText("Edit replacement content"), {
+			target: {
+				value: "preview edit",
+			},
+		});
+
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith("build_agent_edit_preview", {
+				worktreePath: "/repo",
+				toolName: "Edit",
+				input: {
+					file_path: "src/index.ts",
+					old_string: "old",
+					new_string: "preview edit",
+				},
+			}),
+		);
+		await waitFor(() =>
+			expect(screen.getAllByText("preview edit").length).toBeGreaterThan(1),
+		);
+	});
+
+	it("allows direct MultiEdit replacement content edits through Rust", async () => {
+		const onAllow = vi.fn();
+		mockInvoke.mockImplementation((command: string, args: unknown) => {
+			const presentation = mockPermissionPresentation(command, args);
+			if (presentation) return presentation;
+			if (command === "build_agent_edited_multi_edit_tool_input") {
+				return Promise.resolve({
+					file_path: "src/index.ts",
+					edits: [
+						{ old_string: "one", new_string: "two" },
+						{ old_string: "three", new_string: "direct multi edit" },
+					],
+				});
+			}
+			return Promise.resolve(null);
+		});
+		const input = {
+			file_path: "src/index.ts",
+			edits: [
+				{ old_string: "one", new_string: "two" },
+				{ old_string: "three", new_string: "four" },
+			],
+		};
+		render(
+			<PermissionDialog
+				request={{
+					...baseRequest,
+					tool_name: "MultiEdit",
+					input,
+				}}
+				onAllow={onAllow}
+				onDeny={vi.fn()}
+			/>,
+		);
+		const editor = screen.getByLabelText("Edit replacement content 2");
+
+		fireEvent.change(editor, {
+			target: {
+				value: "direct multi edit",
+			},
+		});
+		await userEvent.click(screen.getByText("Allow edit 2"));
+
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"build_agent_edited_multi_edit_tool_input",
+			{
+				input,
+				editIndex: 1,
+				editedContent: "direct multi edit",
+			},
+		);
+		expect(onAllow).toHaveBeenCalledWith("req-001", {
+			file_path: "src/index.ts",
+			edits: [
+				{ old_string: "one", new_string: "two" },
+				{ old_string: "three", new_string: "direct multi edit" },
+			],
+		});
 	});
 
 	it("calls onDeny with request_id when Deny is clicked", async () => {

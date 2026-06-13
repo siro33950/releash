@@ -40,6 +40,31 @@ export interface ModelInfo {
 	value: string;
 }
 
+export interface SlashCommand {
+	name: string;
+	description: string;
+	argumentHint?: string;
+}
+
+export interface CodexGoal {
+	objective: string;
+	status: string;
+	tokenBudget?: number | null;
+	tokensUsed: number;
+	timeUsedSeconds: number;
+}
+
+export interface CodexRuntimeStatus {
+	accountSummary?: string;
+	rateLimitSummary?: string;
+}
+
+export interface AgentSkill {
+	name: string;
+	description: string;
+	scope: "personal" | "project" | "system" | "admin";
+}
+
 export interface PermissionRequest {
 	request_id: string;
 	tool_name: string;
@@ -53,7 +78,13 @@ export interface PermissionRequest {
 
 export type MessageRole = "human" | "agent" | "system";
 
-export type SessionState = "active" | "idle" | "done" | "error" | "closed";
+export type SessionState =
+	| "active"
+	| "idle"
+	| "done"
+	| "error"
+	| "closed"
+	| "archived";
 
 export type TurnPhase = "idle" | "streaming" | "waiting_permission";
 
@@ -155,6 +186,7 @@ export interface ChatSession {
 	updatedAt: number;
 	agentSessionId?: string | null;
 	permissionMode: PermissionMode;
+	permissionProfileId?: string | null;
 	backendId?: string | null;
 	workflowStepSession?: boolean;
 }
@@ -176,8 +208,16 @@ export interface SessionSummary {
 	messageCount: number;
 	agentSessionId?: string | null;
 	permissionMode: PermissionMode;
+	permissionProfileId?: string | null;
 	backendId?: string | null;
 	workflowStepSession?: boolean;
+}
+
+export interface SessionSearchResult {
+	session: SessionSummary;
+	matchedMessageId: string;
+	matchedRole: MessageRole;
+	snippet: string;
 }
 
 export interface BackendInfo {
@@ -185,6 +225,21 @@ export interface BackendInfo {
 	name: string;
 	available: boolean;
 	availableModels: ModelInfo[];
+}
+
+export interface QueuedAgentTurn {
+	id: string;
+	contentPreview: string;
+	createdAt: number;
+	permissionMode: PermissionMode;
+	imageCount: number;
+}
+
+export interface TokenUsage {
+	inputTokens: number;
+	outputTokens: number;
+	totalTokens?: number;
+	contextWindowTokens?: number;
 }
 
 /**
@@ -223,6 +278,18 @@ export type ImagePart = Extract<MessagePart, { type: "image" }>;
 export interface ImageAttachment {
 	data: string;
 	mediaType: string;
+}
+
+export interface AgentEditorContext {
+	activeEditorPath?: string | null;
+	openEditorPaths?: string[];
+	selection?: AgentEditorSelection | null;
+}
+
+export interface AgentEditorSelection {
+	filePath: string;
+	startLine: number;
+	endLine: number;
 }
 
 export interface MentionReference {

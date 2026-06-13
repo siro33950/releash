@@ -2,12 +2,17 @@ import type {
 	BackendInfo,
 	ChatMessage,
 	ChatSession,
+	CodexGoal,
+	CodexRuntimeStatus,
 	MessagePart,
 	ModelInfo,
 	PermissionMode,
 	PermissionRequest,
+	QueuedAgentTurn,
 	SessionState,
 	SessionSummary,
+	SlashCommand,
+	TokenUsage,
 	TurnPhase,
 } from "@/types/session";
 
@@ -27,6 +32,11 @@ export interface AgentChatState {
 	error: string | null;
 	permissionMode: PermissionMode;
 	pendingPermissions: Record<string, PermissionRequest>;
+	pendingQueues: Record<string, QueuedAgentTurn[]>;
+	latestTokenUsage: Record<string, TokenUsage | null>;
+	codexGoals: Record<string, CodexGoal | null>;
+	codexRuntimeStatuses: Record<string, CodexRuntimeStatus>;
+	runtimeSlashCommands: Record<string, SlashCommand[]>;
 	availableModels: ModelInfo[];
 	availableModelsByBackend: Record<string, ModelInfo[]>;
 	sessionModels: Record<string, string>;
@@ -58,6 +68,36 @@ export type AgentChatAction =
 			type: "SET_PENDING_PERMISSION";
 			sessionId: string;
 			request: PermissionRequest | null;
+	  }
+	| {
+			type: "SET_PENDING_QUEUE";
+			sessionId: string;
+			queue: QueuedAgentTurn[];
+	  }
+	| {
+			type: "SET_LATEST_TOKEN_USAGE";
+			sessionId: string;
+			usage: TokenUsage | null;
+	  }
+	| {
+			type: "SET_CODEX_GOAL";
+			sessionId: string;
+			goal: CodexGoal | null;
+	  }
+	| {
+			type: "SET_CODEX_RUNTIME_STATUS";
+			sessionId: string;
+			status: CodexRuntimeStatus;
+	  }
+	| {
+			type: "SET_RUNTIME_SLASH_COMMANDS";
+			sessionId: string;
+			commands: SlashCommand[];
+	  }
+	| {
+			type: "REMOVE_PENDING_QUEUE_ITEM";
+			sessionId: string;
+			queuedTurnId: string;
 	  }
 	| { type: "REORDER_SESSIONS"; sessionOrder: string[] }
 	| {
@@ -235,6 +275,61 @@ export function reducer(
 				},
 			};
 		}
+		case "SET_PENDING_QUEUE":
+			return {
+				...state,
+				pendingQueues: {
+					...state.pendingQueues,
+					[action.sessionId]: action.queue,
+				},
+			};
+		case "SET_LATEST_TOKEN_USAGE":
+			return {
+				...state,
+				latestTokenUsage: {
+					...state.latestTokenUsage,
+					[action.sessionId]: action.usage,
+				},
+			};
+		case "SET_CODEX_GOAL":
+			return {
+				...state,
+				codexGoals: {
+					...state.codexGoals,
+					[action.sessionId]: action.goal,
+				},
+			};
+		case "SET_CODEX_RUNTIME_STATUS":
+			return {
+				...state,
+				codexRuntimeStatuses: {
+					...state.codexRuntimeStatuses,
+					[action.sessionId]: {
+						...state.codexRuntimeStatuses[action.sessionId],
+						...action.status,
+					},
+				},
+			};
+		case "SET_RUNTIME_SLASH_COMMANDS":
+			return {
+				...state,
+				runtimeSlashCommands: {
+					...state.runtimeSlashCommands,
+					[action.sessionId]: action.commands,
+				},
+			};
+		case "REMOVE_PENDING_QUEUE_ITEM": {
+			const queue = state.pendingQueues[action.sessionId] ?? [];
+			return {
+				...state,
+				pendingQueues: {
+					...state.pendingQueues,
+					[action.sessionId]: queue.filter(
+						(item) => item.id !== action.queuedTurnId,
+					),
+				},
+			};
+		}
 		case "REORDER_SESSIONS":
 			return { ...state, sessionOrder: action.sessionOrder };
 		case "SET_STREAMING_MESSAGE": {
@@ -270,6 +365,15 @@ export function reducer(
 			const { [action.sessionId]: _tp, ...restTurnPhases } = state.turnPhases;
 			const { [action.sessionId]: _pp, ...restPendingPermissions } =
 				state.pendingPermissions;
+			const { [action.sessionId]: _pq, ...restPendingQueues } =
+				state.pendingQueues;
+			const { [action.sessionId]: _tu, ...restLatestTokenUsage } =
+				state.latestTokenUsage;
+			const { [action.sessionId]: _cg, ...restCodexGoals } = state.codexGoals;
+			const { [action.sessionId]: _crs, ...restCodexRuntimeStatuses } =
+				state.codexRuntimeStatuses;
+			const { [action.sessionId]: _rsc, ...restRuntimeSlashCommands } =
+				state.runtimeSlashCommands;
 			const { [action.sessionId]: _sm, ...restSessionModels } =
 				state.sessionModels;
 			const { [action.sessionId]: _sb, ...restSessionsById } =
@@ -278,6 +382,11 @@ export function reducer(
 				...state,
 				turnPhases: restTurnPhases,
 				pendingPermissions: restPendingPermissions,
+				pendingQueues: restPendingQueues,
+				latestTokenUsage: restLatestTokenUsage,
+				codexGoals: restCodexGoals,
+				codexRuntimeStatuses: restCodexRuntimeStatuses,
+				runtimeSlashCommands: restRuntimeSlashCommands,
 				sessionModels: restSessionModels,
 				sessionsById: restSessionsById,
 				activeSessionId:
@@ -341,6 +450,11 @@ export const INITIAL_STATE: AgentChatState = {
 	error: null,
 	permissionMode: "edit",
 	pendingPermissions: {},
+	pendingQueues: {},
+	latestTokenUsage: {},
+	codexGoals: {},
+	codexRuntimeStatuses: {},
+	runtimeSlashCommands: {},
 	availableModels: [],
 	availableModelsByBackend: {},
 	sessionModels: {},

@@ -1,18 +1,38 @@
-import { ChevronRight, Layers, Loader2, Terminal } from "lucide-react";
-import { useState } from "react";
-import type { ActivityEntry, MessagePart } from "@/types/session";
+import { invoke } from "@tauri-apps/api/core";
 import {
-	classifyTool,
-	getCommandLabel,
-	getReadToolLabel,
-	shortenPath,
-} from "./toolClassification";
+	Check,
+	ChevronRight,
+	Copy,
+	Layers,
+	Loader2,
+	Terminal,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import type { ActivityEntry, MessagePart } from "@/types/session";
+import { AgentEditPreviewPanel } from "./AgentEditPreviewPanel";
 import type { TaskGroup } from "./toolPairing";
 
-function truncateResult(content: string, maxLines = 5): string {
+type ToolCategory = "read" | "write" | "command" | "other";
+
+interface AgentToolActivityPresentation {
+	category: ToolCategory;
+	label: string;
+	summary: string;
+	editPreviewTool: boolean;
+}
+
+function truncateResult(
+	content: string,
+	maxLines = 5,
+	maxChars = 4000,
+): string {
 	const lines = content.split("\n");
-	if (lines.length <= maxLines) return content;
-	return `${lines.slice(0, maxLines).join("\n")}\n… (${lines.length - maxLines} more lines)`;
+	const lineLimited =
+		lines.length <= maxLines
+			? content
+			: `${lines.slice(0, maxLines).join("\n")}\n... (${lines.length - maxLines} more lines)`;
+	if (lineLimited.length <= maxChars) return lineLimited;
+	return `${lineLimited.slice(0, maxChars)}\n... (${lineLimited.length - maxChars} more chars)`;
 }
 
 export function CollapsibleError({
@@ -36,37 +56,100 @@ export function CollapsibleError({
 				<span className="text-destructive">Error</span>
 			</button>
 			{isExpanded && (
-				<pre className="mt-1 ml-4 text-[11px] text-muted-foreground/70 whitespace-pre-wrap break-words overflow-hidden max-h-48 overflow-y-auto">
-					{truncateResult(content, maxLines)}
-				</pre>
+				<CopyableToolResult content={content} maxLines={maxLines} />
 			)}
 		</div>
 	);
 }
 
-function summarizeToolInput(
-	tool: string,
-	input: Record<string, unknown>,
+function CopyableToolResult({
+	content,
+	maxLines = 5,
+	className = "max-h-48",
+}: {
+	content: string;
+	maxLines?: number;
+	className?: string;
+}) {
+	const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
+		"idle",
+	);
+	const handleCopy = async () => {
+		try {
+			await navigator.clipboard.writeText(content);
+			setCopyState("copied");
+		} catch {
+			setCopyState("error");
+		}
+	};
+
+	return (
+		<div className="relative mt-1 ml-4">
+			<button
+				type="button"
+				className="absolute right-1 top-1 inline-flex size-6 items-center justify-center rounded text-muted-foreground/70 hover:bg-background hover:text-foreground"
+				aria-label="Copy tool result"
+				title={copyState === "error" ? "Copy failed" : "Copy tool result"}
+				onClick={handleCopy}
+			>
+				{copyState === "copied" ? (
+					<Check className="size-3.5" />
+				) : (
+					<Copy className="size-3.5" />
+				)}
+			</button>
+			<pre
+				className={`text-[11px] text-muted-foreground/70 whitespace-pre-wrap break-words overflow-hidden overflow-y-auto pr-8 ${className}`}
+			>
+				{truncateResult(content, maxLines)}
+			</pre>
+		</div>
+	);
+}
+
+function fallbackToolPresentation(
+	entry: Extract<ActivityEntry, { type: "tool_use" }>,
+): AgentToolActivityPresentation {
+	return {
+		category: "other",
+		label: entry.tool,
+		summary: entry.tool,
+		editPreviewTool: false,
+	};
+}
+
+function useToolActivityPresentation(
+	entry: Extract<ActivityEntry, { type: "tool_use" }>,
 	basePath?: string,
-): string {
-	if (input.file_path && typeof input.file_path === "string") {
-		return shortenPath(input.file_path, basePath);
-	}
-	if (input.pattern && typeof input.pattern === "string") {
-		return input.pattern;
-	}
-	if (input.command && typeof input.command === "string") {
-		const cmd = input.command as string;
-		return cmd.length > 80 ? `${cmd.slice(0, 80)}…` : cmd;
-	}
-	const keys = Object.keys(input);
-	if (keys.length === 0) return tool;
-	const firstKey = keys[0];
-	const val = input[firstKey];
-	if (typeof val === "string") {
-		return val.length > 60 ? `${val.slice(0, 60)}…` : val;
-	}
-	return `${firstKey}: …`;
+): AgentToolActivityPresentation {
+	const fallback = useMemo(() => fallbackToolPresentation(entry), [entry]);
+	const [presentation, setPresentation] =
+		useState<AgentToolActivityPresentation>(fallback);
+
+	useEffect(() => {
+		let cancelled = false;
+		setPresentation(fallback);
+		void invoke<AgentToolActivityPresentation>("present_agent_tool_activity", {
+			toolName: entry.tool,
+			input: entry.input,
+			basePath,
+		})
+			.then((result) => {
+				if (!cancelled) {
+					setPresentation(result);
+				}
+			})
+			.catch(() => {
+				if (!cancelled) {
+					setPresentation(fallback);
+				}
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [entry.tool, entry.input, basePath, fallback]);
+
+	return presentation;
 }
 
 interface ToolActivityProps {
@@ -75,6 +158,7 @@ interface ToolActivityProps {
 	index: number;
 	isExecuting?: boolean;
 	basePath?: string;
+	presentation?: AgentToolActivityPresentation;
 }
 
 function ToolActivityHeader({
@@ -116,10 +200,10 @@ function ReadToolActivity({
 	result,
 	index,
 	isExecuting,
-	basePath,
+	presentation,
 }: ToolActivityProps) {
 	const [isExpanded, setIsExpanded] = useState(false);
-	const label = getReadToolLabel(entry.tool, entry.input, basePath);
+	const label = presentation?.label ?? entry.tool;
 
 	return (
 		<div className="py-0.5">
@@ -134,9 +218,7 @@ function ReadToolActivity({
 			{result?.isError && result.content.trim().length > 0 ? (
 				<CollapsibleError content={result.content} />
 			) : isExpanded && result && result.content.trim().length > 0 ? (
-				<pre className="mt-1 ml-4 text-[11px] text-muted-foreground/70 whitespace-pre-wrap break-words overflow-hidden max-h-48 overflow-y-auto">
-					{truncateResult(result.content)}
-				</pre>
+				<CopyableToolResult content={result.content} className="max-h-48" />
 			) : null}
 		</div>
 	);
@@ -147,9 +229,10 @@ function CommandToolActivity({
 	result,
 	index,
 	isExecuting,
+	presentation,
 }: ToolActivityProps) {
 	const [isExpanded, setIsExpanded] = useState(false);
-	const label = getCommandLabel(entry.input);
+	const label = presentation?.label ?? entry.tool;
 	const hasResult = result && result.content.trim().length > 0;
 
 	return (
@@ -167,9 +250,11 @@ function CommandToolActivity({
 			{hasResult && result.isError ? (
 				<CollapsibleError content={result.content} maxLines={20} />
 			) : isExpanded && hasResult ? (
-				<pre className="mt-1 ml-4 text-[11px] whitespace-pre-wrap break-words overflow-hidden max-h-64 overflow-y-auto rounded px-2 py-1.5 bg-muted text-muted-foreground/70">
-					{truncateResult(result.content, 20)}
-				</pre>
+				<CopyableToolResult
+					content={result.content}
+					maxLines={20}
+					className="max-h-64 rounded bg-muted px-2 py-1.5"
+				/>
 			) : null}
 		</div>
 	);
@@ -181,10 +266,11 @@ function DefaultToolActivity({
 	index,
 	isExecuting,
 	basePath,
+	presentation,
 }: ToolActivityProps) {
 	const [isExpanded, setIsExpanded] = useState(false);
 	const hasInput = Object.keys(entry.input).length > 0;
-	const summary = summarizeToolInput(entry.tool, entry.input, basePath);
+	const summary = presentation?.summary ?? entry.tool;
 
 	return (
 		<div className="py-0.5">
@@ -202,15 +288,20 @@ function DefaultToolActivity({
 				<CollapsibleError content={result.content} />
 			) : isExpanded ? (
 				<>
+					{presentation?.editPreviewTool && (
+						<AgentEditPreviewPanel
+							worktreePath={basePath}
+							toolName={entry.tool}
+							input={entry.input}
+						/>
+					)}
 					{hasInput && (
 						<pre className="mt-1 ml-4 text-[11px] text-muted-foreground/70 whitespace-pre-wrap break-words overflow-hidden max-h-48 overflow-y-auto">
 							{JSON.stringify(entry.input, null, 2)}
 						</pre>
 					)}
 					{result && result.content.trim().length > 0 && (
-						<pre className="mt-1 ml-4 text-[11px] text-muted-foreground/70 whitespace-pre-wrap break-words overflow-hidden max-h-48 overflow-y-auto">
-							{truncateResult(result.content)}
-						</pre>
+						<CopyableToolResult content={result.content} className="max-h-48" />
 					)}
 				</>
 			) : null}
@@ -225,7 +316,8 @@ export function ToolActivity({
 	isExecuting,
 	basePath,
 }: ToolActivityProps) {
-	const category = classifyTool(entry.tool);
+	const presentation = useToolActivityPresentation(entry, basePath);
+	const category = presentation.category;
 
 	switch (category) {
 		case "read":
@@ -236,6 +328,7 @@ export function ToolActivity({
 					index={index}
 					isExecuting={isExecuting}
 					basePath={basePath}
+					presentation={presentation}
 				/>
 			);
 		case "command":
@@ -246,10 +339,9 @@ export function ToolActivity({
 					index={index}
 					isExecuting={isExecuting}
 					basePath={basePath}
+					presentation={presentation}
 				/>
 			);
-		// biome-ignore lint/complexity/noUselessSwitchCase: explicit coverage for classifyTool return type
-		case "write":
 		default:
 			return (
 				<DefaultToolActivity
@@ -258,6 +350,7 @@ export function ToolActivity({
 					index={index}
 					isExecuting={isExecuting}
 					basePath={basePath}
+					presentation={presentation}
 				/>
 			);
 	}
@@ -313,9 +406,7 @@ export function ActivityItem({
 					<span className="text-muted-foreground/70">{label}</span>
 				)}
 				{isExpanded && hasContent && (
-					<pre className="mt-1 ml-4 text-[11px] text-muted-foreground/70 whitespace-pre-wrap break-words overflow-hidden max-h-48 overflow-y-auto">
-						{truncateResult(entry.content)}
-					</pre>
+					<CopyableToolResult content={entry.content} className="max-h-48" />
 				)}
 			</div>
 		);

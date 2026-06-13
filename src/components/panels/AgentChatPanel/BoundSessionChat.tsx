@@ -3,7 +3,10 @@ import { useCallback, useEffect, useMemo } from "react";
 import { useAgentChatContext } from "@/contexts/AgentChatContext";
 import { deriveActivityStatus } from "@/hooks/deriveActivityStatus";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
+import { useSessionStatus } from "@/hooks/useSessionStatus";
 import type {
+	AgentEditorContext,
+	AgentEditorSelection,
 	ImageAttachment,
 	MentionReference,
 	PermissionMode,
@@ -14,6 +17,9 @@ interface BoundSessionChatProps {
 	/** 表示対象 session の id。null の場合は何もレンダリングしない（empty fallback は親側）。*/
 	sessionId: string | null;
 	worktreePath: string;
+	activeEditorPath?: string | null;
+	openEditorPaths?: string[];
+	activeEditorSelection?: AgentEditorSelection | null;
 	registerDropZone?: (
 		zone: DropZoneType,
 		element: HTMLElement | null,
@@ -45,6 +51,9 @@ interface BoundSessionChatProps {
 export function BoundSessionChat({
 	sessionId,
 	worktreePath,
+	activeEditorPath,
+	openEditorPaths,
+	activeEditorSelection,
 	registerDropZone,
 	dropZoneName,
 	sendMessageRef,
@@ -56,12 +65,19 @@ export function BoundSessionChat({
 		registerViewableSession,
 		getSessionTurnPhase,
 		getSessionSelectedModel,
+		getSessionPendingQueue = () => [],
+		getSessionLatestTokenUsage = () => null,
+		getSessionCodexGoal = () => null,
+		getSessionCodexRuntimeStatus = () => null,
+		getSessionRuntimeSlashCommands = () => [],
 		availableModels,
 		backends,
 		error,
 		permissionMode: contextPermissionMode,
 		sendMessage,
 		interrupt,
+		cancelQueuedTurn = async () => {},
+		rewindSessionToMessage,
 		setPermissionMode,
 		setModel,
 		setBackend,
@@ -84,6 +100,7 @@ export function BoundSessionChat({
 	}, [sessionId, skipInitialLoad, loadSession]);
 
 	const session = getSessionById(sessionId);
+	const sessionStatus = useSessionStatus(sessionId);
 
 	const turnPhase = sessionId ? getSessionTurnPhase(sessionId) : "idle";
 	const isStreaming =
@@ -98,9 +115,32 @@ export function BoundSessionChat({
 			content: string,
 			images?: ImageAttachment[],
 			mentions?: MentionReference[],
+			options?: {
+				activateNewSession?: boolean;
+				forkNewSession?: boolean;
+				editorContext?: AgentEditorContext;
+			},
 		) => {
-			if (!sessionId) return Promise.resolve();
-			return sendMessage(sessionId, content, images, mentions);
+			const targetSessionId = options?.forkNewSession ? null : sessionId;
+			if (!targetSessionId && !options?.forkNewSession)
+				return Promise.resolve();
+			const sendOptions =
+				options?.activateNewSession === undefined && !options?.editorContext
+					? undefined
+					: {
+							activateNewSession: options?.activateNewSession,
+							editorContext: options?.editorContext,
+						};
+			if (!sendOptions) {
+				return sendMessage(targetSessionId, content, images, mentions);
+			}
+			return sendMessage(
+				targetSessionId,
+				content,
+				images,
+				mentions,
+				sendOptions,
+			);
 		},
 		[sessionId, sendMessage],
 	);
@@ -151,6 +191,11 @@ export function BoundSessionChat({
 	// backend の available models[0]）に解決して常に string を伝播する。
 	const selectedModel =
 		getSessionSelectedModel(session.id) ?? availableModels[0]?.value ?? "";
+	const pendingQueue = getSessionPendingQueue(session.id);
+	const latestTokenUsage = getSessionLatestTokenUsage(session.id);
+	const codexGoal = getSessionCodexGoal(session.id);
+	const codexRuntimeStatus = getSessionCodexRuntimeStatus(session.id);
+	const runtimeSlashCommands = getSessionRuntimeSlashCommands(session.id);
 	const canChangeBackend =
 		session.messages.length === 0 && !session.agentSessionId && !isStreaming;
 
@@ -158,18 +203,33 @@ export function BoundSessionChat({
 		<ChatSessionView
 			key={session.id}
 			session={session}
+			sessionStatus={sessionStatus}
 			isStreaming={isStreaming}
 			activityStatus={activityStatus}
 			error={error}
 			permissionMode={contextPermissionMode}
 			availableModels={availableModels}
 			selectedModel={selectedModel}
+			pendingQueue={pendingQueue}
+			latestTokenUsage={latestTokenUsage}
+			codexGoal={codexGoal}
+			codexRuntimeStatus={codexRuntimeStatus}
+			runtimeSlashCommands={runtimeSlashCommands}
 			backends={backends}
 			selectedBackendId={session.backendId ?? null}
 			canChangeBackend={canChangeBackend}
 			worktreePath={worktreePath}
+			activeEditorPath={activeEditorPath}
+			openEditorPaths={openEditorPaths}
+			activeEditorSelection={activeEditorSelection}
 			onSend={handleSend}
 			onInterrupt={handleInterrupt}
+			onCancelQueuedTurn={(queuedTurnId) =>
+				cancelQueuedTurn(session.id, queuedTurnId)
+			}
+			onRewindToMessage={(messageId, options) =>
+				rewindSessionToMessage(session.id, messageId, options)
+			}
 			onPermissionModeChange={handlePermissionModeChange}
 			onModelChange={handleModelChange}
 			onBackendChange={handleBackendChange}

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { SlashCommand } from "@/hooks/useSlashCommands";
+import type { SlashCommand } from "@/types/session";
 import { SlashCommandPopup } from "./SlashCommandPopup";
 
 const commands: SlashCommand[] = [

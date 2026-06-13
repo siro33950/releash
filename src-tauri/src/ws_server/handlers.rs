@@ -763,6 +763,10 @@ fn agent_message_error(req: &AgentMessageRequest, error: impl Into<String>) -> W
         session_id: req.session_id.clone(),
         human_message_id: None,
         agent_message_id: None,
+        queued_turn_id: None,
+        pending_queue: Vec::new(),
+        pending_queue_count: 0,
+        sessions: Vec::new(),
         backend_id: req.backend_id.clone(),
         error: Some(error.into()),
     })
@@ -832,6 +836,109 @@ pub(super) async fn handle_agent_session_start_request(
     }
 }
 
+pub(super) async fn handle_agent_sessions_request(
+    req: &AgentSessionsRequest,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    use tauri::Manager;
+
+    let result = if let Some(app) = &state.app_handle {
+        let session_store = app
+            .state::<Arc<crate::usecase::agent_session::session::SessionStore>>()
+            .inner()
+            .clone();
+        let handles =
+            app.state::<Arc<
+                tokio::sync::Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>,
+            >>()
+            .inner()
+            .clone();
+        let open_tabs = app
+            .state::<Arc<crate::usecase::agent_session::session::OpenTabRegistry>>()
+            .inner()
+            .clone();
+        crate::infrastructure::agent_session::runtime::init_agent_sessions_internal(
+            app,
+            &session_store,
+            state.get_backend_registry(),
+            &handles,
+            &open_tabs,
+            req.worktree_path.clone(),
+        )
+        .await
+    } else {
+        Err("App handle not available".to_string())
+    };
+
+    Some(WsMessage::AgentSessionsResponse(match result {
+        Ok(response) => AgentSessionsResponse {
+            success: true,
+            worktree_path: req.worktree_path.clone(),
+            sessions: response.sessions,
+            active_session: response.active_session,
+            error: None,
+        },
+        Err(error) => AgentSessionsResponse {
+            success: false,
+            worktree_path: req.worktree_path.clone(),
+            sessions: Vec::new(),
+            active_session: None,
+            error: Some(error),
+        },
+    }))
+}
+
+pub(super) async fn handle_agent_session_get_request(
+    req: &AgentSessionGetRequest,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    use tauri::Manager;
+
+    let result = if let Some(app) = &state.app_handle {
+        let session_store = app
+            .state::<Arc<crate::usecase::agent_session::session::SessionStore>>()
+            .inner()
+            .clone();
+        let handles =
+            app.state::<Arc<
+                tokio::sync::Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>,
+            >>()
+            .inner()
+            .clone();
+        crate::infrastructure::agent_session::runtime::get_session_internal(
+            &session_store,
+            &handles,
+            Some(state.get_backend_registry()),
+            app,
+            &req.session_id,
+        )
+        .await
+    } else {
+        Err("App handle not available".to_string())
+    };
+
+    Some(WsMessage::AgentSessionGetResponse(match result {
+        Ok(Some(session)) => AgentSessionGetResponse {
+            success: true,
+            session_id: req.session_id.clone(),
+            session: Some(session),
+            error: None,
+        },
+        Ok(None) => AgentSessionGetResponse {
+            success: false,
+            session_id: req.session_id.clone(),
+            session: None,
+            error: Some(format!("Session not found: {}", req.session_id)),
+        },
+        Err(error) => AgentSessionGetResponse {
+            success: false,
+            session_id: req.session_id.clone(),
+            session: None,
+            error: Some(error),
+        },
+    }))
+}
+
 pub(super) async fn handle_agent_message_request(
     req: &AgentMessageRequest,
     state: &WsServerState,
@@ -860,6 +967,10 @@ pub(super) async fn handle_agent_message_request(
                 session_id: req.session_id.clone(),
                 human_message_id: None,
                 agent_message_id: None,
+                queued_turn_id: None,
+                pending_queue: Vec::new(),
+                pending_queue_count: 0,
+                sessions: Vec::new(),
                 backend_id: req.backend_id.clone(),
                 error: Some("App handle not available".to_string()),
             }));
@@ -921,8 +1032,19 @@ pub(super) async fn handle_agent_message_request(
             content: typed.content.clone(),
             permission_mode: typed.permission_mode,
             backend_id: typed.backend_id.clone(),
-            images: None,
-            mentions: None,
+            images: if typed.images.is_empty() {
+                None
+            } else {
+                Some(typed.images.clone())
+            },
+            mentions: if typed.mentions.is_empty() {
+                None
+            } else {
+                Some(crate::adaptor::protocol::mention::into_domain_vec(
+                    typed.mentions.clone(),
+                ))
+            },
+            editor_context: None,
         },
     )
     .await;
@@ -942,6 +1064,10 @@ pub(super) async fn handle_agent_message_request(
                 session_id: Some(response.session.id),
                 human_message_id: Some(response.human_message.id),
                 agent_message_id: response.agent_message.map(|m| m.id),
+                queued_turn_id: response.queued_turn.as_ref().map(|turn| turn.id.clone()),
+                pending_queue: response.pending_queue,
+                pending_queue_count: response.pending_queue_count,
+                sessions: response.sessions,
                 backend_id: response.session.backend_id,
                 error: None,
             }))
@@ -978,6 +1104,166 @@ pub(super) async fn handle_agent_interrupt_request(
         session_id: req.session_id.clone(),
         error: result.err(),
     }))
+}
+
+pub(super) async fn handle_agent_queue_cancel_request(
+    req: &AgentQueueCancelRequest,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    use tauri::Manager;
+
+    let result = if let Some(app) = &state.app_handle {
+        let handles =
+            app.state::<Arc<
+                tokio::sync::Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>,
+            >>()
+            .inner()
+            .clone();
+        crate::infrastructure::agent_session::runtime::cancel_agent_queued_turn_internal(
+            &handles,
+            &req.session_id,
+            req.queued_turn_id.as_deref(),
+        )
+        .await
+    } else {
+        Err("App handle not available".to_string())
+    };
+
+    Some(WsMessage::AgentQueueCancelResponse(match result {
+        Ok(response) => AgentQueueCancelResponse {
+            success: true,
+            session_id: response.session_id,
+            canceled_count: response.canceled_count,
+            pending_queue: response.pending_queue,
+            pending_queue_count: response.pending_queue_count,
+            error: None,
+        },
+        Err(error) => AgentQueueCancelResponse {
+            success: false,
+            session_id: req.session_id.clone(),
+            canceled_count: 0,
+            pending_queue: Vec::new(),
+            pending_queue_count: 0,
+            error: Some(error),
+        },
+    }))
+}
+
+pub(super) async fn handle_agent_slash_commands_request(
+    req: &AgentSlashCommandsRequest,
+) -> Option<WsMessage> {
+    Some(WsMessage::AgentSlashCommandsResponse(
+        AgentSlashCommandsResponse {
+            success: true,
+            worktree_path: req.worktree_path.clone(),
+            commands: Vec::new(),
+            error: None,
+        },
+    ))
+}
+
+pub(super) async fn handle_agent_mention_files_request(
+    req: &AgentMentionFilesRequest,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    use tauri::Manager;
+
+    let result = if let Some(app) = &state.app_handle {
+        let app_state = app.state::<crate::adaptor::controller::state::AppState>();
+        app_state
+            .code_usecase
+            .list_mentionable_files(&req.worktree_path, &req.query)
+            .map_err(|e| e.to_string())
+    } else {
+        Err("App handle not available".to_string())
+    };
+
+    Some(WsMessage::AgentMentionFilesResponse(match result {
+        Ok(files) => AgentMentionFilesResponse {
+            success: true,
+            request_id: req.request_id.clone(),
+            worktree_path: req.worktree_path.clone(),
+            query: req.query.clone(),
+            files,
+            error: None,
+        },
+        Err(error) => AgentMentionFilesResponse {
+            success: false,
+            request_id: req.request_id.clone(),
+            worktree_path: req.worktree_path.clone(),
+            query: req.query.clone(),
+            files: Vec::new(),
+            error: Some(error),
+        },
+    }))
+}
+
+pub(super) async fn handle_agent_image_prepare_request(
+    req: &AgentImagePrepareRequest,
+) -> Option<WsMessage> {
+    let result =
+        crate::infrastructure::agent_session::runtime::prepare_image_attachment(req.data.clone());
+    Some(WsMessage::AgentImagePrepareResponse(match result {
+        Ok(attachment) => AgentImagePrepareResponse {
+            success: true,
+            request_id: req.request_id.clone(),
+            attachment: Some(attachment),
+            error: None,
+        },
+        Err(error) => AgentImagePrepareResponse {
+            success: false,
+            request_id: req.request_id.clone(),
+            attachment: None,
+            error: Some(error),
+        },
+    }))
+}
+
+pub(super) async fn handle_agent_permission_response_request(
+    req: &AgentPermissionResponseRequest,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    use tauri::Manager;
+
+    let result = if let Some(app) = &state.app_handle {
+        let session_store = app
+            .state::<Arc<crate::usecase::agent_session::session::SessionStore>>()
+            .inner()
+            .clone();
+        let handles =
+            app.state::<Arc<
+                tokio::sync::Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>,
+            >>()
+            .inner()
+            .clone();
+        let registry = app
+            .state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>()
+            .inner()
+            .clone();
+        crate::infrastructure::agent_session::runtime::respond_agent_permission_internal(
+            app,
+            &session_store,
+            &handles,
+            &registry,
+            req.session_id.clone(),
+            req.request_id.clone(),
+            req.behavior.clone(),
+            req.message.clone(),
+            req.updated_input.as_ref().map(serde_json::Value::to_string),
+        )
+        .await
+    } else {
+        Err("App handle not available".to_string())
+    };
+
+    Some(WsMessage::AgentPermissionResponseResponse(
+        AgentPermissionResponseResponse {
+            success: result.is_ok(),
+            session_id: req.session_id.clone(),
+            request_id: req.request_id.clone(),
+            error: result.err(),
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -1261,6 +1547,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
@@ -1869,6 +2156,8 @@ mod tests {
             content: "hello".to_string(),
             permission_mode: Some("edit".to_string()),
             backend_id: Some("claude".to_string()),
+            images: Vec::new(),
+            mentions: Vec::new(),
         };
 
         let result = handle_agent_message_request(&req, &state).await;
@@ -1890,6 +2179,8 @@ mod tests {
             content: "hello".to_string(),
             permission_mode: Some("edit".to_string()),
             backend_id: None,
+            images: Vec::new(),
+            mentions: Vec::new(),
         };
         let session = make_chat_session("session-1", "/persisted/worktree");
 
@@ -1906,6 +2197,8 @@ mod tests {
             content: "hello".to_string(),
             permission_mode: Some("edit".to_string()),
             backend_id: None,
+            images: Vec::new(),
+            mentions: Vec::new(),
         };
 
         let error = effective_agent_message_worktree(&req, None).unwrap_err();
@@ -2042,6 +2335,8 @@ mod tests {
                 content: "hello".to_string(),
                 permission_mode: permission.map(|s| s.to_string()),
                 backend_id: Some("claude".to_string()),
+                images: Vec::new(),
+                mentions: Vec::new(),
             };
             let result = handle_agent_message_request(&req, &state).await;
             match result {

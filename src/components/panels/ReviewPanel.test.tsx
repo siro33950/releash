@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ReviewPanel } from "./ReviewPanel";
@@ -360,6 +360,77 @@ describe("ReviewPanel", () => {
 
 		// No file selected → DiffToolbar is not rendered (placeholder shown instead)
 		expect(screen.queryByTestId("diff-toolbar")).not.toBeInTheDocument();
+	});
+
+	it("clears agent editor line context when selected file is cleared externally", async () => {
+		const onLineRangeSelected = vi.fn();
+		vi.mocked(useDiffFileTree).mockReturnValue({
+			stagedTree: [],
+			changesTree: [
+				{
+					id: "file:src/main.ts",
+					name: "main.ts",
+					path: "src/main.ts",
+					node_type: "file",
+					status: "modified",
+					additions: 1,
+					deletions: 0,
+					children: [],
+				},
+			],
+			stagedFileCount: 0,
+			changesFileCount: 1,
+			branchBaseTree: [],
+			branchBaseFileCount: 0,
+			loading: false,
+		});
+		vi.mocked(useReviewPanel).mockReturnValue({
+			diffBase: "head",
+			diffMode: "gutter",
+			selectedFile: "src/main.ts",
+			selectedSection: "changes",
+			setDiffBase: vi.fn(),
+			setDiffMode: vi.fn(),
+			selectFile: vi.fn(),
+		});
+
+		const view = render(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					baseBranch="main"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={() => {}}
+					onLineRangeSelected={onLineRangeSelected}
+				/>
+			</TooltipProvider>,
+		);
+		expect(onLineRangeSelected).not.toHaveBeenCalled();
+
+		vi.mocked(useReviewPanel).mockReturnValue({
+			diffBase: "head",
+			diffMode: "gutter",
+			selectedFile: null,
+			selectedSection: "changes",
+			setDiffBase: vi.fn(),
+			setDiffMode: vi.fn(),
+			selectFile: vi.fn(),
+		});
+		view.rerender(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					baseBranch="main"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={() => {}}
+					onLineRangeSelected={onLineRangeSelected}
+				/>
+			</TooltipProvider>,
+		);
+
+		await waitFor(() =>
+			expect(onLineRangeSelected).toHaveBeenCalledWith("", 0, 0),
+		);
 	});
 
 	it("should pass filePath to DiffToolbar when a file is selected", () => {
