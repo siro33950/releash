@@ -64,41 +64,6 @@ fn has_word(text: &str, words: &[&str]) -> bool {
     words.iter().any(|word| lower.contains(word))
 }
 
-fn compact_prompt(text: &str, max_chars: usize) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut value = compact.chars().take(max_chars).collect::<String>();
-    if compact.chars().count() > max_chars {
-        value.push_str("...");
-    }
-    value
-}
-
-fn recent_human_prompt_from_sessions(
-    sessions: &[ChatSession],
-    current_session_id: &str,
-) -> Option<String> {
-    sessions
-        .iter()
-        .filter(|session| session.id != current_session_id)
-        .flat_map(|session| {
-            session
-                .messages
-                .iter()
-                .filter(|message| message.role == MessageRole::Human)
-                .map(move |message| (session.updated_at.max(message.timestamp), message))
-        })
-        .filter_map(|(timestamp, message)| {
-            let text = compact_prompt(&message_text(message), 160);
-            if text.trim().is_empty() {
-                None
-            } else {
-                Some((timestamp, text))
-            }
-        })
-        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(_, text)| text)
-}
-
 fn git_suggestion(context: &GitSuggestionContext) -> Option<AgentPromptSuggestion> {
     if !context.has_changes() {
         return None;
@@ -168,23 +133,16 @@ fn capture_git_suggestion_context(worktree_path: &str) -> Option<GitSuggestionCo
 pub(crate) fn build_agent_prompt_suggestion_inner(
     session: &ChatSession,
 ) -> Option<AgentPromptSuggestion> {
-    build_agent_prompt_suggestion_with_git(session, None, None)
+    build_agent_prompt_suggestion_with_git(session, None)
 }
 
 pub(crate) fn build_agent_prompt_suggestion_with_git(
     session: &ChatSession,
     git_context: Option<&GitSuggestionContext>,
-    recent_prompt: Option<&str>,
 ) -> Option<AgentPromptSuggestion> {
     if session.messages.is_empty() {
         if let Some(suggestion) = git_context.and_then(git_suggestion) {
             return Some(suggestion);
-        }
-        if let Some(prompt) = recent_prompt.filter(|prompt| !prompt.trim().is_empty()) {
-            return Some(AgentPromptSuggestion {
-                text: format!("Continue a recent request: {prompt}"),
-                source: "prompt_history".to_string(),
-            });
         }
         return Some(AgentPromptSuggestion {
             text: "Review the current repository state and suggest the next step.".to_string(),
@@ -237,15 +195,7 @@ pub fn build_agent_prompt_suggestion(
     let session = session_store.get_session(&data_dir, &chat_session_id)?;
     Ok(session.as_ref().and_then(|session| {
         let git_context = capture_git_suggestion_context(&session.worktree_path);
-        let recent_prompt = session_store
-            .list_worktree_sessions(&data_dir, &session.worktree_path)
-            .ok()
-            .and_then(|sessions| recent_human_prompt_from_sessions(&sessions, &session.id));
-        build_agent_prompt_suggestion_with_git(
-            session,
-            git_context.as_ref(),
-            recent_prompt.as_deref(),
-        )
+        build_agent_prompt_suggestion_with_git(session, git_context.as_ref())
     }))
 }
 
@@ -321,7 +271,6 @@ mod tests {
         let suggestion = build_agent_prompt_suggestion_with_git(
             &session_with_messages(Vec::new()),
             Some(&context),
-            None,
         )
         .expect("suggestion");
 
@@ -342,7 +291,6 @@ mod tests {
         let suggestion = build_agent_prompt_suggestion_with_git(
             &session_with_messages(vec![message(MessageRole::Agent, "Implementation is done.")]),
             Some(&context),
-            None,
         )
         .expect("suggestion");
 
@@ -366,7 +314,6 @@ mod tests {
                 "Implementation is done, but tests are failing.",
             )]),
             Some(&context),
-            None,
         )
         .expect("suggestion");
 
@@ -375,46 +322,5 @@ mod tests {
             "Run the relevant tests and fix any failures."
         );
         assert_eq!(suggestion.source, "latest_agent_message");
-    }
-
-    #[test]
-    fn empty_session_uses_recent_prompt_history_when_git_is_clean() {
-        let suggestion = build_agent_prompt_suggestion_with_git(
-            &session_with_messages(Vec::new()),
-            None,
-            Some("Fix the parser edge case and add tests"),
-        )
-        .expect("suggestion");
-
-        assert_eq!(
-            suggestion.text,
-            "Continue a recent request: Fix the parser edge case and add tests"
-        );
-        assert_eq!(suggestion.source, "prompt_history");
-    }
-
-    #[test]
-    fn recent_human_prompt_prefers_latest_other_session_message() {
-        let mut older = session_with_messages(vec![message(MessageRole::Human, "older request")]);
-        older.id = "older".to_string();
-        older.updated_at = 10.0;
-        older.messages[0].timestamp = 10.0;
-        let mut newer = session_with_messages(vec![message(
-            MessageRole::Human,
-            "newer request with\nextra whitespace",
-        )]);
-        newer.id = "newer".to_string();
-        newer.updated_at = 20.0;
-        newer.messages[0].timestamp = 20.0;
-        let mut current =
-            session_with_messages(vec![message(MessageRole::Human, "current request")]);
-        current.id = "current".to_string();
-        current.updated_at = 30.0;
-        current.messages[0].timestamp = 30.0;
-
-        let prompt =
-            recent_human_prompt_from_sessions(&[older, newer, current], "current").expect("prompt");
-
-        assert_eq!(prompt, "newer request with extra whitespace");
     }
 }

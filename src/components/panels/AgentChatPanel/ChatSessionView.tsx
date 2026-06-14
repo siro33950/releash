@@ -1487,7 +1487,6 @@ export function ChatSessionView({
 					onBackendChange={onBackendChange}
 					backendDisabled={!canChangeBackend}
 					worktreePath={worktreePath}
-					chatSessionId={session.id}
 					promptSuggestion={promptSuggestion}
 					runtimeSlashCommands={runtimeSlashCommands}
 				/>

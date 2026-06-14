@@ -530,7 +530,6 @@ pub fn run() {
             adaptor::controller::command::agent_session::permission::respond_agent_permission,
             adaptor::controller::command::agent_session::session::send_agent_message,
             adaptor::controller::command::agent_session::session::search_agent_sessions,
-            adaptor::controller::command::agent_session::session::search_agent_prompt_history,
             adaptor::controller::command::agent_session::session::search_agent_thread_messages,
             adaptor::controller::command::agent_session::session::init_agent_sessions,
             adaptor::controller::command::agent_session::action::scan_agent_skills,

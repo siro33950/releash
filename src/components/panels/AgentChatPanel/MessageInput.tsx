@@ -1,13 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
 	ArrowUp,
-	ChevronDown,
-	ChevronUp,
 	ExternalLink,
 	FileInput,
 	Loader2,
 	Maximize2,
-	Search,
 	Square,
 	X,
 } from "lucide-react";
@@ -71,22 +68,6 @@ interface PromptEditorDraftInfo {
 	filePath: string;
 }
 
-type PromptHistoryScope = "session" | "project" | "all";
-
-interface PromptHistoryMatch {
-	text: string;
-	scope: PromptHistoryScope;
-	index?: number;
-}
-
-interface AgentPromptHistoryEntry {
-	text: string;
-	scope: PromptHistoryScope;
-	sessionId?: string | null;
-	worktreePath?: string | null;
-	timestamp: number;
-}
-
 export interface MessageInputHandle {
 	addImageAttachments: (attachments: ImageAttachment[]) => void;
 	setDraft: (content: string) => void;
@@ -116,7 +97,6 @@ interface MessageInputProps {
 	backendDisabled: boolean;
 	ref?: React.Ref<MessageInputHandle>;
 	worktreePath?: string;
-	chatSessionId?: string;
 	promptSuggestion?: string | null;
 	runtimeSlashCommands?: SlashCommand[];
 }
@@ -138,13 +118,11 @@ export function MessageInput({
 	backendDisabled,
 	ref,
 	worktreePath,
-	chatSessionId,
 	promptSuggestion,
 	runtimeSlashCommands = [],
 }: MessageInputProps) {
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
-	const historySearchInputRef = useRef<HTMLInputElement>(null);
 	const [slashPopupDismissed, setSlashPopupDismissed] = useState(false);
 	const [selectedIndex, setSelectedIndex] = useState(0);
 	const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
@@ -153,17 +131,6 @@ export function MessageInput({
 	const [pastedTextBlocks, setPastedTextBlocks] = useState<PastedTextBlock[]>(
 		[],
 	);
-	const [promptHistory, setPromptHistory] = useState<string[]>([]);
-	const [historyIndex, setHistoryIndex] = useState<number | null>(null);
-	const [historySearchOpen, setHistorySearchOpen] = useState(false);
-	const [historySearchQuery, setHistorySearchQuery] = useState("");
-	const [historySearchScope, setHistorySearchScope] =
-		useState<PromptHistoryScope>("session");
-	const [rustHistorySearchMatches, setRustHistorySearchMatches] = useState<
-		PromptHistoryMatch[]
-	>([]);
-	const [historySearchSelectedIndex, setHistorySearchSelectedIndex] =
-		useState(0);
 	const [promptEditorOpen, setPromptEditorOpen] = useState(false);
 	const [promptEditorValue, setPromptEditorValue] = useState("");
 	const promptEditorRef = useRef<HTMLTextAreaElement>(null);
@@ -263,7 +230,6 @@ export function MessageInput({
 			},
 			setDraft: (content: string) => {
 				setComposerValue(content);
-				setHistoryIndex(null);
 				setSlashPopupDismissed(false);
 				requestAnimationFrame(() => textareaRef.current?.focus());
 			},
@@ -298,18 +264,6 @@ export function MessageInput({
 			cmd.name.toLowerCase().startsWith(slashQuery),
 		);
 	}, [showSlashPopup, slashQuery, allCommands]);
-	const localHistorySearchMatches = useMemo<PromptHistoryMatch[]>(() => {
-		const query = historySearchQuery.trim().toLowerCase();
-		return promptHistory
-			.map((text, index) => ({ text, index }))
-			.filter(({ text }) => !query || text.toLowerCase().includes(query))
-			.reverse()
-			.map((match) => ({ ...match, scope: "session" as const }));
-	}, [promptHistory, historySearchQuery]);
-	const usesRustHistorySearch = Boolean(chatSessionId && worktreePath);
-	const historySearchMatches = usesRustHistorySearch
-		? rustHistorySearchMatches
-		: localHistorySearchMatches;
 
 	const popupOpen = showSlashPopup && filteredCommands.length > 0;
 	const mentionPopupOpen =
@@ -419,59 +373,6 @@ export function MessageInput({
 		};
 	}, [skillQuery, skillDismissed, worktreePath, currentBackendId]);
 
-	useEffect(() => {
-		if (!historySearchOpen) return;
-		setHistorySearchSelectedIndex((current) =>
-			Math.min(current, Math.max(historySearchMatches.length - 1, 0)),
-		);
-	}, [historySearchMatches.length, historySearchOpen]);
-
-	useEffect(() => {
-		if (!historySearchOpen || !chatSessionId || !worktreePath) {
-			setRustHistorySearchMatches([]);
-			return;
-		}
-		let cancelled = false;
-		const timer = window.setTimeout(() => {
-			invoke<AgentPromptHistoryEntry[]>("search_agent_prompt_history", {
-				request: {
-					chatSessionId,
-					worktreePath,
-					query: historySearchQuery,
-					scope: historySearchScope,
-					localHistory: promptHistory,
-					limit: 30,
-				},
-			})
-				.then((entries) => {
-					if (cancelled) return;
-					setRustHistorySearchMatches(
-						entries.map((entry) => ({
-							text: entry.text,
-							scope: entry.scope,
-						})),
-					);
-					setHistorySearchSelectedIndex(0);
-				})
-				.catch(() => {
-					if (cancelled) return;
-					setRustHistorySearchMatches(localHistorySearchMatches);
-				});
-		}, 120);
-		return () => {
-			cancelled = true;
-			window.clearTimeout(timer);
-		};
-	}, [
-		chatSessionId,
-		historySearchOpen,
-		historySearchQuery,
-		historySearchScope,
-		localHistorySearchMatches,
-		promptHistory,
-		worktreePath,
-	]);
-
 	const handleSelectCommand = useCallback((cmd: SlashCommand) => {
 		setValue(`/${cmd.name} `);
 		setSlashPopupDismissed(true);
@@ -480,37 +381,6 @@ export function MessageInput({
 			textareaRef.current.focus();
 		}
 	}, []);
-
-	const openHistorySearch = useCallback(() => {
-		if (!usesRustHistorySearch && promptHistory.length === 0) return;
-		setHistorySearchQuery(value);
-		setHistorySearchSelectedIndex(0);
-		setHistorySearchOpen(true);
-		requestAnimationFrame(() => {
-			historySearchInputRef.current?.focus();
-			historySearchInputRef.current?.select();
-		});
-	}, [promptHistory.length, usesRustHistorySearch, value]);
-
-	const closeHistorySearch = useCallback(() => {
-		setHistorySearchOpen(false);
-		requestAnimationFrame(() => {
-			textareaRef.current?.focus();
-		});
-	}, []);
-
-	const acceptHistorySearchMatch = useCallback(() => {
-		const match = historySearchMatches[historySearchSelectedIndex];
-		if (!match) return;
-		setHistoryIndex(match.index ?? null);
-		setComposerValue(match.text);
-		closeHistorySearch();
-	}, [
-		closeHistorySearch,
-		historySearchMatches,
-		historySearchSelectedIndex,
-		setComposerValue,
-	]);
 
 	const openPromptEditor = useCallback(() => {
 		setPromptEditorValue(value);
@@ -546,7 +416,6 @@ export function MessageInput({
 
 	const applyPromptEditorValue = useCallback(() => {
 		setComposerValue(promptEditorValue);
-		setHistoryIndex(null);
 		setSlashPopupDismissed(false);
 		setSelectedIndex(0);
 		setPromptEditorOpen(false);
@@ -600,20 +469,6 @@ export function MessageInput({
 			setIsImportingExternalEditor(false);
 		}
 	}, [externalPromptDraftId]);
-
-	const cycleHistorySearchScope = useCallback(() => {
-		setHistorySearchScope((current) => {
-			switch (current) {
-				case "session":
-					return "project";
-				case "project":
-					return "all";
-				case "all":
-					return "session";
-			}
-		});
-		setHistorySearchSelectedIndex(0);
-	}, []);
 
 	const addImages = useCallback(
 		async (files: File[]) => {
@@ -725,14 +580,6 @@ export function MessageInput({
 			} else {
 				onSend(submittedContent, undefined, currentMentions);
 			}
-			if (trimmed) {
-				setPromptHistory((current) =>
-					current[current.length - 1] === trimmed
-						? current
-						: [...current, trimmed],
-				);
-			}
-			setHistoryIndex(null);
 			setValue("");
 			setAttachedImages([]);
 			setPastedTextBlocks([]);
@@ -841,11 +688,6 @@ export function MessageInput({
 				setComposerValue(activePromptSuggestion);
 				return;
 			}
-			if (e.key.toLowerCase() === "r" && e.ctrlKey && !e.metaKey && !e.altKey) {
-				e.preventDefault();
-				openHistorySearch();
-				return;
-			}
 			if (
 				isStreaming &&
 				value.length === 0 &&
@@ -863,40 +705,6 @@ export function MessageInput({
 				handleSubmit();
 				return;
 			}
-			if (
-				e.key === "ArrowUp" &&
-				!e.metaKey &&
-				!e.ctrlKey &&
-				!e.altKey &&
-				promptHistory.length > 0 &&
-				(value.length === 0 || historyIndex !== null)
-			) {
-				e.preventDefault();
-				const nextIndex =
-					historyIndex === null
-						? promptHistory.length - 1
-						: Math.max(0, historyIndex - 1);
-				setHistoryIndex(nextIndex);
-				setComposerValue(promptHistory[nextIndex]);
-				return;
-			}
-			if (
-				e.key === "ArrowDown" &&
-				!e.metaKey &&
-				!e.ctrlKey &&
-				!e.altKey &&
-				historyIndex !== null
-			) {
-				e.preventDefault();
-				const nextIndex = historyIndex + 1;
-				if (nextIndex >= promptHistory.length) {
-					setHistoryIndex(null);
-					setComposerValue("");
-				} else {
-					setHistoryIndex(nextIndex);
-					setComposerValue(promptHistory[nextIndex]);
-				}
-			}
 		},
 		[
 			handleSubmit,
@@ -905,7 +713,6 @@ export function MessageInput({
 			filteredCommands,
 			selectedIndex,
 			handleSelectCommand,
-			openHistorySearch,
 			mentionPopupOpen,
 			mentionFiles,
 			mentionSelectedIndex,
@@ -918,8 +725,6 @@ export function MessageInput({
 			isStreaming,
 			onInterrupt,
 			value,
-			promptHistory,
-			historyIndex,
 			setComposerValue,
 		],
 	);
@@ -928,7 +733,6 @@ export function MessageInput({
 		(e: React.ChangeEvent<HTMLTextAreaElement>) => {
 			const newValue = e.target.value;
 			setValue(newValue);
-			setHistoryIndex(null);
 			setSlashPopupDismissed(false);
 			setSelectedIndex(0);
 
@@ -956,53 +760,6 @@ export function MessageInput({
 			el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
 		},
 		[],
-	);
-
-	const handleHistorySearchKeyDown = useCallback(
-		(e: React.KeyboardEvent<HTMLInputElement>) => {
-			if (e.key.toLowerCase() === "s" && e.ctrlKey && !e.metaKey && !e.altKey) {
-				e.preventDefault();
-				cycleHistorySearchScope();
-				return;
-			}
-			if (e.key === "Escape") {
-				e.preventDefault();
-				closeHistorySearch();
-				return;
-			}
-			if (e.key === "Enter") {
-				e.preventDefault();
-				acceptHistorySearchMatch();
-				return;
-			}
-			if (e.key === "ArrowDown") {
-				e.preventDefault();
-				setHistorySearchSelectedIndex((current) =>
-					historySearchMatches.length === 0
-						? 0
-						: (current + 1) % historySearchMatches.length,
-				);
-				return;
-			}
-			if (
-				e.key === "ArrowUp" ||
-				(e.key.toLowerCase() === "r" && e.ctrlKey && !e.metaKey && !e.altKey)
-			) {
-				e.preventDefault();
-				setHistorySearchSelectedIndex((current) =>
-					historySearchMatches.length === 0
-						? 0
-						: (current - 1 + historySearchMatches.length) %
-							historySearchMatches.length,
-				);
-			}
-		},
-		[
-			acceptHistorySearchMatch,
-			closeHistorySearch,
-			cycleHistorySearchScope,
-			historySearchMatches.length,
-		],
 	);
 
 	const handlePaste = useCallback(
@@ -1042,7 +799,6 @@ export function MessageInput({
 					pastedTextIdCounterRef.current = block.id;
 					setPastedTextBlocks((current) => [...current, block]);
 				}
-				setHistoryIndex(null);
 				setSlashPopupDismissed(false);
 				setSelectedIndex(0);
 				setComposerValueWithCaret(
@@ -1100,95 +856,6 @@ export function MessageInput({
 								</button>
 							</div>
 						))}
-					</div>
-				)}
-				{historySearchOpen && (
-					<div
-						className="border-b px-2 py-2"
-						data-testid="prompt-history-search"
-					>
-						<div className="flex items-center gap-1 rounded border bg-background px-2 py-1">
-							<Search className="size-3.5 shrink-0 text-muted-foreground" />
-							<input
-								ref={historySearchInputRef}
-								type="search"
-								value={historySearchQuery}
-								onChange={(event) => {
-									setHistorySearchQuery(event.target.value);
-									setHistorySearchSelectedIndex(0);
-								}}
-								onKeyDown={handleHistorySearchKeyDown}
-								placeholder="Search prompt history"
-								aria-label="Search prompt history"
-								className="min-w-0 flex-1 bg-transparent text-sm outline-none"
-							/>
-							<button
-								type="button"
-								className="inline-flex h-6 shrink-0 items-center rounded border border-border px-1.5 text-[11px] uppercase tracking-normal text-muted-foreground hover:bg-muted hover:text-foreground"
-								aria-label="Cycle prompt history search scope"
-								onClick={cycleHistorySearchScope}
-							>
-								{historySearchScope}
-							</button>
-							<span className="w-14 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
-								{historySearchMatches.length === 0
-									? "0/0"
-									: `${historySearchSelectedIndex + 1}/${historySearchMatches.length}`}
-							</span>
-							<button
-								type="button"
-								className="inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-								aria-label="Previous prompt history match"
-								disabled={historySearchMatches.length === 0}
-								onClick={() =>
-									setHistorySearchSelectedIndex((current) =>
-										historySearchMatches.length === 0
-											? 0
-											: (current - 1 + historySearchMatches.length) %
-												historySearchMatches.length,
-									)
-								}
-							>
-								<ChevronUp className="size-3.5" />
-							</button>
-							<button
-								type="button"
-								className="inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-								aria-label="Next prompt history match"
-								disabled={historySearchMatches.length === 0}
-								onClick={() =>
-									setHistorySearchSelectedIndex((current) =>
-										historySearchMatches.length === 0
-											? 0
-											: (current + 1) % historySearchMatches.length,
-									)
-								}
-							>
-								<ChevronDown className="size-3.5" />
-							</button>
-							<button
-								type="button"
-								className="inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted"
-								aria-label="Close prompt history search"
-								onClick={closeHistorySearch}
-							>
-								<X className="size-3.5" />
-							</button>
-						</div>
-						{historySearchMatches[historySearchSelectedIndex] && (
-							<button
-								type="button"
-								className="mt-1 flex w-full min-w-0 items-center gap-2 rounded px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-								onClick={acceptHistorySearchMatch}
-							>
-								<span className="shrink-0 uppercase tracking-normal">
-									{historySearchMatches[historySearchSelectedIndex].scope}
-								</span>
-								<span className="min-w-0 truncate">
-									{historySearchMatches[historySearchSelectedIndex].text}
-								</span>
-							</button>
-						)}
 					</div>
 				)}
 				<textarea

@@ -315,12 +315,6 @@ impl SessionStore {
             .collect())
     }
 
-    pub fn list_all_sessions(&self, app_data_dir: &Path) -> Result<Vec<ChatSession>, String> {
-        self.ensure_loaded(app_data_dir)?;
-        let cache = self.cache.read();
-        Ok(cache.values().cloned().collect())
-    }
-
     pub fn save_session(&self, app_data_dir: &Path, session: &ChatSession) -> Result<(), String> {
         // 保存層を AgentChat permission_mode の正典とする。
         // cache / ファイルへの書き込み前に検証・正規化し、legacy 入力を新規保存値へ漏らさない。

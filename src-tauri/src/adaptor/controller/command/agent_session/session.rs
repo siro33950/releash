@@ -45,27 +45,6 @@ pub struct AgentTaskListReport {
     pub items: Vec<AgentTaskListItem>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentPromptHistoryEntry {
-    pub text: String,
-    pub scope: String,
-    pub session_id: Option<String>,
-    pub worktree_path: Option<String>,
-    pub timestamp: f64,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentPromptHistorySearchRequest {
-    pub chat_session_id: String,
-    pub worktree_path: String,
-    pub query: String,
-    pub scope: Option<String>,
-    pub local_history: Option<Vec<String>>,
-    pub limit: Option<usize>,
-}
-
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentThreadSearchRequest {
@@ -351,19 +330,6 @@ fn message_search_text(message: &ChatMessage) -> String {
     text
 }
 
-fn human_prompt_text(message: &ChatMessage) -> Option<String> {
-    if message.role != crate::usecase::agent_session::session::MessageRole::Human {
-        return None;
-    }
-    let text = message_search_text(message);
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.is_empty() {
-        None
-    } else {
-        Some(compact)
-    }
-}
-
 fn build_search_snippet(text: &str, needle: &str) -> String {
     let haystack = text.to_lowercase();
     let needle = needle.to_lowercase();
@@ -417,108 +383,6 @@ fn search_thread_messages(messages: &[ChatMessage], query: &str) -> Vec<AgentThr
             })
         })
         .collect()
-}
-
-fn normalize_prompt_history_scope(scope: Option<&str>) -> Result<&'static str, String> {
-    match scope.unwrap_or("session").trim().to_lowercase().as_str() {
-        "" | "session" => Ok("session"),
-        "project" | "worktree" => Ok("project"),
-        "all" | "global" => Ok("all"),
-        other => Err(format!(
-            "Unknown prompt history scope: {other}. Available: session, project, all"
-        )),
-    }
-}
-
-fn prompt_history_scope_matches(
-    scope: &str,
-    session: &ChatSession,
-    chat_session_id: &str,
-    worktree_path: &str,
-) -> bool {
-    match scope {
-        "session" => session.id == chat_session_id,
-        "project" => session.worktree_path == worktree_path,
-        "all" => true,
-        _ => false,
-    }
-}
-
-fn search_prompt_history_entries(
-    sessions: Vec<ChatSession>,
-    chat_session_id: &str,
-    worktree_path: &str,
-    query: &str,
-    scope: &str,
-    local_history: Vec<String>,
-    limit: usize,
-) -> Vec<AgentPromptHistoryEntry> {
-    let needle = query.trim().to_lowercase();
-    let max_results = limit.max(1);
-    let mut candidates = Vec::new();
-
-    for (index, prompt) in local_history.into_iter().rev().enumerate() {
-        let text = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
-        if text.is_empty() {
-            continue;
-        }
-        candidates.push(AgentPromptHistoryEntry {
-            text,
-            scope: "session".to_string(),
-            session_id: Some(chat_session_id.to_string()),
-            worktree_path: Some(worktree_path.to_string()),
-            timestamp: f64::MAX - index as f64,
-        });
-    }
-
-    for session in sessions {
-        if session.workflow_step_session || session.state == SessionState::Archived {
-            continue;
-        }
-        if !prompt_history_scope_matches(scope, &session, chat_session_id, worktree_path) {
-            continue;
-        }
-        for message in &session.messages {
-            let Some(text) = human_prompt_text(message) else {
-                continue;
-            };
-            candidates.push(AgentPromptHistoryEntry {
-                text,
-                scope: if session.id == chat_session_id {
-                    "session".to_string()
-                } else if session.worktree_path == worktree_path {
-                    "project".to_string()
-                } else {
-                    "all".to_string()
-                },
-                session_id: Some(session.id.clone()),
-                worktree_path: Some(session.worktree_path.clone()),
-                timestamp: message.timestamp,
-            });
-        }
-    }
-
-    candidates.sort_by(|a, b| {
-        b.timestamp
-            .partial_cmp(&a.timestamp)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let mut seen = std::collections::HashSet::new();
-    let mut results = Vec::new();
-    for entry in candidates {
-        if !needle.is_empty() && !entry.text.to_lowercase().contains(&needle) {
-            continue;
-        }
-        if !seen.insert(entry.text.clone()) {
-            continue;
-        }
-        results.push(entry);
-        if results.len() >= max_results {
-            break;
-        }
-    }
-    results
 }
 
 fn search_sessions(
@@ -655,30 +519,6 @@ pub async fn search_agent_sessions(
         }
     }
     Ok(results)
-}
-
-#[tauri::command]
-pub async fn search_agent_prompt_history(
-    app: tauri::AppHandle,
-    session_store: tauri::State<'_, Arc<SessionStore>>,
-    request: AgentPromptHistorySearchRequest,
-) -> Result<Vec<AgentPromptHistoryEntry>, String> {
-    let scope = normalize_prompt_history_scope(request.scope.as_deref())?;
-    let data_dir = resolve_data_dir(&app)?;
-    let sessions = if scope == "all" {
-        session_store.list_all_sessions(&data_dir)?
-    } else {
-        session_store.list_worktree_sessions(&data_dir, &request.worktree_path)?
-    };
-    Ok(search_prompt_history_entries(
-        sessions,
-        &request.chat_session_id,
-        &request.worktree_path,
-        &request.query,
-        scope,
-        request.local_history.unwrap_or_default(),
-        request.limit.unwrap_or(20),
-    ))
 }
 
 #[tauri::command]
@@ -908,30 +748,6 @@ mod tests {
         }
     }
 
-    fn prompt_history_session(
-        id: &str,
-        worktree_path: &str,
-        state: crate::usecase::agent_session::session::SessionState,
-        messages: Vec<crate::usecase::agent_session::session::ChatMessage>,
-    ) -> crate::usecase::agent_session::session::ChatSession {
-        crate::usecase::agent_session::session::ChatSession {
-            id: id.to_string(),
-            worktree_path: worktree_path.to_string(),
-            messages,
-            state,
-            created_at: 1.0,
-            updated_at: 1.0,
-            agent_session_id: None,
-            permission_mode: "edit".to_string(),
-            permission_profile_id: None,
-            selected_model: None,
-            backend_id: Some(
-                crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
-            ),
-            workflow_step_session: false,
-        }
-    }
-
     fn human_prompt(
         id: &str,
         content: &str,
@@ -970,86 +786,6 @@ mod tests {
             }]),
             mentions: None,
         }
-    }
-
-    #[test]
-    fn prompt_history_search_respects_scope_and_deduplicates() {
-        let sessions = vec![
-            prompt_history_session(
-                "current",
-                "/repo",
-                crate::usecase::agent_session::session::SessionState::Active,
-                vec![human_prompt("m1", "Add tests", 10.0)],
-            ),
-            prompt_history_session(
-                "project-old",
-                "/repo",
-                crate::usecase::agent_session::session::SessionState::Closed,
-                vec![human_prompt("m2", "Review tests", 20.0)],
-            ),
-            prompt_history_session(
-                "other",
-                "/other",
-                crate::usecase::agent_session::session::SessionState::Closed,
-                vec![human_prompt("m3", "Other repo tests", 30.0)],
-            ),
-            prompt_history_session(
-                "archived",
-                "/repo",
-                crate::usecase::agent_session::session::SessionState::Archived,
-                vec![human_prompt("m4", "Archived tests", 40.0)],
-            ),
-        ];
-
-        let session = search_prompt_history_entries(
-            sessions.clone(),
-            "current",
-            "/repo",
-            "tests",
-            "session",
-            vec!["Draft tests".to_string(), "Add tests".to_string()],
-            10,
-        );
-        assert_eq!(
-            session
-                .iter()
-                .map(|entry| entry.text.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Add tests", "Draft tests"]
-        );
-
-        let project = search_prompt_history_entries(
-            sessions.clone(),
-            "current",
-            "/repo",
-            "tests",
-            "project",
-            Vec::new(),
-            10,
-        );
-        assert_eq!(
-            project
-                .iter()
-                .map(|entry| entry.text.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Review tests", "Add tests"]
-        );
-
-        let all = search_prompt_history_entries(
-            sessions,
-            "current",
-            "/repo",
-            "tests",
-            "all",
-            Vec::new(),
-            10,
-        );
-        assert_eq!(
-            all.iter()
-                .map(|entry| entry.text.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Other repo tests", "Review tests", "Add tests"]
-        );
     }
 
     #[test]
