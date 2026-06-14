@@ -99,12 +99,6 @@ pub fn run() {
             parking_lot::RwLock::new(Vec::new()),
         ))
         .setup(|app| {
-            // OneShotPtyManager shares the same PtyManager instance
-            let pty_mgr = app.state::<Arc<pty::PtyManager>>();
-            app.manage(Arc::new(pty::oneshot::OneShotPtyManager::new(Arc::clone(
-                pty_mgr.inner(),
-            ))));
-
             let data_dir = app.path().app_data_dir()?;
             // spec issues-1054 Implementation Freedom (L104): 別 Releash binary 由来の
             // RELEASH_DATA_DIR inherit (例: prod 版 Releash の Terminal Panel から起動
@@ -511,12 +505,6 @@ pub fn run() {
             review_comments::delete_review_thread,
             review_comments::get_review_thread_history,
             review_comments::build_review_thread_handoff,
-            // OneShot PTY
-            pty::oneshot::spawn_oneshot_pty,
-            pty::oneshot::cancel_oneshot_pty,
-            pty::oneshot::get_oneshot_pty_status,
-            pty::oneshot::list_oneshot_ptys,
-            pty::oneshot::find_oneshot_pty,
             // File Mention（code ドメイン）
             adaptor::controller::command::code::mention::list_mentionable_files,
             adaptor::controller::command::code::mention::read_codex_mentionable_files,
@@ -551,12 +539,6 @@ pub fn run() {
             adaptor::controller::command::agent_session::edit_preview::build_agent_edited_multi_edit_tool_input_all,
             adaptor::controller::command::agent_session::edit_preview::build_agent_edited_tool_input,
             adaptor::controller::command::agent_session::edit_preview::build_agent_edit_preview,
-            adaptor::controller::command::agent_session::shell::build_agent_shell_command_context_prompt,
-            adaptor::controller::command::agent_session::shell::complete_agent_shell_command,
-            adaptor::controller::command::agent_session::shell::prepare_agent_shell_command,
-            adaptor::controller::command::agent_session::shell::prepare_agent_shell_input,
-            adaptor::controller::command::agent_session::shell::read_agent_shell_background_output,
-            adaptor::controller::command::agent_session::shell::run_agent_shell_command,
             adaptor::controller::command::agent_session::suggestion::build_agent_prompt_suggestion,
             adaptor::controller::command::agent_session::tool_activity::present_agent_tool_activity,
             adaptor::controller::command::agent_session::image::prepare_image_attachment,

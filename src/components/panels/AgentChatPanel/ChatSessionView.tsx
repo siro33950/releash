@@ -19,7 +19,6 @@ import React, {
 	useState,
 } from "react";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
-import { useOneShotPty } from "@/hooks/useOneShotPty";
 import type {
 	AgentEditorContext,
 	AgentEditorSelection,
@@ -121,45 +120,9 @@ function taskListRevision(messages: ChatMessage[]): string {
 		.join("|");
 }
 
-interface AgentShellCommandResult {
-	title: string;
-	detail: string;
-	prompt: string;
-	exitCode?: number | null;
-	timedOut: boolean;
-}
-
-interface AgentShellBackgroundOutput {
-	output: string;
-	truncated: boolean;
-	path: string;
-}
-
-interface AgentPreparedShellCommand {
-	command: string;
-	displayCommand: string;
-	label: string;
-	timeoutSecs?: number | null;
-	background: boolean;
-	backgroundOutputPath?: string;
-}
-
 interface AgentPromptSuggestion {
 	text: string;
 	source: string;
-}
-
-interface ActiveShellCommand {
-	ptyId: number;
-	command: string;
-	background: boolean;
-	backgroundOutputPath?: string;
-	contextSent: boolean;
-}
-
-interface QueuedShellCommand {
-	id: string;
-	prepared: AgentPreparedShellCommand;
 }
 
 function isEditableShortcutTarget(target: EventTarget | null): boolean {
@@ -513,19 +476,6 @@ export function ChatSessionView({
 		"idle",
 	);
 	const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
-	const [activeShellCommand, setActiveShellCommand] =
-		useState<ActiveShellCommand | null>(null);
-	const [queuedShellCommands, setQueuedShellCommands] = useState<
-		QueuedShellCommand[]
-	>([]);
-	const queuedShellCommandIdRef = useRef(0);
-	const shellContextSentRef = useRef<Set<number>>(new Set());
-	const {
-		activePtys: shellPtys,
-		spawn: spawnShellPty,
-		cancel: cancelShellPty,
-		getOutput: getShellOutput,
-	} = useOneShotPty();
 	const [threadSearchState, setThreadSearchState] = useState({
 		open: false,
 		requestId: 0,
@@ -763,102 +713,6 @@ export function ChatSessionView({
 		};
 	}, [isStreaming, promptSuggestionRequest]);
 
-	const activeShellInfo = activeShellCommand
-		? (shellPtys.get(activeShellCommand.ptyId) ?? null)
-		: null;
-	const activeShellOutput = activeShellCommand
-		? getShellOutput(activeShellCommand.ptyId)
-		: "";
-
-	useEffect(() => {
-		if (!activeShellCommand || !activeShellInfo) return;
-		const terminalStatus = [
-			"completed",
-			"error",
-			"timeout",
-			"cancelled",
-		].includes(activeShellInfo.status);
-		if (
-			!terminalStatus ||
-			activeShellCommand.contextSent ||
-			shellContextSentRef.current.has(activeShellCommand.ptyId)
-		)
-			return;
-
-		if (activeShellInfo.status === "cancelled") {
-			setNativeCommandNotice({
-				kind: "error",
-				title: "Shell: cancelled",
-				detail: activeShellCommand.command,
-			});
-			setActiveShellCommand(null);
-			return;
-		}
-
-		shellContextSentRef.current.add(activeShellCommand.ptyId);
-		let cancelled = false;
-		void (async () => {
-			let output = activeShellOutput;
-			let truncated = false;
-			if (activeShellCommand.backgroundOutputPath) {
-				const backgroundOutput = await invoke<AgentShellBackgroundOutput>(
-					"read_agent_shell_background_output",
-					{
-						outputPath: activeShellCommand.backgroundOutputPath,
-					},
-				);
-				const backgroundBlock = backgroundOutput.output.trim()
-					? `\n\nBackground output snapshot (${backgroundOutput.path}):\n${backgroundOutput.output}`
-					: `\n\nBackground output snapshot (${backgroundOutput.path}):\n<empty>`;
-				output = `${activeShellOutput}${backgroundBlock}`;
-				truncated = backgroundOutput.truncated;
-			}
-			const result = await invoke<AgentShellCommandResult>(
-				"build_agent_shell_command_context_prompt",
-				{
-					command: activeShellCommand.command,
-					output,
-					exitCode: activeShellInfo.exit_code,
-					timedOut: activeShellInfo.status === "timeout",
-					truncated,
-				},
-			);
-			return result;
-		})()
-			.then(async (result) => {
-				if (cancelled) return;
-				setNativeCommandNotice({
-					kind: result.timedOut || result.exitCode ? "error" : "info",
-					title: result.title,
-					detail: result.detail,
-				});
-				await onSend(result.prompt, undefined, undefined, {
-					editorContext: currentEditorContext,
-				});
-				if (!cancelled) {
-					setActiveShellCommand(null);
-				}
-			})
-			.catch((e) => {
-				if (cancelled) return;
-				setNativeCommandNotice({
-					kind: "error",
-					title: "Shell command failed",
-					detail: String(e),
-				});
-				setActiveShellCommand(null);
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [
-		activeShellCommand,
-		activeShellInfo,
-		activeShellOutput,
-		currentEditorContext,
-		onSend,
-	]);
-
 	const cycleMode = useCallback(() => {
 		const currentIndex = MODES.findIndex((m) => m.value === permissionMode);
 		const nextIndex = (currentIndex + 1) % MODES.length;
@@ -885,101 +739,17 @@ export function ChatSessionView({
 		}
 	}, [latestCopyableAgentText]);
 
-	const startPreparedShellCommand = useCallback(
-		async (prepared: AgentPreparedShellCommand) => {
-			const info = await spawnShellPty(
-				prepared.command,
-				worktreePath,
-				prepared.label,
-				prepared.timeoutSecs ?? undefined,
-			);
-			setActiveShellCommand({
-				ptyId: info.pty_id,
-				command: prepared.displayCommand,
-				background: prepared.background,
-				backgroundOutputPath: prepared.backgroundOutputPath,
-				contextSent: false,
-			});
-			setNativeCommandNotice(null);
-		},
-		[spawnShellPty, worktreePath],
-	);
-
-	useEffect(() => {
-		if (isStreaming || activeShellCommand || queuedShellCommands.length === 0) {
-			return;
-		}
-		const next = queuedShellCommands[0];
-		setQueuedShellCommands((commands) => commands.slice(1));
-		void startPreparedShellCommand(next.prepared).catch((e) => {
-			setNativeCommandNotice({
-				kind: "error",
-				title: "Queued shell command failed",
-				detail: String(e),
-			});
-		});
-	}, [
-		activeShellCommand,
-		isStreaming,
-		queuedShellCommands,
-		startPreparedShellCommand,
-	]);
-
 	const handleComposerSend = useCallback(
 		async (
 			content: string,
 			images?: ImageAttachment[],
 			mentions?: MentionReference[],
 		) => {
-			if (!images || images.length === 0) {
-				try {
-					const prepared = await invoke<AgentPreparedShellCommand | null>(
-						"prepare_agent_shell_input",
-						{
-							content,
-						},
-					);
-					if (
-						prepared &&
-						typeof prepared === "object" &&
-						"command" in prepared &&
-						typeof prepared.command === "string"
-					) {
-						if (isStreaming) {
-							queuedShellCommandIdRef.current += 1;
-							setQueuedShellCommands((commands) => [
-								...commands,
-								{
-									id: `shell-${queuedShellCommandIdRef.current}`,
-									prepared,
-								},
-							]);
-							setNativeCommandNotice({
-								kind: "info",
-								title: prepared.background
-									? "Shell background queued"
-									: "Shell queued",
-								detail: prepared.displayCommand,
-							});
-							return;
-						}
-						await startPreparedShellCommand(prepared);
-						return;
-					}
-				} catch (e) {
-					setNativeCommandNotice({
-						kind: "error",
-						title: "Shell command failed",
-						detail: String(e),
-					});
-					return;
-				}
-			}
 			await onSend(content, images, mentions, {
 				editorContext: currentEditorContext,
 			});
 		},
-		[isStreaming, onSend, currentEditorContext, startPreparedShellCommand],
+		[onSend, currentEditorContext],
 	);
 
 	useEffect(() => {
@@ -1398,41 +1168,6 @@ export function ChatSessionView({
 				</div>
 			</div>
 			<div className="shrink-0">
-				{activeShellCommand && (
-					<div className="px-3 pb-2">
-						<div className="rounded border border-border bg-background px-3 py-2 text-xs">
-							<div className="mb-2 flex items-center justify-between gap-2">
-								<div className="min-w-0">
-									<div className="font-medium">
-										{activeShellCommand.background
-											? "Shell background"
-											: "Shell"}
-										: {activeShellInfo?.status ?? "running"}
-									</div>
-									<div className="truncate font-mono text-muted-foreground">
-										{activeShellCommand.command}
-									</div>
-								</div>
-								{activeShellInfo?.status === "running" ||
-								activeShellInfo?.status === "starting" ? (
-									<button
-										type="button"
-										className="inline-flex h-6 shrink-0 items-center rounded px-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-										aria-label="Cancel shell command"
-										onClick={() =>
-											void cancelShellPty(activeShellCommand.ptyId)
-										}
-									>
-										Cancel
-									</button>
-								) : null}
-							</div>
-							<pre className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words rounded bg-muted/40 px-2 py-1.5 font-mono text-[11px] text-muted-foreground">
-								{activeShellOutput || "No output yet"}
-							</pre>
-						</div>
-					</div>
-				)}
 				{isStatusOpen && (
 					<div className="px-3 pb-2">
 						<div className="rounded border border-border bg-background px-3 py-2 text-xs">
@@ -1728,35 +1463,6 @@ export function ChatSessionView({
 									className="inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted"
 									aria-label="Cancel queued message"
 									onClick={() => onCancelQueuedTurn(turn.id)}
-								>
-									<X className="size-3.5" />
-								</button>
-							</div>
-						))}
-					</div>
-				)}
-				{queuedShellCommands.length > 0 && (
-					<div className="px-3 pb-2 space-y-1">
-						{queuedShellCommands.map((entry, index) => (
-							<div
-								key={entry.id}
-								className="flex items-center gap-2 rounded border border-border bg-muted/40 px-2 py-1.5 text-xs"
-							>
-								<span className="shrink-0 text-muted-foreground">
-									Queued shell {index + 1}
-								</span>
-								<span className="min-w-0 flex-1 truncate font-mono">
-									{entry.prepared.displayCommand}
-								</span>
-								<button
-									type="button"
-									className="inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted"
-									aria-label="Cancel queued shell command"
-									onClick={() =>
-										setQueuedShellCommands((commands) =>
-											commands.filter((command) => command.id !== entry.id),
-										)
-									}
 								>
 									<X className="size-3.5" />
 								</button>

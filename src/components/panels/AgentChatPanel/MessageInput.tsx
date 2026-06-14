@@ -71,10 +71,6 @@ interface PromptEditorDraftInfo {
 	filePath: string;
 }
 
-interface ShellCompletionResult {
-	completed?: string | null;
-}
-
 type PromptHistoryScope = "session" | "project" | "all";
 
 interface PromptHistoryMatch {
@@ -563,20 +559,6 @@ export function MessageInput({
 		setComposerValue,
 	]);
 
-	const completeShellDraft = useCallback(async () => {
-		const result = await invoke<ShellCompletionResult>(
-			"complete_agent_shell_command",
-			{
-				history: promptHistory,
-				draft: value,
-			},
-		);
-		if (!result.completed) return false;
-		setComposerValue(result.completed);
-		setHistoryIndex(null);
-		return true;
-	}, [promptHistory, setComposerValue, value]);
-
 	const openExternalPromptEditor = useCallback(async () => {
 		setPromptEditorError(null);
 		setIsOpeningExternalEditor(true);
@@ -848,18 +830,6 @@ export function MessageInput({
 				return;
 			}
 			if (
-				e.key === "Tab" &&
-				value.trimStart().startsWith("!") &&
-				!e.shiftKey &&
-				!e.metaKey &&
-				!e.ctrlKey &&
-				!e.altKey
-			) {
-				e.preventDefault();
-				void completeShellDraft();
-				return;
-			}
-			if (
 				activePromptSuggestion &&
 				(e.key === "Tab" || e.key === "ArrowRight") &&
 				!e.shiftKey &&
@@ -945,7 +915,6 @@ export function MessageInput({
 			skillSelectedIndex,
 			handleSelectSkill,
 			activePromptSuggestion,
-			completeShellDraft,
 			isStreaming,
 			onInterrupt,
 			value,

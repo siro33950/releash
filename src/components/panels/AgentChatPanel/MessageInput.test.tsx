@@ -407,37 +407,6 @@ describe("MessageInput", () => {
 		);
 	});
 
-	it("completes bang shell command from Rust history matcher on Tab", async () => {
-		const onSend = vi.fn();
-		mockInvoke.mockImplementation((command: string) => {
-			if (command === "complete_agent_shell_command") {
-				return Promise.resolve({
-					completed: "! pnpm test --filter agent",
-				});
-			}
-			return Promise.resolve([]);
-		});
-		render(<MessageInput {...defaultProps} onSend={onSend} />);
-		const textarea = screen.getByPlaceholderText(
-			"Send a message...",
-		) as HTMLTextAreaElement;
-
-		fireEvent.change(textarea, {
-			target: { value: "! pnpm test --filter agent" },
-		});
-		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
-		fireEvent.change(textarea, { target: { value: "! pn" } });
-		fireEvent.keyDown(textarea, { key: "Tab" });
-
-		await waitFor(() =>
-			expect(textarea.value).toBe("! pnpm test --filter agent"),
-		);
-		expect(mockInvoke).toHaveBeenCalledWith("complete_agent_shell_command", {
-			history: ["! pnpm test --filter agent"],
-			draft: "! pn",
-		});
-	});
-
 	it("does not send whitespace-only messages", () => {
 		const onSend = vi.fn();
 		render(<MessageInput {...defaultProps} onSend={onSend} />);

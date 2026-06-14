@@ -7,7 +7,6 @@ pub(crate) mod model;
 pub(crate) mod paste;
 pub(crate) mod permission;
 pub(crate) mod session;
-pub(crate) mod shell;
 pub(crate) mod status;
 pub(crate) mod suggestion;
 pub(crate) mod tool_activity;

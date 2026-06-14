@@ -1,6 +1,5 @@
 pub mod backend;
 mod direct;
-pub mod oneshot;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -281,13 +280,6 @@ impl PtyManager {
         }
     }
 
-    pub fn get_exit_status(&self, pty_id: u64) -> Option<(bool, Option<i32>)> {
-        let sessions = self.sessions.lock();
-        sessions
-            .get(&pty_id)
-            .map(|s| (s.exited.load(Ordering::SeqCst), *s.exit_code.lock()))
-    }
-
     fn build_found_session(id: u64, session: &PtySession) -> FoundSession {
         let is_exited = session.exited.load(Ordering::SeqCst);
         let exit_code = *session.exit_code.lock();
@@ -413,30 +405,6 @@ impl PtyManager {
         kind: PtyKind,
     ) -> Result<(u64, String), String> {
         self.spawn_inner(app, rows, cols, cwd, worktree_path, label, None, kind)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn spawn_exec(
-        &self,
-        app: &AppHandle,
-        rows: u16,
-        cols: u16,
-        cwd: Option<String>,
-        worktree_path: Option<String>,
-        label: Option<String>,
-        exec_command: String,
-        kind: PtyKind,
-    ) -> Result<(u64, String), String> {
-        self.spawn_inner(
-            app,
-            rows,
-            cols,
-            cwd,
-            worktree_path,
-            label,
-            Some(exec_command),
-            kind,
-        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1316,35 +1284,6 @@ mod tests {
         insert_test_session(&pm, 1, Some("/repo"), None);
         pm.remove_if_exited(1);
         assert!(pm.sessions.lock().get(&1).is_some());
-    }
-
-    #[test]
-    fn test_get_exit_status_running() {
-        let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), None);
-        let status = pm.get_exit_status(1);
-        assert_eq!(status, Some((false, None)));
-    }
-
-    #[test]
-    fn test_get_exit_status_exited() {
-        let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), None);
-        {
-            let sessions = pm.sessions.lock();
-            let s = sessions.get(&1).unwrap();
-            s.exited.store(true, Ordering::SeqCst);
-            *s.exit_code.lock() = Some(42);
-        }
-        let status = pm.get_exit_status(1);
-        assert_eq!(status, Some((true, Some(42))));
-    }
-
-    #[test]
-    fn test_get_exit_status_nonexistent() {
-        let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        let status = pm.get_exit_status(99999);
-        assert!(status.is_none());
     }
 
     #[test]
