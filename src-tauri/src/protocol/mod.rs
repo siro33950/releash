@@ -465,6 +465,7 @@ mod tests {
                 backend_id: Some("claude".to_string()),
                 images: Vec::new(),
                 mentions: Vec::new(),
+                editor_context: None,
             }),
             WsMessage::AgentMessageResponse(AgentMessageResponse {
                 success: true,
@@ -484,6 +485,18 @@ mod tests {
             WsMessage::AgentInterruptResponse(AgentInterruptResponse {
                 success: true,
                 session_id: "sess-1".to_string(),
+                error: None,
+            }),
+            WsMessage::AgentQueueCancelRequest(AgentQueueCancelRequest {
+                session_id: "sess-1".to_string(),
+                queued_turn_id: Some("queued-1".to_string()),
+            }),
+            WsMessage::AgentQueueCancelResponse(AgentQueueCancelResponse {
+                success: true,
+                session_id: "sess-1".to_string(),
+                canceled_count: 1,
+                pending_queue: Vec::new(),
+                pending_queue_count: 0,
                 error: None,
             }),
             WsMessage::AgentSlashCommandsRequest(AgentSlashCommandsRequest {

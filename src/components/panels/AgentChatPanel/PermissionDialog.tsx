@@ -293,7 +293,7 @@ export function PermissionDialog({
 				"build_agent_edited_tool_input",
 				{
 					toolName: request.tool_name,
-					input: request.input,
+					input: editedInput ?? request.input,
 					editedContent: editedContentText,
 				},
 			);
@@ -308,7 +308,7 @@ export function PermissionDialog({
 			const updatedInput = await invoke<Record<string, unknown>>(
 				"build_agent_edited_multi_edit_tool_input",
 				{
-					input: request.input,
+					input: editedInput ?? request.input,
 					editIndex,
 					editedContent: multiEditContentTexts[editIndex] ?? "",
 				},
@@ -376,6 +376,17 @@ export function PermissionDialog({
 		multiEditContentTexts,
 		request.input,
 	]);
+	const multiEditContentRows = useMemo(
+		() =>
+			Array.from({ length: multiEditContentCount }, (_, index) => {
+				const oldString = presentation.multiEditOldStrings[index] ?? "";
+				return {
+					key: `${oldString}\u0000${index}`,
+					oldString,
+				};
+			}),
+		[multiEditContentCount, presentation.multiEditOldStrings],
+	);
 	const previewInput = editedPreviewInput ?? editedInput ?? request.input;
 	if (status !== "pending") {
 		const isAllowed = status === "allowed";
@@ -702,18 +713,17 @@ export function PermissionDialog({
 										Edit replacement content
 									</div>
 									{multiEditContentTexts.map((content, index) => {
-										const oldString =
-											presentation.multiEditOldStrings[index] ?? "";
+										const row = multiEditContentRows[index];
 										return (
 											<div
-												key={`${oldString}\u0000${content}`}
+												key={row.key}
 												className="rounded border border-border bg-background/60 p-2"
 											>
 												<div className="mb-1 flex items-center justify-between gap-2 text-xs">
 													<span className="font-medium">Edit {index + 1}</span>
-													{oldString && (
+													{row.oldString && (
 														<span className="min-w-0 truncate text-muted-foreground">
-															Replace: {oldString}
+															Replace: {row.oldString}
 														</span>
 													)}
 												</div>

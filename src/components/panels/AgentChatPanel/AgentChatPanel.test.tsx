@@ -1332,7 +1332,7 @@ describe("AgentChatPanel", () => {
 
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "! printf hello" } });
-		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 
 		expect(await screen.findByText("Shell: running")).toBeInTheDocument();
 		expect(mockInvoke).toHaveBeenCalledWith("prepare_agent_shell_input", {
@@ -1418,7 +1418,7 @@ describe("AgentChatPanel", () => {
 
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "regular prompt" } });
-		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 
 		await waitFor(() =>
 			expect(mockInvoke).toHaveBeenCalledWith("prepare_agent_shell_input", {
@@ -1490,7 +1490,7 @@ describe("AgentChatPanel", () => {
 
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "! pnpm test &" } });
-		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 
 		expect(
 			await screen.findByText("Shell background: running"),
@@ -1593,7 +1593,7 @@ describe("AgentChatPanel", () => {
 
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "! pnpm test --watch &" } });
-		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 
 		expect(
 			await screen.findByText("Shell background: running"),
@@ -1656,7 +1656,7 @@ describe("AgentChatPanel", () => {
 
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "! printf queued" } });
-		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 
 		expect(await screen.findByText("Queued shell 1")).toBeInTheDocument();
 		expect(screen.getAllByText("printf queued").length).toBeGreaterThan(0);
@@ -1760,7 +1760,7 @@ describe("AgentChatPanel", () => {
 		fireEvent.change(textarea, {
 			target: { value: "/compact native UX audit" },
 		});
-		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 
 		await waitFor(() =>
 			expect(sendMessage).toHaveBeenCalledWith(
@@ -1800,7 +1800,7 @@ describe("AgentChatPanel", () => {
 		fireEvent.change(textarea, {
 			target: { value: "explain this area" },
 		});
-		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 
 		await waitFor(() =>
 			expect(sendMessage).toHaveBeenCalledWith(
@@ -1850,7 +1850,7 @@ describe("AgentChatPanel", () => {
 		fireEvent.change(textarea, {
 			target: { value: "explain this selection" },
 		});
-		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 
 		await waitFor(() =>
 			expect(sendMessage).toHaveBeenCalledWith(

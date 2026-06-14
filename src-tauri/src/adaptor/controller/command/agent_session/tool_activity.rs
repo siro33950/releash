@@ -18,7 +18,7 @@ fn classify_tool(tool_name: &str) -> &'static str {
         | "ReadMcpResourceTool"
         | "ToolSearch" => "read",
         "Bash" => "command",
-        "Write" | "Edit" | "NotebookEdit" => "write",
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => "write",
         _ if tool_name.starts_with("mcp__") => classify_mcp_tool(tool_name),
         _ => "other",
     }
@@ -167,6 +167,7 @@ mod tests {
         assert_eq!(classify_tool("Read"), "read");
         assert_eq!(classify_tool("Bash"), "command");
         assert_eq!(classify_tool("Write"), "write");
+        assert_eq!(classify_tool("MultiEdit"), "write");
         assert_eq!(classify_tool("Unknown"), "other");
     }
 

@@ -165,8 +165,12 @@ fn checkpoint_digest(files: &[WorktreeCheckpointFile]) -> String {
 }
 
 fn head_blob(repo: &Repository, path: &str) -> Result<Option<(Vec<u8>, bool)>, String> {
-    let Ok(head) = repo.head() else {
-        return Ok(None);
+    let head = match repo.head() {
+        Ok(head) => head,
+        Err(e) if e.code() == ErrorCode::UnbornBranch || e.code() == ErrorCode::NotFound => {
+            return Ok(None);
+        }
+        Err(e) => return Err(format!("Failed to read repository HEAD: {e}")),
     };
     let tree = head
         .peel_to_tree()
@@ -314,9 +318,16 @@ pub fn load_message_worktree_checkpoint(
     }
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("Failed to read checkpoint: {e}"))?;
-    serde_json::from_str(&content).map(Some).map_err(|e| {
+    let checkpoint: WorktreeCheckpoint = serde_json::from_str(&content).map_err(|e| {
         format!("Failed to parse checkpoint for session {session_id} message {message_id}: {e}")
-    })
+    })?;
+    let expected = checkpoint_digest(&checkpoint.files);
+    if checkpoint.digest != expected {
+        return Err(format!(
+            "Checkpoint digest mismatch for session {session_id} message {message_id}"
+        ));
+    }
+    Ok(Some(checkpoint))
 }
 
 pub fn copy_message_checkpoints(
@@ -681,5 +692,30 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(err, "Repository HEAD has changed since this checkpoint");
+    }
+
+    #[test]
+    fn load_message_worktree_checkpoint_rejects_digest_mismatch() {
+        let app_data = TempDir::new().unwrap();
+        let checkpoint = WorktreeCheckpoint {
+            version: 1,
+            head_oid: None,
+            files: vec![WorktreeCheckpointFile {
+                path: "a.txt".to_string(),
+                content_base64: Some(STANDARD.encode("content")),
+                executable: false,
+                staged: false,
+                staged_content_base64: None,
+                staged_executable: false,
+            }],
+            digest: "not-the-real-digest".to_string(),
+        };
+        save_message_worktree_checkpoint(app_data.path(), "session-1", "message-1", &checkpoint)
+            .unwrap();
+
+        let err = load_message_worktree_checkpoint(app_data.path(), "session-1", "message-1")
+            .unwrap_err();
+
+        assert!(err.contains("Checkpoint digest mismatch"));
     }
 }

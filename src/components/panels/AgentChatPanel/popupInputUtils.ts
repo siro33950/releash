@@ -85,20 +85,20 @@ function hasUnescapedQuote(value: string): boolean {
 
 function unescapeQuotedMentionQuery(value: string): string {
 	let result = "";
-	let escaped = false;
-	for (const ch of value) {
-		if (escaped) {
-			result += ch;
-			escaped = false;
-			continue;
-		}
+	for (let index = 0; index < value.length; index += 1) {
+		const ch = value[index];
 		if (ch === "\\") {
-			escaped = true;
+			const next = value[index + 1];
+			if (next === '"' || next === "\\") {
+				result += next;
+				index += 1;
+			} else {
+				result += ch;
+			}
 			continue;
 		}
 		result += ch;
 	}
-	if (escaped) result += "\\";
 	return result;
 }
 

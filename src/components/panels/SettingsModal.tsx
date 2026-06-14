@@ -16,7 +16,14 @@ import {
 	Trash2,
 	Workflow,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useReducer, useState } from "react";
+import {
+	Fragment,
+	useCallback,
+	useEffect,
+	useReducer,
+	useRef,
+	useState,
+} from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -157,18 +164,26 @@ function useAgentShortcutSettings(open: boolean) {
 	const [loading, setLoading] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const loadRequestIdRef = useRef(0);
 
 	const load = useCallback(() => {
+		const requestId = loadRequestIdRef.current + 1;
+		loadRequestIdRef.current = requestId;
 		setLoading(true);
 		setError(null);
 		invoke<AgentShortcutSetting[]>("get_agent_shortcut_settings")
 			.then((settings) => {
+				if (loadRequestIdRef.current !== requestId) return;
 				const normalized = Array.isArray(settings) ? settings : [];
 				setConfig(normalized);
 				setDraft(normalized);
 			})
-			.catch((e) => setError(String(e)))
-			.finally(() => setLoading(false));
+			.catch((e) => {
+				if (loadRequestIdRef.current === requestId) setError(String(e));
+			})
+			.finally(() => {
+				if (loadRequestIdRef.current === requestId) setLoading(false);
+			});
 	}, []);
 
 	useEffect(() => {

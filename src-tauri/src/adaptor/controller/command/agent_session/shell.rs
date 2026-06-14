@@ -136,20 +136,43 @@ fn shell_output_dir() -> PathBuf {
     std::env::temp_dir().join("releash-agent-shell")
 }
 
+#[cfg(not(unix))]
+fn shell_output_dir() -> PathBuf {
+    std::env::temp_dir().join("releash-agent-shell")
+}
+
+fn create_background_output_path() -> Result<PathBuf, String> {
+    let dir = shell_output_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create shell output directory: {e}"))?;
+    let path = dir.join(format!("{}.log", uuid::Uuid::new_v4()));
+    std::fs::File::create(&path).map_err(|e| format!("Failed to create shell output file: {e}"))?;
+    Ok(path)
+}
+
 #[cfg(unix)]
 fn background_shell_command(command: &str) -> Result<PreparedBackgroundCommand, String> {
+    let output_path = create_background_output_path()?;
+    let quoted_path = shell_quote(output_path.to_string_lossy().as_ref());
     Ok(PreparedBackgroundCommand {
-        command: command.to_string(),
-        output_path: None,
+        command: format!("({command}) > {quoted_path} 2>&1 &"),
+        output_path: Some(output_path.to_string_lossy().to_string()),
     })
 }
 
-#[cfg(windows)]
+#[cfg(not(unix))]
 fn background_shell_command(command: &str) -> Result<PreparedBackgroundCommand, String> {
+    let output_path = create_background_output_path()?;
+    let escaped_path = output_path.to_string_lossy().replace('"', "\\\"");
     Ok(PreparedBackgroundCommand {
-        command: command.to_string(),
-        output_path: None,
+        command: format!("{command} > \"{escaped_path}\" 2>&1"),
+        output_path: Some(output_path.to_string_lossy().to_string()),
     })
+}
+
+#[cfg(unix)]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 pub(crate) fn prepare_agent_shell_command_inner(
@@ -601,11 +624,11 @@ mod tests {
     fn prepare_shell_command_marks_trailing_ampersand_as_owned_background() {
         let prepared = prepare_agent_shell_command_inner("pnpm test &").unwrap();
 
-        assert_eq!(prepared.command, "pnpm test");
+        assert!(prepared.command.contains("pnpm test"));
         assert_eq!(prepared.display_command, "pnpm test");
         assert!(prepared.background);
         assert_eq!(prepared.timeout_secs, None);
-        assert_eq!(prepared.background_output_path, None);
+        assert!(prepared.background_output_path.is_some());
     }
 
     #[test]

@@ -74,6 +74,11 @@ function CopyableToolResult({
 	const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
 		"idle",
 	);
+	useEffect(() => {
+		if (copyState === "idle") return;
+		const timeout = window.setTimeout(() => setCopyState("idle"), 1600);
+		return () => window.clearTimeout(timeout);
+	}, [copyState]);
 	const handleCopy = async () => {
 		try {
 			await navigator.clipboard.writeText(content);
@@ -108,12 +113,14 @@ function CopyableToolResult({
 }
 
 function fallbackToolPresentation(
-	entry: Extract<ActivityEntry, { type: "tool_use" }>,
+	tool: string,
+	input: unknown,
 ): AgentToolActivityPresentation {
+	void input;
 	return {
 		category: "other",
-		label: entry.tool,
-		summary: entry.tool,
+		label: tool,
+		summary: tool,
 		editPreviewTool: false,
 	};
 }
@@ -122,7 +129,12 @@ function useToolActivityPresentation(
 	entry: Extract<ActivityEntry, { type: "tool_use" }>,
 	basePath?: string,
 ): AgentToolActivityPresentation {
-	const fallback = useMemo(() => fallbackToolPresentation(entry), [entry]);
+	const tool = entry.tool;
+	const input = entry.input;
+	const fallback = useMemo(
+		() => fallbackToolPresentation(tool, input),
+		[tool, input],
+	);
 	const [presentation, setPresentation] =
 		useState<AgentToolActivityPresentation>(fallback);
 

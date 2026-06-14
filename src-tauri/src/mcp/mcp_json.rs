@@ -399,6 +399,23 @@ fn normalize_agent_types(agent_types: Vec<String>) -> Result<Vec<String>, String
     Ok(normalized)
 }
 
+fn validate_generation_credentials(
+    has_desired_agents: bool,
+    port: u16,
+    token: &str,
+) -> Result<(), String> {
+    if !has_desired_agents {
+        return Ok(());
+    }
+    if port == 0 {
+        return Err("mcp_port must be between 1 and 65535".to_string());
+    }
+    if token.trim().is_empty() {
+        return Err("mcp_token must not be empty".to_string());
+    }
+    Ok(())
+}
+
 async fn save_and_generate_mcp_configs_inner(
     app: tauri::AppHandle,
     app_config: Arc<AppConfig>,
@@ -408,15 +425,9 @@ async fn save_and_generate_mcp_configs_inner(
     removed_agents: Vec<String>,
 ) -> Result<Vec<GenerateResult>, String> {
     let token = token.trim().to_string();
-    if port == 0 {
-        return Err("mcp_port must be between 1 and 65535".to_string());
-    }
-    if token.is_empty() {
-        return Err("mcp_token must not be empty".to_string());
-    }
-
     let agent_types = normalize_agent_types(agent_types)?;
     let removed_agents = normalize_agent_types(removed_agents)?;
+    validate_generation_credentials(!agent_types.is_empty(), port, &token)?;
 
     // agent_types / removed_agents を先にパースしてバリデーション
     let parsed_agents: Vec<AgentKind> = agent_types
@@ -627,6 +638,18 @@ mod tests {
     #[test]
     fn normalize_agent_types_rejects_unknown_agent() {
         assert!(normalize_agent_types(vec!["unknown".to_string()]).is_err());
+    }
+
+    #[test]
+    fn generation_credentials_are_not_required_for_deletion_only_changes() {
+        assert!(validate_generation_credentials(false, 0, "").is_ok());
+    }
+
+    #[test]
+    fn generation_credentials_are_required_when_agents_are_desired() {
+        assert!(validate_generation_credentials(true, 0, "token").is_err());
+        assert!(validate_generation_credentials(true, 19801, " ").is_err());
+        assert!(validate_generation_credentials(true, 19801, "token").is_ok());
     }
 
     #[test]

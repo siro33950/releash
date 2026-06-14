@@ -209,7 +209,8 @@ impl AppServerCodexRuntime {
         &self,
         config: &SessionConfig,
     ) -> Result<Arc<Mutex<AppServerSessionState>>, String> {
-        if let Some(state) = self.session_state(&config.chat_session_id).await {
+        let mut sessions = self.sessions.lock().await;
+        if let Some(state) = sessions.get(&config.chat_session_id).cloned() {
             return Ok(state);
         }
 
@@ -274,11 +275,6 @@ impl AppServerCodexRuntime {
         )
         .await?;
 
-        self.sessions
-            .lock()
-            .await
-            .insert(config.chat_session_id.clone(), Arc::clone(&state));
-
         self.spawn_read_loop(
             config.chat_session_id.clone(),
             parts.stdout,
@@ -286,15 +282,27 @@ impl AppServerCodexRuntime {
         );
 
         let initialize_id = Self::next_request_id(&state).await;
-        self.send_jsonrpc(
-            &config.chat_session_id,
-            build_initialize_request(initialize_id, env!("CARGO_PKG_VERSION")),
-        )
-        .await?;
-        self.send_jsonrpc(&config.chat_session_id, build_initialized_notification())
-            .await?;
+        if let Err(err) = self
+            .send_jsonrpc(
+                &config.chat_session_id,
+                build_initialize_request(initialize_id, env!("CARGO_PKG_VERSION")),
+            )
+            .await
+        {
+            let _ = close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
+                .await;
+            return Err(err);
+        }
+        if let Err(err) = self
+            .send_jsonrpc(&config.chat_session_id, build_initialized_notification())
+            .await
+        {
+            let _ = close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
+                .await;
+            return Err(err);
+        }
         let request_id = Self::next_request_id(&state).await;
-        let thread_request = if let Some(thread_id) = saved_thread_id.as_deref() {
+        let thread_request = match if let Some(thread_id) = saved_thread_id.as_deref() {
             build_thread_resume_request(
                 request_id,
                 thread_id,
@@ -313,9 +321,25 @@ impl AppServerCodexRuntime {
                 permission_profile_id.as_deref(),
                 config.system_prompt.as_deref(),
             )
-        }?;
-        self.send_jsonrpc(&config.chat_session_id, thread_request)
-            .await?;
+        } {
+            Ok(request) => request,
+            Err(err) => {
+                let _ =
+                    close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
+                        .await;
+                return Err(err);
+            }
+        };
+        if let Err(err) = self
+            .send_jsonrpc(&config.chat_session_id, thread_request)
+            .await
+        {
+            let _ = close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
+                .await;
+            return Err(err);
+        }
+
+        sessions.insert(config.chat_session_id.clone(), Arc::clone(&state));
 
         Ok(state)
     }

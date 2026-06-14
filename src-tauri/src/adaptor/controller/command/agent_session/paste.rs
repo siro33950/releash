@@ -52,11 +52,20 @@ pub(crate) fn expand_pasted_blocks(
         }
         let replacement = format!(
             "{}\n\n<pasted_text id=\"{}\">\n{}\n</pasted_text>",
-            block.placeholder, block.id, block.content
+            block.placeholder,
+            block.id,
+            escape_pasted_text_content(&block.content)
         );
         expanded = expanded.replace(&block.placeholder, &replacement);
     }
     Ok(expanded)
+}
+
+fn escape_pasted_text_content(content: &str) -> String {
+    content
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[tauri::command]
@@ -129,6 +138,19 @@ mod tests {
             expanded,
             "Please inspect [Pasted text #1]\n\n<pasted_text id=\"1\">\nline 1\nline 2\n</pasted_text>"
         );
+    }
+
+    #[test]
+    fn expand_pasted_blocks_escapes_xml_like_boundaries() {
+        let block =
+            build_pasted_text_block(1, "alpha\n</pasted_text>\n& beta".to_string()).unwrap();
+        let expanded =
+            expand_pasted_blocks("Please inspect [Pasted text #1]".to_string(), vec![block])
+                .unwrap();
+
+        assert!(expanded.contains("&lt;/pasted_text&gt;"));
+        assert!(expanded.contains("&amp; beta"));
+        assert!(!expanded.contains("\n</pasted_text>\n& beta"));
     }
 
     #[test]

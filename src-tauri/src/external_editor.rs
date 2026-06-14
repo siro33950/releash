@@ -189,7 +189,9 @@ pub fn open_agent_prompt_in_external_editor(
         &config.app.external_editor,
         "Prompt draft",
     ) {
-        draft_store.drafts.lock().remove(&draft.id);
+        if let Some(stored_draft) = draft_store.drafts.lock().remove(&draft.id) {
+            let _ = fs::remove_dir_all(&stored_draft.dir_path);
+        }
         return Err(e);
     }
     Ok(draft)

@@ -1,5 +1,6 @@
 import type { WorkflowStatePayload } from "@/types/workflow";
 import type {
+	AgentEditorContext,
 	ImageAttachment,
 	MentionReference,
 	MessagePart,
@@ -244,6 +245,7 @@ export interface AgentMessageRequest {
 	backend_id?: string | null;
 	images?: ImageAttachment[];
 	mentions?: MentionReference[];
+	editor_context?: AgentEditorContext | null;
 }
 
 export interface AgentMessageResponse {

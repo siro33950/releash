@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::adaptor::protocol::mention::MentionReferenceInput;
-use crate::infrastructure::agent_session::runtime::ImageAttachment;
+use crate::infrastructure::agent_session::runtime::{AgentEditorContext, ImageAttachment};
 use crate::permission::{InvalidPermissionMode, PermissionMode};
 use crate::usecase::agent_session::session::{GetSessionResponse, QueuedAgentTurn, SessionSummary};
 
@@ -144,6 +144,8 @@ pub struct AgentMessageRequest {
     pub images: Vec<ImageAttachment>,
     #[serde(default)]
     pub mentions: Vec<MentionReferenceInput>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub editor_context: Option<AgentEditorContext>,
 }
 
 /// `AgentSessionStartRequest` の typed 境界変換結果。
@@ -184,6 +186,7 @@ pub struct AgentMessageHandlerRequest {
     pub backend_id: Option<String>,
     pub images: Vec<ImageAttachment>,
     pub mentions: Vec<MentionReferenceInput>,
+    pub editor_context: Option<AgentEditorContext>,
 }
 
 impl TryFrom<&AgentMessageRequest> for AgentMessageHandlerRequest {
@@ -200,6 +203,7 @@ impl TryFrom<&AgentMessageRequest> for AgentMessageHandlerRequest {
             backend_id: req.backend_id.clone(),
             images: req.images.clone(),
             mentions: req.mentions.clone(),
+            editor_context: req.editor_context.clone(),
         })
     }
 }
@@ -588,6 +592,7 @@ mod tests {
                 backend_id: None,
                 images: Vec::new(),
                 mentions: Vec::new(),
+                editor_context: None,
             };
             let typed: AgentMessageHandlerRequest = (&req).try_into().unwrap();
             assert_eq!(typed.permission_mode, PermissionMode::parse(value).unwrap());
@@ -614,6 +619,7 @@ mod tests {
                 backend_id: None,
                 images: Vec::new(),
                 mentions: Vec::new(),
+                editor_context: None,
             };
             let err = AgentMessageHandlerRequest::try_from(&req).unwrap_err();
             assert!(

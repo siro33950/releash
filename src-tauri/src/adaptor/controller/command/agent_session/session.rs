@@ -3491,7 +3491,7 @@ fn format_codex_mcp_tool_lines(server: &serde_json::Value, limit: usize) -> Vec<
         return Vec::new();
     };
     let mut entries: Vec<_> = tools.iter().collect();
-    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort_by_key(|(left, _)| *left);
 
     let mut lines = Vec::new();
     for (name, tool) in entries.iter().take(limit) {
@@ -3623,7 +3623,7 @@ fn summarize_codex_rate_limits(rate_limits: &serde_json::Value) -> Vec<String> {
         .and_then(serde_json::Value::as_object)
     {
         let mut entries: Vec<_> = by_id.iter().collect();
-        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        entries.sort_by_key(|(left, _)| *left);
         for (id, snapshot) in entries {
             snapshots.push((id.as_str(), snapshot));
         }

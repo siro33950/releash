@@ -1141,6 +1141,15 @@ describe("findMentionTrigger", () => {
 		});
 	});
 
+	it("preserves literal backslashes in quoted mention query text", () => {
+		const value = '@"C:\\Users\\me\\file.ts';
+
+		expect(findMentionTrigger(value, value.length)).toEqual({
+			start: 0,
+			query: "C:\\Users\\me\\file.ts",
+		});
+	});
+
 	it("returns null after a quoted mention is closed", () => {
 		expect(findMentionTrigger('check @"docs/my file" now', 22)).toBeNull();
 	});

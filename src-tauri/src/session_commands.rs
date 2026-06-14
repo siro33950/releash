@@ -191,14 +191,14 @@ pub async fn archive_open_session(
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<(), String> {
+    let data_dir = resolve_data_dir(&app)?;
+    state.archive_open_session(&data_dir, &session_id)?;
     crate::infrastructure::agent_session::runtime::close_agent_session_internal(
         &app,
         handles.inner(),
         &session_id,
     )
     .await?;
-    let data_dir = resolve_data_dir(&app)?;
-    state.archive_open_session(&data_dir, &session_id)?;
     let codex_thread_id = state
         .get_session(&data_dir, &session_id)
         .ok()
@@ -225,6 +225,13 @@ pub fn rewind_session_to_message(
         let session = state
             .get_session(&data_dir, &session_id)?
             .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        if !session
+            .messages
+            .iter()
+            .any(|message| message.id == message_id)
+        {
+            return Err(format!("Message not found: {message_id}"));
+        }
         let checkpoint = crate::usecase::agent_session::session::load_message_worktree_checkpoint(
             &data_dir,
             &session_id,
@@ -337,6 +344,13 @@ pub fn restore_session_worktree_checkpoint(
     let session = state
         .get_session(&data_dir, &session_id)?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    if !session
+        .messages
+        .iter()
+        .any(|message| message.id == message_id)
+    {
+        return Err(format!("Message not found: {message_id}"));
+    }
     let checkpoint = crate::usecase::agent_session::session::load_message_worktree_checkpoint(
         &data_dir,
         &session_id,

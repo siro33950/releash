@@ -206,7 +206,7 @@ function VirtualizedAgentLines({ content }: { content: string }) {
 						<div
 							key={virtualItem.key}
 							data-index={virtualItem.index}
-							className="absolute left-0 top-0 flex min-h-5 w-full gap-3 whitespace-pre-wrap break-words px-3 py-0.5"
+							className="absolute left-0 top-0 flex h-5 w-full gap-3 whitespace-pre px-3 py-0.5"
 							style={{
 								transform: `translateY(${virtualItem.start}px)`,
 							}}
@@ -214,7 +214,7 @@ function VirtualizedAgentLines({ content }: { content: string }) {
 							<span className="w-12 shrink-0 select-none text-right text-muted-foreground/70">
 								{virtualItem.index + 1}
 							</span>
-							<span className="min-w-0 flex-1">
+							<span className="min-w-0 flex-1 overflow-hidden text-ellipsis">
 								{lines[virtualItem.index] || " "}
 							</span>
 						</div>

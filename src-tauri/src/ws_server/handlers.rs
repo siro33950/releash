@@ -1044,7 +1044,7 @@ pub(super) async fn handle_agent_message_request(
                     typed.mentions.clone(),
                 ))
             },
-            editor_context: None,
+            editor_context: typed.editor_context.clone(),
         },
     )
     .await;
@@ -2158,6 +2158,7 @@ mod tests {
             backend_id: Some("claude".to_string()),
             images: Vec::new(),
             mentions: Vec::new(),
+            editor_context: None,
         };
 
         let result = handle_agent_message_request(&req, &state).await;
@@ -2181,6 +2182,7 @@ mod tests {
             backend_id: None,
             images: Vec::new(),
             mentions: Vec::new(),
+            editor_context: None,
         };
         let session = make_chat_session("session-1", "/persisted/worktree");
 
@@ -2199,6 +2201,7 @@ mod tests {
             backend_id: None,
             images: Vec::new(),
             mentions: Vec::new(),
+            editor_context: None,
         };
 
         let error = effective_agent_message_worktree(&req, None).unwrap_err();
@@ -2337,6 +2340,7 @@ mod tests {
                 backend_id: Some("claude".to_string()),
                 images: Vec::new(),
                 mentions: Vec::new(),
+                editor_context: None,
             };
             let result = handle_agent_message_request(&req, &state).await;
             match result {

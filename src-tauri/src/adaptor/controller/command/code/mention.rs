@@ -160,7 +160,12 @@ fn parse_mention_token_at(text: &str, start: usize) -> Option<(ParsedMentionToke
                 continue;
             }
             if ch == '\\' {
-                escaped = true;
+                let next = text[cursor + ch_len..].chars().next();
+                if matches!(next, Some('"') | Some('\\')) {
+                    escaped = true;
+                } else {
+                    file_path.push(ch);
+                }
                 cursor += ch_len;
                 continue;
             }
@@ -312,6 +317,22 @@ mod tests {
             vec![MentionReferenceInput {
                 file_path: "docs/my file.md".to_string(),
                 start_line: Some(3),
+                end_line: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn sync_mentions_with_text_preserves_literal_backslashes_in_quoted_paths() {
+        let refs = vec![mention(r#"C:\repo\src\main.rs"#)];
+        let result =
+            sync_mentions_with_text_inner(r#"Read @"C:\repo\src\main.rs":L10"#, &refs).unwrap();
+
+        assert_eq!(
+            result,
+            vec![MentionReferenceInput {
+                file_path: r#"C:\repo\src\main.rs"#.to_string(),
+                start_line: Some(10),
                 end_line: None,
             }]
         );

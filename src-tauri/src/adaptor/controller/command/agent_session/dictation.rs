@@ -65,7 +65,7 @@ pub(crate) fn compose_agent_dictation_draft_inner(
     if transcript.is_empty() {
         return AgentDictationDraft {
             value: request.base_value.clone(),
-            caret: request.base_value.len(),
+            caret: request.base_value.chars().count(),
         };
     }
 
@@ -74,7 +74,7 @@ pub(crate) fn compose_agent_dictation_draft_inner(
         value.push(' ');
     }
     value.push_str(transcript);
-    let caret = value.len();
+    let caret = value.chars().count();
     AgentDictationDraft { value, caret }
 }
 
@@ -126,7 +126,7 @@ mod tests {
         });
 
         assert_eq!(result.value, "Review this and write tests");
-        assert_eq!(result.caret, result.value.len());
+        assert_eq!(result.caret, result.value.chars().count());
     }
 
     #[test]
@@ -137,5 +137,17 @@ mod tests {
         });
 
         assert_eq!(result.value, "Keep draft");
+        assert_eq!(result.caret, "Keep draft".chars().count());
+    }
+
+    #[test]
+    fn returns_caret_as_unicode_character_position() {
+        let result = compose_agent_dictation_draft_inner(&AgentDictationDraftRequest {
+            base_value: "確認".to_string(),
+            transcript: "  追加  ".to_string(),
+        });
+
+        assert_eq!(result.value, "確認 追加");
+        assert_eq!(result.caret, 5);
     }
 }

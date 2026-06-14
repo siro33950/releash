@@ -76,23 +76,53 @@ fn resolve_tool_file_path(worktree_path: &str, file_path: &str) -> Result<PathBu
         .map_err(|e| format!("Failed to resolve worktree path: {e}"))?;
     let raw_path = Path::new(file_path);
 
+    let ensure_under_root = |path: PathBuf| {
+        if path.starts_with(&root) {
+            Ok(path)
+        } else {
+            Err("file_path resolves outside the worktree".to_string())
+        }
+    };
+
+    let resolve_existing_or_new = |candidate: PathBuf| {
+        if candidate.exists() {
+            return candidate
+                .canonicalize()
+                .map_err(|e| format!("Failed to resolve file_path: {e}"))
+                .and_then(&ensure_under_root);
+        }
+        let parent = candidate
+            .parent()
+            .ok_or_else(|| "Invalid file_path".to_string())?;
+        let mut nearest_existing_parent = parent;
+        while !nearest_existing_parent.exists() {
+            nearest_existing_parent = nearest_existing_parent
+                .parent()
+                .ok_or_else(|| "Invalid file_path".to_string())?;
+        }
+        let canonical_parent = nearest_existing_parent
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve file_path parent: {e}"))?;
+        ensure_under_root(canonical_parent)?;
+        let file_name = candidate
+            .file_name()
+            .ok_or_else(|| "Invalid file_path".to_string())?;
+        Ok(parent.join(file_name))
+    };
+
     if raw_path.is_absolute() {
         if has_parent_component(raw_path) {
             return Err("file_path must not contain parent directory components".to_string());
         }
-        match raw_path.canonicalize() {
-            Ok(canonical) if canonical.starts_with(&root) => Ok(canonical),
-            Ok(_) => Err("file_path resolves outside the worktree".to_string()),
-            Err(_) if raw_path.starts_with(&root) => Ok(raw_path.to_path_buf()),
-            Err(e) => Err(format!(
-                "file_path is outside the worktree or unreadable: {e}"
-            )),
+        if !raw_path.starts_with(&root) {
+            return Err("file_path is outside the worktree".to_string());
         }
+        resolve_existing_or_new(raw_path.to_path_buf())
     } else {
         if has_forbidden_relative_component(raw_path) {
             return Err("file_path must be relative to the worktree without traversal".to_string());
         }
-        Ok(root.join(raw_path))
+        resolve_existing_or_new(root.join(raw_path))
     }
 }
 
@@ -544,6 +574,28 @@ mod tests {
         assert!(err.contains("traversal"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn build_agent_edit_preview_rejects_relative_symlink_escape() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "secret\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), temp.path().join("linked")).unwrap();
+
+        let err = build_agent_edit_preview_inner(
+            temp.path().to_str().unwrap(),
+            "Edit",
+            &serde_json::json!({
+                "file_path": "linked/secret.txt",
+                "old_string": "secret",
+                "new_string": "public"
+            }),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("outside the worktree"));
+    }
+
     #[test]
     fn build_agent_edit_preview_handles_write_new_file() {
         let temp = tempfile::tempdir().unwrap();
@@ -567,6 +619,27 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.kind == AgentEditPreviewLineKind::Added && line.content == "hello"));
+    }
+
+    #[test]
+    fn build_agent_edit_preview_allows_new_file_under_missing_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let preview = build_agent_edit_preview_inner(
+            temp.path().to_str().unwrap(),
+            "Write",
+            &serde_json::json!({
+                "file_path": "new-dir/new.txt",
+                "content": "hello\n"
+            }),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(preview.operation, "Write file");
+        assert!(preview
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("new file")));
     }
 
     #[test]

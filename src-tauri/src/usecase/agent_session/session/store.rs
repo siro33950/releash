@@ -108,6 +108,14 @@ impl SessionStore {
             .map_err(|e| format!("Failed to rename session titles temp file: {e}"))
     }
 
+    fn remove_session_file_and_cache(&self, app_data_dir: &Path, session_id: &str) {
+        if let Ok(file) = session_file(app_data_dir, session_id) {
+            let _ = std::fs::remove_file(file);
+        }
+        self.cache.write().remove(session_id);
+        self.invalid_sessions.write().remove(session_id);
+    }
+
     fn apply_titles_to_summaries(
         &self,
         app_data_dir: &Path,
@@ -215,20 +223,24 @@ impl SessionStore {
             return Err("Workflow step sessions cannot be renamed".to_string());
         }
 
-        let mut titles = self.load_session_titles(app_data_dir)?;
-        match title.map(compact_session_title) {
-            Some(title) if !title.is_empty() => {
-                titles.insert(session_id.to_string(), title);
+        let title_for_summary = {
+            let _lock = self.file_lock.lock();
+            let mut titles = self.load_session_titles(app_data_dir)?;
+            match title.map(compact_session_title) {
+                Some(title) if !title.is_empty() => {
+                    titles.insert(session_id.to_string(), title);
+                }
+                _ => {
+                    titles.remove(session_id);
+                }
             }
-            _ => {
-                titles.remove(session_id);
-            }
-        }
-        self.save_session_titles(app_data_dir, &titles)?;
+            self.save_session_titles(app_data_dir, &titles)?;
+            titles.get(session_id).cloned()
+        };
 
         let mut summary = session.to_summary();
-        if let Some(title) = titles.get(session_id) {
-            summary.first_message = title.clone();
+        if let Some(title) = title_for_summary {
+            summary.first_message = title;
         }
         Ok(summary)
     }
@@ -268,13 +280,13 @@ impl SessionStore {
             backend_id: session.backend_id.clone(),
             workflow_step_session: false,
         };
-        self.save_session(app_data_dir, &rewound)?;
         let message_ids = rewound
             .messages
             .iter()
             .map(|message| message.id.clone())
             .collect::<Vec<_>>();
         super::copy_message_checkpoints(app_data_dir, session_id, &rewound.id, &message_ids)?;
+        self.save_session(app_data_dir, &rewound)?;
         Ok(rewound)
     }
 
@@ -304,17 +316,25 @@ impl SessionStore {
             backend_id: session.backend_id.clone(),
             workflow_step_session: false,
         };
-        self.save_session(app_data_dir, &forked)?;
         let message_ids = forked
             .messages
             .iter()
             .map(|message| message.id.clone())
             .collect::<Vec<_>>();
         super::copy_message_checkpoints(app_data_dir, session_id, &forked.id, &message_ids)?;
-        let mut titles = self.load_session_titles(app_data_dir)?;
-        if let Some(title) = titles.get(session_id).cloned() {
-            titles.insert(forked.id.clone(), title);
-            self.save_session_titles(app_data_dir, &titles)?;
+        self.save_session(app_data_dir, &forked)?;
+        let title_result = {
+            let _lock = self.file_lock.lock();
+            let mut titles = self.load_session_titles(app_data_dir)?;
+            if let Some(title) = titles.get(session_id).cloned() {
+                titles.insert(forked.id.clone(), title);
+                self.save_session_titles(app_data_dir, &titles)?;
+            }
+            Ok::<(), String>(())
+        };
+        if let Err(err) = title_result {
+            self.remove_session_file_and_cache(app_data_dir, &forked.id);
+            return Err(err);
         }
         Ok(forked)
     }
