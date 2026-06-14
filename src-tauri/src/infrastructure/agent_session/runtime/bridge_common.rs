@@ -2595,71 +2595,21 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
 
                             // Workflow engine への通知と pending message 消費は
                             // session_runtime_lock を保持しない経路で実施する。
-                            // 各経路は必要に応じて自前で lock を取得する（spawn-if-needed
-                            // / close ガード）ため、ここで lock を保持してはならない
-                            // （engine 内で同 session への turn 再投入があると再入デッドロック）。
-                            {
-                                use tauri::Manager;
-                                let wf_engine: Option<
-                                    Arc<crate::workflow::engine::WorkflowEngine>,
-                                > = app_stdout
-                                    .try_state::<Arc<crate::workflow::engine::WorkflowEngine>>()
-                                    .map(|s| Arc::clone(&s));
-                                let pending =
-                                    take_pending_message(&handles_stdout, &csid_stdout).await;
-                                let app_wf = app_stdout.clone();
-                                let ss_wf = Arc::clone(&session_store_clone);
-                                let h_wf = Arc::clone(&handles_stdout);
-                                let csid_wf = csid_stdout.clone();
-                                let parts_wf = final_parts.clone();
-                                let token_usage_wf = turn_token_usage;
-                                let handle = tokio::runtime::Handle::current();
-                                std::thread::spawn(move || {
-                                    handle.block_on(async move {
-                                        if let Some(engine) = wf_engine {
-                                            if engine.is_running(&csid_wf).await {
-                                                match crate::app_data_dir::resolve_data_dir(&app_wf) {
-                                                    Ok(data_dir) => {
-                                                        let store =
-                                                            crate::workflow::pending_command::PendingCommandStore::new(
-                                                                &data_dir,
-                                                            );
-                                                        crate::workflow::pending_command_watcher::process_pending_submit_output_pickup(
-                                                            &app_wf, &store,
-                                                        )
-                                                        .await;
-                                                    }
-                                                    Err(e) => {
-                                                        log::warn!(
-                                                            "pending SubmitOutput pickup skipped for {}: resolve_data_dir failed: {e}",
-                                                            csid_wf
-                                                        );
-                                                    }
-                                                }
-                                                if let Err(e) = engine
-                                                    .on_turn_complete(
-                                                        &app_wf, &ss_wf, &h_wf, &csid_wf,
-                                                        exit_code, &parts_wf,
-                                                        token_usage_wf,
-                                                    )
-                                                    .await
-                                                {
-                                                    log::error!(
-                                                        "Workflow on_turn_complete error for {}: {e}",
-                                                        csid_wf
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        if let Some(pending) = pending {
-                                            start_pending_message_turn(
-                                                &app_wf, &h_wf, &ss_wf, &csid_wf, pending,
-                                            )
-                                            .await;
-                                        }
-                                    });
-                                });
-                            }
+                            // 共通ヘルパーが内部で thread::spawn + block_on し、ここの
+                            // lock スコープから切り離す（engine 内で同 session への turn
+                            // 再投入があると再入デッドロックするため）。pending は
+                            // 同期文脈で先に取り出してから渡す。
+                            let pending = take_pending_message(&handles_stdout, &csid_stdout).await;
+                            spawn_workflow_turn_complete_notification(
+                                app_stdout.clone(),
+                                Arc::clone(&session_store_clone),
+                                Arc::clone(&handles_stdout),
+                                csid_stdout.clone(),
+                                exit_code,
+                                final_parts.clone(),
+                                turn_token_usage,
+                                pending,
+                            );
                         }
                     }
                     "error" => {
@@ -4773,6 +4723,87 @@ pub(crate) async fn finish_external_pending_message_turn_start(chat_session_id: 
     clear_pending_turn_starting(chat_session_id).await;
 }
 
+/// turn_complete 後の Workflow Engine 通知と pending message 消費を、
+/// `session_runtime_lock` を保持しない経路で実施する共通ヘルパー。
+///
+/// engine 内で同 session への turn 再投入があると tokio Mutex の非再入性により
+/// 再入デッドロックするため、呼び出し側は lock を保持してはならない。内部で
+/// `std::thread::spawn + block_on` し、呼び出し元の lock スコープから切り離す。
+///
+/// `pending` は streaming 中にキューされた人間メッセージ（無ければ `None`）。
+/// engine 通知後に消費する。Codex app-server は独自の pending キュー
+/// (`start_next_app_server_pending_turn`) を持つため、その経路では `None` を渡す。
+///
+/// Claude（stdout 読み取りループ）と Codex/legacy（`handle_external_bridge_message`）
+/// の両経路から呼ばれ、turn 完了 → workflow 進行の通知ロジックを一本化する。
+#[allow(clippy::too_many_arguments)]
+fn spawn_workflow_turn_complete_notification<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    session_store: Arc<SessionStore>,
+    handles: Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: String,
+    exit_code: i64,
+    final_parts: Vec<MessagePart>,
+    token_usage: Option<(u64, u64)>,
+    pending: Option<PendingMessage>,
+) {
+    let wf_engine: Option<Arc<crate::workflow::engine::WorkflowEngine>> = app
+        .try_state::<Arc<crate::workflow::engine::WorkflowEngine>>()
+        .map(|s| Arc::clone(&s));
+    let handle = tokio::runtime::Handle::current();
+    std::thread::spawn(move || {
+        handle.block_on(async move {
+            if let Some(engine) = wf_engine {
+                if engine.is_running(&chat_session_id).await {
+                    match resolve_data_dir(&app) {
+                        Ok(data_dir) => {
+                            let store =
+                                crate::workflow::pending_command::PendingCommandStore::new(
+                                    &data_dir,
+                                );
+                            crate::workflow::pending_command_watcher::process_pending_submit_output_pickup(
+                                &app, &store,
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "pending SubmitOutput pickup skipped for {chat_session_id}: resolve_data_dir failed: {e}"
+                            );
+                        }
+                    }
+                    if let Err(e) = engine
+                        .on_turn_complete(
+                            &app,
+                            &session_store,
+                            &handles,
+                            &chat_session_id,
+                            exit_code,
+                            &final_parts,
+                            token_usage,
+                        )
+                        .await
+                    {
+                        log::error!(
+                            "Workflow on_turn_complete error for {chat_session_id}: {e}"
+                        );
+                    }
+                }
+            }
+            if let Some(pending) = pending {
+                start_pending_message_turn(
+                    &app,
+                    &handles,
+                    &session_store,
+                    &chat_session_id,
+                    pending,
+                )
+                .await;
+            }
+        });
+    });
+}
+
 #[allow(dead_code)]
 pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -4857,23 +4888,33 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                     TurnPhase::Idle,
                     override_state,
                 );
-                let should_consume_pending_with_legacy_bridge = {
-                    let map = handles.lock().await;
-                    map.get(chat_session_id)
-                        .is_some_and(|proc| proc.backend_id != CODEX_BACKEND_ID)
-                };
-                if should_consume_pending_with_legacy_bridge {
-                    if let Some(pending) = take_pending_message(handles, chat_session_id).await {
-                        start_pending_message_turn(
-                            app,
-                            handles,
-                            session_store,
-                            chat_session_id,
-                            pending,
-                        )
-                        .await;
+                // Codex app-server は独自の pending キュー
+                // (`start_next_app_server_pending_turn`) で follow-up turn を起動するため、
+                // ここでは pending を消費しない（legacy external bridge のみ消費する）。
+                let pending = {
+                    let is_legacy_bridge = {
+                        let map = handles.lock().await;
+                        map.get(chat_session_id)
+                            .is_some_and(|proc| proc.backend_id != CODEX_BACKEND_ID)
+                    };
+                    if is_legacy_bridge {
+                        take_pending_message(handles, chat_session_id).await
+                    } else {
+                        None
                     }
-                }
+                };
+                // Claude(stdout loop) と同じ共通ヘルパーで Workflow Engine へ通知する。
+                // これが無いと Codex の turn 完了が engine に届かずワークフローが進まない。
+                spawn_workflow_turn_complete_notification(
+                    app.clone(),
+                    Arc::clone(session_store),
+                    Arc::clone(handles),
+                    chat_session_id.to_string(),
+                    exit_code,
+                    final_parts.clone(),
+                    effect.turn_token_usage,
+                    pending,
+                );
             }
         }
         "error" => {
