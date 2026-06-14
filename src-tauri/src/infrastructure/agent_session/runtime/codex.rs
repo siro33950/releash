@@ -10,8 +10,9 @@ use crate::domain::agent_session::CODEX_FIXED_MODELS;
 use crate::infrastructure::agent_session::runtime::bridge_common::{
     close_external_agent_process, finish_external_pending_message_turn_start,
     handle_external_bridge_message, prepare_external_pending_message_turn,
-    register_external_agent_process, start_external_agent_turn_state, write_bridge_command,
-    AgentProcessMap, ExternalBridgeMessageState, CODEX_BACKEND_ID,
+    register_external_agent_process, session_specific_env_overrides,
+    start_external_agent_turn_state, write_bridge_command, AgentProcessMap,
+    ExternalBridgeMessageState, CODEX_BACKEND_ID,
 };
 use crate::infrastructure::agent_session::runtime::codex_app_server::{
     app_server_message_to_bridge_messages, build_app_server_permission_response_for_bridge_request,
@@ -194,7 +195,29 @@ impl AppServerCodexRuntime {
         }
 
         wait_until_session_close_finished(&config.chat_session_id).await;
-        let parts = spawn_app_server_process_parts(&self.cli_path)?;
+
+        // spec issues-1054 / issues-1022: app-server 経路でも legacy bridge と同様に、
+        // alias 解決用 env（PATH / RELEASH_DATA_DIR）と session 固有 env
+        // （RELEASH_SESSION_ID / RELEASH_BASE_BRANCH）を agent 子プロセスへ伝搬する。
+        // legacy Node bridge では spawn_bridge_process が担っていた責務であり、
+        // app-server 直結への移行で欠落していたため、ここで等価に復元する。
+        let mut child_envs = crate::path_aliases::prepare_child_env(
+            self.app.path().app_data_dir().ok(),
+        )
+        .map_err(|e| format!("failed to prepare alias child env for codex app-server: {e}"))?;
+        let base_branch = self
+            .app
+            .state::<crate::adaptor::controller::state::AppState>()
+            .code_usecase
+            .resolve_effective_base_branch_name(&config.cwd)
+            .ok()
+            .flatten();
+        for (key, value) in
+            session_specific_env_overrides(&config.chat_session_id, base_branch.as_deref())
+        {
+            child_envs.push((key.to_string(), value));
+        }
+        let parts = spawn_app_server_process_parts(&self.cli_path, Some(&config.cwd), &child_envs)?;
         let state = Arc::new(Mutex::new(AppServerSessionState::new()));
         let data_dir = resolve_data_dir(&self.app)?;
         let stored_session = self
