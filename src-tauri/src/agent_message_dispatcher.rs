@@ -13,6 +13,7 @@ pub struct AgentMessageDispatchRequest {
     pub backend_id: Option<String>,
     pub images: Option<Vec<AgentImageAttachment>>,
     pub mentions: Option<Vec<crate::domain::code::MentionReference>>,
+    pub editor_context: Option<crate::infrastructure::agent_session::runtime::AgentEditorContext>,
 }
 
 pub struct AgentMessageDispatchContext<'a> {
@@ -43,6 +44,7 @@ pub async fn dispatch_agent_message(
             backend_id: req.backend_id,
             images: req.images,
             mentions: req.mentions,
+            editor_context: req.editor_context,
         })
         .await
         .map_err(|err| redact_dispatch_error(workflow_step_target, err))?;

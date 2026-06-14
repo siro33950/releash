@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 
-use super::{ChatSession, SessionState, SessionSummary};
+use super::{now_timestamp, ChatSession, SessionState, SessionSummary};
 
 /// `SessionState` の遷移を観測する購読者向けコールバック。
 /// 引数は `(session_id, worktree_path, new_state)`。
@@ -38,6 +38,10 @@ fn sessions_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("sessions")
 }
 
+fn session_titles_file(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("session_titles.json")
+}
+
 static UUID_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
         .unwrap()
@@ -67,7 +71,65 @@ fn invalid_session_error_message() -> String {
     )
 }
 
+fn compact_session_title(title: &str) -> String {
+    let compact = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    match compact.char_indices().nth(100) {
+        Some((byte_pos, _)) => format!("{}…", &compact[..byte_pos]),
+        None => compact,
+    }
+}
+
 impl SessionStore {
+    fn load_session_titles(&self, app_data_dir: &Path) -> Result<HashMap<String, String>, String> {
+        let path = session_titles_file(app_data_dir);
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                serde_json::from_str(&content).map_err(|_| invalid_session_error_message())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(e) => Err(format!("Failed to read session titles: {e}")),
+        }
+    }
+
+    fn save_session_titles(
+        &self,
+        app_data_dir: &Path,
+        titles: &HashMap<String, String>,
+    ) -> Result<(), String> {
+        std::fs::create_dir_all(app_data_dir)
+            .map_err(|e| format!("Failed to create app data dir: {e}"))?;
+        let path = session_titles_file(app_data_dir);
+        let json = serde_json::to_string_pretty(titles)
+            .map_err(|e| format!("Failed to serialize session titles: {e}"))?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, json)
+            .map_err(|e| format!("Failed to write session titles temp file: {e}"))?;
+        std::fs::rename(&tmp, &path)
+            .map_err(|e| format!("Failed to rename session titles temp file: {e}"))
+    }
+
+    fn remove_session_file_and_cache(&self, app_data_dir: &Path, session_id: &str) {
+        if let Ok(file) = session_file(app_data_dir, session_id) {
+            let _ = std::fs::remove_file(file);
+        }
+        self.cache.write().remove(session_id);
+        self.invalid_sessions.write().remove(session_id);
+    }
+
+    fn apply_titles_to_summaries(
+        &self,
+        app_data_dir: &Path,
+        summaries: &mut [SessionSummary],
+    ) -> Result<(), String> {
+        let titles = self.load_session_titles(app_data_dir)?;
+        for summary in summaries {
+            if let Some(title) = titles.get(&summary.id) {
+                summary.first_message = title.clone();
+            }
+        }
+        Ok(())
+    }
+
     fn list_sessions_filtered(
         &self,
         app_data_dir: &Path,
@@ -89,6 +151,7 @@ impl SessionStore {
                 .partial_cmp(&a.updated_at)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        self.apply_titles_to_summaries(app_data_dir, &mut summaries)?;
         Ok(summaries)
     }
 
@@ -98,7 +161,7 @@ impl SessionStore {
         worktree_path: &str,
     ) -> Result<Vec<SessionSummary>, String> {
         self.list_sessions_filtered(app_data_dir, worktree_path, |s| {
-            s.state != SessionState::Closed
+            s.state != SessionState::Closed && s.state != SessionState::Archived
         })
     }
 
@@ -110,6 +173,119 @@ impl SessionStore {
         self.list_sessions_filtered(app_data_dir, worktree_path, |s| {
             s.state == SessionState::Closed
         })
+    }
+
+    pub fn archive_session(&self, app_data_dir: &Path, session_id: &str) -> Result<(), String> {
+        let session = self
+            .get_session(app_data_dir, session_id)?
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        if session.state != SessionState::Closed {
+            return Err("Only closed sessions can be archived".to_string());
+        }
+        self.set_session_state(app_data_dir, session_id, SessionState::Archived)
+    }
+
+    pub fn archive_open_session(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<(), String> {
+        let session = self
+            .get_session(app_data_dir, session_id)?
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        if session.workflow_step_session {
+            return Err("Workflow step sessions cannot be archived".to_string());
+        }
+        self.set_session_state(app_data_dir, session_id, SessionState::Archived)
+    }
+
+    pub fn session_title(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Option<String>, String> {
+        Ok(self
+            .load_session_titles(app_data_dir)?
+            .get(session_id)
+            .cloned())
+    }
+
+    pub fn set_session_title(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        title: Option<&str>,
+    ) -> Result<SessionSummary, String> {
+        let session = self
+            .get_session(app_data_dir, session_id)?
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        if session.workflow_step_session {
+            return Err("Workflow step sessions cannot be renamed".to_string());
+        }
+
+        let title_for_summary = {
+            let _lock = self.file_lock.lock();
+            let mut titles = self.load_session_titles(app_data_dir)?;
+            match title.map(compact_session_title) {
+                Some(title) if !title.is_empty() => {
+                    titles.insert(session_id.to_string(), title);
+                }
+                _ => {
+                    titles.remove(session_id);
+                }
+            }
+            self.save_session_titles(app_data_dir, &titles)?;
+            titles.get(session_id).cloned()
+        };
+
+        let mut summary = session.to_summary();
+        if let Some(title) = title_for_summary {
+            summary.first_message = title;
+        }
+        Ok(summary)
+    }
+
+    pub fn fork_session(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<ChatSession, String> {
+        let session = self
+            .get_session(app_data_dir, session_id)?
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        if session.workflow_step_session {
+            return Err("Workflow step sessions cannot be forked".to_string());
+        }
+        let now = now_timestamp();
+        let forked = ChatSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            worktree_path: session.worktree_path.clone(),
+            messages: session.messages.clone(),
+            state: SessionState::Idle,
+            created_at: now,
+            updated_at: now,
+            agent_session_id: None,
+            permission_mode: session.permission_mode.clone(),
+            selected_model: session.selected_model.clone(),
+            permission_profile_id: session.permission_profile_id.clone(),
+            backend_id: session.backend_id.clone(),
+            workflow_step_session: false,
+        };
+        self.save_session(app_data_dir, &forked)?;
+        let title_result = {
+            let _lock = self.file_lock.lock();
+            let mut titles = self.load_session_titles(app_data_dir)?;
+            if let Some(title) = titles.get(session_id).cloned() {
+                titles.insert(forked.id.clone(), title);
+                self.save_session_titles(app_data_dir, &titles)?;
+            }
+            Ok::<(), String>(())
+        };
+        if let Err(err) = title_result {
+            self.remove_session_file_and_cache(app_data_dir, &forked.id);
+            return Err(err);
+        }
+        Ok(forked)
     }
 
     pub fn get_session(
@@ -237,6 +413,38 @@ impl SessionStore {
         self.save_session(app_data_dir, &session)
     }
 
+    pub fn update_permission_profile_id(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        permission_profile_id: Option<&str>,
+    ) -> Result<(), String> {
+        let profile_id = permission_profile_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                if value.chars().any(char::is_control) {
+                    Err("Permission profile id cannot contain control characters".to_string())
+                } else {
+                    Ok(value.to_string())
+                }
+            })
+            .transpose()?;
+        self.ensure_loaded(app_data_dir)?;
+        if let Some(err) = self.invalid_sessions.read().get(session_id) {
+            return Err(err.clone());
+        }
+        let mut session = {
+            let cache = self.cache.read();
+            cache
+                .get(session_id)
+                .cloned()
+                .ok_or_else(|| format!("Session not found: {session_id}"))?
+        };
+        session.permission_profile_id = profile_id;
+        self.save_session(app_data_dir, &session)
+    }
+
     fn ensure_loaded(&self, app_data_dir: &Path) -> Result<(), String> {
         if self.loaded.load(Ordering::Acquire) {
             return Ok(());
@@ -355,6 +563,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
@@ -568,6 +777,194 @@ mod tests {
         let sessions = store.list_sessions(tmp.path(), "/repo").unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, UUID1);
+    }
+
+    #[test]
+    fn list_sessions_excludes_archived() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+
+        store
+            .save_session(tmp.path(), &make_session(UUID1, "/repo"))
+            .unwrap();
+        let mut archived = make_session(UUID2, "/repo");
+        archived.state = SessionState::Archived;
+        store.save_session(tmp.path(), &archived).unwrap();
+
+        let sessions = store.list_sessions(tmp.path(), "/repo").unwrap();
+        let closed = store.list_closed_sessions(tmp.path(), "/repo").unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, UUID1);
+        assert!(closed.is_empty());
+    }
+
+    #[test]
+    fn archive_session_moves_closed_session_out_of_closed_history() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+
+        let mut closed = make_session(UUID1, "/repo");
+        closed.state = SessionState::Closed;
+        store.save_session(tmp.path(), &closed).unwrap();
+
+        store.archive_session(tmp.path(), UUID1).unwrap();
+
+        let saved = store.get_session(tmp.path(), UUID1).unwrap().unwrap();
+        assert_eq!(saved.state, SessionState::Archived);
+        assert!(store
+            .list_closed_sessions(tmp.path(), "/repo")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn archive_open_session_archives_active_session() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+
+        store
+            .save_session(tmp.path(), &make_session(UUID1, "/repo"))
+            .unwrap();
+
+        store.archive_open_session(tmp.path(), UUID1).unwrap();
+
+        let saved = store.get_session(tmp.path(), UUID1).unwrap().unwrap();
+        assert_eq!(saved.state, SessionState::Archived);
+        assert!(store.list_sessions(tmp.path(), "/repo").unwrap().is_empty());
+        assert!(store
+            .list_closed_sessions(tmp.path(), "/repo")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn archive_open_session_rejects_workflow_step_sessions() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let mut session = make_session(UUID1, "/repo");
+        session.workflow_step_session = true;
+        store.save_session(tmp.path(), &session).unwrap();
+
+        let err = store.archive_open_session(tmp.path(), UUID1).unwrap_err();
+
+        assert_eq!(err, "Workflow step sessions cannot be archived");
+    }
+
+    #[test]
+    fn set_session_title_overrides_summary_and_can_clear() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+
+        store
+            .save_session(tmp.path(), &make_session(UUID1, "/repo"))
+            .unwrap();
+
+        let summary = store
+            .set_session_title(tmp.path(), UUID1, Some("  Custom   title  "))
+            .unwrap();
+
+        assert_eq!(summary.first_message, "Custom title");
+        let sessions = store.list_sessions(tmp.path(), "/repo").unwrap();
+        assert_eq!(sessions[0].first_message, "Custom title");
+
+        let summary = store.set_session_title(tmp.path(), UUID1, None).unwrap();
+
+        assert_eq!(summary.first_message, "Hello");
+        let sessions = store.list_sessions(tmp.path(), "/repo").unwrap();
+        assert_eq!(sessions[0].first_message, "Hello");
+    }
+
+    #[test]
+    fn set_session_title_rejects_workflow_step_sessions() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let mut session = make_session(UUID1, "/repo");
+        session.workflow_step_session = true;
+        store.save_session(tmp.path(), &session).unwrap();
+
+        let err = store
+            .set_session_title(tmp.path(), UUID1, Some("Step title"))
+            .unwrap_err();
+
+        assert_eq!(err, "Workflow step sessions cannot be renamed");
+    }
+
+    #[test]
+    fn fork_session_creates_detached_copy() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+
+        let mut session = make_session(UUID1, "/repo");
+        session.agent_session_id = Some("agent-session".to_string());
+        session.selected_model = Some("claude-opus".to_string());
+        session.backend_id = Some("claude".to_string());
+        session.messages.push(ChatMessage {
+            id: "m2".to_string(),
+            role: MessageRole::Agent,
+            content: "Response".to_string(),
+            thinking: None,
+            activities: None,
+            parts: None,
+            timestamp: 1001.0,
+            mentions: None,
+        });
+        store.save_session(tmp.path(), &session).unwrap();
+
+        let forked = store.fork_session(tmp.path(), UUID1).unwrap();
+
+        assert_ne!(forked.id, UUID1);
+        assert_eq!(forked.worktree_path, "/repo");
+        assert_eq!(forked.state, SessionState::Idle);
+        assert_eq!(forked.agent_session_id, None);
+        assert_eq!(forked.permission_mode, "edit");
+        assert_eq!(forked.selected_model, Some("claude-opus".to_string()));
+        assert_eq!(forked.backend_id, Some("claude".to_string()));
+        assert_eq!(
+            forked
+                .messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["m1", "m2"]
+        );
+        assert!(store.get_session(tmp.path(), &forked.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn fork_session_copies_custom_title() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+
+        store
+            .save_session(tmp.path(), &make_session(UUID1, "/repo"))
+            .unwrap();
+        store
+            .set_session_title(tmp.path(), UUID1, Some("Custom title"))
+            .unwrap();
+
+        let forked = store.fork_session(tmp.path(), UUID1).unwrap();
+
+        assert_eq!(
+            store
+                .session_title(tmp.path(), &forked.id)
+                .unwrap()
+                .as_deref(),
+            Some("Custom title")
+        );
+    }
+
+    #[test]
+    fn fork_session_rejects_workflow_step_sessions() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let mut session = make_session(UUID1, "/repo");
+        session.workflow_step_session = true;
+        store.save_session(tmp.path(), &session).unwrap();
+
+        let err = store.fork_session(tmp.path(), UUID1).unwrap_err();
+
+        assert_eq!(err, "Workflow step sessions cannot be forked");
     }
 
     #[test]

@@ -51,10 +51,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("./useSlashCommands", () => ({
-	setSlashCommands: vi.fn(),
-}));
-
 vi.mock("./useSessionStore", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./useSessionStore")>();
 	return {
@@ -83,6 +79,7 @@ function makeRefs(): TestRefs {
 		dispatch: vi.fn(),
 		viewableRegistry: registry,
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
+		hasMessage: vi.fn().mockReturnValue(false),
 	};
 }
 
@@ -667,6 +664,49 @@ describe("SET_PERMISSION_MODE from agent-permission-mode-changed event", () => {
 });
 
 describe("result error display", () => {
+	it("dispatches latest token usage from result modelUsage", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "result",
+				chat_session_id: "session-1",
+				modelUsage: {
+					codex: {
+						inputTokens: 12,
+						outputTokens: 34,
+						totalTokens: 46,
+						contextWindowTokens: 200000,
+					},
+					planner: {
+						inputTokens: 3,
+						outputTokens: 4,
+						totalTokens: 7,
+						contextWindowTokens: 128000,
+					},
+				},
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_LATEST_TOKEN_USAGE",
+			sessionId: "session-1",
+			usage: {
+				inputTokens: 15,
+				outputTokens: 38,
+				totalTokens: 53,
+				contextWindowTokens: 200000,
+			},
+		});
+	});
+
 	it("dispatches ADD_MESSAGE when result message has errors", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
@@ -755,7 +795,7 @@ describe("result error display", () => {
 });
 
 describe("supported_commands handling", () => {
-	it("calls setSlashCommands when supported_commands message is received", async () => {
+	it("stores runtime slash commands when supported commands are updated", async () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -763,7 +803,7 @@ describe("supported_commands handling", () => {
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
-		const cb = listenCallbacks.get("agent-sdk-message");
+		const cb = listenCallbacks.get("agent-supported-commands-updated");
 
 		const commands = [
 			{ name: "plan-spec", description: "Create plan spec" },
@@ -776,22 +816,22 @@ describe("supported_commands handling", () => {
 
 		cb?.({
 			payload: {
-				type: "supported_commands",
+				chat_session_id: "session-1",
 				commands,
 			},
 		});
 
-		const { setSlashCommands } = await import("./useSlashCommands");
-		expect(setSlashCommands).toHaveBeenCalledWith(commands);
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_RUNTIME_SLASH_COMMANDS",
+			sessionId: "session-1",
+			commands,
+		});
 	});
 
-	it("does not call setSlashCommands when commands is not an array", async () => {
+	it("does not treat raw agent-sdk-message supported_commands as slash catalog", async () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-
-		const { setSlashCommands } = await import("./useSlashCommands");
-		vi.mocked(setSlashCommands).mockClear();
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -805,7 +845,91 @@ describe("supported_commands handling", () => {
 			},
 		});
 
-		expect(setSlashCommands).not.toHaveBeenCalled();
+		expect(refs.dispatch).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "SET_RUNTIME_SLASH_COMMANDS" }),
+		);
+	});
+});
+
+describe("codex goal message handling", () => {
+	it("stores Codex runtime status summaries from agent sdk messages", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "codex_runtime_status_updated",
+				chat_session_id: "session-1",
+				accountSummary: "auth chatgpt / plan pro",
+			},
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_CODEX_RUNTIME_STATUS",
+			sessionId: "session-1",
+			status: { accountSummary: "auth chatgpt / plan pro" },
+		});
+
+		cb?.({
+			payload: {
+				type: "codex_runtime_status_updated",
+				chat_session_id: "session-1",
+				rateLimitSummary: "codex primary 50% used",
+			},
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_CODEX_RUNTIME_STATUS",
+			sessionId: "session-1",
+			status: { rateLimitSummary: "codex primary 50% used" },
+		});
+	});
+
+	it("stores and clears Codex goal state from agent sdk messages", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		const goal = {
+			objective: "Finish native parity",
+			status: "active",
+			tokenBudget: 50000,
+			tokensUsed: 1200,
+			timeUsedSeconds: 30,
+		};
+		cb?.({
+			payload: {
+				type: "codex_goal_updated",
+				chat_session_id: "session-1",
+				goal,
+			},
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_CODEX_GOAL",
+			sessionId: "session-1",
+			goal,
+		});
+
+		cb?.({
+			payload: {
+				type: "codex_goal_cleared",
+				chat_session_id: "session-1",
+			},
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_CODEX_GOAL",
+			sessionId: "session-1",
+			goal: null,
+		});
 	});
 });
 

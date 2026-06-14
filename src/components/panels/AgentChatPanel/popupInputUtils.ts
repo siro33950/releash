@@ -11,7 +11,8 @@
  * Find the position of the `@` trigger for mention autocomplete in text.
  * Scans backwards from the cursor to detect a valid `@` trigger:
  * - `@` must be at the start of text or preceded by whitespace
- * - The query between `@` and cursor must not contain whitespace
+ * - Unquoted query text between `@` and cursor must not contain whitespace
+ * - Quoted query text after `@"` may contain whitespace until the closing quote
  */
 export function findMentionTrigger(
 	text: string,
@@ -20,19 +21,65 @@ export function findMentionTrigger(
 	for (let i = cursorPos - 1; i >= 0; i--) {
 		const ch = text[i];
 		if (ch === "@") {
-			if (i === 0 || /\s/.test(text[i - 1])) {
-				const query = text.slice(i + 1, cursorPos);
-				if (!/\s/.test(query)) {
-					return { start: i, query };
-				}
+			if (i !== 0 && !/\s/.test(text[i - 1])) return null;
+			if (text[i + 1] === '"') {
+				const query = text.slice(i + 2, cursorPos);
+				if (hasUnescapedQuote(query)) return null;
+				return { start: i, query: unescapeQuotedMentionQuery(query) };
 			}
-			return null;
-		}
-		if (/\s/.test(ch)) {
+			const query = text.slice(i + 1, cursorPos);
+			if (!/\s/.test(query)) {
+				return { start: i, query };
+			}
 			return null;
 		}
 	}
 	return null;
+}
+
+export function findSkillTrigger(
+	text: string,
+	cursorPos: number,
+): { start: number; query: string } | null {
+	if (text[0] !== "/") return null;
+	const query = text.slice(1, cursorPos);
+	if (/\s/.test(query)) return null;
+	return { start: 0, query };
+}
+
+function hasUnescapedQuote(value: string): boolean {
+	let escaped = false;
+	for (const ch of value) {
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (ch === "\\") {
+			escaped = true;
+			continue;
+		}
+		if (ch === '"') return true;
+	}
+	return false;
+}
+
+function unescapeQuotedMentionQuery(value: string): string {
+	let result = "";
+	for (let index = 0; index < value.length; index += 1) {
+		const ch = value[index];
+		if (ch === "\\") {
+			const next = value[index + 1];
+			if (next === '"' || next === "\\") {
+				result += next;
+				index += 1;
+			} else {
+				result += ch;
+			}
+			continue;
+		}
+		result += ch;
+	}
+	return result;
 }
 
 /**

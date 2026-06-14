@@ -1,7 +1,12 @@
+pub(crate) mod action;
 pub(crate) mod backend;
+pub(crate) mod command_palette;
+pub(crate) mod edit_preview;
 pub(crate) mod image;
 pub(crate) mod model;
+pub(crate) mod paste;
 pub(crate) mod permission;
 pub(crate) mod session;
-pub(crate) mod slash;
 pub(crate) mod status;
+pub(crate) mod suggestion;
+pub(crate) mod tool_activity;

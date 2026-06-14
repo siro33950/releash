@@ -51,6 +51,7 @@ pub struct McpConfigParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateResult {
+    pub agent: String,
     pub file_path: String,
     pub content: String,
 }
@@ -79,6 +80,7 @@ pub fn generate_config_at(
     };
 
     Ok(GenerateResult {
+        agent: agent.to_str().to_string(),
         file_path: file_path.to_string_lossy().to_string(),
         content,
     })
@@ -381,6 +383,109 @@ fn get_configured_agents_at(base_dir: &Path) -> Vec<String> {
         .collect()
 }
 
+fn normalize_agent_types(agent_types: Vec<String>) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::new();
+    for raw in agent_types {
+        let candidate = raw.trim().to_lowercase();
+        if candidate.is_empty() {
+            continue;
+        }
+        let agent = AgentKind::from_str(&candidate)?;
+        let value = agent.to_str().to_string();
+        if !normalized.contains(&value) {
+            normalized.push(value);
+        }
+    }
+    Ok(normalized)
+}
+
+fn validate_generation_credentials(
+    has_desired_agents: bool,
+    port: u16,
+    token: &str,
+) -> Result<(), String> {
+    if !has_desired_agents {
+        return Ok(());
+    }
+    if port == 0 {
+        return Err("mcp_port must be between 1 and 65535".to_string());
+    }
+    if token.trim().is_empty() {
+        return Err("mcp_token must not be empty".to_string());
+    }
+    Ok(())
+}
+
+async fn save_and_generate_mcp_configs_inner(
+    app: tauri::AppHandle,
+    app_config: Arc<AppConfig>,
+    port: u16,
+    token: String,
+    agent_types: Vec<String>,
+    removed_agents: Vec<String>,
+) -> Result<Vec<GenerateResult>, String> {
+    let token = token.trim().to_string();
+    let agent_types = normalize_agent_types(agent_types)?;
+    let removed_agents = normalize_agent_types(removed_agents)?;
+    validate_generation_credentials(!agent_types.is_empty(), port, &token)?;
+
+    // agent_types / removed_agents を先にパースしてバリデーション
+    let parsed_agents: Vec<AgentKind> = agent_types
+        .iter()
+        .map(|s| AgentKind::from_str(s))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let parsed_removed: Vec<AgentKind> = removed_agents
+        .iter()
+        .map(|s| AgentKind::from_str(s))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // removed_agents の設定を削除
+    if !parsed_removed.is_empty() {
+        let home = dirs::home_dir().ok_or("ホームディレクトリの取得に失敗")?;
+        for agent in &parsed_removed {
+            remove_releash_entry_at(*agent, &home)?;
+        }
+    }
+
+    // config.toml 保存
+    let port_for_save = port;
+    let token_for_save = token.clone();
+    let app_config_for_write = app_config.clone();
+    tokio::task::spawn_blocking(move || {
+        app_config_for_write.with_config_mut(|config| {
+            config.server.mcp_port = port_for_save;
+            config.server.mcp_token = token_for_save;
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))??;
+
+    // MCPサーバー再起動（停止中なら起動）
+    crate::mcp::restart_mcp_server_if_running(&app).await?;
+
+    // 再起動後の実ポート/トークンで各エージェント設定を生成
+    if parsed_agents.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let config = app_config.get_config()?;
+    let params = McpConfigParams {
+        port: config.server.mcp_port,
+        token: config.server.mcp_token.clone(),
+    };
+
+    tokio::task::spawn_blocking(move || {
+        parsed_agents
+            .iter()
+            .map(|agent| generate_config(*agent, &params))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
 // ── Tauri commands ──
 
 #[tauri::command]
@@ -407,69 +512,52 @@ pub async fn save_and_generate_mcp_configs(
     agent_types: Vec<String>,
     removed_agents: Vec<String>,
 ) -> Result<Vec<GenerateResult>, String> {
-    let token = token.trim().to_string();
-    if port == 0 {
-        return Err("mcp_port must be between 1 and 65535".to_string());
-    }
-    if token.is_empty() {
-        return Err("mcp_token must not be empty".to_string());
-    }
-
-    // 0. agent_types / removed_agents を先にパースしてバリデーション
-    let parsed_agents: Vec<AgentKind> = agent_types
-        .iter()
-        .map(|s| AgentKind::from_str(s))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let parsed_removed: Vec<AgentKind> = removed_agents
-        .iter()
-        .map(|s| AgentKind::from_str(s))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    // 1. removed_agents の設定を削除
-    if !parsed_removed.is_empty() {
-        let home = dirs::home_dir().ok_or("ホームディレクトリの取得に失敗")?;
-        for agent in &parsed_removed {
-            remove_releash_entry_at(*agent, &home)?;
-        }
-    }
-
-    // 2. config.toml 保存
-    let app_config = state.inner().clone();
-    let port_for_save = port;
-    let token_for_save = token.clone();
-    tokio::task::spawn_blocking(move || {
-        app_config.with_config_mut(|config| {
-            config.server.mcp_port = port_for_save;
-            config.server.mcp_token = token_for_save;
-            Ok(())
-        })
-    })
+    save_and_generate_mcp_configs_inner(
+        app,
+        state.inner().clone(),
+        port,
+        token,
+        agent_types,
+        removed_agents,
+    )
     .await
-    .map_err(|e| format!("task join error: {e}"))??;
+}
 
-    // 3. MCPサーバー再起動（停止中なら起動）
-    crate::mcp::restart_mcp_server_if_running(&app).await?;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSelectionResult {
+    pub agent_types: Vec<String>,
+    pub removed_agents: Vec<String>,
+    pub generated: Vec<GenerateResult>,
+}
 
-    // 4. 再起動後の実ポート/トークンで各エージェント設定を生成
-    if parsed_agents.is_empty() {
-        return Ok(vec![]);
-    }
-
+#[tauri::command]
+pub async fn save_mcp_agent_selection(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppConfig>>,
+    agent_types: Vec<String>,
+) -> Result<AgentSelectionResult, String> {
+    let desired_agents = normalize_agent_types(agent_types)?;
+    let home = dirs::home_dir().ok_or("ホームディレクトリの取得に失敗")?;
+    let current_agents = get_configured_agents_at(&home);
+    let removed_agents: Vec<String> = current_agents
+        .into_iter()
+        .filter(|agent| !desired_agents.contains(agent))
+        .collect();
     let config = state.get_config()?;
-    let params = McpConfigParams {
-        port: config.server.mcp_port,
-        token: config.server.mcp_token.clone(),
-    };
-
-    tokio::task::spawn_blocking(move || {
-        parsed_agents
-            .iter()
-            .map(|agent| generate_config(*agent, &params))
-            .collect::<Result<Vec<_>, _>>()
+    let generated = save_and_generate_mcp_configs_inner(
+        app,
+        state.inner().clone(),
+        config.server.mcp_port,
+        config.server.mcp_token.clone(),
+        desired_agents.clone(),
+        removed_agents.clone(),
+    )
+    .await?;
+    Ok(AgentSelectionResult {
+        agent_types: desired_agents,
+        removed_agents,
+        generated,
     })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[tauri::command]
@@ -532,6 +620,36 @@ mod tests {
     #[test]
     fn agent_kind_from_str_invalid() {
         assert!(AgentKind::from_str("unknown").is_err());
+    }
+
+    #[test]
+    fn normalize_agent_types_deduplicates_and_trims() {
+        let normalized = normalize_agent_types(vec![
+            " Claude ".to_string(),
+            "codex".to_string(),
+            "claude".to_string(),
+            "".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(normalized, vec!["claude", "codex"]);
+    }
+
+    #[test]
+    fn normalize_agent_types_rejects_unknown_agent() {
+        assert!(normalize_agent_types(vec!["unknown".to_string()]).is_err());
+    }
+
+    #[test]
+    fn generation_credentials_are_not_required_for_deletion_only_changes() {
+        assert!(validate_generation_credentials(false, 0, "").is_ok());
+    }
+
+    #[test]
+    fn generation_credentials_are_required_when_agents_are_desired() {
+        assert!(validate_generation_credentials(true, 0, "token").is_err());
+        assert!(validate_generation_credentials(true, 19801, " ").is_err());
+        assert!(validate_generation_credentials(true, 19801, "token").is_ok());
     }
 
     #[test]

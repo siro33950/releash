@@ -6,10 +6,22 @@ import {
 	waitFor,
 	within,
 } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // jsdom does not implement scrollIntoView
 Element.prototype.scrollIntoView = vi.fn();
+
+const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+Object.defineProperty(navigator, "clipboard", {
+	configurable: true,
+	value: {
+		writeText: clipboardWriteText,
+	},
+});
+
+beforeEach(() => {
+	clipboardWriteText.mockClear();
+});
 
 vi.mock("react-resizable-panels", () => ({
 	Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -17,10 +29,118 @@ vi.mock("react-resizable-panels", () => ({
 	Separator: () => <div />,
 }));
 
-const mockInvoke = vi.fn().mockResolvedValue([]);
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: (...args: unknown[]) => mockInvoke(...args),
+vi.mock("@tanstack/react-virtual", () => ({
+	useVirtualizer: ({
+		count,
+		estimateSize,
+		getItemKey,
+	}: {
+		count: number;
+		estimateSize: (index: number) => number;
+		getItemKey?: (index: number) => string | number;
+	}) => ({
+		getVirtualItems: () =>
+			Array.from({ length: count }, (_, i) => {
+				const size = estimateSize(i);
+				return {
+					index: i,
+					key: getItemKey?.(i) ?? i,
+					start: i * size,
+					size,
+					end: (i + 1) * size,
+				};
+			}),
+		getTotalSize: () => {
+			let total = 0;
+			for (let i = 0; i < count; i++) {
+				total += estimateSize(i);
+			}
+			return total;
+		},
+		measureElement: () => {},
+		scrollToIndex: () => {},
+	}),
 }));
+
+const defaultAgentShortcuts = [
+	{
+		id: "command_menu",
+		label: "Command menu",
+		shortcut: "Cmd K",
+		alternateShortcut: "Cmd Shift P",
+		defaultShortcut: "Cmd K",
+	},
+	{
+		id: "new_thread",
+		label: "New thread",
+		shortcut: "Cmd N",
+		defaultShortcut: "Cmd N",
+	},
+	{
+		id: "search_threads",
+		label: "Search threads",
+		shortcut: "Cmd G",
+		defaultShortcut: "Cmd G",
+	},
+	{
+		id: "find_in_thread",
+		label: "Find in thread",
+		shortcut: "Cmd F",
+		defaultShortcut: "Cmd F",
+	},
+	{
+		id: "copy_latest_response",
+		label: "Copy latest response",
+		shortcut: "Ctrl O",
+		defaultShortcut: "Ctrl O",
+	},
+	{
+		id: "toggle_raw_scrollback",
+		label: "Toggle raw scrollback",
+		shortcut: "",
+		defaultShortcut: "",
+	},
+	{
+		id: "previous_thread",
+		label: "Previous thread",
+		shortcut: "Cmd Shift [",
+		defaultShortcut: "Cmd Shift [",
+	},
+	{
+		id: "next_thread",
+		label: "Next thread",
+		shortcut: "Cmd Shift ]",
+		defaultShortcut: "Cmd Shift ]",
+	},
+];
+
+const mockInvoke = vi.fn(
+	(command: string, ..._args: unknown[]): Promise<unknown> => {
+		if (command === "get_agent_shortcut_settings") {
+			return Promise.resolve(defaultAgentShortcuts);
+		}
+		if (command === "is_agent_command_enabled") {
+			return Promise.resolve(true);
+		}
+		return Promise.resolve([]);
+	},
+);
+vi.mock("@tauri-apps/api/core", () => ({
+	invoke: (command: string, args?: unknown) => mockInvoke(command, args),
+}));
+
+beforeEach(() => {
+	mockInvoke.mockClear();
+	mockInvoke.mockImplementation((command: string) => {
+		if (command === "get_agent_shortcut_settings") {
+			return Promise.resolve(defaultAgentShortcuts);
+		}
+		if (command === "is_agent_command_enabled") {
+			return Promise.resolve(true);
+		}
+		return Promise.resolve([]);
+	});
+});
 
 type ListenCallback = (event: { payload: unknown }) => void;
 const listenCallbacks = new Map<string, ListenCallback>();
@@ -106,7 +226,11 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		refreshSessions: vi.fn(),
 		refreshClosedSessions: vi.fn(),
 		closeSession: vi.fn(),
+		archiveSession: vi.fn(),
+		archiveOpenSession: vi.fn(),
 		restoreSession: vi.fn(),
+		forkSession: vi.fn(),
+		setSessionTitle: vi.fn(),
 		createNewSession: vi.fn(),
 		reorderSessions: vi.fn(),
 		setPermissionMode: vi.fn(),
@@ -126,6 +250,11 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		registerViewableSession: vi.fn().mockReturnValue(() => {}),
 		getSessionTurnPhase,
 		getSessionSelectedModel: vi.fn().mockReturnValue(null),
+		getSessionPendingQueue: vi.fn().mockReturnValue([]),
+		getSessionLatestTokenUsage: vi.fn().mockReturnValue(null),
+		getSessionCodexGoal: vi.fn().mockReturnValue(null),
+		getSessionRuntimeSlashCommands: vi.fn().mockReturnValue([]),
+		getSessionInterrupting: vi.fn().mockReturnValue(false),
 		...overrides,
 	});
 }
@@ -155,6 +284,260 @@ describe("AgentChatPanel", () => {
 		expect(dragRegion).toBeInTheDocument();
 	});
 
+	it("opens the Rust-backed command palette with Cmd+K", async () => {
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "get_agent_shortcut_settings") {
+				return Promise.resolve(defaultAgentShortcuts);
+			}
+			if (command === "present_agent_command_palette") {
+				return Promise.resolve([
+					{
+						id: "new_thread",
+						label: "New thread",
+						shortcut: "Cmd N",
+						alternateShortcut: null,
+						enabled: true,
+					},
+				]);
+			}
+			return Promise.resolve([]);
+		});
+		mockUseAgentChat();
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_agent_shortcut_settings",
+				undefined,
+			),
+		);
+
+		await waitFor(() => {
+			fireEvent.keyDown(window, { key: "k", metaKey: true });
+			expect(mockInvoke).toHaveBeenCalledWith("present_agent_command_palette", {
+				request: {
+					hasActiveSession: false,
+					sessionCount: 0,
+				},
+			});
+		});
+		expect(await screen.findByText("New thread")).toBeInTheDocument();
+	});
+
+	it("opens the command palette with the native Cmd+Shift+P alternate shortcut", async () => {
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "get_agent_shortcut_settings") {
+				return Promise.resolve(defaultAgentShortcuts);
+			}
+			if (command === "present_agent_command_palette") {
+				return Promise.resolve([
+					{
+						id: "new_thread",
+						label: "New thread",
+						shortcut: "Cmd N",
+						alternateShortcut: null,
+						enabled: true,
+					},
+				]);
+			}
+			return Promise.resolve([]);
+		});
+		mockUseAgentChat();
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_agent_shortcut_settings",
+				undefined,
+			),
+		);
+
+		await waitFor(() => {
+			fireEvent.keyDown(window, { key: "p", metaKey: true, shiftKey: true });
+			expect(mockInvoke).toHaveBeenCalledWith("present_agent_command_palette", {
+				request: {
+					hasActiveSession: false,
+					sessionCount: 0,
+				},
+			});
+		});
+		expect(await screen.findByText("New thread")).toBeInTheDocument();
+	});
+
+	it("opens current thread search from the command palette Find action", async () => {
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "get_agent_shortcut_settings") {
+				return Promise.resolve(defaultAgentShortcuts);
+			}
+			if (command === "present_agent_command_palette") {
+				return Promise.resolve([
+					{
+						id: "find_in_thread",
+						label: "Find in thread",
+						shortcut: "Cmd F",
+						alternateShortcut: null,
+						enabled: true,
+					},
+				]);
+			}
+			return Promise.resolve([]);
+		});
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "agent",
+						parts: [{ type: "text", content: "Searchable answer" }],
+						timestamp: 1000,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_agent_shortcut_settings",
+				undefined,
+			),
+		);
+
+		mockInvoke.mockClear();
+		await waitFor(() => {
+			fireEvent.keyDown(window, { key: "k", metaKey: true });
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"present_agent_command_palette",
+				expect.any(Object),
+			);
+		});
+		fireEvent.click(await screen.findByText("Find in thread"));
+
+		const input = await screen.findByPlaceholderText("Find in current thread");
+		expect(document.activeElement).toBe(input);
+	});
+
+	it("creates a new thread with Cmd+N", async () => {
+		const createNewSession = vi.fn();
+		mockUseAgentChat({ createNewSession });
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_agent_shortcut_settings",
+				undefined,
+			),
+		);
+
+		fireEvent.keyDown(window, { key: "n", metaKey: true });
+
+		await waitFor(() => expect(createNewSession).toHaveBeenCalledTimes(1));
+	});
+
+	it("uses customized shortcuts from Rust settings", async () => {
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "get_agent_shortcut_settings") {
+				return Promise.resolve(
+					defaultAgentShortcuts.map((shortcut) =>
+						shortcut.id === "new_thread"
+							? { ...shortcut, shortcut: "Ctrl Shift N" }
+							: shortcut,
+					),
+				);
+			}
+			if (command === "is_agent_command_enabled") {
+				return Promise.resolve(true);
+			}
+			return Promise.resolve([]);
+		});
+		const createNewSession = vi.fn();
+		mockUseAgentChat({ createNewSession });
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_agent_shortcut_settings",
+				undefined,
+			),
+		);
+
+		fireEvent.keyDown(window, { key: "n", metaKey: true });
+		fireEvent.keyDown(window, { key: "n", ctrlKey: true, shiftKey: true });
+
+		await waitFor(() => expect(createNewSession).toHaveBeenCalledTimes(1));
+	});
+
+	it("navigates threads with Cmd+Shift brackets", async () => {
+		const selectSession = vi.fn();
+		const sessionOne = {
+			id: "s1",
+			worktreePath: "/repo",
+			firstMessage: "One",
+			messages: [],
+			state: "idle" as const,
+			createdAt: 1000,
+			updatedAt: 1000,
+			permissionMode: "edit" as const,
+		};
+		const sessionTwo = {
+			...sessionOne,
+			id: "s2",
+			firstMessage: "Two",
+		};
+		mockUseAgentChat({
+			sessions: [sessionOne, sessionTwo],
+			orderedSessions: [sessionOne, sessionTwo],
+			activeSession: sessionOne,
+			selectSession,
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_agent_shortcut_settings",
+				undefined,
+			),
+		);
+
+		fireEvent.keyDown(window, { key: "]", metaKey: true, shiftKey: true });
+		fireEvent.keyDown(window, { key: "[", metaKey: true, shiftKey: true });
+
+		await waitFor(() => {
+			expect(selectSession).toHaveBeenNthCalledWith(1, "s2");
+			expect(selectSession).toHaveBeenNthCalledWith(2, "s2");
+		});
+	});
+
 	it("renders message input", () => {
 		mockUseAgentChat({
 			activeSession: {
@@ -174,6 +557,687 @@ describe("AgentChatPanel", () => {
 			/>,
 		);
 		expect(screen.getByTestId("message-input")).toBeDefined();
+	});
+
+	it("copies the latest completed agent response", async () => {
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "agent",
+						parts: [{ type: "text", content: "First answer" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [{ type: "text", content: "Latest answer" }],
+						timestamp: 1001,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		fireEvent.click(screen.getByLabelText("Copy latest agent response"));
+
+		await waitFor(() =>
+			expect(clipboardWriteText).toHaveBeenCalledWith("Latest answer"),
+		);
+	});
+
+	it("copies the previous completed agent response while streaming", async () => {
+		mockUseAgentChat({
+			isStreaming: true,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "agent",
+						parts: [{ type: "text", content: "Completed answer" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [{ type: "text", content: "Partial answer" }],
+						timestamp: 1001,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		fireEvent.click(screen.getByLabelText("Copy latest agent response"));
+
+		await waitFor(() =>
+			expect(clipboardWriteText).toHaveBeenCalledWith("Completed answer"),
+		);
+	});
+
+	it("copies the latest completed agent response with Ctrl+O", async () => {
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "agent",
+						parts: [{ type: "text", content: "Copy via shortcut" }],
+						timestamp: 1000,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		fireEvent.keyDown(window, { key: "o", ctrlKey: true });
+
+		await waitFor(() =>
+			expect(clipboardWriteText).toHaveBeenCalledWith("Copy via shortcut"),
+		);
+	});
+
+	it("finds and navigates matches in the current thread", async () => {
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "search_agent_thread_messages") {
+				return Promise.resolve([
+					{ messageId: "m1", matchIndex: 0 },
+					{ messageId: "m2", matchIndex: 0 },
+					{ messageId: "m2", matchIndex: 1 },
+				]);
+			}
+			return Promise.resolve([]);
+		});
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "Please inspect the agent" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [{ type: "text", content: "The agent found an agent bug" }],
+						timestamp: 1001,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		fireEvent.click(screen.getByLabelText("Find in current thread"));
+		const input = screen.getByPlaceholderText("Find in current thread");
+		fireEvent.change(input, { target: { value: "agent" } });
+
+		await waitFor(() => expect(screen.getByText("1/3")).toBeInTheDocument());
+		expect(mockInvoke).toHaveBeenCalledWith("search_agent_thread_messages", {
+			request: {
+				messages: expect.any(Array),
+				query: "agent",
+			},
+		});
+		fireEvent.click(screen.getByLabelText("Next search match"));
+		expect(screen.getByText("2/3")).toBeInTheDocument();
+		fireEvent.click(screen.getByLabelText("Previous search match"));
+		expect(screen.getByText("1/3")).toBeInTheDocument();
+	});
+
+	it("refocuses and selects current thread search when Cmd+F is pressed again", async () => {
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "agent",
+						parts: [{ type: "text", content: "The agent found an agent bug" }],
+						timestamp: 1001,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		fireEvent.keyDown(window, { key: "f", metaKey: true });
+		const input = screen.getByPlaceholderText(
+			"Find in current thread",
+		) as HTMLInputElement;
+		fireEvent.change(input, { target: { value: "agent" } });
+		input.blur();
+		expect(document.activeElement).not.toBe(input);
+
+		fireEvent.keyDown(window, { key: "f", metaKey: true });
+
+		await waitFor(() => expect(document.activeElement).toBe(input));
+		expect(input.selectionStart).toBe(0);
+		expect(input.selectionEnd).toBe("agent".length);
+	});
+
+	it("shows Rust task list report with Ctrl+T", async () => {
+		const sendMessage = vi.fn();
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "build_agent_task_list_report") {
+				return Promise.resolve({
+					title: "Tasks: 1 active / 1 finished",
+					detail:
+						"completed - Explore parser (Explore)\nrunning background - Running tests",
+					activeCount: 1,
+					completedCount: 1,
+					totalCount: 2,
+					items: [
+						{
+							toolUseId: "task-1",
+							label: "Explore parser (Explore)",
+							status: "completed",
+							background: false,
+						},
+						{
+							toolUseId: "task-2",
+							label: "Running tests",
+							status: "running",
+							background: true,
+						},
+					],
+				});
+			}
+			return Promise.resolve([]);
+		});
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+			sendMessage,
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		fireEvent.keyDown(window, { key: "t", ctrlKey: true });
+
+		expect(
+			await screen.findByText("Tasks: 1 active / 1 finished"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/running background - Running tests/),
+		).toBeInTheDocument();
+		expect(screen.getByText("completed")).toBeInTheDocument();
+		expect(screen.getByText("running background")).toBeInTheDocument();
+		expect(mockInvoke).toHaveBeenCalledWith("build_agent_task_list_report", {
+			chatSessionId: "s1",
+		});
+
+		mockInvoke.mockClear();
+		fireEvent.click(screen.getByLabelText("Dismiss command result"));
+		fireEvent.keyDown(window, { key: "t", ctrlKey: true });
+
+		expect(
+			await screen.findByText("Tasks: 1 active / 1 finished"),
+		).toBeInTheDocument();
+		expect(mockInvoke).toHaveBeenCalledWith("build_agent_task_list_report", {
+			chatSessionId: "s1",
+		});
+		expect(sendMessage).not.toHaveBeenCalled();
+	});
+
+	it("refreshes the Rust task list report while it is open", async () => {
+		let taskReportCallCount = 0;
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "build_agent_task_list_report") {
+				taskReportCallCount += 1;
+				return Promise.resolve(
+					taskReportCallCount === 1
+						? {
+								title: "Tasks: 1 active / 0 finished",
+								detail: "running background - Running tests",
+								activeCount: 1,
+								completedCount: 0,
+								totalCount: 1,
+								items: [
+									{
+										toolUseId: "task-1",
+										label: "Running tests",
+										status: "running",
+										background: true,
+									},
+								],
+							}
+						: {
+								title: "Tasks: 0 active / 1 finished",
+								detail: "completed background - Running tests",
+								activeCount: 0,
+								completedCount: 1,
+								totalCount: 1,
+								items: [
+									{
+										toolUseId: "task-1",
+										label: "Running tests",
+										status: "completed",
+										background: true,
+									},
+								],
+							},
+				);
+			}
+			return Promise.resolve([]);
+		});
+		const activeSession = {
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [
+				{
+					id: "m1",
+					role: "agent",
+					content: "",
+					parts: [
+						{
+							type: "tool_use",
+							tool: "Bash",
+							id: "task-1",
+							input: {
+								command: "pnpm test",
+								run_in_background: true,
+							},
+						},
+					],
+					timestamp: 1000,
+				},
+			],
+			state: "idle",
+			createdAt: 1000,
+			updatedAt: 1001,
+			permissionMode: "edit",
+		};
+		mockUseAgentChat({ activeSession });
+		const { rerender } = render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		fireEvent.keyDown(window, { key: "t", ctrlKey: true });
+
+		expect(
+			await screen.findByText("Tasks: 1 active / 0 finished"),
+		).toBeInTheDocument();
+		expect(taskReportCallCount).toBe(1);
+
+		mockUseAgentChat({
+			activeSession: {
+				...activeSession,
+				messages: [
+					{
+						...activeSession.messages[0],
+						parts: [
+							...activeSession.messages[0].parts,
+							{
+								type: "task_status",
+								taskToolUseId: "task-1",
+								status: "completed",
+								description: "done",
+							},
+						],
+					},
+				],
+				updatedAt: 1002,
+			},
+		});
+		rerender(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		expect(
+			await screen.findByText("Tasks: 0 active / 1 finished"),
+		).toBeInTheDocument();
+		expect(taskReportCallCount).toBe(2);
+	});
+
+	it("loads Rust prompt suggestion and accepts it with Tab", async () => {
+		const sendMessage = vi.fn();
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "build_agent_prompt_suggestion") {
+				return Promise.resolve({
+					text: "Review the current repository state and suggest the next step.",
+					source: "empty_session",
+				});
+			}
+			return Promise.resolve([]);
+		});
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+			sendMessage,
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		const textarea = (await screen.findByPlaceholderText(
+			"Review the current repository state and suggest the next step.",
+		)) as HTMLTextAreaElement;
+		fireEvent.keyDown(textarea, { key: "Tab" });
+
+		expect(textarea.value).toBe(
+			"Review the current repository state and suggest the next step.",
+		);
+		expect(mockInvoke).toHaveBeenCalledWith("build_agent_prompt_suggestion", {
+			chatSessionId: "s1",
+		});
+	});
+
+	it("passes runtime-owned slash commands through to the selected backend", async () => {
+		const sendMessage = vi.fn().mockResolvedValue(undefined);
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+			sendMessage,
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "/compact native UX audit" },
+		});
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+
+		await waitFor(() =>
+			expect(sendMessage).toHaveBeenCalledWith(
+				"s1",
+				"/compact native UX audit",
+				undefined,
+				undefined,
+			),
+		);
+		expect(screen.queryByText("Compaction started")).not.toBeInTheDocument();
+	});
+
+	it("passes active and open editor context through normal sends", async () => {
+		const sendMessage = vi.fn().mockResolvedValue(undefined);
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+			sendMessage,
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				activeEditorPath="/repo/src/main.rs"
+				openEditorPaths={["/repo/src/main.rs", "/repo/src/lib.rs"]}
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "explain this area" },
+		});
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+
+		await waitFor(() =>
+			expect(sendMessage).toHaveBeenCalledWith(
+				"s1",
+				"explain this area",
+				undefined,
+				undefined,
+				{
+					editorContext: {
+						activeEditorPath: "/repo/src/main.rs",
+						openEditorPaths: ["/repo/src/main.rs", "/repo/src/lib.rs"],
+					},
+				},
+			),
+		);
+	});
+
+	it("passes selected editor line range through normal sends", async () => {
+		const sendMessage = vi.fn().mockResolvedValue(undefined);
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+			sendMessage,
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				activeEditorPath="/repo/src/main.rs"
+				openEditorPaths={["/repo/src/main.rs"]}
+				activeEditorSelection={{
+					filePath: "/repo/src/main.rs",
+					startLine: 12,
+					endLine: 14,
+				}}
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "explain this selection" },
+		});
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+
+		await waitFor(() =>
+			expect(sendMessage).toHaveBeenCalledWith(
+				"s1",
+				"explain this selection",
+				undefined,
+				undefined,
+				{
+					editorContext: {
+						activeEditorPath: "/repo/src/main.rs",
+						openEditorPaths: ["/repo/src/main.rs"],
+						selection: {
+							filePath: "/repo/src/main.rs",
+							startLine: 12,
+							endLine: 14,
+						},
+					},
+				},
+			),
+		);
+	});
+
+	it("toggles raw scrollback with the toolbar button", async () => {
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "agent",
+						parts: [{ type: "text", content: "**bold text**" }],
+						createdAt: 1000,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+		expect(screen.queryByTestId("agent-raw-message")).not.toBeInTheDocument();
+
+		fireEvent.click(screen.getByLabelText("Enable raw scrollback"));
+
+		const raw = await screen.findByTestId("agent-raw-message");
+		expect(raw.textContent).toContain("**bold text**");
+	});
+
+	it("toggles raw scrollback from the command palette", async () => {
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "get_agent_shortcut_settings") {
+				return Promise.resolve(defaultAgentShortcuts);
+			}
+			if (command === "present_agent_command_palette") {
+				return Promise.resolve([
+					{
+						id: "toggle_raw_scrollback",
+						label: "Toggle raw scrollback",
+						shortcut: "",
+						alternateShortcut: null,
+						enabled: true,
+					},
+				]);
+			}
+			return Promise.resolve([]);
+		});
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "agent",
+						parts: [{ type: "text", content: "**raw from palette**" }],
+						createdAt: 1000,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_agent_shortcut_settings",
+				undefined,
+			),
+		);
+		expect(screen.queryByTestId("agent-raw-message")).not.toBeInTheDocument();
+
+		mockInvoke.mockClear();
+		await waitFor(() => {
+			fireEvent.keyDown(window, { key: "k", metaKey: true });
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"present_agent_command_palette",
+				expect.any(Object),
+			);
+		});
+		fireEvent.click(await screen.findByText("Toggle raw scrollback"));
+
+		const raw = await screen.findByTestId("agent-raw-message");
+		expect(raw.textContent).toContain("**raw from palette**");
 	});
 });
 
@@ -348,7 +1412,6 @@ describe("AgentChatPanel session tabs", () => {
 				createdAt: 1000,
 				updatedAt: 1000,
 				permissionMode: "edit",
-				backendId: "claude",
 			},
 			backends: [
 				{ id: "claude", name: "Claude", available: true, availableModels: [] },
@@ -383,7 +1446,6 @@ describe("AgentChatPanel session tabs", () => {
 				createdAt: 1000,
 				updatedAt: 1000,
 				permissionMode: "edit",
-				backendId: "claude",
 			},
 			backends: [
 				{ id: "claude", name: "Claude", available: true, availableModels: [] },
@@ -669,6 +1731,8 @@ describe("AgentChatPanel shimmer placeholder", () => {
 		const shimmer = screen.getByTestId("shimmer-placeholder");
 		expect(shimmer).toBeDefined();
 		expect(shimmer.children).toHaveLength(2);
+		expect(screen.getByTestId("thinking-block")).toBeInTheDocument();
+		expect(screen.getByText("Let me think about this...")).toBeInTheDocument();
 		expect(screen.queryByTestId("stream-message-agent")).toBeNull();
 	});
 
@@ -882,7 +1946,7 @@ describe("AgentChatPanel shimmer placeholder", () => {
 		expect(screen.queryByTestId("shimmer-placeholder")).toBeNull();
 	});
 
-	it("hides thinking and shows text when text arrives after thinking", () => {
+	it("shows thinking and text when text arrives after thinking", () => {
 		mockUseAgentChat({
 			isStreaming: true,
 			activeSession: {
@@ -916,8 +1980,123 @@ describe("AgentChatPanel shimmer placeholder", () => {
 				registerDropZone={mockRegisterDropZone}
 			/>,
 		);
-		expect(screen.queryByTestId("thinking-indicator")).toBeNull();
+		expect(screen.getByTestId("thinking-block")).toBeInTheDocument();
+		expect(screen.getByText("Let me think...")).toBeInTheDocument();
 		expect(screen.getByTestId("stream-message-agent")).toBeDefined();
+	});
+
+	it("collapses and expands thinking content", () => {
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [{ type: "thinking", content: "private reasoning" }],
+						timestamp: 1001,
+					},
+				],
+				state: "done",
+				createdAt: 1000,
+				updatedAt: 1001,
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		const toggle = screen.getByRole("button", { name: "Thinking" });
+		expect(screen.getByText("private reasoning")).toBeInTheDocument();
+		fireEvent.click(toggle);
+		expect(screen.queryByText("private reasoning")).toBeNull();
+		fireEvent.click(toggle);
+		expect(screen.getByText("private reasoning")).toBeInTheDocument();
+	});
+
+	it("toggles all thinking content from the transcript control", () => {
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [{ type: "thinking", content: "private reasoning" }],
+						timestamp: 1001,
+					},
+				],
+				state: "done",
+				createdAt: 1000,
+				updatedAt: 1001,
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		expect(screen.getByText("private reasoning")).toBeInTheDocument();
+		fireEvent.click(screen.getByLabelText("Hide thinking"));
+		expect(screen.queryByText("private reasoning")).toBeNull();
+		fireEvent.click(screen.getByLabelText("Show thinking"));
+		expect(screen.getByText("private reasoning")).toBeInTheDocument();
+	});
+
+	it("toggles thinking content with Tab when the transcript is focused", () => {
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [{ type: "thinking", content: "private reasoning" }],
+						timestamp: 1001,
+					},
+				],
+				state: "done",
+				createdAt: 1000,
+				updatedAt: 1001,
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		screen.getByLabelText("Hide thinking").focus();
+		fireEvent.keyDown(window, { key: "Tab" });
+
+		expect(screen.queryByText("private reasoning")).toBeNull();
 	});
 
 	it("hides shimmer when streaming is finished", () => {
@@ -1447,6 +2626,109 @@ describe("AgentChatPanel session history", () => {
 		expect(screen.getByText("Old conversation")).toBeDefined();
 		fireEvent.click(screen.getByText("Old conversation"));
 		expect(restoreSession).toHaveBeenCalledWith("closed-1");
+	});
+
+	it("archives a closed session from the history popover", () => {
+		const archiveSession = vi.fn();
+		const restoreSession = vi.fn();
+		mockUseAgentChat({
+			closedSessions: [
+				{
+					id: "closed-1",
+					firstMessage: "Old conversation",
+					messageCount: 5,
+					worktreePath: "/repo",
+					state: "closed",
+					createdAt: 500,
+					updatedAt: 500,
+				},
+			],
+			archiveSession,
+			restoreSession,
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		fireEvent.click(screen.getByLabelText("Session history"));
+		fireEvent.click(screen.getByLabelText("Archive Old conversation"));
+
+		expect(archiveSession).toHaveBeenCalledWith("closed-1");
+		expect(restoreSession).not.toHaveBeenCalled();
+	});
+
+	it("searches across sessions from history popover and restores a result", async () => {
+		const restoreSession = vi.fn();
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "search_agent_sessions") {
+				expect(args).toEqual({
+					worktreePath: "/repo",
+					query: "parser",
+					includeWorkflow: false,
+					limit: 20,
+				});
+				return Promise.resolve([
+					{
+						session: {
+							id: "s2",
+							worktreePath: "/repo",
+							state: "closed",
+							createdAt: 1000,
+							updatedAt: 1002,
+							firstMessage: "Fix parser bug",
+							messageCount: 4,
+							permissionMode: "edit",
+						},
+						matchedMessageId: "m2",
+						matchedRole: "agent",
+						snippet: "The parser bug is fixed",
+					},
+				]);
+			}
+			return Promise.resolve([]);
+		});
+		mockUseAgentChat({ restoreSession });
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		fireEvent.click(screen.getByLabelText("Session history"));
+		fireEvent.change(screen.getByLabelText("Search sessions"), {
+			target: { value: "parser" },
+		});
+
+		expect(await screen.findByText("Fix parser bug")).toBeInTheDocument();
+		expect(screen.getByText("The parser bug is fixed")).toBeInTheDocument();
+
+		fireEvent.click(screen.getByText("Fix parser bug"));
+		expect(restoreSession).toHaveBeenCalledWith("s2");
+	});
+
+	it("focuses session search when opened from Cmd+G", async () => {
+		mockUseAgentChat();
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_agent_shortcut_settings",
+				undefined,
+			),
+		);
+
+		fireEvent.keyDown(window, { key: "g", metaKey: true });
+
+		const search = await screen.findByLabelText("Search sessions");
+		await waitFor(() => expect(search).toHaveFocus());
 	});
 });
 

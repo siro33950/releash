@@ -1,25 +1,43 @@
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { invoke } from "@tauri-apps/api/core";
+import {
+	Check,
+	ChevronDown,
+	ChevronRight,
+	ChevronUp,
+	Code2,
+	Copy,
+	Search,
+	X,
+} from "lucide-react";
 import React, {
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
 } from "react";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
-import { loadSlashCommands } from "@/hooks/useSlashCommands";
 import type {
+	AgentEditorContext,
+	AgentEditorSelection,
 	BackendInfo,
 	ChatMessage,
 	ChatSession,
+	CodexRuntimeStatus,
 	ImageAttachment,
 	ImagePart,
 	MentionReference,
 	MessagePart,
 	ModelInfo,
 	PermissionMode,
+	QueuedAgentTurn,
+	SessionStatus,
+	SlashCommand,
+	TokenUsage,
 } from "@/types/session";
-import { getTextContent } from "@/types/session";
+import { getTextContent, PERMISSION_MODE_LABELS } from "@/types/session";
 import {
 	ActivityItem,
 	CollapsibleError,
@@ -39,6 +57,85 @@ type SystemNotificationPart = Extract<
 	{ type: "system_notification" }
 >;
 
+interface ThreadSearchMatch {
+	messageId: string;
+	matchIndex: number;
+}
+
+interface NativeCommandNotice {
+	kind: "info" | "error";
+	title: string;
+	detail?: string;
+	taskItems?: AgentTaskListReport["items"];
+}
+
+interface AgentTaskListReport {
+	title: string;
+	detail: string;
+	activeCount: number;
+	completedCount: number;
+	totalCount: number;
+	items: Array<{
+		toolUseId: string;
+		label: string;
+		status: string;
+		background: boolean;
+	}>;
+}
+
+function taskListRevision(messages: ChatMessage[]): string {
+	return messages
+		.map((message) => {
+			const parts = message.parts ?? [];
+			const partRevision = parts
+				.map((part) => {
+					switch (part.type) {
+						case "tool_use":
+							return [
+								part.type,
+								part.id,
+								part.tool,
+								JSON.stringify(part.input ?? null),
+							].join(":");
+						case "tool_result":
+							return [
+								part.type,
+								part.toolUseId ?? "",
+								part.isError ? "error" : "ok",
+							].join(":");
+						case "task_status":
+							return [
+								part.type,
+								part.taskToolUseId,
+								part.status,
+								part.description ?? part.summary ?? "",
+							].join(":");
+						default:
+							return part.type;
+					}
+				})
+				.join(",");
+			return `${message.id}:${message.role}:${partRevision}`;
+		})
+		.join("|");
+}
+
+interface AgentPromptSuggestion {
+	text: string;
+	source: string;
+}
+
+function isEditableShortcutTarget(target: EventTarget | null): boolean {
+	if (!(target instanceof HTMLElement)) return false;
+	const tagName = target.tagName.toLowerCase();
+	return (
+		tagName === "input" ||
+		tagName === "textarea" ||
+		tagName === "select" ||
+		target.isContentEditable
+	);
+}
+
 function SystemNotificationItem({ part }: { part: SystemNotificationPart }) {
 	const isInProgress = part.status === "in_progress";
 	return (
@@ -52,10 +149,47 @@ function SystemNotificationItem({ part }: { part: SystemNotificationPart }) {
 	);
 }
 
+function ThinkingPart({
+	content,
+	isStreaming,
+	showContent,
+}: {
+	content: string;
+	isStreaming: boolean;
+	showContent: boolean;
+}) {
+	const [isExpanded, setIsExpanded] = useState(true);
+	const trimmed = content.trim();
+	if (!trimmed) return null;
+
+	return (
+		<div className="px-5 py-0.5 text-xs" data-testid="thinking-block">
+			<button
+				type="button"
+				className="flex min-w-0 items-center gap-1 text-muted-foreground/70 hover:text-foreground/80"
+				onClick={() => setIsExpanded((current) => !current)}
+				aria-expanded={isExpanded}
+			>
+				<ChevronRight
+					className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+				/>
+				<span className={isStreaming ? "animate-pulse" : ""}>Thinking</span>
+			</button>
+			{showContent && isExpanded && (
+				<div className="mt-1 ml-4 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-muted/30 px-2 py-1.5 text-muted-foreground">
+					{trimmed}
+				</div>
+			)}
+		</div>
+	);
+}
+
 interface AgentMessagePartsProps {
 	msg: ChatMessage;
 	isLastAgentStreaming: boolean;
 	worktreePath: string;
+	showThinkingContent: boolean;
+	rawScrollback: boolean;
 	respondPermission: (
 		id: string,
 		allow: boolean,
@@ -67,6 +201,8 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 	msg,
 	isLastAgentStreaming,
 	worktreePath,
+	showThinkingContent,
+	rawScrollback,
 	respondPermission,
 }: AgentMessagePartsProps) {
 	const { pairedResults, skippedResultIndices, taskGroups, taskChildIndices } =
@@ -144,11 +280,23 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 
 				switch (part.type) {
 					case "thinking":
-						return null;
+						return (
+							<ThinkingPart
+								key={key}
+								content={part.content}
+								isStreaming={isLastAgentStreaming}
+								showContent={showThinkingContent}
+							/>
+						);
 					case "text":
 						return (
 							// biome-ignore lint/a11y/useValidAriaRole: role is a component prop, not an ARIA role
-							<StreamMessage key={key} content={part.content} role="agent" />
+							<StreamMessage
+								key={key}
+								content={part.content}
+								role="agent"
+								rawMode={rawScrollback}
+							/>
 						);
 					case "error":
 						return (
@@ -186,7 +334,10 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 								request={part.request}
 								status={part.status}
 								resolvedAnswers={part.answers}
-								onAllow={(id) => respondPermission(id, true)}
+								worktreePath={worktreePath}
+								onAllow={(id, updatedInput) =>
+									respondPermission(id, true, updatedInput)
+								}
 								onDeny={(id) => respondPermission(id, false)}
 								onAnswer={(id, answers) =>
 									respondPermission(id, true, {
@@ -223,23 +374,38 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 export interface ChatSessionViewProps {
 	/** spec issues-1023: 表示対象の完全 ChatSession。未選択時は親で出し分け。 */
 	session: ChatSession;
+	sessionStatus: SessionStatus | null;
 	isStreaming: boolean;
+	isInterrupting: boolean;
 	activityStatus: { label: string } | null;
 	error: string | null;
 	permissionMode: PermissionMode;
 	availableModels: ModelInfo[];
 	selectedModel: string;
+	pendingQueue: QueuedAgentTurn[];
+	latestTokenUsage: TokenUsage | null;
+	codexRuntimeStatus?: CodexRuntimeStatus | null;
+	runtimeSlashCommands?: SlashCommand[];
 	backends: BackendInfo[];
 	selectedBackendId: string | null;
 	canChangeBackend: boolean;
 	worktreePath: string;
+	activeEditorPath?: string | null;
+	openEditorPaths?: string[];
+	activeEditorSelection?: AgentEditorSelection | null;
 	/** メッセージ送信。session id へのバインドは親側で行う。 */
 	onSend: (
 		content: string,
 		images?: ImageAttachment[],
 		mentions?: MentionReference[],
+		options?: {
+			activateNewSession?: boolean;
+			forkNewSession?: boolean;
+			editorContext?: AgentEditorContext;
+		},
 	) => Promise<void>;
 	onInterrupt: () => void;
+	onCancelQueuedTurn: (queuedTurnId?: string | null) => Promise<void>;
 	onPermissionModeChange: (mode: PermissionMode) => void;
 	onModelChange: (modelId: string) => void;
 	onBackendChange: (backendId: string | null) => void;
@@ -258,8 +424,6 @@ export interface ChatSessionViewProps {
 		onDrop?: (paths: string[]) => void,
 	) => void;
 	dropZoneName?: DropZoneType;
-	/** mount 直後に slash commands を読み込むかどうか（default: true）。 */
-	loadSlashCommandsOnMount?: boolean;
 	/**
 	 * 親から sendMessage を呼び出すための ref（任意）。AgentChatPanel が外部に
 	 * sendMessageRef を公開しているため互換のために提供する。
@@ -276,46 +440,92 @@ export interface ChatSessionViewProps {
  */
 export function ChatSessionView({
 	session,
+	sessionStatus,
 	isStreaming,
+	isInterrupting,
 	activityStatus,
 	error,
 	permissionMode,
 	availableModels,
 	selectedModel,
+	pendingQueue,
+	latestTokenUsage,
+	codexRuntimeStatus = null,
+	runtimeSlashCommands = [],
 	backends,
 	selectedBackendId,
 	canChangeBackend,
 	worktreePath,
+	activeEditorPath,
+	openEditorPaths,
+	activeEditorSelection,
 	onSend,
 	onInterrupt,
+	onCancelQueuedTurn,
 	onPermissionModeChange,
 	onModelChange,
 	onBackendChange,
 	onRespondPermission,
 	registerDropZone,
 	dropZoneName,
-	loadSlashCommandsOnMount = true,
 	sendMessageRef,
 }: ChatSessionViewProps) {
 	const messageInputRef = useRef<MessageInputHandle>(null);
 	const [isFileDragOver, setIsFileDragOver] = useState(false);
+	const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
+		"idle",
+	);
+	const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
+	const [threadSearchState, setThreadSearchState] = useState({
+		open: false,
+		requestId: 0,
+	});
+	const [searchQuery, setSearchQuery] = useState("");
+	const [searchMatches, setSearchMatches] = useState<ThreadSearchMatch[]>([]);
+	const [activeSearchIndex, setActiveSearchIndex] = useState(0);
+	const [isStatusOpen, setIsStatusOpen] = useState(false);
+	const [showThinkingContent, setShowThinkingContent] = useState(true);
+	const [rawScrollback, setRawScrollback] = useState(false);
+	const [nativeCommandNotice, setNativeCommandNotice] =
+		useState<NativeCommandNotice | null>(null);
+	const [selectedPermissionProfileId, setSelectedPermissionProfileId] =
+		useState<string | null>(session.permissionProfileId ?? null);
+
+	useEffect(() => {
+		setSelectedPermissionProfileId(session.permissionProfileId ?? null);
+	}, [session.permissionProfileId]);
 	const isFileDragOverRef = useRef(false);
 
+	const currentEditorContext = useMemo<AgentEditorContext | undefined>(() => {
+		const active = activeEditorPath?.trim() || null;
+		const open = Array.from(
+			new Set(
+				(openEditorPaths ?? []).map((path) => path.trim()).filter(Boolean),
+			),
+		);
+		const selection = activeEditorSelection ?? null;
+		if (!active && open.length === 0 && !selection) return undefined;
+		return {
+			activeEditorPath: active,
+			openEditorPaths: open,
+			...(selection ? { selection } : {}),
+		};
+	}, [activeEditorPath, openEditorPaths, activeEditorSelection]);
+
+	const rootRef = useRef<HTMLDivElement>(null);
+	const dropZoneRef = useRef<HTMLDivElement>(null);
+	const searchInputRef = useRef<HTMLInputElement>(null);
+	const messageRefs = useRef(new Map<string, HTMLDivElement>());
 	const scrollRef = useRef<HTMLDivElement>(null);
-	const scrollAnchorRef = useRef<HTMLDivElement>(null);
 	const lastMessageCount = useRef(0);
 	const isNearBottomRef = useRef(true);
-
-	// Load slash commands from filesystem on mount
-	useEffect(() => {
-		if (!loadSlashCommandsOnMount) return;
-		loadSlashCommands(worktreePath).catch((e) =>
-			console.error("Failed to load slash commands:", e),
-		);
-	}, [worktreePath, loadSlashCommandsOnMount]);
+	const lastTaskListRevisionRef = useRef<string | null>(null);
+	const currentTaskListRevision = useMemo(
+		() => taskListRevision(session.messages),
+		[session.messages],
+	);
 
 	// Register agent drop zone for native file drop (image attachment)
-	const dropZoneRef = useRef<HTMLDivElement>(null);
 	const handleDrop = useCallback(async (paths: string[]) => {
 		isFileDragOverRef.current = false;
 		setIsFileDragOver(false);
@@ -374,6 +584,44 @@ export function ChatSessionView({
 
 	const msgs = session.messages;
 	const lastMsg = msgs[msgs.length - 1];
+	const hasThinkingContent = useMemo(
+		() =>
+			session.messages.some((message) =>
+				message.parts.some(
+					(part) => part.type === "thinking" && part.content.trim().length > 0,
+				),
+			),
+		[session.messages],
+	);
+	const activeSearchMatch = searchMatches[activeSearchIndex] ?? null;
+	const isSearchOpen = threadSearchState.open;
+
+	const openThreadSearch = useCallback(() => {
+		setThreadSearchState((current) => ({
+			open: true,
+			requestId: current.requestId + 1,
+		}));
+	}, []);
+
+	const closeThreadSearch = useCallback(() => {
+		setThreadSearchState((current) => ({ ...current, open: false }));
+	}, []);
+
+	const toggleRawScrollback = useCallback(() => {
+		setRawScrollback((current) => !current);
+	}, []);
+
+	const latestCopyableAgentText = useMemo(() => {
+		for (let i = agentMessages.length - 1; i >= 0; i--) {
+			const msg = agentMessages[i];
+			if (isStreaming && lastMsg?.role === "agent" && msg.id === lastMsg.id) {
+				continue;
+			}
+			const text = getTextContent(msg.parts);
+			if (text.trim().length > 0) return text;
+		}
+		return "";
+	}, [agentMessages, isStreaming, lastMsg]);
 	const shimmerLineCount = useMemo(() => {
 		if (!isStreaming || lastMsg?.role !== "agent") return 0;
 		if (lastMsg.parts.length === 0) return 3;
@@ -391,15 +639,35 @@ export function ChatSessionView({
 				return 0;
 		}
 	}, [isStreaming, lastMsg]);
+	const virtualRowCount =
+		session.messages.length + (shimmerLineCount > 0 ? 1 : 0);
+	const messageVirtualizer = useVirtualizer({
+		count: virtualRowCount,
+		getScrollElement: () => scrollRef.current,
+		getItemKey: (index) => session.messages[index]?.id ?? "agent-shimmer",
+		estimateSize: (index) => {
+			if (index >= session.messages.length) return 56;
+			return session.messages[index]?.role === "agent" ? 112 : 72;
+		},
+		overscan: 8,
+		initialRect: {
+			width: 800,
+			height: 800,
+		},
+	});
 
-	// Auto-scroll: anchor-based approach
-	// biome-ignore lint/correctness/useExhaustiveDependencies: lastAgentContent/lastAgentPartsLen/shimmerLineCount triggers scroll on content growth
+	// Auto-scroll: keep tail-following behavior while only mounted rows are in the DOM.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: lastAgentContent/lastAgentPartsLen/shimmerLineCount intentionally trigger tail follow during streaming growth.
 	useEffect(() => {
 		const count = session.messages.length;
 		if (count > lastMessageCount.current) {
-			scrollAnchorRef.current?.scrollIntoView({ behavior: "instant" });
+			messageVirtualizer.scrollToIndex(Math.max(virtualRowCount - 1, 0), {
+				align: "end",
+			});
 		} else if (isNearBottomRef.current) {
-			scrollAnchorRef.current?.scrollIntoView({ behavior: "instant" });
+			messageVirtualizer.scrollToIndex(Math.max(virtualRowCount - 1, 0), {
+				align: "end",
+			});
 		}
 		lastMessageCount.current = count;
 	}, [
@@ -407,13 +675,361 @@ export function ChatSessionView({
 		lastAgentContent,
 		lastAgentPartsLen,
 		shimmerLineCount,
+		virtualRowCount,
+		messageVirtualizer,
 	]);
+
+	const promptSuggestionRequest = useMemo(
+		() => ({
+			chatSessionId: session.id,
+			updatedAt: session.updatedAt,
+		}),
+		[session.id, session.updatedAt],
+	);
+
+	useEffect(() => {
+		if (isStreaming) {
+			setPromptSuggestion(null);
+			return;
+		}
+		let cancelled = false;
+		const { chatSessionId } = promptSuggestionRequest;
+		invoke<AgentPromptSuggestion | null>("build_agent_prompt_suggestion", {
+			chatSessionId,
+		})
+			.then((suggestion) => {
+				if (cancelled) return;
+				setPromptSuggestion(
+					suggestion && typeof suggestion.text === "string"
+						? suggestion.text
+						: null,
+				);
+			})
+			.catch(() => {
+				if (!cancelled) setPromptSuggestion(null);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [isStreaming, promptSuggestionRequest]);
 
 	const cycleMode = useCallback(() => {
 		const currentIndex = MODES.findIndex((m) => m.value === permissionMode);
 		const nextIndex = (currentIndex + 1) % MODES.length;
+		setSelectedPermissionProfileId(null);
 		onPermissionModeChange(MODES[nextIndex].value);
 	}, [permissionMode, onPermissionModeChange]);
+
+	const handlePermissionModeChange = useCallback(
+		(mode: PermissionMode) => {
+			setSelectedPermissionProfileId(null);
+			onPermissionModeChange(mode);
+		},
+		[onPermissionModeChange],
+	);
+
+	const handleCopyLatestAgentText = useCallback(async () => {
+		if (!latestCopyableAgentText) return;
+		try {
+			await navigator.clipboard.writeText(latestCopyableAgentText);
+			setCopyState("copied");
+		} catch (e) {
+			console.error("Failed to copy latest agent response:", e);
+			setCopyState("error");
+		}
+	}, [latestCopyableAgentText]);
+
+	const handleComposerSend = useCallback(
+		async (
+			content: string,
+			images?: ImageAttachment[],
+			mentions?: MentionReference[],
+		) => {
+			await onSend(content, images, mentions, {
+				editorContext: currentEditorContext,
+			});
+		},
+		[onSend, currentEditorContext],
+	);
+
+	useEffect(() => {
+		if (copyState === "idle") return;
+		const id = window.setTimeout(() => setCopyState("idle"), 1200);
+		return () => window.clearTimeout(id);
+	}, [copyState]);
+
+	useLayoutEffect(() => {
+		const handleCopyShortcut = (event: KeyboardEvent) => {
+			if (!event.ctrlKey || event.key.toLowerCase() !== "o") return;
+			if (
+				rootRef.current &&
+				document.activeElement &&
+				document.activeElement !== document.body &&
+				!rootRef.current.contains(document.activeElement) &&
+				isEditableShortcutTarget(document.activeElement)
+			) {
+				return;
+			}
+			event.preventDefault();
+			void handleCopyLatestAgentText();
+		};
+		window.addEventListener("keydown", handleCopyShortcut);
+		return () => window.removeEventListener("keydown", handleCopyShortcut);
+	}, [handleCopyLatestAgentText]);
+
+	useEffect(() => {
+		const handleCopyEvent = () => {
+			void handleCopyLatestAgentText();
+		};
+		window.addEventListener("agent-copy-latest-response", handleCopyEvent);
+		return () =>
+			window.removeEventListener("agent-copy-latest-response", handleCopyEvent);
+	}, [handleCopyLatestAgentText]);
+
+	useEffect(() => {
+		const handleRawScrollbackEvent = () => {
+			toggleRawScrollback();
+		};
+		window.addEventListener(
+			"agent-toggle-raw-scrollback",
+			handleRawScrollbackEvent,
+		);
+		return () => {
+			window.removeEventListener(
+				"agent-toggle-raw-scrollback",
+				handleRawScrollbackEvent,
+			);
+		};
+	}, [toggleRawScrollback]);
+
+	useEffect(() => {
+		if (activeSearchIndex < searchMatches.length) return;
+		setActiveSearchIndex(Math.max(searchMatches.length - 1, 0));
+	}, [activeSearchIndex, searchMatches.length]);
+
+	useEffect(() => {
+		const query = searchQuery.trim();
+		if (!isSearchOpen || !query) {
+			setSearchMatches([]);
+			setActiveSearchIndex(0);
+			return;
+		}
+		let cancelled = false;
+		void invoke<ThreadSearchMatch[]>("search_agent_thread_messages", {
+			request: {
+				messages: session.messages,
+				query,
+			},
+		})
+			.then((matches) => {
+				if (cancelled) return;
+				setSearchMatches(matches);
+				setActiveSearchIndex(0);
+			})
+			.catch((error) => {
+				if (cancelled) return;
+				console.error("Failed to search current thread", error);
+				setSearchMatches([]);
+				setActiveSearchIndex(0);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [isSearchOpen, searchQuery, session.messages]);
+
+	useEffect(() => {
+		if (!threadSearchState.open) return;
+		searchInputRef.current?.focus();
+		searchInputRef.current?.select();
+	}, [threadSearchState]);
+
+	useEffect(() => {
+		if (!activeSearchMatch) return;
+		const index = session.messages.findIndex(
+			(message) => message.id === activeSearchMatch.messageId,
+		);
+		if (index === -1) return;
+		messageVirtualizer.scrollToIndex(index, { align: "center" });
+		messageRefs.current.get(activeSearchMatch.messageId)?.scrollIntoView({
+			behavior: "smooth",
+			block: "center",
+		});
+	}, [activeSearchMatch, session.messages, messageVirtualizer]);
+
+	useLayoutEffect(() => {
+		const handleFindShortcut = (event: KeyboardEvent) => {
+			if (
+				!(event.metaKey || event.ctrlKey) ||
+				event.key.toLowerCase() !== "f"
+			) {
+				return;
+			}
+			if (
+				rootRef.current &&
+				document.activeElement &&
+				document.activeElement !== document.body &&
+				!rootRef.current.contains(document.activeElement) &&
+				isEditableShortcutTarget(document.activeElement)
+			) {
+				return;
+			}
+			event.preventDefault();
+			openThreadSearch();
+		};
+		window.addEventListener("keydown", handleFindShortcut);
+		return () => window.removeEventListener("keydown", handleFindShortcut);
+	}, [openThreadSearch]);
+
+	useEffect(() => {
+		const handleFindEvent = () => {
+			openThreadSearch();
+		};
+		window.addEventListener("agent-open-thread-find", handleFindEvent);
+		return () =>
+			window.removeEventListener("agent-open-thread-find", handleFindEvent);
+	}, [openThreadSearch]);
+
+	useLayoutEffect(() => {
+		const handleThinkingShortcut = (event: KeyboardEvent) => {
+			if (
+				event.key !== "Tab" ||
+				event.shiftKey ||
+				event.metaKey ||
+				event.ctrlKey ||
+				event.altKey ||
+				!hasThinkingContent ||
+				isEditableShortcutTarget(event.target)
+			) {
+				return;
+			}
+			if (
+				rootRef.current &&
+				document.activeElement &&
+				document.activeElement !== document.body &&
+				!rootRef.current.contains(document.activeElement) &&
+				isEditableShortcutTarget(document.activeElement)
+			) {
+				return;
+			}
+			event.preventDefault();
+			setShowThinkingContent((current) => !current);
+		};
+		window.addEventListener("keydown", handleThinkingShortcut);
+		return () => window.removeEventListener("keydown", handleThinkingShortcut);
+	}, [hasThinkingContent]);
+
+	const goToNextSearchMatch = useCallback(() => {
+		setActiveSearchIndex((current) =>
+			searchMatches.length === 0 ? 0 : (current + 1) % searchMatches.length,
+		);
+	}, [searchMatches.length]);
+
+	const goToPreviousSearchMatch = useCallback(() => {
+		setActiveSearchIndex((current) =>
+			searchMatches.length === 0
+				? 0
+				: (current - 1 + searchMatches.length) % searchMatches.length,
+		);
+	}, [searchMatches.length]);
+
+	const setRootElement = useCallback((node: HTMLDivElement | null) => {
+		rootRef.current = node;
+		dropZoneRef.current = node;
+	}, []);
+
+	const selectedBackendLabel =
+		backends.find((backend) => backend.id === selectedBackendId)?.name ??
+		selectedBackendId ??
+		"None";
+	const latestTokenTotal =
+		latestTokenUsage?.totalTokens ??
+		(latestTokenUsage
+			? latestTokenUsage.inputTokens + latestTokenUsage.outputTokens
+			: null);
+	const latestContextRemaining =
+		latestTokenUsage?.contextWindowTokens != null && latestTokenTotal != null
+			? Math.max(latestTokenUsage.contextWindowTokens - latestTokenTotal, 0)
+			: null;
+	const latestTokenUsageLabel = latestTokenUsage
+		? [
+				`in ${latestTokenUsage.inputTokens.toLocaleString()}`,
+				`out ${latestTokenUsage.outputTokens.toLocaleString()}`,
+				`used ${latestTokenTotal?.toLocaleString() ?? "unknown"}`,
+				latestTokenUsage.contextWindowTokens != null
+					? `context ${latestContextRemaining?.toLocaleString() ?? "unknown"} / ${latestTokenUsage.contextWindowTokens.toLocaleString()} left`
+					: null,
+			]
+				.filter(Boolean)
+				.join(" / ")
+		: "unavailable";
+	const codexAccountSummary =
+		selectedBackendId === "codex"
+			? (codexRuntimeStatus?.accountSummary ?? "unavailable")
+			: null;
+	const codexRateLimitSummary =
+		selectedBackendId === "codex"
+			? (codexRuntimeStatus?.rateLimitSummary ?? "unavailable")
+			: null;
+
+	const showTaskList = useCallback(async () => {
+		lastTaskListRevisionRef.current = currentTaskListRevision;
+		try {
+			const report = await invoke<AgentTaskListReport>(
+				"build_agent_task_list_report",
+				{
+					chatSessionId: session.id,
+				},
+			);
+			setNativeCommandNotice({
+				kind: "info",
+				title: report.title,
+				detail: report.detail,
+				taskItems: report.items,
+			});
+		} catch (e) {
+			setNativeCommandNotice({
+				kind: "error",
+				title: "Task list unavailable",
+				detail: String(e),
+			});
+		}
+	}, [currentTaskListRevision, session.id]);
+
+	const toggleTaskList = useCallback(() => {
+		if (nativeCommandNotice?.title.startsWith("Tasks:")) {
+			lastTaskListRevisionRef.current = null;
+			setNativeCommandNotice(null);
+			return;
+		}
+		void showTaskList();
+	}, [nativeCommandNotice?.title, showTaskList]);
+
+	const isTaskListOpen =
+		nativeCommandNotice?.title.startsWith("Tasks:") ?? false;
+	useEffect(() => {
+		if (!isTaskListOpen) return;
+		if (lastTaskListRevisionRef.current === currentTaskListRevision) return;
+		void showTaskList();
+	}, [currentTaskListRevision, isTaskListOpen, showTaskList]);
+
+	useLayoutEffect(() => {
+		const handleTaskListShortcut = (event: KeyboardEvent) => {
+			if (!event.ctrlKey || event.key.toLowerCase() !== "t") return;
+			if (
+				rootRef.current &&
+				document.activeElement &&
+				document.activeElement !== document.body &&
+				!rootRef.current.contains(document.activeElement) &&
+				isEditableShortcutTarget(document.activeElement)
+			) {
+				return;
+			}
+			event.preventDefault();
+			toggleTaskList();
+		};
+		window.addEventListener("keydown", handleTaskListShortcut);
+		return () => window.removeEventListener("keydown", handleTaskListShortcut);
+	}, [toggleTaskList]);
 
 	// Expose sendMessage to parent via ref (without images parameter)
 	useEffect(() => {
@@ -421,19 +1037,19 @@ export function ChatSessionView({
 			sendMessageRef.current = (
 				content: string,
 				mentions?: MentionReference[],
-			) => onSend(content, undefined, mentions);
+			) => handleComposerSend(content, undefined, mentions);
 		}
 		return () => {
 			if (sendMessageRef) {
 				sendMessageRef.current = null;
 			}
 		};
-	}, [onSend, sendMessageRef]);
+	}, [handleComposerSend, sendMessageRef]);
 
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: native file drop target
 		<div
-			ref={dropZoneRef}
+			ref={setRootElement}
 			className="flex flex-col flex-1 min-h-0 relative"
 			onDragOver={handleFileDragOver}
 			onDragLeave={handleFileDragLeave}
@@ -450,15 +1066,58 @@ export function ChatSessionView({
 				onScroll={handleScroll}
 				className="flex-1 min-h-0 overflow-auto select-text"
 			>
-				<div className="py-2">
-					{session.messages.map((msg, idx) => {
+				<div
+					className="relative py-2"
+					style={{ height: messageVirtualizer.getTotalSize() }}
+				>
+					{messageVirtualizer.getVirtualItems().map((virtualItem) => {
+						const idx = virtualItem.index;
+						if (idx >= session.messages.length) {
+							return (
+								<div
+									key={virtualItem.key}
+									data-index={virtualItem.index}
+									ref={messageVirtualizer.measureElement}
+									className="absolute left-0 top-0 w-full"
+									style={{
+										transform: `translateY(${virtualItem.start}px)`,
+									}}
+								>
+									<ShimmerPlaceholder lines={shimmerLineCount} />
+								</div>
+							);
+						}
+
+						const msg = session.messages[idx];
+						if (!msg) return null;
 						if (msg.role !== "agent") {
 							const textContent = getTextContent(msg.parts);
 							const imageParts = msg.parts.filter(
 								(p): p is ImagePart => p.type === "image",
 							);
+							const isActiveSearchMessage =
+								activeSearchMatch?.messageId === msg.id;
 							return (
-								<div key={msg.id}>
+								<div
+									key={virtualItem.key}
+									data-index={virtualItem.index}
+									ref={(node) => {
+										messageVirtualizer.measureElement(node);
+										if (node) {
+											messageRefs.current.set(msg.id, node);
+										} else {
+											messageRefs.current.delete(msg.id);
+										}
+									}}
+									className={
+										isActiveSearchMessage
+											? "group absolute left-0 top-0 w-full rounded-sm bg-primary/10 ring-1 ring-primary/30"
+											: "group absolute left-0 top-0 w-full"
+									}
+									style={{
+										transform: `translateY(${virtualItem.start}px)`,
+									}}
+								>
 									<StreamMessage
 										content={textContent}
 										role={msg.role}
@@ -471,30 +1130,314 @@ export function ChatSessionView({
 
 						const isLastMsg = idx === session.messages.length - 1;
 						const isLastAgentStreaming = isStreaming && isLastMsg;
+						const isActiveSearchMessage =
+							activeSearchMatch?.messageId === msg.id;
 
 						return (
-							<div key={msg.id}>
+							<div
+								key={virtualItem.key}
+								data-index={virtualItem.index}
+								ref={(node) => {
+									messageVirtualizer.measureElement(node);
+									if (node) {
+										messageRefs.current.set(msg.id, node);
+									} else {
+										messageRefs.current.delete(msg.id);
+									}
+								}}
+								className={
+									isActiveSearchMessage
+										? "group absolute left-0 top-0 w-full rounded-sm bg-primary/10 ring-1 ring-primary/30"
+										: "group absolute left-0 top-0 w-full"
+								}
+								style={{
+									transform: `translateY(${virtualItem.start}px)`,
+								}}
+							>
 								<AgentMessageParts
 									msg={msg}
 									isLastAgentStreaming={isLastAgentStreaming}
 									worktreePath={worktreePath}
+									showThinkingContent={showThinkingContent}
+									rawScrollback={rawScrollback}
 									respondPermission={onRespondPermission}
 								/>
 							</div>
 						);
 					})}
-					{shimmerLineCount > 0 && (
-						<ShimmerPlaceholder lines={shimmerLineCount} />
-					)}
-					<div ref={scrollAnchorRef} />
 				</div>
 			</div>
 			<div className="shrink-0">
-				{activityStatus && (
-					<div className="px-4 pb-1 text-xs text-muted-foreground animate-pulse truncate">
-						{activityStatus.label}
+				{isStatusOpen && (
+					<div className="px-3 pb-2">
+						<div className="rounded border border-border bg-background px-3 py-2 text-xs">
+							<div className="mb-2 flex items-center justify-between gap-2">
+								<span className="font-medium">Session status</span>
+								<button
+									type="button"
+									className="inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted"
+									aria-label="Close session status"
+									onClick={() => setIsStatusOpen(false)}
+								>
+									<X className="size-3.5" />
+								</button>
+							</div>
+							<div className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-muted-foreground">
+								<span>Session</span>
+								<span className="min-w-0 truncate font-mono text-foreground">
+									{session.id}
+								</span>
+								<span>Agent</span>
+								<span className="text-foreground">
+									{sessionStatus?.agent_state ?? "unavailable"}
+								</span>
+								<span>Turn</span>
+								<span className="text-foreground">
+									{sessionStatus?.turn_phase ?? "unavailable"}
+								</span>
+								<span>State</span>
+								<span className="text-foreground">
+									{sessionStatus?.session_state ?? session.state}
+								</span>
+								<span>Permission</span>
+								<span className="text-foreground">
+									{selectedPermissionProfileId
+										? `Profile ${selectedPermissionProfileId}`
+										: PERMISSION_MODE_LABELS[permissionMode]}
+								</span>
+								<span>Model</span>
+								<span className="min-w-0 truncate text-foreground">
+									{selectedModel || "None"}
+								</span>
+								<span>Backend</span>
+								<span className="min-w-0 truncate text-foreground">
+									{selectedBackendLabel}
+								</span>
+								<span>Queue</span>
+								<span className="text-foreground">{pendingQueue.length}</span>
+								<span>Latest tokens</span>
+								<span className="text-foreground">{latestTokenUsageLabel}</span>
+								{codexAccountSummary != null && (
+									<>
+										<span>Codex account</span>
+										<span className="min-w-0 truncate text-foreground">
+											{codexAccountSummary}
+										</span>
+									</>
+								)}
+								{codexRateLimitSummary != null && (
+									<>
+										<span>Codex limits</span>
+										<span className="min-w-0 truncate text-foreground">
+											{codexRateLimitSummary}
+										</span>
+									</>
+								)}
+							</div>
+						</div>
 					</div>
 				)}
+				{nativeCommandNotice && (
+					<div className="px-3 pb-2">
+						<div
+							className={
+								nativeCommandNotice.kind === "error"
+									? "rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+									: "rounded border border-border bg-muted/40 px-3 py-2 text-xs"
+							}
+							role={nativeCommandNotice.kind === "error" ? "alert" : "status"}
+						>
+							<div className="flex items-start justify-between gap-2">
+								<div className="min-w-0">
+									<div className="font-medium">{nativeCommandNotice.title}</div>
+									{nativeCommandNotice.detail && (
+										<div className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">
+											{nativeCommandNotice.detail}
+										</div>
+									)}
+									{nativeCommandNotice.taskItems &&
+										nativeCommandNotice.taskItems.length > 0 && (
+											<div className="mt-2 space-y-1">
+												{nativeCommandNotice.taskItems.map((item) => {
+													const isDone =
+														item.status === "completed" ||
+														item.status === "failed" ||
+														item.status === "stopped";
+													return (
+														<div
+															key={item.toolUseId}
+															className="flex min-w-0 items-center gap-2 rounded border border-border/60 bg-background/70 px-2 py-1"
+														>
+															<span
+																className={
+																	isDone
+																		? "size-2 shrink-0 rounded-full bg-muted-foreground/50"
+																		: "size-2 shrink-0 rounded-full bg-primary"
+																}
+																aria-hidden="true"
+															/>
+															<span className="shrink-0 text-[11px] uppercase tracking-normal text-muted-foreground">
+																{item.status}
+																{item.background ? " background" : ""}
+															</span>
+															<span className="min-w-0 truncate text-foreground">
+																{item.label}
+															</span>
+														</div>
+													);
+												})}
+											</div>
+										)}
+								</div>
+								<button
+									type="button"
+									className="inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted"
+									aria-label="Dismiss command result"
+									onClick={() => setNativeCommandNotice(null)}
+								>
+									<X className="size-3.5" />
+								</button>
+							</div>
+						</div>
+					</div>
+				)}
+				{isSearchOpen && (
+					<div className="px-3 pb-2">
+						<div className="flex items-center gap-1 rounded border border-border bg-background px-2 py-1">
+							<Search className="size-3.5 shrink-0 text-muted-foreground" />
+							<input
+								ref={searchInputRef}
+								type="search"
+								value={searchQuery}
+								onChange={(event) => {
+									setSearchQuery(event.target.value);
+									setActiveSearchIndex(0);
+								}}
+								onKeyDown={(event) => {
+									if (event.key === "Enter") {
+										event.preventDefault();
+										if (event.shiftKey) {
+											goToPreviousSearchMatch();
+										} else {
+											goToNextSearchMatch();
+										}
+									} else if (event.key === "Escape") {
+										closeThreadSearch();
+									}
+								}}
+								aria-label="Find in current thread"
+								placeholder="Find in current thread"
+								className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+							/>
+							<span className="w-14 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
+								{searchQuery.trim()
+									? `${searchMatches.length === 0 ? 0 : activeSearchIndex + 1}/${searchMatches.length}`
+									: "0/0"}
+							</span>
+							<button
+								type="button"
+								className="inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+								aria-label="Previous search match"
+								onClick={goToPreviousSearchMatch}
+								disabled={searchMatches.length === 0}
+							>
+								<ChevronUp className="size-3.5" />
+							</button>
+							<button
+								type="button"
+								className="inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+								aria-label="Next search match"
+								onClick={goToNextSearchMatch}
+								disabled={searchMatches.length === 0}
+							>
+								<ChevronDown className="size-3.5" />
+							</button>
+							<button
+								type="button"
+								className="inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted"
+								aria-label="Close thread search"
+								onClick={closeThreadSearch}
+							>
+								<X className="size-3.5" />
+							</button>
+						</div>
+					</div>
+				)}
+				<div className="flex items-center gap-2 px-4 pb-1 text-xs text-muted-foreground">
+					{activityStatus && (
+						<div className="min-w-0 flex-1 animate-pulse truncate">
+							{activityStatus.label}
+						</div>
+					)}
+					{session.messages.length > 0 && (
+						<button
+							type="button"
+							className={`${activityStatus ? "" : "ml-auto"} inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-muted-foreground hover:bg-muted hover:text-foreground`}
+							aria-label="Find in current thread"
+							title="Find in current thread"
+							onClick={openThreadSearch}
+						>
+							<Search className="size-3.5" />
+						</button>
+					)}
+					{session.messages.length > 0 && (
+						<button
+							type="button"
+							className={`inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 hover:bg-muted hover:text-foreground ${
+								rawScrollback
+									? "bg-muted text-foreground"
+									: "text-muted-foreground"
+							}`}
+							aria-label={
+								rawScrollback
+									? "Disable raw scrollback"
+									: "Enable raw scrollback"
+							}
+							title="Toggle raw scrollback"
+							onClick={toggleRawScrollback}
+						>
+							<Code2 className="size-3.5" />
+						</button>
+					)}
+					{hasThinkingContent && (
+						<button
+							type="button"
+							className="inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+							aria-label={
+								showThinkingContent ? "Hide thinking" : "Show thinking"
+							}
+							title="Toggle thinking visibility"
+							onClick={() => setShowThinkingContent((current) => !current)}
+						>
+							<ChevronRight
+								className={`size-3.5 transition-transform ${showThinkingContent ? "rotate-90" : ""}`}
+							/>
+						</button>
+					)}
+					{latestCopyableAgentText && (
+						<button
+							type="button"
+							className="inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+							aria-label="Copy latest agent response"
+							title="Copy latest agent response"
+							onClick={handleCopyLatestAgentText}
+							disabled={copyState === "copied"}
+						>
+							{copyState === "copied" ? (
+								<Check className="size-3.5" />
+							) : (
+								<Copy className="size-3.5" />
+							)}
+							<span className="sr-only">
+								{copyState === "copied"
+									? "Copied"
+									: copyState === "error"
+										? "Copy failed"
+										: "Copy"}
+							</span>
+						</button>
+					)}
+				</div>
 				{error && (
 					<div className="px-2 pb-2">
 						<div className="bg-destructive/10 text-destructive rounded-lg px-3 py-2 text-sm">
@@ -502,14 +1445,40 @@ export function ChatSessionView({
 						</div>
 					</div>
 				)}
+				{pendingQueue.length > 0 && (
+					<div className="px-3 pb-2 space-y-1">
+						{pendingQueue.map((turn, index) => (
+							<div
+								key={turn.id}
+								className="flex items-center gap-2 rounded border border-border bg-muted/40 px-2 py-1.5 text-xs"
+							>
+								<span className="shrink-0 text-muted-foreground">
+									Queued {index + 1}
+								</span>
+								<span className="min-w-0 flex-1 truncate">
+									{turn.contentPreview || "[image]"}
+								</span>
+								<button
+									type="button"
+									className="inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted"
+									aria-label="Cancel queued message"
+									onClick={() => onCancelQueuedTurn(turn.id)}
+								>
+									<X className="size-3.5" />
+								</button>
+							</div>
+						))}
+					</div>
+				)}
 				<MessageInput
 					ref={messageInputRef}
-					onSend={onSend}
+					onSend={handleComposerSend}
 					onInterrupt={onInterrupt}
 					isStreaming={isStreaming}
+					isInterrupting={isInterrupting}
 					onCycleMode={cycleMode}
 					mode={permissionMode}
-					onModeChange={onPermissionModeChange}
+					onModeChange={handlePermissionModeChange}
 					models={availableModels}
 					currentModelId={selectedModel}
 					onModelChange={onModelChange}
@@ -518,6 +1487,8 @@ export function ChatSessionView({
 					onBackendChange={onBackendChange}
 					backendDisabled={!canChangeBackend}
 					worktreePath={worktreePath}
+					promptSuggestion={promptSuggestion}
+					runtimeSlashCommands={runtimeSlashCommands}
 				/>
 			</div>
 		</div>

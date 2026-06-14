@@ -5,7 +5,6 @@ const outputDir = "src-tauri/generated/bridges";
 
 const bridges = [
 	["claude-sdk-bridge.mjs", "claude-sdk-bridge.bundled.mjs"],
-	["codex-sdk-bridge.mjs", "codex-sdk-bridge.bundled.mjs"],
 ];
 
 await mkdir(outputDir, { recursive: true });

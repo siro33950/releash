@@ -92,6 +92,8 @@ pub struct AppSection {
     pub last_bind_ip: String,
     #[serde(default)]
     pub external_editor: String,
+    #[serde(default)]
+    pub agent_shortcuts: AgentShortcutSection,
 }
 
 impl Default for AppSection {
@@ -104,8 +106,15 @@ impl Default for AppSection {
             last_repo_paths: Vec::new(),
             last_bind_ip: String::new(),
             external_editor: String::new(),
+            agent_shortcuts: AgentShortcutSection::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentShortcutSection {
+    #[serde(default)]
+    pub overrides: HashMap<String, String>,
 }
 
 fn default_crash_reporting() -> bool {
@@ -815,6 +824,7 @@ pub async fn update_app_settings(
         config.app.close_to_tray = app.close_to_tray;
         config.app.auto_launch = app.auto_launch;
         config.app.start_minimized = app.start_minimized;
+        config.app.agent_shortcuts = app.agent_shortcuts;
         write_config(&app_config.config_path, &config)?;
         Ok(())
     })
@@ -1124,6 +1134,37 @@ token = ""
 
         let config = load_or_create_config(&path).unwrap();
         assert!(!config.telemetry_enabled);
+    }
+
+    #[test]
+    fn app_agent_shortcuts_defaults_when_missing() {
+        let config: ReleashConfig = toml::from_str(
+            r#"
+[app]
+close_to_tray = false
+"#,
+        )
+        .unwrap();
+
+        assert!(config.app.agent_shortcuts.overrides.is_empty());
+    }
+
+    #[test]
+    fn app_agent_shortcut_overrides_roundtrip() {
+        let mut config = ReleashConfig::default();
+        config
+            .app
+            .agent_shortcuts
+            .overrides
+            .insert("send".to_string(), "Ctrl+Enter".to_string());
+
+        let encoded = toml::to_string(&config).unwrap();
+        let decoded: ReleashConfig = toml::from_str(&encoded).unwrap();
+
+        assert_eq!(
+            decoded.app.agent_shortcuts.overrides.get("send"),
+            Some(&"Ctrl+Enter".to_string())
+        );
     }
 
     #[test]

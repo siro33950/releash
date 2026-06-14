@@ -38,6 +38,7 @@ export interface DiffViewerSectionProps {
 	onDeleteThread?: (threadId: string) => Promise<void>;
 	scrollToLine?: number | null;
 	scrollToThread?: string | null;
+	onLineRangeSelected?: (startLine: number, endLine: number) => void;
 }
 
 export function DiffViewerSection(props: DiffViewerSectionProps) {
@@ -80,6 +81,7 @@ export function DiffViewerSection(props: DiffViewerSectionProps) {
 			onDeleteThread={props.onDeleteThread}
 			scrollToLine={props.scrollToLine}
 			scrollToThread={props.scrollToThread}
+			onLineRangeSelected={props.onLineRangeSelected}
 		/>
 	);
 }

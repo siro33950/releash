@@ -1,5 +1,18 @@
 import type { WorkflowStatePayload } from "@/types/workflow";
-import type { MessagePart, ModelInfo, PermissionMode } from "./session";
+import type {
+	AgentEditorContext,
+	ImageAttachment,
+	MentionReference,
+	MessagePart,
+	MessageRole,
+	ModelInfo,
+	PermissionMode,
+	QueuedAgentTurn,
+	SessionState,
+	SessionSummary,
+	SlashCommand,
+	TurnPhase,
+} from "./session";
 
 // --- 認証 ---
 
@@ -173,12 +186,66 @@ export interface AgentSessionStartResponse {
 	error?: string | null;
 }
 
+export interface AgentSessionSnapshotMessage {
+	id: string;
+	role: MessageRole;
+	content?: string;
+	thinking?: string;
+	parts?: MessagePart[];
+	timestamp: number;
+	mentions?: MentionReference[];
+}
+
+export interface AgentSessionSnapshot {
+	id: string;
+	worktreePath: string;
+	messages: AgentSessionSnapshotMessage[];
+	state: SessionState;
+	createdAt: number;
+	updatedAt: number;
+	agentSessionId?: string | null;
+	permissionMode: PermissionMode | string;
+	selectedModel?: string | null;
+	backendId?: string | null;
+	workflowStepSession?: boolean;
+	turnPhase: TurnPhase;
+	availableModels: ModelInfo[];
+	pendingQueue?: QueuedAgentTurn[];
+	pendingQueueCount?: number;
+}
+
+export interface AgentSessionsRequest {
+	worktree_path: string;
+}
+
+export interface AgentSessionsResponse {
+	success: boolean;
+	worktree_path: string;
+	sessions: SessionSummary[];
+	active_session?: AgentSessionSnapshot | null;
+	error?: string | null;
+}
+
+export interface AgentSessionGetRequest {
+	session_id: string;
+}
+
+export interface AgentSessionGetResponse {
+	success: boolean;
+	session_id: string;
+	session?: AgentSessionSnapshot | null;
+	error?: string | null;
+}
+
 export interface AgentMessageRequest {
 	session_id?: string | null;
 	worktree_path: string;
 	content: string;
 	permission_mode?: PermissionMode | null;
 	backend_id?: string | null;
+	images?: ImageAttachment[];
+	mentions?: MentionReference[];
+	editor_context?: AgentEditorContext | null;
 }
 
 export interface AgentMessageResponse {
@@ -186,6 +253,10 @@ export interface AgentMessageResponse {
 	session_id?: string | null;
 	human_message_id?: string | null;
 	agent_message_id?: string | null;
+	queued_turn_id?: string | null;
+	pending_queue?: QueuedAgentTurn[];
+	pending_queue_count?: number;
+	sessions?: SessionSummary[];
 	backend_id?: string | null;
 	error?: string | null;
 }
@@ -197,6 +268,78 @@ export interface AgentInterruptRequest {
 export interface AgentInterruptResponse {
 	success: boolean;
 	session_id: string;
+	error?: string | null;
+}
+
+export interface AgentQueueCancelRequest {
+	session_id: string;
+	queued_turn_id?: string | null;
+}
+
+export interface AgentQueueCancelResponse {
+	success: boolean;
+	session_id: string;
+	canceled_count: number;
+	pending_queue?: QueuedAgentTurn[];
+	pending_queue_count?: number;
+	error?: string | null;
+}
+
+export interface AgentSlashCommandsRequest {
+	worktree_path: string;
+}
+
+export interface AgentSlashCommandsResponse {
+	success: boolean;
+	worktree_path: string;
+	commands: SlashCommand[];
+	error?: string | null;
+}
+
+export interface AgentSupportedCommandsUpdated {
+	chat_session_id: string;
+	commands: SlashCommand[];
+}
+
+export interface AgentMentionFilesRequest {
+	request_id: string;
+	worktree_path: string;
+	query: string;
+}
+
+export interface AgentMentionFilesResponse {
+	success: boolean;
+	request_id: string;
+	worktree_path: string;
+	query: string;
+	files: string[];
+	error?: string | null;
+}
+
+export interface AgentImagePrepareRequest {
+	request_id: string;
+	data: number[];
+}
+
+export interface AgentImagePrepareResponse {
+	success: boolean;
+	request_id: string;
+	attachment?: ImageAttachment | null;
+	error?: string | null;
+}
+
+export interface AgentPermissionResponseRequest {
+	session_id: string;
+	request_id: string;
+	behavior: "allow" | "deny";
+	message?: string | null;
+	updated_input?: Record<string, unknown> | null;
+}
+
+export interface AgentPermissionResponseResponse {
+	success: boolean;
+	session_id: string;
+	request_id: string;
 	error?: string | null;
 }
 
@@ -428,10 +571,48 @@ export type WsMessage =
 	| { type: "backend_list_response"; payload: BackendListResponse }
 	| { type: "agent_session_start_request"; payload: AgentSessionStartRequest }
 	| { type: "agent_session_start_response"; payload: AgentSessionStartResponse }
+	| { type: "agent_sessions_request"; payload: AgentSessionsRequest }
+	| { type: "agent_sessions_response"; payload: AgentSessionsResponse }
+	| { type: "agent_session_get_request"; payload: AgentSessionGetRequest }
+	| { type: "agent_session_get_response"; payload: AgentSessionGetResponse }
 	| { type: "agent_message_request"; payload: AgentMessageRequest }
 	| { type: "agent_message_response"; payload: AgentMessageResponse }
 	| { type: "agent_interrupt_request"; payload: AgentInterruptRequest }
 	| { type: "agent_interrupt_response"; payload: AgentInterruptResponse }
+	| { type: "agent_queue_cancel_request"; payload: AgentQueueCancelRequest }
+	| { type: "agent_queue_cancel_response"; payload: AgentQueueCancelResponse }
+	| {
+			type: "agent_slash_commands_request";
+			payload: AgentSlashCommandsRequest;
+	  }
+	| {
+			type: "agent_slash_commands_response";
+			payload: AgentSlashCommandsResponse;
+	  }
+	| {
+			type: "agent_mention_files_request";
+			payload: AgentMentionFilesRequest;
+	  }
+	| {
+			type: "agent_mention_files_response";
+			payload: AgentMentionFilesResponse;
+	  }
+	| {
+			type: "agent_image_prepare_request";
+			payload: AgentImagePrepareRequest;
+	  }
+	| {
+			type: "agent_image_prepare_response";
+			payload: AgentImagePrepareResponse;
+	  }
+	| {
+			type: "agent_permission_response_request";
+			payload: AgentPermissionResponseRequest;
+	  }
+	| {
+			type: "agent_permission_response_response";
+			payload: AgentPermissionResponseResponse;
+	  }
 	| { type: "agent_model_set_request"; payload: AgentModelSetRequest }
 	| { type: "agent_model_set_response"; payload: AgentModelSetResponse }
 	| {

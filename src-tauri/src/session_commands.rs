@@ -4,8 +4,15 @@ use tauri::State;
 use tokio::sync::Mutex;
 
 use crate::app_data_dir::resolve_data_dir;
+use crate::infrastructure::agent_session::runtime::codex::configured_cli_path;
+use crate::infrastructure::agent_session::runtime::codex_app_server::{
+    build_thread_archive_request, build_thread_fork_request, build_thread_unarchive_request,
+    CodexAppServerProcess,
+};
 use crate::infrastructure::agent_session::runtime::AgentBackendRegistry;
-use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::infrastructure::agent_session::runtime::{
+    AgentProcessMap, SessionHandle, CODEX_BACKEND_ID,
+};
 use crate::usecase::agent_session::session::{
     add_message_internal, create_session_command_inner, resolve_session_backend,
     update_session_state_in_data_dir, validate_session_permission_mode, ChatMessage, ChatSession,
@@ -13,6 +20,84 @@ use crate::usecase::agent_session::session::{
     SessionSummary,
 };
 use crate::workflow::engine::WorkflowEngine;
+
+fn saved_codex_thread_id(session: &ChatSession) -> Option<String> {
+    if session.backend_id.as_deref() != Some(CODEX_BACKEND_ID) {
+        return None;
+    }
+    session
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn codex_thread_id_from_fork_response(response: &serde_json::Value) -> Option<String> {
+    response
+        .get("thread")
+        .and_then(|thread| thread.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| response.get("threadId").and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+async fn send_codex_thread_lifecycle_request(
+    app: &tauri::AppHandle,
+    thread_id: &str,
+    archive: bool,
+) -> Result<(), String> {
+    let cli_path = configured_cli_path(app).unwrap_or_else(|| "codex".to_string());
+    let mut process = CodexAppServerProcess::spawn(&cli_path)?;
+    let result = async {
+        process.initialize(env!("CARGO_PKG_VERSION")).await?;
+        let id = process.next_request_id();
+        let request = if archive {
+            build_thread_archive_request(id, thread_id)
+        } else {
+            build_thread_unarchive_request(id, thread_id)
+        };
+        process.send(&request).await?;
+        process.read_response_result(id).await?;
+        Ok(())
+    }
+    .await;
+    process.shutdown().await;
+    result
+}
+
+async fn fork_codex_thread_for_session(
+    app: &tauri::AppHandle,
+    session: &ChatSession,
+) -> Result<Option<String>, String> {
+    let Some(thread_id) = saved_codex_thread_id(session) else {
+        return Ok(None);
+    };
+    let cli_path = configured_cli_path(app).unwrap_or_else(|| "codex".to_string());
+    let mut process = CodexAppServerProcess::spawn(&cli_path)?;
+    let result = async {
+        process.initialize(env!("CARGO_PKG_VERSION")).await?;
+        let id = process.next_request_id();
+        let request = build_thread_fork_request(
+            id,
+            &thread_id,
+            &session.worktree_path,
+            session.selected_model.as_deref(),
+            Some(&session.permission_mode),
+            session.permission_profile_id.as_deref(),
+        )?;
+        process.send(&request).await?;
+        let response = process.read_response_result(id).await?;
+        codex_thread_id_from_fork_response(&response)
+            .map(Some)
+            .ok_or_else(|| "Codex thread/fork response did not include thread.id".to_string())
+    }
+    .await;
+    process.shutdown().await;
+    result
+}
 
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -76,6 +161,115 @@ pub async fn list_closed_sessions(
 ) -> Result<Vec<SessionSummary>, String> {
     let data_dir = resolve_data_dir(&app)?;
     state.list_closed_sessions(&data_dir, &worktree_path)
+}
+
+#[tauri::command]
+pub async fn archive_session(
+    state: State<'_, Arc<SessionStore>>,
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<(), String> {
+    let data_dir = resolve_data_dir(&app)?;
+    state.archive_session(&data_dir, &session_id)?;
+    let codex_thread_id = state
+        .get_session(&data_dir, &session_id)
+        .ok()
+        .flatten()
+        .and_then(|session| saved_codex_thread_id(&session));
+    if let Some(thread_id) = codex_thread_id {
+        if let Err(err) = send_codex_thread_lifecycle_request(&app, &thread_id, true).await {
+            log::debug!("skipped Codex runtime thread archive sync for {session_id}: {err}");
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn archive_open_session(
+    state: State<'_, Arc<SessionStore>>,
+    handles: State<'_, Arc<Mutex<AgentProcessMap>>>,
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<(), String> {
+    let data_dir = resolve_data_dir(&app)?;
+    state.archive_open_session(&data_dir, &session_id)?;
+    crate::infrastructure::agent_session::runtime::close_agent_session_internal(
+        &app,
+        handles.inner(),
+        &session_id,
+    )
+    .await?;
+    let codex_thread_id = state
+        .get_session(&data_dir, &session_id)
+        .ok()
+        .flatten()
+        .and_then(|session| saved_codex_thread_id(&session));
+    if let Some(thread_id) = codex_thread_id {
+        if let Err(err) = send_codex_thread_lifecycle_request(&app, &thread_id, true).await {
+            log::debug!("skipped Codex runtime open-thread archive sync for {session_id}: {err}");
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn fork_session(
+    state: State<'_, Arc<SessionStore>>,
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<ChatSession, String> {
+    let data_dir = resolve_data_dir(&app)?;
+    let source_session = state
+        .get_session(&data_dir, &session_id)?
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    let mut forked = state.fork_session(&data_dir, &session_id)?;
+    match fork_codex_thread_for_session(&app, &source_session).await {
+        Ok(Some(thread_id)) => {
+            forked.agent_session_id = Some(thread_id);
+            state.save_session(&data_dir, &forked)?;
+        }
+        Ok(None) => {}
+        Err(err) => {
+            log::debug!("skipped Codex runtime thread fork sync for {session_id}: {err}");
+        }
+    }
+    Ok(forked)
+}
+
+#[tauri::command]
+pub async fn set_session_title(
+    state: State<'_, Arc<SessionStore>>,
+    registry: State<'_, Arc<AgentBackendRegistry>>,
+    app: tauri::AppHandle,
+    session_id: String,
+    title: Option<String>,
+) -> Result<SessionSummary, String> {
+    let data_dir = resolve_data_dir(&app)?;
+    let session = state
+        .get_session(&data_dir, &session_id)?
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    let summary = state.set_session_title(&data_dir, &session_id, title.as_deref())?;
+    let has_custom_title = title
+        .as_deref()
+        .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
+        .is_some_and(|value| !value.is_empty());
+    if session.backend_id.as_deref() == Some(CODEX_BACKEND_ID) && has_custom_title {
+        if let Some(backend) = registry.get(CODEX_BACKEND_ID) {
+            if let Err(err) = backend
+                .set_thread_name(
+                    &SessionHandle {
+                        chat_session_id: session_id.clone(),
+                        backend_id: CODEX_BACKEND_ID.to_string(),
+                    },
+                    &summary.first_message,
+                )
+                .await
+            {
+                log::debug!("skipped Codex runtime title sync for {session_id}: {err}");
+            }
+        }
+    }
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -200,11 +394,19 @@ pub async fn restore_session(
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
     validate_session_permission_mode(&session)?;
     resolve_session_backend(&mut session, registry.inner())?;
-    crate::usecase::agent_session::session::lifecycle_controller::SessionLifecycleController {
-        session_store: state.inner(),
-        data_dir: &data_dir,
+    let codex_thread_id = saved_codex_thread_id(&session);
+    let response =
+        crate::usecase::agent_session::session::lifecycle_controller::SessionLifecycleController {
+            session_store: state.inner(),
+            data_dir: &data_dir,
+        }
+        .restore_session_state(session)?;
+    if let Some(thread_id) = codex_thread_id {
+        if let Err(err) = send_codex_thread_lifecycle_request(&app, &thread_id, false).await {
+            log::debug!("skipped Codex runtime thread unarchive sync for {session_id}: {err}");
+        }
     }
-    .restore_session_state(session)
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -242,6 +444,7 @@ fn restore_workflow_step_session_tab_state(
 mod tests {
     use super::*;
     use crate::usecase::agent_session::session::SessionState;
+    use serde_json::json;
 
     fn workflow_step_session_for_test(
         session_id: &str,
@@ -255,6 +458,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
                 crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
@@ -345,5 +549,43 @@ mod tests {
             .unwrap();
         assert_eq!(err, "runtime close failed");
         assert_eq!(loaded.state, session.state);
+    }
+
+    #[test]
+    fn saved_codex_thread_id_requires_codex_backend_and_non_empty_id() {
+        let mut session = workflow_step_session_for_test("session-1");
+        session.backend_id = Some(CODEX_BACKEND_ID.to_string());
+        session.agent_session_id = Some(" thread-1 ".to_string());
+        assert_eq!(
+            saved_codex_thread_id(&session),
+            Some("thread-1".to_string())
+        );
+
+        session.backend_id = Some("claude".to_string());
+        assert_eq!(saved_codex_thread_id(&session), None);
+
+        session.backend_id = Some(CODEX_BACKEND_ID.to_string());
+        session.agent_session_id = Some("   ".to_string());
+        assert_eq!(saved_codex_thread_id(&session), None);
+    }
+
+    #[test]
+    fn codex_thread_id_from_fork_response_reads_thread_id() {
+        let response = json!({
+            "thread": {
+                "id": "thread-forked",
+                "sessionId": "tree-1"
+            }
+        });
+        assert_eq!(
+            codex_thread_id_from_fork_response(&response),
+            Some("thread-forked".to_string())
+        );
+
+        assert_eq!(
+            codex_thread_id_from_fork_response(&json!({ "threadId": "legacy-id" })),
+            Some("legacy-id".to_string())
+        );
+        assert_eq!(codex_thread_id_from_fork_response(&json!({})), None);
     }
 }

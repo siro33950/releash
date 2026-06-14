@@ -59,6 +59,11 @@ interface ReviewPanelProps {
 	) => Promise<void>;
 	initialSelectedFile?: string | null;
 	onSelectedFileChange?: (file: string | null) => void;
+	onLineRangeSelected?: (
+		filePath: string,
+		startLine: number,
+		endLine: number,
+	) => void;
 }
 
 function DiffBaseToggle({
@@ -128,6 +133,7 @@ export function ReviewPanel({
 	navigateToThread,
 	initialSelectedFile,
 	onSelectedFileChange,
+	onLineRangeSelected,
 }: ReviewPanelProps) {
 	const {
 		diffBase,
@@ -142,13 +148,30 @@ export function ReviewPanel({
 		initialDiffMode: defaultDiffMode,
 		initialSelectedFile,
 	});
+	const previousSelectedFileRef = useRef<string | null>(selectedFile);
+
+	useEffect(() => {
+		const previous = previousSelectedFileRef.current;
+		if (previous && previous !== selectedFile) {
+			onLineRangeSelected?.("", 0, 0);
+		}
+		previousSelectedFileRef.current = selectedFile;
+	}, [selectedFile, onLineRangeSelected]);
 
 	const selectFile = useCallback(
 		(path: string | null, section?: DiffSection) => {
 			selectFileInternal(path, section);
 			onSelectedFileChange?.(path);
+			if (path !== selectedFile) {
+				onLineRangeSelected?.("", 0, 0);
+			}
 		},
-		[selectFileInternal, onSelectedFileChange],
+		[
+			selectFileInternal,
+			onSelectedFileChange,
+			onLineRangeSelected,
+			selectedFile,
+		],
 	);
 
 	const [gitRefreshKey, setGitRefreshKey] = useState(0);
@@ -481,6 +504,14 @@ export function ReviewPanel({
 		[selectFile],
 	);
 
+	const handleLineRangeSelected = useCallback(
+		(startLine: number, endLine: number) => {
+			if (!selectedFile) return;
+			onLineRangeSelected?.(selectedFile, startLine, endLine);
+		},
+		[selectedFile, onLineRangeSelected],
+	);
+
 	// Empty state
 	if (totalFileCount === 0) {
 		return (
@@ -732,6 +763,7 @@ export function ReviewPanel({
 											onDeleteThread={deleteThread}
 											scrollToLine={scrollToLine}
 											scrollToThread={scrollToThread}
+											onLineRangeSelected={handleLineRangeSelected}
 										/>
 									</div>
 									<DiffToolbar

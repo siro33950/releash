@@ -97,6 +97,14 @@ pub enum WsMessage {
     AgentSessionStartRequest(AgentSessionStartRequest),
     #[serde(rename = "agent_session_start_response")]
     AgentSessionStartResponse(AgentSessionStartResponse),
+    #[serde(rename = "agent_sessions_request")]
+    AgentSessionsRequest(AgentSessionsRequest),
+    #[serde(rename = "agent_sessions_response")]
+    AgentSessionsResponse(AgentSessionsResponse),
+    #[serde(rename = "agent_session_get_request")]
+    AgentSessionGetRequest(AgentSessionGetRequest),
+    #[serde(rename = "agent_session_get_response")]
+    AgentSessionGetResponse(AgentSessionGetResponse),
     #[serde(rename = "agent_message_request")]
     AgentMessageRequest(AgentMessageRequest),
     #[serde(rename = "agent_message_response")]
@@ -105,6 +113,26 @@ pub enum WsMessage {
     AgentInterruptRequest(AgentInterruptRequest),
     #[serde(rename = "agent_interrupt_response")]
     AgentInterruptResponse(AgentInterruptResponse),
+    #[serde(rename = "agent_queue_cancel_request")]
+    AgentQueueCancelRequest(AgentQueueCancelRequest),
+    #[serde(rename = "agent_queue_cancel_response")]
+    AgentQueueCancelResponse(AgentQueueCancelResponse),
+    #[serde(rename = "agent_slash_commands_request")]
+    AgentSlashCommandsRequest(AgentSlashCommandsRequest),
+    #[serde(rename = "agent_slash_commands_response")]
+    AgentSlashCommandsResponse(AgentSlashCommandsResponse),
+    #[serde(rename = "agent_mention_files_request")]
+    AgentMentionFilesRequest(AgentMentionFilesRequest),
+    #[serde(rename = "agent_mention_files_response")]
+    AgentMentionFilesResponse(AgentMentionFilesResponse),
+    #[serde(rename = "agent_image_prepare_request")]
+    AgentImagePrepareRequest(AgentImagePrepareRequest),
+    #[serde(rename = "agent_image_prepare_response")]
+    AgentImagePrepareResponse(AgentImagePrepareResponse),
+    #[serde(rename = "agent_permission_response_request")]
+    AgentPermissionResponseRequest(AgentPermissionResponseRequest),
+    #[serde(rename = "agent_permission_response_response")]
+    AgentPermissionResponseResponse(AgentPermissionResponseResponse),
     #[serde(rename = "agent_model_set_request")]
     AgentModelSetRequest(AgentModelSetRequest),
     #[serde(rename = "agent_model_set_response")]
@@ -410,18 +438,44 @@ mod tests {
                 backend_id: Some("claude".to_string()),
                 error: None,
             }),
+            WsMessage::AgentSessionsRequest(AgentSessionsRequest {
+                worktree_path: "/repo".to_string(),
+            }),
+            WsMessage::AgentSessionsResponse(AgentSessionsResponse {
+                success: true,
+                worktree_path: "/repo".to_string(),
+                sessions: Vec::new(),
+                active_session: None,
+                error: None,
+            }),
+            WsMessage::AgentSessionGetRequest(AgentSessionGetRequest {
+                session_id: "sess-1".to_string(),
+            }),
+            WsMessage::AgentSessionGetResponse(AgentSessionGetResponse {
+                success: true,
+                session_id: "sess-1".to_string(),
+                session: None,
+                error: None,
+            }),
             WsMessage::AgentMessageRequest(AgentMessageRequest {
                 session_id: Some("sess-1".to_string()),
                 worktree_path: "/repo".to_string(),
                 content: "hello".to_string(),
                 permission_mode: Some("edit".to_string()),
                 backend_id: Some("claude".to_string()),
+                images: Vec::new(),
+                mentions: Vec::new(),
+                editor_context: None,
             }),
             WsMessage::AgentMessageResponse(AgentMessageResponse {
                 success: true,
                 session_id: Some("sess-1".to_string()),
                 human_message_id: Some("h-1".to_string()),
                 agent_message_id: Some("a-1".to_string()),
+                queued_turn_id: None,
+                pending_queue: Vec::new(),
+                pending_queue_count: 0,
+                sessions: Vec::new(),
                 backend_id: Some("claude".to_string()),
                 error: None,
             }),
@@ -431,6 +485,67 @@ mod tests {
             WsMessage::AgentInterruptResponse(AgentInterruptResponse {
                 success: true,
                 session_id: "sess-1".to_string(),
+                error: None,
+            }),
+            WsMessage::AgentQueueCancelRequest(AgentQueueCancelRequest {
+                session_id: "sess-1".to_string(),
+                queued_turn_id: Some("queued-1".to_string()),
+            }),
+            WsMessage::AgentQueueCancelResponse(AgentQueueCancelResponse {
+                success: true,
+                session_id: "sess-1".to_string(),
+                canceled_count: 1,
+                pending_queue: Vec::new(),
+                pending_queue_count: 0,
+                error: None,
+            }),
+            WsMessage::AgentSlashCommandsRequest(AgentSlashCommandsRequest {
+                worktree_path: "/repo/wt".to_string(),
+            }),
+            WsMessage::AgentSlashCommandsResponse(AgentSlashCommandsResponse {
+                success: true,
+                worktree_path: "/repo/wt".to_string(),
+                commands: vec![AgentSlashCommandEntry {
+                    name: "review".to_string(),
+                    description: "Review changes".to_string(),
+                    argument_hint: Some("<target>".to_string()),
+                }],
+                error: None,
+            }),
+            WsMessage::AgentMentionFilesRequest(AgentMentionFilesRequest {
+                request_id: "mention-1".to_string(),
+                worktree_path: "/repo/wt".to_string(),
+                query: "src".to_string(),
+            }),
+            WsMessage::AgentMentionFilesResponse(AgentMentionFilesResponse {
+                success: true,
+                request_id: "mention-1".to_string(),
+                worktree_path: "/repo/wt".to_string(),
+                query: "src".to_string(),
+                files: vec!["src/main.rs".to_string()],
+                error: None,
+            }),
+            WsMessage::AgentImagePrepareRequest(AgentImagePrepareRequest {
+                request_id: "image-1".to_string(),
+                data: vec![0x89, b'P', b'N', b'G'],
+            }),
+            WsMessage::AgentImagePrepareResponse(AgentImagePrepareResponse {
+                success: true,
+                request_id: "image-1".to_string(),
+                attachment: None,
+                error: None,
+            }),
+            WsMessage::AgentPermissionResponseRequest(AgentPermissionResponseRequest {
+                session_id: "sess-1".to_string(),
+                request_id: "perm-1".to_string(),
+                behavior: "allow".to_string(),
+                message: None,
+                updated_input: Some(serde_json::json!({"answers":{"Q":"A"}})),
+            }),
+            WsMessage::AgentPermissionResponseResponse(AgentPermissionResponseResponse {
+                success: true,
+                session_id: "sess-1".to_string(),
+                request_id: "perm-1".to_string(),
                 error: None,
             }),
             WsMessage::AgentModelSetRequest(AgentModelSetRequest {

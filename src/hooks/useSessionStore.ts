@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
+	type AgentEditorContext,
 	type BackendInfo,
 	type ChatMessage,
 	type ChatSession,
@@ -11,8 +12,10 @@ import {
 	type ModelInfo,
 	normalizePermissionMode,
 	type PermissionMode,
+	type QueuedAgentTurn,
 	type SessionState,
 	type SessionSummary,
+	type TokenUsage,
 	type TurnPhase,
 } from "@/types/session";
 
@@ -25,6 +28,7 @@ interface LegacyChatSession {
 	updatedAt: number;
 	agentSessionId?: string | null;
 	permissionMode: string;
+	permissionProfileId?: string | null;
 	backendId?: string | null;
 	workflowStepSession?: boolean;
 }
@@ -87,6 +91,7 @@ function convertLegacySession(session: LegacyChatSession): ChatSession {
 		...session,
 		messages: session.messages.map(convertLegacyMessage),
 		permissionMode: normalizePermissionMode(session.permissionMode),
+		permissionProfileId: session.permissionProfileId ?? null,
 		backendId: session.backendId ?? null,
 	};
 }
@@ -102,6 +107,9 @@ export interface GetSessionResponse {
 	turnPhase: TurnPhase;
 	selectedModel: string;
 	availableModels: ModelInfo[];
+	pendingQueue?: QueuedAgentTurn[];
+	pendingQueueCount?: number;
+	latestTokenUsage?: TokenUsage | null;
 }
 
 interface RawGetSessionResponse {
@@ -114,9 +122,13 @@ interface RawGetSessionResponse {
 	updatedAt: number;
 	agentSessionId?: string | null;
 	permissionMode: string;
+	permissionProfileId?: string | null;
 	backendId?: string | null;
 	selectedModel: string;
 	availableModels?: ModelInfo[];
+	pendingQueue?: QueuedAgentTurn[];
+	pendingQueueCount?: number;
+	latestTokenUsage?: TokenUsage | null;
 	workflowStepSession?: boolean;
 	turnPhase: TurnPhase;
 }
@@ -134,12 +146,16 @@ function convertRawGetSessionResponse(
 			updatedAt: raw.updatedAt,
 			agentSessionId: raw.agentSessionId,
 			permissionMode: raw.permissionMode,
+			permissionProfileId: raw.permissionProfileId,
 			backendId: raw.backendId,
 			workflowStepSession: raw.workflowStepSession,
 		}),
 		turnPhase: raw.turnPhase,
 		selectedModel: raw.selectedModel,
 		availableModels: raw.availableModels ?? [],
+		pendingQueue: raw.pendingQueue ?? [],
+		pendingQueueCount: raw.pendingQueueCount ?? 0,
+		latestTokenUsage: raw.latestTokenUsage ?? null,
 	};
 }
 
@@ -168,6 +184,29 @@ export async function createSession(
 
 export async function closeSession(sessionId: string): Promise<void> {
 	return invoke("close_session", { sessionId });
+}
+
+export async function archiveSession(sessionId: string): Promise<void> {
+	return invoke("archive_session", { sessionId });
+}
+
+export async function archiveOpenSession(sessionId: string): Promise<void> {
+	return invoke("archive_open_session", { sessionId });
+}
+
+export async function forkSession(sessionId: string): Promise<ChatSession> {
+	const raw = await invoke<LegacyChatSession>("fork_session", { sessionId });
+	return convertLegacySession(raw);
+}
+
+export async function setSessionTitle(
+	sessionId: string,
+	title: string | null,
+): Promise<SessionSummary> {
+	return invoke<SessionSummary>("set_session_title", {
+		sessionId,
+		title,
+	});
 }
 
 export interface RestoreSessionResponse {
@@ -209,6 +248,9 @@ interface RawSendMessageResponse {
 	session: LegacyChatSession;
 	humanMessage: LegacyChatMessage & { parts?: MessagePart[] };
 	agentMessage: (LegacyChatMessage & { parts?: MessagePart[] }) | null;
+	queuedTurn?: QueuedAgentTurn | null;
+	pendingQueue?: QueuedAgentTurn[];
+	pendingQueueCount?: number;
 	sessions: SessionSummary[];
 }
 
@@ -216,6 +258,9 @@ export interface SendMessageResponse {
 	session: ChatSession;
 	humanMessage: ChatMessage;
 	agentMessage: ChatMessage | null;
+	queuedTurn: QueuedAgentTurn | null;
+	pendingQueue: QueuedAgentTurn[];
+	pendingQueueCount: number;
 	sessions: SessionSummary[];
 }
 
@@ -227,8 +272,18 @@ export async function sendAgentMessage(
 	backendId?: string | null,
 	images?: ImageAttachment[],
 	mentions?: MentionReference[],
+	editorContext?: AgentEditorContext,
 ): Promise<SendMessageResponse> {
-	const raw = await invoke<RawSendMessageResponse>("send_agent_message", {
+	const args: {
+		chatSessionId: string | null;
+		worktreePath: string;
+		content: string;
+		permissionMode: PermissionMode;
+		backendId: string | null;
+		images?: ImageAttachment[];
+		mentions?: MentionReference[];
+		editorContext?: AgentEditorContext;
+	} = {
 		chatSessionId,
 		worktreePath,
 		content,
@@ -236,13 +291,20 @@ export async function sendAgentMessage(
 		backendId: backendId ?? null,
 		images: images && images.length > 0 ? images : undefined,
 		mentions: mentions && mentions.length > 0 ? mentions : undefined,
-	});
+	};
+	if (editorContext) {
+		args.editorContext = editorContext;
+	}
+	const raw = await invoke<RawSendMessageResponse>("send_agent_message", args);
 	return {
 		session: convertLegacySession(raw.session),
 		humanMessage: convertLegacyMessage(raw.humanMessage),
 		agentMessage: raw.agentMessage
 			? convertLegacyMessage(raw.agentMessage)
 			: null,
+		queuedTurn: raw.queuedTurn ?? null,
+		pendingQueue: raw.pendingQueue ?? [],
+		pendingQueueCount: raw.pendingQueueCount ?? 0,
 		sessions: raw.sessions,
 	};
 }
@@ -270,8 +332,28 @@ export async function sendWorkflowApprovalChatMessage(
 		agentMessage: raw.agentMessage
 			? convertLegacyMessage(raw.agentMessage)
 			: null,
+		queuedTurn: raw.queuedTurn ?? null,
+		pendingQueue: raw.pendingQueue ?? [],
+		pendingQueueCount: raw.pendingQueueCount ?? 0,
 		sessions: raw.sessions,
 	};
+}
+
+export interface CancelQueuedTurnResponse {
+	sessionId: string;
+	canceledCount: number;
+	pendingQueue: QueuedAgentTurn[];
+	pendingQueueCount: number;
+}
+
+export async function cancelAgentQueuedTurn(
+	chatSessionId: string,
+	queuedTurnId?: string | null,
+): Promise<CancelQueuedTurnResponse> {
+	return invoke<CancelQueuedTurnResponse>("cancel_agent_queued_turn", {
+		chatSessionId,
+		queuedTurnId: queuedTurnId ?? null,
+	});
 }
 
 interface RawInitSessionsResponse {
@@ -331,4 +413,8 @@ export interface BackendListResult {
 
 export async function listAgentBackends(): Promise<BackendListResult> {
 	return invoke<BackendListResult>("list_agent_backends");
+}
+
+export async function readCodexModelCatalog(): Promise<ModelInfo[]> {
+	return invoke<ModelInfo[]>("read_codex_model_catalog");
 }

@@ -1,12 +1,114 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActivityEntry, MessagePart } from "@/types/session";
 import { ActivityItem, TaskToolActivity, ToolActivity } from "./ActivityLog";
 import type { TaskGroup } from "./toolPairing";
 
+const mockInvoke = vi.fn().mockResolvedValue(null);
+vi.mock("@tauri-apps/api/core", () => ({
+	invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
+
+function presentToolActivity(args: {
+	toolName: string;
+	input: Record<string, unknown>;
+	basePath?: string;
+}) {
+	const { toolName, input, basePath } = args;
+	const shorten = (value: string) => {
+		if (!basePath) return value;
+		if (value === basePath) return ".";
+		return value.startsWith(`${basePath}/`)
+			? value.slice(basePath.length + 1)
+			: value;
+	};
+	const truncate = (value: string, max: number) =>
+		value.length > max ? `${value.slice(0, max)}...` : value;
+	const mcpRead =
+		toolName.startsWith("mcp__") &&
+		/(read|get|list|search|fetch|retrieve|query)/.test(toolName.toLowerCase());
+	const mcpWrite =
+		toolName.startsWith("mcp__") &&
+		/(write|create|update|delete|edit|post|patch|put)/.test(
+			toolName.toLowerCase(),
+		);
+	const category =
+		["Read", "Glob", "Grep", "WebFetch", "WebSearch"].includes(toolName) ||
+		mcpRead
+			? "read"
+			: toolName === "Bash"
+				? "command"
+				: ["Write", "Edit", "NotebookEdit"].includes(toolName) || mcpWrite
+					? "write"
+					: "other";
+	const summary =
+		typeof input.file_path === "string"
+			? shorten(input.file_path)
+			: typeof input.pattern === "string"
+				? input.pattern
+				: typeof input.command === "string"
+					? truncate(input.command, 80)
+					: Object.keys(input).length === 0
+						? toolName
+						: typeof input[Object.keys(input)[0]] === "string"
+							? truncate(input[Object.keys(input)[0]] as string, 60)
+							: `${Object.keys(input)[0]}: ...`;
+	const label =
+		category === "read"
+			? typeof input.file_path === "string"
+				? `Explored ${shorten(input.file_path)}`
+				: typeof input.pattern === "string"
+					? `Explored ${input.pattern}`
+					: typeof input.path === "string"
+						? `Explored ${shorten(input.path)}`
+						: typeof input.query === "string"
+							? `Searched "${truncate(input.query, 60)}"`
+							: typeof input.url === "string"
+								? `Fetched ${input.url}`
+								: `Explored (${toolName})`
+			: category === "command"
+				? typeof input.command === "string"
+					? truncate(input.command, 80)
+					: "command"
+				: summary;
+	return {
+		category,
+		label,
+		summary,
+		editPreviewTool: ["Edit", "MultiEdit", "Write"].includes(toolName),
+	};
+}
+
+const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+Object.defineProperty(navigator, "clipboard", {
+	configurable: true,
+	value: {
+		writeText: clipboardWriteText,
+	},
+});
+
+beforeEach(() => {
+	mockInvoke.mockClear();
+	mockInvoke.mockImplementation((command: string, args: unknown) => {
+		if (command === "present_agent_tool_activity") {
+			return Promise.resolve(
+				presentToolActivity(
+					args as {
+						toolName: string;
+						input: Record<string, unknown>;
+						basePath?: string;
+					},
+				),
+			);
+		}
+		return Promise.resolve(null);
+	});
+	clipboardWriteText.mockClear();
+});
+
 describe("ToolActivity", () => {
 	describe("ReadToolActivity", () => {
-		it("shows collapsed read tool with label", () => {
+		it("shows collapsed read tool with label", async () => {
 			const entry = {
 				type: "tool_use" as const,
 				tool: "Read",
@@ -15,11 +117,14 @@ describe("ToolActivity", () => {
 			};
 			render(<ToolActivity entry={entry} index={0} />);
 
-			const el = screen.getByTestId("activity-tool-use-0");
-			expect(el).toHaveTextContent("Explored /src/main.ts");
+			await waitFor(() =>
+				expect(screen.getByTestId("activity-tool-use-0")).toHaveTextContent(
+					"Explored /src/main.ts",
+				),
+			);
 		});
 
-		it("expands to show result content on click", () => {
+		it("expands to show result content on click", async () => {
 			const entry = {
 				type: "tool_use" as const,
 				tool: "Read",
@@ -35,11 +140,11 @@ describe("ToolActivity", () => {
 
 			expect(screen.queryByText("file contents here")).toBeNull();
 
-			fireEvent.click(screen.getByText("Explored /src/main.ts"));
+			fireEvent.click(await screen.findByText("Explored /src/main.ts"));
 			expect(screen.getByText("file contents here")).toBeInTheDocument();
 		});
 
-		it("shows Glob tool with pattern label", () => {
+		it("shows Glob tool with pattern label", async () => {
 			const entry = {
 				type: "tool_use" as const,
 				tool: "Glob",
@@ -47,14 +152,16 @@ describe("ToolActivity", () => {
 				id: "t2",
 			};
 			render(<ToolActivity entry={entry} index={0} />);
-			expect(screen.getByTestId("activity-tool-use-0")).toHaveTextContent(
-				"Explored **/*.ts",
+			await waitFor(() =>
+				expect(screen.getByTestId("activity-tool-use-0")).toHaveTextContent(
+					"Explored **/*.ts",
+				),
 			);
 		});
 	});
 
 	describe("basePath shortening", () => {
-		it("shortens file_path label when basePath is provided", () => {
+		it("shortens file_path label when basePath is provided", async () => {
 			const entry = {
 				type: "tool_use" as const,
 				tool: "Read",
@@ -65,11 +172,14 @@ describe("ToolActivity", () => {
 				<ToolActivity entry={entry} index={0} basePath="/home/user/project" />,
 			);
 
-			const el = screen.getByTestId("activity-tool-use-0");
-			expect(el).toHaveTextContent("Explored src/main.ts");
+			await waitFor(() =>
+				expect(screen.getByTestId("activity-tool-use-0")).toHaveTextContent(
+					"Explored src/main.ts",
+				),
+			);
 		});
 
-		it("shortens file_path in default tool when basePath is provided", () => {
+		it("shortens file_path in default tool when basePath is provided", async () => {
 			const entry = {
 				type: "tool_use" as const,
 				tool: "Edit",
@@ -80,8 +190,11 @@ describe("ToolActivity", () => {
 				<ToolActivity entry={entry} index={0} basePath="/home/user/project" />,
 			);
 
-			const el = screen.getByTestId("activity-tool-use-0");
-			expect(el).toHaveTextContent("Edit src/app.ts");
+			await waitFor(() =>
+				expect(screen.getByTestId("activity-tool-use-0")).toHaveTextContent(
+					"Edit src/app.ts",
+				),
+			);
 		});
 	});
 
@@ -100,7 +213,7 @@ describe("ToolActivity", () => {
 			expect(span).not.toBeNull();
 		});
 
-		it("applies truncate to command tool label", () => {
+		it("applies truncate to command tool label", async () => {
 			const entry = {
 				type: "tool_use" as const,
 				tool: "Bash",
@@ -109,9 +222,11 @@ describe("ToolActivity", () => {
 			};
 			render(<ToolActivity entry={entry} index={0} />);
 
-			const el = screen.getByTestId("activity-tool-use-0");
-			const code = el.querySelector("code.truncate");
-			expect(code).not.toBeNull();
+			await waitFor(() => {
+				const el = screen.getByTestId("activity-tool-use-0");
+				const code = el.querySelector("code.truncate");
+				expect(code).not.toBeNull();
+			});
 		});
 
 		it("applies truncate to default tool label", () => {
@@ -130,7 +245,7 @@ describe("ToolActivity", () => {
 	});
 
 	describe("CommandToolActivity", () => {
-		it("shows command with terminal icon", () => {
+		it("shows command with terminal icon", async () => {
 			const entry = {
 				type: "tool_use" as const,
 				tool: "Bash",
@@ -139,11 +254,14 @@ describe("ToolActivity", () => {
 			};
 			render(<ToolActivity entry={entry} index={0} />);
 
-			const el = screen.getByTestId("activity-tool-use-0");
-			expect(el).toHaveTextContent("git status");
+			await waitFor(() =>
+				expect(screen.getByTestId("activity-tool-use-0")).toHaveTextContent(
+					"git status",
+				),
+			);
 		});
 
-		it("shows result as collapsible on label click", () => {
+		it("shows result as collapsible on label click", async () => {
 			const entry = {
 				type: "tool_use" as const,
 				tool: "Bash",
@@ -159,7 +277,7 @@ describe("ToolActivity", () => {
 
 			expect(screen.queryByText(/file1\.ts/)).toBeNull();
 
-			fireEvent.click(screen.getByText("ls"));
+			fireEvent.click(await screen.findByText("ls"));
 			expect(screen.getByText(/file1\.ts/)).toBeInTheDocument();
 		});
 
@@ -262,7 +380,7 @@ describe("ToolActivity", () => {
 	});
 
 	describe("DefaultToolActivity", () => {
-		it("shows write tool with name and summary", () => {
+		it("shows write tool with name and summary", async () => {
 			const entry = {
 				type: "tool_use" as const,
 				tool: "Edit",
@@ -271,12 +389,14 @@ describe("ToolActivity", () => {
 			};
 			render(<ToolActivity entry={entry} index={0} />);
 
-			const el = screen.getByTestId("activity-tool-use-0");
-			expect(el).toHaveTextContent("Edit");
-			expect(el).toHaveTextContent("/src/app.ts");
+			await waitFor(() => {
+				const el = screen.getByTestId("activity-tool-use-0");
+				expect(el).toHaveTextContent("Edit");
+				expect(el).toHaveTextContent("/src/app.ts");
+			});
 		});
 
-		it("toggles expand/collapse on label click", () => {
+		it("toggles expand/collapse on label click", async () => {
 			const entry = {
 				type: "tool_use" as const,
 				tool: "Edit",
@@ -285,7 +405,7 @@ describe("ToolActivity", () => {
 			};
 			render(<ToolActivity entry={entry} index={0} />);
 
-			const label = screen.getByText("Edit /src/app.ts");
+			const label = await screen.findByText("Edit /src/app.ts");
 			fireEvent.click(label);
 			expect(
 				screen.getByText(/"file_path": "\/src\/app.ts"/),
@@ -293,6 +413,77 @@ describe("ToolActivity", () => {
 
 			fireEvent.click(label);
 			expect(screen.queryByText(/"file_path": "\/src\/app.ts"/)).toBeNull();
+		});
+
+		it("shows Rust-built inline diff preview for edit tools", async () => {
+			mockInvoke.mockImplementation((command: string, args: unknown) => {
+				if (command === "present_agent_tool_activity") {
+					return Promise.resolve(
+						presentToolActivity(
+							args as {
+								toolName: string;
+								input: Record<string, unknown>;
+								basePath?: string;
+							},
+						),
+					);
+				}
+				if (command !== "build_agent_edit_preview") {
+					return Promise.resolve(null);
+				}
+				return Promise.resolve({
+					toolName: "Edit",
+					operation: "Edit first match",
+					filePath: "src/app.ts",
+					hunks: [
+						{
+							oldStart: 1,
+							newStart: 1,
+							lines: [
+								{
+									kind: "removed",
+									oldLine: 1,
+									newLine: null,
+									content: "old",
+								},
+								{
+									kind: "added",
+									oldLine: null,
+									newLine: 1,
+									content: "new",
+								},
+							],
+						},
+					],
+					warnings: [],
+				});
+			});
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Edit",
+				input: {
+					file_path: "src/app.ts",
+					old_string: "old",
+					new_string: "new",
+				},
+				id: "t8",
+			};
+			render(<ToolActivity entry={entry} index={0} basePath="/repo" />);
+
+			fireEvent.click(await screen.findByText("Edit src/app.ts"));
+
+			await waitFor(() =>
+				expect(mockInvoke).toHaveBeenCalledWith("build_agent_edit_preview", {
+					worktreePath: "/repo",
+					toolName: "Edit",
+					input: entry.input,
+				}),
+			);
+			expect(
+				await screen.findByText("Edit first match: src/app.ts"),
+			).toBeInTheDocument();
+			expect(screen.getByText("old")).toBeInTheDocument();
+			expect(screen.getByText("new")).toBeInTheDocument();
 		});
 	});
 });
@@ -369,6 +560,39 @@ describe("ActivityItem", () => {
 		fireEvent.click(screen.getByText("✓"));
 
 		expect(screen.getByText(/15 more lines/)).toBeInTheDocument();
+	});
+
+	it("truncates single-line huge result content by characters", () => {
+		const longContent = "x".repeat(5000);
+		const entry: ActivityEntry = {
+			type: "tool_result",
+			content: longContent,
+			isError: false,
+		};
+		render(<ActivityItem entry={entry} index={1} />);
+		fireEvent.click(screen.getByText("✓"));
+
+		expect(screen.getByText(/more chars/)).toBeInTheDocument();
+		expect(screen.queryByText(longContent)).not.toBeInTheDocument();
+	});
+
+	it("copies full tool result content", async () => {
+		const content = Array.from({ length: 8 }, (_, i) => `line ${i + 1}`).join(
+			"\n",
+		);
+		const entry: ActivityEntry = {
+			type: "tool_result",
+			content,
+			isError: false,
+		};
+		render(<ActivityItem entry={entry} index={1} />);
+
+		fireEvent.click(screen.getByText("✓"));
+		fireEvent.click(screen.getByLabelText("Copy tool result"));
+
+		await waitFor(() =>
+			expect(clipboardWriteText).toHaveBeenCalledWith(content),
+		);
 	});
 
 	it("shows tool_use fallback when no paired result", () => {
@@ -607,7 +831,7 @@ describe("TaskToolActivity", () => {
 		expect(screen.queryByTestId("activity-tool-use-1")).toBeNull();
 	});
 
-	it("shows child tool_use entries when expanded by click", () => {
+	it("shows child tool_use entries when expanded by click", async () => {
 		const childResult: Extract<MessagePart, { type: "tool_result" }> = {
 			type: "tool_result",
 			content: "file content here",
@@ -646,8 +870,11 @@ describe("TaskToolActivity", () => {
 
 		// Click to expand
 		fireEvent.click(screen.getByTestId("activity-task-0"));
-		const toolEl = screen.getByTestId("activity-tool-use-1");
-		expect(toolEl).toHaveTextContent("Explored /src/main.ts");
+		await waitFor(() =>
+			expect(screen.getByTestId("activity-tool-use-1")).toHaveTextContent(
+				"Explored /src/main.ts",
+			),
+		);
 	});
 
 	it("shows description with subagentType suffix when both present", () => {

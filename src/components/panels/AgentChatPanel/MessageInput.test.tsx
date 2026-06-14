@@ -8,13 +8,8 @@ import {
 } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setSlashCommands } from "@/hooks/useSlashCommands";
-import {
-	MessageInput,
-	type MessageInputHandle,
-	syncMentionsWithText,
-} from "./MessageInput";
-import { findMentionTrigger } from "./popupInputUtils";
+import { MessageInput, type MessageInputHandle } from "./MessageInput";
+import { findMentionTrigger, findSkillTrigger } from "./popupInputUtils";
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -83,6 +78,15 @@ describe("MessageInput", () => {
 		expect(onSend).toHaveBeenCalledWith("Hello", undefined, undefined);
 	});
 
+	it("does not send on Enter alone (Enter is reserved for newline)", () => {
+		const onSend = vi.fn();
+		render(<MessageInput {...defaultProps} onSend={onSend} />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, { target: { value: "Hello" } });
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		expect(onSend).not.toHaveBeenCalled();
+	});
+
 	it("does not send on Shift+Enter", () => {
 		const onSend = vi.fn();
 		render(<MessageInput {...defaultProps} onSend={onSend} />);
@@ -110,12 +114,57 @@ describe("MessageInput", () => {
 		expect(onInterrupt).toHaveBeenCalled();
 	});
 
+	it("interrupts with Ctrl+C while streaming and composer is empty", () => {
+		const onInterrupt = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				onInterrupt={onInterrupt}
+				isStreaming={true}
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.keyDown(textarea, { key: "c", ctrlKey: true });
+		expect(onInterrupt).toHaveBeenCalled();
+	});
+
+	it("does not interrupt with Ctrl+C when a queued follow-up is being edited", () => {
+		const onInterrupt = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				onInterrupt={onInterrupt}
+				isStreaming={true}
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, { target: { value: "queued follow-up" } });
+		fireEvent.keyDown(textarea, { key: "c", ctrlKey: true });
+		expect(onInterrupt).not.toHaveBeenCalled();
+	});
+
 	it("shows send button when streaming with text input", () => {
 		render(<MessageInput {...defaultProps} isStreaming={true} />);
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "Hello" } });
-		expect(screen.getByLabelText("Send message")).toBeDefined();
-		expect(screen.queryByLabelText("Interrupt agent")).toBeNull();
+		expect(screen.getByText("Queue follow-up")).toBeInTheDocument();
+		expect(screen.getByLabelText("Queue message")).toBeDefined();
+		expect(screen.getByLabelText("Interrupt agent")).toBeDefined();
+	});
+
+	it("labels streaming Codex sends as active-turn steering", () => {
+		render(
+			<MessageInput
+				{...defaultProps}
+				currentBackendId="codex"
+				isStreaming={true}
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, { target: { value: "Add this constraint" } });
+		expect(screen.getByText("Steer active turn")).toBeInTheDocument();
+		expect(screen.getByLabelText("Steer active turn")).toBeDefined();
+		expect(screen.getByLabelText("Interrupt agent")).toBeDefined();
 	});
 
 	it("textarea is always enabled even during streaming", () => {
@@ -140,6 +189,24 @@ describe("MessageInput", () => {
 		}).not.toThrow();
 	});
 
+	it("accepts prompt suggestion with Tab when input is empty", () => {
+		render(
+			<MessageInput
+				{...defaultProps}
+				promptSuggestion="Continue with the next useful implementation step."
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Continue with the next useful implementation step.",
+		) as HTMLTextAreaElement;
+
+		fireEvent.keyDown(textarea, { key: "Tab" });
+
+		expect(textarea.value).toBe(
+			"Continue with the next useful implementation step.",
+		);
+	});
+
 	it("does not send whitespace-only messages", () => {
 		const onSend = vi.fn();
 		render(<MessageInput {...defaultProps} onSend={onSend} />);
@@ -147,6 +214,56 @@ describe("MessageInput", () => {
 		fireEvent.change(textarea, { target: { value: "   " } });
 		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 		expect(onSend).not.toHaveBeenCalled();
+	});
+
+	it("sends slash commands to the agent without native interception", () => {
+		const onSend = vi.fn();
+		render(<MessageInput {...defaultProps} onSend={onSend} />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, { target: { value: "/find agent bug" } });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+
+		expect(onSend).toHaveBeenCalledWith(
+			"/find agent bug",
+			undefined,
+			undefined,
+		);
+		expect(textarea.value).toBe("");
+	});
+
+	it("sends unknown slash commands to the agent", () => {
+		const onSend = vi.fn();
+		render(<MessageInput {...defaultProps} onSend={onSend} />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, { target: { value: "/status" } });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+
+		expect(onSend).toHaveBeenCalledWith("/status", undefined, undefined);
+	});
+
+	it("sends runtime slash commands to the SDK path without native handlers", () => {
+		const onSend = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				runtimeSlashCommands={[{ name: "compact", description: "SDK compact" }]}
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, { target: { value: "/compact native UX" } });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+
+		expect(onSend).toHaveBeenCalledWith(
+			"/compact native UX",
+			undefined,
+			undefined,
+		);
+		expect(textarea.value).toBe("");
 	});
 
 	it("renders ModeSelector inside the input container", () => {
@@ -251,12 +368,13 @@ const slashCommands = [
 ];
 
 describe("MessageInput slash command popup", () => {
-	beforeEach(() => {
-		setSlashCommands(slashCommands);
-	});
+	const renderWithRuntimeSlashCommands = () =>
+		render(
+			<MessageInput {...defaultProps} runtimeSlashCommands={slashCommands} />,
+		);
 
 	it("shows popup when typing /", () => {
-		render(<MessageInput {...defaultProps} />);
+		renderWithRuntimeSlashCommands();
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/" } });
 		expect(screen.getByTestId("slash-command-list")).toBeDefined();
@@ -264,7 +382,7 @@ describe("MessageInput slash command popup", () => {
 	});
 
 	it("filters commands by prefix", () => {
-		render(<MessageInput {...defaultProps} />);
+		renderWithRuntimeSlashCommands();
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/pl" } });
 		const options = screen.getAllByRole("option");
@@ -273,22 +391,44 @@ describe("MessageInput slash command popup", () => {
 		expect(options[1].textContent).toContain("/plan-behavior");
 	});
 
+	it("dedupes runtime slash command names", () => {
+		render(
+			<MessageInput
+				{...defaultProps}
+				runtimeSlashCommands={[
+					{ name: "compact", description: "Compact context" },
+					{ name: "review", description: "SDK review" },
+					{ name: "review", description: "Duplicate review" },
+				]}
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, { target: { value: "/" } });
+		const options = screen.getAllByRole("option");
+		expect(options).toHaveLength(2);
+		expect(options[0].textContent).toContain("/compact");
+		expect(options[1].textContent).toContain("/review");
+		expect(
+			options.filter((option) => option.textContent?.includes("/review")),
+		).toHaveLength(1);
+	});
+
 	it("does not show popup when value contains space", () => {
-		render(<MessageInput {...defaultProps} />);
+		renderWithRuntimeSlashCommands();
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/plan-spec " } });
 		expect(screen.queryByTestId("slash-command-list")).toBeNull();
 	});
 
 	it("does not show popup when value does not start with /", () => {
-		render(<MessageInput {...defaultProps} />);
+		renderWithRuntimeSlashCommands();
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "hello" } });
 		expect(screen.queryByTestId("slash-command-list")).toBeNull();
 	});
 
 	it("selects command on Enter", () => {
-		render(<MessageInput {...defaultProps} />);
+		renderWithRuntimeSlashCommands();
 		const textarea = screen.getByPlaceholderText(
 			"Send a message...",
 		) as HTMLTextAreaElement;
@@ -298,8 +438,25 @@ describe("MessageInput slash command popup", () => {
 		expect(screen.queryByTestId("slash-command-list")).toBeNull();
 	});
 
+	it("shows argument help after selecting a slash command with an argument hint", () => {
+		renderWithRuntimeSlashCommands();
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, { target: { value: "/review" } });
+		fireEvent.keyDown(textarea, { key: "Enter" });
+
+		const help = screen.getByTestId("slash-argument-help");
+		expect(help.textContent).toContain("/review");
+		expect(help.textContent).toContain("<file>");
+		expect(help.textContent).toContain("Code review");
+
+		fireEvent.change(textarea, { target: { value: "/review src/main.rs" } });
+		expect(screen.queryByTestId("slash-argument-help")).toBeNull();
+	});
+
 	it("selects command on Tab", () => {
-		render(<MessageInput {...defaultProps} />);
+		renderWithRuntimeSlashCommands();
 		const textarea = screen.getByPlaceholderText(
 			"Send a message...",
 		) as HTMLTextAreaElement;
@@ -309,7 +466,7 @@ describe("MessageInput slash command popup", () => {
 	});
 
 	it("navigates with ArrowDown and ArrowUp", () => {
-		render(<MessageInput {...defaultProps} />);
+		renderWithRuntimeSlashCommands();
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/" } });
 
@@ -322,7 +479,7 @@ describe("MessageInput slash command popup", () => {
 	});
 
 	it("wraps around on ArrowDown at end", () => {
-		render(<MessageInput {...defaultProps} />);
+		renderWithRuntimeSlashCommands();
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/" } });
 
@@ -334,7 +491,7 @@ describe("MessageInput slash command popup", () => {
 	});
 
 	it("wraps around on ArrowUp at start", () => {
-		render(<MessageInput {...defaultProps} />);
+		renderWithRuntimeSlashCommands();
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/" } });
 
@@ -344,7 +501,7 @@ describe("MessageInput slash command popup", () => {
 	});
 
 	it("dismisses popup on Escape", () => {
-		render(<MessageInput {...defaultProps} />);
+		renderWithRuntimeSlashCommands();
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/" } });
 		expect(screen.getByTestId("slash-command-list")).toBeDefined();
@@ -354,7 +511,7 @@ describe("MessageInput slash command popup", () => {
 	});
 
 	it("re-opens popup after dismiss when input changes", () => {
-		render(<MessageInput {...defaultProps} />);
+		renderWithRuntimeSlashCommands();
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/" } });
 		fireEvent.keyDown(textarea, { key: "Escape" });
@@ -366,15 +523,20 @@ describe("MessageInput slash command popup", () => {
 
 	it("sends with Cmd+Enter even when popup is open", () => {
 		const onSend = vi.fn();
-		render(<MessageInput {...defaultProps} onSend={onSend} />);
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				runtimeSlashCommands={slashCommands}
+			/>,
+		);
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/review" } });
 		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 		expect(onSend).toHaveBeenCalledWith("/review", undefined, undefined);
 	});
 
-	it("does not show popup when commands cache is empty", () => {
-		setSlashCommands([]);
+	it("does not show popup without runtime slash commands", () => {
 		render(<MessageInput {...defaultProps} />);
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/" } });
@@ -515,6 +677,85 @@ describe("MessageInput image attachments", () => {
 		});
 		expect(await screen.findByTestId("image-preview-list")).toBeDefined();
 	});
+
+	it("asks Rust whether text paste should collapse", async () => {
+		const shortText = "short paste";
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "prepare_pasted_text_block") {
+				expect(args).toEqual({ index: 1, content: shortText });
+				return Promise.resolve(null);
+			}
+			return Promise.resolve([]);
+		});
+		render(<MessageInput {...defaultProps} />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		const clipboardData = {
+			items: [],
+			getData: (type: string) => (type === "text/plain" ? shortText : ""),
+		};
+
+		await act(async () => {
+			fireEvent.paste(textarea, { clipboardData });
+		});
+
+		await waitFor(() => expect(textarea.value).toBe(shortText));
+		expect(mockInvoke).toHaveBeenCalledWith("prepare_pasted_text_block", {
+			index: 1,
+			content: shortText,
+		});
+	});
+
+	it("collapses long text paste and expands it through Rust on send", async () => {
+		const longText = Array.from({ length: 24 }, (_, i) => `line ${i + 1}`).join(
+			"\n",
+		);
+		const block = {
+			id: 1,
+			placeholder: "[Pasted text #1]",
+			content: longText,
+		};
+		const onSend = vi.fn();
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "prepare_pasted_text_block") {
+				expect(args).toEqual({ index: 1, content: longText });
+				return Promise.resolve(block);
+			}
+			if (command === "expand_pasted_text_blocks") {
+				expect(args).toEqual({
+					content: "[Pasted text #1]",
+					blocks: [block],
+				});
+				return Promise.resolve("expanded prompt");
+			}
+			return Promise.resolve([]);
+		});
+		render(<MessageInput {...defaultProps} onSend={onSend} />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		const clipboardData = {
+			items: [],
+			getData: (type: string) => (type === "text/plain" ? longText : ""),
+		};
+
+		await act(async () => {
+			fireEvent.paste(textarea, { clipboardData });
+		});
+
+		await waitFor(() => expect(textarea.value).toBe("[Pasted text #1]"));
+
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+
+		await waitFor(() =>
+			expect(onSend).toHaveBeenCalledWith(
+				"expanded prompt",
+				undefined,
+				undefined,
+			),
+		);
+	});
 });
 
 describe("findMentionTrigger", () => {
@@ -544,6 +785,33 @@ describe("findMentionTrigger", () => {
 		expect(findMentionTrigger("@ src", 5)).toBeNull();
 	});
 
+	it("allows whitespace inside quoted mention queries", () => {
+		expect(findMentionTrigger('check @"docs/my file', 20)).toEqual({
+			start: 6,
+			query: "docs/my file",
+		});
+	});
+
+	it("unescapes quoted mention query text", () => {
+		expect(findMentionTrigger('@"docs/\\"guide', 14)).toEqual({
+			start: 0,
+			query: 'docs/"guide',
+		});
+	});
+
+	it("preserves literal backslashes in quoted mention query text", () => {
+		const value = '@"C:\\Users\\me\\file.ts';
+
+		expect(findMentionTrigger(value, value.length)).toEqual({
+			start: 0,
+			query: "C:\\Users\\me\\file.ts",
+		});
+	});
+
+	it("returns null after a quoted mention is closed", () => {
+		expect(findMentionTrigger('check @"docs/my file" now', 22)).toBeNull();
+	});
+
 	it("returns empty query when cursor is right after @", () => {
 		expect(findMentionTrigger("@", 1)).toEqual({ start: 0, query: "" });
 	});
@@ -560,12 +828,41 @@ describe("findMentionTrigger", () => {
 	});
 });
 
+describe("findSkillTrigger", () => {
+	it("detects / at start of text", () => {
+		expect(findSkillTrigger("/review", 7)).toEqual({
+			start: 0,
+			query: "review",
+		});
+	});
+
+	it("returns null when / is not at the start of text", () => {
+		expect(findSkillTrigger("use /review", 11)).toBeNull();
+	});
+
+	it("returns null when query contains whitespace", () => {
+		expect(findSkillTrigger("/review extra", 13)).toBeNull();
+	});
+
+	it("returns empty query when cursor is right after /", () => {
+		expect(findSkillTrigger("/", 1)).toEqual({ start: 0, query: "" });
+	});
+});
+
 describe("MessageInput mention popup", () => {
 	const mentionFiles = ["src/main.rs", "src/lib.rs", "src/app.tsx"];
 
 	beforeEach(() => {
 		vi.useFakeTimers();
-		mockInvoke.mockResolvedValue(mentionFiles);
+		mockInvoke.mockImplementation((command) => {
+			if (command === "list_mentionable_files") {
+				return Promise.resolve(mentionFiles);
+			}
+			if (command === "sync_mentions_with_text") {
+				return Promise.resolve(null);
+			}
+			return Promise.resolve([]);
+		});
 	});
 
 	afterEach(() => {
@@ -585,6 +882,74 @@ describe("MessageInput mention popup", () => {
 			query: "",
 		});
 		expect(screen.getByTestId("mention-file-list")).toBeDefined();
+	});
+
+	it("uses Codex runtime fuzzy file search for Codex mention popup", async () => {
+		mockInvoke.mockImplementation((command) => {
+			if (command === "read_codex_mentionable_files") {
+				return Promise.resolve(["src/codex.rs"]);
+			}
+			if (command === "list_mentionable_files") {
+				return Promise.resolve(mentionFiles);
+			}
+			return Promise.resolve([]);
+		});
+		render(
+			<MessageInput
+				{...defaultProps}
+				currentBackendId="codex"
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "@cod", selectionStart: 4 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+
+		expect(mockInvoke).toHaveBeenCalledWith("read_codex_mentionable_files", {
+			worktreePath: "/test/repo",
+			query: "cod",
+		});
+		expect(mockInvoke).not.toHaveBeenCalledWith("list_mentionable_files", {
+			worktreePath: "/test/repo",
+			query: "cod",
+		});
+		expect(screen.getByText("src/codex.rs")).toBeDefined();
+	});
+
+	it("falls back to local mention scanner when Codex runtime fuzzy search fails", async () => {
+		mockInvoke.mockImplementation((command) => {
+			if (command === "read_codex_mentionable_files") {
+				return Promise.reject(new Error("codex unavailable"));
+			}
+			if (command === "list_mentionable_files") {
+				return Promise.resolve(["src/fallback.rs"]);
+			}
+			return Promise.resolve([]);
+		});
+		render(
+			<MessageInput
+				{...defaultProps}
+				currentBackendId="codex"
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "@fall", selectionStart: 5 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+
+		expect(mockInvoke).toHaveBeenCalledWith("read_codex_mentionable_files", {
+			worktreePath: "/test/repo",
+			query: "fall",
+		});
+		expect(mockInvoke).toHaveBeenCalledWith("list_mentionable_files", {
+			worktreePath: "/test/repo",
+			query: "fall",
+		});
+		expect(screen.getByText("src/fallback.rs")).toBeDefined();
 	});
 
 	it("does not show mention popup without worktreePath", async () => {
@@ -734,6 +1099,20 @@ describe("MessageInput mention popup", () => {
 		expect(textarea.value).toBe("check @src/lib.rs please");
 	});
 
+	it("quotes selected mention paths that contain spaces", async () => {
+		mockInvoke.mockResolvedValue(["docs/my file.md"]);
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "check @my", selectionStart: 9 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		expect(textarea.value).toBe('check @"docs/my file.md" ');
+	});
+
 	it("debounces invoke calls", async () => {
 		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
 		const textarea = screen.getByPlaceholderText("Send a message...");
@@ -759,6 +1138,31 @@ describe("MessageInput mention popup", () => {
 
 	it("sends mentions with onSend after selecting a mention", async () => {
 		const onSend = vi.fn();
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "list_mentionable_files") {
+				return Promise.resolve(mentionFiles);
+			}
+			if (command === "sync_mentions_with_text") {
+				expect(args).toEqual({
+					text: "@src/main.rs",
+					refs: [
+						{
+							filePath: "src/main.rs",
+							startLine: undefined,
+							endLine: undefined,
+						},
+					],
+				});
+				return Promise.resolve([
+					{
+						filePath: "src/main.rs",
+						startLine: undefined,
+						endLine: undefined,
+					},
+				]);
+			}
+			return Promise.resolve([]);
+		});
 		render(
 			<MessageInput
 				{...defaultProps}
@@ -775,8 +1179,66 @@ describe("MessageInput mention popup", () => {
 		await act(() => vi.advanceTimersByTimeAsync(150));
 		fireEvent.keyDown(textarea, { key: "Enter" });
 		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		await act(async () => {
+			await Promise.resolve();
+		});
 		expect(onSend).toHaveBeenCalledWith("@src/main.rs", undefined, [
 			{ filePath: "src/main.rs", startLine: undefined, endLine: undefined },
+		]);
+	});
+
+	it("sends quoted mention paths with spaces as structured mentions", async () => {
+		const onSend = vi.fn();
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "list_mentionable_files") {
+				return Promise.resolve(["docs/my file.md"]);
+			}
+			if (command === "sync_mentions_with_text") {
+				expect(args).toEqual({
+					text: '@"docs/my file.md"',
+					refs: [
+						{
+							filePath: "docs/my file.md",
+							startLine: undefined,
+							endLine: undefined,
+						},
+					],
+				});
+				return Promise.resolve([
+					{
+						filePath: "docs/my file.md",
+						startLine: undefined,
+						endLine: undefined,
+					},
+				]);
+			}
+			return Promise.resolve([]);
+		});
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@my", selectionStart: 3 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(onSend).toHaveBeenCalledWith('@"docs/my file.md"', undefined, [
+			{
+				filePath: "docs/my file.md",
+				startLine: undefined,
+				endLine: undefined,
+			},
 		]);
 	});
 
@@ -802,11 +1264,35 @@ describe("MessageInput mention popup", () => {
 			target: { value: "hello world", selectionStart: 11 },
 		});
 		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		await act(async () => {
+			await Promise.resolve();
+		});
 		expect(onSend).toHaveBeenCalledWith("hello world", undefined, undefined);
 	});
 
 	it("extracts line number from @filePath:L50 in text", async () => {
 		const onSend = vi.fn();
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "list_mentionable_files") {
+				return Promise.resolve(mentionFiles);
+			}
+			if (command === "sync_mentions_with_text") {
+				expect(args).toEqual({
+					text: "@src/main.rs:L50 check this",
+					refs: [
+						{
+							filePath: "src/main.rs",
+							startLine: undefined,
+							endLine: undefined,
+						},
+					],
+				});
+				return Promise.resolve([
+					{ filePath: "src/main.rs", startLine: 50, endLine: undefined },
+				]);
+			}
+			return Promise.resolve([]);
+		});
 		render(
 			<MessageInput
 				{...defaultProps}
@@ -829,6 +1315,9 @@ describe("MessageInput mention popup", () => {
 			},
 		});
 		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		await act(async () => {
+			await Promise.resolve();
+		});
 		expect(onSend).toHaveBeenCalledWith(
 			"@src/main.rs:L50 check this",
 			undefined,
@@ -836,42 +1325,29 @@ describe("MessageInput mention popup", () => {
 		);
 	});
 
-	it("handles multiple mentions of the same file with different ranges", async () => {
-		const refs = [{ filePath: "src/main.rs" }, { filePath: "src/main.rs" }];
-		const text = "@src/main.rs:L1-L5 and @src/main.rs:L20-L25";
-		const result = syncMentionsWithText(text, refs);
-		expect(result).toEqual([
-			{ filePath: "src/main.rs", startLine: 1, endLine: 5 },
-			{ filePath: "src/main.rs", startLine: 20, endLine: 25 },
-		]);
-	});
-
-	it("excludes extra refs when text has fewer mentions than refs", async () => {
-		const refs = [{ filePath: "src/main.rs" }, { filePath: "src/main.rs" }];
-		const text = "@src/main.rs:L1-L5 only one mention";
-		const result = syncMentionsWithText(text, refs);
-		expect(result).toEqual([
-			{ filePath: "src/main.rs", startLine: 1, endLine: 5 },
-		]);
-	});
-
-	it("handles mixed files with duplicates correctly", async () => {
-		const refs = [
-			{ filePath: "src/main.rs" },
-			{ filePath: "src/lib.rs" },
-			{ filePath: "src/main.rs" },
-		];
-		const text = "@src/main.rs:L1 and @src/lib.rs:L10-L20 and @src/main.rs:L50";
-		const result = syncMentionsWithText(text, refs);
-		expect(result).toEqual([
-			{ filePath: "src/main.rs", startLine: 1, endLine: undefined },
-			{ filePath: "src/lib.rs", startLine: 10, endLine: 20 },
-			{ filePath: "src/main.rs", startLine: 50, endLine: undefined },
-		]);
-	});
-
 	it("extracts line range from @filePath:L10-L20 in text", async () => {
 		const onSend = vi.fn();
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "list_mentionable_files") {
+				return Promise.resolve(mentionFiles);
+			}
+			if (command === "sync_mentions_with_text") {
+				expect(args).toEqual({
+					text: "@src/main.rs:L10-L20 review",
+					refs: [
+						{
+							filePath: "src/main.rs",
+							startLine: undefined,
+							endLine: undefined,
+						},
+					],
+				});
+				return Promise.resolve([
+					{ filePath: "src/main.rs", startLine: 10, endLine: 20 },
+				]);
+			}
+			return Promise.resolve([]);
+		});
 		render(
 			<MessageInput
 				{...defaultProps}
@@ -894,10 +1370,154 @@ describe("MessageInput mention popup", () => {
 			},
 		});
 		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		await act(async () => {
+			await Promise.resolve();
+		});
 		expect(onSend).toHaveBeenCalledWith(
 			"@src/main.rs:L10-L20 review",
 			undefined,
 			[{ filePath: "src/main.rs", startLine: 10, endLine: 20 }],
 		);
+	});
+});
+
+describe("MessageInput skill popup", () => {
+	const skills = [
+		{
+			name: "review",
+			description: "Review code changes",
+			scope: "project" as const,
+		},
+		{
+			name: "docs",
+			description: "Write docs",
+			scope: "personal" as const,
+		},
+	];
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		mockInvoke.mockImplementation((command, args) => {
+			if (
+				command === "scan_agent_skills" ||
+				command === "read_codex_skill_catalog"
+			) {
+				const query =
+					typeof (args as { query?: unknown })?.query === "string"
+						? String((args as { query?: unknown }).query).toLowerCase()
+						: "";
+				const limit =
+					typeof (args as { limit?: unknown })?.limit === "number"
+						? Number((args as { limit?: unknown }).limit)
+						: skills.length;
+				return Promise.resolve(
+					skills
+						.filter(
+							(skill) =>
+								query.length === 0 ||
+								skill.name.toLowerCase().includes(query) ||
+								skill.description.toLowerCase().includes(query),
+						)
+						.slice(0, limit),
+				);
+			}
+			return Promise.resolve(null);
+		});
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		mockInvoke.mockReset();
+	});
+
+	it("shows skills from Rust when typing / with worktreePath", async () => {
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+
+		fireEvent.change(textarea, {
+			target: { value: "/", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+
+		expect(mockInvoke).toHaveBeenCalledWith("scan_agent_skills", {
+			cwd: "/test/repo",
+			backendId: undefined,
+			query: "",
+			limit: 20,
+		});
+		expect(screen.getByTestId("skill-list")).toBeDefined();
+		expect(screen.getByText("/review")).toBeInTheDocument();
+	});
+
+	it("uses the Codex runtime skill catalog when Codex is selected", async () => {
+		render(
+			<MessageInput
+				{...defaultProps}
+				worktreePath="/test/repo"
+				currentBackendId="codex"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+
+		fireEvent.change(textarea, {
+			target: { value: "/", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+
+		expect(mockInvoke).toHaveBeenCalledWith("read_codex_skill_catalog", {
+			cwd: "/test/repo",
+			query: "",
+			limit: 20,
+		});
+	});
+
+	it("passes skill query to the Rust scanner", async () => {
+		mockInvoke.mockResolvedValue([skills[1]]);
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+
+		fireEvent.change(textarea, {
+			target: { value: "/doc", selectionStart: 4 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+
+		expect(mockInvoke).toHaveBeenCalledWith("scan_agent_skills", {
+			cwd: "/test/repo",
+			backendId: undefined,
+			query: "doc",
+			limit: 20,
+		});
+		expect(screen.getByText("/docs")).toBeInTheDocument();
+		expect(screen.queryByText("/review")).toBeNull();
+	});
+
+	it("inserts selected skill token on Enter", async () => {
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+
+		fireEvent.change(textarea, {
+			target: { value: "/rev", selectionStart: 4 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+
+		expect(textarea.value).toBe("/review ");
+	});
+
+	it("inserts selected skill token on Tab", async () => {
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+
+		fireEvent.change(textarea, {
+			target: { value: "/doc", selectionStart: 4 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Tab" });
+
+		expect(textarea.value).toBe("/docs ");
 	});
 });

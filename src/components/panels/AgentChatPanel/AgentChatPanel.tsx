@@ -1,7 +1,17 @@
-import { History, X } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { Archive, History, Search, X } from "lucide-react";
 import type React from "react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentStateIcon } from "@/components/ui/agent-state-icon";
+import {
+	CommandDialog,
+	CommandEmpty,
+	CommandGroup,
+	CommandInput,
+	CommandItem,
+	CommandList,
+	CommandShortcut,
+} from "@/components/ui/command";
 import {
 	Popover,
 	PopoverContent,
@@ -11,11 +21,79 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChatContext } from "@/contexts/AgentChatContext";
 import { useDisplayedActiveSession } from "@/hooks/useDisplayedActiveSession";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
-import type { MentionReference } from "@/types/session";
+import type {
+	AgentEditorSelection,
+	MentionReference,
+	SessionSearchResult,
+} from "@/types/session";
 import { BoundSessionChat } from "./BoundSessionChat";
+
+interface AgentCommandPaletteItem {
+	id: string;
+	label: string;
+	shortcut: string;
+	alternateShortcut?: string | null;
+	enabled: boolean;
+}
+
+interface AgentShortcutSetting {
+	id: string;
+	label: string;
+	shortcut: string;
+	alternateShortcut?: string | null;
+	defaultShortcut: string;
+}
+
+function normalizeKeyboardShortcut(event: KeyboardEvent): string | null {
+	const key = normalizeKeyboardKey(event.key);
+	if (!key) return null;
+	const parts: string[] = [];
+	if (event.metaKey) parts.push("Cmd");
+	if (event.ctrlKey) parts.push("Ctrl");
+	if (event.altKey) parts.push("Alt");
+	if (event.shiftKey) parts.push("Shift");
+	if (parts.length === 0) return null;
+	parts.push(key);
+	return parts.join(" ");
+}
+
+function normalizeKeyboardKey(key: string): string | null {
+	if (
+		!key ||
+		key === "Meta" ||
+		key === "Control" ||
+		key === "Alt" ||
+		key === "Shift"
+	) {
+		return null;
+	}
+	if (key === " ") return "Space";
+	if (key.length === 1) return key.toUpperCase();
+	return key.slice(0, 1).toUpperCase() + key.slice(1).toLowerCase();
+}
+
+function shortcutMatches(
+	setting: AgentShortcutSetting,
+	shortcut: string | null,
+): boolean {
+	if (!shortcut) return false;
+	return (
+		setting.shortcut === shortcut || setting.alternateShortcut === shortcut
+	);
+}
+
+function commandShortcutLabel(item: AgentCommandPaletteItem): string {
+	if (item.alternateShortcut) {
+		return `${item.shortcut} / ${item.alternateShortcut}`;
+	}
+	return item.shortcut;
+}
 
 interface AgentChatPanelProps {
 	worktreePath: string;
+	activeEditorPath?: string | null;
+	openEditorPaths?: string[];
+	activeEditorSelection?: AgentEditorSelection | null;
 	registerDropZone: (
 		zone: DropZoneType,
 		element: HTMLElement | null,
@@ -34,6 +112,9 @@ interface AgentChatPanelProps {
  */
 export function AgentChatPanel({
 	worktreePath,
+	activeEditorPath,
+	openEditorPaths,
+	activeEditorSelection,
 	registerDropZone,
 	sendMessageRef,
 }: AgentChatPanelProps) {
@@ -43,6 +124,7 @@ export function AgentChatPanel({
 		sessionAgentStates,
 		selectSession,
 		closeSession,
+		archiveSession,
 		restoreSession,
 		createNewSession,
 		reorderSessions,
@@ -68,6 +150,22 @@ export function AgentChatPanel({
 	const activeSessionId = displayedActiveSession?.id ?? null;
 
 	const [historyOpen, setHistoryOpen] = useState(false);
+	const [historySearchQuery, setHistorySearchQuery] = useState("");
+	const [historySearchResults, setHistorySearchResults] = useState<
+		SessionSearchResult[]
+	>([]);
+	const [historySearchError, setHistorySearchError] = useState<string | null>(
+		null,
+	);
+	const [isHistorySearchLoading, setIsHistorySearchLoading] = useState(false);
+	const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+	const [commandPaletteItems, setCommandPaletteItems] = useState<
+		AgentCommandPaletteItem[]
+	>([]);
+	const [agentShortcuts, setAgentShortcuts] = useState<AgentShortcutSetting[]>(
+		[],
+	);
+	const historySearchInputRef = useRef<HTMLInputElement>(null);
 	const draggedSessionIdRef = useRef<string | null>(null);
 	const isDraggingRef = useRef(false);
 
@@ -88,6 +186,99 @@ export function AgentChatPanel({
 		},
 		[restoreSession],
 	);
+
+	const handleArchive = useCallback(
+		(sessionId: string) => {
+			archiveSession(sessionId);
+		},
+		[archiveSession],
+	);
+
+	useEffect(() => {
+		let cancelled = false;
+		void invoke<AgentShortcutSetting[]>("get_agent_shortcut_settings")
+			.then((settings) => {
+				if (cancelled) return;
+				setAgentShortcuts(settings);
+			})
+			.catch(() => {
+				if (cancelled) return;
+				setAgentShortcuts([]);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	useEffect(() => {
+		if (!commandPaletteOpen) return;
+		let cancelled = false;
+		void invoke<AgentCommandPaletteItem[]>("present_agent_command_palette", {
+			request: {
+				hasActiveSession: Boolean(activeSessionId),
+				sessionCount: displayedSessions.length,
+			},
+		})
+			.then((items) => {
+				if (cancelled) return;
+				setCommandPaletteItems(items);
+			})
+			.catch(() => {
+				if (cancelled) return;
+				setCommandPaletteItems([]);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [activeSessionId, commandPaletteOpen, displayedSessions.length]);
+
+	useEffect(() => {
+		if (!historyOpen) return;
+		const focusId = window.requestAnimationFrame(() => {
+			historySearchInputRef.current?.focus();
+		});
+		return () => window.cancelAnimationFrame(focusId);
+	}, [historyOpen]);
+
+	useEffect(() => {
+		if (!historyOpen) return;
+		const query = historySearchQuery.trim();
+		if (!query) {
+			setHistorySearchResults([]);
+			setHistorySearchError(null);
+			setIsHistorySearchLoading(false);
+			return;
+		}
+		let cancelled = false;
+		setIsHistorySearchLoading(true);
+		const timer = window.setTimeout(() => {
+			invoke<SessionSearchResult[]>("search_agent_sessions", {
+				worktreePath,
+				query,
+				includeWorkflow: false,
+				limit: 20,
+			})
+				.then((results) => {
+					if (cancelled) return;
+					setHistorySearchResults(results);
+					setHistorySearchError(null);
+				})
+				.catch((e) => {
+					if (cancelled) return;
+					setHistorySearchResults([]);
+					setHistorySearchError(String(e));
+				})
+				.finally(() => {
+					if (!cancelled) {
+						setIsHistorySearchLoading(false);
+					}
+				});
+		}, 150);
+		return () => {
+			cancelled = true;
+			window.clearTimeout(timer);
+		};
+	}, [historyOpen, historySearchQuery, worktreePath]);
 
 	const handleDragStart = useCallback(
 		(e: React.DragEvent, sessionId: string) => {
@@ -146,6 +337,98 @@ export function AgentChatPanel({
 		},
 		[selectSession],
 	);
+
+	const selectAdjacentSession = useCallback(
+		(direction: -1 | 1) => {
+			if (!activeSessionId || displayedSessions.length < 2) return;
+			const currentIndex = displayedSessions.findIndex(
+				(session) => session.id === activeSessionId,
+			);
+			if (currentIndex === -1) return;
+			const nextIndex =
+				(currentIndex + direction + displayedSessions.length) %
+				displayedSessions.length;
+			selectSession(displayedSessions[nextIndex].id);
+		},
+		[activeSessionId, displayedSessions, selectSession],
+	);
+
+	const runAgentCommand = useCallback(
+		(commandId: string) => {
+			setCommandPaletteOpen(false);
+			switch (commandId) {
+				case "command_menu":
+					setCommandPaletteOpen(true);
+					return;
+				case "new_thread":
+					createNewSession();
+					return;
+				case "search_threads":
+					handleHistoryOpen(true);
+					return;
+				case "find_in_thread":
+					window.dispatchEvent(new Event("agent-open-thread-find"));
+					return;
+				case "copy_latest_response":
+					window.dispatchEvent(new Event("agent-copy-latest-response"));
+					return;
+				case "toggle_raw_scrollback":
+					window.dispatchEvent(new Event("agent-toggle-raw-scrollback"));
+					return;
+				case "previous_thread":
+					selectAdjacentSession(-1);
+					return;
+				case "next_thread":
+					selectAdjacentSession(1);
+					return;
+			}
+		},
+		[createNewSession, handleHistoryOpen, selectAdjacentSession],
+	);
+
+	const runCommandPaletteItem = useCallback(
+		(item: AgentCommandPaletteItem) => {
+			if (!item.enabled) return;
+			runAgentCommand(item.id);
+		},
+		[runAgentCommand],
+	);
+
+	useEffect(() => {
+		const handleKeyDown = (event: KeyboardEvent) => {
+			const shortcut = normalizeKeyboardShortcut(event);
+			const matched = agentShortcuts.find((setting) =>
+				shortcutMatches(setting, shortcut),
+			);
+			if (!matched) return;
+			event.preventDefault();
+			if (matched.id === "command_menu") {
+				runAgentCommand(matched.id);
+				return;
+			}
+			void invoke<boolean>("is_agent_command_enabled", {
+				request: {
+					commandId: matched.id,
+					request: {
+						hasActiveSession: Boolean(activeSessionId),
+						sessionCount: displayedSessions.length,
+					},
+				},
+			})
+				.then((enabled) => {
+					if (enabled !== true) return;
+					runAgentCommand(matched.id);
+				})
+				.catch(() => {});
+		};
+		window.addEventListener("keydown", handleKeyDown);
+		return () => window.removeEventListener("keydown", handleKeyDown);
+	}, [
+		activeSessionId,
+		agentShortcuts,
+		displayedSessions.length,
+		runAgentCommand,
+	]);
 
 	return (
 		<div data-testid="agent-chat-panel" className="flex flex-col h-full">
@@ -215,18 +498,101 @@ export function AgentChatPanel({
 								<History className="size-3.5" />
 							</button>
 						</PopoverTrigger>
-						<PopoverContent align="end" className="w-64 p-0">
-							{displayedClosedSessions.length > 0 ? (
+						<PopoverContent align="end" className="w-80 p-0">
+							<div className="border-b p-2">
+								<div className="flex items-center gap-1 rounded border px-2 py-1">
+									<Search className="size-3.5 shrink-0 text-muted-foreground" />
+									<input
+										ref={historySearchInputRef}
+										type="search"
+										value={historySearchQuery}
+										onChange={(event) =>
+											setHistorySearchQuery(event.target.value)
+										}
+										placeholder="Search sessions"
+										aria-label="Search sessions"
+										className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+									/>
+									{historySearchQuery && (
+										<button
+											type="button"
+											aria-label="Clear session search"
+											className="inline-flex size-5 shrink-0 items-center justify-center rounded hover:bg-muted"
+											onClick={() => setHistorySearchQuery("")}
+										>
+											<X className="size-3" />
+										</button>
+									)}
+								</div>
+							</div>
+							{historySearchQuery.trim() ? (
+								<div className="max-h-72 overflow-y-auto">
+									{isHistorySearchLoading ? (
+										<p className="px-3 py-4 text-center text-sm text-muted-foreground">
+											Searching...
+										</p>
+									) : historySearchError ? (
+										<p className="px-3 py-4 text-center text-sm text-destructive">
+											{historySearchError}
+										</p>
+									) : historySearchResults.length > 0 ? (
+										<ul>
+											{historySearchResults.map((result) => (
+												<li key={result.session.id}>
+													<div className="flex items-start gap-1 px-2 py-1 hover:bg-muted">
+														<button
+															type="button"
+															className="min-w-0 flex-1 px-1 py-1 text-left"
+															onClick={() => handleRestore(result.session.id)}
+														>
+															<div className="truncate text-sm">
+																{result.session.firstMessage || "New session"}
+															</div>
+															<div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+																{result.snippet}
+															</div>
+														</button>
+														<button
+															type="button"
+															className="inline-flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground"
+															aria-label={`Archive ${result.session.firstMessage || "New session"}`}
+															title="Archive session"
+															onClick={() => handleArchive(result.session.id)}
+														>
+															<Archive className="size-3.5" />
+														</button>
+													</div>
+												</li>
+											))}
+										</ul>
+									) : (
+										<p className="px-3 py-4 text-center text-sm text-muted-foreground">
+											No matching sessions
+										</p>
+									)}
+								</div>
+							) : displayedClosedSessions.length > 0 ? (
 								<ul className="max-h-60 overflow-y-auto">
 									{displayedClosedSessions.map((session) => (
 										<li key={session.id}>
-											<button
-												type="button"
-												className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors truncate"
-												onClick={() => handleRestore(session.id)}
-											>
-												{session.firstMessage || "New session"}
-											</button>
+											<div className="flex items-center gap-1 px-2 py-1 hover:bg-muted">
+												<button
+													type="button"
+													className="min-w-0 flex-1 truncate px-1 py-1 text-left text-sm"
+													onClick={() => handleRestore(session.id)}
+												>
+													{session.firstMessage || "New session"}
+												</button>
+												<button
+													type="button"
+													className="inline-flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground"
+													aria-label={`Archive ${session.firstMessage || "New session"}`}
+													title="Archive session"
+													onClick={() => handleArchive(session.id)}
+												>
+													<Archive className="size-3.5" />
+												</button>
+											</div>
 										</li>
 									))}
 								</ul>
@@ -242,6 +608,9 @@ export function AgentChatPanel({
 					<BoundSessionChat
 						sessionId={activeSessionId}
 						worktreePath={worktreePath}
+						activeEditorPath={activeEditorPath}
+						openEditorPaths={openEditorPaths}
+						activeEditorSelection={activeEditorSelection}
 						registerDropZone={registerDropZone}
 						dropZoneName="agent"
 						sendMessageRef={sendMessageRef}
@@ -252,6 +621,33 @@ export function AgentChatPanel({
 						No chat selected
 					</div>
 				)}
+				<CommandDialog
+					open={commandPaletteOpen}
+					onOpenChange={setCommandPaletteOpen}
+					title="Agent Commands"
+					description="Search agent commands"
+					className="max-w-lg"
+				>
+					<CommandInput placeholder="Search commands" />
+					<CommandList data-testid="agent-command-palette">
+						<CommandEmpty>No commands found</CommandEmpty>
+						<CommandGroup heading="Agent">
+							{commandPaletteItems.map((item) => (
+								<CommandItem
+									key={item.id}
+									value={item.label}
+									disabled={!item.enabled}
+									onSelect={() => runCommandPaletteItem(item)}
+								>
+									<span>{item.label}</span>
+									<CommandShortcut>
+										{commandShortcutLabel(item)}
+									</CommandShortcut>
+								</CommandItem>
+							))}
+						</CommandGroup>
+					</CommandList>
+				</CommandDialog>
 			</Tabs>
 		</div>
 	);

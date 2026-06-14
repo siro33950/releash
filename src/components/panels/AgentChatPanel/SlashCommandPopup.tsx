@@ -1,4 +1,4 @@
-import type { SlashCommand } from "@/hooks/useSlashCommands";
+import type { SlashCommand } from "@/types/session";
 import { AutocompletePopup } from "./AutocompletePopup";
 
 interface SlashCommandPopupProps {

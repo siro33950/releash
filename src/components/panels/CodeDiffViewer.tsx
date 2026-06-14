@@ -35,6 +35,7 @@ export interface CodeDiffViewerProps {
 	onDeleteThread?: (threadId: string) => Promise<void>;
 	scrollToLine?: number | null;
 	scrollToThread?: string | null;
+	onLineRangeSelected?: (startLine: number, endLine: number) => void;
 }
 
 export function CodeDiffViewer({
@@ -55,6 +56,7 @@ export function CodeDiffViewer({
 	onDeleteThread,
 	scrollToLine,
 	scrollToThread,
+	onLineRangeSelected,
 }: CodeDiffViewerProps) {
 	const [detectedLanguage, setDetectedLanguage] = useState("plaintext");
 	const [hunks, setHunks] = useState<Hunk[] | null>(null);
@@ -120,6 +122,7 @@ export function CodeDiffViewer({
 			onDeleteThread={onDeleteThread}
 			scrollToLine={scrollToLine}
 			scrollToThread={scrollToThread}
+			onLineRangeSelected={onLineRangeSelected}
 		/>
 	);
 }

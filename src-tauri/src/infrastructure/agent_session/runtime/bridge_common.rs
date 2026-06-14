@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,13 +20,14 @@ use crate::infrastructure::agent_session::runtime::runtime_coordinator::{
     prune_session_runtime_lock, wait_until_session_close_finished,
 };
 use crate::infrastructure::agent_session::runtime::{
-    BackendRuntimeConfig, ImageAttachment, ModelInfo,
+    AgentEditorContext, AgentMessage, BackendRuntimeConfig, ImageAttachment, ModelInfo,
+    SessionConfig, SessionHandle,
 };
 #[cfg(test)]
 use crate::usecase::agent_session::session::create_session_internal;
 use crate::usecase::agent_session::session::{
     add_message_internal, now_timestamp, ChatMessage, ChatSession, GetSessionResponse, MessagePart,
-    MessageRole, SessionStore, SessionSummary,
+    MessageRole, SessionStore, SessionSummary, TokenUsage,
 };
 
 pub(crate) use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
@@ -58,11 +59,14 @@ pub enum TurnPhase {
 
 /// A message queued while the agent is streaming, consumed on turn_complete.
 pub struct PendingMessage {
+    pub id: String,
     pub content: String,
+    pub created_at: f64,
     pub permission_mode: String,
     pub images: Vec<ImageAttachment>,
     pub worktree_path: String,
     pub mentions: Vec<crate::domain::code::MentionReference>,
+    pub editor_context: Option<AgentEditorContext>,
 }
 
 pub struct AgentProcess {
@@ -85,9 +89,9 @@ pub struct AgentProcess {
     /// Populated from ToolResult content ("agentId: XXX"), used to fill
     /// missing tool_use_id in task_notification messages from the SDK.
     pub task_id_map: HashMap<String, String>,
-    /// Pending message queued by send_agent_message during streaming.
-    /// Auto-consumed on turn_complete by the stdout reader.
-    pub pending_message: Option<PendingMessage>,
+    /// Pending messages queued by send_agent_message while the current turn is busy.
+    /// Auto-consumed FIFO on turn_complete by the stdout reader.
+    pub pending_messages: VecDeque<PendingMessage>,
     /// Runtime permission mode tracked from SDK notifications.
     /// Holds the abstract mode (ask / edit / full) and is updated when the SDK
     /// reports a transition that maps cleanly to an abstract mode; unmapped values
@@ -100,6 +104,8 @@ pub struct AgentProcess {
     /// Token usage from the latest `result` message (extracted from modelUsage).
     /// Consumed by turn_complete handler and passed to WorkflowEngine.
     pub last_result_token_usage: Option<(u64, u64)>,
+    /// Token usage from the latest SDK result, retained for desktop status display.
+    pub latest_token_usage: Option<TokenUsage>,
     /// Count of streaming delta parts queued since the last successful emit.
     /// Acts as the dirty signal for coalescing — `> 0` means a flush is owed.
     /// The actual payload lives in `streaming_parts` (cumulative); this field
@@ -145,11 +151,12 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         streaming_parts: Vec::new(),
         last_message_id: None,
         task_id_map: HashMap::new(),
-        pending_message: None,
+        pending_messages: VecDeque::new(),
         current_permission_mode: "edit".to_string(),
         available_models: Vec::new(),
         selected_model: None,
         last_result_token_usage: None,
+        latest_token_usage: None,
         pending_stream_part_count: 0,
         pending_stream_bytes: 0,
         last_stream_emit_at: None,
@@ -159,6 +166,99 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
 
 /// Per-session agent process map: chat_session_id -> AgentProcess
 pub type AgentProcessMap = HashMap<String, AgentProcess>;
+
+/// drain 時に永続化する人間メッセージの parts を pending から構築する。
+/// 画像が無ければ None（content は add_message_internal が text として扱う）。
+fn pending_human_parts(pending: &PendingMessage) -> Option<Vec<MessagePart>> {
+    if pending.images.is_empty() {
+        return None;
+    }
+    let mut p: Vec<MessagePart> = Vec::new();
+    if !pending.content.is_empty() {
+        p.push(MessagePart::Text {
+            content: pending.content.clone(),
+            parent_tool_use_id: None,
+        });
+    }
+    for img in &pending.images {
+        p.push(MessagePart::Image {
+            data: img.data.clone(),
+            media_type: img.media_type.clone(),
+        });
+    }
+    Some(p)
+}
+
+fn pending_message_to_queued_turn(
+    pending: &PendingMessage,
+) -> crate::usecase::agent_session::session::QueuedAgentTurn {
+    const PREVIEW_MAX_CHARS: usize = 160;
+    let mut preview: String = pending.content.chars().take(PREVIEW_MAX_CHARS).collect();
+    if pending.content.chars().count() > PREVIEW_MAX_CHARS {
+        preview.push_str("...");
+    }
+    crate::usecase::agent_session::session::QueuedAgentTurn {
+        id: pending.id.clone(),
+        content_preview: preview,
+        created_at: pending.created_at,
+        permission_mode: pending.permission_mode.clone(),
+        image_count: pending.images.len(),
+    }
+}
+
+fn pending_queue_view(
+    proc: &AgentProcess,
+) -> Vec<crate::usecase::agent_session::session::QueuedAgentTurn> {
+    proc.pending_messages
+        .iter()
+        .map(pending_message_to_queued_turn)
+        .collect()
+}
+
+fn token_usage_from_result_message(msg: &serde_json::Value) -> Option<TokenUsage> {
+    let model_usage = msg.get("modelUsage").and_then(|v| v.as_object())?;
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let mut total_tokens: u64 = 0;
+    let mut saw_explicit_total = false;
+    let mut context_window_tokens: Option<u64> = None;
+
+    for usage in model_usage.values() {
+        let input = usage
+            .get("inputTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let output = usage
+            .get("outputTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        input_tokens += input;
+        output_tokens += output;
+        if let Some(total) = usage.get("totalTokens").and_then(|v| v.as_u64()) {
+            total_tokens += total;
+            saw_explicit_total = true;
+        }
+        if let Some(window) = usage.get("contextWindowTokens").and_then(|v| v.as_u64()) {
+            context_window_tokens =
+                Some(context_window_tokens.map_or(window, |current| current.max(window)));
+        }
+    }
+
+    if input_tokens == 0 && output_tokens == 0 && !saw_explicit_total {
+        return None;
+    }
+
+    Some(TokenUsage {
+        input_tokens,
+        output_tokens,
+        total_tokens: Some(if saw_explicit_total {
+            total_tokens
+        } else {
+            input_tokens + output_tokens
+        }),
+        context_window_tokens,
+    })
+}
 
 pub(crate) async fn is_agent_step_runtime_busy(
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -172,7 +272,7 @@ pub(crate) async fn is_agent_step_runtime_busy(
         proc.state == BridgeState::Initializing
             || proc.state == BridgeState::Streaming
             || proc.turn_phase == TurnPhase::WaitingPermission
-            || proc.pending_message.is_some()
+            || !proc.pending_messages.is_empty()
     })
 }
 
@@ -183,27 +283,28 @@ async fn agent_session_has_pending_message(
 ) -> bool {
     let map = handles.lock().await;
     map.get(chat_session_id)
-        .is_some_and(|proc| proc.pending_message.is_some())
+        .is_some_and(|proc| !proc.pending_messages.is_empty())
 }
 
-pub(crate) fn bridge_script_names(backend_id: &str) -> (&'static str, &'static str) {
+pub(crate) fn bridge_script_names(
+    backend_id: &str,
+) -> Result<(&'static str, &'static str), String> {
     match backend_id {
-        CODEX_BACKEND_ID => (
-            "codex-sdk-bridge.mjs",
-            "generated/bridges/codex-sdk-bridge.bundled.mjs",
+        CODEX_BACKEND_ID => Err(
+            "Codex uses codex app-server directly; the legacy Node bridge is disabled".to_string(),
         ),
-        _ => (
+        _ => Ok((
             "claude-sdk-bridge.mjs",
             "generated/bridges/claude-sdk-bridge.bundled.mjs",
-        ),
+        )),
     }
 }
 
-pub(crate) fn dev_bridge_path(backend_id: &str) -> PathBuf {
-    let (dev_name, _) = bridge_script_names(backend_id);
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+pub(crate) fn dev_bridge_path(backend_id: &str) -> Result<PathBuf, String> {
+    let (dev_name, _) = bridge_script_names(backend_id)?;
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
-        .join(dev_name)
+        .join(dev_name))
 }
 
 pub(crate) fn resolve_bridge_script<R: tauri::Runtime>(
@@ -212,13 +313,13 @@ pub(crate) fn resolve_bridge_script<R: tauri::Runtime>(
 ) -> Result<PathBuf, String> {
     #[cfg(debug_assertions)]
     {
-        let dev_path = dev_bridge_path(backend_id);
+        let dev_path = dev_bridge_path(backend_id)?;
         if dev_path.exists() {
             return Ok(dev_path);
         }
     }
 
-    let (_, bundled_name) = bridge_script_names(backend_id);
+    let (_, bundled_name) = bridge_script_names(backend_id)?;
     app.path()
         .resource_dir()
         .map(|d| d.join(bundled_name))
@@ -2008,6 +2109,32 @@ fn accumulate_sdk_message(
                     });
                     (true, None)
                 }
+                "codex_realtime" => {
+                    let notification_type = msg
+                        .get("notification_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("codex_realtime");
+                    let status = msg
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("in_progress");
+                    let label = msg
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Codex realtime");
+                    let detail = msg
+                        .get("detail")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    parts.push(MessagePart::SystemNotification {
+                        notification_type: notification_type.to_string(),
+                        status: status.to_string(),
+                        label: label.to_string(),
+                        detail,
+                        hook_id: None,
+                    });
+                    (true, None)
+                }
                 _ => {
                     // Check for status=compacting (subtype may be empty/"" for status messages)
                     let status = msg.get("status").and_then(|v| v.as_str()).unwrap_or("");
@@ -2251,11 +2378,12 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                 streaming_parts: Vec::new(),
                 last_message_id: None,
                 task_id_map: HashMap::new(),
-                pending_message: None,
+                pending_messages: VecDeque::new(),
                 current_permission_mode: initial_permission_mode.clone(),
                 available_models: Vec::new(),
                 selected_model,
                 last_result_token_usage: None,
+                latest_token_usage: None,
                 pending_stream_part_count: 0,
                 pending_stream_bytes: 0,
                 last_stream_emit_at: None,
@@ -2288,6 +2416,21 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                 let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
                 match msg_type {
+                    "supported_commands" => {
+                        let commands = supported_commands_from_bridge_message(&msg);
+                        let payload = crate::protocol::AgentSupportedCommandsUpdated {
+                            chat_session_id: csid_stdout.clone(),
+                            commands: commands
+                                .into_iter()
+                                .map(|command| crate::protocol::AgentSupportedCommandMsg {
+                                    name: command.name,
+                                    description: command.description,
+                                    argument_hint: command.argument_hint,
+                                })
+                                .collect(),
+                        };
+                        let _ = app_stdout.emit("agent-supported-commands-updated", &payload);
+                    }
                     "session_ready" => {
                         let mut map = handles_stdout.lock().await;
                         if let Some(proc) = map.get_mut(&csid_stdout) {
@@ -2322,26 +2465,12 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         let _ = app_stdout.emit("agent-sdk-message", &msg);
                     }
                     "result" => {
-                        // Extract token usage from modelUsage in SDK result message
-                        let mut total_input: u64 = 0;
-                        let mut total_output: u64 = 0;
-                        if let Some(model_usage) = msg.get("modelUsage").and_then(|v| v.as_object())
-                        {
-                            for (_model, usage) in model_usage {
-                                total_input += usage
-                                    .get("inputTokens")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0);
-                                total_output += usage
-                                    .get("outputTokens")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0);
-                            }
-                        }
-                        if total_input > 0 || total_output > 0 {
+                        if let Some(token_usage) = token_usage_from_result_message(&msg) {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
-                                proc.last_result_token_usage = Some((total_input, total_output));
+                                proc.last_result_token_usage =
+                                    Some((token_usage.input_tokens, token_usage.output_tokens));
+                                proc.latest_token_usage = Some(token_usage);
                             }
                         }
                         // Forward result message to frontend
@@ -2968,7 +3097,7 @@ fn spawn_streaming_timer<R: tauri::Runtime>(
     });
 }
 
-async fn get_session_internal(
+pub(crate) async fn get_session_internal(
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
@@ -2991,31 +3120,35 @@ async fn get_session_internal_with_data_dir(
     match session {
         None => Ok(None),
         Some(mut session) => {
-            let (turn_phase, raw_parts, streaming_mid) = {
+            let (turn_phase, raw_parts, streaming_mid, pending_queue, latest_token_usage) = {
                 let map = handles.lock().await;
                 if let Some(proc) = map.get(session_id) {
-                    // Prefer the queued pending message's permission_mode when present,
+                    // Prefer the newest queued pending message's permission_mode when present,
                     // because prepare_send_agent_message_internal persists a new mode to
-                    // SessionStore and pending_message while busy without updating
+                    // SessionStore and pending_messages while busy without updating
                     // current_permission_mode. Falling back to current_permission_mode
                     // keeps in-flight runtime changes (e.g. SDK-driven transitions) visible.
                     session.permission_mode = proc
-                        .pending_message
-                        .as_ref()
+                        .pending_messages
+                        .back()
                         .map(|pending| pending.permission_mode.clone())
                         .unwrap_or_else(|| proc.current_permission_mode.clone());
                     let phase = proc.turn_phase;
+                    let pending_queue = pending_queue_view(proc);
+                    let latest_token_usage = proc.latest_token_usage;
                     if proc.state == BridgeState::Streaming {
                         (
                             phase,
                             proc.streaming_parts.clone(),
                             proc.streaming_message_id.clone(),
+                            pending_queue,
+                            latest_token_usage,
                         )
                     } else {
-                        (phase, Vec::new(), None)
+                        (phase, Vec::new(), None, pending_queue, latest_token_usage)
                     }
                 } else {
-                    (TurnPhase::Idle, Vec::new(), None)
+                    (TurnPhase::Idle, Vec::new(), None, Vec::new(), None)
                 }
             };
 
@@ -3060,6 +3193,9 @@ async fn get_session_internal_with_data_dir(
                 session,
                 turn_phase: turn_phase.into(),
                 available_models: available_models.into_iter().map(Into::into).collect(),
+                pending_queue_count: pending_queue.len(),
+                pending_queue,
+                latest_token_usage,
             }))
         }
     }
@@ -3297,6 +3433,20 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
     let (resume_sid, selected_model, backend_id) =
         get_persisted_spawn_info(app, session_store, chat_session_id)?;
 
+    if backend_id == CODEX_BACKEND_ID {
+        let backend = codex_backend_from_app(app)?;
+        backend
+            .start_session(SessionConfig {
+                chat_session_id: chat_session_id.to_string(),
+                cwd: cwd.to_string(),
+                permission_mode: Some(resolved_permission_mode),
+                permission_profile_id: None,
+                system_prompt,
+            })
+            .await?;
+        return Ok(());
+    }
+
     spawn_bridge_process(
         app,
         handles,
@@ -3326,6 +3476,19 @@ pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
+    let (_, _, backend_id) = get_persisted_spawn_info(app, session_store, chat_session_id)?;
+    if backend_id == CODEX_BACKEND_ID {
+        return start_codex_backend_turn(
+            app,
+            chat_session_id,
+            permission_mode,
+            prompt,
+            streaming_message_id,
+            images,
+        )
+        .await;
+    }
+
     start_agent_turn_with_runtime_spawner(
         Some(app),
         handles,
@@ -3381,6 +3544,19 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
+    let (_, _, backend_id) = get_persisted_spawn_info(app, session_store, chat_session_id)?;
+    if backend_id == CODEX_BACKEND_ID {
+        return start_codex_backend_turn(
+            app,
+            chat_session_id,
+            permission_mode,
+            prompt,
+            streaming_message_id,
+            images,
+        )
+        .await;
+    }
+
     start_agent_turn_with_runtime_spawner_locked(
         Some(app),
         handles,
@@ -3421,6 +3597,44 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
     );
 
     Ok(())
+}
+
+fn codex_backend_from_app<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Arc<dyn crate::infrastructure::agent_session::runtime::AgentBackend>, String> {
+    let registry = app
+        .try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>()
+        .ok_or_else(|| "AgentBackendRegistry is not registered".to_string())?;
+    registry
+        .get(CODEX_BACKEND_ID)
+        .ok_or_else(|| format!("Agent backend not found: {CODEX_BACKEND_ID}"))
+}
+
+async fn start_codex_backend_turn<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    chat_session_id: &str,
+    permission_mode: &str,
+    prompt: &str,
+    streaming_message_id: &str,
+    images: &[ImageAttachment],
+) -> Result<(), String> {
+    let backend = codex_backend_from_app(app)?;
+    backend
+        .send_message(
+            &SessionHandle {
+                chat_session_id: chat_session_id.to_string(),
+                backend_id: CODEX_BACKEND_ID.to_string(),
+            },
+            AgentMessage {
+                content: prompt.to_string(),
+                streaming_message_id: streaming_message_id.to_string(),
+                images: images.to_vec(),
+                permission_mode: permission_mode.to_string(),
+                permission_profile_id: None,
+                editor_context: None,
+            },
+        )
+        .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3554,6 +3768,40 @@ where
     Ok(())
 }
 
+async fn interrupt_active_agent_turn(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
+    chat_session_id: &str,
+) -> Result<(), String> {
+    let backend_id = {
+        let map = handles.lock().await;
+        map.get(chat_session_id)
+            .map(|proc| proc.backend_id.clone())
+            .ok_or_else(|| format!("No active agent process for session {chat_session_id}"))?
+    };
+
+    if backend_id == CODEX_BACKEND_ID {
+        let backend = registry
+            .get(&backend_id)
+            .ok_or_else(|| format!("Agent backend not found: {backend_id}"))?;
+        return backend
+            .interrupt(
+                &crate::infrastructure::agent_session::runtime::SessionHandle {
+                    chat_session_id: chat_session_id.to_string(),
+                    backend_id,
+                },
+            )
+            .await;
+    }
+
+    write_bridge_command(
+        handles,
+        chat_session_id,
+        serde_json::json!({ "type": "interrupt" }),
+    )
+    .await
+}
+
 /// Detach a pending message queued during streaming and mark its follow-up turn
 /// as in-flight so tab close observes the step as busy until resume starts.
 async fn take_pending_message(
@@ -3563,7 +3811,7 @@ async fn take_pending_message(
     let pending = {
         let mut map = handles.lock().await;
         map.get_mut(chat_session_id)
-            .and_then(|p| p.pending_message.take())
+            .and_then(|p| p.pending_messages.pop_front())
     };
     if pending.is_some() {
         mark_pending_turn_starting(chat_session_id).await;
@@ -3596,6 +3844,30 @@ async fn start_pending_message_turn<R: tauri::Runtime>(
             return;
         }
     };
+
+    // 人間メッセージを drain 時に永続化する（enqueue 時は二重表示防止のため追加しない）。
+    let human_parts = pending_human_parts(&pending);
+    let human_mentions = if pending.mentions.is_empty() {
+        None
+    } else {
+        Some(pending.mentions.clone())
+    };
+    let human_msg = match add_message_internal(
+        session_store,
+        &data_dir,
+        chat_session_id,
+        MessageRole::Human,
+        &pending.content,
+        human_parts,
+        human_mentions,
+    ) {
+        Ok(msg) => msg,
+        Err(e) => {
+            log::error!("consume_pending_message: failed to add human message: {e}");
+            clear_pending_turn_starting(chat_session_id).await;
+            return;
+        }
+    };
     let agent_msg = match add_message_internal(
         session_store,
         &data_dir,
@@ -3613,13 +3885,15 @@ async fn start_pending_message_turn<R: tauri::Runtime>(
         }
     };
 
-    // 3. Emit event so UI can update with the new agent message
+    // 3. Emit event so UI can update with the new human + agent messages
     {
         use tauri::Emitter;
         let _ = app.emit(
             "agent-pending-message-consumed",
             serde_json::json!({
                 "chat_session_id": chat_session_id,
+                "queued_turn_id": pending.id,
+                "human_message": human_msg,
                 "agent_message": agent_msg,
             }),
         );
@@ -3650,27 +3924,49 @@ async fn start_pending_message_turn<R: tauri::Runtime>(
 
 pub async fn interrupt_agent_query(
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    registry: tauri::State<
+        '_,
+        Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
+    >,
     chat_session_id: String,
 ) -> Result<(), String> {
-    {
-        let mut map = handles.lock().await;
-        if let Some(proc) = map.get_mut(&chat_session_id) {
-            proc.stdin
-                .write_all(b"{\"type\":\"interrupt\"}\n")
-                .await
-                .map_err(|e| format!("Failed to write interrupt: {e}"))?;
-            proc.stdin
-                .flush()
-                .await
-                .map_err(|e| format!("Failed to flush: {e}"))?;
-        } else {
-            return Err(format!(
-                "No active agent process for session {chat_session_id}"
-            ));
-        }
-    }
+    interrupt_active_agent_turn(handles.inner(), registry.inner(), &chat_session_id).await
+}
 
-    Ok(())
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelQueuedTurnResponse {
+    pub session_id: String,
+    pub canceled_count: usize,
+    pub pending_queue: Vec<crate::usecase::agent_session::session::QueuedAgentTurn>,
+    pub pending_queue_count: usize,
+}
+
+pub async fn cancel_agent_queued_turn_internal(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    queued_turn_id: Option<&str>,
+) -> Result<CancelQueuedTurnResponse, String> {
+    let mut map = handles.lock().await;
+    let proc = map
+        .get_mut(chat_session_id)
+        .ok_or_else(|| format!("No active agent process for session {chat_session_id}"))?;
+    let before = proc.pending_messages.len();
+    match queued_turn_id {
+        Some(id) => proc.pending_messages.retain(|pending| pending.id != id),
+        None => proc.pending_messages.clear(),
+    }
+    let canceled_count = before.saturating_sub(proc.pending_messages.len());
+    if queued_turn_id.is_some() && canceled_count == 0 {
+        return Err("Queued turn not found".to_string());
+    }
+    let pending_queue = pending_queue_view(proc);
+    Ok(CancelQueuedTurnResponse {
+        session_id: chat_session_id.to_string(),
+        canceled_count,
+        pending_queue_count: pending_queue.len(),
+        pending_queue,
+    })
 }
 
 pub(crate) async fn close_agent_session_internal<R: tauri::Runtime>(
@@ -4075,6 +4371,36 @@ pub async fn respond_agent_permission(
     app: tauri::AppHandle,
     session_store: tauri::State<'_, Arc<SessionStore>>,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    registry: tauri::State<
+        '_,
+        Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
+    >,
+    chat_session_id: String,
+    request_id: String,
+    behavior: String,
+    message: Option<String>,
+    updated_input: Option<String>,
+) -> Result<(), String> {
+    respond_agent_permission_internal(
+        &app,
+        session_store.inner(),
+        handles.inner(),
+        registry.inner(),
+        chat_session_id,
+        request_id,
+        behavior,
+        message,
+        updated_input,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn respond_agent_permission_internal(
+    app: &tauri::AppHandle,
+    session_store: &Arc<SessionStore>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
     chat_session_id: String,
     request_id: String,
     behavior: String,
@@ -4109,18 +4435,47 @@ pub async fn respond_agent_permission(
     });
     let data = format!("{}\n", payload);
 
+    let backend_id = {
+        let map = handles.lock().await;
+        map.get(&chat_session_id)
+            .map(|proc| proc.backend_id.clone())
+            .ok_or_else(|| format!("No active agent process for session {chat_session_id}"))?
+    };
+
+    if backend_id == CODEX_BACKEND_ID {
+        let backend = registry
+            .get(&backend_id)
+            .ok_or_else(|| format!("Agent backend not found: {backend_id}"))?;
+        backend
+            .respond_permission(
+                &crate::infrastructure::agent_session::runtime::SessionHandle {
+                    chat_session_id: chat_session_id.clone(),
+                    backend_id: backend_id.clone(),
+                },
+                crate::infrastructure::agent_session::runtime::PermissionResponse {
+                    request_id: request_id.clone(),
+                    behavior: behavior.clone(),
+                    message: message.clone(),
+                    updated_input: updated_input.clone(),
+                },
+            )
+            .await?;
+    }
+
     let did_transition_to_streaming;
     {
         let mut map = handles.lock().await;
         if let Some(proc) = map.get_mut(&chat_session_id) {
-            proc.stdin
-                .write_all(data.as_bytes())
-                .await
-                .map_err(|e| format!("Failed to write permission response: {e}"))?;
-            proc.stdin
-                .flush()
-                .await
-                .map_err(|e| format!("Failed to flush: {e}"))?;
+            if backend_id != CODEX_BACKEND_ID {
+                proc.stdin
+                    .write_all(data.as_bytes())
+                    .await
+                    .map_err(|e| format!("Failed to write permission response: {e}"))?;
+                proc.stdin
+                    .flush()
+                    .await
+                    .map_err(|e| format!("Failed to flush: {e}"))?;
+            }
 
             // Apply the synchronous part of the permission response
             // (phase flip + permission part patch + force flush) via the
@@ -4133,7 +4488,7 @@ pub async fn respond_agent_permission(
                 &request_id,
                 &behavior,
                 answers_value.as_ref(),
-                |mid, parts| emit_streaming_parts(&app, &chat_session_id, mid, parts.to_vec()),
+                |mid, parts| emit_streaming_parts(app, &chat_session_id, mid, parts.to_vec()),
             );
             did_transition_to_streaming = effect.did_transition;
 
@@ -4141,7 +4496,7 @@ pub async fn respond_agent_permission(
             // has already exited (turn left Streaming when WaitingPermission
             // was entered). Idempotent — no-op if a timer is still alive.
             if did_transition_to_streaming {
-                spawn_streaming_timer(&app, handles.inner(), &chat_session_id, proc);
+                spawn_streaming_timer(app, handles, &chat_session_id, proc);
             }
         } else {
             return Err(format!(
@@ -4152,10 +4507,10 @@ pub async fn respond_agent_permission(
 
     // Emit state change only if we actually transitioned: WaitingPermission → Streaming
     if did_transition_to_streaming {
-        emit_session_state_changed(&app, &chat_session_id, TurnPhase::Streaming, None);
+        emit_session_state_changed(app, &chat_session_id, TurnPhase::Streaming, None);
         notify_status_transition(
-            &app,
-            session_store.inner(),
+            app,
+            session_store,
             &chat_session_id,
             TurnPhase::Streaming,
             None,
@@ -4165,22 +4520,543 @@ pub async fn respond_agent_permission(
     Ok(())
 }
 
+#[allow(dead_code)]
+pub(crate) struct ExternalBridgeMessageState {
+    last_persist_time: Instant,
+}
+
+impl Default for ExternalBridgeMessageState {
+    fn default() -> Self {
+        Self {
+            last_persist_time: Instant::now(),
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) async fn start_external_agent_turn_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &Arc<SessionStore>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    permission_mode: &str,
+    streaming_message_id: &str,
+) -> Result<(), String> {
+    let canonical_permission_mode =
+        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
+    {
+        let mut map = handles.lock().await;
+        let proc = map
+            .get_mut(chat_session_id)
+            .ok_or_else(|| format!("No agent process for session {chat_session_id}"))?;
+        proc.current_permission_mode = canonical_permission_mode.as_str().to_string();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        proc.streaming_message_id = Some(streaming_message_id.to_string());
+        proc.reset_streaming_state_for_new_turn();
+        spawn_streaming_timer(app, handles, chat_session_id, proc);
+    }
+    emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None);
+    notify_status_transition(
+        app,
+        session_store,
+        chat_session_id,
+        TurnPhase::Streaming,
+        None,
+    );
+    Ok(())
+}
+
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &Arc<SessionStore>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    backend_id: String,
+    child: Child,
+    stdin: ChildStdin,
+    #[cfg(unix)] pgid: Option<u32>,
+    permission_mode: String,
+    selected_model: Option<String>,
+    sdk_session_id: Option<String>,
+) -> Result<u64, String> {
+    crate::permission::PermissionMode::parse(&permission_mode).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    if let Some(pg) = pgid {
+        let data_dir = resolve_data_dir(app).map_err(|e| {
+            format!("Failed to resolve data dir for session {chat_session_id}: {e}")
+        })?;
+        save_pgid(&data_dir, chat_session_id, pg)?;
+    }
+
+    let gen_id = GENERATION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    {
+        let mut map = handles.lock().await;
+        map.insert(
+            chat_session_id.to_string(),
+            AgentProcess {
+                stdin,
+                backend_id,
+                state: BridgeState::Initializing,
+                turn_phase: TurnPhase::Idle,
+                sdk_session_id,
+                child,
+                generation_id: gen_id,
+                #[cfg(unix)]
+                pgid,
+                streaming_message_id: None,
+                streaming_parts: Vec::new(),
+                last_message_id: None,
+                task_id_map: HashMap::new(),
+                pending_messages: VecDeque::new(),
+                current_permission_mode: permission_mode,
+                available_models: Vec::new(),
+                selected_model,
+                last_result_token_usage: None,
+                latest_token_usage: None,
+                pending_stream_part_count: 0,
+                pending_stream_bytes: 0,
+                last_stream_emit_at: None,
+                streaming_timer_active: false,
+            },
+        );
+    }
+    notify_status_transition(app, session_store, chat_session_id, TurnPhase::Idle, None);
+    Ok(gen_id)
+}
+
+#[allow(dead_code)]
+pub(crate) async fn close_external_agent_process<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+) -> Result<(), String> {
+    mark_session_closing(chat_session_id).await;
+    let removed = {
+        let mut map = handles.lock().await;
+        map.remove(chat_session_id)
+    };
+
+    let Some(mut proc) = removed else {
+        clear_session_closing(chat_session_id).await;
+        return Ok(());
+    };
+
+    #[cfg(unix)]
+    {
+        if let Some(pg) = proc.pgid {
+            sweep_process_group(pg).await;
+        } else if let Err(e) = proc.child.kill().await {
+            log::warn!("Failed to kill external agent process {chat_session_id}: {e}");
+        }
+        if let Ok(data_dir) = resolve_data_dir(app) {
+            remove_pgid(&data_dir, chat_session_id);
+        }
+    }
+    #[cfg(not(unix))]
+    if let Err(e) = proc.child.kill().await {
+        log::warn!("Failed to kill external agent process {chat_session_id}: {e}");
+    }
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), proc.child.wait()).await;
+    clear_session_closing(chat_session_id).await;
+    prune_session_runtime_lock(chat_session_id).await;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) struct ExternalPendingTurn {
+    pub queued_turn_id: String,
+    pub worktree_path: String,
+    pub permission_mode: String,
+    pub permission_profile_id: Option<String>,
+    pub prompt: String,
+    pub agent_message_id: String,
+    pub images: Vec<ImageAttachment>,
+    pub editor_context: Option<AgentEditorContext>,
+}
+
+#[allow(dead_code)]
+pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+) -> Result<Option<ExternalPendingTurn>, String> {
+    let Some(pending) = take_pending_message(handles, chat_session_id).await else {
+        return Ok(None);
+    };
+
+    let data_dir = match resolve_data_dir(app) {
+        Ok(data_dir) => data_dir,
+        Err(e) => {
+            clear_pending_turn_starting(chat_session_id).await;
+            return Err(format!("failed to resolve data dir: {e}"));
+        }
+    };
+    // 人間メッセージを drain 時に永続化する（enqueue 時は二重表示防止のため追加しない）。
+    // Claude 経路 (start_pending_message_turn) と同じ扱い。
+    let human_parts = pending_human_parts(&pending);
+    let human_mentions = if pending.mentions.is_empty() {
+        None
+    } else {
+        Some(pending.mentions.clone())
+    };
+    let human_msg = match add_message_internal(
+        session_store,
+        &data_dir,
+        chat_session_id,
+        MessageRole::Human,
+        &pending.content,
+        human_parts,
+        human_mentions,
+    ) {
+        Ok(msg) => msg,
+        Err(e) => {
+            clear_pending_turn_starting(chat_session_id).await;
+            return Err(format!("failed to add pending human message: {e}"));
+        }
+    };
+    let agent_msg = match add_message_internal(
+        session_store,
+        &data_dir,
+        chat_session_id,
+        MessageRole::Agent,
+        "",
+        None,
+        None,
+    ) {
+        Ok(msg) => msg,
+        Err(e) => {
+            clear_pending_turn_starting(chat_session_id).await;
+            return Err(format!("failed to add pending agent message: {e}"));
+        }
+    };
+    let permission_profile_id = session_store
+        .get_session(&data_dir, chat_session_id)?
+        .and_then(|session| session.permission_profile_id);
+
+    {
+        use tauri::Emitter;
+        let _ = app.emit(
+            "agent-pending-message-consumed",
+            serde_json::json!({
+                "chat_session_id": chat_session_id,
+                "queued_turn_id": pending.id,
+                "human_message": human_msg,
+                "agent_message": agent_msg,
+            }),
+        );
+    }
+
+    let prompt = app
+        .state::<crate::adaptor::controller::state::AppState>()
+        .code_usecase
+        .resolve_mentions_or_fallback(&pending.worktree_path, &pending.content, &pending.mentions);
+
+    Ok(Some(ExternalPendingTurn {
+        queued_turn_id: pending.id,
+        worktree_path: pending.worktree_path,
+        permission_mode: pending.permission_mode,
+        permission_profile_id,
+        prompt,
+        agent_message_id: agent_msg.id,
+        images: pending.images,
+        editor_context: pending.editor_context,
+    }))
+}
+
+#[allow(dead_code)]
+pub(crate) async fn finish_external_pending_message_turn_start(chat_session_id: &str) {
+    clear_pending_turn_starting(chat_session_id).await;
+}
+
+#[allow(dead_code)]
+pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &Arc<SessionStore>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    mut msg: serde_json::Value,
+    state: &mut ExternalBridgeMessageState,
+) {
+    use tauri::Emitter;
+
+    msg["chat_session_id"] = serde_json::Value::String(chat_session_id.to_string());
+    let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    match msg_type {
+        "session_ready" => {
+            let mut map = handles.lock().await;
+            if let Some(proc) = map.get_mut(chat_session_id) {
+                if proc.state == BridgeState::Initializing {
+                    proc.state = BridgeState::Ready;
+                }
+                if let Some(sid) = msg.get("session_id").and_then(|v| v.as_str()) {
+                    proc.sdk_session_id = Some(sid.to_string());
+                }
+            }
+            let _ = app.emit("agent-sdk-message", &msg);
+        }
+        "result" => {
+            if let Some(token_usage) = token_usage_from_result_message(&msg) {
+                let mut map = handles.lock().await;
+                if let Some(proc) = map.get_mut(chat_session_id) {
+                    proc.last_result_token_usage =
+                        Some((token_usage.input_tokens, token_usage.output_tokens));
+                    proc.latest_token_usage = Some(token_usage);
+                }
+            }
+            let _ = app.emit("agent-sdk-message", &msg);
+        }
+        "turn_complete" => {
+            let exit_code = msg.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
+            let effect = {
+                let _runtime_guard = acquire_session_runtime_lock(chat_session_id).await;
+                let mut map = handles.lock().await;
+                map.get_mut(chat_session_id).map(|proc| {
+                    run_turn_complete_transition_locked(
+                        proc,
+                        chat_session_id,
+                        exit_code,
+                        |mid, parts| {
+                            emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
+                        },
+                    )
+                })
+            };
+
+            let Some(effect) = effect else {
+                return;
+            };
+            let final_parts = consolidate_parts(effect.raw_parts);
+            if effect.was_streaming {
+                if let Some(ref mid) = effect.final_msg_id {
+                    if !final_parts.is_empty() {
+                        persist_streaming_parts(
+                            session_store,
+                            app,
+                            chat_session_id,
+                            mid,
+                            &final_parts,
+                        );
+                    }
+                }
+                emit_session_state_changed(app, chat_session_id, TurnPhase::Idle, Some(exit_code));
+                let override_state = if exit_code != 0 {
+                    Some(crate::usecase::agent_session::session::SessionState::Error)
+                } else {
+                    None
+                };
+                notify_status_transition(
+                    app,
+                    session_store,
+                    chat_session_id,
+                    TurnPhase::Idle,
+                    override_state,
+                );
+                let should_consume_pending_with_legacy_bridge = {
+                    let map = handles.lock().await;
+                    map.get(chat_session_id)
+                        .is_some_and(|proc| proc.backend_id != CODEX_BACKEND_ID)
+                };
+                if should_consume_pending_with_legacy_bridge {
+                    if let Some(pending) = take_pending_message(handles, chat_session_id).await {
+                        start_pending_message_turn(
+                            app,
+                            handles,
+                            session_store,
+                            chat_session_id,
+                            pending,
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+        "error" => {
+            {
+                let mut map = handles.lock().await;
+                if let Some(proc) = map.get_mut(chat_session_id) {
+                    if proc.state == BridgeState::Streaming {
+                        let prev_len = proc.streaming_parts.len();
+                        accumulate_sdk_message(
+                            &msg,
+                            &mut proc.streaming_parts,
+                            &mut proc.task_id_map,
+                        );
+                        let delta: Vec<MessagePart> = proc.streaming_parts[prev_len..].to_vec();
+                        let mid = proc.streaming_message_id.clone();
+                        if !delta.is_empty() {
+                            enqueue_pending_delta(proc, &delta);
+                        }
+                        if let Some(ref mid) = mid {
+                            flush_streaming(app, proc, chat_session_id, mid);
+                        }
+                    }
+                    if proc.state == BridgeState::Streaming
+                        || proc.state == BridgeState::Initializing
+                    {
+                        proc.state = BridgeState::Crashed;
+                        proc.turn_phase = TurnPhase::Idle;
+                    }
+                }
+            }
+            let _ = app.emit("agent-sdk-message", &msg);
+            emit_session_state_changed(app, chat_session_id, TurnPhase::Idle, Some(1));
+            notify_status_transition(
+                app,
+                session_store,
+                chat_session_id,
+                TurnPhase::Idle,
+                Some(crate::usecase::agent_session::session::SessionState::Error),
+            );
+        }
+        _ => {
+            let (accumulated, emit_msg_id, should_persist, raw_persist_parts) = {
+                let mut map = handles.lock().await;
+                if let Some(proc) = map.get_mut(chat_session_id) {
+                    let in_streaming =
+                        proc.state == BridgeState::Streaming && proc.streaming_message_id.is_some();
+                    let post_turn = !in_streaming && proc.last_message_id.is_some();
+
+                    if !in_streaming && !post_turn {
+                        (false, None, false, Vec::new())
+                    } else {
+                        let prev_len = proc.streaming_parts.len();
+                        let (acc, updated_parts) = accumulate_sdk_message(
+                            &msg,
+                            &mut proc.streaming_parts,
+                            &mut proc.task_id_map,
+                        );
+                        if !acc {
+                            (false, None, false, Vec::new())
+                        } else {
+                            let mut delta: Vec<MessagePart> =
+                                proc.streaming_parts[prev_len..].to_vec();
+                            if let Some(up) = updated_parts {
+                                delta.extend(up);
+                            }
+                            let mid = if in_streaming {
+                                proc.streaming_message_id.clone()
+                            } else {
+                                proc.last_message_id.clone()
+                            };
+                            enqueue_pending_delta(proc, &delta);
+                            if should_flush_per_delta(proc, &delta, post_turn) {
+                                if let Some(ref mid) = mid {
+                                    flush_streaming(app, proc, chat_session_id, mid);
+                                }
+                            }
+                            let elapsed_persist =
+                                state.last_persist_time.elapsed().as_millis() as u64;
+                            let should_persist =
+                                post_turn || elapsed_persist >= PERSIST_INTERVAL_MS;
+                            let raw_persist_parts = if should_persist {
+                                proc.streaming_parts.clone()
+                            } else {
+                                Vec::new()
+                            };
+                            (true, mid, should_persist, raw_persist_parts)
+                        }
+                    }
+                } else {
+                    (false, None, false, Vec::new())
+                }
+            };
+
+            if should_persist {
+                if let Some(ref mid) = emit_msg_id {
+                    state.last_persist_time = Instant::now();
+                    let persist_parts = consolidate_parts(raw_persist_parts);
+                    persist_streaming_parts(
+                        session_store,
+                        app,
+                        chat_session_id,
+                        mid,
+                        &persist_parts,
+                    );
+                }
+            }
+
+            let permission_did_transition = if msg_type == "permission_request" {
+                let mut map = handles.lock().await;
+                if let Some(proc) = map.get_mut(chat_session_id) {
+                    let effect = run_permission_request_transition_locked(
+                        proc,
+                        chat_session_id,
+                        |mid, parts| {
+                            emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
+                        },
+                    );
+                    effect.did_transition
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if should_forward_sdk_message(accumulated, msg_type) {
+                let _ = app.emit("agent-sdk-message", &msg);
+            }
+            if permission_did_transition {
+                emit_session_state_changed(
+                    app,
+                    chat_session_id,
+                    TurnPhase::WaitingPermission,
+                    None,
+                );
+                notify_status_transition(
+                    app,
+                    session_store,
+                    chat_session_id,
+                    TurnPhase::WaitingPermission,
+                    None,
+                );
+            }
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendMessageResponse {
     pub session: ChatSession,
     pub human_message: ChatMessage,
     pub agent_message: Option<ChatMessage>,
+    pub queued_turn: Option<crate::usecase::agent_session::session::QueuedAgentTurn>,
+    pub pending_queue: Vec<crate::usecase::agent_session::session::QueuedAgentTurn>,
+    pub pending_queue_count: usize,
     pub sessions: Vec<SessionSummary>,
 }
 
 struct PreparedAgentTurn {
     session_id: String,
+    backend_id: String,
     worktree_path: String,
     permission_mode: String,
     prompt: String,
     agent_message_id: String,
     images: Vec<ImageAttachment>,
+    editor_context: Option<AgentEditorContext>,
+}
+
+struct PreparedAgentSteer {
+    session_id: String,
+    backend_id: String,
+    permission_mode: String,
+    prompt: String,
+    steering_message_id: String,
+    images: Vec<ImageAttachment>,
+    editor_context: Option<AgentEditorContext>,
+}
+
+enum PreparedAgentRuntimeInput {
+    Turn(PreparedAgentTurn),
+    Steer(PreparedAgentSteer),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4197,7 +5073,8 @@ async fn prepare_send_agent_message_internal(
     backend_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::domain::code::MentionReference>>,
-) -> Result<(SendMessageResponse, Option<PreparedAgentTurn>), String> {
+    editor_context: Option<AgentEditorContext>,
+) -> Result<(SendMessageResponse, Option<PreparedAgentRuntimeInput>), String> {
     let pm = permission_mode.as_str().to_string();
     let images = images.unwrap_or_default();
     let mentions = mentions.unwrap_or_default();
@@ -4236,80 +5113,150 @@ async fn prepare_send_agent_message_internal(
     };
     let sid = session.id.clone();
     let session_worktree_path = session.worktree_path.clone();
+    let session_backend_id = session
+        .backend_id
+        .clone()
+        .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string());
 
-    // 2. Add human message (with image parts if present)
-    let human_message = {
-        let parts = if images.is_empty() {
-            None
+    // 2. Compute human message parts.
+    // 永続化のタイミングは busy 判定後の分岐で決める。キュー投入時は session に
+    // 即時追加すると transcript とキューUI に二重表示されるため、ここでは追加せず
+    // drain（start_pending_message_turn / prepare_external_pending_message_turn）で追加する。
+    let human_parts = if images.is_empty() {
+        None
+    } else {
+        let mut p: Vec<MessagePart> = Vec::new();
+        if !content.is_empty() {
+            p.push(MessagePart::Text {
+                content: content.clone(),
+                parent_tool_use_id: None,
+            });
+        }
+        for img in &images {
+            p.push(MessagePart::Image {
+                data: img.data.clone(),
+                media_type: img.media_type.clone(),
+            });
+        }
+        Some(p)
+    };
+    let human_mentions = if mentions.is_empty() {
+        None
+    } else {
+        Some(mentions.clone())
+    };
+
+    // 3. Check turn phase
+    let (current_phase, current_state) = {
+        let map = handles.lock().await;
+        map.get(&sid)
+            .map(|p| (p.turn_phase, p.state))
+            .unwrap_or((TurnPhase::Idle, BridgeState::Ready))
+    };
+
+    // turn_phase に加え、bridge 起動中 (Initializing) も busy として扱う。
+    // 起動中は turn_phase がまだ Idle のため、これを見ないと「起動中の送信」を
+    // 競合ターンとして即時起動してしまう。
+    let is_initializing = current_state == BridgeState::Initializing;
+    let active_turn_busy = current_phase == TurnPhase::Streaming
+        || current_phase == TurnPhase::WaitingPermission
+        || is_initializing;
+    let pending_turn_starting = is_pending_turn_starting(&sid).await;
+    let turn_busy = active_turn_busy || pending_turn_starting;
+
+    let (human_message, agent_message, prepared_input, queued_turn) = if turn_busy {
+        let can_steer_active_turn = if active_turn_busy && !pending_turn_starting {
+            if let Some(backend) = registry.get(&session_backend_id) {
+                let session_handle = crate::infrastructure::agent_session::runtime::SessionHandle {
+                    chat_session_id: sid.clone(),
+                    backend_id: session_backend_id.clone(),
+                };
+                backend.active_turn_steering_ready(&session_handle).await
+            } else {
+                false
+            }
         } else {
-            let mut p: Vec<MessagePart> = Vec::new();
-            if !content.is_empty() {
-                p.push(MessagePart::Text {
-                    content: content.clone(),
-                    parent_tool_use_id: None,
-                });
-            }
-            for img in &images {
-                p.push(MessagePart::Image {
-                    data: img.data.clone(),
-                    media_type: img.media_type.clone(),
-                });
-            }
-            Some(p)
+            false
         };
-        add_message_internal(
+
+        if can_steer_active_turn {
+            // steer は即座にアクティブターンへ流し込むため、人間メッセージを永続化する。
+            let human_message = add_message_internal(
+                session_store,
+                data_dir,
+                &sid,
+                MessageRole::Human,
+                &content,
+                human_parts.clone(),
+                human_mentions.clone(),
+            )?;
+            let resolved_prompt = code_usecase.resolve_mentions_or_fallback(
+                &session_worktree_path,
+                &content,
+                &mentions,
+            );
+            let steer = PreparedAgentSteer {
+                session_id: sid.clone(),
+                backend_id: session_backend_id.clone(),
+                permission_mode: pm.clone(),
+                prompt: resolved_prompt,
+                steering_message_id: human_message.id.clone(),
+                images: images.clone(),
+                editor_context,
+            };
+            (
+                human_message,
+                None,
+                Some(PreparedAgentRuntimeInput::Steer(steer)),
+                None,
+            )
+        } else {
+            // 4a. Queue pending message + interrupt
+            // 人間メッセージはここでは永続化しない（transcript とキューUI の二重表示を
+            // 避けるため）。drain 時に各 drain 関数が永続化する。response 用には
+            // 非永続の ChatMessage を構築して返す。
+            let pending = PendingMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                content: content.clone(),
+                created_at: now_timestamp(),
+                permission_mode: pm.clone(),
+                images: images.clone(),
+                worktree_path: session_worktree_path.clone(),
+                mentions: mentions.clone(),
+                editor_context: editor_context.clone(),
+            };
+            let queued_turn = pending_message_to_queued_turn(&pending);
+            let transient_human = ChatMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                role: MessageRole::Human,
+                content: content.clone(),
+                thinking: None,
+                activities: None,
+                parts: human_parts.clone(),
+                timestamp: now_timestamp(),
+                mentions: None,
+            };
+            {
+                let mut map = handles.lock().await;
+                let proc = map
+                    .get_mut(&sid)
+                    .ok_or_else(|| format!("No active agent process for session {sid}"))?;
+                proc.pending_messages.push_back(pending);
+            }
+            interrupt_active_agent_turn(handles, registry, &sid).await?;
+            (transient_human, None, None, Some(queued_turn))
+        }
+    } else {
+        // 4b. Create human + agent message, start turn
+        let human_message = add_message_internal(
             session_store,
             data_dir,
             &sid,
             MessageRole::Human,
             &content,
-            parts,
-            if mentions.is_empty() {
-                None
-            } else {
-                Some(mentions.clone())
-            },
-        )?
-    };
-
-    // 3. Check turn phase
-    let current_phase = {
-        let map = handles.lock().await;
-        map.get(&sid)
-            .map(|p| p.turn_phase)
-            .unwrap_or(TurnPhase::Idle)
-    };
-
-    let turn_busy = current_phase == TurnPhase::Streaming
-        || current_phase == TurnPhase::WaitingPermission
-        || is_pending_turn_starting(&sid).await;
-
-    let (agent_message, prepared_turn) = if turn_busy {
-        // 4a. Queue pending message + interrupt
-        {
-            let mut map = handles.lock().await;
-            let proc = map
-                .get_mut(&sid)
-                .ok_or_else(|| format!("No active agent process for session {sid}"))?;
-            proc.pending_message = Some(PendingMessage {
-                content: content.clone(),
-                permission_mode: pm.clone(),
-                images: images.clone(),
-                worktree_path: session_worktree_path.clone(),
-                mentions: mentions.clone(),
-            });
-            proc.stdin
-                .write_all(b"{\"type\":\"interrupt\"}\n")
-                .await
-                .map_err(|e| format!("Failed to write interrupt: {e}"))?;
-            proc.stdin
-                .flush()
-                .await
-                .map_err(|e| format!("Failed to flush: {e}"))?;
-        }
-        (None, None)
-    } else {
-        // 4b. Create agent message + start turn
+            human_parts.clone(),
+            human_mentions.clone(),
+        )?;
         let agent_msg = add_message_internal(
             session_store,
             data_dir,
@@ -4323,13 +5270,23 @@ async fn prepare_send_agent_message_internal(
             code_usecase.resolve_mentions_or_fallback(&session_worktree_path, &content, &mentions);
         let turn = PreparedAgentTurn {
             session_id: sid.clone(),
+            backend_id: session
+                .backend_id
+                .clone()
+                .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string()),
             worktree_path: session_worktree_path.clone(),
             permission_mode: pm.clone(),
             prompt: resolved_prompt,
             agent_message_id: agent_msg.id.clone(),
             images: images.clone(),
+            editor_context,
         };
-        (Some(agent_msg), Some(turn))
+        (
+            human_message,
+            Some(agent_msg),
+            Some(PreparedAgentRuntimeInput::Turn(turn)),
+            None,
+        )
     };
 
     // 5. Get updated session and list
@@ -4337,16 +5294,92 @@ async fn prepare_send_agent_message_internal(
         .get_session(data_dir, &sid)?
         .ok_or_else(|| format!("Session not found: {sid}"))?;
     let sessions = session_store.list_sessions(data_dir, &session_worktree_path)?;
+    let pending_queue = {
+        let map = handles.lock().await;
+        map.get(&sid).map(pending_queue_view).unwrap_or_default()
+    };
 
     Ok((
         SendMessageResponse {
             session: updated_session,
             human_message,
             agent_message,
+            queued_turn,
+            pending_queue_count: pending_queue.len(),
+            pending_queue,
             sessions,
         },
-        prepared_turn,
+        prepared_input,
     ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_prepared_agent_turn(
+    app: &tauri::AppHandle,
+    session_store: &Arc<SessionStore>,
+    registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    turn: PreparedAgentTurn,
+) -> Result<(), String> {
+    if turn.backend_id == CODEX_BACKEND_ID {
+        let backend = registry
+            .get(&turn.backend_id)
+            .ok_or_else(|| format!("Agent backend not found: {}", turn.backend_id))?;
+        return backend
+            .send_message(
+                &crate::infrastructure::agent_session::runtime::SessionHandle {
+                    chat_session_id: turn.session_id,
+                    backend_id: turn.backend_id,
+                },
+                crate::infrastructure::agent_session::runtime::AgentMessage {
+                    content: turn.prompt,
+                    streaming_message_id: turn.agent_message_id,
+                    images: turn.images,
+                    permission_mode: turn.permission_mode,
+                    permission_profile_id: None,
+                    editor_context: turn.editor_context,
+                },
+            )
+            .await;
+    }
+
+    start_agent_turn(
+        app,
+        handles,
+        session_store,
+        &turn.session_id,
+        &turn.worktree_path,
+        &turn.permission_mode,
+        &turn.prompt,
+        &turn.agent_message_id,
+        &turn.images,
+    )
+    .await
+}
+
+async fn steer_prepared_agent_turn(
+    registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
+    steer: PreparedAgentSteer,
+) -> Result<(), String> {
+    let backend = registry
+        .get(&steer.backend_id)
+        .ok_or_else(|| format!("Agent backend not found: {}", steer.backend_id))?;
+    backend
+        .steer_message(
+            &crate::infrastructure::agent_session::runtime::SessionHandle {
+                chat_session_id: steer.session_id,
+                backend_id: steer.backend_id,
+            },
+            crate::infrastructure::agent_session::runtime::AgentMessage {
+                content: steer.prompt,
+                streaming_message_id: steer.steering_message_id,
+                images: steer.images,
+                permission_mode: steer.permission_mode,
+                permission_profile_id: None,
+                editor_context: steer.editor_context,
+            },
+        )
+        .await
 }
 
 /// Unified command to send a message: handles session creation, message persistence,
@@ -4364,6 +5397,7 @@ pub async fn send_agent_message_internal(
     backend_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::domain::code::MentionReference>>,
+    editor_context: Option<AgentEditorContext>,
 ) -> Result<SendMessageResponse, String> {
     let lock_key = chat_session_id
         .as_deref()
@@ -4374,7 +5408,7 @@ pub async fn send_agent_message_internal(
         &app.state::<crate::adaptor::controller::state::AppState>()
             .code_usecase,
     );
-    let (response, prepared_turn) = {
+    let (response, prepared_input) = {
         let _send_guard = acquire_session_runtime_lock(&lock_key).await;
         prepare_send_agent_message_internal(
             &code_usecase,
@@ -4389,23 +5423,20 @@ pub async fn send_agent_message_internal(
             backend_id,
             images,
             mentions,
+            editor_context,
         )
         .await?
     };
 
-    if let Some(turn) = prepared_turn {
-        start_agent_turn(
-            app,
-            handles,
-            session_store,
-            &turn.session_id,
-            &turn.worktree_path,
-            &turn.permission_mode,
-            &turn.prompt,
-            &turn.agent_message_id,
-            &turn.images,
-        )
-        .await?;
+    if let Some(input) = prepared_input {
+        match input {
+            PreparedAgentRuntimeInput::Turn(turn) => {
+                start_prepared_agent_turn(app, session_store, registry, handles, turn).await?;
+            }
+            PreparedAgentRuntimeInput::Steer(steer) => {
+                steer_prepared_agent_turn(registry, steer).await?;
+            }
+        }
     }
 
     Ok(response)
@@ -4432,13 +5463,32 @@ pub async fn init_agent_sessions(
     open_tabs: tauri::State<'_, Arc<crate::usecase::agent_session::session::OpenTabRegistry>>,
     worktree_path: String,
 ) -> Result<InitSessionsResponse, String> {
-    let data_dir = resolve_data_dir(&app)?;
+    init_agent_sessions_internal(
+        &app,
+        session_store.inner(),
+        registry.inner(),
+        handles.inner(),
+        open_tabs.inner(),
+        worktree_path,
+    )
+    .await
+}
+
+pub(crate) async fn init_agent_sessions_internal(
+    app: &tauri::AppHandle,
+    session_store: &Arc<SessionStore>,
+    registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    open_tabs: &Arc<crate::usecase::agent_session::session::OpenTabRegistry>,
+    worktree_path: String,
+) -> Result<InitSessionsResponse, String> {
+    let data_dir = resolve_data_dir(app)?;
 
     crate::workflow_step_lifecycle_adapters::hydrate_open_workflow_step_tabs(
-        session_store.inner(),
+        session_store,
         &data_dir,
         &worktree_path,
-        open_tabs.inner(),
+        open_tabs,
     )?;
     let sessions = session_store.list_sessions(&data_dir, &worktree_path)?;
 
@@ -4450,23 +5500,15 @@ pub async fn init_agent_sessions(
     } else {
         // Start agent processes only for sessions that have already sent a turn or have
         // a resumable SDK session. Empty NewSession entries must remain selectable.
-        // Sequential execution is required because start_agent_session_internal
-        // transitively calls spawn_bridge_process, making the Future !Send
-        // and incompatible with tokio::spawn.
+        // Sequential execution is required because the bridge process path makes the
+        // Future !Send and incompatible with tokio::spawn.
         for s in &sessions {
             if !should_start_agent_process_for_summary(s) {
                 continue;
             }
-            if let Err(e) = start_agent_session_internal(
-                &app,
-                handles.inner(),
-                session_store.inner(),
-                &s.id,
-                &worktree_path,
-                Some(s.permission_mode.clone()),
-                None,
-            )
-            .await
+            if let Err(e) =
+                start_existing_session_for_summary(app, handles, session_store, registry, s, None)
+                    .await
             {
                 log::error!("Failed to start agent session {}: {e}", s.id);
             }
@@ -4477,14 +5519,7 @@ pub async fn init_agent_sessions(
         // 候補が無い場合は active_session を None で返し、UI は空状態を描く。
         let active_candidate = pick_initial_active_session_candidate(&sessions);
         let active = if let Some(candidate) = active_candidate {
-            get_session_internal(
-                session_store.inner(),
-                handles.inner(),
-                Some(registry.inner()),
-                &app,
-                &candidate.id,
-            )
-            .await?
+            get_session_internal(session_store, handles, Some(registry), app, &candidate.id).await?
         } else {
             None
         };
@@ -4496,10 +5531,103 @@ pub async fn init_agent_sessions(
     }
 }
 
+async fn start_existing_session_for_summary(
+    app: &tauri::AppHandle,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
+    session: &SessionSummary,
+    system_prompt: Option<String>,
+) -> Result<(), String> {
+    let backend_id = match session.backend_id.as_deref() {
+        Some(id) => id.to_string(),
+        None => registry.resolve_default_id()?,
+    };
+    if backend_id == CODEX_BACKEND_ID {
+        let backend = registry
+            .get(&backend_id)
+            .ok_or_else(|| format!("Agent backend not found: {backend_id}"))?;
+        backend
+            .start_session(SessionConfig {
+                chat_session_id: session.id.clone(),
+                cwd: session.worktree_path.clone(),
+                permission_mode: Some(session.permission_mode.clone()),
+                permission_profile_id: session.permission_profile_id.clone(),
+                system_prompt,
+            })
+            .await?;
+        return Ok(());
+    }
+
+    start_agent_session_internal(
+        app,
+        handles,
+        session_store,
+        &session.id,
+        &session.worktree_path,
+        Some(session.permission_mode.clone()),
+        system_prompt,
+    )
+    .await
+}
+
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 pub struct SlashCommandEntry {
     pub name: String,
     pub description: String,
+    #[serde(
+        rename = "argumentHint",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub argument_hint: Option<String>,
+}
+
+fn normalize_supported_command_name(raw: &str) -> String {
+    raw.trim().trim_start_matches('/').to_string()
+}
+
+fn supported_commands_from_bridge_message(msg: &serde_json::Value) -> Vec<SlashCommandEntry> {
+    let Some(commands) = msg.get("commands").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+
+    commands
+        .iter()
+        .filter_map(|command| {
+            let obj = command.as_object()?;
+            let name = normalize_supported_command_name(obj.get("name")?.as_str()?);
+            if name.is_empty() {
+                return None;
+            }
+            let description = obj
+                .get("description")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let argument_hint = obj
+                .get("argumentHint")
+                .or_else(|| obj.get("argument_hint"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string);
+            Some(SlashCommandEntry {
+                name,
+                description,
+                argument_hint,
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+    pub scope: String,
 }
 
 /// Parse SKILL.md frontmatter (delimited by `---`) and extract `name` / `description` fields.
@@ -4525,77 +5653,96 @@ fn parse_skill_frontmatter(content: &str) -> Option<(String, String)> {
     Some((name.unwrap_or_default(), description.unwrap_or_default()))
 }
 
-/// Scan skill and command directories to collect slash commands with deduplication.
-///
-/// Scan order (highest priority first):
-/// 1. `~/.claude/skills/*/SKILL.md` — personal skill
-/// 2. `{cwd}/.claude/skills/*/SKILL.md` — project skill
-/// 3. `~/.claude/commands/*.md` — personal command
-/// 4. `{cwd}/.claude/commands/*.md` — project command
-///
-/// When the same name appears in multiple sources, the higher-priority entry wins.
-pub async fn scan_slash_commands(cwd: String) -> Result<Vec<SlashCommandEntry>, String> {
-    let mut commands = Vec::new();
-    let mut seen = HashSet::new();
-
-    let cwd_path = PathBuf::from(&cwd);
-
-    // Build list of directories to scan in priority order
-    let mut skill_dirs: Vec<PathBuf> = Vec::new();
-    let mut command_dirs: Vec<PathBuf> = Vec::new();
-
-    if let Some(home) = dirs::home_dir() {
-        skill_dirs.push(home.join(".claude").join("skills"));
-        command_dirs.push(home.join(".claude").join("commands"));
+fn normalized_scanner_backend_id(backend_id: Option<&str>) -> &'static str {
+    match backend_id {
+        Some(id) if id == CODEX_BACKEND_ID => CODEX_BACKEND_ID,
+        _ => CLAUDE_BACKEND_ID,
     }
-    skill_dirs.push(cwd_path.join(".claude").join("skills"));
-    command_dirs.push(cwd_path.join(".claude").join("commands"));
+}
 
-    // Scan skills (personal first, then project)
-    for skills_dir in &skill_dirs {
+fn agent_skill_dirs_for_backend(
+    cwd: &Path,
+    backend_id: Option<&str>,
+    home: Option<PathBuf>,
+) -> Vec<(PathBuf, &'static str)> {
+    let mut dirs = Vec::new();
+    match normalized_scanner_backend_id(backend_id) {
+        CODEX_BACKEND_ID => {
+            if let Some(home) = home {
+                dirs.push((home.join(".agents").join("skills"), "personal"));
+            }
+            dirs.push((cwd.join(".agents").join("skills"), "project"));
+        }
+        _ => {
+            if let Some(home) = home {
+                dirs.push((home.join(".claude").join("skills"), "personal"));
+            }
+            dirs.push((cwd.join(".claude").join("skills"), "project"));
+        }
+    }
+    dirs
+}
+
+fn scan_agent_skills_inner(
+    cwd: &Path,
+    backend_id: Option<&str>,
+    home: Option<PathBuf>,
+) -> Vec<SkillEntry> {
+    let mut skills = Vec::new();
+    for (skills_dir, scope) in agent_skill_dirs_for_backend(cwd, backend_id, home) {
         if let Ok(entries) = std::fs::read_dir(skills_dir) {
             for entry in entries.flatten() {
                 let skill_md = entry.path().join("SKILL.md");
-                if skill_md.is_file() {
-                    if let Ok(content) = std::fs::read_to_string(&skill_md) {
-                        if let Some((name, description)) = parse_skill_frontmatter(&content) {
-                            if !name.is_empty() && seen.insert(name.clone()) {
-                                commands.push(SlashCommandEntry { name, description });
-                            }
+                if !skill_md.is_file() {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(&skill_md) {
+                    if let Some((name, description)) = parse_skill_frontmatter(&content) {
+                        if !name.is_empty() {
+                            skills.push(SkillEntry {
+                                name,
+                                description,
+                                scope: scope.to_string(),
+                            });
                         }
                     }
                 }
             }
         }
     }
+    skills
+}
 
-    // Scan commands (personal first, then project)
-    for cmd_dir in &command_dirs {
-        if let Ok(entries) = std::fs::read_dir(cmd_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("md") && path.is_file() {
-                    let name = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if name.is_empty() {
-                        continue;
-                    }
-                    if seen.insert(name.clone()) {
-                        let description = std::fs::read_to_string(&path)
-                            .ok()
-                            .and_then(|c| c.lines().next().map(|l| l.trim().to_string()))
-                            .unwrap_or_default();
-                        commands.push(SlashCommandEntry { name, description });
-                    }
-                }
-            }
-        }
-    }
+pub(crate) fn filter_agent_skills_for_query(
+    skills: Vec<SkillEntry>,
+    query: Option<&str>,
+    limit: Option<usize>,
+) -> Vec<SkillEntry> {
+    let needle = query.unwrap_or_default().trim().to_lowercase();
+    let max_results = limit.unwrap_or(usize::MAX);
+    skills
+        .into_iter()
+        .filter(|skill| {
+            needle.is_empty()
+                || skill.name.to_lowercase().contains(&needle)
+                || skill.description.to_lowercase().contains(&needle)
+        })
+        .take(max_results)
+        .collect()
+}
 
-    Ok(commands)
+pub async fn scan_agent_skills(
+    cwd: String,
+    backend_id: Option<String>,
+    query: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<SkillEntry>, String> {
+    let home = dirs::home_dir();
+    Ok(filter_agent_skills_for_query(
+        scan_agent_skills_inner(&PathBuf::from(cwd), backend_id.as_deref(), home),
+        query.as_deref(),
+        limit,
+    ))
 }
 
 // --- Image attachment support ---
@@ -4854,6 +6001,82 @@ mod tests {
         }
     }
 
+    struct MockSteeringBackend {
+        backend_id: String,
+    }
+
+    #[async_trait]
+    impl AgentBackend for MockSteeringBackend {
+        fn id(&self) -> &str {
+            &self.backend_id
+        }
+
+        fn name(&self) -> &str {
+            "MockSteering"
+        }
+
+        async fn start_session(&self, config: SessionConfig) -> Result<SessionHandle, String> {
+            Ok(SessionHandle {
+                chat_session_id: config.chat_session_id,
+                backend_id: self.backend_id.clone(),
+            })
+        }
+
+        async fn send_message(
+            &self,
+            _session: &SessionHandle,
+            _message: AgentMessage,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn steer_message(
+            &self,
+            _session: &SessionHandle,
+            _message: AgentMessage,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn active_turn_steering_ready(&self, _session: &SessionHandle) -> bool {
+            true
+        }
+
+        async fn interrupt(&self, _session: &SessionHandle) -> Result<(), String> {
+            panic!("steering-ready backend should not be interrupted")
+        }
+
+        async fn respond_permission(
+            &self,
+            _session: &SessionHandle,
+            _response: PermissionResponse,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn expect_prepared_turn(input: PreparedAgentRuntimeInput) -> PreparedAgentTurn {
+        match input {
+            PreparedAgentRuntimeInput::Turn(turn) => turn,
+            PreparedAgentRuntimeInput::Steer(_) => {
+                panic!("expected a prepared turn, got active-turn steer")
+            }
+        }
+    }
+
+    fn expect_prepared_steer(input: PreparedAgentRuntimeInput) -> PreparedAgentSteer {
+        match input {
+            PreparedAgentRuntimeInput::Steer(steer) => steer,
+            PreparedAgentRuntimeInput::Turn(_) => {
+                panic!("expected active-turn steer, got a prepared turn")
+            }
+        }
+    }
+
     fn chat_session_for_spawn_info(session_id: &str) -> ChatSession {
         ChatSession {
             id: session_id.to_string(),
@@ -4864,6 +6087,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: Some("sdk-resume-id".to_string()),
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: Some("sonnet".to_string()),
             backend_id: Some("mock".to_string()),
             workflow_step_session: true,
@@ -6496,11 +7720,13 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
 
         let (_response, prepared_turn) = result.unwrap();
         let prepared_turn = prepared_turn.expect("workflow step message starts a turn");
+        let prepared_turn = expect_prepared_turn(prepared_turn);
         assert_eq!(prepared_turn.worktree_path, "/repo");
         let saved = session_store
             .get_session(data_dir.path(), &step_session.id)
@@ -6600,6 +7826,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -6643,11 +7870,13 @@ mod tests {
             Some(CLAUDE_BACKEND_ID.to_string()),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
 
         let prepared_turn = prepared_turn.expect("new session should start a turn");
+        let prepared_turn = expect_prepared_turn(prepared_turn);
         assert_eq!(prepared_turn.permission_mode, "ask");
         assert_eq!(response.session.permission_mode, "ask");
         let saved = session_store
@@ -6655,6 +7884,95 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(saved.permission_mode, "ask");
+    }
+
+    #[tokio::test]
+    async fn prepared_turn_carries_codex_backend_for_runtime_dispatch() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let registry = make_fixed_model_registry();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            None,
+            "/repo".to_string(),
+            "hello codex".to_string(),
+            crate::permission::PermissionMode::Edit,
+            Some(CODEX_BACKEND_ID.to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let prepared_turn = prepared_turn.expect("new codex session should start a turn");
+        let prepared_turn = expect_prepared_turn(prepared_turn);
+        assert_eq!(prepared_turn.backend_id, CODEX_BACKEND_ID);
+        assert_eq!(prepared_turn.prompt, "hello codex");
+    }
+
+    #[tokio::test]
+    async fn busy_send_uses_active_turn_steer_when_backend_is_ready() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(MockSteeringBackend {
+            backend_id: "steer".to_string(),
+        }));
+        let registry = Arc::new(registry);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let worktree_path = "/repo".to_string();
+        let session = create_session_internal(
+            &session_store,
+            data_dir.path(),
+            &worktree_path,
+            Some("steer".to_string()),
+        )
+        .unwrap();
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        handles.lock().await.insert(session.id.clone(), proc);
+
+        let (response, prepared_input) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            Some(session.id.clone()),
+            worktree_path.clone(),
+            "/status".to_string(),
+            crate::permission::PermissionMode::Edit,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(response.agent_message.is_none());
+        assert!(response.queued_turn.is_none());
+        assert!(response.pending_queue.is_empty());
+        let steer = expect_prepared_steer(prepared_input.expect("busy send should steer"));
+        assert_eq!(steer.session_id, session.id);
+        assert_eq!(steer.backend_id, "steer");
+        assert_eq!(steer.prompt, "/status");
+        assert_eq!(steer.steering_message_id, response.human_message.id);
+        let pending_count = handles
+            .lock()
+            .await
+            .get(&session.id)
+            .map(|proc| proc.pending_messages.len())
+            .unwrap_or_default();
+        assert_eq!(pending_count, 0);
     }
 
     #[tokio::test]
@@ -6695,11 +8013,13 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
 
         let prepared_turn = prepared_turn.expect("stopped workflow step should resume on send");
+        let prepared_turn = expect_prepared_turn(prepared_turn);
         assert_eq!(prepared_turn.session_id, step_session.id);
         assert_eq!(prepared_turn.worktree_path, worktree_path);
         assert_eq!(prepared_turn.prompt, "resume step");
@@ -7190,11 +8510,12 @@ mod tests {
                 streaming_parts: Vec::new(),
                 last_message_id: None,
                 task_id_map: HashMap::new(),
-                pending_message: None,
+                pending_messages: VecDeque::new(),
                 current_permission_mode: "edit".to_string(),
                 available_models: Vec::new(),
                 selected_model: None,
                 last_result_token_usage: None,
+                latest_token_usage: None,
                 pending_stream_part_count: 0,
                 pending_stream_bytes: 0,
                 last_stream_emit_at: None,
@@ -7215,12 +8536,14 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
 
         let agent = response.agent_message.unwrap();
         let prepared_turn = prepared_turn.unwrap();
+        let prepared_turn = expect_prepared_turn(prepared_turn);
         assert_eq!(prepared_turn.session_id, session.id);
         assert_eq!(
             prepared_turn.prompt,
@@ -7327,6 +8650,7 @@ mod tests {
             message_count: 0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
         };
@@ -7346,6 +8670,7 @@ mod tests {
             message_count: 1,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
         };
@@ -7375,6 +8700,7 @@ mod tests {
                 message_count: 0,
                 agent_session_id: None,
                 permission_mode: "edit".to_string(),
+                permission_profile_id: None,
                 backend_id: Some("claude".to_string()),
                 workflow_step_session: workflow_step,
             }
@@ -7412,6 +8738,7 @@ mod tests {
             message_count: 3,
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: true,
         };
@@ -7440,12 +8767,15 @@ mod tests {
             let mut map = handles.lock().await;
             let proc = map.get_mut("step").unwrap();
             proc.turn_phase = TurnPhase::Idle;
-            proc.pending_message = Some(PendingMessage {
+            proc.pending_messages.push_back(PendingMessage {
+                id: "queued-1".to_string(),
                 content: "next".to_string(),
+                created_at: 1.0,
                 permission_mode: "edit".to_string(),
                 images: Vec::new(),
                 worktree_path: "/repo".to_string(),
                 mentions: Vec::new(),
+                editor_context: None,
             });
         }
         assert!(is_agent_step_runtime_busy(&handles, "step").await);
@@ -7454,7 +8784,7 @@ mod tests {
         {
             let mut map = handles.lock().await;
             let proc = map.get_mut("step").unwrap();
-            proc.pending_message = None;
+            proc.pending_messages.clear();
         }
         assert!(!is_agent_step_runtime_busy(&handles, "step").await);
         assert!(!agent_session_has_pending_message(&handles, "step").await);
@@ -7464,12 +8794,15 @@ mod tests {
     async fn pending_turn_starting_keeps_step_runtime_busy_after_pending_is_taken() {
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let mut proc = make_test_agent_process();
-        proc.pending_message = Some(PendingMessage {
+        proc.pending_messages.push_back(PendingMessage {
+            id: "queued-1".to_string(),
             content: "next".to_string(),
+            created_at: 1.0,
             permission_mode: "edit".to_string(),
             images: Vec::new(),
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),
+            editor_context: None,
         });
         handles
             .lock()
@@ -7484,6 +8817,82 @@ mod tests {
 
         clear_pending_turn_starting("step-pending").await;
         assert!(!is_agent_step_runtime_busy(&handles, "step-pending").await);
+    }
+
+    #[tokio::test]
+    async fn pending_messages_are_consumed_fifo_without_overwriting_later_turns() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.pending_messages.push_back(PendingMessage {
+            id: "queued-1".to_string(),
+            content: "first".to_string(),
+            created_at: 1.0,
+            permission_mode: "edit".to_string(),
+            images: Vec::new(),
+            worktree_path: "/repo".to_string(),
+            mentions: Vec::new(),
+            editor_context: None,
+        });
+        proc.pending_messages.push_back(PendingMessage {
+            id: "queued-2".to_string(),
+            content: "second".to_string(),
+            created_at: 2.0,
+            permission_mode: "ask".to_string(),
+            images: Vec::new(),
+            worktree_path: "/repo".to_string(),
+            mentions: Vec::new(),
+            editor_context: None,
+        });
+        handles.lock().await.insert("queued".to_string(), proc);
+
+        let first = take_pending_message(&handles, "queued").await.unwrap();
+        assert_eq!(first.content, "first");
+        assert_eq!(first.permission_mode, "edit");
+        assert!(agent_session_has_pending_message(&handles, "queued").await);
+
+        clear_pending_turn_starting("queued").await;
+        let second = take_pending_message(&handles, "queued").await.unwrap();
+        assert_eq!(second.content, "second");
+        assert_eq!(second.permission_mode, "ask");
+        assert!(!agent_session_has_pending_message(&handles, "queued").await);
+
+        clear_pending_turn_starting("queued").await;
+    }
+
+    #[tokio::test]
+    async fn cancel_agent_queued_turn_removes_only_requested_pending_turn() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.pending_messages.push_back(PendingMessage {
+            id: "keep".to_string(),
+            content: "first".to_string(),
+            created_at: 1.0,
+            permission_mode: "edit".to_string(),
+            images: Vec::new(),
+            worktree_path: "/repo".to_string(),
+            mentions: Vec::new(),
+            editor_context: None,
+        });
+        proc.pending_messages.push_back(PendingMessage {
+            id: "drop".to_string(),
+            content: "second".to_string(),
+            created_at: 2.0,
+            permission_mode: "ask".to_string(),
+            images: Vec::new(),
+            worktree_path: "/repo".to_string(),
+            mentions: Vec::new(),
+            editor_context: None,
+        });
+        handles.lock().await.insert("queued".to_string(), proc);
+
+        let response = cancel_agent_queued_turn_internal(&handles, "queued", Some("drop"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.canceled_count, 1);
+        assert_eq!(response.pending_queue_count, 1);
+        assert_eq!(response.pending_queue[0].id, "keep");
+        assert_eq!(response.pending_queue[0].content_preview, "first");
     }
 
     #[test]
@@ -7661,7 +9070,7 @@ mod tests {
 
     #[test]
     fn dev_bridge_path_points_to_src_tauri_resources() {
-        let path = dev_bridge_path(CLAUDE_BACKEND_ID);
+        let path = dev_bridge_path(CLAUDE_BACKEND_ID).unwrap();
         assert!(
             path.ends_with("src-tauri/resources/claude-sdk-bridge.mjs"),
             "dev_bridge_path should end with src-tauri/resources/claude-sdk-bridge.mjs, got: {}",
@@ -7671,7 +9080,7 @@ mod tests {
 
     #[test]
     fn dev_bridge_path_file_exists() {
-        let path = dev_bridge_path(CLAUDE_BACKEND_ID);
+        let path = dev_bridge_path(CLAUDE_BACKEND_ID).unwrap();
         assert!(
             path.exists(),
             "Bridge script should exist at {}, but it does not",
@@ -7680,36 +9089,21 @@ mod tests {
     }
 
     #[test]
-    fn dev_bridge_path_switches_for_codex() {
-        let path = dev_bridge_path(CODEX_BACKEND_ID);
-        assert!(
-            path.ends_with("src-tauri/resources/codex-sdk-bridge.mjs"),
-            "dev_bridge_path should end with src-tauri/resources/codex-sdk-bridge.mjs, got: {}",
-            path.display()
-        );
-        assert!(
-            path.exists(),
-            "Codex bridge script should exist at {}, but it does not",
-            path.display()
-        );
+    fn dev_bridge_path_rejects_codex_legacy_bridge() {
+        let err = dev_bridge_path(CODEX_BACKEND_ID).unwrap_err();
+        assert!(err.contains("app-server"));
     }
 
     #[test]
-    fn bridge_script_names_switch_by_backend_id() {
+    fn bridge_script_names_returns_claude_bridge_only() {
         assert_eq!(
-            bridge_script_names(CLAUDE_BACKEND_ID),
+            bridge_script_names(CLAUDE_BACKEND_ID).unwrap(),
             (
                 "claude-sdk-bridge.mjs",
                 "generated/bridges/claude-sdk-bridge.bundled.mjs"
             )
         );
-        assert_eq!(
-            bridge_script_names(CODEX_BACKEND_ID),
-            (
-                "codex-sdk-bridge.mjs",
-                "generated/bridges/codex-sdk-bridge.bundled.mjs"
-            )
-        );
+        assert!(bridge_script_names(CODEX_BACKEND_ID).is_err());
     }
 
     #[tokio::test]
@@ -8183,71 +9577,123 @@ mod tests {
         assert!(parse_skill_frontmatter("").is_none());
     }
 
-    #[tokio::test]
-    async fn scan_slash_commands_with_nonexistent_cwd() {
-        let result = scan_slash_commands("/nonexistent/path/abc123".to_string()).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn scan_slash_commands_with_temp_dir() {
+    #[test]
+    fn scan_agent_skills_switches_directories_by_backend() {
         let tmp = tempfile::tempdir().unwrap();
-        let commands_dir = tmp.path().join(".claude").join("commands");
-        std::fs::create_dir_all(&commands_dir).unwrap();
-
+        let home = tmp.path().join("home");
+        let cwd = tmp.path().join("repo");
+        let claude_skill = cwd.join(".claude").join("skills").join("claude-review");
+        std::fs::create_dir_all(&claude_skill).unwrap();
         std::fs::write(
-            commands_dir.join("test-cmd.md"),
-            "This is a test command\nMore details here",
+            claude_skill.join("SKILL.md"),
+            "---\nname: claude-review\ndescription: Claude review\n---\nBody",
+        )
+        .unwrap();
+        let codex_skill = cwd.join(".agents").join("skills").join("codex-review");
+        std::fs::create_dir_all(&codex_skill).unwrap();
+        std::fs::write(
+            codex_skill.join("SKILL.md"),
+            "---\nname: codex-review\ndescription: Codex review\n---\nBody",
         )
         .unwrap();
 
-        let result = scan_slash_commands(tmp.path().to_string_lossy().to_string())
-            .await
-            .unwrap();
+        let claude = scan_agent_skills_inner(&cwd, Some(CLAUDE_BACKEND_ID), Some(home.clone()));
+        let codex = scan_agent_skills_inner(&cwd, Some(CODEX_BACKEND_ID), Some(home));
 
-        let test_cmd = result.iter().find(|c| c.name == "test-cmd");
-        assert!(test_cmd.is_some(), "Should find test-cmd in results");
-        assert_eq!(test_cmd.unwrap().description, "This is a test command");
+        assert!(claude.iter().any(|skill| skill.name == "claude-review"));
+        assert!(!claude.iter().any(|skill| skill.name == "codex-review"));
+        let codex_skill = codex
+            .iter()
+            .find(|skill| skill.name == "codex-review")
+            .expect("Codex project skill should be included");
+        assert_eq!(codex_skill.scope, "project");
+        assert!(!codex.iter().any(|skill| skill.name == "claude-review"));
+    }
+
+    #[test]
+    fn scan_agent_skills_preserves_duplicate_codex_skill_names_across_scopes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let cwd = tmp.path().join("repo");
+        let personal_skill = home.join(".agents").join("skills").join("shared-review");
+        std::fs::create_dir_all(&personal_skill).unwrap();
+        std::fs::write(
+            personal_skill.join("SKILL.md"),
+            "---\nname: shared-review\ndescription: Personal review\n---\nBody",
+        )
+        .unwrap();
+        let repo_skill = cwd.join(".agents").join("skills").join("shared-review");
+        std::fs::create_dir_all(&repo_skill).unwrap();
+        std::fs::write(
+            repo_skill.join("SKILL.md"),
+            "---\nname: shared-review\ndescription: Repo review\n---\nBody",
+        )
+        .unwrap();
+
+        let codex = scan_agent_skills_inner(&cwd, Some(CODEX_BACKEND_ID), Some(home));
+
+        let matches = codex
+            .iter()
+            .filter(|skill| skill.name == "shared-review")
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].description, "Personal review");
+        assert_eq!(matches[0].scope, "personal");
+        assert_eq!(matches[1].description, "Repo review");
+        assert_eq!(matches[1].scope, "project");
     }
 
     #[tokio::test]
-    async fn scan_slash_commands_deduplicates_skill_over_command() {
+    async fn scan_agent_skills_returns_project_skills() {
         let tmp = tempfile::tempdir().unwrap();
-
-        let skill_dir = tmp
-            .path()
-            .join(".claude")
-            .join("skills")
-            .join("zzz-dedup-test-skill");
+        let skill_dir = tmp.path().join(".claude").join("skills").join("reviewer");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname: zzz-dedup-test\ndescription: From skill\n---\nBody",
+            "---\nname: reviewer\ndescription: Review focused changes\n---\nBody",
         )
         .unwrap();
 
-        let commands_dir = tmp.path().join(".claude").join("commands");
-        std::fs::create_dir_all(&commands_dir).unwrap();
-        std::fs::write(
-            commands_dir.join("zzz-dedup-test.md"),
-            "From command\nDetails",
-        )
-        .unwrap();
-
-        let result = scan_slash_commands(tmp.path().to_string_lossy().to_string())
+        let result = scan_agent_skills(tmp.path().to_string_lossy().to_string(), None, None, None)
             .await
             .unwrap();
 
-        let matches: Vec<_> = result
-            .iter()
-            .filter(|c| c.name == "zzz-dedup-test")
-            .collect();
-        assert_eq!(
-            matches.len(),
-            1,
-            "zzz-dedup-test should appear exactly once, got: {matches:?}"
-        );
-        assert_eq!(matches[0].description, "From skill");
+        let skill = result.iter().find(|skill| skill.name == "reviewer");
+        assert!(skill.is_some(), "project skill should be included");
+        let skill = skill.unwrap();
+        assert_eq!(skill.description, "Review focused changes");
+        assert_eq!(skill.scope, "project");
+    }
+
+    #[test]
+    fn scan_agent_skills_filters_by_query_and_limit_in_rust() {
+        let skills = vec![
+            SkillEntry {
+                name: "review".to_string(),
+                description: "Review code changes".to_string(),
+                scope: "project".to_string(),
+            },
+            SkillEntry {
+                name: "docs".to_string(),
+                description: "Write documentation".to_string(),
+                scope: "personal".to_string(),
+            },
+            SkillEntry {
+                name: "diagram".to_string(),
+                description: "Document architecture diagrams".to_string(),
+                scope: "project".to_string(),
+            },
+        ];
+
+        let result = filter_agent_skills_for_query(skills.clone(), Some("doc"), Some(1));
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "docs");
+
+        let result = filter_agent_skills_for_query(skills, Some("review"), Some(20));
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "review");
     }
 
     // --- append_to_parts tests ---
@@ -8431,6 +9877,46 @@ mod tests {
         assert!(!should_forward_sdk_message(true, "stream_event"));
         // permission_request → accumulated=true but still forward
         assert!(should_forward_sdk_message(true, "permission_request"));
+    }
+
+    #[test]
+    fn supported_commands_from_bridge_message_normalizes_sdk_commands() {
+        let msg = serde_json::json!({
+            "type": "supported_commands",
+            "commands": [
+                {
+                    "name": "/compact",
+                    "description": "Compact context",
+                    "argumentHint": "[instructions]"
+                },
+                {
+                    "name": "status",
+                    "description": "Show status",
+                    "argument_hint": ""
+                },
+                {
+                    "name": "   ",
+                    "description": "ignored"
+                }
+            ]
+        });
+
+        let commands = supported_commands_from_bridge_message(&msg);
+        assert_eq!(
+            commands,
+            vec![
+                SlashCommandEntry {
+                    name: "compact".to_string(),
+                    description: "Compact context".to_string(),
+                    argument_hint: Some("[instructions]".to_string()),
+                },
+                SlashCommandEntry {
+                    name: "status".to_string(),
+                    description: "Show status".to_string(),
+                    argument_hint: None,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -8875,6 +10361,38 @@ mod tests {
     }
 
     #[test]
+    fn test_accumulate_codex_realtime_notification() {
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "codex_realtime",
+            "notification_type": "codex_realtime",
+            "status": "in_progress",
+            "label": "Codex realtime started",
+            "detail": "thread=thr_123, version=v2"
+        });
+        let mut parts = vec![];
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(handled);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::SystemNotification {
+                notification_type,
+                status,
+                label,
+                detail,
+                hook_id,
+            } => {
+                assert_eq!(notification_type, "codex_realtime");
+                assert_eq!(status, "in_progress");
+                assert_eq!(label, "Codex realtime started");
+                assert_eq!(detail.as_deref(), Some("thread=thr_123, version=v2"));
+                assert_eq!(*hook_id, None);
+            }
+            _ => panic!("expected SystemNotification"),
+        }
+    }
+
+    #[test]
     fn test_accumulate_init_not_handled() {
         let msg = serde_json::json!({
             "type": "system",
@@ -9312,6 +10830,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: None,
             permission_mode: permission.to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: Some("mock".to_string()),
             workflow_step_session: false,
@@ -9345,11 +10864,12 @@ mod tests {
             streaming_parts: Vec::new(),
             last_message_id: None,
             task_id_map: HashMap::new(),
-            pending_message: None,
+            pending_messages: VecDeque::new(),
             current_permission_mode: "edit".to_string(),
             available_models: Vec::new(),
             selected_model: None,
             last_result_token_usage: None,
+            latest_token_usage: None,
             pending_stream_part_count: 0,
             pending_stream_bytes: 0,
             last_stream_emit_at: None,
@@ -9498,6 +11018,7 @@ mod tests {
             "hello".to_string(),
             crate::permission::PermissionMode::Ask,
             Some("mock".to_string()),
+            None,
             None,
             None,
         )
@@ -10004,11 +11525,12 @@ mod tests {
                 streaming_parts: Vec::new(),
                 last_message_id: None,
                 task_id_map: HashMap::new(),
-                pending_message: None,
+                pending_messages: VecDeque::new(),
                 current_permission_mode: "ask".to_string(),
                 available_models: Vec::new(),
                 selected_model: None,
                 last_result_token_usage: None,
+                latest_token_usage: None,
                 pending_stream_part_count: 0,
                 pending_stream_bytes: 0,
                 last_stream_emit_at: None,
@@ -10598,6 +12120,27 @@ mod tests {
         assert_eq!(payload["available_models"].as_array().unwrap().len(), 0);
     }
 
+    #[test]
+    fn token_usage_from_result_message_preserves_context_window_metadata() {
+        let usage = token_usage_from_result_message(&serde_json::json!({
+            "type": "result",
+            "modelUsage": {
+                "codex": {
+                    "inputTokens": 12,
+                    "outputTokens": 34,
+                    "totalTokens": 1234,
+                    "contextWindowTokens": 200000
+                }
+            }
+        }))
+        .expect("usage should be parsed");
+
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 34);
+        assert_eq!(usage.total_tokens, Some(1234));
+        assert_eq!(usage.context_window_tokens, Some(200000));
+    }
+
     // --- get_persisted_spawn_info: 新規未起動セッションと選択解除後の区別 ---
 
     fn make_chat_session_for_spawn(
@@ -10614,6 +12157,7 @@ mod tests {
             updated_at: 0.0,
             agent_session_id,
             permission_mode: "acceptEdits".to_string(),
+            permission_profile_id: None,
             selected_model,
             backend_id: Some(backend_id.to_string()),
             workflow_step_session: false,
@@ -10695,6 +12239,12 @@ mod tests {
             proc.available_models = vec![ModelInfo {
                 value: "stale-from-process".to_string(),
             }];
+            proc.latest_token_usage = Some(TokenUsage {
+                input_tokens: 1200,
+                output_tokens: 34,
+                total_tokens: None,
+                context_window_tokens: None,
+            });
             map.insert(session.id.clone(), proc);
         }
 
@@ -10715,6 +12265,15 @@ mod tests {
             .map(|m| m.value)
             .collect();
         assert_eq!(values, vec!["from-config".to_string()]);
+        assert_eq!(
+            response.latest_token_usage,
+            Some(TokenUsage {
+                input_tokens: 1200,
+                output_tokens: 34,
+                total_tokens: None,
+                context_window_tokens: None,
+            })
+        );
 
         let mut map = handles.lock().await;
         force_kill_all_sessions(&mut map).await;

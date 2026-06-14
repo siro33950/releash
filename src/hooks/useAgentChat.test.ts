@@ -34,6 +34,34 @@ vi.mock("./useSessionStore", () => ({
 	updateSessionState: vi.fn().mockResolvedValue(undefined),
 	updateSessionAgentInfo: vi.fn().mockResolvedValue(undefined),
 	closeSession: vi.fn().mockResolvedValue(undefined),
+	archiveSession: vi.fn().mockResolvedValue(undefined),
+	archiveOpenSession: vi.fn().mockResolvedValue(undefined),
+	forkSession: vi.fn().mockResolvedValue({
+		id: "s-forked",
+		worktreePath: "/repo",
+		messages: [
+			{
+				id: "m1",
+				role: "human",
+				parts: [{ type: "text", content: "old msg" }],
+				timestamp: 500,
+			},
+		],
+		state: "idle",
+		createdAt: 2000,
+		updatedAt: 2000,
+		permissionMode: "edit",
+	}),
+	setSessionTitle: vi.fn().mockResolvedValue({
+		id: "s1",
+		worktreePath: "/repo",
+		state: "idle",
+		createdAt: 1000,
+		updatedAt: 1000,
+		firstMessage: "Custom title",
+		messageCount: 1,
+		permissionMode: "edit",
+	}),
 	restoreSession: vi.fn().mockResolvedValue({ restoredWorkflowStep: false }),
 	openWorkflowStepTab: vi.fn().mockResolvedValue(undefined),
 	listClosedSessions: vi.fn().mockResolvedValue([]),
@@ -41,6 +69,7 @@ vi.mock("./useSessionStore", () => ({
 		backends: [],
 		defaultId: null,
 	}),
+	readCodexModelCatalog: vi.fn().mockResolvedValue([]),
 	setSessionBackend: vi.fn().mockResolvedValue({
 		session: {
 			id: "s1",
@@ -135,6 +164,8 @@ describe("useAgentChat", () => {
 		});
 		vi.mocked(sessionStore.restoreSession).mockClear();
 		vi.mocked(sessionStore.setSessionBackend).mockClear();
+		vi.mocked(sessionStore.readCodexModelCatalog).mockResolvedValue([]);
+		vi.mocked(sessionStore.readCodexModelCatalog).mockClear();
 	});
 
 	it("should define the hook", async () => {
@@ -146,6 +177,43 @@ describe("useAgentChat", () => {
 	it("should not export buildClaudeCommand (removed)", async () => {
 		const mod = await import("./useAgentChat");
 		expect((mod as Record<string, unknown>).buildClaudeCommand).toBeUndefined();
+	});
+
+	it("uses Codex app-server model catalog when available", async () => {
+		const { renderHook, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		vi.mocked(sessionStore.listAgentBackends).mockResolvedValueOnce({
+			backends: [
+				{
+					id: "codex",
+					name: "Codex",
+					available: true,
+					availableModels: [{ value: "fixed-codex-model" }],
+				},
+			],
+			defaultId: "codex",
+		});
+		vi.mocked(sessionStore.readCodexModelCatalog).mockResolvedValueOnce([
+			{ value: "runtime-codex-model" },
+			{ value: "runtime-codex-mini" },
+		]);
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: null,
+		});
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await waitFor(() => {
+			expect(sessionStore.readCodexModelCatalog).toHaveBeenCalled();
+			expect(result.current.selectedBackendId).toBe("codex");
+			expect(result.current.availableModels).toEqual([
+				{ value: "runtime-codex-model" },
+				{ value: "runtime-codex-mini" },
+			]);
+		});
 	});
 
 	it("sendMessage calls sendAgentMessage with permissionMode", async () => {
@@ -509,6 +577,87 @@ describe("useAgentChat", () => {
 			undefined,
 			undefined,
 		);
+	});
+
+	it("sendMessage can create a new session without activating it", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		vi.mocked(sessionStore.sendAgentMessage).mockResolvedValueOnce({
+			session: {
+				id: "side",
+				worktreePath: "/repo",
+				messages: [],
+				state: "active",
+				createdAt: 1001,
+				updatedAt: 1001,
+				permissionMode: "edit",
+			},
+			humanMessage: {
+				id: "msg-side-human",
+				role: "human",
+				parts: [{ type: "text", content: "side prompt" }],
+				timestamp: 1001,
+			},
+			agentMessage: {
+				id: "msg-side-agent",
+				role: "agent",
+				parts: [],
+				timestamp: 1002,
+			},
+			sessions: [
+				{
+					id: "s1",
+					worktreePath: "/repo",
+					createdAt: 1000,
+					updatedAt: 1000,
+					firstMessage: "",
+					messageCount: 0,
+					state: "active",
+					permissionMode: "edit",
+				},
+				{
+					id: "side",
+					worktreePath: "/repo",
+					createdAt: 1001,
+					updatedAt: 1001,
+					firstMessage: "side prompt",
+					messageCount: 1,
+					state: "active",
+					permissionMode: "edit",
+				},
+			],
+			pendingQueue: [],
+			pendingQueueCount: 0,
+			queuedTurn: null,
+		});
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
+
+		await act(async () => {
+			await result.current.sendMessage(
+				null,
+				"side prompt",
+				undefined,
+				undefined,
+				{ activateNewSession: false },
+			);
+		});
+
+		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
+			null,
+			"/repo",
+			"side prompt",
+			"edit",
+			null,
+			undefined,
+			undefined,
+		);
+		expect(result.current.activeSession?.id).toBe("s1");
+		expect(result.current.getSessionById("side")?.id).toBe("side");
 	});
 
 	it("sendMessage passes existing session id on second message", async () => {
@@ -1507,6 +1656,161 @@ describe("useAgentChat", () => {
 		});
 
 		expect(result.current.error).toContain("セッションクローズに失敗");
+	});
+
+	it("archiveSession archives a closed session and refreshes closed sessions", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		vi.mocked(sessionStore.listClosedSessions).mockResolvedValueOnce([]);
+
+		await act(async () => {
+			await result.current.archiveSession("s-closed");
+		});
+
+		expect(sessionStore.archiveSession).toHaveBeenCalledWith("s-closed");
+		expect(sessionStore.listClosedSessions).toHaveBeenCalledWith("/repo");
+	});
+
+	it("archiveOpenSession archives the active session and refreshes lists", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const activeSession = {
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [],
+			state: "idle",
+			createdAt: 1000,
+			updatedAt: 1000,
+			permissionMode: "edit",
+		};
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [{ id: "s1", worktreePath: "/repo", updatedAt: 1000 }],
+			activeSession: {
+				session: activeSession,
+				turnPhase: "idle",
+				selectedModel: null,
+				availableModels: [],
+			},
+		} as never);
+		vi.mocked(sessionStore.listSessions).mockResolvedValueOnce([]);
+		vi.mocked(sessionStore.listClosedSessions).mockResolvedValueOnce([]);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		await act(async () => {
+			await result.current.archiveOpenSession("s1");
+		});
+
+		expect(sessionStore.archiveOpenSession).toHaveBeenCalledWith("s1");
+		expect(result.current.activeSession).toBeNull();
+		expect(sessionStore.listSessions).toHaveBeenCalledWith("/repo");
+		expect(sessionStore.listClosedSessions).toHaveBeenCalledWith("/repo");
+	});
+
+	it("forkSession creates and activates a forked session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		const forkedSession = {
+			id: "s-forked",
+			worktreePath: "/repo",
+			messages: [
+				{
+					id: "m1",
+					role: "human",
+					parts: [{ type: "text", content: "old msg" }],
+					timestamp: 500,
+				},
+			],
+			state: "idle",
+			createdAt: 2000,
+			updatedAt: 2000,
+			permissionMode: "edit",
+		};
+		vi.mocked(sessionStore.forkSession).mockResolvedValueOnce(
+			forkedSession as never,
+		);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: forkedSession,
+			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [],
+		} as never);
+
+		await act(async () => {
+			await result.current.forkSession("s1");
+		});
+
+		expect(sessionStore.forkSession).toHaveBeenCalledWith("s1");
+		expect(result.current.activeSession?.id).toBe("s-forked");
+	});
+
+	it("setSessionTitle persists title and refreshes sessions", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		vi.mocked(sessionStore.setSessionTitle).mockResolvedValueOnce({
+			id: "s1",
+			worktreePath: "/repo",
+			state: "idle",
+			createdAt: 1000,
+			updatedAt: 1000,
+			firstMessage: "Custom title",
+			messageCount: 1,
+			permissionMode: "edit",
+		} as never);
+		vi.mocked(sessionStore.listSessions).mockResolvedValueOnce([
+			{
+				id: "s1",
+				worktreePath: "/repo",
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1000,
+				firstMessage: "Custom title",
+				messageCount: 1,
+				permissionMode: "edit",
+			},
+		] as never);
+
+		let label = "";
+		await act(async () => {
+			label = await result.current.setSessionTitle("s1", "Custom title");
+		});
+
+		expect(sessionStore.setSessionTitle).toHaveBeenCalledWith(
+			"s1",
+			"Custom title",
+		);
+		expect(label).toBe("Custom title");
+		expect(sessionStore.listSessions).toHaveBeenCalledWith("/repo");
 	});
 
 	it("restoreSession sets activeSession and refreshes lists", async () => {

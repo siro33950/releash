@@ -1,17 +1,19 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Dispatch } from "react";
 import { useEffect } from "react";
+import type { AgentSupportedCommandsUpdated } from "@/types/protocol";
 import {
+	type CodexGoal,
 	type MessagePart,
 	type ModelInfo,
 	normalizePermissionMode,
 	type PermissionRequest,
 	type SessionState,
+	type TokenUsage,
 	type TurnPhase,
 } from "@/types/session";
 import type { AgentChatAction } from "./agentChatReducer";
 import { getSession, updateSessionState } from "./useSessionStore";
-import { setSlashCommands } from "./useSlashCommands";
 
 interface PermissionRequestMessage {
 	type: "permission_request";
@@ -51,6 +53,18 @@ interface StreamingMessageUpdated {
 
 interface PendingMessageConsumed {
 	chat_session_id: string;
+	queued_turn_id?: string;
+	/**
+	 * drain 時に永続化された人間メッセージ。キュー投入時は transcript に追加せず、
+	 * ここで初めて transcript に出す（二重表示の防止）。
+	 */
+	human_message?: {
+		id: string;
+		role: "human";
+		content: string;
+		parts?: MessagePart[] | null;
+		timestamp: number;
+	};
 	agent_message: {
 		id: string;
 		role: "agent";
@@ -78,6 +92,13 @@ export interface AgentSdkListenerRefs {
 	dispatch: Dispatch<AgentChatAction>;
 	viewableRegistry: ViewableSessionRegistry;
 	refreshSessions: () => Promise<unknown>;
+	/**
+	 * 指定 session に message_id のメッセージが既に存在するか。streaming 更新時の
+	 * cache-miss hydration を「本当に未存在の時だけ」に限定するために使う。毎回
+	 * getSession→UPSERT_SESSION すると、drain 直後の楽観追加メッセージを古い
+	 * snapshot で上書きして消すレースが起きる。
+	 */
+	hasMessage: (sessionId: string, messageId: string) => boolean;
 }
 
 function isViewable(
@@ -85,22 +106,6 @@ function isViewable(
 	viewableRegistry: ViewableSessionRegistry,
 ): boolean {
 	return viewableRegistry.getIds().has(sessionId);
-}
-
-function handleSupportedCommands(msg: SdkMessage): void {
-	if (
-		msg.type === "supported_commands" &&
-		"commands" in msg &&
-		Array.isArray(msg.commands)
-	) {
-		setSlashCommands(
-			msg.commands as {
-				name: string;
-				description: string;
-				argumentHint?: string;
-			}[],
-		);
-	}
 }
 
 function handlePermissionRequest(
@@ -190,10 +195,135 @@ function handleResultErrors(
 	}
 }
 
-export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
-	const { dispatch, viewableRegistry, refreshSessions } = refs;
+function numberFromUnknown(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
 
-	// Listen to SDK messages for meta events (permissions, commands, system messages)
+function tokenUsageFromResultMessage(msg: SdkMessage): TokenUsage | null {
+	if (msg.type !== "result") return null;
+	const modelUsage = msg.modelUsage;
+	if (!modelUsage || typeof modelUsage !== "object") return null;
+
+	let inputTokens = 0;
+	let outputTokens = 0;
+	let totalTokens = 0;
+	let sawExplicitTotal = false;
+	let contextWindowTokens: number | undefined;
+
+	for (const usage of Object.values(modelUsage as Record<string, unknown>)) {
+		if (!usage || typeof usage !== "object") continue;
+		const entry = usage as Record<string, unknown>;
+		const input = numberFromUnknown(entry.inputTokens) ?? 0;
+		const output = numberFromUnknown(entry.outputTokens) ?? 0;
+		inputTokens += input;
+		outputTokens += output;
+		const total = numberFromUnknown(entry.totalTokens);
+		if (total != null) {
+			totalTokens += total;
+			sawExplicitTotal = true;
+		}
+		const window = numberFromUnknown(entry.contextWindowTokens);
+		if (window != null) {
+			contextWindowTokens =
+				contextWindowTokens == null
+					? window
+					: Math.max(contextWindowTokens, window);
+		}
+	}
+
+	if (inputTokens === 0 && outputTokens === 0 && !sawExplicitTotal) {
+		return null;
+	}
+
+	return {
+		inputTokens,
+		outputTokens,
+		totalTokens: sawExplicitTotal ? totalTokens : inputTokens + outputTokens,
+		contextWindowTokens,
+	};
+}
+
+function handleResultTokenUsage(
+	msg: SdkMessage,
+	chatSessionId: string | undefined,
+	dispatch: Dispatch<AgentChatAction>,
+): void {
+	if (!chatSessionId) return;
+	const usage = tokenUsageFromResultMessage(msg);
+	if (!usage) return;
+	dispatch({
+		type: "SET_LATEST_TOKEN_USAGE",
+		sessionId: chatSessionId,
+		usage,
+	});
+}
+
+function handleCodexRuntimeStatusMessage(
+	msg: SdkMessage,
+	chatSessionId: string | undefined,
+	dispatch: Dispatch<AgentChatAction>,
+): void {
+	if (!chatSessionId || msg.type !== "codex_runtime_status_updated") {
+		return;
+	}
+	const accountSummary =
+		typeof msg.accountSummary === "string" ? msg.accountSummary : undefined;
+	const rateLimitSummary =
+		typeof msg.rateLimitSummary === "string" ? msg.rateLimitSummary : undefined;
+	if (!accountSummary && !rateLimitSummary) return;
+	dispatch({
+		type: "SET_CODEX_RUNTIME_STATUS",
+		sessionId: chatSessionId,
+		status: {
+			accountSummary,
+			rateLimitSummary,
+		},
+	});
+}
+
+function isCodexGoal(value: unknown): value is CodexGoal {
+	if (!value || typeof value !== "object") return false;
+	const goal = value as Record<string, unknown>;
+	return (
+		typeof goal.objective === "string" &&
+		typeof goal.status === "string" &&
+		typeof goal.tokensUsed === "number" &&
+		typeof goal.timeUsedSeconds === "number" &&
+		(goal.tokenBudget === undefined ||
+			goal.tokenBudget === null ||
+			typeof goal.tokenBudget === "number")
+	);
+}
+
+function handleCodexGoalMessage(
+	msg: SdkMessage,
+	chatSessionId: string | undefined,
+	dispatch: Dispatch<AgentChatAction>,
+): void {
+	if (!chatSessionId) return;
+	if (msg.type === "codex_goal_updated") {
+		const goal = msg.goal;
+		if (!isCodexGoal(goal)) return;
+		dispatch({
+			type: "SET_CODEX_GOAL",
+			sessionId: chatSessionId,
+			goal,
+		});
+		return;
+	}
+	if (msg.type === "codex_goal_cleared") {
+		dispatch({
+			type: "SET_CODEX_GOAL",
+			sessionId: chatSessionId,
+			goal: null,
+		});
+	}
+}
+
+export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
+	const { dispatch, viewableRegistry, refreshSessions, hasMessage } = refs;
+
+	// Listen to SDK messages for meta events (permissions, system messages)
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;
 		let cancelled = false;
@@ -202,10 +332,12 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			const msg = event.payload;
 			const chatSessionId = msg.chat_session_id;
 
-			handleSupportedCommands(msg);
 			handlePermissionRequest(msg, chatSessionId, dispatch);
 			handleSystemMessage(msg, chatSessionId, dispatch, viewableRegistry);
 			handleResultErrors(msg, chatSessionId, dispatch, viewableRegistry);
+			handleResultTokenUsage(msg, chatSessionId, dispatch);
+			handleCodexRuntimeStatusMessage(msg, chatSessionId, dispatch);
+			handleCodexGoalMessage(msg, chatSessionId, dispatch);
 		}).then((fn) => {
 			if (cancelled) {
 				fn();
@@ -219,6 +351,35 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			unlisten?.();
 		};
 	}, [dispatch, viewableRegistry]);
+
+	// Listen to agent-supported-commands-updated from Rust backend.
+	useEffect(() => {
+		let unlisten: UnlistenFn | null = null;
+		let cancelled = false;
+
+		listen<AgentSupportedCommandsUpdated>(
+			"agent-supported-commands-updated",
+			(event) => {
+				const { chat_session_id, commands } = event.payload;
+				dispatch({
+					type: "SET_RUNTIME_SLASH_COMMANDS",
+					sessionId: chat_session_id,
+					commands,
+				});
+			},
+		).then((fn) => {
+			if (cancelled) {
+				fn();
+			} else {
+				unlisten = fn;
+			}
+		});
+
+		return () => {
+			cancelled = true;
+			unlisten?.();
+		};
+	}, [dispatch]);
 
 	// Listen to agent-permission-mode-changed from Rust backend
 	useEffect(() => {
@@ -271,9 +432,13 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 
 				// Cache miss: SET_STREAMING_MESSAGE は session.messages 内に message_id が
 				// 存在しない場合 no-op になる。viewable な session で message_id が
-				// 未確認の場合は getSession で fetch → UPSERT_SESSION で sessionsById を
+				// 未確認の場合のみ getSession で fetch → UPSERT_SESSION で sessionsById を
 				// 更新し、後続の SET_STREAMING_MESSAGE が反映できる状態に揃える。
-				if (!refreshInFlight) {
+				//
+				// 重要: message_id が既に存在する場合に毎回 getSession→UPSERT_SESSION
+				// すると、drain 直後に楽観追加したメッセージを「投入前の古い snapshot」で
+				// 上書きして一瞬で消すレースが起きる。必ず未存在時に限定する。
+				if (!hasMessage(chat_session_id, message_id) && !refreshInFlight) {
 					refreshInFlight = true;
 					try {
 						const response = await getSession(chat_session_id);
@@ -304,7 +469,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, viewableRegistry]);
+	}, [dispatch, viewableRegistry, hasMessage]);
 
 	// Listen to agent-session-state-changed (unified state event from Rust)
 	useEffect(() => {
@@ -367,8 +532,39 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		listen<PendingMessageConsumed>(
 			"agent-pending-message-consumed",
 			(event) => {
-				const { chat_session_id, agent_message } = event.payload;
+				const {
+					chat_session_id,
+					queued_turn_id,
+					human_message,
+					agent_message,
+				} = event.payload;
 				if (!isViewable(chat_session_id, viewableRegistry)) return;
+				if (queued_turn_id) {
+					dispatch({
+						type: "REMOVE_PENDING_QUEUE_ITEM",
+						sessionId: chat_session_id,
+						queuedTurnId: queued_turn_id,
+					});
+				}
+				// drain 時に永続化された人間メッセージを、agent メッセージより先に
+				// transcript へ追加する（キュー投入時は意図的に追加していない）。
+				if (human_message) {
+					// ChatMessage は parts のみを持つ（content は text part として表現）。
+					const humanParts: MessagePart[] =
+						human_message.parts && human_message.parts.length > 0
+							? human_message.parts
+							: [{ type: "text", content: human_message.content }];
+					dispatch({
+						type: "ADD_MESSAGE",
+						sessionId: chat_session_id,
+						message: {
+							id: human_message.id,
+							role: human_message.role,
+							parts: humanParts,
+							timestamp: human_message.timestamp,
+						},
+					});
+				}
 				dispatch({
 					type: "ADD_MESSAGE",
 					sessionId: chat_session_id,

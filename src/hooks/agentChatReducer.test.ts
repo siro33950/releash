@@ -40,14 +40,71 @@ describe("agentChatReducer", () => {
 			sessionsById: {},
 			activeSessionId: null,
 			turnPhases: {},
+			interrupting: {},
 			error: null,
 			permissionMode: "edit" as const,
 			pendingPermissions: {},
+			pendingQueues: {},
+			latestTokenUsage: {},
+			codexGoals: {},
+			codexRuntimeStatuses: {},
+			runtimeSlashCommands: {},
 			availableModels: [],
 			availableModelsByBackend: {},
 			sessionModels: {},
 			backends: [],
 			selectedBackendId: null,
+		});
+	});
+
+	it("stores runtime slash commands per session", () => {
+		const commands = [{ name: "compact", description: "Compact context" }];
+		const next = reducer(INITIAL_STATE, {
+			type: "SET_RUNTIME_SLASH_COMMANDS",
+			sessionId: "s1",
+			commands,
+		});
+		expect(next.runtimeSlashCommands.s1).toBe(commands);
+	});
+
+	it("stores and clears Codex goals per session", () => {
+		const goal = {
+			objective: "Finish native parity",
+			status: "active",
+			tokenBudget: 50000,
+			tokensUsed: 1200,
+			timeUsedSeconds: 30,
+		};
+		const withGoal = reducer(INITIAL_STATE, {
+			type: "SET_CODEX_GOAL",
+			sessionId: "s1",
+			goal,
+		});
+		expect(withGoal.codexGoals.s1).toEqual(goal);
+
+		const cleared = reducer(withGoal, {
+			type: "SET_CODEX_GOAL",
+			sessionId: "s1",
+			goal: null,
+		});
+		expect(cleared.codexGoals.s1).toBeNull();
+	});
+
+	it("merges Codex runtime status per session", () => {
+		const withAccount = reducer(INITIAL_STATE, {
+			type: "SET_CODEX_RUNTIME_STATUS",
+			sessionId: "s1",
+			status: { accountSummary: "auth chatgpt / plan pro" },
+		});
+		const withLimits = reducer(withAccount, {
+			type: "SET_CODEX_RUNTIME_STATUS",
+			sessionId: "s1",
+			status: { rateLimitSummary: "codex primary 50% used" },
+		});
+
+		expect(withLimits.codexRuntimeStatuses.s1).toEqual({
+			accountSummary: "auth chatgpt / plan pro",
+			rateLimitSummary: "codex primary 50% used",
 		});
 	});
 
@@ -472,6 +529,56 @@ describe("agentChatReducer", () => {
 		});
 	});
 
+	describe("pending queue", () => {
+		it("sets and removes queued turns for a session", () => {
+			const queued = [
+				{
+					id: "q1",
+					contentPreview: "first",
+					createdAt: 1,
+					permissionMode: "edit" as const,
+					imageCount: 0,
+				},
+				{
+					id: "q2",
+					contentPreview: "second",
+					createdAt: 2,
+					permissionMode: "ask" as const,
+					imageCount: 1,
+				},
+			];
+			const state = reducer(INITIAL_STATE, {
+				type: "SET_PENDING_QUEUE",
+				sessionId: "s1",
+				queue: queued,
+			});
+
+			expect(state.pendingQueues.s1).toEqual(queued);
+
+			const next = reducer(state, {
+				type: "REMOVE_PENDING_QUEUE_ITEM",
+				sessionId: "s1",
+				queuedTurnId: "q1",
+			});
+			expect(next.pendingQueues.s1).toEqual([queued[1]]);
+		});
+	});
+
+	describe("SET_LATEST_TOKEN_USAGE", () => {
+		it("stores latest token usage per session", () => {
+			const state = reducer(INITIAL_STATE, {
+				type: "SET_LATEST_TOKEN_USAGE",
+				sessionId: "s1",
+				usage: { inputTokens: 100, outputTokens: 25 },
+			});
+
+			expect(state.latestTokenUsage.s1).toEqual({
+				inputTokens: 100,
+				outputTokens: 25,
+			});
+		});
+	});
+
 	describe("SET_STREAMING_MESSAGE", () => {
 		it("replaces existing parts with the cumulative payload in sessionsById", () => {
 			// Rust sends the full cumulative `streaming_parts` on every flush, so the
@@ -670,6 +777,14 @@ describe("agentChatReducer", () => {
 					},
 				},
 				sessionModels: { s1: "claude-4", s2: "claude-3.5" },
+				codexRuntimeStatuses: {
+					s1: { accountSummary: "auth chatgpt" },
+					s2: { rateLimitSummary: "primary 10% used" },
+				},
+				latestTokenUsage: {
+					s1: { inputTokens: 100, outputTokens: 25 },
+					s2: { inputTokens: 7, outputTokens: 3 },
+				},
 			};
 			const next = reducer(state, {
 				type: "CLEANUP_SESSION",
@@ -678,6 +793,12 @@ describe("agentChatReducer", () => {
 			expect(next.turnPhases).toEqual({ s2: "idle" });
 			expect(next.pendingPermissions).toEqual({});
 			expect(next.sessionModels).toEqual({ s2: "claude-3.5" });
+			expect(next.latestTokenUsage).toEqual({
+				s2: { inputTokens: 7, outputTokens: 3 },
+			});
+			expect(next.codexRuntimeStatuses).toEqual({
+				s2: { rateLimitSummary: "primary 10% used" },
+			});
 		});
 
 		it("is a no-op when session ID does not exist in any Record", () => {

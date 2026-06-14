@@ -58,8 +58,23 @@ pub(super) async fn route_message(
         WsMessage::AgentSessionStartRequest(req) => {
             handle_agent_session_start_request(req, state).await
         }
+        WsMessage::AgentSessionsRequest(req) => handle_agent_sessions_request(req, state).await,
+        WsMessage::AgentSessionGetRequest(req) => {
+            handle_agent_session_get_request(req, state).await
+        }
         WsMessage::AgentMessageRequest(req) => handle_agent_message_request(req, state).await,
         WsMessage::AgentInterruptRequest(req) => handle_agent_interrupt_request(req, state).await,
+        WsMessage::AgentQueueCancelRequest(req) => {
+            handle_agent_queue_cancel_request(req, state).await
+        }
+        WsMessage::AgentSlashCommandsRequest(req) => handle_agent_slash_commands_request(req).await,
+        WsMessage::AgentMentionFilesRequest(req) => {
+            handle_agent_mention_files_request(req, state).await
+        }
+        WsMessage::AgentImagePrepareRequest(req) => handle_agent_image_prepare_request(req).await,
+        WsMessage::AgentPermissionResponseRequest(req) => {
+            handle_agent_permission_response_request(req, state).await
+        }
         WsMessage::AgentModelSetRequest(req) => handle_agent_model_set_request(req, state).await,
         WsMessage::AgentPermissionModeSetRequest(req) => {
             handle_agent_permission_mode_set_request(req, state).await
@@ -184,6 +199,81 @@ mod tests {
                 assert!(r.error.is_some());
             }
             _ => panic!("expected PtySpawnResponse with error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_agent_slash_commands_request_returns_empty_catalog() {
+        let state = test_state();
+        let wt = test_selected_worktree();
+        let tmp = tempfile::tempdir().unwrap();
+        let commands_dir = tmp.path().join(".claude").join("commands");
+        std::fs::create_dir_all(&commands_dir).unwrap();
+        std::fs::write(
+            commands_dir.join("zzz-ws-route-test.md"),
+            "Review changes\nDetails",
+        )
+        .unwrap();
+        let worktree_path = tmp.path().to_string_lossy().to_string();
+        let msg = WsMessage::AgentSlashCommandsRequest(AgentSlashCommandsRequest {
+            worktree_path: worktree_path.clone(),
+        });
+
+        let result = route_message(&msg, &state, &wt).await;
+
+        match result {
+            Some(WsMessage::AgentSlashCommandsResponse(response)) => {
+                assert!(response.success);
+                assert_eq!(response.worktree_path, worktree_path);
+                assert!(response.commands.is_empty());
+            }
+            _ => panic!("expected AgentSlashCommandsResponse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_agent_image_prepare_request_returns_validation_error() {
+        let state = test_state();
+        let wt = test_selected_worktree();
+        let msg = WsMessage::AgentImagePrepareRequest(AgentImagePrepareRequest {
+            request_id: "image-1".to_string(),
+            data: Vec::new(),
+        });
+
+        let result = route_message(&msg, &state, &wt).await;
+
+        match result {
+            Some(WsMessage::AgentImagePrepareResponse(response)) => {
+                assert!(!response.success);
+                assert_eq!(response.request_id, "image-1");
+                assert!(response.attachment.is_none());
+                assert!(response.error.is_some());
+            }
+            _ => panic!("expected AgentImagePrepareResponse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_agent_mention_files_without_app_returns_response_error() {
+        let state = test_state();
+        let wt = test_selected_worktree();
+        let msg = WsMessage::AgentMentionFilesRequest(AgentMentionFilesRequest {
+            request_id: "mention-1".to_string(),
+            worktree_path: "/tmp/repo".to_string(),
+            query: "src".to_string(),
+        });
+
+        let result = route_message(&msg, &state, &wt).await;
+
+        match result {
+            Some(WsMessage::AgentMentionFilesResponse(response)) => {
+                assert!(!response.success);
+                assert_eq!(response.request_id, "mention-1");
+                assert_eq!(response.query, "src");
+                assert!(response.files.is_empty());
+                assert!(response.error.is_some());
+            }
+            _ => panic!("expected AgentMentionFilesResponse"),
         }
     }
 
@@ -338,6 +428,49 @@ mod tests {
                 assert!(r.error.unwrap().contains("worktree"));
             }
             _ => panic!("expected AgentSessionStartResponse with error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_agent_sessions_without_app_returns_response_error() {
+        let state = test_state();
+        let wt = test_selected_worktree();
+        let msg = WsMessage::AgentSessionsRequest(AgentSessionsRequest {
+            worktree_path: "/tmp/repo".to_string(),
+        });
+
+        let result = route_message(&msg, &state, &wt).await;
+
+        match result {
+            Some(WsMessage::AgentSessionsResponse(response)) => {
+                assert!(!response.success);
+                assert_eq!(response.worktree_path, "/tmp/repo");
+                assert!(response.sessions.is_empty());
+                assert!(response.active_session.is_none());
+                assert!(response.error.is_some());
+            }
+            _ => panic!("expected AgentSessionsResponse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_agent_session_get_without_app_returns_response_error() {
+        let state = test_state();
+        let wt = test_selected_worktree();
+        let msg = WsMessage::AgentSessionGetRequest(AgentSessionGetRequest {
+            session_id: "session-1".to_string(),
+        });
+
+        let result = route_message(&msg, &state, &wt).await;
+
+        match result {
+            Some(WsMessage::AgentSessionGetResponse(response)) => {
+                assert!(!response.success);
+                assert_eq!(response.session_id, "session-1");
+                assert!(response.session.is_none());
+                assert!(response.error.is_some());
+            }
+            _ => panic!("expected AgentSessionGetResponse"),
         }
     }
 

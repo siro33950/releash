@@ -79,6 +79,7 @@ export interface ShikiDiffViewerProps {
 	onDeleteThread?: (threadId: string) => Promise<void>;
 	scrollToLine?: number | null;
 	scrollToThread?: string | null;
+	onLineRangeSelected?: (startLine: number, endLine: number) => void;
 }
 
 type VisibleItem = DiffBlock | { type: "hidden"; range: HiddenRange };
@@ -444,6 +445,7 @@ interface VirtualViewProps extends CommentCallbacks {
 	scrollToLine?: number | null;
 	scrollToThread?: string | null;
 	lineHighlights?: Map<DiffLine, HighlightRange[]>;
+	onLineRangeSelected?: (startLine: number, endLine: number) => void;
 }
 
 function flattenWithGroups(
@@ -590,7 +592,10 @@ function isLineInRange(
 	return lineNumber >= range.start && lineNumber <= range.end;
 }
 
-function useCommentViewState(comments: ReviewDiscussionThread[] | undefined) {
+function useCommentViewState(
+	comments: ReviewDiscussionThread[] | undefined,
+	onLineRangeSelected?: (startLine: number, endLine: number) => void,
+) {
 	const [commentInputLine, setCommentInputLine] = useState<number | null>(null);
 	const [commentInputRange, setCommentInputRange] = useState<{
 		start: number;
@@ -603,6 +608,7 @@ function useCommentViewState(comments: ReviewDiscussionThread[] | undefined) {
 		clearSelection,
 	} = useLineRangeSelection((start, end) => {
 		setCommentInputRange({ start, end });
+		onLineRangeSelected?.(start, end);
 	});
 
 	const commentHighlightLines = useMemo(() => {
@@ -769,6 +775,7 @@ function GutterView({
 	onAppendComment,
 	onResolveThread,
 	onDeleteThread,
+	onLineRangeSelected,
 }: VirtualViewProps) {
 	const {
 		commentInputLine,
@@ -780,7 +787,7 @@ function GutterView({
 		handleLineMouseEnter,
 		clearSelection,
 		commentHighlightLines,
-	} = useCommentViewState(comments);
+	} = useCommentViewState(comments, onLineRangeSelected);
 
 	const flatItems = useMemo(() => {
 		const { blocksWithGroups, blockOrder } = flattenWithGroups(
@@ -985,6 +992,7 @@ function InlineView({
 	onAppendComment,
 	onResolveThread,
 	onDeleteThread,
+	onLineRangeSelected,
 }: VirtualViewProps) {
 	const {
 		commentInputLine,
@@ -996,7 +1004,7 @@ function InlineView({
 		handleLineMouseEnter,
 		clearSelection,
 		commentHighlightLines,
-	} = useCommentViewState(comments);
+	} = useCommentViewState(comments, onLineRangeSelected);
 
 	const flatItems = useMemo(() => {
 		const { blocksWithGroups, blockOrder } = flattenWithGroups(
@@ -1208,6 +1216,7 @@ function SplitView({
 	onAppendComment,
 	onResolveThread,
 	onDeleteThread,
+	onLineRangeSelected,
 }: VirtualViewProps) {
 	const {
 		commentInputLine,
@@ -1219,7 +1228,7 @@ function SplitView({
 		handleLineMouseEnter,
 		clearSelection,
 		commentHighlightLines,
-	} = useCommentViewState(comments);
+	} = useCommentViewState(comments, onLineRangeSelected);
 
 	const flatItems = useMemo(() => {
 		const { blocksWithGroups, blockOrder } = flattenWithGroups(
@@ -1654,6 +1663,7 @@ export function ShikiDiffViewer({
 	onDeleteThread,
 	scrollToLine,
 	scrollToThread,
+	onLineRangeSelected,
 }: ShikiDiffViewerProps) {
 	const originalTokens = useShikiHighlighter(originalContent, language);
 	const modifiedTokens = useShikiHighlighter(modifiedContent, language);
@@ -1857,6 +1867,7 @@ export function ShikiDiffViewer({
 					onAppendComment={onAppendComment}
 					onResolveThread={onResolveThread}
 					onDeleteThread={onDeleteThread}
+					onLineRangeSelected={onLineRangeSelected}
 				/>
 			</div>
 			<ScrollbarMarkers markers={diffMarkers} />

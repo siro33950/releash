@@ -98,12 +98,6 @@ pub fn run() {
             parking_lot::RwLock::new(Vec::new()),
         ))
         .setup(|app| {
-            // OneShotPtyManager shares the same PtyManager instance
-            let pty_mgr = app.state::<Arc<pty::PtyManager>>();
-            app.manage(Arc::new(pty::oneshot::OneShotPtyManager::new(Arc::clone(
-                pty_mgr.inner(),
-            ))));
-
             let data_dir = app.path().app_data_dir()?;
             // spec issues-1054 Implementation Freedom (L104): 別 Releash binary 由来の
             // RELEASH_DATA_DIR inherit (例: prod 版 Releash の Terminal Panel から起動
@@ -492,6 +486,7 @@ pub fn run() {
             mcp::mcp_json::get_configured_agents,
             mcp::mcp_json::remove_agent_mcp_config,
             mcp::mcp_json::save_and_generate_mcp_configs,
+            mcp::mcp_json::save_mcp_agent_selection,
             mcp::mcp_json::generate_agent_mcp_config,
             mcp::mcp_json::preview_agent_mcp_config,
             // Workspace state
@@ -506,29 +501,45 @@ pub fn run() {
             review_comments::delete_review_thread,
             review_comments::get_review_thread_history,
             review_comments::build_review_thread_handoff,
-            // OneShot PTY
-            pty::oneshot::spawn_oneshot_pty,
-            pty::oneshot::cancel_oneshot_pty,
-            pty::oneshot::get_oneshot_pty_status,
-            pty::oneshot::list_oneshot_ptys,
-            pty::oneshot::find_oneshot_pty,
             // File Mention（code ドメイン）
             adaptor::controller::command::code::mention::list_mentionable_files,
+            adaptor::controller::command::code::mention::read_codex_mentionable_files,
+            adaptor::controller::command::code::mention::sync_mentions_with_text,
             // Agent Backend Registry
             adaptor::controller::command::agent_session::backend::list_agent_backends,
             // Agent SDK
             adaptor::controller::command::agent_session::session::start_agent_session,
             adaptor::controller::command::agent_session::session::interrupt_agent_query,
+            adaptor::controller::command::agent_session::session::cancel_agent_queued_turn,
+            adaptor::controller::command::agent_session::session::build_agent_task_list_report,
             adaptor::controller::command::agent_session::session::close_agent_session,
             adaptor::controller::command::agent_session::model::set_agent_permission_mode,
             adaptor::controller::command::agent_session::model::set_agent_model,
+            adaptor::controller::command::agent_session::model::read_codex_model_catalog,
             adaptor::controller::command::agent_session::session::set_session_backend,
+            adaptor::controller::command::agent_session::command_palette::present_agent_command_palette,
+            adaptor::controller::command::agent_session::command_palette::is_agent_command_enabled,
+            adaptor::controller::command::agent_session::command_palette::get_agent_shortcut_settings,
+            adaptor::controller::command::agent_session::command_palette::update_agent_shortcut_settings,
+            adaptor::controller::command::agent_session::command_palette::reset_agent_shortcut_settings,
+            adaptor::controller::command::agent_session::permission::present_agent_permission_request,
             adaptor::controller::command::agent_session::permission::respond_agent_permission,
             adaptor::controller::command::agent_session::session::send_agent_message,
+            adaptor::controller::command::agent_session::session::search_agent_sessions,
+            adaptor::controller::command::agent_session::session::search_agent_thread_messages,
             adaptor::controller::command::agent_session::session::init_agent_sessions,
-            adaptor::controller::command::agent_session::slash::scan_slash_commands,
+            adaptor::controller::command::agent_session::action::scan_agent_skills,
+            adaptor::controller::command::agent_session::action::read_codex_skill_catalog,
+            adaptor::controller::command::agent_session::edit_preview::build_agent_edited_multi_edit_tool_input,
+            adaptor::controller::command::agent_session::edit_preview::build_agent_edited_multi_edit_tool_input_all,
+            adaptor::controller::command::agent_session::edit_preview::build_agent_edited_tool_input,
+            adaptor::controller::command::agent_session::edit_preview::build_agent_edit_preview,
+            adaptor::controller::command::agent_session::suggestion::build_agent_prompt_suggestion,
+            adaptor::controller::command::agent_session::tool_activity::present_agent_tool_activity,
             adaptor::controller::command::agent_session::image::prepare_image_attachment,
             adaptor::controller::command::agent_session::image::prepare_image_attachments_from_paths,
+            adaptor::controller::command::agent_session::paste::prepare_pasted_text_block,
+            adaptor::controller::command::agent_session::paste::expand_pasted_text_blocks,
             // Session
             session_commands::list_sessions,
             adaptor::controller::command::agent_session::session::get_session,
@@ -536,6 +547,10 @@ pub fn run() {
             session_commands::close_session,
             session_commands::restore_session,
             session_commands::list_closed_sessions,
+            session_commands::archive_session,
+            session_commands::archive_open_session,
+            session_commands::fork_session,
+            session_commands::set_session_title,
             session_commands::add_message,
             session_commands::update_session_state,
             session_commands::update_session_agent_info,

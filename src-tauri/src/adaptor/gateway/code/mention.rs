@@ -9,6 +9,9 @@ use crate::domain::code::services::mention::{
 };
 use crate::domain::code::{CodeError, MentionReference, MentionRepository};
 
+const DIRECTORY_MENTION_FILE_LIMIT: usize = 40;
+const DIRECTORY_MENTION_TOTAL_BYTES_LIMIT: usize = 100_000;
+
 /// worktree 配下で fuzzy クエリに一致するファイルを列挙する（.gitignore 準拠）。
 /// 最大 `limit`（既定 50）件を返す。
 pub(crate) fn list_mentionable_files(
@@ -41,12 +44,22 @@ pub(crate) fn list_mentionable_files(
     let mut results = Vec::new();
 
     for entry in walker.flatten() {
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+        let Some(file_type) = entry.file_type() else {
             continue;
-        }
+        };
         let path = entry.path();
         if let Ok(rel) = path.strip_prefix(&canonical_root) {
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
             let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let rel_str = if file_type.is_dir() {
+                format!("{}/", rel_str.trim_end_matches('/'))
+            } else if file_type.is_file() {
+                rel_str
+            } else {
+                continue;
+            };
             if query_lower.is_empty() || fuzzy_match(&rel_str.to_lowercase(), &query_lower) {
                 results.push(rel_str);
                 if results.len() >= collect_limit {
@@ -59,6 +72,109 @@ pub(crate) fn list_mentionable_files(
     results.sort();
     results.truncate(limit);
     Ok(results)
+}
+
+fn file_section_for_path(
+    canonical_root: &Path,
+    canonical_file: &Path,
+    display_path: &str,
+    start_line: Option<u32>,
+    end_line: Option<u32>,
+) -> Result<Option<(String, usize)>, String> {
+    if !canonical_file.starts_with(canonical_root) {
+        return Err(format!(
+            "Path traversal rejected: {display_path} resolves outside worktree"
+        ));
+    }
+    let file_content = match std::fs::read_to_string(canonical_file) {
+        Ok(content) => content,
+        Err(_) => return Ok(None),
+    };
+    let excerpt = extract_excerpt(&file_content, start_line, end_line);
+    let byte_count = excerpt.len();
+    let escaped_path = escape_xml_attr(display_path);
+    let attrs = match (start_line, end_line) {
+        (Some(s), Some(e)) => format!(r#" path="{escaped_path}" lines="{s}-{e}""#),
+        (Some(s), None) => format!(r#" path="{escaped_path}" lines="{s}""#),
+        _ => format!(r#" path="{escaped_path}""#),
+    };
+    let wrapped_excerpt = wrap_cdata(&excerpt);
+    Ok(Some((
+        format!("<file{attrs}>\n{wrapped_excerpt}\n</file>"),
+        byte_count,
+    )))
+}
+
+fn directory_section_for_path(
+    canonical_root: &Path,
+    canonical_dir: &Path,
+    display_path: &str,
+) -> Result<Option<String>, String> {
+    if !canonical_dir.starts_with(canonical_root) {
+        return Err(format!(
+            "Path traversal rejected: {display_path} resolves outside worktree"
+        ));
+    }
+    if !canonical_dir.is_dir() {
+        return Ok(None);
+    }
+
+    let walker = ignore::WalkBuilder::new(canonical_dir)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build();
+    let mut files = Vec::new();
+    for entry in walker.flatten() {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        files.push(entry.path().to_path_buf());
+    }
+    files.sort();
+
+    let mut sections = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut truncated = false;
+    for file in files {
+        if sections.len() >= DIRECTORY_MENTION_FILE_LIMIT {
+            truncated = true;
+            break;
+        }
+        let rel = match file.strip_prefix(canonical_root) {
+            Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+        let Some((section, bytes)) =
+            file_section_for_path(canonical_root, &file, &rel, None, None)?
+        else {
+            continue;
+        };
+        if total_bytes.saturating_add(bytes) > DIRECTORY_MENTION_TOTAL_BYTES_LIMIT {
+            truncated = true;
+            break;
+        }
+        total_bytes += bytes;
+        sections.push(section);
+    }
+    if sections.is_empty() {
+        return Ok(None);
+    }
+
+    let escaped_path = escape_xml_attr(display_path.trim_end_matches('/'));
+    let truncated_attr = if truncated {
+        r#" truncated="true""#
+    } else {
+        ""
+    };
+    Ok(Some(format!(
+        r#"<directory path="{escaped_path}"{truncated_attr}>
+{}
+</directory>"#,
+        sections.join("\n")
+    )))
 }
 
 /// 構造化されたメンション参照を file_context ブロックへ解決し、内容の先頭へ前置する。
@@ -88,33 +204,23 @@ fn resolve_from_references(
             Ok(p) => p,
             Err(_) => continue,
         };
-        if !canonical.starts_with(&canonical_root) {
-            return Err(format!(
-                "Path traversal rejected: {} resolves outside worktree",
-                mention.file_path
-            ));
+        if canonical.is_dir() {
+            if let Some(section) =
+                directory_section_for_path(&canonical_root, &canonical, &mention.file_path)?
+            {
+                file_sections.push(section);
+            }
+        } else if canonical.is_file() {
+            if let Some((section, _)) = file_section_for_path(
+                &canonical_root,
+                &canonical,
+                &mention.file_path,
+                mention.start_line,
+                mention.end_line,
+            )? {
+                file_sections.push(section);
+            }
         }
-
-        let file_content = match std::fs::read_to_string(&canonical) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let excerpt = extract_excerpt(&file_content, mention.start_line, mention.end_line);
-
-        let escaped_path = escape_xml_attr(&mention.file_path);
-        let attrs = match (mention.start_line, mention.end_line) {
-            (Some(s), Some(e)) => format!(r#" path="{escaped_path}" lines="{s}-{e}""#),
-            (Some(s), None) => format!(r#" path="{escaped_path}" lines="{s}""#),
-            _ => format!(r#" path="{escaped_path}""#),
-        };
-
-        // excerpt はリポジトリ内のファイル本文。`</file></file_context>` 等で擬似 XML
-        // 構造を脱出して agent LLM のプロンプトへ任意指示を注入できる（OWASP LLM01 系）
-        // ため、CDATA で包んで無害化する。属性値は CDATA 化できないため path のみ
-        // escape_xml_attr を維持する。
-        let wrapped_excerpt = wrap_cdata(&excerpt);
-        file_sections.push(format!("<file{attrs}>\n{wrapped_excerpt}\n</file>"));
     }
 
     if file_sections.is_empty() {
@@ -159,7 +265,9 @@ mod mention_gateway_tests {
     #[test]
     fn test_候補列挙_基本() {
         let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("hello.rs"), "fn main() {}").unwrap();
+        fs::write(dir.path().join("src").join("lib.rs"), "pub fn lib() {}").unwrap();
         fs::write(dir.path().join("world.txt"), "hello").unwrap();
 
         git2::Repository::init(dir.path()).unwrap();
@@ -167,6 +275,8 @@ mod mention_gateway_tests {
         let result = list_mentionable_files(dir.path().to_str().unwrap(), "").unwrap();
 
         assert!(result.contains(&"hello.rs".to_string()));
+        assert!(result.contains(&"src/".to_string()));
+        assert!(result.contains(&"src/lib.rs".to_string()));
         assert!(result.contains(&"world.txt".to_string()));
     }
 
@@ -269,6 +379,58 @@ mod mention_gateway_tests {
         assert!(result.contains("<file_context>"));
         assert!(result.contains(r#"path="Gitフロー.md""#));
         assert!(result.contains("日本語の内容"));
+    }
+
+    #[test]
+    fn test_参照解決_空白を含むファイル名() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        let file = dir.path().join("docs").join("my file.md");
+        fs::write(&file, "空白パスの内容\n").unwrap();
+
+        let mentions = vec![MentionReference {
+            file_path: "docs/my file.md".to_string(),
+            start_line: None,
+            end_line: None,
+        }];
+        let result = resolve_from_references(
+            dir.path().to_str().unwrap(),
+            "空白入りパスを確認",
+            &mentions,
+        )
+        .unwrap();
+
+        assert!(result.contains(r#"path="docs/my file.md""#));
+        assert!(result.contains("空白パスの内容"));
+    }
+
+    #[test]
+    fn test_参照解決_ディレクトリを複数ファイルに展開する() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src").join("nested")).unwrap();
+        fs::write(dir.path().join("src").join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(
+            dir.path().join("src").join("nested").join("lib.rs"),
+            "pub fn lib() {}\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("outside.rs"), "outside\n").unwrap();
+        git2::Repository::init(dir.path()).unwrap();
+
+        let mentions = vec![MentionReference {
+            file_path: "src/".to_string(),
+            start_line: None,
+            end_line: None,
+        }];
+        let result =
+            resolve_from_references(dir.path().to_str().unwrap(), "Review src", &mentions).unwrap();
+
+        assert!(result.contains(r#"<directory path="src""#));
+        assert!(result.contains(r#"path="src/main.rs""#));
+        assert!(result.contains(r#"path="src/nested/lib.rs""#));
+        assert!(result.contains("fn main() {}"));
+        assert!(result.contains("pub fn lib() {}"));
+        assert!(!result.contains(r#"path="outside.rs""#));
     }
 
     #[test]

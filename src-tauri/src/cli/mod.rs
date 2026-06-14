@@ -1356,6 +1356,7 @@ models = ["opus"]
             updated_at: 1.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: model.map(str::to_string),
             backend_id: backend_id.map(str::to_string),
             workflow_step_session: false,

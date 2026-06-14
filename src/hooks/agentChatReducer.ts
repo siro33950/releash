@@ -2,12 +2,17 @@ import type {
 	BackendInfo,
 	ChatMessage,
 	ChatSession,
+	CodexGoal,
+	CodexRuntimeStatus,
 	MessagePart,
 	ModelInfo,
 	PermissionMode,
 	PermissionRequest,
+	QueuedAgentTurn,
 	SessionState,
 	SessionSummary,
+	SlashCommand,
+	TokenUsage,
 	TurnPhase,
 } from "@/types/session";
 
@@ -24,9 +29,20 @@ export interface AgentChatState {
 	/** Main panel の active session id。`sessionsById[activeSessionId]` で本体に到達。*/
 	activeSessionId: string | null;
 	turnPhases: Record<string, TurnPhase>;
+	/**
+	 * interrupt 要求を出してから turn が idle になるまでの楽観的フラグ。
+	 * 停止ボタン押下を即座に UI へ反映し、連打を防ぐ。turnPhase が idle に
+	 * 遷移した時点で自動クリアされる。
+	 */
+	interrupting: Record<string, boolean>;
 	error: string | null;
 	permissionMode: PermissionMode;
 	pendingPermissions: Record<string, PermissionRequest>;
+	pendingQueues: Record<string, QueuedAgentTurn[]>;
+	latestTokenUsage: Record<string, TokenUsage | null>;
+	codexGoals: Record<string, CodexGoal | null>;
+	codexRuntimeStatuses: Record<string, CodexRuntimeStatus>;
+	runtimeSlashCommands: Record<string, SlashCommand[]>;
 	availableModels: ModelInfo[];
 	availableModelsByBackend: Record<string, ModelInfo[]>;
 	sessionModels: Record<string, string>;
@@ -47,6 +63,7 @@ export type AgentChatAction =
 			sessionId: string;
 			turnPhase: TurnPhase;
 	  }
+	| { type: "SET_INTERRUPTING"; sessionId: string; value: boolean }
 	| { type: "SET_ERROR"; error: string | null }
 	| {
 			type: "UPDATE_SESSION_STATE";
@@ -58,6 +75,36 @@ export type AgentChatAction =
 			type: "SET_PENDING_PERMISSION";
 			sessionId: string;
 			request: PermissionRequest | null;
+	  }
+	| {
+			type: "SET_PENDING_QUEUE";
+			sessionId: string;
+			queue: QueuedAgentTurn[];
+	  }
+	| {
+			type: "SET_LATEST_TOKEN_USAGE";
+			sessionId: string;
+			usage: TokenUsage | null;
+	  }
+	| {
+			type: "SET_CODEX_GOAL";
+			sessionId: string;
+			goal: CodexGoal | null;
+	  }
+	| {
+			type: "SET_CODEX_RUNTIME_STATUS";
+			sessionId: string;
+			status: CodexRuntimeStatus;
+	  }
+	| {
+			type: "SET_RUNTIME_SLASH_COMMANDS";
+			sessionId: string;
+			commands: SlashCommand[];
+	  }
+	| {
+			type: "REMOVE_PENDING_QUEUE_ITEM";
+			sessionId: string;
+			queuedTurnId: string;
 	  }
 	| { type: "REORDER_SESSIONS"; sessionOrder: string[] }
 	| {
@@ -205,14 +252,34 @@ export function reducer(
 				appendMessage(s, action.message),
 			);
 		}
-		case "SET_TURN_PHASE":
+		case "SET_TURN_PHASE": {
+			// idle に戻ったら interrupting 楽観フラグをクリアする。
+			const nextInterrupting =
+				action.turnPhase === "idle" && state.interrupting[action.sessionId]
+					? (() => {
+							const { [action.sessionId]: _drop, ...rest } = state.interrupting;
+							return rest;
+						})()
+					: state.interrupting;
 			return {
 				...state,
 				turnPhases: {
 					...state.turnPhases,
 					[action.sessionId]: action.turnPhase,
 				},
+				interrupting: nextInterrupting,
 			};
+		}
+		case "SET_INTERRUPTING": {
+			if (!action.value) {
+				const { [action.sessionId]: _drop, ...rest } = state.interrupting;
+				return { ...state, interrupting: rest };
+			}
+			return {
+				...state,
+				interrupting: { ...state.interrupting, [action.sessionId]: true },
+			};
+		}
 		case "SET_ERROR":
 			return { ...state, error: action.error };
 		case "UPDATE_SESSION_STATE":
@@ -232,6 +299,61 @@ export function reducer(
 				pendingPermissions: {
 					...state.pendingPermissions,
 					[action.sessionId]: action.request,
+				},
+			};
+		}
+		case "SET_PENDING_QUEUE":
+			return {
+				...state,
+				pendingQueues: {
+					...state.pendingQueues,
+					[action.sessionId]: action.queue,
+				},
+			};
+		case "SET_LATEST_TOKEN_USAGE":
+			return {
+				...state,
+				latestTokenUsage: {
+					...state.latestTokenUsage,
+					[action.sessionId]: action.usage,
+				},
+			};
+		case "SET_CODEX_GOAL":
+			return {
+				...state,
+				codexGoals: {
+					...state.codexGoals,
+					[action.sessionId]: action.goal,
+				},
+			};
+		case "SET_CODEX_RUNTIME_STATUS":
+			return {
+				...state,
+				codexRuntimeStatuses: {
+					...state.codexRuntimeStatuses,
+					[action.sessionId]: {
+						...state.codexRuntimeStatuses[action.sessionId],
+						...action.status,
+					},
+				},
+			};
+		case "SET_RUNTIME_SLASH_COMMANDS":
+			return {
+				...state,
+				runtimeSlashCommands: {
+					...state.runtimeSlashCommands,
+					[action.sessionId]: action.commands,
+				},
+			};
+		case "REMOVE_PENDING_QUEUE_ITEM": {
+			const queue = state.pendingQueues[action.sessionId] ?? [];
+			return {
+				...state,
+				pendingQueues: {
+					...state.pendingQueues,
+					[action.sessionId]: queue.filter(
+						(item) => item.id !== action.queuedTurnId,
+					),
 				},
 			};
 		}
@@ -268,8 +390,19 @@ export function reducer(
 			};
 		case "CLEANUP_SESSION": {
 			const { [action.sessionId]: _tp, ...restTurnPhases } = state.turnPhases;
+			const { [action.sessionId]: _int, ...restInterrupting } =
+				state.interrupting;
 			const { [action.sessionId]: _pp, ...restPendingPermissions } =
 				state.pendingPermissions;
+			const { [action.sessionId]: _pq, ...restPendingQueues } =
+				state.pendingQueues;
+			const { [action.sessionId]: _tu, ...restLatestTokenUsage } =
+				state.latestTokenUsage;
+			const { [action.sessionId]: _cg, ...restCodexGoals } = state.codexGoals;
+			const { [action.sessionId]: _crs, ...restCodexRuntimeStatuses } =
+				state.codexRuntimeStatuses;
+			const { [action.sessionId]: _rsc, ...restRuntimeSlashCommands } =
+				state.runtimeSlashCommands;
 			const { [action.sessionId]: _sm, ...restSessionModels } =
 				state.sessionModels;
 			const { [action.sessionId]: _sb, ...restSessionsById } =
@@ -277,7 +410,13 @@ export function reducer(
 			return {
 				...state,
 				turnPhases: restTurnPhases,
+				interrupting: restInterrupting,
 				pendingPermissions: restPendingPermissions,
+				pendingQueues: restPendingQueues,
+				latestTokenUsage: restLatestTokenUsage,
+				codexGoals: restCodexGoals,
+				codexRuntimeStatuses: restCodexRuntimeStatuses,
+				runtimeSlashCommands: restRuntimeSlashCommands,
 				sessionModels: restSessionModels,
 				sessionsById: restSessionsById,
 				activeSessionId:
@@ -338,9 +477,15 @@ export const INITIAL_STATE: AgentChatState = {
 	sessionsById: {},
 	activeSessionId: null,
 	turnPhases: {},
+	interrupting: {},
 	error: null,
 	permissionMode: "edit",
 	pendingPermissions: {},
+	pendingQueues: {},
+	latestTokenUsage: {},
+	codexGoals: {},
+	codexRuntimeStatuses: {},
+	runtimeSlashCommands: {},
 	availableModels: [],
 	availableModelsByBackend: {},
 	sessionModels: {},

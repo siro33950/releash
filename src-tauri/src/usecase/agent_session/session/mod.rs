@@ -119,6 +119,7 @@ pub enum SessionState {
     Done,
     Error,
     Closed,
+    Archived,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -210,24 +211,51 @@ pub struct ChatSession {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub selected_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub permission_profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow_step_session: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetSessionResponse {
     #[serde(flatten)]
     pub session: ChatSession,
     pub turn_phase: TurnPhase,
     pub available_models: Vec<ModelInfo>,
+    pub pending_queue: Vec<QueuedAgentTurn>,
+    pub pending_queue_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub latest_token_usage: Option<TokenUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedAgentTurn {
+    pub id: String,
+    pub content_preview: String,
+    pub created_at: f64,
+    pub permission_mode: String,
+    pub image_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,6 +271,8 @@ pub struct SessionSummary {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_session_id: Option<String>,
     pub permission_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub permission_profile_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -283,6 +313,7 @@ impl ChatSession {
             message_count: self.messages.len(),
             agent_session_id: self.agent_session_id.clone(),
             permission_mode: self.permission_mode.clone(),
+            permission_profile_id: self.permission_profile_id.clone(),
             backend_id: self.backend_id.clone(),
             workflow_step_session: self.workflow_step_session,
         }
@@ -457,6 +488,7 @@ fn build_new_session(
         agent_session_id: None,
         permission_mode: permission_mode.as_str().to_string(),
         selected_model,
+        permission_profile_id: None,
         backend_id,
         workflow_step_session,
     }
@@ -742,6 +774,7 @@ mod tests {
                 updated_at: 1000.0,
                 agent_session_id: None,
                 permission_mode: legacy.to_string(),
+                permission_profile_id: None,
                 selected_model: None,
                 backend_id: None,
                 workflow_step_session: false,
@@ -774,6 +807,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
@@ -806,6 +840,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
@@ -837,6 +872,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
@@ -859,6 +895,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
@@ -884,6 +921,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: Some("agent-session".to_string()),
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: None,
             workflow_step_session: true,
@@ -1021,6 +1059,7 @@ mod tests {
             updated_at: 1001.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
@@ -1051,6 +1090,7 @@ mod tests {
             updated_at: 1001.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: Some("claude-opus-4-6".to_string()),
             backend_id: None,
             workflow_step_session: false,
@@ -1842,6 +1882,7 @@ mod tests {
             updated_at: 1001.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
@@ -1872,6 +1913,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
@@ -1895,6 +1937,7 @@ mod tests {
                 updated_at: 1000.0,
                 agent_session_id: None,
                 permission_mode: "edit".to_string(),
+                permission_profile_id: None,
                 selected_model: None,
                 backend_id: backend_id.map(str::to_string),
                 workflow_step_session: false,

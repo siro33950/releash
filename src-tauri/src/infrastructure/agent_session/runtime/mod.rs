@@ -1,6 +1,7 @@
 pub mod bridge_common;
 pub mod claude;
 pub mod codex;
+pub mod codex_app_server;
 mod permission_flags;
 pub mod runtime_coordinator;
 
@@ -75,12 +76,33 @@ pub struct ImageAttachment {
     pub media_type: String,
 }
 
+/// Editor state supplied by the desktop UI for runtime-native contextual input.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEditorContext {
+    #[serde(default)]
+    pub active_editor_path: Option<String>,
+    #[serde(default)]
+    pub open_editor_paths: Vec<String>,
+    #[serde(default)]
+    pub selection: Option<AgentEditorSelection>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEditorSelection {
+    pub file_path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
 /// セッション開始時の共通設定。
 #[allow(dead_code)]
 pub struct SessionConfig {
     pub chat_session_id: String,
     pub cwd: String,
     pub permission_mode: Option<String>,
+    pub permission_profile_id: Option<String>,
     pub system_prompt: Option<String>,
 }
 
@@ -98,6 +120,8 @@ pub struct AgentMessage {
     pub streaming_message_id: String,
     pub images: Vec<ImageAttachment>,
     pub permission_mode: String,
+    pub permission_profile_id: Option<String>,
+    pub editor_context: Option<AgentEditorContext>,
 }
 
 /// ツール実行許可への応答。
@@ -130,6 +154,24 @@ pub trait AgentBackend: Send + Sync {
         message: AgentMessage,
     ) -> Result<(), String>;
 
+    /// Send runtime-native input to the currently active turn when supported.
+    async fn steer_message(
+        &self,
+        session: &SessionHandle,
+        message: AgentMessage,
+    ) -> Result<(), String> {
+        let _ = message;
+        Err(format!(
+            "Backend '{}' does not expose active-turn steering",
+            session.backend_id
+        ))
+    }
+
+    /// Returns true only when a backend has a ready active turn that can accept steering input.
+    async fn active_turn_steering_ready(&self, _session: &SessionHandle) -> bool {
+        false
+    }
+
     /// 実行中のターンを中断する。
     async fn interrupt(&self, session: &SessionHandle) -> Result<(), String>;
 
@@ -139,6 +181,47 @@ pub trait AgentBackend: Send + Sync {
         session: &SessionHandle,
         response: PermissionResponse,
     ) -> Result<(), String>;
+
+    /// Runtime-owned thread title update.
+    async fn set_thread_name(&self, session: &SessionHandle, name: &str) -> Result<(), String> {
+        let _ = name;
+        Err(format!(
+            "Backend '{}' does not expose runtime thread naming",
+            session.backend_id
+        ))
+    }
+
+    /// Runtime-owned permission settings update for already-started sessions.
+    async fn set_permission_mode(
+        &self,
+        session: &SessionHandle,
+        cwd: &str,
+        permission_mode: &str,
+    ) -> Result<(), String> {
+        let _ = cwd;
+        let _ = permission_mode;
+        Err(format!(
+            "Backend '{}' does not expose runtime permission mode updates",
+            session.backend_id
+        ))
+    }
+
+    /// Runtime-owned named permission profile update for already-started sessions.
+    async fn set_permission_profile(
+        &self,
+        session: &SessionHandle,
+        cwd: &str,
+        permission_mode: &str,
+        permission_profile_id: Option<&str>,
+    ) -> Result<(), String> {
+        let _ = cwd;
+        let _ = permission_mode;
+        let _ = permission_profile_id;
+        Err(format!(
+            "Backend '{}' does not expose runtime permission profiles",
+            session.backend_id
+        ))
+    }
 
     /// バックエンドが選択肢として提供する固定モデル一覧。
     /// `Some` を返すバックエンドは config.toml を参照せず、この一覧を

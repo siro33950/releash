@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -30,10 +30,14 @@ function renderPanel(
 		...overrides,
 	};
 
-	render(<RemoteAgentPanel {...props} />);
+	const view = render(<RemoteAgentPanel {...props} />);
 
 	return {
 		send,
+		container: view.container,
+		rerender: (
+			nextOverrides: Partial<ComponentProps<typeof RemoteAgentPanel>>,
+		) => view.rerender(<RemoteAgentPanel {...props} {...nextOverrides} />),
 		emit: (msg: WsMessage) => {
 			act(() => {
 				handler?.(msg);
@@ -61,6 +65,213 @@ describe("RemoteAgentPanel", () => {
 				permission_mode: "edit",
 			},
 		});
+	});
+
+	it("requests slash commands for the selected worktree", () => {
+		const { send } = renderPanel();
+
+		expect(send).toHaveBeenCalledWith({
+			type: "agent_slash_commands_request",
+			payload: { worktree_path: "/repo/worktree" },
+		});
+	});
+
+	it("requests remote agent sessions and restores the active session snapshot", async () => {
+		const user = userEvent.setup();
+		const { send, emit } = renderPanel();
+
+		expect(send).toHaveBeenCalledWith({
+			type: "agent_sessions_request",
+			payload: { worktree_path: "/repo/worktree" },
+		});
+
+		emit({
+			type: "agent_sessions_response",
+			payload: {
+				success: true,
+				worktree_path: "/repo/worktree",
+				sessions: [
+					{
+						id: "session-1",
+						worktreePath: "/repo/worktree",
+						state: "idle",
+						createdAt: 1,
+						updatedAt: 2,
+						firstMessage: "Persisted hello",
+						messageCount: 2,
+						permissionMode: "edit",
+						backendId: "codex",
+					},
+					{
+						id: "session-2",
+						worktreePath: "/repo/worktree",
+						state: "idle",
+						createdAt: 1,
+						updatedAt: 3,
+						firstMessage: "Other",
+						messageCount: 1,
+						permissionMode: "ask",
+						backendId: "claude",
+					},
+				],
+				active_session: {
+					id: "session-1",
+					worktreePath: "/repo/worktree",
+					messages: [
+						{
+							id: "m1",
+							role: "human",
+							content: "Persisted hello",
+							timestamp: 1,
+						},
+					],
+					state: "idle",
+					createdAt: 1,
+					updatedAt: 2,
+					permissionMode: "edit",
+					backendId: "codex",
+					selectedModel: "gpt-5.4",
+					turnPhase: "idle",
+					availableModels: [{ value: "gpt-5.4" }],
+					pendingQueue: [],
+					pendingQueueCount: 0,
+				},
+			},
+		});
+
+		expect(screen.getByText("Persisted hello")).toBeInTheDocument();
+		expect(screen.getByLabelText("Agent session")).toHaveValue("session-1");
+
+		await user.selectOptions(
+			screen.getByLabelText("Agent session"),
+			"session-2",
+		);
+
+		expect(send).toHaveBeenCalledWith({
+			type: "agent_session_get_request",
+			payload: { session_id: "session-2" },
+		});
+	});
+
+	it("clears restored sessions on worktree change and ignores stale session snapshots", () => {
+		const { send, emit, rerender } = renderPanel();
+
+		emit({
+			type: "agent_sessions_response",
+			payload: {
+				success: true,
+				worktree_path: "/repo/worktree",
+				sessions: [
+					{
+						id: "session-1",
+						worktreePath: "/repo/worktree",
+						state: "idle",
+						createdAt: 1,
+						updatedAt: 2,
+						firstMessage: "Persisted hello",
+						messageCount: 1,
+						permissionMode: "edit",
+						backendId: "codex",
+					},
+				],
+				active_session: {
+					id: "session-1",
+					worktreePath: "/repo/worktree",
+					messages: [
+						{
+							id: "m1",
+							role: "human",
+							content: "Persisted hello",
+							timestamp: 1,
+						},
+					],
+					state: "idle",
+					createdAt: 1,
+					updatedAt: 2,
+					permissionMode: "edit",
+					backendId: "codex",
+					selectedModel: null,
+					turnPhase: "idle",
+					availableModels: [],
+					pendingQueue: [],
+					pendingQueueCount: 0,
+				},
+			},
+		});
+
+		expect(screen.getByText("Persisted hello")).toBeInTheDocument();
+
+		rerender({ selectedWorktree: "/repo/other" });
+
+		expect(screen.queryByText("Persisted hello")).not.toBeInTheDocument();
+		expect(send).toHaveBeenCalledWith({
+			type: "agent_sessions_request",
+			payload: { worktree_path: "/repo/other" },
+		});
+
+		emit({
+			type: "agent_session_get_response",
+			payload: {
+				success: true,
+				session_id: "session-1",
+				session: {
+					id: "session-1",
+					worktreePath: "/repo/worktree",
+					messages: [
+						{
+							id: "stale",
+							role: "agent",
+							content: "Stale response",
+							timestamp: 3,
+						},
+					],
+					state: "idle",
+					createdAt: 1,
+					updatedAt: 3,
+					permissionMode: "edit",
+					backendId: "codex",
+					selectedModel: null,
+					turnPhase: "idle",
+					availableModels: [],
+					pendingQueue: [],
+					pendingQueueCount: 0,
+				},
+			},
+		});
+
+		expect(screen.queryByText("Stale response")).not.toBeInTheDocument();
+	});
+
+	it("renders remote slash command suggestions and inserts the selected command", async () => {
+		const user = userEvent.setup();
+		const { emit } = renderPanel();
+
+		emit({
+			type: "agent_slash_commands_response",
+			payload: {
+				success: true,
+				worktree_path: "/repo/worktree",
+				commands: [
+					{
+						name: "review",
+						description: "Review changes",
+						argumentHint: "<target>",
+					},
+					{ name: "commit", description: "Create commit" },
+				],
+			},
+		});
+
+		const input = screen.getByPlaceholderText("Message") as HTMLTextAreaElement;
+		await user.type(input, "/r");
+
+		const list = screen.getByTestId("remote-slash-command-list");
+		expect(within(list).getByText("Review changes")).toBeInTheDocument();
+		expect(within(list).queryByText("Create commit")).not.toBeInTheDocument();
+
+		await user.click(within(list).getByRole("button", { name: /\/review/ }));
+
+		expect(input.value).toBe("/review ");
 	});
 
 	it("includes the selected abstract permission_mode in agent_session_start_request", async () => {
@@ -164,6 +375,124 @@ describe("RemoteAgentPanel", () => {
 		expect(screen.getAllByText("Hello")).toHaveLength(2);
 	});
 
+	it("prepares remote image attachments through Rust and sends them with the message", async () => {
+		const user = userEvent.setup();
+		const { send, emit, container } = renderPanel();
+		emit({
+			type: "agent_session_start_response",
+			payload: {
+				success: true,
+				session_id: "session-1",
+				backend_id: "codex",
+			},
+		});
+
+		const input = container.querySelector(
+			'input[type="file"]',
+		) as HTMLInputElement;
+		const file = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "a.png", {
+			type: "image/png",
+		});
+		await user.upload(input, file);
+
+		const prepareCall = send.mock.calls.find(
+			(call) => (call[0] as WsMessage).type === "agent_image_prepare_request",
+		);
+		expect(prepareCall).toBeDefined();
+		const requestId = (
+			prepareCall?.[0] as Extract<
+				WsMessage,
+				{ type: "agent_image_prepare_request" }
+			>
+		).payload.request_id;
+
+		emit({
+			type: "agent_image_prepare_response",
+			payload: {
+				success: true,
+				request_id: requestId,
+				attachment: { data: "UE5H", mediaType: "image/png" },
+			},
+		});
+
+		expect(screen.getByTestId("remote-image-preview-list")).toBeInTheDocument();
+		await user.click(screen.getByLabelText("Send message"));
+
+		expect(send).toHaveBeenLastCalledWith({
+			type: "agent_message_request",
+			payload: {
+				session_id: "session-1",
+				worktree_path: "/repo/worktree",
+				content: "",
+				permission_mode: "edit",
+				backend_id: null,
+				images: [{ data: "UE5H", mediaType: "image/png" }],
+			},
+		});
+	});
+
+	it("requests remote mention candidates and sends selected mentions", async () => {
+		const user = userEvent.setup();
+		const { send, emit } = renderPanel();
+		emit({
+			type: "agent_session_start_response",
+			payload: {
+				success: true,
+				session_id: "session-1",
+				backend_id: "codex",
+			},
+		});
+
+		const input = screen.getByPlaceholderText("Message");
+		await user.type(input, "Read @sr");
+
+		await waitFor(() => {
+			expect(
+				send.mock.calls.some(
+					(call) =>
+						(call[0] as WsMessage).type === "agent_mention_files_request",
+				),
+			).toBe(true);
+		});
+		const request = send.mock.calls
+			.map((call) => call[0] as WsMessage)
+			.find(
+				(
+					message,
+				): message is Extract<
+					WsMessage,
+					{ type: "agent_mention_files_request" }
+				> => message.type === "agent_mention_files_request",
+			);
+		expect(request?.payload.query).toBe("sr");
+
+		emit({
+			type: "agent_mention_files_response",
+			payload: {
+				success: true,
+				request_id: request?.payload.request_id ?? "",
+				worktree_path: "/repo/worktree",
+				query: "sr",
+				files: ["src/main.rs"],
+			},
+		});
+
+		await user.click(screen.getByText("src/main.rs"));
+		await user.click(screen.getByLabelText("Send message"));
+
+		expect(send).toHaveBeenLastCalledWith({
+			type: "agent_message_request",
+			payload: {
+				session_id: "session-1",
+				worktree_path: "/repo/worktree",
+				content: "Read @src/main.rs",
+				permission_mode: "edit",
+				backend_id: null,
+				mentions: [{ filePath: "src/main.rs" }],
+			},
+		});
+	});
+
 	it("creates an agent message when stream sync arrives with an unknown message id", () => {
 		const { emit } = renderPanel();
 		emit({
@@ -185,6 +514,57 @@ describe("RemoteAgentPanel", () => {
 		});
 
 		expect(screen.getByText("Recovered stream")).toBeInTheDocument();
+	});
+
+	it("sends permission responses from remote permission cards", async () => {
+		const user = userEvent.setup();
+		const { send, emit } = renderPanel();
+		emit({
+			type: "agent_session_start_response",
+			payload: {
+				success: true,
+				session_id: "session-1",
+				backend_id: "codex",
+			},
+		});
+
+		emit({
+			type: "agent_stream_sync",
+			payload: {
+				session_id: "session-1",
+				message_id: "agent-1",
+				parts: [
+					{
+						type: "permission",
+						status: "pending",
+						request: {
+							request_id: "perm-1",
+							tool_name: "Bash",
+							display_name: "Run command",
+							description: "Execute test command",
+							input: {},
+							tool_use_id: "toolu-1",
+						},
+					},
+				],
+			},
+		});
+
+		expect(screen.getByText("Run command")).toBeInTheDocument();
+		expect(screen.getByText("Execute test command")).toBeInTheDocument();
+
+		await user.click(screen.getByText("Allow"));
+
+		expect(send).toHaveBeenCalledWith({
+			type: "agent_permission_response_request",
+			payload: {
+				session_id: "session-1",
+				request_id: "perm-1",
+				behavior: "allow",
+				message: null,
+				updated_input: null,
+			},
+		});
 	});
 
 	it("ignores stream sync from another session", () => {
