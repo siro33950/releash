@@ -6,7 +6,6 @@ pub(crate) const CLAUDE_FIXED_MODELS: &[&str] = &[
     "opus[1m]",
     "claude-sonnet-4-5",
     "claude-haiku-4-5-20251001",
-    "claude-fable-5",
 ];
 
 /// Codex バックエンドで選択可能な固定モデル一覧（表示順）。

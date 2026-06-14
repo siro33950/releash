@@ -1,14 +1,14 @@
 name: 03_review
-description: Fable と GPT-5.5 がそれぞれ 6 観点すべてを確認し、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。
+description: Claude 系モデルと GPT-5.5 がそれぞれ 6 観点すべてを確認し、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。
 builtin: true
 
 nodes:
   - name: review-parallel
     type: parallel
     parallel_children:
-      - name: review-fable
+      - name: review-opus
         type: agent
-        model: claude-fable-5
+        model: claude-opus-4-8
         permission: edit
         instruction: review-all
         policy: reviewing

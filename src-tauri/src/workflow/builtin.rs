@@ -6,7 +6,7 @@ use super::validation::{self, ValidationError};
 
 const BUILTIN_AUTHORING_GPT55: &str = include_str!("builtin/01_authoring_gpt55.yml");
 const BUILTIN_AUTHORING_OPUS48: &str = include_str!("builtin/01_authoring_opus48.yml");
-const BUILTIN_AUTHORING_FABLE: &str = include_str!("builtin/01_authoring_fable.yml");
+const BUILTIN_AUTHORING_DRAFT: &str = include_str!("builtin/01_authoring_draft.yml");
 const BUILTIN_IMPLEMENT_GPT55: &str = include_str!("builtin/02_implement_gpt55.yml");
 const BUILTIN_IMPLEMENT_OPUS48: &str = include_str!("builtin/02_implement_opus48.yml");
 const BUILTIN_FULL_REVIEW: &str = include_str!("builtin/03_full-review.yml");
@@ -35,9 +35,9 @@ const BUILTINS: &[BuiltinEntry] = &[
         description: "ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をClaude系モデルで構築する。レビューループは行わない。",
     },
     BuiltinEntry {
-        filename: "01_authoring_fable.yml",
-        content: BUILTIN_AUTHORING_FABLE,
-        description: "requirements / behavior / design を文書ごとにFableモデルで一括作成し、Open Questions 解消後に人間のレビューを待つ。",
+        filename: "01_authoring_draft.yml",
+        content: BUILTIN_AUTHORING_DRAFT,
+        description: "requirements / behavior / design を文書ごとに Claude 系モデルで draft 方式（finalize なし）で一括作成し、Open Questions 解消後に人間のレビューを待つ。",
     },
     BuiltinEntry {
         filename: "02_implement_gpt55.yml",
@@ -57,7 +57,7 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "03_review.yml",
         content: BUILTIN_REVIEW,
-        description: "Fable と GPT-5.5 がそれぞれ 6 観点すべてを確認し、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
+        description: "Claude 系モデルと GPT-5.5 がそれぞれ 6 観点すべてを確認し、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
     },
     BuiltinEntry {
         filename: "04_review-fix-policy.yml",
@@ -468,8 +468,8 @@ mod tests {
     }
 
     #[test]
-    fn fable_authoring_workflow_is_document_steps() {
-        let name = "01_authoring_fable";
+    fn draft_authoring_workflow_is_document_steps() {
+        let name = "01_authoring_draft";
         let wf = load_builtin_workflow_resolved(name)
             .unwrap_or_else(|err| panic!("builtin '{name}' must load: {err}"))
             .unwrap_or_else(|| panic!("builtin '{name}' must exist"));
@@ -478,7 +478,7 @@ mod tests {
         assert_eq!(
             node_names,
             vec!["write_requirements", "write_behavior", "write_design"],
-            "fable authoring must stay document-step based"
+            "draft authoring must stay document-step based"
         );
 
         for node in &wf.nodes {
@@ -497,8 +497,8 @@ mod tests {
             );
             assert_eq!(
                 node.model.as_deref(),
-                Some("claude-fable-5"),
-                "node '{}' must use fable model",
+                Some("claude-opus-4-8"),
+                "node '{}' must use opus-4-8 model",
                 node.name
             );
         }
