@@ -167,6 +167,24 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
 /// Per-session agent process map: chat_session_id -> AgentProcess
 pub type AgentProcessMap = HashMap<String, AgentProcess>;
 
+// [DIAG] queue/cancel 調査用。Rust の log バックエンドが未初期化のため、
+// 直接ファイルへ追記して queue 経路の状態を可視化する。確認後に削除する。
+pub(crate) fn diag_queue(label: &str, session_id: &str, extra: Option<&str>) {
+    use std::io::Write as _;
+    let path = std::env::temp_dir().join("releash-bridge-diag.log");
+    let line = format!(
+        "rust-diag: {label} session={session_id}{}\n",
+        extra.map(|e| format!(" {e}")).unwrap_or_default()
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 /// drain 時に永続化する人間メッセージの parts を pending から構築する。
 /// 画像が無ければ None（content は add_message_internal が text として扱う）。
 fn pending_human_parts(pending: &PendingMessage) -> Option<Vec<MessagePart>> {
@@ -5147,17 +5165,29 @@ async fn prepare_send_agent_message_internal(
     };
 
     // 3. Check turn phase
-    let current_phase = {
+    let (current_phase, current_state) = {
         let map = handles.lock().await;
         map.get(&sid)
-            .map(|p| p.turn_phase)
-            .unwrap_or(TurnPhase::Idle)
+            .map(|p| (p.turn_phase, p.state))
+            .unwrap_or((TurnPhase::Idle, BridgeState::Ready))
     };
 
-    let active_turn_busy =
-        current_phase == TurnPhase::Streaming || current_phase == TurnPhase::WaitingPermission;
+    // turn_phase に加え、bridge 起動中 (Initializing) も busy として扱う。
+    // 起動中は turn_phase がまだ Idle のため、これを見ないと「起動中の送信」を
+    // 競合ターンとして即時起動してしまう。
+    let is_initializing = current_state == BridgeState::Initializing;
+    let active_turn_busy = current_phase == TurnPhase::Streaming
+        || current_phase == TurnPhase::WaitingPermission
+        || is_initializing;
     let pending_turn_starting = is_pending_turn_starting(&sid).await;
     let turn_busy = active_turn_busy || pending_turn_starting;
+    diag_queue(
+        "busy_check",
+        &sid,
+        Some(&format!(
+            "backend={session_backend_id} phase={current_phase:?} state={current_state:?} turn_busy={turn_busy}"
+        )),
+    );
 
     let (human_message, agent_message, prepared_input, queued_turn) = if turn_busy {
         let can_steer_active_turn = if active_turn_busy && !pending_turn_starting {

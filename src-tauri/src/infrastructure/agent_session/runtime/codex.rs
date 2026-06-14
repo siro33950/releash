@@ -388,6 +388,11 @@ impl AppServerCodexRuntime {
                     .await;
                 }
                 if is_turn_completed {
+                    crate::infrastructure::agent_session::runtime::bridge_common::diag_queue(
+                        "codex:turn_completed->drain_trigger",
+                        &chat_session_id,
+                        None,
+                    );
                     if let Err(e) = start_next_app_server_pending_turn(
                         &app,
                         &session_store,
@@ -397,6 +402,11 @@ impl AppServerCodexRuntime {
                     )
                     .await
                     {
+                        crate::infrastructure::agent_session::runtime::bridge_common::diag_queue(
+                            "codex:drain_failed",
+                            &chat_session_id,
+                            Some(&e),
+                        );
                         log::error!(
                             "failed to start pending codex app-server turn for {chat_session_id}: {e}"
                         );
