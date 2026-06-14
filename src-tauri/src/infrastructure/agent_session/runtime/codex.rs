@@ -617,15 +617,12 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
         .await
     }
 
-    async fn active_turn_steering_ready(&self, session: &SessionHandle) -> bool {
-        if ensure_codex_session(session).is_err() {
-            return false;
-        }
-        let Some(state) = self.session_state(&session.chat_session_id).await else {
-            return false;
-        };
-        let guard = state.lock().await;
-        guard.bridge_state.thread_id.is_some() && guard.bridge_state.turn_id.is_some()
+    async fn active_turn_steering_ready(&self, _session: &SessionHandle) -> bool {
+        // steering（turn/steer による実行中ターンへの注入）は無効化する。
+        // steering を有効にすると、ターン実行中の送信が常に steer 経路へ入り、
+        // キューに積まれない（=「キューに入らず投入されるが無視される」）。
+        // Claude と同様、busy 時は必ずキュー経路へ流して drain で順次実行する。
+        false
     }
 
     async fn interrupt(&self, session: &SessionHandle) -> Result<(), String> {
