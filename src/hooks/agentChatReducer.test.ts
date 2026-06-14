@@ -40,6 +40,7 @@ describe("agentChatReducer", () => {
 			sessionsById: {},
 			activeSessionId: null,
 			turnPhases: {},
+			interrupting: {},
 			error: null,
 			permissionMode: "edit" as const,
 			pendingPermissions: {},

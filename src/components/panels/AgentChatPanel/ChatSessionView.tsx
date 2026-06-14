@@ -554,6 +554,7 @@ export interface ChatSessionViewProps {
 	session: ChatSession;
 	sessionStatus: SessionStatus | null;
 	isStreaming: boolean;
+	isInterrupting: boolean;
 	activityStatus: { label: string } | null;
 	error: string | null;
 	permissionMode: PermissionMode;
@@ -624,6 +625,7 @@ export function ChatSessionView({
 	session,
 	sessionStatus,
 	isStreaming,
+	isInterrupting,
 	activityStatus,
 	error,
 	permissionMode,
@@ -3619,6 +3621,7 @@ export function ChatSessionView({
 					onSend={handleComposerSend}
 					onInterrupt={onInterrupt}
 					isStreaming={isStreaming}
+					isInterrupting={isInterrupting}
 					onCycleMode={cycleMode}
 					mode={permissionMode}
 					onModeChange={handlePermissionModeChange}

@@ -64,6 +64,7 @@ export function BoundSessionChat({
 		loadSession,
 		registerViewableSession,
 		getSessionTurnPhase,
+		getSessionInterrupting,
 		getSessionSelectedModel,
 		getSessionPendingQueue = () => [],
 		getSessionLatestTokenUsage = () => null,
@@ -105,6 +106,8 @@ export function BoundSessionChat({
 	const turnPhase = sessionId ? getSessionTurnPhase(sessionId) : "idle";
 	const isStreaming =
 		turnPhase === "streaming" || turnPhase === "waiting_permission";
+	// interrupt 要求を出してから idle になるまでの楽観フラグ（停止ボタンの即時反映用）。
+	const isInterrupting = sessionId ? getSessionInterrupting(sessionId) : false;
 	const activityStatus = useMemo(() => {
 		if (!session) return null;
 		return deriveActivityStatus(session.messages, turnPhase);
@@ -205,6 +208,7 @@ export function BoundSessionChat({
 			session={session}
 			sessionStatus={sessionStatus}
 			isStreaming={isStreaming}
+			isInterrupting={isInterrupting}
 			activityStatus={activityStatus}
 			error={error}
 			permissionMode={contextPermissionMode}

@@ -79,6 +79,7 @@ function makeRefs(): TestRefs {
 		dispatch: vi.fn(),
 		viewableRegistry: registry,
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
+		hasMessage: vi.fn().mockReturnValue(false),
 	};
 }
 

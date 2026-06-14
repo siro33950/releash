@@ -135,6 +135,7 @@ export interface UseAgentChatResult {
 	registerViewableSession: (sessionId: string) => () => void;
 	/** per-session lookup（既存）。*/
 	getSessionTurnPhase: (sessionId: string) => TurnPhase;
+	getSessionInterrupting: (sessionId: string) => boolean;
 	getSessionSelectedModel: (sessionId: string) => string | null;
 	getSessionPendingQueue: (sessionId: string) => QueuedAgentTurn[];
 	getSessionLatestTokenUsage: (sessionId: string) => TokenUsage | null;
@@ -235,6 +236,8 @@ export function useAgentChat(
 	permissionModeRef.current = state.permissionMode;
 	const turnPhasesRef = useRef(state.turnPhases);
 	turnPhasesRef.current = state.turnPhases;
+	const interruptingRef = useRef(state.interrupting);
+	interruptingRef.current = state.interrupting;
 	const selectedBackendIdRef = useRef(state.selectedBackendId);
 	selectedBackendIdRef.current = state.selectedBackendId;
 
@@ -377,8 +380,15 @@ export function useAgentChat(
 
 	const interrupt = useCallback((sessionId: string) => {
 		if (!sessionId) return;
+		// 既に interrupt 要求済みなら握りつぶす（連打抑止）。
+		if (interruptingRef.current[sessionId]) return;
+		// 楽観的に interrupting 状態へ。turn が idle になった時点で reducer が
+		// 自動クリアする。これで停止押下が即座に UI へ反映される。
+		dispatch({ type: "SET_INTERRUPTING", sessionId, value: true });
 		invoke("interrupt_agent_query", { chatSessionId: sessionId }).catch((e) => {
 			console.error("Failed to interrupt agent query:", e);
+			// 送信自体に失敗したら楽観フラグを戻す。
+			dispatch({ type: "SET_INTERRUPTING", sessionId, value: false });
 		});
 	}, []);
 
@@ -862,6 +872,10 @@ export function useAgentChat(
 		dispatch,
 		viewableRegistry,
 		refreshSessions,
+		hasMessage: (sessionId, messageId) =>
+			(sessionsByIdRef.current[sessionId]?.messages ?? []).some(
+				(m) => m.id === messageId,
+			),
 	});
 
 	// activeSession は Main panel が表示している session として実質 viewable。
@@ -987,6 +1001,11 @@ export function useAgentChat(
 		(sessionId: string): TurnPhase => turnPhasesState[sessionId] ?? "idle",
 		[turnPhasesState],
 	);
+	const interruptingState = state.interrupting;
+	const getSessionInterrupting = useCallback(
+		(sessionId: string): boolean => interruptingState[sessionId] ?? false,
+		[interruptingState],
+	);
 	const getSessionSelectedModel = useCallback(
 		(sessionId: string): string | null => sessionModelsState[sessionId] ?? null,
 		[sessionModelsState],
@@ -1069,6 +1088,7 @@ export function useAgentChat(
 		getSessionById,
 		registerViewableSession,
 		getSessionTurnPhase,
+		getSessionInterrupting,
 		getSessionSelectedModel,
 		getSessionPendingQueue,
 		getSessionLatestTokenUsage,

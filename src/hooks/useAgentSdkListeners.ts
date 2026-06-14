@@ -54,6 +54,17 @@ interface StreamingMessageUpdated {
 interface PendingMessageConsumed {
 	chat_session_id: string;
 	queued_turn_id?: string;
+	/**
+	 * drain 時に永続化された人間メッセージ。キュー投入時は transcript に追加せず、
+	 * ここで初めて transcript に出す（二重表示の防止）。
+	 */
+	human_message?: {
+		id: string;
+		role: "human";
+		content: string;
+		parts?: MessagePart[] | null;
+		timestamp: number;
+	};
 	agent_message: {
 		id: string;
 		role: "agent";
@@ -81,6 +92,13 @@ export interface AgentSdkListenerRefs {
 	dispatch: Dispatch<AgentChatAction>;
 	viewableRegistry: ViewableSessionRegistry;
 	refreshSessions: () => Promise<unknown>;
+	/**
+	 * 指定 session に message_id のメッセージが既に存在するか。streaming 更新時の
+	 * cache-miss hydration を「本当に未存在の時だけ」に限定するために使う。毎回
+	 * getSession→UPSERT_SESSION すると、drain 直後の楽観追加メッセージを古い
+	 * snapshot で上書きして消すレースが起きる。
+	 */
+	hasMessage: (sessionId: string, messageId: string) => boolean;
 }
 
 function isViewable(
@@ -303,7 +321,7 @@ function handleCodexGoalMessage(
 }
 
 export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
-	const { dispatch, viewableRegistry, refreshSessions } = refs;
+	const { dispatch, viewableRegistry, refreshSessions, hasMessage } = refs;
 
 	// Listen to SDK messages for meta events (permissions, system messages)
 	useEffect(() => {
@@ -414,9 +432,13 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 
 				// Cache miss: SET_STREAMING_MESSAGE は session.messages 内に message_id が
 				// 存在しない場合 no-op になる。viewable な session で message_id が
-				// 未確認の場合は getSession で fetch → UPSERT_SESSION で sessionsById を
+				// 未確認の場合のみ getSession で fetch → UPSERT_SESSION で sessionsById を
 				// 更新し、後続の SET_STREAMING_MESSAGE が反映できる状態に揃える。
-				if (!refreshInFlight) {
+				//
+				// 重要: message_id が既に存在する場合に毎回 getSession→UPSERT_SESSION
+				// すると、drain 直後に楽観追加したメッセージを「投入前の古い snapshot」で
+				// 上書きして一瞬で消すレースが起きる。必ず未存在時に限定する。
+				if (!hasMessage(chat_session_id, message_id) && !refreshInFlight) {
 					refreshInFlight = true;
 					try {
 						const response = await getSession(chat_session_id);
@@ -510,7 +532,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		listen<PendingMessageConsumed>(
 			"agent-pending-message-consumed",
 			(event) => {
-				const { chat_session_id, queued_turn_id, agent_message } =
+				const { chat_session_id, queued_turn_id, human_message, agent_message } =
 					event.payload;
 				if (!isViewable(chat_session_id, viewableRegistry)) return;
 				if (queued_turn_id) {
@@ -518,6 +540,25 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 						type: "REMOVE_PENDING_QUEUE_ITEM",
 						sessionId: chat_session_id,
 						queuedTurnId: queued_turn_id,
+					});
+				}
+				// drain 時に永続化された人間メッセージを、agent メッセージより先に
+				// transcript へ追加する（キュー投入時は意図的に追加していない）。
+				if (human_message) {
+					// ChatMessage は parts のみを持つ（content は text part として表現）。
+					const humanParts: MessagePart[] =
+						human_message.parts && human_message.parts.length > 0
+							? human_message.parts
+							: [{ type: "text", content: human_message.content }];
+					dispatch({
+						type: "ADD_MESSAGE",
+						sessionId: chat_session_id,
+						message: {
+							id: human_message.id,
+							role: human_message.role,
+							parts: humanParts,
+							timestamp: human_message.timestamp,
+						},
 					});
 				}
 				dispatch({

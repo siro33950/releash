@@ -5,6 +5,7 @@ import {
 	ChevronUp,
 	ExternalLink,
 	FileInput,
+	Loader2,
 	Maximize2,
 	Mic,
 	Search,
@@ -181,6 +182,8 @@ interface MessageInputProps {
 	) => void | Promise<void>;
 	onInterrupt: () => void;
 	isStreaming: boolean;
+	/** interrupt 要求済みで turn 終了待ちの楽観状態。停止ボタンを停止中表示にする。*/
+	isInterrupting?: boolean;
 	onCycleMode?: () => void;
 	mode: PermissionMode;
 	onModeChange: (mode: PermissionMode) => void;
@@ -202,6 +205,7 @@ export function MessageInput({
 	onSend,
 	onInterrupt,
 	isStreaming,
+	isInterrupting = false,
 	onCycleMode,
 	mode,
 	onModeChange,
@@ -1545,10 +1549,17 @@ export function MessageInput({
 								variant="destructive"
 								className="h-7 w-7 shrink-0"
 								onClick={onInterrupt}
-								aria-label="Interrupt agent"
-								title="Interrupt agent"
+								disabled={isInterrupting}
+								aria-label={
+									isInterrupting ? "Stopping agent" : "Interrupt agent"
+								}
+								title={isInterrupting ? "Stopping…" : "Interrupt agent"}
 							>
-								<Square className="size-3.5" />
+								{isInterrupting ? (
+									<Loader2 className="size-3.5 animate-spin" />
+								) : (
+									<Square className="size-3.5" />
+								)}
 							</Button>
 						)}
 						{(!isStreaming || canSend) && (

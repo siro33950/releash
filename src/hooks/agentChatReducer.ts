@@ -29,6 +29,12 @@ export interface AgentChatState {
 	/** Main panel の active session id。`sessionsById[activeSessionId]` で本体に到達。*/
 	activeSessionId: string | null;
 	turnPhases: Record<string, TurnPhase>;
+	/**
+	 * interrupt 要求を出してから turn が idle になるまでの楽観的フラグ。
+	 * 停止ボタン押下を即座に UI へ反映し、連打を防ぐ。turnPhase が idle に
+	 * 遷移した時点で自動クリアされる。
+	 */
+	interrupting: Record<string, boolean>;
 	error: string | null;
 	permissionMode: PermissionMode;
 	pendingPermissions: Record<string, PermissionRequest>;
@@ -57,6 +63,7 @@ export type AgentChatAction =
 			sessionId: string;
 			turnPhase: TurnPhase;
 	  }
+	| { type: "SET_INTERRUPTING"; sessionId: string; value: boolean }
 	| { type: "SET_ERROR"; error: string | null }
 	| {
 			type: "UPDATE_SESSION_STATE";
@@ -245,14 +252,35 @@ export function reducer(
 				appendMessage(s, action.message),
 			);
 		}
-		case "SET_TURN_PHASE":
+		case "SET_TURN_PHASE": {
+			// idle に戻ったら interrupting 楽観フラグをクリアする。
+			const nextInterrupting =
+				action.turnPhase === "idle" && state.interrupting[action.sessionId]
+					? (() => {
+							const { [action.sessionId]: _drop, ...rest } =
+								state.interrupting;
+							return rest;
+						})()
+					: state.interrupting;
 			return {
 				...state,
 				turnPhases: {
 					...state.turnPhases,
 					[action.sessionId]: action.turnPhase,
 				},
+				interrupting: nextInterrupting,
 			};
+		}
+		case "SET_INTERRUPTING": {
+			if (!action.value) {
+				const { [action.sessionId]: _drop, ...rest } = state.interrupting;
+				return { ...state, interrupting: rest };
+			}
+			return {
+				...state,
+				interrupting: { ...state.interrupting, [action.sessionId]: true },
+			};
+		}
 		case "SET_ERROR":
 			return { ...state, error: action.error };
 		case "UPDATE_SESSION_STATE":
@@ -363,6 +391,8 @@ export function reducer(
 			};
 		case "CLEANUP_SESSION": {
 			const { [action.sessionId]: _tp, ...restTurnPhases } = state.turnPhases;
+			const { [action.sessionId]: _int, ...restInterrupting } =
+				state.interrupting;
 			const { [action.sessionId]: _pp, ...restPendingPermissions } =
 				state.pendingPermissions;
 			const { [action.sessionId]: _pq, ...restPendingQueues } =
@@ -381,6 +411,7 @@ export function reducer(
 			return {
 				...state,
 				turnPhases: restTurnPhases,
+			interrupting: restInterrupting,
 				pendingPermissions: restPendingPermissions,
 				pendingQueues: restPendingQueues,
 				latestTokenUsage: restLatestTokenUsage,
@@ -447,6 +478,7 @@ export const INITIAL_STATE: AgentChatState = {
 	sessionsById: {},
 	activeSessionId: null,
 	turnPhases: {},
+	interrupting: {},
 	error: null,
 	permissionMode: "edit",
 	pendingPermissions: {},

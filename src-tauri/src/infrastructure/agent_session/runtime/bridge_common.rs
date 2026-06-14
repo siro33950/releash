@@ -167,6 +167,28 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
 /// Per-session agent process map: chat_session_id -> AgentProcess
 pub type AgentProcessMap = HashMap<String, AgentProcess>;
 
+/// drain 時に永続化する人間メッセージの parts を pending から構築する。
+/// 画像が無ければ None（content は add_message_internal が text として扱う）。
+fn pending_human_parts(pending: &PendingMessage) -> Option<Vec<MessagePart>> {
+    if pending.images.is_empty() {
+        return None;
+    }
+    let mut p: Vec<MessagePart> = Vec::new();
+    if !pending.content.is_empty() {
+        p.push(MessagePart::Text {
+            content: pending.content.clone(),
+            parent_tool_use_id: None,
+        });
+    }
+    for img in &pending.images {
+        p.push(MessagePart::Image {
+            data: img.data.clone(),
+            media_type: img.media_type.clone(),
+        });
+    }
+    Some(p)
+}
+
 fn pending_message_to_queued_turn(
     pending: &PendingMessage,
 ) -> crate::usecase::agent_session::session::QueuedAgentTurn {
@@ -3822,6 +3844,30 @@ async fn start_pending_message_turn<R: tauri::Runtime>(
             return;
         }
     };
+
+    // 人間メッセージを drain 時に永続化する（enqueue 時は二重表示防止のため追加しない）。
+    let human_parts = pending_human_parts(&pending);
+    let human_mentions = if pending.mentions.is_empty() {
+        None
+    } else {
+        Some(pending.mentions.clone())
+    };
+    let human_msg = match add_message_internal(
+        session_store,
+        &data_dir,
+        chat_session_id,
+        MessageRole::Human,
+        &pending.content,
+        human_parts,
+        human_mentions,
+    ) {
+        Ok(msg) => msg,
+        Err(e) => {
+            log::error!("consume_pending_message: failed to add human message: {e}");
+            clear_pending_turn_starting(chat_session_id).await;
+            return;
+        }
+    };
     let agent_msg = match add_message_internal(
         session_store,
         &data_dir,
@@ -3839,7 +3885,7 @@ async fn start_pending_message_turn<R: tauri::Runtime>(
         }
     };
 
-    // 3. Emit event so UI can update with the new agent message
+    // 3. Emit event so UI can update with the new human + agent messages
     {
         use tauri::Emitter;
         let _ = app.emit(
@@ -3847,6 +3893,7 @@ async fn start_pending_message_turn<R: tauri::Runtime>(
             serde_json::json!({
                 "chat_session_id": chat_session_id,
                 "queued_turn_id": pending.id,
+                "human_message": human_msg,
                 "agent_message": agent_msg,
             }),
         );
@@ -4649,6 +4696,29 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
             return Err(format!("failed to resolve data dir: {e}"));
         }
     };
+    // 人間メッセージを drain 時に永続化する（enqueue 時は二重表示防止のため追加しない）。
+    // Claude 経路 (start_pending_message_turn) と同じ扱い。
+    let human_parts = pending_human_parts(&pending);
+    let human_mentions = if pending.mentions.is_empty() {
+        None
+    } else {
+        Some(pending.mentions.clone())
+    };
+    let human_msg = match add_message_internal(
+        session_store,
+        &data_dir,
+        chat_session_id,
+        MessageRole::Human,
+        &pending.content,
+        human_parts,
+        human_mentions,
+    ) {
+        Ok(msg) => msg,
+        Err(e) => {
+            clear_pending_turn_starting(chat_session_id).await;
+            return Err(format!("failed to add pending human message: {e}"));
+        }
+    };
     let agent_msg = match add_message_internal(
         session_store,
         &data_dir,
@@ -4675,6 +4745,7 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
             serde_json::json!({
                 "chat_session_id": chat_session_id,
                 "queued_turn_id": pending.id,
+                "human_message": human_msg,
                 "agent_message": agent_msg,
             }),
         );
@@ -5047,39 +5118,32 @@ async fn prepare_send_agent_message_internal(
         .clone()
         .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string());
 
-    // 2. Add human message (with image parts if present)
-    let human_message = {
-        let parts = if images.is_empty() {
-            None
-        } else {
-            let mut p: Vec<MessagePart> = Vec::new();
-            if !content.is_empty() {
-                p.push(MessagePart::Text {
-                    content: content.clone(),
-                    parent_tool_use_id: None,
-                });
-            }
-            for img in &images {
-                p.push(MessagePart::Image {
-                    data: img.data.clone(),
-                    media_type: img.media_type.clone(),
-                });
-            }
-            Some(p)
-        };
-        add_message_internal(
-            session_store,
-            data_dir,
-            &sid,
-            MessageRole::Human,
-            &content,
-            parts,
-            if mentions.is_empty() {
-                None
-            } else {
-                Some(mentions.clone())
-            },
-        )?
+    // 2. Compute human message parts.
+    // 永続化のタイミングは busy 判定後の分岐で決める。キュー投入時は session に
+    // 即時追加すると transcript とキューUI に二重表示されるため、ここでは追加せず
+    // drain（start_pending_message_turn / prepare_external_pending_message_turn）で追加する。
+    let human_parts = if images.is_empty() {
+        None
+    } else {
+        let mut p: Vec<MessagePart> = Vec::new();
+        if !content.is_empty() {
+            p.push(MessagePart::Text {
+                content: content.clone(),
+                parent_tool_use_id: None,
+            });
+        }
+        for img in &images {
+            p.push(MessagePart::Image {
+                data: img.data.clone(),
+                media_type: img.media_type.clone(),
+            });
+        }
+        Some(p)
+    };
+    let human_mentions = if mentions.is_empty() {
+        None
+    } else {
+        Some(mentions.clone())
     };
 
     // 3. Check turn phase
@@ -5095,7 +5159,7 @@ async fn prepare_send_agent_message_internal(
     let pending_turn_starting = is_pending_turn_starting(&sid).await;
     let turn_busy = active_turn_busy || pending_turn_starting;
 
-    let (agent_message, prepared_input, queued_turn) = if turn_busy {
+    let (human_message, agent_message, prepared_input, queued_turn) = if turn_busy {
         let can_steer_active_turn = if active_turn_busy && !pending_turn_starting {
             if let Some(backend) = registry.get(&session_backend_id) {
                 let session_handle = crate::infrastructure::agent_session::runtime::SessionHandle {
@@ -5111,6 +5175,16 @@ async fn prepare_send_agent_message_internal(
         };
 
         if can_steer_active_turn {
+            // steer は即座にアクティブターンへ流し込むため、人間メッセージを永続化する。
+            let human_message = add_message_internal(
+                session_store,
+                data_dir,
+                &sid,
+                MessageRole::Human,
+                &content,
+                human_parts.clone(),
+                human_mentions.clone(),
+            )?;
             let resolved_prompt = code_usecase.resolve_mentions_or_fallback(
                 &session_worktree_path,
                 &content,
@@ -5125,9 +5199,17 @@ async fn prepare_send_agent_message_internal(
                 images: images.clone(),
                 editor_context,
             };
-            (None, Some(PreparedAgentRuntimeInput::Steer(steer)), None)
+            (
+                human_message,
+                None,
+                Some(PreparedAgentRuntimeInput::Steer(steer)),
+                None,
+            )
         } else {
             // 4a. Queue pending message + interrupt
+            // 人間メッセージはここでは永続化しない（transcript とキューUI の二重表示を
+            // 避けるため）。drain 時に各 drain 関数が永続化する。response 用には
+            // 非永続の ChatMessage を構築して返す。
             let pending = PendingMessage {
                 id: uuid::Uuid::new_v4().to_string(),
                 content: content.clone(),
@@ -5139,6 +5221,16 @@ async fn prepare_send_agent_message_internal(
                 editor_context: editor_context.clone(),
             };
             let queued_turn = pending_message_to_queued_turn(&pending);
+            let transient_human = ChatMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                role: MessageRole::Human,
+                content: content.clone(),
+                thinking: None,
+                activities: None,
+                parts: human_parts.clone(),
+                timestamp: now_timestamp(),
+                mentions: None,
+            };
             {
                 let mut map = handles.lock().await;
                 let proc = map
@@ -5147,10 +5239,19 @@ async fn prepare_send_agent_message_internal(
                 proc.pending_messages.push_back(pending);
             }
             interrupt_active_agent_turn(handles, registry, &sid).await?;
-            (None, None, Some(queued_turn))
+            (transient_human, None, None, Some(queued_turn))
         }
     } else {
-        // 4b. Create agent message + start turn
+        // 4b. Create human + agent message, start turn
+        let human_message = add_message_internal(
+            session_store,
+            data_dir,
+            &sid,
+            MessageRole::Human,
+            &content,
+            human_parts.clone(),
+            human_mentions.clone(),
+        )?;
         let agent_msg = add_message_internal(
             session_store,
             data_dir,
@@ -5176,6 +5277,7 @@ async fn prepare_send_agent_message_internal(
             editor_context,
         };
         (
+            human_message,
             Some(agent_msg),
             Some(PreparedAgentRuntimeInput::Turn(turn)),
             None,
