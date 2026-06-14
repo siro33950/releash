@@ -469,7 +469,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, viewableRegistry]);
+	}, [dispatch, viewableRegistry, hasMessage]);
 
 	// Listen to agent-session-state-changed (unified state event from Rust)
 	useEffect(() => {
@@ -532,8 +532,12 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		listen<PendingMessageConsumed>(
 			"agent-pending-message-consumed",
 			(event) => {
-				const { chat_session_id, queued_turn_id, human_message, agent_message } =
-					event.payload;
+				const {
+					chat_session_id,
+					queued_turn_id,
+					human_message,
+					agent_message,
+				} = event.payload;
 				if (!isViewable(chat_session_id, viewableRegistry)) return;
 				if (queued_turn_id) {
 					dispatch({

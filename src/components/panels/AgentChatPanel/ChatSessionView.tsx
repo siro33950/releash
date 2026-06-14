@@ -15,7 +15,6 @@ import {
 	Minimize2,
 	MoreHorizontal,
 	Radio,
-	RotateCcw,
 	Search,
 	Stethoscope,
 	Target,
@@ -39,7 +38,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
 import { useOneShotPty } from "@/hooks/useOneShotPty";
-import { getRewindWorktreeCheckpointPreview } from "@/hooks/useSessionStore";
 import type {
 	AgentEditorContext,
 	AgentEditorSelection,
@@ -287,20 +285,6 @@ interface ActiveShellCommand {
 interface QueuedShellCommand {
 	id: string;
 	prepared: AgentPreparedShellCommand;
-}
-
-function RewindMessageButton({ onClick }: { onClick: () => void }) {
-	return (
-		<button
-			type="button"
-			className="absolute top-1 right-2 z-10 inline-flex size-6 items-center justify-center rounded bg-background/90 text-muted-foreground opacity-0 shadow-sm ring-1 ring-border/70 transition-opacity hover:bg-muted hover:text-foreground focus:opacity-100 group-hover:opacity-100"
-			aria-label="Rewind to this message"
-			title="Rewind to this message"
-			onClick={onClick}
-		>
-			<RotateCcw className="size-3.5" />
-		</button>
-	);
 }
 
 function isEditableShortcutTarget(target: EventTarget | null): boolean {
@@ -585,10 +569,6 @@ export interface ChatSessionViewProps {
 	) => Promise<void>;
 	onInterrupt: () => void;
 	onCancelQueuedTurn: (queuedTurnId?: string | null) => Promise<void>;
-	onRewindToMessage?: (
-		messageId: string,
-		options?: { restoreWorktree?: boolean },
-	) => Promise<void>;
 	onPermissionModeChange: (mode: PermissionMode) => void;
 	onModelChange: (modelId: string) => void;
 	onBackendChange: (backendId: string | null) => void;
@@ -646,7 +626,6 @@ export function ChatSessionView({
 	onSend,
 	onInterrupt,
 	onCancelQueuedTurn,
-	onRewindToMessage,
 	onPermissionModeChange,
 	onModelChange,
 	onBackendChange,
@@ -780,40 +759,6 @@ export function ChatSessionView({
 		isNearBottomRef.current =
 			el.scrollHeight - el.scrollTop - el.clientHeight < 100;
 	}, []);
-
-	const handleRewindToMessage = useCallback(
-		async (messageId: string) => {
-			if (!onRewindToMessage) return;
-			let restoreWorktree = false;
-			try {
-				const preview = await getRewindWorktreeCheckpointPreview(
-					session.id,
-					messageId,
-				);
-				const hasWorktreeEffect =
-					preview.targetDirtyFileCount > 0 || preview.currentDirtyFileCount > 0;
-				if (preview.available && hasWorktreeEffect) {
-					restoreWorktree = window.confirm(
-						[
-							"Restore the worktree to this message checkpoint?",
-							"",
-							`Checkpoint changes: ${preview.targetDirtyFileCount}`,
-							`Current changes: ${preview.currentDirtyFileCount}`,
-							"",
-							"Cancel keeps the current files and rewinds only the transcript.",
-						].join("\n"),
-					);
-				}
-			} catch {
-				restoreWorktree = false;
-			}
-			await onRewindToMessage(
-				messageId,
-				restoreWorktree ? { restoreWorktree: true } : undefined,
-			);
-		},
-		[onRewindToMessage, session.id],
-	);
 
 	// Derive streaming content tracking values
 	const agentMessages = session.messages.filter((m) => m.role === "agent");
@@ -2772,11 +2717,6 @@ export function ChatSessionView({
 										transform: `translateY(${virtualItem.start}px)`,
 									}}
 								>
-									{onRewindToMessage && !isStreaming && (
-										<RewindMessageButton
-											onClick={() => void handleRewindToMessage(msg.id)}
-										/>
-									)}
 									<StreamMessage
 										content={textContent}
 										role={msg.role}
@@ -2813,11 +2753,6 @@ export function ChatSessionView({
 									transform: `translateY(${virtualItem.start}px)`,
 								}}
 							>
-								{onRewindToMessage && !isStreaming && (
-									<RewindMessageButton
-										onClick={() => void handleRewindToMessage(msg.id)}
-									/>
-								)}
 								<AgentMessageParts
 									msg={msg}
 									isLastAgentStreaming={isLastAgentStreaming}

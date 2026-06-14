@@ -380,7 +380,6 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		archiveSession: vi.fn(),
 		archiveOpenSession: vi.fn(),
 		restoreSession: vi.fn(),
-		rewindSessionToMessage: vi.fn(),
 		forkSession: vi.fn(),
 		setSessionTitle: vi.fn(),
 		createNewSession: vi.fn(),
@@ -406,6 +405,7 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		getSessionLatestTokenUsage: vi.fn().mockReturnValue(null),
 		getSessionCodexGoal: vi.fn().mockReturnValue(null),
 		getSessionRuntimeSlashCommands: vi.fn().mockReturnValue([]),
+		getSessionInterrupting: vi.fn().mockReturnValue(false),
 		...overrides,
 	});
 }
@@ -851,105 +851,6 @@ describe("AgentChatPanel", () => {
 		await waitFor(() =>
 			expect(clipboardWriteText).toHaveBeenCalledWith("Completed answer"),
 		);
-	});
-
-	it("rewinds the active session to a selected message", async () => {
-		const rewindSessionToMessage = vi.fn().mockResolvedValue(undefined);
-		mockInvoke.mockImplementation((command: string) => {
-			if (command === "get_rewind_worktree_checkpoint_preview") {
-				return Promise.resolve({ available: false });
-			}
-			return Promise.resolve([]);
-		});
-		mockUseAgentChat({
-			rewindSessionToMessage,
-			activeSession: {
-				id: "s1",
-				worktreePath: "/repo",
-				messages: [
-					{
-						id: "m-human",
-						role: "human",
-						parts: [{ type: "text", content: "Try another approach" }],
-						timestamp: 1000,
-					},
-				],
-				state: "idle",
-				createdAt: 1000,
-				updatedAt: 1001,
-				permissionMode: "edit",
-			},
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-
-		fireEvent.click(screen.getByLabelText("Rewind to this message"));
-
-		await waitFor(() =>
-			expect(rewindSessionToMessage).toHaveBeenCalledWith(
-				"s1",
-				"m-human",
-				undefined,
-			),
-		);
-		expect(mockInvoke).toHaveBeenCalledWith(
-			"get_rewind_worktree_checkpoint_preview",
-			{ sessionId: "s1", messageId: "m-human" },
-		);
-	});
-
-	it("passes restoreWorktree when rewind checkpoint restore is confirmed", async () => {
-		const rewindSessionToMessage = vi.fn().mockResolvedValue(undefined);
-		const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(true);
-		mockInvoke.mockImplementation((command: string) => {
-			if (command === "get_rewind_worktree_checkpoint_preview") {
-				return Promise.resolve({
-					available: true,
-					targetDirtyFileCount: 1,
-					currentDirtyFileCount: 2,
-				});
-			}
-			return Promise.resolve([]);
-		});
-		mockUseAgentChat({
-			rewindSessionToMessage,
-			activeSession: {
-				id: "s1",
-				worktreePath: "/repo",
-				messages: [
-					{
-						id: "m-human",
-						role: "human",
-						parts: [{ type: "text", content: "Try another approach" }],
-						timestamp: 1000,
-					},
-				],
-				state: "idle",
-				createdAt: 1000,
-				updatedAt: 1001,
-				permissionMode: "edit",
-			},
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-
-		fireEvent.click(screen.getByLabelText("Rewind to this message"));
-
-		await waitFor(() =>
-			expect(rewindSessionToMessage).toHaveBeenCalledWith("s1", "m-human", {
-				restoreWorktree: true,
-			}),
-		);
-		expect(confirmSpy).toHaveBeenCalled();
-		confirmSpy.mockRestore();
 	});
 
 	it("copies the latest completed agent response with Ctrl+O", async () => {

@@ -194,19 +194,6 @@ export async function archiveOpenSession(sessionId: string): Promise<void> {
 	return invoke("archive_open_session", { sessionId });
 }
 
-export async function rewindSessionToMessage(
-	sessionId: string,
-	messageId: string,
-	options?: { restoreWorktree?: boolean },
-): Promise<ChatSession> {
-	const raw = await invoke<LegacyChatSession>("rewind_session_to_message", {
-		sessionId,
-		messageId,
-		restoreWorktree: options?.restoreWorktree ?? null,
-	});
-	return convertLegacySession(raw);
-}
-
 export async function forkSession(sessionId: string): Promise<ChatSession> {
 	const raw = await invoke<LegacyChatSession>("fork_session", { sessionId });
 	return convertLegacySession(raw);
@@ -220,24 +207,6 @@ export async function setSessionTitle(
 		sessionId,
 		title,
 	});
-}
-
-export interface RewindWorktreeCheckpointPreview {
-	available: boolean;
-	targetDirtyFileCount: number;
-	currentDirtyFileCount: number;
-	headOid?: string | null;
-	reason?: string | null;
-}
-
-export async function getRewindWorktreeCheckpointPreview(
-	sessionId: string,
-	messageId: string,
-): Promise<RewindWorktreeCheckpointPreview> {
-	return invoke<RewindWorktreeCheckpointPreview>(
-		"get_rewind_worktree_checkpoint_preview",
-		{ sessionId, messageId },
-	);
 }
 
 export interface RestoreSessionResponse {

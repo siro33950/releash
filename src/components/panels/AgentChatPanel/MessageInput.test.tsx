@@ -28,53 +28,6 @@ const defaultProps = {
 	backendDisabled: true,
 };
 
-class FakeSpeechRecognition {
-	static latest: FakeSpeechRecognition | null = null;
-	continuous = false;
-	interimResults = false;
-	lang = "";
-	onresult:
-		| ((event: {
-				results: {
-					length: number;
-					[index: number]:
-						| {
-								isFinal: boolean;
-								length: number;
-								[index: number]: { transcript: string } | undefined;
-						  }
-						| undefined;
-				};
-		  }) => void)
-		| null = null;
-	onerror: ((event: { error?: string; message?: string }) => void) | null =
-		null;
-	onend: (() => void) | null = null;
-	start = vi.fn();
-	stop = vi.fn(() => {
-		FakeSpeechRecognition.latest = null;
-		this.onend?.();
-	});
-	abort = vi.fn();
-
-	constructor() {
-		FakeSpeechRecognition.latest = this;
-	}
-
-	emitResult(transcript: string) {
-		this.onresult?.({
-			results: {
-				length: 1,
-				0: {
-					isFinal: true,
-					length: 1,
-					0: { transcript },
-				},
-			},
-		});
-	}
-}
-
 describe("MessageInput", () => {
 	it("renders textarea and send button", () => {
 		render(<MessageInput {...defaultProps} />);
@@ -216,70 +169,6 @@ describe("MessageInput", () => {
 		fireEvent.change(textarea, { target: { value: "Hello" } });
 		fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
 		expect(onSend).not.toHaveBeenCalled();
-	});
-
-	it("starts voice dictation with Ctrl+M and inserts transcript through Rust", async () => {
-		const speechWindow = window as Window &
-			typeof globalThis & {
-				SpeechRecognition?: typeof FakeSpeechRecognition;
-			};
-		const previousSpeechRecognition = speechWindow.SpeechRecognition;
-		speechWindow.SpeechRecognition = FakeSpeechRecognition;
-		mockInvoke.mockImplementation((command: string, args?: unknown) => {
-			if (command === "present_agent_dictation") {
-				const request = (args as { request?: { listening?: boolean } }).request;
-				return Promise.resolve({
-					enabled: true,
-					label: request?.listening ? "Stop dictation" : "Start dictation",
-					title: request?.listening
-						? "Stop voice dictation"
-						: "Start voice dictation",
-					status: request?.listening ? "Listening" : null,
-				});
-			}
-			if (command === "compose_agent_dictation_draft") {
-				const request = (
-					args as { request?: { baseValue?: string; transcript?: string } }
-				).request;
-				const base = request?.baseValue?.trimEnd() ?? "";
-				const transcript = request?.transcript?.trim() ?? "";
-				const value = [base, transcript].filter(Boolean).join(" ");
-				return Promise.resolve({ value, caret: value.length });
-			}
-			return Promise.resolve([]);
-		});
-		try {
-			render(<MessageInput {...defaultProps} />);
-			const textarea = screen.getByPlaceholderText(
-				"Send a message...",
-			) as HTMLTextAreaElement;
-			fireEvent.change(textarea, { target: { value: "Review" } });
-
-			fireEvent.keyDown(textarea, { key: "m", ctrlKey: true });
-
-			await waitFor(() => expect(FakeSpeechRecognition.latest).not.toBeNull());
-			expect(FakeSpeechRecognition.latest?.start).toHaveBeenCalled();
-			act(() => {
-				FakeSpeechRecognition.latest?.emitResult("the staged changes");
-			});
-
-			await waitFor(() =>
-				expect(textarea.value).toBe("Review the staged changes"),
-			);
-			expect(mockInvoke).toHaveBeenCalledWith("compose_agent_dictation_draft", {
-				request: {
-					baseValue: "Review",
-					transcript: "the staged changes",
-				},
-			});
-
-			fireEvent.keyUp(window, { key: "m" });
-			expect(FakeSpeechRecognition.latest).toBeNull();
-		} finally {
-			speechWindow.SpeechRecognition = previousSpeechRecognition;
-			FakeSpeechRecognition.latest = null;
-			mockInvoke.mockReset();
-		}
 	});
 
 	it("recalls sent prompt history with ArrowUp and clears with ArrowDown", () => {

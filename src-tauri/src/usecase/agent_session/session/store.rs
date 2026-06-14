@@ -245,51 +245,6 @@ impl SessionStore {
         Ok(summary)
     }
 
-    pub fn rewind_session_to_message(
-        &self,
-        app_data_dir: &Path,
-        session_id: &str,
-        message_id: &str,
-    ) -> Result<ChatSession, String> {
-        let session = self
-            .get_session(app_data_dir, session_id)?
-            .ok_or_else(|| format!("Session not found: {session_id}"))?;
-        if session.workflow_step_session {
-            return Err("Workflow step sessions cannot be rewound".to_string());
-        }
-        if session.messages.is_empty() {
-            return Err("Session has no messages to rewind".to_string());
-        }
-        let message_index = session
-            .messages
-            .iter()
-            .position(|message| message.id == message_id)
-            .ok_or_else(|| format!("Message not found: {message_id}"))?;
-        let now = now_timestamp();
-        let rewound = ChatSession {
-            id: uuid::Uuid::new_v4().to_string(),
-            worktree_path: session.worktree_path.clone(),
-            messages: session.messages[..=message_index].to_vec(),
-            state: SessionState::Idle,
-            created_at: now,
-            updated_at: now,
-            agent_session_id: None,
-            permission_mode: session.permission_mode.clone(),
-            selected_model: session.selected_model.clone(),
-            permission_profile_id: session.permission_profile_id.clone(),
-            backend_id: session.backend_id.clone(),
-            workflow_step_session: false,
-        };
-        let message_ids = rewound
-            .messages
-            .iter()
-            .map(|message| message.id.clone())
-            .collect::<Vec<_>>();
-        super::copy_message_checkpoints(app_data_dir, session_id, &rewound.id, &message_ids)?;
-        self.save_session(app_data_dir, &rewound)?;
-        Ok(rewound)
-    }
-
     pub fn fork_session(
         &self,
         app_data_dir: &Path,
@@ -316,12 +271,6 @@ impl SessionStore {
             backend_id: session.backend_id.clone(),
             workflow_step_session: false,
         };
-        let message_ids = forked
-            .messages
-            .iter()
-            .map(|message| message.id.clone())
-            .collect::<Vec<_>>();
-        super::copy_message_checkpoints(app_data_dir, session_id, &forked.id, &message_ids)?;
         self.save_session(app_data_dir, &forked)?;
         let title_result = {
             let _lock = self.file_lock.lock();
@@ -945,79 +894,6 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err, "Workflow step sessions cannot be renamed");
-    }
-
-    #[test]
-    fn rewind_session_to_message_creates_new_prefix_session() {
-        let tmp = TempDir::new().unwrap();
-        let store = SessionStore::default();
-
-        let mut session = make_session(UUID1, "/repo");
-        session.agent_session_id = Some("agent-session".to_string());
-        session.selected_model = Some("claude-opus".to_string());
-        session.backend_id = Some("claude".to_string());
-        session.messages.push(ChatMessage {
-            id: "m2".to_string(),
-            role: MessageRole::Agent,
-            content: "Response".to_string(),
-            thinking: None,
-            activities: None,
-            parts: None,
-            timestamp: 1001.0,
-            mentions: None,
-        });
-        session.messages.push(ChatMessage {
-            id: "m3".to_string(),
-            role: MessageRole::Human,
-            content: "Follow-up".to_string(),
-            thinking: None,
-            activities: None,
-            parts: None,
-            timestamp: 1002.0,
-            mentions: None,
-        });
-        store.save_session(tmp.path(), &session).unwrap();
-
-        let rewound = store
-            .rewind_session_to_message(tmp.path(), UUID1, "m2")
-            .unwrap();
-
-        assert_ne!(rewound.id, UUID1);
-        assert_eq!(rewound.worktree_path, "/repo");
-        assert_eq!(rewound.state, SessionState::Idle);
-        assert_eq!(rewound.agent_session_id, None);
-        assert_eq!(rewound.selected_model, Some("claude-opus".to_string()));
-        assert_eq!(rewound.backend_id, Some("claude".to_string()));
-        assert_eq!(
-            rewound
-                .messages
-                .iter()
-                .map(|message| message.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["m1", "m2"]
-        );
-
-        let original = store.get_session(tmp.path(), UUID1).unwrap().unwrap();
-        assert_eq!(original.messages.len(), 3);
-        assert!(store
-            .get_session(tmp.path(), &rewound.id)
-            .unwrap()
-            .is_some());
-    }
-
-    #[test]
-    fn rewind_session_to_message_rejects_workflow_step_sessions() {
-        let tmp = TempDir::new().unwrap();
-        let store = SessionStore::default();
-        let mut session = make_session(UUID1, "/repo");
-        session.workflow_step_session = true;
-        store.save_session(tmp.path(), &session).unwrap();
-
-        let err = store
-            .rewind_session_to_message(tmp.path(), UUID1, "m1")
-            .unwrap_err();
-
-        assert_eq!(err, "Workflow step sessions cannot be rewound");
     }
 
     #[test]

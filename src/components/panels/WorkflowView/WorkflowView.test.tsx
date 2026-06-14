@@ -176,6 +176,7 @@ function mockAgentChatContext(overrides: Record<string, unknown> = {}) {
 		registerViewableSession: vi.fn().mockReturnValue(() => {}),
 		getSessionTurnPhase: vi.fn().mockReturnValue("idle"),
 		getSessionSelectedModel: vi.fn().mockReturnValue(null),
+		getSessionInterrupting: vi.fn().mockReturnValue(false),
 		...overrides,
 		// sessionsById / viewedStepSession の上書きは互換 layer 内で吸収済みのため除く
 		viewedStepSession: undefined,

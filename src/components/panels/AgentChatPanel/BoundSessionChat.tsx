@@ -78,7 +78,6 @@ export function BoundSessionChat({
 		sendMessage,
 		interrupt,
 		cancelQueuedTurn = async () => {},
-		rewindSessionToMessage,
 		setPermissionMode,
 		setModel,
 		setBackend,
@@ -230,9 +229,6 @@ export function BoundSessionChat({
 			onInterrupt={handleInterrupt}
 			onCancelQueuedTurn={(queuedTurnId) =>
 				cancelQueuedTurn(session.id, queuedTurnId)
-			}
-			onRewindToMessage={(messageId, options) =>
-				rewindSessionToMessage(session.id, messageId, options)
 			}
 			onPermissionModeChange={handlePermissionModeChange}
 			onModelChange={handleModelChange}

@@ -36,22 +36,6 @@ vi.mock("./useSessionStore", () => ({
 	closeSession: vi.fn().mockResolvedValue(undefined),
 	archiveSession: vi.fn().mockResolvedValue(undefined),
 	archiveOpenSession: vi.fn().mockResolvedValue(undefined),
-	rewindSessionToMessage: vi.fn().mockResolvedValue({
-		id: "s-rewound",
-		worktreePath: "/repo",
-		messages: [
-			{
-				id: "m1",
-				role: "human",
-				parts: [{ type: "text", content: "old msg" }],
-				timestamp: 500,
-			},
-		],
-		state: "idle",
-		createdAt: 2000,
-		updatedAt: 2000,
-		permissionMode: "edit",
-	}),
 	forkSession: vi.fn().mockResolvedValue({
 		id: "s-forked",
 		worktreePath: "/repo",
@@ -179,7 +163,6 @@ describe("useAgentChat", () => {
 			restoredWorkflowStep: false,
 		});
 		vi.mocked(sessionStore.restoreSession).mockClear();
-		vi.mocked(sessionStore.rewindSessionToMessage).mockClear();
 		vi.mocked(sessionStore.setSessionBackend).mockClear();
 		vi.mocked(sessionStore.readCodexModelCatalog).mockResolvedValue([]);
 		vi.mocked(sessionStore.readCodexModelCatalog).mockClear();
@@ -1738,55 +1721,6 @@ describe("useAgentChat", () => {
 		expect(sessionStore.listClosedSessions).toHaveBeenCalledWith("/repo");
 	});
 
-	it("rewindSessionToMessage creates and activates a rewound session", async () => {
-		const { renderHook, act } = await import("@testing-library/react");
-		const { useAgentChat } = await import("./useAgentChat");
-		const sessionStore = await import("./useSessionStore");
-
-		const { result } = renderHook(() => useAgentChat("/repo"));
-
-		await act(async () => {
-			await new Promise((resolve) => setTimeout(resolve, 0));
-		});
-
-		const rewoundSession = {
-			id: "s-rewound",
-			worktreePath: "/repo",
-			messages: [
-				{
-					id: "m1",
-					role: "human",
-					parts: [{ type: "text", content: "old msg" }],
-					timestamp: 500,
-				},
-			],
-			state: "idle",
-			createdAt: 2000,
-			updatedAt: 2000,
-			permissionMode: "edit",
-		};
-		vi.mocked(sessionStore.rewindSessionToMessage).mockResolvedValueOnce(
-			rewoundSession as never,
-		);
-		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
-			session: rewoundSession,
-			turnPhase: "idle",
-			selectedModel: null,
-			availableModels: [],
-		} as never);
-
-		await act(async () => {
-			await result.current.rewindSessionToMessage("s1", "m1");
-		});
-
-		expect(sessionStore.rewindSessionToMessage).toHaveBeenCalledWith(
-			"s1",
-			"m1",
-			undefined,
-		);
-		expect(result.current.activeSession?.id).toBe("s-rewound");
-	});
-
 	it("forkSession creates and activates a forked session", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
@@ -2656,7 +2590,6 @@ describe("useSessionStore", () => {
 		expect(mod.updateSessionAgentInfo).toBeDefined();
 		expect(mod.closeSession).toBeDefined();
 		expect(mod.restoreSession).toBeDefined();
-		expect(mod.rewindSessionToMessage).toBeDefined();
 		expect(mod.listClosedSessions).toBeDefined();
 		expect(mod.sendAgentMessage).toBeDefined();
 		expect(mod.initAgentSessions).toBeDefined();

@@ -7,7 +7,6 @@ import {
 	FileInput,
 	Loader2,
 	Maximize2,
-	Mic,
 	Search,
 	Square,
 	X,
@@ -74,81 +73,6 @@ interface PromptEditorDraftInfo {
 
 interface ShellCompletionResult {
 	completed?: string | null;
-}
-
-interface AgentDictationPresentation {
-	enabled: boolean;
-	label: string;
-	title: string;
-	status?: string | null;
-}
-
-interface AgentDictationDraft {
-	value: string;
-	caret: number;
-}
-
-interface SpeechRecognitionAlternativeLike {
-	transcript: string;
-}
-
-interface SpeechRecognitionResultLike {
-	isFinal: boolean;
-	readonly length: number;
-	[index: number]: SpeechRecognitionAlternativeLike | undefined;
-}
-
-interface SpeechRecognitionResultListLike {
-	readonly length: number;
-	[index: number]: SpeechRecognitionResultLike | undefined;
-}
-
-interface SpeechRecognitionEventLike {
-	results: SpeechRecognitionResultListLike;
-}
-
-interface SpeechRecognitionErrorEventLike {
-	error?: string;
-	message?: string;
-}
-
-interface SpeechRecognitionLike {
-	continuous: boolean;
-	interimResults: boolean;
-	lang: string;
-	onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-	onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
-	onend: (() => void) | null;
-	start: () => void;
-	stop: () => void;
-	abort: () => void;
-}
-
-type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
-
-function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
-	const speechWindow = window as Window &
-		typeof globalThis & {
-			SpeechRecognition?: SpeechRecognitionConstructor;
-			webkitSpeechRecognition?: SpeechRecognitionConstructor;
-		};
-	return (
-		speechWindow.SpeechRecognition ??
-		speechWindow.webkitSpeechRecognition ??
-		null
-	);
-}
-
-function isAgentDictationPresentation(
-	value: unknown,
-): value is AgentDictationPresentation {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		typeof (value as AgentDictationPresentation).enabled === "boolean" &&
-		typeof (value as AgentDictationPresentation).label === "string" &&
-		typeof (value as AgentDictationPresentation).title === "string"
-	);
 }
 
 type PromptHistoryScope = "session" | "project" | "all";
@@ -256,19 +180,6 @@ export function MessageInput({
 	const [isOpeningExternalEditor, setIsOpeningExternalEditor] = useState(false);
 	const [isImportingExternalEditor, setIsImportingExternalEditor] =
 		useState(false);
-	const dictationRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
-	const dictationBaseValueRef = useRef("");
-	const [dictationSupported, setDictationSupported] = useState(false);
-	const [dictationListening, setDictationListening] = useState(false);
-	const [dictationError, setDictationError] = useState<string | null>(null);
-	const [dictationPresentation, setDictationPresentation] =
-		useState<AgentDictationPresentation>({
-			enabled: false,
-			label: "Dictation unavailable",
-			title: "Voice dictation is unavailable",
-			status: null,
-		});
-
 	// Mention state
 	const [mentionDismissed, setMentionDismissed] = useState(false);
 	const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
@@ -318,64 +229,6 @@ export function MessageInput({
 			});
 		},
 		[],
-	);
-
-	useEffect(() => {
-		setDictationSupported(Boolean(getSpeechRecognitionConstructor()));
-	}, []);
-
-	useEffect(() => {
-		let cancelled = false;
-		void Promise.resolve(
-			invoke<AgentDictationPresentation>("present_agent_dictation", {
-				request: {
-					supported: dictationSupported,
-					listening: dictationListening,
-					error: dictationError,
-				},
-			}),
-		)
-			.then((presentation) => {
-				if (!cancelled) {
-					if (isAgentDictationPresentation(presentation)) {
-						setDictationPresentation(presentation);
-					}
-				}
-			})
-			.catch(() => {
-				if (!cancelled) {
-					setDictationPresentation({
-						enabled: dictationSupported,
-						label: dictationListening ? "Stop dictation" : "Start dictation",
-						title: dictationListening
-							? "Stop voice dictation"
-							: "Start voice dictation",
-						status: dictationError,
-					});
-				}
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [dictationError, dictationListening, dictationSupported]);
-
-	const applyDictationTranscript = useCallback(
-		async (transcript: string) => {
-			const result = await invoke<AgentDictationDraft>(
-				"compose_agent_dictation_draft",
-				{
-					request: {
-						baseValue: dictationBaseValueRef.current,
-						transcript,
-					},
-				},
-			);
-			setComposerValueWithCaret(result.value, result.caret);
-			setHistoryIndex(null);
-			setSlashPopupDismissed(false);
-			setSelectedIndex(0);
-		},
-		[setComposerValueWithCaret],
 	);
 
 	const createAttachedImage = useCallback(
@@ -766,85 +619,6 @@ export function MessageInput({
 		}
 	}, [externalPromptDraftId]);
 
-	const stopDictation = useCallback(() => {
-		const recognition = dictationRecognitionRef.current;
-		if (!recognition) return;
-		recognition.stop();
-	}, []);
-
-	const startDictation = useCallback(() => {
-		if (dictationRecognitionRef.current) return;
-		const Recognition = getSpeechRecognitionConstructor();
-		if (!Recognition) {
-			setDictationError("Voice dictation is unavailable in this WebView");
-			return;
-		}
-
-		const recognition = new Recognition();
-		recognition.continuous = true;
-		recognition.interimResults = true;
-		recognition.lang = navigator.language || "en-US";
-		dictationBaseValueRef.current = value;
-		setDictationError(null);
-
-		recognition.onresult = (event) => {
-			const parts: string[] = [];
-			for (let index = 0; index < event.results.length; index++) {
-				const result = event.results[index];
-				const transcript = result?.[0]?.transcript;
-				if (transcript) {
-					parts.push(transcript);
-				}
-			}
-			const transcript = parts.join(" ").replace(/\s+/g, " ").trim();
-			void applyDictationTranscript(transcript);
-		};
-		recognition.onerror = (event) => {
-			setDictationError(event.message || event.error || "Dictation failed");
-			setDictationListening(false);
-		};
-		recognition.onend = () => {
-			dictationRecognitionRef.current = null;
-			setDictationListening(false);
-			requestAnimationFrame(() => textareaRef.current?.focus());
-		};
-
-		try {
-			dictationRecognitionRef.current = recognition;
-			setDictationListening(true);
-			recognition.start();
-		} catch (err) {
-			dictationRecognitionRef.current = null;
-			setDictationListening(false);
-			setDictationError(String(err));
-		}
-	}, [applyDictationTranscript, value]);
-
-	const toggleDictation = useCallback(() => {
-		if (dictationListening) {
-			stopDictation();
-		} else {
-			startDictation();
-		}
-	}, [dictationListening, startDictation, stopDictation]);
-
-	useEffect(() => {
-		if (!dictationListening) return;
-		const handleKeyUp = (event: KeyboardEvent) => {
-			if (event.key.toLowerCase() === "m") {
-				stopDictation();
-			}
-		};
-		window.addEventListener("keyup", handleKeyUp);
-		return () => window.removeEventListener("keyup", handleKeyUp);
-	}, [dictationListening, stopDictation]);
-
-	useEffect(() => {
-		return () => {
-			dictationRecognitionRef.current?.abort();
-		};
-	}, []);
-
 	const cycleHistorySearchScope = useCallback(() => {
 		setHistorySearchScope((current) => {
 			switch (current) {
@@ -1068,11 +842,6 @@ export function MessageInput({
 					return;
 			}
 
-			if (e.key.toLowerCase() === "m" && e.ctrlKey && !e.metaKey && !e.altKey) {
-				e.preventDefault();
-				startDictation();
-				return;
-			}
 			if (e.key === "Tab" && e.shiftKey) {
 				e.preventDefault();
 				onCycleMode?.();
@@ -1183,7 +952,6 @@ export function MessageInput({
 			promptHistory,
 			historyIndex,
 			setComposerValue,
-			startDictation,
 		],
 	);
 
@@ -1510,32 +1278,8 @@ export function MessageInput({
 						>
 							<Maximize2 className="size-3" />
 						</Button>
-						<Button
-							type="button"
-							size="xs"
-							variant={dictationListening ? "secondary" : "ghost"}
-							className="h-6 px-1.5"
-							onClick={toggleDictation}
-							disabled={!dictationPresentation.enabled && !dictationListening}
-							aria-label={dictationPresentation.label}
-							title={dictationPresentation.title}
-						>
-							<Mic className="size-3" />
-						</Button>
 					</div>
 					<div className="flex items-center gap-2">
-						{dictationPresentation.status && (
-							<span
-								className={
-									dictationListening
-										? "text-xs text-primary"
-										: "text-xs text-muted-foreground"
-								}
-								role="status"
-							>
-								{dictationPresentation.status}
-							</span>
-						)}
 						{isStreaming && canSend && (
 							<span className="text-xs text-muted-foreground">
 								{currentBackendId === "codex"

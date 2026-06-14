@@ -42,7 +42,6 @@ import {
 	listSessions,
 	readCodexModelCatalog,
 	restoreSession as restoreSessionApi,
-	rewindSessionToMessage as rewindSessionToMessageApi,
 	sendAgentMessage,
 	sendWorkflowApprovalChatMessage,
 	setSessionBackend,
@@ -100,11 +99,6 @@ export interface UseAgentChatResult {
 	archiveSession: (sessionId: string) => Promise<void>;
 	archiveOpenSession: (sessionId: string) => Promise<void>;
 	restoreSession: (sessionId: string) => Promise<void>;
-	rewindSessionToMessage: (
-		sessionId: string,
-		messageId: string,
-		options?: { restoreWorktree?: boolean },
-	) => Promise<void>;
 	forkSession: (sessionId: string) => Promise<void>;
 	setSessionTitle: (sessionId: string, title: string | null) => Promise<string>;
 	createNewSession: () => Promise<void>;
@@ -636,39 +630,6 @@ export function useAgentChat(
 		[refreshSessions, refreshClosedSessions],
 	);
 
-	const rewindSessionToMessageFn = useCallback(
-		async (
-			sessionId: string,
-			messageId: string,
-			options?: { restoreWorktree?: boolean },
-		) => {
-			try {
-				const rewound = await rewindSessionToMessageApi(
-					sessionId,
-					messageId,
-					options,
-				);
-				const response = await getSession(rewound.id);
-				const activeSession = response?.session ?? rewound;
-				dispatch({ type: "UPSERT_SESSION", session: activeSession });
-				dispatch({
-					type: "SET_ACTIVE_SESSION_ID",
-					sessionId: activeSession.id,
-				});
-				if (response) {
-					dispatchSessionMeta(dispatch, activeSession.id, response);
-				}
-				await refreshSessions();
-			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `セッションの巻き戻しに失敗: ${e}`,
-				});
-			}
-		},
-		[refreshSessions],
-	);
-
 	const forkSessionFn = useCallback(
 		async (sessionId: string) => {
 			try {
@@ -868,14 +829,18 @@ export function useAgentChat(
 		[],
 	);
 
+	const hasMessage = useCallback(
+		(sessionId: string, messageId: string) =>
+			(sessionsByIdRef.current[sessionId]?.messages ?? []).some(
+				(m) => m.id === messageId,
+			),
+		[],
+	);
 	useAgentSdkListeners({
 		dispatch,
 		viewableRegistry,
 		refreshSessions,
-		hasMessage: (sessionId, messageId) =>
-			(sessionsByIdRef.current[sessionId]?.messages ?? []).some(
-				(m) => m.id === messageId,
-			),
+		hasMessage,
 	});
 
 	// activeSession は Main panel が表示している session として実質 viewable。
@@ -1069,7 +1034,6 @@ export function useAgentChat(
 		archiveSession: archiveSessionFn,
 		archiveOpenSession: archiveOpenSessionFn,
 		restoreSession: restoreSessionFn,
-		rewindSessionToMessage: rewindSessionToMessageFn,
 		forkSession: forkSessionFn,
 		setSessionTitle: setSessionTitleFn,
 		createNewSession,

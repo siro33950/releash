@@ -1,4 +1,3 @@
-pub(crate) mod checkpoint;
 pub(crate) mod errors;
 pub(crate) mod lifecycle_controller;
 mod open_tabs;
@@ -7,10 +6,6 @@ mod store;
 use serde::{Deserialize, Serialize};
 
 pub use crate::usecase::agent_session::status::TurnPhase;
-pub use checkpoint::{
-    copy_message_checkpoints, load_message_worktree_checkpoint, preview_rewind_worktree_checkpoint,
-    restore_worktree_checkpoint, RewindWorktreeCheckpointPreview, WorktreeCheckpointRestoreResult,
-};
 pub use open_tabs::OpenTabRegistry;
 pub use store::SessionStore;
 
@@ -561,19 +556,6 @@ pub fn add_message_internal(
     session.messages.push(message.clone());
     session.updated_at = now;
     session_store.save_session(data_dir, &session)?;
-    if let Err(e) = checkpoint::capture_and_save_message_worktree_checkpoint(
-        data_dir,
-        session_id,
-        &message.id,
-        &session.worktree_path,
-    ) {
-        log::debug!(
-            "Skipped worktree checkpoint for session {} message {}: {}",
-            session_id,
-            message.id,
-            e
-        );
-    }
     Ok(message)
 }
 

@@ -257,8 +257,7 @@ export function reducer(
 			const nextInterrupting =
 				action.turnPhase === "idle" && state.interrupting[action.sessionId]
 					? (() => {
-							const { [action.sessionId]: _drop, ...rest } =
-								state.interrupting;
+							const { [action.sessionId]: _drop, ...rest } = state.interrupting;
 							return rest;
 						})()
 					: state.interrupting;
@@ -411,7 +410,7 @@ export function reducer(
 			return {
 				...state,
 				turnPhases: restTurnPhases,
-			interrupting: restInterrupting,
+				interrupting: restInterrupting,
 				pendingPermissions: restPendingPermissions,
 				pendingQueues: restPendingQueues,
 				latestTokenUsage: restLatestTokenUsage,

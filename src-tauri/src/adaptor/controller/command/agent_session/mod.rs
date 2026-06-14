@@ -1,7 +1,6 @@
 pub(crate) mod action;
 pub(crate) mod backend;
 pub(crate) mod command_palette;
-pub(crate) mod dictation;
 pub(crate) mod edit_preview;
 pub(crate) mod image;
 pub(crate) mod model;
