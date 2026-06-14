@@ -13,7 +13,7 @@ nodes:
 
   - name: decide_pr_review_comment_policy
     type: approval
-    model: gpt-5.5
+    model: claude-opus-4-8
     permission: full
     instruction: verify-review-comments-decide-policy
     policy: reporting
@@ -21,7 +21,7 @@ nodes:
 
   - name: check_and_make_tasks
     type: agent
-    model: gpt-5.5
+    model: claude-opus-4-8
     permission: full
     instruction: review-fix-check-tasks
     output_contract: review-fix-tasks
@@ -50,7 +50,7 @@ nodes:
 
   - name: commit_push_and_reply
     type: approval
-    model: gpt-5.5
+    model: claude-opus-4-8
     permission: full
     instruction: verify-review-comments-commit-push-reply
     policy: reporting
