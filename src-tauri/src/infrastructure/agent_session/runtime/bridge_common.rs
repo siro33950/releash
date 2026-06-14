@@ -167,24 +167,6 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
 /// Per-session agent process map: chat_session_id -> AgentProcess
 pub type AgentProcessMap = HashMap<String, AgentProcess>;
 
-// [DIAG] queue/cancel 調査用。Rust の log バックエンドが未初期化のため、
-// 直接ファイルへ追記して queue 経路の状態を可視化する。確認後に削除する。
-pub(crate) fn diag_queue(label: &str, session_id: &str, extra: Option<&str>) {
-    use std::io::Write as _;
-    let path = std::env::temp_dir().join("releash-bridge-diag.log");
-    let line = format!(
-        "rust-diag: {label} session={session_id}{}\n",
-        extra.map(|e| format!(" {e}")).unwrap_or_default()
-    );
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = f.write_all(line.as_bytes());
-    }
-}
-
 /// drain 時に永続化する人間メッセージの parts を pending から構築する。
 /// 画像が無ければ None（content は add_message_internal が text として扱う）。
 fn pending_human_parts(pending: &PendingMessage) -> Option<Vec<MessagePart>> {
@@ -4704,10 +4686,8 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
     chat_session_id: &str,
 ) -> Result<Option<ExternalPendingTurn>, String> {
     let Some(pending) = take_pending_message(handles, chat_session_id).await else {
-        diag_queue("drain:no_pending", chat_session_id, None);
         return Ok(None);
     };
-    diag_queue("drain:start", chat_session_id, Some(&pending.id));
 
     let data_dir = match resolve_data_dir(app) {
         Ok(data_dir) => data_dir,
@@ -4776,7 +4756,6 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
         .code_usecase
         .resolve_mentions_or_fallback(&pending.worktree_path, &pending.content, &pending.mentions);
 
-    diag_queue("drain:event_emitted", chat_session_id, Some(&agent_msg.id));
     Ok(Some(ExternalPendingTurn {
         queued_turn_id: pending.id,
         worktree_path: pending.worktree_path,
@@ -5184,13 +5163,6 @@ async fn prepare_send_agent_message_internal(
         || is_initializing;
     let pending_turn_starting = is_pending_turn_starting(&sid).await;
     let turn_busy = active_turn_busy || pending_turn_starting;
-    diag_queue(
-        "busy_check",
-        &sid,
-        Some(&format!(
-            "backend={session_backend_id} phase={current_phase:?} state={current_state:?} turn_busy={turn_busy}"
-        )),
-    );
 
     let (human_message, agent_message, prepared_input, queued_turn) = if turn_busy {
         let can_steer_active_turn = if active_turn_busy && !pending_turn_starting {
@@ -5270,17 +5242,8 @@ async fn prepare_send_agent_message_internal(
                     .get_mut(&sid)
                     .ok_or_else(|| format!("No active agent process for session {sid}"))?;
                 proc.pending_messages.push_back(pending);
-                diag_queue(
-                    "enqueue:pushed",
-                    &sid,
-                    Some(&format!(
-                        "backend={session_backend_id} queue_len={}",
-                        proc.pending_messages.len()
-                    )),
-                );
             }
             interrupt_active_agent_turn(handles, registry, &sid).await?;
-            diag_queue("enqueue:interrupt_done", &sid, Some(&session_backend_id));
             (transient_human, None, None, Some(queued_turn))
         }
     } else {
