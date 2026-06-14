@@ -236,6 +236,8 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		setPermissionMode: vi.fn(),
 		respondPermission: vi.fn(),
 		permissionMode: "edit",
+		planMode: false,
+		setPlanMode: vi.fn(),
 		availableModels: [],
 		selectedModel: null,
 		setModel: vi.fn(),
@@ -252,7 +254,6 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		getSessionSelectedModel: vi.fn().mockReturnValue(null),
 		getSessionPendingQueue: vi.fn().mockReturnValue([]),
 		getSessionLatestTokenUsage: vi.fn().mockReturnValue(null),
-		getSessionCodexGoal: vi.fn().mockReturnValue(null),
 		getSessionRuntimeSlashCommands: vi.fn().mockReturnValue([]),
 		getSessionInterrupting: vi.fn().mockReturnValue(false),
 		...overrides,
@@ -1985,7 +1986,7 @@ describe("AgentChatPanel shimmer placeholder", () => {
 		expect(screen.getByTestId("stream-message-agent")).toBeDefined();
 	});
 
-	it("collapses and expands thinking content", () => {
+	it("collapses and expands thinking content", async () => {
 		mockUseAgentChat({
 			activeSession: {
 				id: "s1",
@@ -2017,14 +2018,16 @@ describe("AgentChatPanel shimmer placeholder", () => {
 		);
 
 		const toggle = screen.getByRole("button", { name: "Thinking" });
+		await waitFor(() =>
+			expect(screen.queryByText("private reasoning")).toBeNull(),
+		);
+		fireEvent.click(toggle);
 		expect(screen.getByText("private reasoning")).toBeInTheDocument();
 		fireEvent.click(toggle);
 		expect(screen.queryByText("private reasoning")).toBeNull();
-		fireEvent.click(toggle);
-		expect(screen.getByText("private reasoning")).toBeInTheDocument();
 	});
 
-	it("toggles all thinking content from the transcript control", () => {
+	it("toggles all thinking content from the transcript control", async () => {
 		mockUseAgentChat({
 			activeSession: {
 				id: "s1",
@@ -2055,6 +2058,10 @@ describe("AgentChatPanel shimmer placeholder", () => {
 			/>,
 		);
 
+		await waitFor(() =>
+			expect(screen.queryByText("private reasoning")).toBeNull(),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Thinking" }));
 		expect(screen.getByText("private reasoning")).toBeInTheDocument();
 		fireEvent.click(screen.getByLabelText("Hide thinking"));
 		expect(screen.queryByText("private reasoning")).toBeNull();
@@ -2508,10 +2515,9 @@ describe("SystemNotificationItem rendering", () => {
 						parts: [
 							{
 								type: "system_notification",
-								notificationType: "hook",
+								notificationType: "compaction",
 								status: "error",
-								label: "pre-commit (PromptSubmit)",
-								hookId: "hook-1",
+								label: "Conversation compaction failed",
 							},
 						],
 						timestamp: 1001,
@@ -2528,7 +2534,7 @@ describe("SystemNotificationItem rendering", () => {
 				registerDropZone={mockRegisterDropZone}
 			/>,
 		);
-		const el = screen.getByText(/pre-commit/);
+		const el = screen.getByText(/Conversation compaction failed/);
 		expect(el).toBeDefined();
 		expect(el.textContent).toContain("❌");
 	});

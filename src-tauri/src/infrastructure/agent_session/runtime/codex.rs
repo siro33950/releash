@@ -157,6 +157,7 @@ struct AppServerTurnStart<'a> {
     state: &'a Arc<Mutex<AppServerSessionState>>,
     cwd: &'a str,
     permission_mode: &'a str,
+    plan_mode: bool,
     permission_profile_id: Option<&'a str>,
     prompt: &'a str,
     images: &'a [ImageAttachment],
@@ -288,6 +289,7 @@ impl AppServerCodexRuntime {
                 &config.cwd,
                 selected_model.as_deref(),
                 Some(&permission_mode),
+                config.plan_mode,
                 permission_profile_id.as_deref(),
                 config.system_prompt.as_deref(),
             )
@@ -297,6 +299,7 @@ impl AppServerCodexRuntime {
                 &config.cwd,
                 selected_model.as_deref(),
                 Some(&permission_mode),
+                config.plan_mode,
                 permission_profile_id.as_deref(),
                 config.system_prompt.as_deref(),
             )
@@ -421,6 +424,7 @@ impl AppServerCodexRuntime {
                 Some(turn.streaming_message_id),
                 turn.editor_context,
                 Some(turn.permission_mode),
+                turn.plan_mode,
                 turn.permission_profile_id,
             )?,
         )
@@ -465,6 +469,7 @@ async fn start_next_app_server_pending_turn(
                 Some(&pending.agent_message_id),
                 pending.editor_context.as_ref(),
                 Some(&pending.permission_mode),
+                pending.plan_mode,
                 pending.permission_profile_id.as_deref(),
             )?,
         )
@@ -501,6 +506,7 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
             chat_session_id: session.chat_session_id.clone(),
             cwd: stored_session.worktree_path.clone(),
             permission_mode: Some(message.permission_mode.clone()),
+            plan_mode: message.plan_mode,
             permission_profile_id: message.permission_profile_id.clone(),
             system_prompt: None,
         };
@@ -510,6 +516,7 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
             state: &state,
             cwd: &stored_session.worktree_path,
             permission_mode: &message.permission_mode,
+            plan_mode: message.plan_mode,
             permission_profile_id: message.permission_profile_id.as_deref(),
             prompt: &message.content,
             images: &message.images,
@@ -868,6 +875,7 @@ mod tests {
             streaming_message_id: "message-1".to_string(),
             images: vec![],
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             editor_context: None,
         };

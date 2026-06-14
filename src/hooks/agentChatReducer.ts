@@ -2,12 +2,11 @@ import type {
 	BackendInfo,
 	ChatMessage,
 	ChatSession,
-	CodexGoal,
-	CodexRuntimeStatus,
 	MessagePart,
 	ModelInfo,
 	PermissionMode,
 	PermissionRequest,
+	PlanMode,
 	QueuedAgentTurn,
 	SessionState,
 	SessionSummary,
@@ -37,11 +36,10 @@ export interface AgentChatState {
 	interrupting: Record<string, boolean>;
 	error: string | null;
 	permissionMode: PermissionMode;
+	planMode: PlanMode;
 	pendingPermissions: Record<string, PermissionRequest>;
 	pendingQueues: Record<string, QueuedAgentTurn[]>;
 	latestTokenUsage: Record<string, TokenUsage | null>;
-	codexGoals: Record<string, CodexGoal | null>;
-	codexRuntimeStatuses: Record<string, CodexRuntimeStatus>;
 	runtimeSlashCommands: Record<string, SlashCommand[]>;
 	availableModels: ModelInfo[];
 	availableModelsByBackend: Record<string, ModelInfo[]>;
@@ -71,6 +69,7 @@ export type AgentChatAction =
 			state: SessionState;
 	  }
 	| { type: "SET_PERMISSION_MODE"; mode: PermissionMode }
+	| { type: "SET_PLAN_MODE"; enabled: PlanMode }
 	| {
 			type: "SET_PENDING_PERMISSION";
 			sessionId: string;
@@ -85,16 +84,6 @@ export type AgentChatAction =
 			type: "SET_LATEST_TOKEN_USAGE";
 			sessionId: string;
 			usage: TokenUsage | null;
-	  }
-	| {
-			type: "SET_CODEX_GOAL";
-			sessionId: string;
-			goal: CodexGoal | null;
-	  }
-	| {
-			type: "SET_CODEX_RUNTIME_STATUS";
-			sessionId: string;
-			status: CodexRuntimeStatus;
 	  }
 	| {
 			type: "SET_RUNTIME_SLASH_COMMANDS";
@@ -112,6 +101,11 @@ export type AgentChatAction =
 			sessionId: string;
 			messageId: string;
 			parts: MessagePart[];
+	  }
+	| {
+			type: "MARK_AGENT_TURN_COMPLETED";
+			sessionId: string;
+			completedAt: number;
 	  }
 	| {
 			type: "SET_AVAILABLE_MODELS";
@@ -289,6 +283,8 @@ export function reducer(
 			}));
 		case "SET_PERMISSION_MODE":
 			return { ...state, permissionMode: action.mode };
+		case "SET_PLAN_MODE":
+			return { ...state, planMode: action.enabled };
 		case "SET_PENDING_PERMISSION": {
 			if (action.request === null) {
 				const { [action.sessionId]: _, ...rest } = state.pendingPermissions;
@@ -316,25 +312,6 @@ export function reducer(
 				latestTokenUsage: {
 					...state.latestTokenUsage,
 					[action.sessionId]: action.usage,
-				},
-			};
-		case "SET_CODEX_GOAL":
-			return {
-				...state,
-				codexGoals: {
-					...state.codexGoals,
-					[action.sessionId]: action.goal,
-				},
-			};
-		case "SET_CODEX_RUNTIME_STATUS":
-			return {
-				...state,
-				codexRuntimeStatuses: {
-					...state.codexRuntimeStatuses,
-					[action.sessionId]: {
-						...state.codexRuntimeStatuses[action.sessionId],
-						...action.status,
-					},
 				},
 			};
 		case "SET_RUNTIME_SLASH_COMMANDS":
@@ -375,6 +352,32 @@ export function reducer(
 				},
 			};
 		}
+		case "MARK_AGENT_TURN_COMPLETED": {
+			const existing = state.sessionsById[action.sessionId];
+			if (!existing) return state;
+			let targetIndex = -1;
+			for (let i = existing.messages.length - 1; i >= 0; i--) {
+				if (existing.messages[i]?.role === "agent") {
+					targetIndex = i;
+					break;
+				}
+			}
+			if (targetIndex === -1) return state;
+			const targetMessage = existing.messages[targetIndex];
+			if (!targetMessage) return state;
+			const messages = existing.messages.slice();
+			messages[targetIndex] = {
+				...targetMessage,
+				timestamp: action.completedAt,
+			};
+			return {
+				...state,
+				sessionsById: {
+					...state.sessionsById,
+					[action.sessionId]: { ...existing, messages },
+				},
+			};
+		}
 		case "SET_AVAILABLE_MODELS": {
 			const backendId = action.backendId ?? displayBackendId(state);
 			if (!backendId) return { ...state, availableModels: action.models };
@@ -398,9 +401,6 @@ export function reducer(
 				state.pendingQueues;
 			const { [action.sessionId]: _tu, ...restLatestTokenUsage } =
 				state.latestTokenUsage;
-			const { [action.sessionId]: _cg, ...restCodexGoals } = state.codexGoals;
-			const { [action.sessionId]: _crs, ...restCodexRuntimeStatuses } =
-				state.codexRuntimeStatuses;
 			const { [action.sessionId]: _rsc, ...restRuntimeSlashCommands } =
 				state.runtimeSlashCommands;
 			const { [action.sessionId]: _sm, ...restSessionModels } =
@@ -414,8 +414,6 @@ export function reducer(
 				pendingPermissions: restPendingPermissions,
 				pendingQueues: restPendingQueues,
 				latestTokenUsage: restLatestTokenUsage,
-				codexGoals: restCodexGoals,
-				codexRuntimeStatuses: restCodexRuntimeStatuses,
 				runtimeSlashCommands: restRuntimeSlashCommands,
 				sessionModels: restSessionModels,
 				sessionsById: restSessionsById,
@@ -480,11 +478,10 @@ export const INITIAL_STATE: AgentChatState = {
 	interrupting: {},
 	error: null,
 	permissionMode: "edit",
+	planMode: false,
 	pendingPermissions: {},
 	pendingQueues: {},
 	latestTokenUsage: {},
-	codexGoals: {},
-	codexRuntimeStatuses: {},
 	runtimeSlashCommands: {},
 	availableModels: [],
 	availableModelsByBackend: {},

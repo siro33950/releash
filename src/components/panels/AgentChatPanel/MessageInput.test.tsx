@@ -19,6 +19,8 @@ const defaultProps = {
 	isStreaming: false,
 	mode: "edit" as const,
 	onModeChange: vi.fn(),
+	planMode: false,
+	onPlanModeChange: vi.fn(),
 	models: [{ value: "claude-opus-4-8" }],
 	currentModelId: "claude-opus-4-8",
 	onModelChange: vi.fn(),

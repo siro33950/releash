@@ -1,6 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { invoke } from "@tauri-apps/api/core";
 import {
+	Brain,
 	Check,
 	ChevronDown,
 	ChevronRight,
@@ -25,22 +26,20 @@ import type {
 	BackendInfo,
 	ChatMessage,
 	ChatSession,
-	CodexRuntimeStatus,
 	ImageAttachment,
 	ImagePart,
 	MentionReference,
 	MessagePart,
 	ModelInfo,
 	PermissionMode,
+	PlanMode,
 	QueuedAgentTurn,
-	SessionStatus,
 	SlashCommand,
-	TokenUsage,
 } from "@/types/session";
-import { getTextContent, PERMISSION_MODE_LABELS } from "@/types/session";
+import { getTextContent } from "@/types/session";
 import {
 	ActivityItem,
-	CollapsibleError,
+	AgentErrorBlock,
 	TaskToolActivity,
 	ToolActivity,
 } from "./ActivityLog";
@@ -49,12 +48,21 @@ import { MessageInput } from "./MessageInput";
 import { MODES } from "./ModeSelector";
 import { PermissionDialog } from "./PermissionDialog";
 import { ShimmerPlaceholder } from "./ShimmerPlaceholder";
-import { StreamMessage } from "./StreamMessage";
+import {
+	AgentMarkdown,
+	formatMessageTime,
+	MessageCopyButton,
+	StreamMessage,
+} from "./StreamMessage";
 import { buildToolPairings, type TaskGroup } from "./toolPairing";
 
 type SystemNotificationPart = Extract<
 	MessagePart,
 	{ type: "system_notification" }
+>;
+type TodoListSnapshotPart = Extract<
+	MessagePart,
+	{ type: "todo_list_snapshot" }
 >;
 
 interface ThreadSearchMatch {
@@ -149,6 +157,101 @@ function SystemNotificationItem({ part }: { part: SystemNotificationPart }) {
 	);
 }
 
+function latestTodoListSnapshot(
+	messages: ChatMessage[],
+): TodoListSnapshotPart | null {
+	for (
+		let messageIndex = messages.length - 1;
+		messageIndex >= 0;
+		messageIndex--
+	) {
+		const message = messages[messageIndex];
+		if (!message) continue;
+		for (
+			let partIndex = message.parts.length - 1;
+			partIndex >= 0;
+			partIndex--
+		) {
+			const part = message.parts[partIndex];
+			if (part?.type === "todo_list_snapshot") return part;
+		}
+	}
+	return null;
+}
+
+function TodoListFooter({
+	snapshot,
+}: {
+	snapshot: TodoListSnapshotPart | null;
+}) {
+	const [isExpanded, setIsExpanded] = useState(false);
+	if (!snapshot || snapshot.items.length === 0) return null;
+
+	const completedCount = snapshot.items.filter((item) => item.completed).length;
+	const visibleItems = isExpanded ? snapshot.items : snapshot.items.slice(0, 3);
+
+	return (
+		<div className="px-3 pb-2">
+			<div className="rounded border border-border bg-background px-3 py-2 text-xs">
+				<button
+					type="button"
+					className="flex w-full min-w-0 items-center gap-2 text-left text-muted-foreground hover:text-foreground"
+					aria-expanded={isExpanded}
+					onClick={() => setIsExpanded((current) => !current)}
+				>
+					<ChevronRight
+						className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+					/>
+					<span className="shrink-0 font-medium text-foreground">TODO</span>
+					<span className="shrink-0 tabular-nums">
+						{completedCount}/{snapshot.items.length} 完了
+					</span>
+					<span className="min-w-0 truncate">
+						{snapshot.items
+							.map((item) => `${item.completed ? "[x]" : "[ ]"} ${item.text}`)
+							.join("  ")}
+					</span>
+				</button>
+				{isExpanded && (
+					<div className="mt-2 space-y-1 pl-5">
+						{visibleItems.map((item) => (
+							<div
+								key={`${item.completed ? "done" : "todo"}-${item.text}`}
+								className="flex min-w-0 items-start gap-2"
+							>
+								<span
+									className={
+										item.completed
+											? "mt-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm border border-muted-foreground/50 bg-muted text-muted-foreground"
+											: "mt-0.5 inline-flex size-3.5 shrink-0 rounded-sm border border-muted-foreground/50"
+									}
+									aria-hidden="true"
+								>
+									{item.completed && <Check className="size-3" />}
+								</span>
+								<span
+									className={
+										item.completed
+											? "min-w-0 break-words text-muted-foreground line-through"
+											: "min-w-0 break-words text-foreground"
+									}
+								>
+									{item.text}
+								</span>
+							</div>
+						))}
+						{snapshot.items.length > visibleItems.length && (
+							<div className="text-muted-foreground">
+								+{snapshot.items.length - visibleItems.length} more
+							</div>
+						)}
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}
+
 function ThinkingPart({
 	content,
 	isStreaming,
@@ -159,26 +262,66 @@ function ThinkingPart({
 	showContent: boolean;
 }) {
 	const [isExpanded, setIsExpanded] = useState(true);
+	const [hasManualToggle, setHasManualToggle] = useState(false);
 	const trimmed = content.trim();
+	useEffect(() => {
+		if (isStreaming) {
+			setIsExpanded(true);
+			setHasManualToggle(false);
+			return;
+		}
+		if (!hasManualToggle) {
+			setIsExpanded(false);
+		}
+	}, [isStreaming, hasManualToggle]);
 	if (!trimmed) return null;
 
 	return (
-		<div className="px-5 py-0.5 text-xs" data-testid="thinking-block">
+		<div className="px-5 py-1 text-xs" data-testid="thinking-block">
 			<button
 				type="button"
-				className="flex min-w-0 items-center gap-1 text-muted-foreground/70 hover:text-foreground/80"
-				onClick={() => setIsExpanded((current) => !current)}
+				className="flex min-w-0 items-center gap-1.5 text-muted-foreground/75 hover:text-foreground/85"
+				onClick={() => {
+					setHasManualToggle(true);
+					setIsExpanded((current) => !current);
+				}}
 				aria-expanded={isExpanded}
 			>
 				<ChevronRight
 					className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
 				/>
+				<Brain className="size-3 shrink-0" />
 				<span className={isStreaming ? "animate-pulse" : ""}>Thinking</span>
 			</button>
 			{showContent && isExpanded && (
-				<div className="mt-1 ml-4 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-muted/30 px-2 py-1.5 text-muted-foreground">
-					{trimmed}
+				<div className="mt-1 ml-5 max-h-56 overflow-y-auto rounded border border-border/60 bg-muted/25 px-2.5 py-2 text-muted-foreground">
+					<AgentMarkdown content={trimmed} />
 				</div>
+			)}
+		</div>
+	);
+}
+
+function AgentMessageMeta({
+	msg,
+	isStreaming,
+}: {
+	msg: ChatMessage;
+	isStreaming: boolean;
+}) {
+	if (isStreaming) return null;
+	const formattedTime = formatMessageTime(msg.timestamp);
+	const copyableText = getTextContent(msg.parts).trim();
+	if (!formattedTime && !copyableText) return null;
+
+	return (
+		<div className="flex items-center gap-1 px-5 pb-1 text-[11px] text-muted-foreground">
+			{formattedTime && <span>{formattedTime}</span>}
+			{copyableText && (
+				<MessageCopyButton
+					content={copyableText}
+					ariaLabel="Copy agent message"
+				/>
 			)}
 		</div>
 	);
@@ -190,6 +333,7 @@ interface AgentMessagePartsProps {
 	worktreePath: string;
 	showThinkingContent: boolean;
 	rawScrollback: boolean;
+	onOpenDiffFile?: (filePath: string) => void;
 	respondPermission: (
 		id: string,
 		allow: boolean,
@@ -203,6 +347,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 	worktreePath,
 	showThinkingContent,
 	rawScrollback,
+	onOpenDiffFile,
 	respondPermission,
 }: AgentMessagePartsProps) {
 	const { pairedResults, skippedResultIndices, taskGroups, taskChildIndices } =
@@ -253,6 +398,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 									pairedResults={pairedResults}
 									isStreaming={isLastAgentStreaming}
 									basePath={worktreePath}
+									onOpenDiffFile={onOpenDiffFile}
 								/>
 							</div>
 						);
@@ -272,6 +418,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 									pairedResults={pairedResults}
 									isStreaming={isLastAgentStreaming}
 									basePath={worktreePath}
+									onOpenDiffFile={onOpenDiffFile}
 								/>
 							</div>
 						);
@@ -301,7 +448,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 					case "error":
 						return (
 							<div key={key} className="px-5 py-0.5 text-xs">
-								<CollapsibleError content={part.content} />
+								<AgentErrorBlock content={part.content} />
 							</div>
 						);
 					case "tool_use": {
@@ -315,6 +462,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 									index={i}
 									isExecuting={isExecuting}
 									basePath={worktreePath}
+									onOpenDiffFile={onOpenDiffFile}
 								/>
 							</div>
 						);
@@ -335,6 +483,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 								status={part.status}
 								resolvedAnswers={part.answers}
 								worktreePath={worktreePath}
+								onOpenDiffFile={onOpenDiffFile}
 								onAllow={(id, updatedInput) =>
 									respondPermission(id, true, updatedInput)
 								}
@@ -349,6 +498,8 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 						);
 					case "system_notification":
 						return <SystemNotificationItem key={key} part={part} />;
+					case "todo_list_snapshot":
+						return null;
 					case "image":
 						return null;
 				}
@@ -364,6 +515,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 						pairedResults={pairedResults}
 						isStreaming={isLastAgentStreaming}
 						basePath={worktreePath}
+						onOpenDiffFile={onOpenDiffFile}
 					/>
 				</div>
 			))}
@@ -374,17 +526,15 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 export interface ChatSessionViewProps {
 	/** spec issues-1023: 表示対象の完全 ChatSession。未選択時は親で出し分け。 */
 	session: ChatSession;
-	sessionStatus: SessionStatus | null;
 	isStreaming: boolean;
 	isInterrupting: boolean;
 	activityStatus: { label: string } | null;
 	error: string | null;
 	permissionMode: PermissionMode;
+	planMode: PlanMode;
 	availableModels: ModelInfo[];
 	selectedModel: string;
 	pendingQueue: QueuedAgentTurn[];
-	latestTokenUsage: TokenUsage | null;
-	codexRuntimeStatus?: CodexRuntimeStatus | null;
 	runtimeSlashCommands?: SlashCommand[];
 	backends: BackendInfo[];
 	selectedBackendId: string | null;
@@ -407,6 +557,7 @@ export interface ChatSessionViewProps {
 	onInterrupt: () => void;
 	onCancelQueuedTurn: (queuedTurnId?: string | null) => Promise<void>;
 	onPermissionModeChange: (mode: PermissionMode) => void;
+	onPlanModeChange: (enabled: PlanMode) => void;
 	onModelChange: (modelId: string) => void;
 	onBackendChange: (backendId: string | null) => void;
 	onRespondPermission: (
@@ -414,6 +565,7 @@ export interface ChatSessionViewProps {
 		allow: boolean,
 		updatedInput?: Record<string, unknown>,
 	) => void;
+	onOpenDiffFile?: (filePath: string) => void;
 	/**
 	 * spec issues-1023: 画像 drop の登録 zone。AgentChatPanel = "agent"、
 	 * Workflow panel = 別 zone を指定する想定。未指定なら drop 受付なし。
@@ -440,17 +592,15 @@ export interface ChatSessionViewProps {
  */
 export function ChatSessionView({
 	session,
-	sessionStatus,
 	isStreaming,
 	isInterrupting,
 	activityStatus,
 	error,
 	permissionMode,
+	planMode,
 	availableModels,
 	selectedModel,
 	pendingQueue,
-	latestTokenUsage,
-	codexRuntimeStatus = null,
 	runtimeSlashCommands = [],
 	backends,
 	selectedBackendId,
@@ -463,9 +613,11 @@ export function ChatSessionView({
 	onInterrupt,
 	onCancelQueuedTurn,
 	onPermissionModeChange,
+	onPlanModeChange,
 	onModelChange,
 	onBackendChange,
 	onRespondPermission,
+	onOpenDiffFile,
 	registerDropZone,
 	dropZoneName,
 	sendMessageRef,
@@ -483,13 +635,13 @@ export function ChatSessionView({
 	const [searchQuery, setSearchQuery] = useState("");
 	const [searchMatches, setSearchMatches] = useState<ThreadSearchMatch[]>([]);
 	const [activeSearchIndex, setActiveSearchIndex] = useState(0);
-	const [isStatusOpen, setIsStatusOpen] = useState(false);
 	const [showThinkingContent, setShowThinkingContent] = useState(true);
 	const [rawScrollback, setRawScrollback] = useState(false);
 	const [nativeCommandNotice, setNativeCommandNotice] =
 		useState<NativeCommandNotice | null>(null);
-	const [selectedPermissionProfileId, setSelectedPermissionProfileId] =
-		useState<string | null>(session.permissionProfileId ?? null);
+	const [, setSelectedPermissionProfileId] = useState<string | null>(
+		session.permissionProfileId ?? null,
+	);
 
 	useEffect(() => {
 		setSelectedPermissionProfileId(session.permissionProfileId ?? null);
@@ -937,39 +1089,10 @@ export function ChatSessionView({
 		dropZoneRef.current = node;
 	}, []);
 
-	const selectedBackendLabel =
-		backends.find((backend) => backend.id === selectedBackendId)?.name ??
-		selectedBackendId ??
-		"None";
-	const latestTokenTotal =
-		latestTokenUsage?.totalTokens ??
-		(latestTokenUsage
-			? latestTokenUsage.inputTokens + latestTokenUsage.outputTokens
-			: null);
-	const latestContextRemaining =
-		latestTokenUsage?.contextWindowTokens != null && latestTokenTotal != null
-			? Math.max(latestTokenUsage.contextWindowTokens - latestTokenTotal, 0)
-			: null;
-	const latestTokenUsageLabel = latestTokenUsage
-		? [
-				`in ${latestTokenUsage.inputTokens.toLocaleString()}`,
-				`out ${latestTokenUsage.outputTokens.toLocaleString()}`,
-				`used ${latestTokenTotal?.toLocaleString() ?? "unknown"}`,
-				latestTokenUsage.contextWindowTokens != null
-					? `context ${latestContextRemaining?.toLocaleString() ?? "unknown"} / ${latestTokenUsage.contextWindowTokens.toLocaleString()} left`
-					: null,
-			]
-				.filter(Boolean)
-				.join(" / ")
-		: "unavailable";
-	const codexAccountSummary =
-		selectedBackendId === "codex"
-			? (codexRuntimeStatus?.accountSummary ?? "unavailable")
-			: null;
-	const codexRateLimitSummary =
-		selectedBackendId === "codex"
-			? (codexRuntimeStatus?.rateLimitSummary ?? "unavailable")
-			: null;
+	const todoListSnapshot = useMemo(
+		() => latestTodoListSnapshot(session.messages),
+		[session.messages],
+	);
 
 	const showTaskList = useCallback(async () => {
 		lastTaskListRevisionRef.current = currentTaskListRevision;
@@ -1123,6 +1246,7 @@ export function ChatSessionView({
 										role={msg.role}
 										images={imageParts.length > 0 ? imageParts : undefined}
 										mentions={msg.mentions}
+										timestamp={msg.timestamp}
 									/>
 								</div>
 							);
@@ -1160,7 +1284,12 @@ export function ChatSessionView({
 									worktreePath={worktreePath}
 									showThinkingContent={showThinkingContent}
 									rawScrollback={rawScrollback}
+									onOpenDiffFile={onOpenDiffFile}
 									respondPermission={onRespondPermission}
+								/>
+								<AgentMessageMeta
+									msg={msg}
+									isStreaming={isLastAgentStreaming}
 								/>
 							</div>
 						);
@@ -1168,75 +1297,6 @@ export function ChatSessionView({
 				</div>
 			</div>
 			<div className="shrink-0">
-				{isStatusOpen && (
-					<div className="px-3 pb-2">
-						<div className="rounded border border-border bg-background px-3 py-2 text-xs">
-							<div className="mb-2 flex items-center justify-between gap-2">
-								<span className="font-medium">Session status</span>
-								<button
-									type="button"
-									className="inline-flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted"
-									aria-label="Close session status"
-									onClick={() => setIsStatusOpen(false)}
-								>
-									<X className="size-3.5" />
-								</button>
-							</div>
-							<div className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-muted-foreground">
-								<span>Session</span>
-								<span className="min-w-0 truncate font-mono text-foreground">
-									{session.id}
-								</span>
-								<span>Agent</span>
-								<span className="text-foreground">
-									{sessionStatus?.agent_state ?? "unavailable"}
-								</span>
-								<span>Turn</span>
-								<span className="text-foreground">
-									{sessionStatus?.turn_phase ?? "unavailable"}
-								</span>
-								<span>State</span>
-								<span className="text-foreground">
-									{sessionStatus?.session_state ?? session.state}
-								</span>
-								<span>Permission</span>
-								<span className="text-foreground">
-									{selectedPermissionProfileId
-										? `Profile ${selectedPermissionProfileId}`
-										: PERMISSION_MODE_LABELS[permissionMode]}
-								</span>
-								<span>Model</span>
-								<span className="min-w-0 truncate text-foreground">
-									{selectedModel || "None"}
-								</span>
-								<span>Backend</span>
-								<span className="min-w-0 truncate text-foreground">
-									{selectedBackendLabel}
-								</span>
-								<span>Queue</span>
-								<span className="text-foreground">{pendingQueue.length}</span>
-								<span>Latest tokens</span>
-								<span className="text-foreground">{latestTokenUsageLabel}</span>
-								{codexAccountSummary != null && (
-									<>
-										<span>Codex account</span>
-										<span className="min-w-0 truncate text-foreground">
-											{codexAccountSummary}
-										</span>
-									</>
-								)}
-								{codexRateLimitSummary != null && (
-									<>
-										<span>Codex limits</span>
-										<span className="min-w-0 truncate text-foreground">
-											{codexRateLimitSummary}
-										</span>
-									</>
-								)}
-							</div>
-						</div>
-					</div>
-				)}
 				{nativeCommandNotice && (
 					<div className="px-3 pb-2">
 						<div
@@ -1470,6 +1530,7 @@ export function ChatSessionView({
 						))}
 					</div>
 				)}
+				<TodoListFooter snapshot={todoListSnapshot} />
 				<MessageInput
 					ref={messageInputRef}
 					onSend={handleComposerSend}
@@ -1479,6 +1540,8 @@ export function ChatSessionView({
 					onCycleMode={cycleMode}
 					mode={permissionMode}
 					onModeChange={handlePermissionModeChange}
+					planMode={planMode}
+					onPlanModeChange={onPlanModeChange}
 					models={availableModels}
 					currentModelId={selectedModel}
 					onModelChange={onModelChange}

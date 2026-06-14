@@ -547,6 +547,7 @@ pub async fn send_workflow_approval_chat_message(
     run_id: String,
     content: String,
     permission_mode: Option<String>,
+    plan_mode: Option<bool>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
 ) -> Result<crate::infrastructure::agent_session::runtime::SendMessageResponse, String> {
@@ -580,6 +581,7 @@ pub async fn send_workflow_approval_chat_message(
             worktree_path,
             content,
             permission_mode,
+            plan_mode: plan_mode.unwrap_or(false),
             backend_id: None,
             images,
             mentions,

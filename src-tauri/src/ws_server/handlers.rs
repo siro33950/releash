@@ -1031,6 +1031,7 @@ pub(super) async fn handle_agent_message_request(
             worktree_path,
             content: typed.content.clone(),
             permission_mode: typed.permission_mode,
+            plan_mode: false,
             backend_id: typed.backend_id.clone(),
             images: if typed.images.is_empty() {
                 None

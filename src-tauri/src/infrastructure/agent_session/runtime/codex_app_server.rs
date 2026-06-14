@@ -86,6 +86,7 @@ pub(crate) const NOTIFY_FILE_CHANGE_PATCH_UPDATED: &str = "item/fileChange/patch
 pub(crate) const REQUEST_COMMAND_APPROVAL: &str = "item/commandExecution/requestApproval";
 pub(crate) const REQUEST_FILE_CHANGE_APPROVAL: &str = "item/fileChange/requestApproval";
 pub(crate) const REQUEST_PERMISSIONS_APPROVAL: &str = "item/permissions/requestApproval";
+pub(crate) const REQUEST_USER_INPUT: &str = "request_user_input";
 const JSONRPC_ERROR_REQUEST_DENIED: i64 = -32001;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +230,19 @@ fn text_delta_message(delta: &str) -> Value {
     })
 }
 
+fn thinking_delta_message(delta: &str) -> Value {
+    json!({
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_delta",
+            "delta": {
+                "type": "thinking_delta",
+                "thinking": delta,
+            },
+        },
+    })
+}
+
 fn tool_use_message(tool: &str, input: Value, id: &str) -> Value {
     json!({
         "type": "assistant",
@@ -240,6 +254,13 @@ fn tool_use_message(tool: &str, input: Value, id: &str) -> Value {
                 "id": id,
             }],
         },
+    })
+}
+
+fn todo_list_snapshot_message(items: Value) -> Value {
+    json!({
+        "type": "todo_list_snapshot",
+        "items": items,
     })
 }
 
@@ -257,29 +278,195 @@ fn tool_result_message(tool_use_id: &str, content: String, is_error: bool) -> Va
     })
 }
 
-fn item_tool_name(item_type: &str) -> Option<&'static str> {
+fn item_type_name(item_type: &str) -> &str {
     match item_type {
-        "commandExecution" => Some("CodexCommand"),
-        "fileChange" => Some("CodexFileChange"),
-        "mcpToolCall" => Some("CodexMcpTool"),
-        "dynamicToolCall" => Some("CodexTool"),
+        "command_execution" => "commandExecution",
+        "file_change" => "fileChange",
+        "mcp_tool_call" => "mcpToolCall",
+        "web_search" => "webSearch",
+        "todo_list" => "todoList",
+        other => other,
+    }
+}
+
+fn mcp_tool_name(item: &Value) -> String {
+    let server = get_string(item, &["server"]).unwrap_or("server");
+    let tool = get_string(item, &["tool"]).unwrap_or("tool");
+    format!("mcp__{server}__{tool}")
+}
+
+fn item_tool_name(item_type: &str, item: &Value) -> Option<String> {
+    match item_type_name(item_type) {
+        "commandExecution" => Some("Bash".to_string()),
+        "fileChange" => Some("Edit".to_string()),
+        "mcpToolCall" => Some(mcp_tool_name(item)),
+        "dynamicToolCall" => get_string(item, &["tool"])
+            .map(ToString::to_string)
+            .or_else(|| Some("CodexTool".to_string())),
+        "webSearch" => Some("WebSearch".to_string()),
         _ => None,
     }
 }
 
+fn mcp_result_content(item: &Value) -> Option<String> {
+    if let Some(message) = get_string(item, &["error", "message"]) {
+        return Some(message.to_string());
+    }
+    let content = item.get("result")?.get("content")?.as_array()?;
+    let parts = content
+        .iter()
+        .filter_map(|block| {
+            block
+                .get("text")
+                .and_then(Value::as_str)
+                .or_else(|| block.get("content").and_then(Value::as_str))
+                .or_else(|| block.as_str())
+                .map(ToString::to_string)
+        })
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn codex_question_input(arguments: Value) -> Value {
+    if arguments.get("questions").is_some() {
+        return arguments;
+    }
+    let question = arguments
+        .get("question")
+        .or_else(|| arguments.get("prompt"))
+        .and_then(Value::as_str)
+        .unwrap_or("Please choose an option.");
+    let header = arguments
+        .get("header")
+        .and_then(Value::as_str)
+        .unwrap_or("Question");
+    let options = arguments
+        .get("options")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|option| {
+            if let Some(label) = option.as_str() {
+                return Some(json!({ "label": label, "description": "" }));
+            }
+            let label = option.get("label").and_then(Value::as_str)?;
+            Some(json!({
+                "label": label,
+                "description": option
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            }))
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "questions": [{
+            "question": question,
+            "header": header,
+            "options": options,
+            "multiSelect": arguments
+                .get("multiSelect")
+                .or_else(|| arguments.get("multi_select"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }]
+    })
+}
+
+fn codex_request_user_input_message(item_id: &str, arguments: Value) -> Value {
+    json!({
+        "type": "permission_request",
+        "request_id": item_id,
+        "tool_name": "AskUserQuestion",
+        "display_name": "Question",
+        "input": codex_question_input(arguments),
+        "tool_use_id": item_id,
+        "title": "Question",
+        "description": "Codex requests user input",
+    })
+}
+
+fn file_change_kind(change: &Value) -> String {
+    change
+        .get("kind")
+        .and_then(|kind| {
+            kind.as_str()
+                .or_else(|| kind.get("type").and_then(Value::as_str))
+        })
+        .unwrap_or("update")
+        .to_string()
+}
+
+fn file_change_tool_use_id(item_id: &str, change: &Value, index: usize) -> String {
+    let suffix = get_string(change, &["path"])
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            path.chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                        ch
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>()
+        })
+        .unwrap_or_else(|| format!("file_{}", index + 1));
+    format!("{item_id}:{suffix}")
+}
+
+fn file_change_tool_messages(item_id: &str, changes: &Value, is_error: bool) -> Vec<Value> {
+    let Some(changes) = changes.as_array() else {
+        return Vec::new();
+    };
+
+    changes
+        .iter()
+        .enumerate()
+        .flat_map(|(index, change)| {
+            let tool_use_id = file_change_tool_use_id(item_id, change, index);
+            let path = get_string(change, &["path"]).unwrap_or("");
+            let diff = get_string(change, &["diff"]).unwrap_or("");
+            let input = json!({
+                "file_path": path,
+                "codex_file_change": true,
+                "kind": file_change_kind(change),
+                "diff": diff,
+                "changes": [change.clone()],
+            });
+            let content = if diff.is_empty() {
+                serde_json::to_string(change)
+                    .unwrap_or_else(|_| "Codex file change completed.".to_string())
+            } else {
+                diff.to_string()
+            };
+            [
+                tool_use_message("Edit", input, &tool_use_id),
+                tool_result_message(&tool_use_id, content, is_error),
+            ]
+        })
+        .collect()
+}
+
 fn item_started_message(item: &Value) -> Option<Value> {
     let item_id = get_string(item, &["id"])?;
-    let item_type = get_string(item, &["type"])?;
-    let tool = item_tool_name(item_type)?;
+    let item_type = item_type_name(get_string(item, &["type"])?);
+    if item_type == "dynamicToolCall" && get_string(item, &["tool"]) == Some("request_user_input") {
+        return Some(codex_request_user_input_message(
+            item_id,
+            item.get("arguments").cloned().unwrap_or_else(|| json!({})),
+        ));
+    }
+    let tool = item_tool_name(item_type, item)?;
     let input = match item_type {
         "commandExecution" => json!({
             "command": item.get("command").cloned().unwrap_or(Value::Null),
             "cwd": item.get("cwd").cloned().unwrap_or(Value::Null),
             "source": item.get("source").cloned().unwrap_or(Value::Null),
+            "status": item.get("status").cloned().unwrap_or(Value::Null),
         }),
-        "fileChange" => json!({
-            "changes": item.get("changes").cloned().unwrap_or_else(|| json!([])),
-        }),
+        "fileChange" => return None,
         "mcpToolCall" => json!({
             "server": item.get("server").cloned().unwrap_or(Value::Null),
             "tool": item.get("tool").cloned().unwrap_or(Value::Null),
@@ -289,15 +476,52 @@ fn item_started_message(item: &Value) -> Option<Value> {
             "tool": item.get("tool").cloned().unwrap_or(Value::Null),
             "arguments": item.get("arguments").cloned().unwrap_or(Value::Null),
         }),
+        "webSearch" => json!({
+            "query": item.get("query").cloned().unwrap_or(Value::Null),
+        }),
         _ => return None,
     };
-    Some(tool_use_message(tool, input, item_id))
+    Some(tool_use_message(&tool, input, item_id))
+}
+
+fn item_started_messages(item: &Value) -> Vec<Value> {
+    let item_id = get_string(item, &["id"]).unwrap_or("");
+    let item_type = get_string(item, &["type"])
+        .map(item_type_name)
+        .unwrap_or("");
+    if item_type == "fileChange" {
+        return file_change_tool_messages(
+            item_id,
+            &item.get("changes").cloned().unwrap_or_else(|| json!([])),
+            false,
+        );
+    }
+    item_started_message(item).into_iter().collect()
 }
 
 fn item_completed_message(item: &Value) -> Option<Value> {
     let item_id = get_string(item, &["id"])?;
-    let item_type = get_string(item, &["type"])?;
+    let item_type = item_type_name(get_string(item, &["type"])?);
     match item_type {
+        "reasoning" => get_string(item, &["text"])
+            .filter(|text| !text.is_empty())
+            .map(thinking_delta_message),
+        "error" => get_string(item, &["message"]).map(error_message),
+        "todoList" => Some(todo_list_snapshot_message(
+            item.get("items").cloned().unwrap_or_else(|| json!([])),
+        )),
+        "webSearch" => {
+            let query = get_string(item, &["query"]).unwrap_or("");
+            Some(tool_result_message(
+                item_id,
+                if query.is_empty() {
+                    "Web search completed.".to_string()
+                } else {
+                    format!("Searched for \"{query}\".")
+                },
+                false,
+            ))
+        }
         "commandExecution" => {
             let content = item
                 .get("aggregatedOutput")
@@ -324,14 +548,16 @@ fn item_completed_message(item: &Value) -> Option<Value> {
                 .is_some_and(|code| code != 0);
             Some(tool_result_message(item_id, content, is_error))
         }
-        "fileChange" => {
-            let changes = item.get("changes").cloned().unwrap_or_else(|| json!([]));
-            let content = serde_json::to_string(&json!({ "changes": changes }))
-                .unwrap_or_else(|_| "Codex file change completed.".to_string());
-            let is_error = !matches!(get_string(item, &["status"]), Some("completed"));
+        "fileChange" => None,
+        "mcpToolCall" => {
+            let content = mcp_result_content(item)
+                .unwrap_or_else(|| "Codex MCP tool call completed.".to_string());
+            let is_error = get_string(item, &["status"])
+                .is_some_and(|status| matches!(status, "failed" | "errored" | "declined"))
+                || item.get("error").is_some();
             Some(tool_result_message(item_id, content, is_error))
         }
-        "mcpToolCall" | "dynamicToolCall" => {
+        "dynamicToolCall" => {
             let content = serde_json::to_string(item)
                 .unwrap_or_else(|_| "Codex tool call completed.".to_string());
             let is_error = get_string(item, &["status"])
@@ -342,17 +568,34 @@ fn item_completed_message(item: &Value) -> Option<Value> {
     }
 }
 
+fn item_completed_messages(item: &Value) -> Vec<Value> {
+    let item_id = get_string(item, &["id"]).unwrap_or("");
+    let item_type = get_string(item, &["type"])
+        .map(item_type_name)
+        .unwrap_or("");
+    if item_type == "fileChange" {
+        let is_error = !matches!(get_string(item, &["status"]), Some("completed"));
+        return file_change_tool_messages(
+            item_id,
+            &item.get("changes").cloned().unwrap_or_else(|| json!([])),
+            is_error,
+        );
+    }
+    item_completed_message(item).into_iter().collect()
+}
+
 fn command_output_delta_message(params: &Value) -> Option<Value> {
     let item_id = get_string(params, &["itemId"])?;
     let delta = get_string(params, &["delta"])?;
     Some(tool_result_message(item_id, delta.to_string(), false))
 }
 
-fn file_change_patch_message(params: &Value) -> Option<Value> {
-    let item_id = get_string(params, &["itemId"])?;
+fn file_change_patch_messages(params: &Value) -> Vec<Value> {
+    let Some(item_id) = get_string(params, &["itemId"]) else {
+        return Vec::new();
+    };
     let changes = params.get("changes").cloned().unwrap_or_else(|| json!([]));
-    let content = serde_json::to_string(&json!({ "changes": changes })).ok()?;
-    Some(tool_result_message(item_id, content, false))
+    file_change_tool_messages(item_id, &changes, false)
 }
 
 fn usage_result_message(
@@ -379,70 +622,6 @@ fn usage_result_message(
     })
 }
 
-fn codex_runtime_status_message(
-    account_summary: Option<String>,
-    rate_limit_summary: Option<String>,
-) -> Option<Value> {
-    if account_summary.is_none() && rate_limit_summary.is_none() {
-        return None;
-    }
-    let mut payload = serde_json::Map::new();
-    payload.insert(
-        "type".to_string(),
-        Value::String("codex_runtime_status_updated".to_string()),
-    );
-    if let Some(summary) = account_summary {
-        payload.insert("accountSummary".to_string(), Value::String(summary));
-    }
-    if let Some(summary) = rate_limit_summary {
-        payload.insert("rateLimitSummary".to_string(), Value::String(summary));
-    }
-    Some(Value::Object(payload))
-}
-
-fn account_update_summary(params: &Value) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(auth_mode) = params.get("authMode").and_then(Value::as_str) {
-        parts.push(format!("auth {auth_mode}"));
-    }
-    if let Some(plan_type) = params.get("planType").and_then(Value::as_str) {
-        parts.push(format!("plan {plan_type}"));
-    }
-    (!parts.is_empty()).then(|| parts.join(" / "))
-}
-
-fn rate_limit_update_summary(params: &Value) -> Option<String> {
-    let snapshot = params.get("rateLimits")?;
-    let label = snapshot
-        .get("limitName")
-        .and_then(Value::as_str)
-        .or_else(|| snapshot.get("limitId").and_then(Value::as_str))
-        .unwrap_or("rate limit");
-    let mut parts = Vec::new();
-    if let Some(reached) = snapshot.get("rateLimitReachedType").and_then(Value::as_str) {
-        parts.push(format!("reached {reached}"));
-    }
-    if let Some(primary) = snapshot
-        .get("primary")
-        .and_then(|window| window.get("usedPercent"))
-        .and_then(Value::as_u64)
-    {
-        parts.push(format!("primary {primary}% used"));
-    }
-    if let Some(secondary) = snapshot
-        .get("secondary")
-        .and_then(|window| window.get("usedPercent"))
-        .and_then(Value::as_u64)
-    {
-        parts.push(format!("secondary {secondary}% used"));
-    }
-    if parts.is_empty() {
-        Some(format!("{label}: updated"))
-    } else {
-        Some(format!("{label}: {}", parts.join(", ")))
-    }
-}
-
 fn turn_complete_message(thread_id: Option<&str>, exit_code: i32) -> Value {
     json!({
         "type": "turn_complete",
@@ -465,24 +644,6 @@ fn session_ready_message(thread_id: &str) -> Value {
     })
 }
 
-fn codex_goal_updated_message(params: &Value) -> Option<Value> {
-    let thread_id = get_string(params, &["threadId"])?;
-    let goal = params.get("goal")?;
-    Some(json!({
-        "type": "codex_goal_updated",
-        "thread_id": thread_id,
-        "goal": goal,
-    }))
-}
-
-fn codex_goal_cleared_message(params: &Value) -> Option<Value> {
-    let thread_id = get_string(params, &["threadId"])?;
-    Some(json!({
-        "type": "codex_goal_cleared",
-        "thread_id": thread_id,
-    }))
-}
-
 fn compaction_completed_message(params: &Value) -> Value {
     let trigger = get_string(params, &["trigger"]).unwrap_or("manual");
     json!({
@@ -498,131 +659,6 @@ fn compaction_completed_message(params: &Value) -> Value {
     })
 }
 
-fn system_notification_message(
-    notification_type: &str,
-    status: &str,
-    label: &str,
-    detail: Option<String>,
-) -> Value {
-    let mut message = json!({
-        "type": "system",
-        "subtype": "codex_realtime",
-        "notification_type": notification_type,
-        "status": status,
-        "label": label,
-    });
-    if let Some(detail) = detail.filter(|value| !value.trim().is_empty()) {
-        message["detail"] = Value::String(detail);
-    }
-    message
-}
-
-fn realtime_audio_detail(params: &Value) -> Option<String> {
-    let audio = params.get("audio")?;
-    let sample_rate = audio.get("sampleRate").and_then(Value::as_u64);
-    let channels = audio.get("numChannels").and_then(Value::as_u64);
-    let samples = audio.get("samplesPerChannel").and_then(Value::as_u64);
-    let bytes = audio
-        .get("data")
-        .and_then(Value::as_str)
-        .map(|data| data.len());
-    let mut parts = Vec::new();
-    if let Some(sample_rate) = sample_rate {
-        parts.push(format!("sampleRate={sample_rate}"));
-    }
-    if let Some(channels) = channels {
-        parts.push(format!("channels={channels}"));
-    }
-    if let Some(samples) = samples {
-        parts.push(format!("samplesPerChannel={samples}"));
-    }
-    if let Some(bytes) = bytes {
-        parts.push(format!("base64Bytes={bytes}"));
-    }
-    (!parts.is_empty()).then(|| parts.join(", "))
-}
-
-fn realtime_notification_message(method: &str, params: &Value) -> Option<Value> {
-    match method {
-        NOTIFY_THREAD_REALTIME_STARTED => {
-            let thread_id = get_string(params, &["threadId"]).unwrap_or("unknown");
-            let version = get_string(params, &["version"]).unwrap_or("unknown");
-            let session_id = get_string(params, &["realtimeSessionId"]);
-            let detail = match session_id {
-                Some(session_id) => {
-                    format!("thread={thread_id}, version={version}, realtimeSessionId={session_id}")
-                }
-                None => format!("thread={thread_id}, version={version}"),
-            };
-            Some(system_notification_message(
-                "codex_realtime",
-                "in_progress",
-                "Codex realtime started",
-                Some(detail),
-            ))
-        }
-        NOTIFY_THREAD_REALTIME_TRANSCRIPT_DELTA => {
-            let delta = get_string(params, &["delta"])?;
-            let role = get_string(params, &["role"]).unwrap_or("unknown");
-            if role == "assistant" {
-                Some(text_delta_message(delta))
-            } else {
-                Some(system_notification_message(
-                    "codex_realtime",
-                    "in_progress",
-                    &format!("Codex realtime transcript ({role})"),
-                    Some(delta.to_string()),
-                ))
-            }
-        }
-        NOTIFY_THREAD_REALTIME_TRANSCRIPT_DONE => {
-            let text = get_string(params, &["text"]).map(ToString::to_string);
-            let role = get_string(params, &["role"]).unwrap_or("unknown");
-            Some(system_notification_message(
-                "codex_realtime",
-                "completed",
-                &format!("Codex realtime transcript completed ({role})"),
-                text,
-            ))
-        }
-        NOTIFY_THREAD_REALTIME_OUTPUT_AUDIO_DELTA => Some(system_notification_message(
-            "codex_realtime",
-            "in_progress",
-            "Codex realtime audio output",
-            realtime_audio_detail(params),
-        )),
-        NOTIFY_THREAD_REALTIME_SDP => Some(system_notification_message(
-            "codex_realtime",
-            "in_progress",
-            "Codex realtime SDP received",
-            get_string(params, &["sdp"]).map(|sdp| format!("sdpBytes={}", sdp.len())),
-        )),
-        NOTIFY_THREAD_REALTIME_ITEM_ADDED => Some(system_notification_message(
-            "codex_realtime",
-            "in_progress",
-            "Codex realtime item added",
-            params
-                .get("item")
-                .and_then(|item| serde_json::to_string(item).ok()),
-        )),
-        NOTIFY_THREAD_REALTIME_ERROR => Some(system_notification_message(
-            "codex_realtime",
-            "error",
-            "Codex realtime error",
-            get_string(params, &["message"])
-                .or_else(|| get_string(params, &["error", "message"]))
-                .map(ToString::to_string),
-        )),
-        NOTIFY_THREAD_REALTIME_CLOSED => Some(system_notification_message(
-            "codex_realtime",
-            "completed",
-            "Codex realtime closed",
-            get_string(params, &["reason"]).map(ToString::to_string),
-        )),
-        _ => None,
-    }
-}
-
 fn app_server_request_to_permission_request(id: u64, method: &str, params: &Value) -> Value {
     let item_id = get_string(params, &["itemId"])
         .or_else(|| get_string(params, &["item", "id"]))
@@ -632,18 +668,29 @@ fn app_server_request_to_permission_request(id: u64, method: &str, params: &Valu
         REQUEST_COMMAND_APPROVAL => "CodexCommand",
         REQUEST_FILE_CHANGE_APPROVAL => "CodexFileChange",
         REQUEST_PERMISSIONS_APPROVAL => "CodexPermissions",
+        _ if is_user_input_request_method(method) => "AskUserQuestion",
         _ => "CodexApproval",
+    };
+    let input = if is_user_input_request_method(method) {
+        codex_question_input(params.clone())
+    } else {
+        params.clone()
     };
     json!({
         "type": "permission_request",
         "request_id": id.to_string(),
         "tool_name": tool_name,
         "display_name": tool_name,
-        "input": params,
+        "input": input,
         "tool_use_id": item_id,
-        "title": "Codex approval requested",
+        "title": if is_user_input_request_method(method) { "Question" } else { "Codex approval requested" },
         "description": method,
     })
+}
+
+fn is_user_input_request_method(method: &str) -> bool {
+    let lower = method.to_lowercase();
+    lower.contains("request_user_input") || lower.contains("requestuserinput")
 }
 
 fn jsonrpc_response(id: u64, result: Value) -> Value {
@@ -862,6 +909,18 @@ pub(crate) fn build_app_server_permission_response(
             JSONRPC_ERROR_REQUEST_DENIED,
             "User denied additional permissions",
         )),
+        (method, "allow") if is_user_input_request_method(method) => {
+            let answers = updated_input
+                .and_then(|value| serde_json::from_str::<Value>(value).ok())
+                .and_then(|value| value.get("answers").cloned())
+                .unwrap_or(Value::Null);
+            Ok(jsonrpc_response(id, json!({ "answers": answers })))
+        }
+        (method, "deny") if is_user_input_request_method(method) => Ok(jsonrpc_error(
+            id,
+            JSONRPC_ERROR_REQUEST_DENIED,
+            "User declined to answer",
+        )),
         (_, "allow" | "deny") => Err(format!("Unsupported app-server approval method: {method}")),
         (_, _) => Err(format!("Invalid behavior: {behavior}")),
     }
@@ -891,16 +950,7 @@ pub(crate) fn app_server_message_to_bridge_messages(
         Some(AppServerMessageKind::Notification { method }) => {
             let params = message.get("params").unwrap_or(&Value::Null);
             match method.as_str() {
-                NOTIFY_ACCOUNT_UPDATED => {
-                    codex_runtime_status_message(account_update_summary(params), None)
-                        .into_iter()
-                        .collect()
-                }
-                NOTIFY_ACCOUNT_RATE_LIMITS_UPDATED => {
-                    codex_runtime_status_message(None, rate_limit_update_summary(params))
-                        .into_iter()
-                        .collect()
-                }
+                NOTIFY_ACCOUNT_UPDATED | NOTIFY_ACCOUNT_RATE_LIMITS_UPDATED => Vec::new(),
                 NOTIFY_THREAD_STARTED => {
                     if let Some(thread_id) = get_string(params, &["thread", "id"]) {
                         state.thread_id = Some(thread_id.to_string());
@@ -910,12 +960,7 @@ pub(crate) fn app_server_message_to_bridge_messages(
                     }
                 }
                 NOTIFY_THREAD_COMPACTED => vec![compaction_completed_message(params)],
-                NOTIFY_THREAD_GOAL_UPDATED => {
-                    codex_goal_updated_message(params).into_iter().collect()
-                }
-                NOTIFY_THREAD_GOAL_CLEARED => {
-                    codex_goal_cleared_message(params).into_iter().collect()
-                }
+                NOTIFY_THREAD_GOAL_UPDATED | NOTIFY_THREAD_GOAL_CLEARED => Vec::new(),
                 NOTIFY_THREAD_REALTIME_STARTED
                 | NOTIFY_THREAD_REALTIME_ITEM_ADDED
                 | NOTIFY_THREAD_REALTIME_TRANSCRIPT_DELTA
@@ -923,9 +968,7 @@ pub(crate) fn app_server_message_to_bridge_messages(
                 | NOTIFY_THREAD_REALTIME_OUTPUT_AUDIO_DELTA
                 | NOTIFY_THREAD_REALTIME_SDP
                 | NOTIFY_THREAD_REALTIME_ERROR
-                | NOTIFY_THREAD_REALTIME_CLOSED => realtime_notification_message(&method, params)
-                    .into_iter()
-                    .collect(),
+                | NOTIFY_THREAD_REALTIME_CLOSED => Vec::new(),
                 NOTIFY_THREAD_TOKEN_USAGE_UPDATED => {
                     let input = get_u64(params, &["tokenUsage", "last", "inputTokens"]);
                     let output = get_u64(params, &["tokenUsage", "last", "outputTokens"]);
@@ -956,14 +999,12 @@ pub(crate) fn app_server_message_to_bridge_messages(
                 }
                 NOTIFY_ITEM_STARTED => params
                     .get("item")
-                    .and_then(item_started_message)
-                    .into_iter()
-                    .collect(),
+                    .map(item_started_messages)
+                    .unwrap_or_default(),
                 NOTIFY_ITEM_COMPLETED => params
                     .get("item")
-                    .and_then(item_completed_message)
-                    .into_iter()
-                    .collect(),
+                    .map(item_completed_messages)
+                    .unwrap_or_default(),
                 NOTIFY_AGENT_MESSAGE_DELTA => get_string(params, &["delta"])
                     .map(text_delta_message)
                     .into_iter()
@@ -971,9 +1012,7 @@ pub(crate) fn app_server_message_to_bridge_messages(
                 NOTIFY_COMMAND_OUTPUT_DELTA | NOTIFY_FILE_CHANGE_OUTPUT_DELTA => {
                     command_output_delta_message(params).into_iter().collect()
                 }
-                NOTIFY_FILE_CHANGE_PATCH_UPDATED => {
-                    file_change_patch_message(params).into_iter().collect()
-                }
+                NOTIFY_FILE_CHANGE_PATCH_UPDATED => file_change_patch_messages(params),
                 NOTIFY_TURN_COMPLETED => {
                     let thread_id =
                         get_string(params, &["threadId"]).or(state.thread_id.as_deref());
@@ -1009,6 +1048,14 @@ pub(crate) fn app_server_message_to_bridge_messages(
                 REQUEST_COMMAND_APPROVAL
                 | REQUEST_FILE_CHANGE_APPROVAL
                 | REQUEST_PERMISSIONS_APPROVAL => {
+                    state
+                        .pending_approval_methods
+                        .insert(id.to_string(), method.clone());
+                    vec![app_server_request_to_permission_request(
+                        id, &method, params,
+                    )]
+                }
+                _ if is_user_input_request_method(&method) => {
                     state
                         .pending_approval_methods
                         .insert(id.to_string(), method.clone());
@@ -1083,6 +1130,7 @@ impl CodexAppServerProcess {
         cwd: &str,
         model: Option<&str>,
         permission_mode: Option<&str>,
+        plan_mode: bool,
         permission_profile_id: Option<&str>,
         system_prompt: Option<&str>,
     ) -> Result<u64, String> {
@@ -1092,6 +1140,7 @@ impl CodexAppServerProcess {
             cwd,
             model,
             permission_mode,
+            plan_mode,
             permission_profile_id,
             system_prompt,
         )?;
@@ -1241,6 +1290,16 @@ fn sandbox_policy(mode: PermissionMode, cwd: &str) -> Value {
     }
 }
 
+fn apply_plan_mode(params: &mut Value) {
+    params["collaborationMode"] = Value::String("plan".to_string());
+    params["approvalPolicy"] = Value::String("on-request".to_string());
+    params["sandbox"] = Value::String("read-only".to_string());
+    params["sandboxPolicy"] = json!({
+        "type": "readOnly",
+        "networkAccess": false,
+    });
+}
+
 pub(crate) fn build_initialize_request(id: u64, version: &str) -> Value {
     request(
         id,
@@ -1268,6 +1327,7 @@ pub(crate) fn build_thread_start_request(
     cwd: &str,
     model: Option<&str>,
     permission_mode: Option<&str>,
+    plan_mode: bool,
     permission_profile_id: Option<&str>,
     system_prompt: Option<&str>,
 ) -> Result<Value, String> {
@@ -1283,6 +1343,9 @@ pub(crate) fn build_thread_start_request(
         params["approvalPolicy"] = Value::String(approval_policy(mode).to_string());
         params["sandbox"] = Value::String(sandbox_mode(mode).to_string());
     }
+    if plan_mode {
+        apply_plan_mode(&mut params);
+    }
     if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
         params["model"] = Value::String(model.to_string());
     }
@@ -1295,12 +1358,14 @@ pub(crate) fn build_thread_start_request(
     Ok(request(id, METHOD_THREAD_START, params))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_thread_resume_request(
     id: u64,
     thread_id: &str,
     cwd: &str,
     model: Option<&str>,
     permission_mode: Option<&str>,
+    plan_mode: bool,
     permission_profile_id: Option<&str>,
     system_prompt: Option<&str>,
 ) -> Result<Value, String> {
@@ -1315,6 +1380,9 @@ pub(crate) fn build_thread_resume_request(
         let mode = parsed_mode(permission_mode)?;
         params["approvalPolicy"] = Value::String(approval_policy(mode).to_string());
         params["sandbox"] = Value::String(sandbox_mode(mode).to_string());
+    }
+    if plan_mode {
+        apply_plan_mode(&mut params);
     }
     if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
         params["model"] = Value::String(model.to_string());
@@ -1334,6 +1402,7 @@ pub(crate) fn build_thread_fork_request(
     cwd: &str,
     model: Option<&str>,
     permission_mode: Option<&str>,
+    plan_mode: bool,
     permission_profile_id: Option<&str>,
 ) -> Result<Value, String> {
     let mut params = json!({
@@ -1349,6 +1418,9 @@ pub(crate) fn build_thread_fork_request(
         let mode = parsed_mode(permission_mode)?;
         params["approvalPolicy"] = Value::String(approval_policy(mode).to_string());
         params["sandbox"] = Value::String(sandbox_mode(mode).to_string());
+    }
+    if plan_mode {
+        apply_plan_mode(&mut params);
     }
     if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
         params["model"] = Value::String(model.to_string());
@@ -1510,6 +1582,7 @@ pub(crate) fn build_turn_start_request_with_permission(
     client_user_message_id: Option<&str>,
     editor_context: Option<&AgentEditorContext>,
     permission_mode: Option<&str>,
+    plan_mode: bool,
     permission_profile_id: Option<&str>,
 ) -> Result<Value, String> {
     let mut value = build_turn_start_request(
@@ -1527,6 +1600,9 @@ pub(crate) fn build_turn_start_request_with_permission(
         let mode = parsed_mode(Some(permission_mode))?;
         value["params"]["approvalPolicy"] = Value::String(approval_policy(mode).to_string());
         value["params"]["sandboxPolicy"] = sandbox_policy(mode, cwd);
+    }
+    if plan_mode {
+        apply_plan_mode(&mut value["params"]);
     }
     Ok(value)
 }
@@ -1857,7 +1933,7 @@ mod tests {
         assert_eq!(started.len(), 1);
         assert_eq!(started[0]["type"], "assistant");
         assert_eq!(started[0]["message"]["content"][0]["type"], "tool_use");
-        assert_eq!(started[0]["message"]["content"][0]["name"], "CodexCommand");
+        assert_eq!(started[0]["message"]["content"][0]["name"], "Bash");
         assert_eq!(
             started[0]["message"]["content"][0]["input"]["command"],
             "pnpm test"
@@ -1910,17 +1986,25 @@ mod tests {
             &mut state,
         );
 
-        assert_eq!(started.len(), 1);
+        assert_eq!(started.len(), 0);
+        assert_eq!(patch.len(), 2);
+        assert_eq!(patch[0]["message"]["content"][0]["name"], "Edit");
         assert_eq!(
-            started[0]["message"]["content"][0]["name"],
-            "CodexFileChange"
+            patch[0]["message"]["content"][0]["input"]["file_path"],
+            "src/lib.rs"
         );
-        assert_eq!(patch.len(), 1);
-        assert_eq!(patch[0]["message"]["content"][0]["tool_use_id"], "patch_1");
-        assert!(patch[0]["message"]["content"][0]["content"]
+        assert_eq!(
+            patch[0]["message"]["content"][0]["input"]["codex_file_change"],
+            true
+        );
+        assert_eq!(
+            patch[1]["message"]["content"][0]["tool_use_id"],
+            "patch_1:src_lib.rs"
+        );
+        assert!(patch[1]["message"]["content"][0]["content"]
             .as_str()
             .unwrap()
-            .contains("src/lib.rs"));
+            .contains("-old"));
     }
 
     #[test]
@@ -2020,7 +2104,7 @@ mod tests {
     }
 
     #[test]
-    fn app_server_account_notifications_update_runtime_status() {
+    fn app_server_account_notifications_are_ignored() {
         let mut state = AppServerBridgeState::default();
         let account = app_server_message_to_bridge_messages(
             &json!({
@@ -2032,9 +2116,7 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(account.len(), 1);
-        assert_eq!(account[0]["type"], "codex_runtime_status_updated");
-        assert_eq!(account[0]["accountSummary"], "auth chatgpt / plan pro");
+        assert!(account.is_empty());
 
         let limits = app_server_message_to_bridge_messages(
             &json!({
@@ -2053,12 +2135,7 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(limits.len(), 1);
-        assert_eq!(limits[0]["type"], "codex_runtime_status_updated");
-        assert_eq!(
-            limits[0]["rateLimitSummary"],
-            "codex: primary 50% used, secondary 25% used"
-        );
+        assert!(limits.is_empty());
     }
 
     #[test]
@@ -2234,6 +2311,7 @@ mod tests {
             "/repo",
             Some("gpt-5.3-codex"),
             Some("full"),
+            false,
             None,
             Some("Follow repo rules."),
         )
@@ -2254,17 +2332,31 @@ mod tests {
 
     #[test]
     fn thread_start_rejects_non_abstract_permission_modes() {
-        let err =
-            build_thread_start_request(2, "/repo", None, Some("bypassPermissions"), None, None)
-                .unwrap_err();
+        let err = build_thread_start_request(
+            2,
+            "/repo",
+            None,
+            Some("bypassPermissions"),
+            false,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert!(err.contains("bypassPermissions"));
     }
 
     #[test]
     fn thread_start_can_use_named_permission_profile() {
-        let value =
-            build_thread_start_request(2, "/repo", None, Some("full"), Some(":read-only"), None)
-                .expect("request");
+        let value = build_thread_start_request(
+            2,
+            "/repo",
+            None,
+            Some("full"),
+            false,
+            Some(":read-only"),
+            None,
+        )
+        .expect("request");
 
         assert_eq!(value["params"]["permissions"], ":read-only");
         assert!(value["params"].get("approvalPolicy").is_none());
@@ -2279,6 +2371,7 @@ mod tests {
             "/repo",
             Some("gpt-5.3-codex"),
             Some("ask"),
+            false,
             None,
             Some("Follow repo rules."),
         )
@@ -2305,6 +2398,7 @@ mod tests {
             "/repo",
             Some("gpt-5.3-codex"),
             Some("edit"),
+            false,
             None,
         )
         .expect("request");
@@ -2322,9 +2416,16 @@ mod tests {
 
     #[test]
     fn thread_fork_can_use_named_permission_profile() {
-        let value =
-            build_thread_fork_request(3, "thr_saved", "/repo", None, Some("full"), Some(":team"))
-                .expect("request");
+        let value = build_thread_fork_request(
+            3,
+            "thr_saved",
+            "/repo",
+            None,
+            Some("full"),
+            false,
+            Some(":team"),
+        )
+        .expect("request");
 
         assert_eq!(value["params"]["permissions"], ":team");
         assert!(value["params"].get("approvalPolicy").is_none());
@@ -2409,6 +2510,7 @@ mod tests {
             None,
             None,
             Some("edit"),
+            false,
             None,
         )
         .expect("request");
@@ -2433,6 +2535,7 @@ mod tests {
             None,
             None,
             Some("full"),
+            false,
             Some(":read-only"),
         )
         .expect("request");
@@ -2652,7 +2755,7 @@ mod tests {
     }
 
     #[test]
-    fn app_server_realtime_transcript_notifications_become_bridge_messages() {
+    fn app_server_realtime_transcript_notifications_are_ignored() {
         let mut state = AppServerBridgeState::default();
         let assistant_delta = app_server_message_to_bridge_messages(
             &json!({
@@ -2665,11 +2768,7 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(assistant_delta.len(), 1);
-        assert_eq!(
-            assistant_delta[0]["event"]["delta"]["text"].as_str(),
-            Some("Hello")
-        );
+        assert!(assistant_delta.is_empty());
 
         let user_delta = app_server_message_to_bridge_messages(
             &json!({
@@ -2682,15 +2781,11 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(user_delta.len(), 1);
-        assert_eq!(user_delta[0]["type"], "system");
-        assert_eq!(user_delta[0]["subtype"], "codex_realtime");
-        assert_eq!(user_delta[0]["label"], "Codex realtime transcript (user)");
-        assert_eq!(user_delta[0]["detail"], "please review");
+        assert!(user_delta.is_empty());
     }
 
     #[test]
-    fn app_server_realtime_lifecycle_notifications_become_system_notifications() {
+    fn app_server_realtime_lifecycle_notifications_are_ignored() {
         let mut state = AppServerBridgeState::default();
         let started = app_server_message_to_bridge_messages(
             &json!({
@@ -2703,13 +2798,7 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(started.len(), 1);
-        assert_eq!(started[0]["type"], "system");
-        assert_eq!(started[0]["status"], "in_progress");
-        assert_eq!(started[0]["label"], "Codex realtime started");
-        assert!(started[0]["detail"]
-            .as_str()
-            .is_some_and(|detail| detail.contains("rt_456")));
+        assert!(started.is_empty());
 
         let audio = app_server_message_to_bridge_messages(
             &json!({
@@ -2726,10 +2815,7 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(audio[0]["label"], "Codex realtime audio output");
-        assert!(audio[0]["detail"]
-            .as_str()
-            .is_some_and(|detail| detail.contains("sampleRate=24000")));
+        assert!(audio.is_empty());
 
         let error = app_server_message_to_bridge_messages(
             &json!({
@@ -2741,8 +2827,7 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(error[0]["status"], "error");
-        assert_eq!(error[0]["detail"], "microphone failed");
+        assert!(error.is_empty());
 
         let closed = app_server_message_to_bridge_messages(
             &json!({
@@ -2754,8 +2839,7 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(closed[0]["status"], "completed");
-        assert_eq!(closed[0]["label"], "Codex realtime closed");
+        assert!(closed.is_empty());
     }
 
     #[test]
@@ -2833,7 +2917,7 @@ mod tests {
     }
 
     #[test]
-    fn app_server_thread_goal_notifications_become_goal_messages() {
+    fn app_server_thread_goal_notifications_are_ignored() {
         let mut state = AppServerBridgeState::default();
         let updated = app_server_message_to_bridge_messages(
             &json!({
@@ -2851,10 +2935,7 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(updated.len(), 1);
-        assert_eq!(updated[0]["type"], "codex_goal_updated");
-        assert_eq!(updated[0]["thread_id"], "thr_123");
-        assert_eq!(updated[0]["goal"]["objective"], "Ship");
+        assert!(updated.is_empty());
 
         let cleared = app_server_message_to_bridge_messages(
             &json!({
@@ -2865,12 +2946,6 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(
-            cleared,
-            vec![json!({
-                "type": "codex_goal_cleared",
-                "thread_id": "thr_123"
-            })]
-        );
+        assert!(cleared.is_empty());
     }
 }

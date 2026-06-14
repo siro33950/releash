@@ -3,7 +3,6 @@ import type { Dispatch } from "react";
 import { useEffect } from "react";
 import type { AgentSupportedCommandsUpdated } from "@/types/protocol";
 import {
-	type CodexGoal,
 	type MessagePart,
 	type ModelInfo,
 	normalizePermissionMode,
@@ -43,6 +42,7 @@ interface SessionStateChanged {
 	chat_session_id: string;
 	turn_phase: TurnPhase;
 	exit_code: number | null;
+	completed_at?: number | null;
 }
 
 interface StreamingMessageUpdated {
@@ -258,68 +258,6 @@ function handleResultTokenUsage(
 	});
 }
 
-function handleCodexRuntimeStatusMessage(
-	msg: SdkMessage,
-	chatSessionId: string | undefined,
-	dispatch: Dispatch<AgentChatAction>,
-): void {
-	if (!chatSessionId || msg.type !== "codex_runtime_status_updated") {
-		return;
-	}
-	const accountSummary =
-		typeof msg.accountSummary === "string" ? msg.accountSummary : undefined;
-	const rateLimitSummary =
-		typeof msg.rateLimitSummary === "string" ? msg.rateLimitSummary : undefined;
-	if (!accountSummary && !rateLimitSummary) return;
-	dispatch({
-		type: "SET_CODEX_RUNTIME_STATUS",
-		sessionId: chatSessionId,
-		status: {
-			accountSummary,
-			rateLimitSummary,
-		},
-	});
-}
-
-function isCodexGoal(value: unknown): value is CodexGoal {
-	if (!value || typeof value !== "object") return false;
-	const goal = value as Record<string, unknown>;
-	return (
-		typeof goal.objective === "string" &&
-		typeof goal.status === "string" &&
-		typeof goal.tokensUsed === "number" &&
-		typeof goal.timeUsedSeconds === "number" &&
-		(goal.tokenBudget === undefined ||
-			goal.tokenBudget === null ||
-			typeof goal.tokenBudget === "number")
-	);
-}
-
-function handleCodexGoalMessage(
-	msg: SdkMessage,
-	chatSessionId: string | undefined,
-	dispatch: Dispatch<AgentChatAction>,
-): void {
-	if (!chatSessionId) return;
-	if (msg.type === "codex_goal_updated") {
-		const goal = msg.goal;
-		if (!isCodexGoal(goal)) return;
-		dispatch({
-			type: "SET_CODEX_GOAL",
-			sessionId: chatSessionId,
-			goal,
-		});
-		return;
-	}
-	if (msg.type === "codex_goal_cleared") {
-		dispatch({
-			type: "SET_CODEX_GOAL",
-			sessionId: chatSessionId,
-			goal: null,
-		});
-	}
-}
-
 export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 	const { dispatch, viewableRegistry, refreshSessions, hasMessage } = refs;
 
@@ -336,8 +274,6 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			handleSystemMessage(msg, chatSessionId, dispatch, viewableRegistry);
 			handleResultErrors(msg, chatSessionId, dispatch, viewableRegistry);
 			handleResultTokenUsage(msg, chatSessionId, dispatch);
-			handleCodexRuntimeStatusMessage(msg, chatSessionId, dispatch);
-			handleCodexGoalMessage(msg, chatSessionId, dispatch);
 		}).then((fn) => {
 			if (cancelled) {
 				fn();
@@ -477,7 +413,8 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		let cancelled = false;
 
 		listen<SessionStateChanged>("agent-session-state-changed", (event) => {
-			const { chat_session_id, turn_phase, exit_code } = event.payload;
+			const { chat_session_id, turn_phase, exit_code, completed_at } =
+				event.payload;
 
 			dispatch({
 				type: "SET_TURN_PHASE",
@@ -487,6 +424,14 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 
 			// Turn completed (idle with exit_code): update session state and clear permissions
 			if (turn_phase === "idle" && exit_code != null) {
+				if (typeof completed_at === "number" && Number.isFinite(completed_at)) {
+					dispatch({
+						type: "MARK_AGENT_TURN_COMPLETED",
+						sessionId: chat_session_id,
+						completedAt: completed_at,
+					});
+				}
+
 				dispatch({
 					type: "SET_PENDING_PERMISSION",
 					sessionId: chat_session_id,

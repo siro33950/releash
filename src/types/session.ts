@@ -2,6 +2,7 @@ import type { AgentState } from "./protocol";
 
 export type PermissionMode = "ask" | "edit" | "full";
 export type LegacyPermissionMode = "readonly" | "edit" | "full";
+export type PlanMode = boolean;
 
 export const PERMISSION_MODES: readonly PermissionMode[] = [
 	"ask",
@@ -44,19 +45,6 @@ export interface SlashCommand {
 	name: string;
 	description: string;
 	argumentHint?: string;
-}
-
-export interface CodexGoal {
-	objective: string;
-	status: string;
-	tokenBudget?: number | null;
-	tokensUsed: number;
-	timeUsedSeconds: number;
-}
-
-export interface CodexRuntimeStatus {
-	accountSummary?: string;
-	rateLimitSummary?: string;
 }
 
 export interface AgentSkill {
@@ -116,17 +104,23 @@ export type MessagePart =
 	| {
 			type: "task_status";
 			taskToolUseId: string;
-			status: "started" | "completed" | "failed" | "stopped" | "progress";
+			status:
+				| "started"
+				| "completed"
+				| "failed"
+				| "stopped"
+				| "progress"
+				| "backgrounded";
 			description?: string;
 			summary?: string;
 	  }
 	| {
+			type: "todo_list_snapshot";
+			items: Array<{ text: string; completed: boolean }>;
+	  }
+	| {
 			type: "system_notification";
-			notificationType:
-				| "compaction"
-				| "hook"
-				| "files_persisted"
-				| "local_command_output";
+			notificationType: "compaction";
 			status: "in_progress" | "completed" | "error";
 			label: string;
 			detail?: string;
@@ -186,6 +180,7 @@ export interface ChatSession {
 	updatedAt: number;
 	agentSessionId?: string | null;
 	permissionMode: PermissionMode;
+	planMode?: PlanMode;
 	permissionProfileId?: string | null;
 	backendId?: string | null;
 	workflowStepSession?: boolean;
@@ -208,6 +203,7 @@ export interface SessionSummary {
 	messageCount: number;
 	agentSessionId?: string | null;
 	permissionMode: PermissionMode;
+	planMode?: PlanMode;
 	permissionProfileId?: string | null;
 	backendId?: string | null;
 	workflowStepSession?: boolean;

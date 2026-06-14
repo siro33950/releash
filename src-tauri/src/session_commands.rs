@@ -86,6 +86,7 @@ async fn fork_codex_thread_for_session(
             &session.worktree_path,
             session.selected_model.as_deref(),
             Some(&session.permission_mode),
+            false,
             session.permission_profile_id.as_deref(),
         )?;
         process.send(&request).await?;

@@ -102,6 +102,7 @@ interface AgentChatPanelProps {
 	sendMessageRef?: React.MutableRefObject<
 		((content: string, mentions?: MentionReference[]) => Promise<void>) | null
 	>;
+	onOpenDiffFile?: (filePath: string) => void;
 }
 
 /**
@@ -117,6 +118,7 @@ export function AgentChatPanel({
 	activeEditorSelection,
 	registerDropZone,
 	sendMessageRef,
+	onOpenDiffFile,
 }: AgentChatPanelProps) {
 	const {
 		orderedSessions,
@@ -614,6 +616,7 @@ export function AgentChatPanel({
 						registerDropZone={registerDropZone}
 						dropZoneName="agent"
 						sendMessageRef={sendMessageRef}
+						onOpenDiffFile={onOpenDiffFile}
 						skipInitialLoad
 					/>
 				) : (

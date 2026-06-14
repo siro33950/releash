@@ -118,6 +118,7 @@ impl<'a, R: tauri::Runtime> SessionStartGate for RealSessionStartGate<'a, R> {
             session_id,
             worktree_path,
             permission_mode,
+            false,
             system_prompt,
         )
         .await
@@ -6803,6 +6804,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
                     &cs.session_id,
                     worktree_path,
                     None,
+                    false,
                     cs.system_prompt.clone(),
                 )
                 .await

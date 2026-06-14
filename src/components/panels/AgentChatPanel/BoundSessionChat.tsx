@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo } from "react";
 import { useAgentChatContext } from "@/contexts/AgentChatContext";
 import { deriveActivityStatus } from "@/hooks/deriveActivityStatus";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
-import { useSessionStatus } from "@/hooks/useSessionStatus";
 import type {
 	AgentEditorContext,
 	AgentEditorSelection,
@@ -29,6 +28,7 @@ interface BoundSessionChatProps {
 	sendMessageRef?: React.MutableRefObject<
 		((content: string, mentions?: MentionReference[]) => Promise<void>) | null
 	>;
+	onOpenDiffFile?: (filePath: string) => void;
 	/**
 	 * sessionId が既に AgentChatPanel の active として読み込み済みかどうかを親が知っている
 	 * ケース向けの最適化フック。指定なし（default false）の場合は本コンポーネントが
@@ -57,6 +57,7 @@ export function BoundSessionChat({
 	registerDropZone,
 	dropZoneName,
 	sendMessageRef,
+	onOpenDiffFile,
 	skipInitialLoad = false,
 }: BoundSessionChatProps) {
 	const {
@@ -67,17 +68,17 @@ export function BoundSessionChat({
 		getSessionInterrupting,
 		getSessionSelectedModel,
 		getSessionPendingQueue = () => [],
-		getSessionLatestTokenUsage = () => null,
-		getSessionCodexRuntimeStatus = () => null,
 		getSessionRuntimeSlashCommands = () => [],
 		availableModels,
 		backends,
 		error,
 		permissionMode: contextPermissionMode,
+		planMode,
 		sendMessage,
 		interrupt,
 		cancelQueuedTurn = async () => {},
 		setPermissionMode,
+		setPlanMode,
 		setModel,
 		setBackend,
 		respondPermission,
@@ -99,7 +100,6 @@ export function BoundSessionChat({
 	}, [sessionId, skipInitialLoad, loadSession]);
 
 	const session = getSessionById(sessionId);
-	const sessionStatus = useSessionStatus(sessionId);
 
 	const turnPhase = sessionId ? getSessionTurnPhase(sessionId) : "idle";
 	const isStreaming =
@@ -158,6 +158,13 @@ export function BoundSessionChat({
 		[sessionId, setPermissionMode],
 	);
 
+	const handlePlanModeChange = useCallback(
+		(enabled: boolean) => {
+			setPlanMode(sessionId, enabled);
+		},
+		[sessionId, setPlanMode],
+	);
+
 	const handleModelChange = useCallback(
 		(modelId: string) => {
 			if (!sessionId) return;
@@ -193,8 +200,6 @@ export function BoundSessionChat({
 	const selectedModel =
 		getSessionSelectedModel(session.id) ?? availableModels[0]?.value ?? "";
 	const pendingQueue = getSessionPendingQueue(session.id);
-	const latestTokenUsage = getSessionLatestTokenUsage(session.id);
-	const codexRuntimeStatus = getSessionCodexRuntimeStatus(session.id);
 	const runtimeSlashCommands = getSessionRuntimeSlashCommands(session.id);
 	const canChangeBackend =
 		session.messages.length === 0 && !session.agentSessionId && !isStreaming;
@@ -203,17 +208,15 @@ export function BoundSessionChat({
 		<ChatSessionView
 			key={session.id}
 			session={session}
-			sessionStatus={sessionStatus}
 			isStreaming={isStreaming}
 			isInterrupting={isInterrupting}
 			activityStatus={activityStatus}
 			error={error}
 			permissionMode={contextPermissionMode}
+			planMode={planMode}
 			availableModels={availableModels}
 			selectedModel={selectedModel}
 			pendingQueue={pendingQueue}
-			latestTokenUsage={latestTokenUsage}
-			codexRuntimeStatus={codexRuntimeStatus}
 			runtimeSlashCommands={runtimeSlashCommands}
 			backends={backends}
 			selectedBackendId={session.backendId ?? null}
@@ -228,9 +231,11 @@ export function BoundSessionChat({
 				cancelQueuedTurn(session.id, queuedTurnId)
 			}
 			onPermissionModeChange={handlePermissionModeChange}
+			onPlanModeChange={handlePlanModeChange}
 			onModelChange={handleModelChange}
 			onBackendChange={handleBackendChange}
 			onRespondPermission={handleRespondPermission}
+			onOpenDiffFile={onOpenDiffFile}
 			registerDropZone={registerDropZone}
 			dropZoneName={dropZoneName}
 			sendMessageRef={sendMessageRef}
