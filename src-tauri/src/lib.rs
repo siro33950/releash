@@ -94,7 +94,6 @@ pub fn run() {
         .manage(Arc::new(git_host::PrCache::new()))
         .manage(Arc::new(git_host::IssueCache::new()))
         .manage(mcp::McpServerHandle::default())
-        .manage(external_editor::PromptEditorDraftStore::default())
         .manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
             parking_lot::RwLock::new(Vec::new()),
         ))
@@ -460,9 +459,6 @@ pub fn run() {
             external_editor::detect_editors,
             external_editor::open_in_editor,
             external_editor::open_folder_in_editor,
-            external_editor::open_agent_prompt_in_external_editor,
-            external_editor::import_agent_prompt_external_editor_draft,
-            external_editor::discard_agent_prompt_external_editor_draft,
             // Agent Status (Rust 中央管理)
             adaptor::controller::command::agent_session::status::get_session_status,
             adaptor::controller::command::agent_session::status::get_workspace_status,

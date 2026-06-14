@@ -1,10 +1,6 @@
 use serde::Serialize;
-use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-use parking_lot::Mutex;
 
 use crate::config::AppConfig;
 
@@ -12,23 +8,6 @@ use crate::config::AppConfig;
 pub struct EditorInfo {
     pub name: String,
     pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptEditorDraftInfo {
-    pub id: String,
-    pub file_path: String,
-}
-
-struct PromptEditorDraft {
-    file_path: PathBuf,
-    dir_path: PathBuf,
-}
-
-#[derive(Default)]
-pub struct PromptEditorDraftStore {
-    drafts: Mutex<HashMap<String, PromptEditorDraft>>,
 }
 
 const KNOWN_EDITORS: &[(&str, &str)] = &[
@@ -126,93 +105,6 @@ pub fn open_folder_in_editor(
     open_path_with_opener(&app, &folder_path, &config.app.external_editor, "フォルダ")
 }
 
-fn create_prompt_editor_draft(
-    store: &PromptEditorDraftStore,
-    content: &str,
-) -> Result<PromptEditorDraftInfo, String> {
-    let id = uuid::Uuid::new_v4().to_string();
-    let dir_path = std::env::temp_dir().join(format!("releash-agent-prompt-{id}"));
-    fs::create_dir_all(&dir_path)
-        .map_err(|e| format!("Prompt draft用の一時ディレクトリを作成できませんでした: {e}"))?;
-    let file_path = dir_path.join("prompt.md");
-    fs::write(&file_path, content)
-        .map_err(|e| format!("Prompt draftを書き込めませんでした: {e}"))?;
-    let file_path_string = file_path.to_string_lossy().into_owned();
-    store.drafts.lock().insert(
-        id.clone(),
-        PromptEditorDraft {
-            file_path,
-            dir_path,
-        },
-    );
-    Ok(PromptEditorDraftInfo {
-        id,
-        file_path: file_path_string,
-    })
-}
-
-fn read_and_remove_prompt_editor_draft(
-    store: &PromptEditorDraftStore,
-    draft_id: &str,
-) -> Result<String, String> {
-    let draft = store
-        .drafts
-        .lock()
-        .remove(draft_id)
-        .ok_or_else(|| format!("Prompt draft not found: {draft_id}"))?;
-    let content = fs::read_to_string(&draft.file_path)
-        .map_err(|e| format!("Prompt draftを読み込めませんでした: {e}"));
-    let _ = fs::remove_dir_all(&draft.dir_path);
-    content
-}
-
-fn discard_prompt_editor_draft(store: &PromptEditorDraftStore, draft_id: &str) -> bool {
-    let Some(draft) = store.drafts.lock().remove(draft_id) else {
-        return false;
-    };
-    let _ = fs::remove_dir_all(&draft.dir_path);
-    true
-}
-
-#[tauri::command]
-pub fn open_agent_prompt_in_external_editor(
-    app: tauri::AppHandle,
-    config_state: tauri::State<'_, Arc<AppConfig>>,
-    draft_store: tauri::State<'_, PromptEditorDraftStore>,
-    content: String,
-) -> Result<PromptEditorDraftInfo, String> {
-    let draft = create_prompt_editor_draft(&draft_store, &content)?;
-    let config = config_state.get_config()?;
-    if let Err(e) = open_path_with_opener(
-        &app,
-        &draft.file_path,
-        &config.app.external_editor,
-        "Prompt draft",
-    ) {
-        if let Some(stored_draft) = draft_store.drafts.lock().remove(&draft.id) {
-            let _ = fs::remove_dir_all(&stored_draft.dir_path);
-        }
-        return Err(e);
-    }
-    Ok(draft)
-}
-
-#[tauri::command]
-pub fn import_agent_prompt_external_editor_draft(
-    draft_store: tauri::State<'_, PromptEditorDraftStore>,
-    draft_id: String,
-) -> Result<String, String> {
-    read_and_remove_prompt_editor_draft(&draft_store, &draft_id)
-}
-
-#[tauri::command]
-pub fn discard_agent_prompt_external_editor_draft(
-    draft_store: tauri::State<'_, PromptEditorDraftStore>,
-    draft_id: String,
-) -> Result<bool, String> {
-    Ok(discard_prompt_editor_draft(&draft_store, &draft_id))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,39 +177,6 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("Test Editor"));
         assert!(json.contains("/Applications/Test.app"));
-    }
-
-    #[test]
-    fn prompt_editor_draft_round_trips_content_and_removes_entry() {
-        let store = PromptEditorDraftStore::default();
-        let draft = create_prompt_editor_draft(&store, "hello\nprompt").unwrap();
-
-        assert!(Path::new(&draft.file_path).exists());
-        fs::write(&draft.file_path, "edited prompt").unwrap();
-
-        let edited = read_and_remove_prompt_editor_draft(&store, &draft.id).unwrap();
-
-        assert_eq!(edited, "edited prompt");
-        assert!(read_and_remove_prompt_editor_draft(&store, &draft.id).is_err());
-    }
-
-    #[test]
-    fn reading_missing_prompt_editor_draft_errors() {
-        let store = PromptEditorDraftStore::default();
-
-        let err = read_and_remove_prompt_editor_draft(&store, "missing").unwrap_err();
-
-        assert_eq!(err, "Prompt draft not found: missing");
-    }
-
-    #[test]
-    fn discard_prompt_editor_draft_removes_entry() {
-        let store = PromptEditorDraftStore::default();
-        let draft = create_prompt_editor_draft(&store, "discard me").unwrap();
-
-        assert!(discard_prompt_editor_draft(&store, &draft.id));
-        assert!(!discard_prompt_editor_draft(&store, &draft.id));
-        assert!(read_and_remove_prompt_editor_draft(&store, &draft.id).is_err());
     }
 
     #[test]

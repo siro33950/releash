@@ -1,13 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-	ArrowUp,
-	ExternalLink,
-	FileInput,
-	Loader2,
-	Maximize2,
-	Square,
-	X,
-} from "lucide-react";
+import { ArrowUp, Loader2, Square, X } from "lucide-react";
 import {
 	useCallback,
 	useEffect,
@@ -17,14 +9,6 @@ import {
 	useState,
 } from "react";
 import { Button } from "@/components/ui/button";
-import {
-	Dialog,
-	DialogContent,
-	DialogDescription,
-	DialogFooter,
-	DialogHeader,
-	DialogTitle,
-} from "@/components/ui/dialog";
 import type {
 	AgentSkill,
 	BackendInfo,
@@ -61,11 +45,6 @@ interface PastedTextBlock {
 	id: number;
 	placeholder: string;
 	content: string;
-}
-
-interface PromptEditorDraftInfo {
-	id: string;
-	filePath: string;
 }
 
 export interface MessageInputHandle {
@@ -131,18 +110,6 @@ export function MessageInput({
 	const [pastedTextBlocks, setPastedTextBlocks] = useState<PastedTextBlock[]>(
 		[],
 	);
-	const [promptEditorOpen, setPromptEditorOpen] = useState(false);
-	const [promptEditorValue, setPromptEditorValue] = useState("");
-	const promptEditorRef = useRef<HTMLTextAreaElement>(null);
-	const [externalPromptDraftId, setExternalPromptDraftId] = useState<
-		string | null
-	>(null);
-	const [promptEditorError, setPromptEditorError] = useState<string | null>(
-		null,
-	);
-	const [isOpeningExternalEditor, setIsOpeningExternalEditor] = useState(false);
-	const [isImportingExternalEditor, setIsImportingExternalEditor] =
-		useState(false);
 	// Mention state
 	const [mentionDismissed, setMentionDismissed] = useState(false);
 	const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
@@ -381,94 +348,6 @@ export function MessageInput({
 			textareaRef.current.focus();
 		}
 	}, []);
-
-	const openPromptEditor = useCallback(() => {
-		setPromptEditorValue(value);
-		setPromptEditorError(null);
-		setPromptEditorOpen(true);
-		requestAnimationFrame(() => {
-			const editor = promptEditorRef.current;
-			if (!editor) return;
-			editor.focus();
-			editor.setSelectionRange(editor.value.length, editor.value.length);
-		});
-	}, [value]);
-
-	const discardExternalPromptDraft = useCallback((draftId: string | null) => {
-		if (!draftId) return;
-		invoke("discard_agent_prompt_external_editor_draft", {
-			draftId,
-		}).catch((err) => {
-			console.error("Failed to discard external prompt draft:", err);
-		});
-	}, []);
-
-	const handlePromptEditorOpenChange = useCallback(
-		(open: boolean) => {
-			setPromptEditorOpen(open);
-			if (open) return;
-			discardExternalPromptDraft(externalPromptDraftId);
-			setExternalPromptDraftId(null);
-			setPromptEditorError(null);
-		},
-		[discardExternalPromptDraft, externalPromptDraftId],
-	);
-
-	const applyPromptEditorValue = useCallback(() => {
-		setComposerValue(promptEditorValue);
-		setSlashPopupDismissed(false);
-		setSelectedIndex(0);
-		setPromptEditorOpen(false);
-		discardExternalPromptDraft(externalPromptDraftId);
-		setExternalPromptDraftId(null);
-	}, [
-		discardExternalPromptDraft,
-		externalPromptDraftId,
-		promptEditorValue,
-		setComposerValue,
-	]);
-
-	const openExternalPromptEditor = useCallback(async () => {
-		setPromptEditorError(null);
-		setIsOpeningExternalEditor(true);
-		try {
-			const previousDraftId = externalPromptDraftId;
-			const draft = await invoke<PromptEditorDraftInfo>(
-				"open_agent_prompt_in_external_editor",
-				{ content: promptEditorValue },
-			);
-			discardExternalPromptDraft(previousDraftId);
-			setExternalPromptDraftId(draft.id);
-		} catch (err) {
-			setPromptEditorError(String(err));
-		} finally {
-			setIsOpeningExternalEditor(false);
-		}
-	}, [discardExternalPromptDraft, externalPromptDraftId, promptEditorValue]);
-
-	const importExternalPromptEdits = useCallback(async () => {
-		if (!externalPromptDraftId) return;
-		setPromptEditorError(null);
-		setIsImportingExternalEditor(true);
-		try {
-			const content = await invoke<string>(
-				"import_agent_prompt_external_editor_draft",
-				{ draftId: externalPromptDraftId },
-			);
-			setPromptEditorValue(content);
-			setExternalPromptDraftId(null);
-			requestAnimationFrame(() => {
-				const editor = promptEditorRef.current;
-				if (!editor) return;
-				editor.focus();
-				editor.setSelectionRange(editor.value.length, editor.value.length);
-			});
-		} catch (err) {
-			setPromptEditorError(String(err));
-		} finally {
-			setIsImportingExternalEditor(false);
-		}
-	}, [externalPromptDraftId]);
 
 	const addImages = useCallback(
 		async (files: File[]) => {
@@ -903,17 +782,6 @@ export function MessageInput({
 							onModelChange={onModelChange}
 							disabled={false}
 						/>
-						<Button
-							type="button"
-							size="xs"
-							variant="ghost"
-							className="h-6 px-1.5"
-							onClick={openPromptEditor}
-							aria-label="Open prompt editor"
-							title="Open prompt editor"
-						>
-							<Maximize2 className="size-3" />
-						</Button>
 					</div>
 					<div className="flex items-center gap-2">
 						{isStreaming && canSend && (
@@ -981,63 +849,6 @@ export function MessageInput({
 				onClose={() => setSkillDismissed(true)}
 				anchorRef={inputRef}
 			/>
-			<Dialog
-				open={promptEditorOpen}
-				onOpenChange={handlePromptEditorOpenChange}
-			>
-				<DialogContent className="max-h-[90vh] sm:max-w-4xl">
-					<DialogHeader>
-						<DialogTitle>Prompt editor</DialogTitle>
-						<DialogDescription className="sr-only">
-							Edit the current prompt in a larger text area.
-						</DialogDescription>
-					</DialogHeader>
-					<textarea
-						ref={promptEditorRef}
-						value={promptEditorValue}
-						onChange={(event) => setPromptEditorValue(event.target.value)}
-						className="min-h-[55vh] w-full resize-none rounded border bg-background p-3 font-mono text-sm outline-none focus:ring-1 focus:ring-ring"
-						aria-label="Prompt editor text"
-					/>
-					{promptEditorError && (
-						<div className="rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-							{promptEditorError}
-						</div>
-					)}
-					<DialogFooter>
-						<div className="mr-auto flex items-center gap-2">
-							<Button
-								type="button"
-								variant="outline"
-								onClick={openExternalPromptEditor}
-								disabled={isOpeningExternalEditor || isImportingExternalEditor}
-							>
-								<ExternalLink className="size-3.5" />
-								{isOpeningExternalEditor ? "Opening" : "Open external"}
-							</Button>
-							<Button
-								type="button"
-								variant="outline"
-								onClick={importExternalPromptEdits}
-								disabled={!externalPromptDraftId || isImportingExternalEditor}
-							>
-								<FileInput className="size-3.5" />
-								{isImportingExternalEditor ? "Importing" : "Import edits"}
-							</Button>
-						</div>
-						<Button
-							type="button"
-							variant="outline"
-							onClick={() => handlePromptEditorOpenChange(false)}
-						>
-							Cancel
-						</Button>
-						<Button type="button" onClick={applyPromptEditorValue}>
-							Apply
-						</Button>
-					</DialogFooter>
-				</DialogContent>
-			</Dialog>
 		</>
 	);
 }
