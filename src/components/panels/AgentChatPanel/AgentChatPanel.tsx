@@ -129,7 +129,6 @@ export function AgentChatPanel({
 		createNewSession,
 		reorderSessions,
 		refreshClosedSessions,
-		selectedBackendId,
 	} = useAgentChatContext();
 
 	// spec issues-1023: workflow step として起動された chat session は
@@ -218,7 +217,6 @@ export function AgentChatPanel({
 			request: {
 				hasActiveSession: Boolean(activeSessionId),
 				sessionCount: displayedSessions.length,
-				backendId: selectedBackendId,
 			},
 		})
 			.then((items) => {
@@ -232,12 +230,7 @@ export function AgentChatPanel({
 		return () => {
 			cancelled = true;
 		};
-	}, [
-		activeSessionId,
-		commandPaletteOpen,
-		displayedSessions.length,
-		selectedBackendId,
-	]);
+	}, [activeSessionId, commandPaletteOpen, displayedSessions.length]);
 
 	useEffect(() => {
 		if (!historyOpen) return;
@@ -379,91 +372,8 @@ export function AgentChatPanel({
 				case "copy_latest_response":
 					window.dispatchEvent(new Event("agent-copy-latest-response"));
 					return;
-				case "copy_response_options":
-					window.dispatchEvent(new Event("agent-copy-response-options"));
-					return;
-				case "export_transcript":
-					window.dispatchEvent(new Event("agent-export-transcript"));
-					return;
-				case "create_agents_md":
-					window.dispatchEvent(new Event("agent-create-agents-md"));
-					return;
 				case "toggle_raw_scrollback":
 					window.dispatchEvent(new Event("agent-toggle-raw-scrollback"));
-					return;
-				case "debug_config":
-					window.dispatchEvent(new Event("agent-show-debug-config"));
-					return;
-				case "doctor":
-					window.dispatchEvent(new Event("agent-show-doctor"));
-					return;
-				case "codex_account_usage":
-					window.dispatchEvent(new Event("agent-show-codex-account-usage"));
-					return;
-				case "codex_goal":
-					window.dispatchEvent(new Event("agent-show-codex-goal"));
-					return;
-				case "codex_compact_context":
-					window.dispatchEvent(new Event("agent-compact-codex-context"));
-					return;
-				case "codex_clean_background_terminals":
-					window.dispatchEvent(
-						new Event("agent-clean-codex-background-terminals"),
-					);
-					return;
-				case "codex_shell_command":
-					window.dispatchEvent(new Event("agent-run-codex-shell-command"));
-					return;
-				case "codex_review_uncommitted_changes":
-					window.dispatchEvent(new Event("agent-start-codex-review"));
-					return;
-				case "codex_review_base_branch":
-					window.dispatchEvent(
-						new Event("agent-start-codex-review-base-branch"),
-					);
-					return;
-				case "codex_review_commit":
-					window.dispatchEvent(new Event("agent-start-codex-review-commit"));
-					return;
-				case "codex_review_custom":
-					window.dispatchEvent(new Event("agent-start-codex-review-custom"));
-					return;
-				case "codex_thread_history":
-					window.dispatchEvent(new Event("agent-show-codex-thread-history"));
-					return;
-				case "codex_thread_transcript":
-					window.dispatchEvent(new Event("agent-show-codex-thread-transcript"));
-					return;
-				case "codex_permission_profiles":
-					window.dispatchEvent(
-						new Event("agent-show-codex-permission-profiles"),
-					);
-					return;
-				case "codex_hooks":
-					window.dispatchEvent(new Event("agent-show-codex-hooks"));
-					return;
-				case "codex_realtime_voices":
-					window.dispatchEvent(new Event("agent-show-codex-realtime-voices"));
-					return;
-				case "codex_realtime_text_start":
-					window.dispatchEvent(new Event("agent-start-codex-realtime-text"));
-					return;
-				case "codex_realtime_text_append":
-					window.dispatchEvent(new Event("agent-append-codex-realtime-text"));
-					return;
-				case "codex_realtime_stop":
-					window.dispatchEvent(new Event("agent-stop-codex-realtime"));
-					return;
-				case "codex_mcp_status":
-					window.dispatchEvent(new Event("agent-show-codex-mcp-status"));
-					return;
-				case "codex_runtime_config":
-					window.dispatchEvent(new Event("agent-show-codex-runtime-config"));
-					return;
-				case "codex_runtime_capabilities":
-					window.dispatchEvent(
-						new Event("agent-show-codex-runtime-capabilities"),
-					);
 					return;
 				case "previous_thread":
 					selectAdjacentSession(-1);
@@ -502,7 +412,6 @@ export function AgentChatPanel({
 					request: {
 						hasActiveSession: Boolean(activeSessionId),
 						sessionCount: displayedSessions.length,
-						backendId: selectedBackendId,
 					},
 				},
 			})
@@ -519,7 +428,6 @@ export function AgentChatPanel({
 		agentShortcuts,
 		displayedSessions.length,
 		runAgentCommand,
-		selectedBackendId,
 	]);
 
 	return (

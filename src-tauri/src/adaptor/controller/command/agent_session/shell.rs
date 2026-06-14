@@ -217,18 +217,6 @@ pub(crate) fn prepare_agent_shell_input_inner(
     prepare_agent_shell_command_inner(command).map(Some)
 }
 
-pub(crate) fn parse_agent_runtime_shell_command(content: &str) -> Result<Option<String>, String> {
-    let trimmed = content.trim();
-    if !trimmed.starts_with('!') {
-        return Ok(None);
-    }
-    let command = trimmed[1..].trim();
-    if command.is_empty() {
-        return Err("Shell command is empty".to_string());
-    }
-    Ok(Some(command.to_string()))
-}
-
 #[tauri::command]
 pub fn prepare_agent_shell_command(command: String) -> Result<AgentPreparedShellCommand, String> {
     prepare_agent_shell_command_inner(&command)
@@ -595,22 +583,6 @@ mod tests {
         let prepared = prepare_agent_shell_input_inner(" ! printf hello ").unwrap();
 
         assert_eq!(prepared.unwrap().command, "printf hello");
-    }
-
-    #[test]
-    fn runtime_shell_command_preserves_shell_syntax_after_bang() {
-        let command = parse_agent_runtime_shell_command(" ! pnpm test > out.log & ")
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(command, "pnpm test > out.log &");
-    }
-
-    #[test]
-    fn runtime_shell_command_ignores_regular_prompt() {
-        let command = parse_agent_runtime_shell_command("explain this").unwrap();
-
-        assert_eq!(command, None);
     }
 
     #[test]

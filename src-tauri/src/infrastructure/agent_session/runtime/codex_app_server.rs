@@ -11,9 +11,7 @@ use tokio::time::{timeout, Duration};
 use crate::infrastructure::agent_session::runtime::permission_flags::{
     codex_approval_policy_from_mode, codex_sandbox_mode_from_mode,
 };
-use crate::infrastructure::agent_session::runtime::{
-    AgentEditorContext, AgentReviewTarget, ImageAttachment,
-};
+use crate::infrastructure::agent_session::runtime::{AgentEditorContext, ImageAttachment};
 use crate::permission::PermissionMode;
 
 pub(crate) const METHOD_INITIALIZE: &str = "initialize";
@@ -1378,69 +1376,6 @@ pub(crate) fn build_thread_unarchive_request(id: u64, thread_id: &str) -> Value 
     )
 }
 
-pub(crate) fn build_thread_background_terminals_clean_request(id: u64, thread_id: &str) -> Value {
-    request(
-        id,
-        METHOD_THREAD_BACKGROUND_TERMINALS_CLEAN,
-        json!({
-            "threadId": thread_id,
-        }),
-    )
-}
-
-pub(crate) fn build_thread_shell_command_request(id: u64, thread_id: &str, command: &str) -> Value {
-    request(
-        id,
-        METHOD_THREAD_SHELL_COMMAND,
-        json!({
-            "threadId": thread_id,
-            "command": command,
-        }),
-    )
-}
-
-pub(crate) fn build_thread_goal_get_request(id: u64, thread_id: &str) -> Value {
-    request(
-        id,
-        METHOD_THREAD_GOAL_GET,
-        json!({
-            "threadId": thread_id,
-        }),
-    )
-}
-
-pub(crate) fn build_thread_goal_set_request(
-    id: u64,
-    thread_id: &str,
-    objective: Option<&str>,
-    status: Option<&str>,
-    token_budget: Option<u64>,
-) -> Value {
-    let mut params = json!({
-        "threadId": thread_id,
-    });
-    if let Some(objective) = objective.map(str::trim).filter(|value| !value.is_empty()) {
-        params["objective"] = Value::String(objective.to_string());
-    }
-    if let Some(status) = status.map(str::trim).filter(|value| !value.is_empty()) {
-        params["status"] = Value::String(status.to_string());
-    }
-    if let Some(token_budget) = token_budget {
-        params["tokenBudget"] = json!(token_budget);
-    }
-    request(id, METHOD_THREAD_GOAL_SET, params)
-}
-
-pub(crate) fn build_thread_goal_clear_request(id: u64, thread_id: &str) -> Value {
-    request(
-        id,
-        METHOD_THREAD_GOAL_CLEAR,
-        json!({
-            "threadId": thread_id,
-        }),
-    )
-}
-
 pub(crate) fn build_thread_list_request(id: u64, cwd: &str, cursor: Option<&str>) -> Value {
     let mut params = json!({
         "archived": false,
@@ -1635,16 +1570,6 @@ pub(crate) fn build_turn_interrupt_request(id: u64, thread_id: &str, turn_id: &s
     )
 }
 
-pub(crate) fn build_thread_compact_start_request(id: u64, thread_id: &str) -> Value {
-    request(
-        id,
-        METHOD_THREAD_COMPACT_START,
-        json!({
-            "threadId": thread_id,
-        }),
-    )
-}
-
 pub(crate) fn build_thread_name_set_request(id: u64, thread_id: &str, name: &str) -> Value {
     request(
         id,
@@ -1678,129 +1603,6 @@ pub(crate) fn build_thread_settings_update_permission_request(
         })
     };
     Ok(request(id, METHOD_THREAD_SETTINGS_UPDATE, params))
-}
-
-fn codex_review_target_value(target: &AgentReviewTarget) -> Value {
-    match target {
-        AgentReviewTarget::UncommittedChanges => json!({
-            "type": "uncommittedChanges",
-        }),
-        AgentReviewTarget::BaseBranch { branch } => json!({
-            "type": "baseBranch",
-            "branch": branch,
-        }),
-        AgentReviewTarget::Commit { sha } => json!({
-            "type": "commit",
-            "sha": sha,
-        }),
-        AgentReviewTarget::Custom { instructions } => json!({
-            "type": "custom",
-            "instructions": instructions,
-        }),
-    }
-}
-
-pub(crate) fn build_review_start_request(
-    id: u64,
-    thread_id: &str,
-    target: &AgentReviewTarget,
-) -> Value {
-    request(
-        id,
-        METHOD_REVIEW_START,
-        json!({
-            "threadId": thread_id,
-            "target": codex_review_target_value(target),
-            "delivery": "inline",
-        }),
-    )
-}
-
-pub(crate) fn build_account_usage_read_request(id: u64) -> Value {
-    request(id, METHOD_ACCOUNT_USAGE_READ, Value::Null)
-}
-
-pub(crate) fn build_account_read_request(id: u64) -> Value {
-    request(id, METHOD_ACCOUNT_READ, json!({}))
-}
-
-pub(crate) fn build_account_rate_limits_read_request(id: u64) -> Value {
-    request(id, METHOD_ACCOUNT_RATE_LIMITS_READ, Value::Null)
-}
-
-pub(crate) fn build_thread_realtime_list_voices_request(id: u64) -> Value {
-    request(id, METHOD_THREAD_REALTIME_LIST_VOICES, json!({}))
-}
-
-pub(crate) fn build_thread_realtime_start_text_request(
-    id: u64,
-    thread_id: &str,
-    prompt: Option<&str>,
-    voice: Option<&str>,
-) -> Value {
-    let mut params = json!({
-        "threadId": thread_id,
-        "outputModality": "text",
-        "transport": { "type": "websocket" },
-    });
-    if let Some(prompt) = prompt.map(str::trim).filter(|value| !value.is_empty()) {
-        params["prompt"] = json!(prompt);
-    }
-    if let Some(voice) = voice.map(str::trim).filter(|value| !value.is_empty()) {
-        params["voice"] = json!(voice);
-    }
-    request(id, METHOD_THREAD_REALTIME_START, params)
-}
-
-pub(crate) fn build_thread_realtime_append_text_request(
-    id: u64,
-    thread_id: &str,
-    text: &str,
-) -> Value {
-    request(
-        id,
-        METHOD_THREAD_REALTIME_APPEND_TEXT,
-        json!({
-            "threadId": thread_id,
-            "text": text,
-        }),
-    )
-}
-
-pub(crate) fn build_thread_realtime_append_audio_request(
-    id: u64,
-    thread_id: &str,
-    data: &str,
-    sample_rate: u32,
-    num_channels: u16,
-    samples_per_channel: Option<u32>,
-) -> Value {
-    let mut audio = json!({
-        "data": data,
-        "sampleRate": sample_rate,
-        "numChannels": num_channels,
-    });
-    if let Some(samples_per_channel) = samples_per_channel {
-        audio["samplesPerChannel"] = json!(samples_per_channel);
-    }
-    request(
-        id,
-        METHOD_THREAD_REALTIME_APPEND_AUDIO,
-        json!({
-            "threadId": thread_id,
-            "audio": audio,
-        }),
-    )
-}
-
-pub(crate) fn build_thread_realtime_stop_request(id: u64, thread_id: &str) -> Value {
-    request(
-        id,
-        METHOD_THREAD_REALTIME_STOP,
-        json!({
-            "threadId": thread_id,
-        }),
-    )
 }
 
 pub(crate) fn build_config_read_request(id: u64, cwd: &str, include_layers: bool) -> Value {
@@ -1887,49 +1689,6 @@ pub(crate) fn build_skills_list_request(id: u64, cwd: &str, force_reload: bool) 
             "forceReload": force_reload,
         }),
     )
-}
-
-pub(crate) fn build_hooks_list_request(id: u64, cwd: &str) -> Value {
-    request(
-        id,
-        METHOD_HOOKS_LIST,
-        json!({
-            "cwds": [cwd],
-        }),
-    )
-}
-
-pub(crate) fn build_permission_profile_list_request(
-    id: u64,
-    cwd: &str,
-    cursor: Option<&str>,
-) -> Value {
-    let mut params = json!({
-        "cwd": cwd,
-        "limit": 100,
-    });
-    if let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
-        params["cursor"] = json!(cursor);
-    }
-    request(id, METHOD_PERMISSION_PROFILE_LIST, params)
-}
-
-pub(crate) fn build_mcp_server_status_list_request(
-    id: u64,
-    thread_id: Option<&str>,
-    cursor: Option<&str>,
-) -> Value {
-    let mut params = json!({
-        "detail": "toolsAndAuthOnly",
-        "limit": 100,
-    });
-    if let Some(thread_id) = thread_id {
-        params["threadId"] = json!(thread_id);
-    }
-    if let Some(cursor) = cursor {
-        params["cursor"] = json!(cursor);
-    }
-    request(id, METHOD_MCP_SERVER_STATUS_LIST, params)
 }
 
 #[cfg(test)]
@@ -2584,23 +2343,6 @@ mod tests {
     }
 
     #[test]
-    fn thread_background_terminal_clean_request_uses_thread_id() {
-        let value = build_thread_background_terminals_clean_request(6, "thr_saved");
-
-        assert_eq!(value["method"], METHOD_THREAD_BACKGROUND_TERMINALS_CLEAN);
-        assert_eq!(value["params"]["threadId"], "thr_saved");
-    }
-
-    #[test]
-    fn thread_shell_command_request_targets_thread_with_command() {
-        let value = build_thread_shell_command_request(7, "thr_saved", "git status --short");
-
-        assert_eq!(value["method"], METHOD_THREAD_SHELL_COMMAND);
-        assert_eq!(value["params"]["threadId"], "thr_saved");
-        assert_eq!(value["params"]["command"], "git status --short");
-    }
-
-    #[test]
     fn turn_start_uses_text_input_and_client_message_id() {
         let value = build_turn_start_request(
             3,
@@ -2777,40 +2519,6 @@ mod tests {
     }
 
     #[test]
-    fn hooks_list_request_uses_worktree_scope() {
-        let value = build_hooks_list_request(8, "/repo");
-
-        assert_eq!(value["method"], METHOD_HOOKS_LIST);
-        assert_eq!(value["params"]["cwds"], json!(["/repo"]));
-    }
-
-    #[test]
-    fn permission_profile_list_request_uses_cwd_and_pagination() {
-        let first = build_permission_profile_list_request(9, "/repo", None);
-        assert_eq!(first["method"], METHOD_PERMISSION_PROFILE_LIST);
-        assert_eq!(first["params"]["cwd"], "/repo");
-        assert_eq!(first["params"]["limit"], 100);
-        assert!(first["params"].get("cursor").is_none());
-
-        let next = build_permission_profile_list_request(10, "/repo", Some("cursor-1"));
-        assert_eq!(next["params"]["cursor"], "cursor-1");
-    }
-
-    #[test]
-    fn mcp_server_status_request_uses_thread_and_pagination() {
-        let first = build_mcp_server_status_list_request(11, Some("thr_123"), None);
-        assert_eq!(first["method"], METHOD_MCP_SERVER_STATUS_LIST);
-        assert_eq!(first["params"]["detail"], "toolsAndAuthOnly");
-        assert_eq!(first["params"]["limit"], 100);
-        assert_eq!(first["params"]["threadId"], "thr_123");
-        assert!(first["params"].get("cursor").is_none());
-
-        let next = build_mcp_server_status_list_request(12, None, Some("cursor-1"));
-        assert!(next["params"].get("threadId").is_none());
-        assert_eq!(next["params"]["cursor"], "cursor-1");
-    }
-
-    #[test]
     fn thread_history_requests_use_runtime_thread_pagination() {
         let list = build_thread_list_request(13, "/repo", None);
         assert_eq!(list["method"], METHOD_THREAD_LIST);
@@ -2935,145 +2643,12 @@ mod tests {
     }
 
     #[test]
-    fn thread_compact_start_targets_thread() {
-        let value = build_thread_compact_start_request(5, "thr_123");
-
-        assert_eq!(value["method"], METHOD_THREAD_COMPACT_START);
-        assert_eq!(value["params"]["threadId"], "thr_123");
-    }
-
-    #[test]
-    fn thread_goal_requests_target_thread() {
-        let get = build_thread_goal_get_request(6, "thr_123");
-        assert_eq!(get["method"], METHOD_THREAD_GOAL_GET);
-        assert_eq!(get["params"]["threadId"], "thr_123");
-
-        let set = build_thread_goal_set_request(
-            7,
-            "thr_123",
-            Some("Ship parity"),
-            Some("paused"),
-            Some(42_000),
-        );
-        assert_eq!(set["method"], METHOD_THREAD_GOAL_SET);
-        assert_eq!(set["params"]["threadId"], "thr_123");
-        assert_eq!(set["params"]["objective"], "Ship parity");
-        assert_eq!(set["params"]["status"], "paused");
-        assert_eq!(set["params"]["tokenBudget"], 42_000);
-
-        let clear = build_thread_goal_clear_request(8, "thr_123");
-        assert_eq!(clear["method"], METHOD_THREAD_GOAL_CLEAR);
-        assert_eq!(clear["params"]["threadId"], "thr_123");
-    }
-
-    #[test]
     fn thread_name_set_targets_thread() {
         let value = build_thread_name_set_request(6, "thr_123", "Review parser");
 
         assert_eq!(value["method"], METHOD_THREAD_NAME_SET);
         assert_eq!(value["params"]["threadId"], "thr_123");
         assert_eq!(value["params"]["name"], "Review parser");
-    }
-
-    #[test]
-    fn review_start_targets_uncommitted_changes_inline() {
-        let value =
-            build_review_start_request(7, "thr_123", &AgentReviewTarget::UncommittedChanges);
-
-        assert_eq!(value["method"], METHOD_REVIEW_START);
-        assert_eq!(value["params"]["threadId"], "thr_123");
-        assert_eq!(value["params"]["target"]["type"], "uncommittedChanges");
-        assert_eq!(value["params"]["delivery"], "inline");
-
-        let base_branch = build_review_start_request(
-            8,
-            "thr_123",
-            &AgentReviewTarget::BaseBranch {
-                branch: "main".to_string(),
-            },
-        );
-        assert_eq!(base_branch["params"]["target"]["type"], "baseBranch");
-        assert_eq!(base_branch["params"]["target"]["branch"], "main");
-
-        let commit = build_review_start_request(
-            9,
-            "thr_123",
-            &AgentReviewTarget::Commit {
-                sha: "abc123".to_string(),
-            },
-        );
-        assert_eq!(commit["params"]["target"]["type"], "commit");
-        assert_eq!(commit["params"]["target"]["sha"], "abc123");
-
-        let custom = build_review_start_request(
-            10,
-            "thr_123",
-            &AgentReviewTarget::Custom {
-                instructions: "Review security issues".to_string(),
-            },
-        );
-        assert_eq!(custom["params"]["target"]["type"], "custom");
-        assert_eq!(
-            custom["params"]["target"]["instructions"],
-            "Review security issues"
-        );
-    }
-
-    #[test]
-    fn account_status_requests_use_null_params() {
-        let account = build_account_read_request(7);
-        assert_eq!(account["method"], METHOD_ACCOUNT_READ);
-        assert_eq!(account["params"], json!({}));
-
-        let usage = build_account_usage_read_request(8);
-        assert_eq!(usage["method"], METHOD_ACCOUNT_USAGE_READ);
-        assert!(usage["params"].is_null());
-
-        let limits = build_account_rate_limits_read_request(9);
-        assert_eq!(limits["method"], METHOD_ACCOUNT_RATE_LIMITS_READ);
-        assert!(limits["params"].is_null());
-    }
-
-    #[test]
-    fn realtime_list_voices_request_uses_empty_params_object() {
-        let value = build_thread_realtime_list_voices_request(10);
-
-        assert_eq!(value["method"], METHOD_THREAD_REALTIME_LIST_VOICES);
-        assert_eq!(value["params"], json!({}));
-    }
-
-    #[test]
-    fn realtime_transport_requests_match_schema() {
-        let start = build_thread_realtime_start_text_request(
-            11,
-            "thr_123",
-            Some("Transcribe"),
-            Some("marin"),
-        );
-        assert_eq!(start["method"], METHOD_THREAD_REALTIME_START);
-        assert_eq!(start["params"]["threadId"], "thr_123");
-        assert_eq!(start["params"]["outputModality"], "text");
-        assert_eq!(start["params"]["transport"]["type"], "websocket");
-        assert_eq!(start["params"]["prompt"], "Transcribe");
-        assert_eq!(start["params"]["voice"], "marin");
-
-        let append_text = build_thread_realtime_append_text_request(12, "thr_123", "hello");
-        assert_eq!(append_text["method"], METHOD_THREAD_REALTIME_APPEND_TEXT);
-        assert_eq!(append_text["params"]["threadId"], "thr_123");
-        assert_eq!(append_text["params"]["text"], "hello");
-
-        let append_audio =
-            build_thread_realtime_append_audio_request(13, "thr_123", "AAEC", 24_000, 1, Some(3));
-        assert_eq!(append_audio["method"], METHOD_THREAD_REALTIME_APPEND_AUDIO);
-        assert_eq!(append_audio["params"]["threadId"], "thr_123");
-        assert_eq!(append_audio["params"]["audio"]["data"], "AAEC");
-        assert_eq!(append_audio["params"]["audio"]["sampleRate"], 24_000);
-        assert_eq!(append_audio["params"]["audio"]["numChannels"], 1);
-        assert_eq!(append_audio["params"]["audio"]["samplesPerChannel"], 3);
-
-        let stop = build_thread_realtime_stop_request(14, "thr_123");
-        assert_eq!(stop["method"], METHOD_THREAD_REALTIME_STOP);
-        assert_eq!(stop["params"]["threadId"], "thr_123");
     }
 
     #[test]

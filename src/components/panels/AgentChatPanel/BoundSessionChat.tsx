@@ -68,7 +68,6 @@ export function BoundSessionChat({
 		getSessionSelectedModel,
 		getSessionPendingQueue = () => [],
 		getSessionLatestTokenUsage = () => null,
-		getSessionCodexGoal = () => null,
 		getSessionCodexRuntimeStatus = () => null,
 		getSessionRuntimeSlashCommands = () => [],
 		availableModels,
@@ -195,7 +194,6 @@ export function BoundSessionChat({
 		getSessionSelectedModel(session.id) ?? availableModels[0]?.value ?? "";
 	const pendingQueue = getSessionPendingQueue(session.id);
 	const latestTokenUsage = getSessionLatestTokenUsage(session.id);
-	const codexGoal = getSessionCodexGoal(session.id);
 	const codexRuntimeStatus = getSessionCodexRuntimeStatus(session.id);
 	const runtimeSlashCommands = getSessionRuntimeSlashCommands(session.id);
 	const canChangeBackend =
@@ -215,7 +213,6 @@ export function BoundSessionChat({
 			selectedModel={selectedModel}
 			pendingQueue={pendingQueue}
 			latestTokenUsage={latestTokenUsage}
-			codexGoal={codexGoal}
 			codexRuntimeStatus={codexRuntimeStatus}
 			runtimeSlashCommands={runtimeSlashCommands}
 			backends={backends}

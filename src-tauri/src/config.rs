@@ -276,10 +276,6 @@ impl AppConfig {
         Ok(config.clone())
     }
 
-    pub fn config_path(&self) -> PathBuf {
-        self.config_path.clone()
-    }
-
     pub fn with_config_mut<F, R>(&self, f: F) -> Result<R, String>
     where
         F: FnOnce(&mut ReleashConfig) -> Result<R, String>,

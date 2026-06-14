@@ -133,55 +133,6 @@ pub async fn set_agent_permission_mode(
 }
 
 #[tauri::command]
-pub async fn set_codex_permission_profile(
-    app: tauri::AppHandle,
-    session_store: tauri::State<'_, Arc<SessionStore>>,
-    registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
-    chat_session_id: String,
-    permission_profile_id: Option<String>,
-) -> Result<(), String> {
-    let data_dir = crate::app_data_dir::resolve_data_dir(&app)?;
-    let session = session_store
-        .get_session(&data_dir, &chat_session_id)?
-        .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
-    if session.backend_id.as_deref() != Some(CODEX_BACKEND_ID) {
-        return Err("Codex permission profiles are only available for Codex sessions".to_string());
-    }
-
-    let profile_id = permission_profile_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
-    session_store.update_permission_profile_id(
-        &data_dir,
-        &chat_session_id,
-        profile_id.as_deref(),
-    )?;
-
-    if let Some(backend) = registry.get(CODEX_BACKEND_ID) {
-        if let Err(error) = backend
-            .set_permission_profile(
-                &SessionHandle {
-                    chat_session_id: chat_session_id.clone(),
-                    backend_id: CODEX_BACKEND_ID.to_string(),
-                },
-                &session.worktree_path,
-                &session.permission_mode,
-                profile_id.as_deref(),
-            )
-            .await
-        {
-            log::debug!(
-                "skipped Codex runtime permission profile sync for {chat_session_id}: {error}"
-            );
-        }
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn set_agent_model(
     app: tauri::AppHandle,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,

@@ -8,7 +8,6 @@ use crate::config::{AgentShortcutSection, AppConfig};
 pub struct AgentCommandPaletteRequest {
     pub has_active_session: bool,
     pub session_count: usize,
-    pub backend_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -85,158 +84,8 @@ const AGENT_SHORTCUTS: &[AgentShortcutDefinition] = &[
         alternate_shortcut: None,
     },
     AgentShortcutDefinition {
-        id: "copy_response_options",
-        label: "Copy response...",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "export_transcript",
-        label: "Export transcript",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "create_agents_md",
-        label: "Create AGENTS.md",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
         id: "toggle_raw_scrollback",
         label: "Toggle raw scrollback",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "debug_config",
-        label: "Debug config",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "doctor",
-        label: "Doctor",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_account_usage",
-        label: "Codex account usage",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_goal",
-        label: "Codex goal",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_compact_context",
-        label: "Compact context",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_clean_background_terminals",
-        label: "Clean Codex background terminals",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_shell_command",
-        label: "Run Codex shell command",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_review_uncommitted_changes",
-        label: "Codex review uncommitted changes",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_review_base_branch",
-        label: "Codex review base branch",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_review_commit",
-        label: "Codex review commit",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_review_custom",
-        label: "Codex review custom",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_thread_history",
-        label: "Codex thread history",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_thread_transcript",
-        label: "Codex thread transcript",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_permission_profiles",
-        label: "Codex permission profiles",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_hooks",
-        label: "Codex hooks",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_realtime_voices",
-        label: "Codex realtime voices",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_realtime_text_start",
-        label: "Start Codex realtime text",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_realtime_text_append",
-        label: "Append Codex realtime text",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_realtime_stop",
-        label: "Stop Codex realtime",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_mcp_status",
-        label: "Codex MCP status",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_runtime_config",
-        label: "Codex runtime config",
-        default_shortcut: "",
-        alternate_shortcut: None,
-    },
-    AgentShortcutDefinition {
-        id: "codex_runtime_capabilities",
-        label: "Codex runtime capabilities",
         default_shortcut: "",
         alternate_shortcut: None,
     },
@@ -415,95 +264,12 @@ pub(crate) fn present_agent_command_palette_inner(
     shortcuts: &AgentShortcutSection,
 ) -> Vec<AgentCommandPaletteItem> {
     let has_multiple_sessions = request.session_count > 1;
-    let is_codex_backend = request.backend_id.as_deref() == Some("codex");
     let enabled_by_id = HashMap::from([
         ("new_thread", true),
         ("search_threads", true),
         ("find_in_thread", request.has_active_session),
         ("copy_latest_response", request.has_active_session),
-        ("copy_response_options", request.has_active_session),
-        ("export_transcript", request.has_active_session),
-        ("create_agents_md", request.has_active_session),
         ("toggle_raw_scrollback", request.has_active_session),
-        ("debug_config", request.has_active_session),
-        ("doctor", request.has_active_session),
-        (
-            "codex_account_usage",
-            request.has_active_session && is_codex_backend,
-        ),
-        ("codex_goal", request.has_active_session && is_codex_backend),
-        (
-            "codex_compact_context",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_clean_background_terminals",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_shell_command",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_review_uncommitted_changes",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_review_base_branch",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_review_commit",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_review_custom",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_thread_history",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_thread_transcript",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_permission_profiles",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_hooks",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_realtime_voices",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_realtime_text_start",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_realtime_text_append",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_realtime_stop",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_mcp_status",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_runtime_config",
-            request.has_active_session && is_codex_backend,
-        ),
-        (
-            "codex_runtime_capabilities",
-            request.has_active_session && is_codex_backend,
-        ),
         ("previous_thread", has_multiple_sessions),
         ("next_thread", has_multiple_sessions),
     ]);
@@ -650,7 +416,6 @@ mod tests {
             &AgentCommandPaletteRequest {
                 has_active_session: true,
                 session_count: 2,
-                backend_id: Some("codex".to_string()),
             },
             &AgentShortcutSection::default(),
         );
@@ -663,73 +428,10 @@ mod tests {
             .any(|item| item.id == "find_in_thread" && item.enabled));
         assert!(result
             .iter()
-            .any(|item| item.id == "copy_response_options" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "export_transcript" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "create_agents_md" && item.enabled));
+            .any(|item| item.id == "copy_latest_response" && item.enabled));
         assert!(result
             .iter()
             .any(|item| item.id == "toggle_raw_scrollback" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "debug_config" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "doctor" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_account_usage" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_goal" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_compact_context" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_clean_background_terminals" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_shell_command" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_review_uncommitted_changes" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_review_base_branch" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_review_commit" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_review_custom" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_thread_history" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_thread_transcript" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_permission_profiles" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_hooks" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_realtime_voices" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_mcp_status" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_runtime_config" && item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_runtime_capabilities" && item.enabled));
         assert!(result
             .iter()
             .any(|item| item.id == "previous_thread" && item.enabled));
@@ -754,7 +456,6 @@ mod tests {
             &AgentCommandPaletteRequest {
                 has_active_session: false,
                 session_count: 1,
-                backend_id: Some("codex".to_string()),
             },
             &AgentShortcutSection::default(),
         );
@@ -767,73 +468,7 @@ mod tests {
             .any(|item| item.id == "copy_latest_response" && !item.enabled));
         assert!(result
             .iter()
-            .any(|item| item.id == "copy_response_options" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "export_transcript" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "create_agents_md" && !item.enabled));
-        assert!(result
-            .iter()
             .any(|item| item.id == "toggle_raw_scrollback" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "debug_config" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "doctor" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_account_usage" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_goal" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_compact_context" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_clean_background_terminals" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_shell_command" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_review_uncommitted_changes" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_review_base_branch" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_review_commit" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_review_custom" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_thread_history" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_thread_transcript" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_permission_profiles" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_hooks" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_realtime_voices" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_mcp_status" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_runtime_config" && !item.enabled));
-        assert!(result
-            .iter()
-            .any(|item| item.id == "codex_runtime_capabilities" && !item.enabled));
         assert!(result
             .iter()
             .any(|item| item.id == "previous_thread" && !item.enabled));
@@ -843,35 +478,25 @@ mod tests {
     }
 
     #[test]
-    fn checks_single_command_enabled_state_with_backend_gating() {
+    fn checks_single_command_enabled_state() {
         let shortcuts = AgentShortcutSection::default();
-        let codex_request = AgentCommandPaletteRequest {
+        let request = AgentCommandPaletteRequest {
             has_active_session: true,
             session_count: 1,
-            backend_id: Some("codex".to_string()),
-        };
-        let claude_request = AgentCommandPaletteRequest {
-            backend_id: Some("claude".to_string()),
-            ..codex_request.clone()
         };
 
         assert!(is_agent_command_enabled_inner(
-            &codex_request,
+            &request,
             &shortcuts,
-            "codex_compact_context",
-        ));
-        assert!(!is_agent_command_enabled_inner(
-            &claude_request,
-            &shortcuts,
-            "codex_compact_context",
+            "toggle_raw_scrollback",
         ));
         assert!(is_agent_command_enabled_inner(
-            &claude_request,
+            &request,
             &shortcuts,
             "command_menu",
         ));
         assert!(!is_agent_command_enabled_inner(
-            &claude_request,
+            &request,
             &shortcuts,
             "unknown_command",
         ));

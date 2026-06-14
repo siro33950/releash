@@ -113,14 +113,6 @@ pub struct SessionHandle {
     pub backend_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AgentReviewTarget {
-    UncommittedChanges,
-    BaseBranch { branch: String },
-    Commit { sha: String },
-    Custom { instructions: String },
-}
-
 /// ユーザーメッセージ。
 #[allow(dead_code)]
 pub struct AgentMessage {
@@ -189,84 +181,6 @@ pub trait AgentBackend: Send + Sync {
         session: &SessionHandle,
         response: PermissionResponse,
     ) -> Result<(), String>;
-
-    /// Runtime-owned conversation compaction.
-    async fn compact_session(&self, session: &SessionHandle) -> Result<(), String> {
-        Err(format!(
-            "Backend '{}' does not expose runtime context compaction",
-            session.backend_id
-        ))
-    }
-
-    /// Runtime-owned background terminal cleanup for already-started sessions.
-    async fn clean_background_terminals(&self, session: &SessionHandle) -> Result<(), String> {
-        Err(format!(
-            "Backend '{}' does not expose runtime background terminal cleanup",
-            session.backend_id
-        ))
-    }
-
-    /// Runtime-owned shell command execution for already-started sessions.
-    async fn run_shell_command(
-        &self,
-        session: &SessionHandle,
-        command: &str,
-    ) -> Result<(), String> {
-        let _ = command;
-        Err(format!(
-            "Backend '{}' does not expose runtime shell commands",
-            session.backend_id
-        ))
-    }
-
-    /// Runtime-owned realtime text session start for already-started sessions.
-    async fn start_realtime_text_session(
-        &self,
-        session: &SessionHandle,
-        prompt: Option<&str>,
-    ) -> Result<(), String> {
-        let _ = prompt;
-        Err(format!(
-            "Backend '{}' does not expose runtime realtime text sessions",
-            session.backend_id
-        ))
-    }
-
-    /// Runtime-owned realtime text append for already-started sessions.
-    async fn append_realtime_text(
-        &self,
-        session: &SessionHandle,
-        text: &str,
-    ) -> Result<(), String> {
-        let _ = text;
-        Err(format!(
-            "Backend '{}' does not expose runtime realtime text append",
-            session.backend_id
-        ))
-    }
-
-    /// Runtime-owned realtime session stop for already-started sessions.
-    async fn stop_realtime_session(&self, session: &SessionHandle) -> Result<(), String> {
-        Err(format!(
-            "Backend '{}' does not expose runtime realtime session stop",
-            session.backend_id
-        ))
-    }
-
-    /// Runtime-owned review for a schema-backed target.
-    async fn review(
-        &self,
-        session: &SessionHandle,
-        streaming_message_id: &str,
-        target: AgentReviewTarget,
-    ) -> Result<(), String> {
-        let _ = streaming_message_id;
-        let _ = target;
-        Err(format!(
-            "Backend '{}' does not expose runtime review",
-            session.backend_id
-        ))
-    }
 
     /// Runtime-owned thread title update.
     async fn set_thread_name(&self, session: &SessionHandle, name: &str) -> Result<(), String> {

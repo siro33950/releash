@@ -15,20 +15,17 @@ use crate::infrastructure::agent_session::runtime::bridge_common::{
 };
 use crate::infrastructure::agent_session::runtime::codex_app_server::{
     app_server_message_to_bridge_messages, build_app_server_permission_response_for_bridge_request,
-    build_initialize_request, build_initialized_notification, build_review_start_request,
-    build_thread_background_terminals_clean_request, build_thread_compact_start_request,
-    build_thread_name_set_request, build_thread_realtime_append_text_request,
-    build_thread_realtime_start_text_request, build_thread_realtime_stop_request,
+    build_initialize_request, build_initialized_notification, build_thread_name_set_request,
     build_thread_resume_request, build_thread_settings_update_permission_request,
-    build_thread_shell_command_request, build_thread_start_request, build_turn_interrupt_request,
+    build_thread_start_request, build_turn_interrupt_request,
     build_turn_start_request_with_permission, build_turn_steer_request, decode_jsonrpc_line,
     message_kind, spawn_app_server_process_parts, AppServerBridgeState, AppServerMessageKind,
     NOTIFY_TURN_COMPLETED,
 };
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::wait_until_session_close_finished;
 use crate::infrastructure::agent_session::runtime::{
-    AgentBackend, AgentEditorContext, AgentMessage, AgentReviewTarget, ImageAttachment,
-    PermissionResponse, SessionConfig, SessionHandle,
+    AgentBackend, AgentEditorContext, AgentMessage, ImageAttachment, PermissionResponse,
+    SessionConfig, SessionHandle,
 };
 use crate::usecase::agent_session::session::SessionStore;
 
@@ -107,24 +104,6 @@ trait CodexBackendRuntime: Send + Sync {
         &self,
         session: &SessionHandle,
         response: PermissionResponse,
-    ) -> Result<(), String>;
-    async fn compact_session(&self, session: &SessionHandle) -> Result<(), String>;
-    async fn clean_background_terminals(&self, session: &SessionHandle) -> Result<(), String>;
-    async fn run_shell_command(&self, session: &SessionHandle, command: &str)
-        -> Result<(), String>;
-    async fn start_realtime_text_session(
-        &self,
-        session: &SessionHandle,
-        prompt: Option<&str>,
-    ) -> Result<(), String>;
-    async fn append_realtime_text(&self, session: &SessionHandle, text: &str)
-        -> Result<(), String>;
-    async fn stop_realtime_session(&self, session: &SessionHandle) -> Result<(), String>;
-    async fn review(
-        &self,
-        session: &SessionHandle,
-        streaming_message_id: &str,
-        target: AgentReviewTarget,
     ) -> Result<(), String>;
     async fn set_thread_name(&self, session: &SessionHandle, name: &str) -> Result<(), String>;
     async fn set_permission_mode(
@@ -419,27 +398,6 @@ impl AppServerCodexRuntime {
         Err("Timed out waiting for Codex app-server thread".to_string())
     }
 
-    async fn ensure_active_state_for_session(
-        &self,
-        session: &SessionHandle,
-    ) -> Result<(Arc<Mutex<AppServerSessionState>>, String), String> {
-        let data_dir = resolve_data_dir(&self.app)?;
-        let stored_session = self
-            .session_store
-            .get_session(&data_dir, &session.chat_session_id)?
-            .ok_or_else(|| format!("Session not found: {}", session.chat_session_id))?;
-        let config = SessionConfig {
-            chat_session_id: session.chat_session_id.clone(),
-            cwd: stored_session.worktree_path.clone(),
-            permission_mode: Some(stored_session.permission_mode.clone()),
-            permission_profile_id: stored_session.permission_profile_id.clone(),
-            system_prompt: None,
-        };
-        let state = self.ensure_session(&config).await?;
-        let thread_id = Self::wait_for_thread_id(&state).await?;
-        Ok((state, thread_id))
-    }
-
     async fn send_turn(&self, turn: AppServerTurnStart<'_>) -> Result<(), String> {
         let thread_id = Self::wait_for_thread_id(turn.state).await?;
         start_external_agent_turn_state(
@@ -690,183 +648,6 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
         self.send_jsonrpc(&session.chat_session_id, payload).await
     }
 
-    async fn compact_session(&self, session: &SessionHandle) -> Result<(), String> {
-        ensure_codex_session(session)?;
-        let state = self
-            .session_state(&session.chat_session_id)
-            .await
-            .ok_or_else(|| {
-                format!(
-                    "No active Codex app-server session: {}",
-                    session.chat_session_id
-                )
-            })?;
-        let thread_id = state
-            .lock()
-            .await
-            .bridge_state
-            .thread_id
-            .clone()
-            .ok_or_else(|| {
-                format!(
-                    "Codex app-server thread is not ready: {}",
-                    session.chat_session_id
-                )
-            })?;
-        let id = Self::next_request_id(&state).await;
-        self.send_jsonrpc(
-            &session.chat_session_id,
-            build_thread_compact_start_request(id, &thread_id),
-        )
-        .await
-    }
-
-    async fn clean_background_terminals(&self, session: &SessionHandle) -> Result<(), String> {
-        ensure_codex_session(session)?;
-        let state = self
-            .session_state(&session.chat_session_id)
-            .await
-            .ok_or_else(|| {
-                format!(
-                    "No active Codex app-server session: {}",
-                    session.chat_session_id
-                )
-            })?;
-        let thread_id = state
-            .lock()
-            .await
-            .bridge_state
-            .thread_id
-            .clone()
-            .ok_or_else(|| {
-                format!(
-                    "Codex app-server thread is not ready: {}",
-                    session.chat_session_id
-                )
-            })?;
-        let id = Self::next_request_id(&state).await;
-        self.send_jsonrpc(
-            &session.chat_session_id,
-            build_thread_background_terminals_clean_request(id, &thread_id),
-        )
-        .await
-    }
-
-    async fn run_shell_command(
-        &self,
-        session: &SessionHandle,
-        command: &str,
-    ) -> Result<(), String> {
-        ensure_codex_session(session)?;
-        let command = command.trim();
-        if command.is_empty() {
-            return Err("Codex shell command is empty".to_string());
-        }
-        let data_dir = resolve_data_dir(&self.app)?;
-        let stored_session = self
-            .session_store
-            .get_session(&data_dir, &session.chat_session_id)?
-            .ok_or_else(|| format!("Session not found: {}", session.chat_session_id))?;
-        let config = SessionConfig {
-            chat_session_id: session.chat_session_id.clone(),
-            cwd: stored_session.worktree_path.clone(),
-            permission_mode: Some(stored_session.permission_mode.clone()),
-            permission_profile_id: stored_session.permission_profile_id.clone(),
-            system_prompt: None,
-        };
-        let state = self.ensure_session(&config).await?;
-        let thread_id = Self::wait_for_thread_id(&state).await?;
-        let id = Self::next_request_id(&state).await;
-        self.send_jsonrpc(
-            &session.chat_session_id,
-            build_thread_shell_command_request(id, &thread_id, command),
-        )
-        .await
-    }
-
-    async fn start_realtime_text_session(
-        &self,
-        session: &SessionHandle,
-        prompt: Option<&str>,
-    ) -> Result<(), String> {
-        ensure_codex_session(session)?;
-        let (state, thread_id) = self.ensure_active_state_for_session(session).await?;
-        let id = Self::next_request_id(&state).await;
-        self.send_jsonrpc(
-            &session.chat_session_id,
-            build_thread_realtime_start_text_request(id, &thread_id, prompt, None),
-        )
-        .await
-    }
-
-    async fn append_realtime_text(
-        &self,
-        session: &SessionHandle,
-        text: &str,
-    ) -> Result<(), String> {
-        ensure_codex_session(session)?;
-        let text = text.trim();
-        if text.is_empty() {
-            return Err("Codex realtime text is empty".to_string());
-        }
-        let (state, thread_id) = self.ensure_active_state_for_session(session).await?;
-        let id = Self::next_request_id(&state).await;
-        self.send_jsonrpc(
-            &session.chat_session_id,
-            build_thread_realtime_append_text_request(id, &thread_id, text),
-        )
-        .await
-    }
-
-    async fn stop_realtime_session(&self, session: &SessionHandle) -> Result<(), String> {
-        ensure_codex_session(session)?;
-        let (state, thread_id) = self.ensure_active_state_for_session(session).await?;
-        let id = Self::next_request_id(&state).await;
-        self.send_jsonrpc(
-            &session.chat_session_id,
-            build_thread_realtime_stop_request(id, &thread_id),
-        )
-        .await
-    }
-
-    async fn review(
-        &self,
-        session: &SessionHandle,
-        streaming_message_id: &str,
-        target: AgentReviewTarget,
-    ) -> Result<(), String> {
-        ensure_codex_session(session)?;
-        let data_dir = resolve_data_dir(&self.app)?;
-        let stored_session = self
-            .session_store
-            .get_session(&data_dir, &session.chat_session_id)?
-            .ok_or_else(|| format!("Session not found: {}", session.chat_session_id))?;
-        let config = SessionConfig {
-            chat_session_id: session.chat_session_id.clone(),
-            cwd: stored_session.worktree_path.clone(),
-            permission_mode: Some(stored_session.permission_mode.clone()),
-            permission_profile_id: stored_session.permission_profile_id.clone(),
-            system_prompt: None,
-        };
-        let state = self.ensure_session(&config).await?;
-        let thread_id = Self::wait_for_thread_id(&state).await?;
-        start_external_agent_turn_state(
-            &self.app,
-            &self.session_store,
-            &self.handles,
-            &session.chat_session_id,
-            &stored_session.permission_mode,
-            streaming_message_id,
-        )
-        .await?;
-        let id = Self::next_request_id(&state).await;
-        self.send_jsonrpc(
-            &session.chat_session_id,
-            build_review_start_request(id, &thread_id, &target),
-        )
-        .await
-    }
-
     async fn set_thread_name(&self, session: &SessionHandle, name: &str) -> Result<(), String> {
         ensure_codex_session(session)?;
         let state = self
@@ -1028,55 +809,6 @@ impl AgentBackend for CodexBackend {
         self.runtime()?.respond_permission(session, response).await
     }
 
-    async fn compact_session(&self, session: &SessionHandle) -> Result<(), String> {
-        self.runtime()?.compact_session(session).await
-    }
-
-    async fn clean_background_terminals(&self, session: &SessionHandle) -> Result<(), String> {
-        self.runtime()?.clean_background_terminals(session).await
-    }
-
-    async fn run_shell_command(
-        &self,
-        session: &SessionHandle,
-        command: &str,
-    ) -> Result<(), String> {
-        self.runtime()?.run_shell_command(session, command).await
-    }
-
-    async fn start_realtime_text_session(
-        &self,
-        session: &SessionHandle,
-        prompt: Option<&str>,
-    ) -> Result<(), String> {
-        self.runtime()?
-            .start_realtime_text_session(session, prompt)
-            .await
-    }
-
-    async fn append_realtime_text(
-        &self,
-        session: &SessionHandle,
-        text: &str,
-    ) -> Result<(), String> {
-        self.runtime()?.append_realtime_text(session, text).await
-    }
-
-    async fn stop_realtime_session(&self, session: &SessionHandle) -> Result<(), String> {
-        self.runtime()?.stop_realtime_session(session).await
-    }
-
-    async fn review(
-        &self,
-        session: &SessionHandle,
-        streaming_message_id: &str,
-        target: AgentReviewTarget,
-    ) -> Result<(), String> {
-        self.runtime()?
-            .review(session, streaming_message_id, target)
-            .await
-    }
-
     async fn set_thread_name(&self, session: &SessionHandle, name: &str) -> Result<(), String> {
         self.runtime()?.set_thread_name(session, name).await
     }
@@ -1147,15 +879,6 @@ mod tests {
             .set_permission_mode(&session, "/repo", "ask")
             .await
             .is_err());
-        assert!(backend
-            .start_realtime_text_session(&session, Some("hello"))
-            .await
-            .is_err());
-        assert!(backend
-            .append_realtime_text(&session, "hello")
-            .await
-            .is_err());
-        assert!(backend.stop_realtime_session(&session).await.is_err());
         assert!(backend.close_session(&session).await.is_err());
     }
 }
