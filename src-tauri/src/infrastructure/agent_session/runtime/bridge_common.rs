@@ -4707,6 +4707,7 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
         diag_queue("drain:no_pending", chat_session_id, None);
         return Ok(None);
     };
+    diag_queue("drain:start", chat_session_id, Some(&pending.id));
 
     let data_dir = match resolve_data_dir(app) {
         Ok(data_dir) => data_dir,
@@ -4775,6 +4776,7 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
         .code_usecase
         .resolve_mentions_or_fallback(&pending.worktree_path, &pending.content, &pending.mentions);
 
+    diag_queue("drain:event_emitted", chat_session_id, Some(&agent_msg.id));
     Ok(Some(ExternalPendingTurn {
         queued_turn_id: pending.id,
         worktree_path: pending.worktree_path,
