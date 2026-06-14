@@ -41,30 +41,10 @@ export function findSkillTrigger(
 	text: string,
 	cursorPos: number,
 ): { start: number; query: string } | null {
-	return findTokenTrigger(text, cursorPos, "$");
-}
-
-function findTokenTrigger(
-	text: string,
-	cursorPos: number,
-	triggerChar: "@" | "$",
-): { start: number; query: string } | null {
-	for (let i = cursorPos - 1; i >= 0; i--) {
-		const ch = text[i];
-		if (ch === triggerChar) {
-			if (i === 0 || /\s/.test(text[i - 1])) {
-				const query = text.slice(i + 1, cursorPos);
-				if (!/\s/.test(query)) {
-					return { start: i, query };
-				}
-			}
-			return null;
-		}
-		if (/\s/.test(ch)) {
-			return null;
-		}
-	}
-	return null;
+	if (text[0] !== "/") return null;
+	const query = text.slice(1, cursorPos);
+	if (/\s/.test(query)) return null;
+	return { start: 0, query };
 }
 
 function hasUnescapedQuote(value: string): boolean {

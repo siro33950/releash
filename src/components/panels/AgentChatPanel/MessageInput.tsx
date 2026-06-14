@@ -706,7 +706,7 @@ export function MessageInput({
 			const after = value
 				.slice(skillTrigger.start + 1 + skillTrigger.query.length)
 				.replace(/^\s/, "");
-			const token = `$${skill.name}`;
+			const token = `/${skill.name}`;
 			const newValue = `${before}${token} ${after}`;
 			setValue(newValue);
 			setSkillTrigger(null);

@@ -1060,26 +1060,23 @@ describe("findMentionTrigger", () => {
 });
 
 describe("findSkillTrigger", () => {
-	it("detects $ at start of text", () => {
-		expect(findSkillTrigger("$review", 7)).toEqual({
+	it("detects / at start of text", () => {
+		expect(findSkillTrigger("/review", 7)).toEqual({
 			start: 0,
 			query: "review",
 		});
 	});
 
-	it("detects $ after whitespace", () => {
-		expect(findSkillTrigger("use $review", 11)).toEqual({
-			start: 4,
-			query: "review",
-		});
+	it("returns null when / is not at the start of text", () => {
+		expect(findSkillTrigger("use /review", 11)).toBeNull();
 	});
 
-	it("returns null when $ is not preceded by whitespace", () => {
-		expect(findSkillTrigger("cost$review", 11)).toBeNull();
+	it("returns null when query contains whitespace", () => {
+		expect(findSkillTrigger("/review extra", 13)).toBeNull();
 	});
 
-	it("returns empty query when cursor is right after $", () => {
-		expect(findSkillTrigger("$", 1)).toEqual({ start: 0, query: "" });
+	it("returns empty query when cursor is right after /", () => {
+		expect(findSkillTrigger("/", 1)).toEqual({ start: 0, query: "" });
 	});
 });
 
@@ -1664,12 +1661,12 @@ describe("MessageInput skill popup", () => {
 		mockInvoke.mockReset();
 	});
 
-	it("shows skills from Rust when typing $ with worktreePath", async () => {
+	it("shows skills from Rust when typing / with worktreePath", async () => {
 		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
 		const textarea = screen.getByPlaceholderText("Send a message...");
 
 		fireEvent.change(textarea, {
-			target: { value: "$", selectionStart: 1 },
+			target: { value: "/", selectionStart: 1 },
 		});
 		await act(() => vi.advanceTimersByTimeAsync(150));
 
@@ -1680,7 +1677,7 @@ describe("MessageInput skill popup", () => {
 			limit: 20,
 		});
 		expect(screen.getByTestId("skill-list")).toBeDefined();
-		expect(screen.getByText("$review")).toBeInTheDocument();
+		expect(screen.getByText("/review")).toBeInTheDocument();
 	});
 
 	it("uses the Codex runtime skill catalog when Codex is selected", async () => {
@@ -1694,7 +1691,7 @@ describe("MessageInput skill popup", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 
 		fireEvent.change(textarea, {
-			target: { value: "$", selectionStart: 1 },
+			target: { value: "/", selectionStart: 1 },
 		});
 		await act(() => vi.advanceTimersByTimeAsync(150));
 
@@ -1711,7 +1708,7 @@ describe("MessageInput skill popup", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 
 		fireEvent.change(textarea, {
-			target: { value: "$doc", selectionStart: 4 },
+			target: { value: "/doc", selectionStart: 4 },
 		});
 		await act(() => vi.advanceTimersByTimeAsync(150));
 
@@ -1721,8 +1718,8 @@ describe("MessageInput skill popup", () => {
 			query: "doc",
 			limit: 20,
 		});
-		expect(screen.getByText("$docs")).toBeInTheDocument();
-		expect(screen.queryByText("$review")).toBeNull();
+		expect(screen.getByText("/docs")).toBeInTheDocument();
+		expect(screen.queryByText("/review")).toBeNull();
 	});
 
 	it("inserts selected skill token on Enter", async () => {
@@ -1732,12 +1729,12 @@ describe("MessageInput skill popup", () => {
 		) as HTMLTextAreaElement;
 
 		fireEvent.change(textarea, {
-			target: { value: "Use $rev", selectionStart: 8 },
+			target: { value: "/rev", selectionStart: 4 },
 		});
 		await act(() => vi.advanceTimersByTimeAsync(150));
 		fireEvent.keyDown(textarea, { key: "Enter" });
 
-		expect(textarea.value).toBe("Use $review ");
+		expect(textarea.value).toBe("/review ");
 	});
 
 	it("inserts selected skill token on Tab", async () => {
@@ -1747,11 +1744,11 @@ describe("MessageInput skill popup", () => {
 		) as HTMLTextAreaElement;
 
 		fireEvent.change(textarea, {
-			target: { value: "$doc", selectionStart: 4 },
+			target: { value: "/doc", selectionStart: 4 },
 		});
 		await act(() => vi.advanceTimersByTimeAsync(150));
 		fireEvent.keyDown(textarea, { key: "Tab" });
 
-		expect(textarea.value).toBe("$docs ");
+		expect(textarea.value).toBe("/docs ");
 	});
 });

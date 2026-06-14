@@ -29,7 +29,7 @@ export function SkillPopup({
 			getKey={(skill) => `${skill.scope}:${skill.name}`}
 			renderItem={(skill) => (
 				<>
-					<span className="font-medium">${skill.name}</span>
+					<span className="font-medium">/{skill.name}</span>
 					<span className="text-xs text-muted-foreground">
 						{skill.description
 							? `${skill.scope} - ${skill.description}`
