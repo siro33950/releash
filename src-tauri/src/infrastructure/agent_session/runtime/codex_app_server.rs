@@ -132,6 +132,8 @@ fn app_server_args() -> [&'static str; 3] {
 
 pub(crate) fn spawn_app_server_process_parts(
     cli_path: &str,
+    cwd: Option<&str>,
+    envs: &[(String, String)],
 ) -> Result<CodexAppServerProcessParts, String> {
     let mut command = Command::new(cli_path);
     command
@@ -139,6 +141,12 @@ pub(crate) fn spawn_app_server_process_parts(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(dir) = cwd {
+        command.current_dir(dir);
+    }
+    for (key, value) in envs {
+        command.env(key, value);
+    }
 
     #[cfg(unix)]
     // SAFETY: setsid() is async-signal-safe per POSIX.
@@ -1025,7 +1033,7 @@ pub(crate) fn app_server_message_to_bridge_messages(
 
 impl CodexAppServerProcess {
     pub(crate) fn spawn(cli_path: &str) -> Result<Self, String> {
-        let parts = spawn_app_server_process_parts(cli_path)?;
+        let parts = spawn_app_server_process_parts(cli_path, None, &[])?;
         Ok(Self {
             child: parts.child,
             stdin: parts.stdin,
@@ -1698,6 +1706,37 @@ mod tests {
     #[test]
     fn app_server_args_use_stdio_transport() {
         assert_eq!(app_server_args(), ["app-server", "--listen", "stdio://"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_app_server_process_parts_injects_provided_envs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // app-server 経路でも RELEASH_SESSION_ID 等が子プロセスへ確実に伝搬することを保証する。
+        // 偽 CLI が自分の env を file へ書き出し、その内容で注入有無を検証する。
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("env.out");
+        let script = dir.path().join("fake-cli.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintenv RELEASH_SESSION_ID > \"{}\"\n",
+                out.display()
+            ),
+        )
+        .expect("write script");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let envs = vec![("RELEASH_SESSION_ID".to_string(), "sid-xyz".to_string())];
+        let mut parts = spawn_app_server_process_parts(script.to_str().unwrap(), None, &envs)
+            .expect("spawn fake cli");
+        parts.child.wait().await.expect("wait fake cli");
+
+        let contents = std::fs::read_to_string(&out).expect("read env out");
+        assert_eq!(contents.trim(), "sid-xyz");
     }
 
     #[test]

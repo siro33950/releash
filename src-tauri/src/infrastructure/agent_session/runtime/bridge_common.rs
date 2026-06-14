@@ -2180,7 +2180,7 @@ fn accumulate_sdk_message(
 ///
 /// facet template に `{{session_id}}` のような動的解決値を持ち込まず、Spec issues-1054 の
 /// `{{vars.<name>}}` 静的値原則を破らない経路で session 固有値を agent に届ける単一責任 helper。
-fn session_specific_env_overrides(
+pub(crate) fn session_specific_env_overrides(
     chat_session_id: &str,
     base_branch: Option<&str>,
 ) -> Vec<(&'static str, String)> {
