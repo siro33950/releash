@@ -4704,6 +4704,7 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
     chat_session_id: &str,
 ) -> Result<Option<ExternalPendingTurn>, String> {
     let Some(pending) = take_pending_message(handles, chat_session_id).await else {
+        diag_queue("drain:no_pending", chat_session_id, None);
         return Ok(None);
     };
 
@@ -5267,8 +5268,17 @@ async fn prepare_send_agent_message_internal(
                     .get_mut(&sid)
                     .ok_or_else(|| format!("No active agent process for session {sid}"))?;
                 proc.pending_messages.push_back(pending);
+                diag_queue(
+                    "enqueue:pushed",
+                    &sid,
+                    Some(&format!(
+                        "backend={session_backend_id} queue_len={}",
+                        proc.pending_messages.len()
+                    )),
+                );
             }
             interrupt_active_agent_turn(handles, registry, &sid).await?;
+            diag_queue("enqueue:interrupt_done", &sid, Some(&session_backend_id));
             (transient_human, None, None, Some(queued_turn))
         }
     } else {
