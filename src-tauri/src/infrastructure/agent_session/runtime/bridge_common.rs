@@ -2432,17 +2432,47 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         let _ = app_stdout.emit("agent-supported-commands-updated", &payload);
                     }
                     "session_ready" => {
-                        let mut map = handles_stdout.lock().await;
-                        if let Some(proc) = map.get_mut(&csid_stdout) {
-                            // Only transition to Ready if still Initializing (not already Streaming)
-                            if proc.state == BridgeState::Initializing {
-                                proc.state = BridgeState::Ready;
+                        let became_ready = {
+                            let mut map = handles_stdout.lock().await;
+                            if let Some(proc) = map.get_mut(&csid_stdout) {
+                                // Only transition to Ready if still Initializing (not already Streaming)
+                                let was_initializing = proc.state == BridgeState::Initializing;
+                                if was_initializing {
+                                    proc.state = BridgeState::Ready;
+                                }
+                                if let Some(sid) = msg.get("session_id").and_then(|v| v.as_str()) {
+                                    proc.sdk_session_id = Some(sid.to_string());
+                                }
+                                was_initializing
+                            } else {
+                                false
                             }
-                            if let Some(sid) = msg.get("session_id").and_then(|v| v.as_str()) {
-                                proc.sdk_session_id = Some(sid.to_string());
+                        };
+                        let _ = app_stdout.emit("agent-sdk-message", &msg);
+                        // Initializing 中（起動直後）に enqueue された pending を Ready 化
+                        // 時に drain する。drain トリガーが turn_complete のみだと、ターンが
+                        // 一度も開始されないためキューが永久に消費されない（再起動／履歴
+                        // 復帰直後に送信が発火しない不具合の修正）。turn_complete と同じく
+                        // session_runtime_lock を保持しない経路で起動する。
+                        if became_ready {
+                            if let Some(pending) =
+                                take_pending_message(&handles_stdout, &csid_stdout).await
+                            {
+                                let app_p = app_stdout.clone();
+                                let ss_p = Arc::clone(&session_store_clone);
+                                let h_p = Arc::clone(&handles_stdout);
+                                let csid_p = csid_stdout.clone();
+                                let handle = tokio::runtime::Handle::current();
+                                std::thread::spawn(move || {
+                                    handle.block_on(async move {
+                                        start_pending_message_turn(
+                                            &app_p, &h_p, &ss_p, &csid_p, pending,
+                                        )
+                                        .await;
+                                    });
+                                });
                             }
                         }
-                        let _ = app_stdout.emit("agent-sdk-message", &msg);
                     }
                     "session_cleared" => {
                         {
