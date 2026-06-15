@@ -28,6 +28,7 @@ interface LegacyChatSession {
 	updatedAt: number;
 	agentSessionId?: string | null;
 	permissionMode: string;
+	planMode?: boolean;
 	permissionProfileId?: string | null;
 	backendId?: string | null;
 	workflowStepSession?: boolean;
@@ -91,6 +92,7 @@ function convertLegacySession(session: LegacyChatSession): ChatSession {
 		...session,
 		messages: session.messages.map(convertLegacyMessage),
 		permissionMode: normalizePermissionMode(session.permissionMode),
+		...(session.planMode !== undefined ? { planMode: session.planMode } : {}),
 		permissionProfileId: session.permissionProfileId ?? null,
 		backendId: session.backendId ?? null,
 	};
@@ -122,6 +124,7 @@ interface RawGetSessionResponse {
 	updatedAt: number;
 	agentSessionId?: string | null;
 	permissionMode: string;
+	planMode?: boolean;
 	permissionProfileId?: string | null;
 	backendId?: string | null;
 	selectedModel: string;
@@ -146,6 +149,7 @@ function convertRawGetSessionResponse(
 			updatedAt: raw.updatedAt,
 			agentSessionId: raw.agentSessionId,
 			permissionMode: raw.permissionMode,
+			planMode: raw.planMode,
 			permissionProfileId: raw.permissionProfileId,
 			backendId: raw.backendId,
 			workflowStepSession: raw.workflowStepSession,
@@ -269,6 +273,7 @@ export async function sendAgentMessage(
 	worktreePath: string,
 	content: string,
 	permissionMode: PermissionMode,
+	planMode: boolean,
 	backendId?: string | null,
 	images?: ImageAttachment[],
 	mentions?: MentionReference[],
@@ -279,6 +284,7 @@ export async function sendAgentMessage(
 		worktreePath: string;
 		content: string;
 		permissionMode: PermissionMode;
+		planMode: boolean;
 		backendId: string | null;
 		images?: ImageAttachment[];
 		mentions?: MentionReference[];
@@ -288,6 +294,7 @@ export async function sendAgentMessage(
 		worktreePath,
 		content,
 		permissionMode,
+		planMode,
 		backendId: backendId ?? null,
 		images: images && images.length > 0 ? images : undefined,
 		mentions: mentions && mentions.length > 0 ? mentions : undefined,
@@ -313,6 +320,7 @@ export async function sendWorkflowApprovalChatMessage(
 	runId: string,
 	content: string,
 	permissionMode: PermissionMode,
+	planMode: boolean,
 	images?: ImageAttachment[],
 	mentions?: MentionReference[],
 ): Promise<SendMessageResponse> {
@@ -322,6 +330,7 @@ export async function sendWorkflowApprovalChatMessage(
 			runId,
 			content,
 			permissionMode,
+			planMode,
 			images: images && images.length > 0 ? images : undefined,
 			mentions: mentions && mentions.length > 0 ? mentions : undefined,
 		},
@@ -359,11 +368,15 @@ export async function cancelAgentQueuedTurn(
 interface RawInitSessionsResponse {
 	sessions: SessionSummary[];
 	activeSession: RawGetSessionResponse | null;
+	permissionMode?: string;
+	planMode?: boolean;
 }
 
 export interface InitSessionsResponse {
 	sessions: SessionSummary[];
 	activeSession: GetSessionResponse | null;
+	permissionMode: PermissionMode;
+	planMode: boolean;
 }
 
 export async function initAgentSessions(
@@ -375,7 +388,12 @@ export async function initAgentSessions(
 	const activeSession = raw.activeSession
 		? convertRawGetSessionResponse(raw.activeSession)
 		: null;
-	return { sessions: raw.sessions, activeSession };
+	return {
+		sessions: raw.sessions,
+		activeSession,
+		permissionMode: normalizePermissionMode(raw.permissionMode),
+		planMode: raw.planMode ?? false,
+	};
 }
 
 export async function setSessionBackend(

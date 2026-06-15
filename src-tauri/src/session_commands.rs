@@ -86,6 +86,7 @@ async fn fork_codex_thread_for_session(
             &session.worktree_path,
             session.selected_model.as_deref(),
             Some(&session.permission_mode),
+            false,
             session.permission_profile_id.as_deref(),
         )?;
         process.send(&request).await?;
@@ -458,6 +459,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(

@@ -43,11 +43,10 @@ describe("agentChatReducer", () => {
 			interrupting: {},
 			error: null,
 			permissionMode: "edit" as const,
+			planMode: false,
 			pendingPermissions: {},
 			pendingQueues: {},
 			latestTokenUsage: {},
-			codexGoals: {},
-			codexRuntimeStatuses: {},
 			runtimeSlashCommands: {},
 			availableModels: [],
 			availableModelsByBackend: {},
@@ -67,45 +66,18 @@ describe("agentChatReducer", () => {
 		expect(next.runtimeSlashCommands.s1).toBe(commands);
 	});
 
-	it("stores and clears Codex goals per session", () => {
-		const goal = {
-			objective: "Finish native parity",
-			status: "active",
-			tokenBudget: 50000,
-			tokensUsed: 1200,
-			timeUsedSeconds: 30,
-		};
-		const withGoal = reducer(INITIAL_STATE, {
-			type: "SET_CODEX_GOAL",
-			sessionId: "s1",
-			goal,
+	it("stores plan mode globally for the active composer", () => {
+		const enabled = reducer(INITIAL_STATE, {
+			type: "SET_PLAN_MODE",
+			enabled: true,
 		});
-		expect(withGoal.codexGoals.s1).toEqual(goal);
+		expect(enabled.planMode).toBe(true);
 
-		const cleared = reducer(withGoal, {
-			type: "SET_CODEX_GOAL",
-			sessionId: "s1",
-			goal: null,
+		const disabled = reducer(enabled, {
+			type: "SET_PLAN_MODE",
+			enabled: false,
 		});
-		expect(cleared.codexGoals.s1).toBeNull();
-	});
-
-	it("merges Codex runtime status per session", () => {
-		const withAccount = reducer(INITIAL_STATE, {
-			type: "SET_CODEX_RUNTIME_STATUS",
-			sessionId: "s1",
-			status: { accountSummary: "auth chatgpt / plan pro" },
-		});
-		const withLimits = reducer(withAccount, {
-			type: "SET_CODEX_RUNTIME_STATUS",
-			sessionId: "s1",
-			status: { rateLimitSummary: "codex primary 50% used" },
-		});
-
-		expect(withLimits.codexRuntimeStatuses.s1).toEqual({
-			accountSummary: "auth chatgpt / plan pro",
-			rateLimitSummary: "codex primary 50% used",
-		});
+		expect(disabled.planMode).toBe(false);
 	});
 
 	describe("SET_SESSIONS", () => {
@@ -777,10 +749,6 @@ describe("agentChatReducer", () => {
 					},
 				},
 				sessionModels: { s1: "claude-4", s2: "claude-3.5" },
-				codexRuntimeStatuses: {
-					s1: { accountSummary: "auth chatgpt" },
-					s2: { rateLimitSummary: "primary 10% used" },
-				},
 				latestTokenUsage: {
 					s1: { inputTokens: 100, outputTokens: 25 },
 					s2: { inputTokens: 7, outputTokens: 3 },
@@ -795,9 +763,6 @@ describe("agentChatReducer", () => {
 			expect(next.sessionModels).toEqual({ s2: "claude-3.5" });
 			expect(next.latestTokenUsage).toEqual({
 				s2: { inputTokens: 7, outputTokens: 3 },
-			});
-			expect(next.codexRuntimeStatuses).toEqual({
-				s2: { rateLimitSummary: "primary 10% used" },
 			});
 		});
 

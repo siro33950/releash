@@ -8,6 +8,10 @@ pub struct AgentToolActivityPresentation {
 }
 
 fn classify_tool(tool_name: &str) -> &'static str {
+    if tool_name.starts_with("mcp__") {
+        return "mcp";
+    }
+
     match tool_name {
         "Read"
         | "Glob"
@@ -19,30 +23,8 @@ fn classify_tool(tool_name: &str) -> &'static str {
         | "ToolSearch" => "read",
         "Bash" => "command",
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => "write",
-        _ if tool_name.starts_with("mcp__") => classify_mcp_tool(tool_name),
         _ => "other",
     }
-}
-
-fn classify_mcp_tool(tool_name: &str) -> &'static str {
-    let lower = tool_name.to_lowercase();
-    if [
-        "read", "get", "list", "search", "fetch", "retrieve", "query",
-    ]
-    .iter()
-    .any(|token| lower.contains(token))
-    {
-        return "read";
-    }
-    if [
-        "write", "create", "update", "delete", "edit", "post", "patch", "put",
-    ]
-    .iter()
-    .any(|token| lower.contains(token))
-    {
-        return "write";
-    }
-    "other"
 }
 
 fn shorten_path(full_path: &str, base_path: Option<&str>) -> String {
@@ -96,8 +78,19 @@ fn read_tool_label(tool_name: &str, input: &serde_json::Value, base_path: Option
 
 fn command_tool_label(input: &serde_json::Value) -> String {
     string_input(input, "command")
-        .map(|command| truncate_chars(command, 80))
+        .map(ToString::to_string)
         .unwrap_or_else(|| "command".to_string())
+}
+
+fn mcp_tool_label(tool_name: &str) -> String {
+    if !tool_name.starts_with("mcp__") {
+        return tool_name.to_string();
+    }
+    let mut parts = tool_name.split("__");
+    let _prefix = parts.next();
+    let server = parts.next().unwrap_or("server");
+    let tool = parts.next().unwrap_or("tool");
+    format!("{server}/{tool}")
 }
 
 fn default_tool_summary(
@@ -126,6 +119,18 @@ fn default_tool_summary(
     format!("{first_key}: ...")
 }
 
+fn tool_label(tool_name: &str, input: &serde_json::Value, base_path: Option<&str>) -> String {
+    let category = classify_tool(tool_name);
+    let summary = default_tool_summary(tool_name, input, base_path);
+    match category {
+        "read" => read_tool_label(tool_name, input, base_path),
+        "command" => command_tool_label(input),
+        "mcp" => mcp_tool_label(tool_name),
+        _ if summary == tool_name => tool_name.to_string(),
+        _ => format!("{tool_name} {summary}"),
+    }
+}
+
 fn is_edit_preview_tool(tool_name: &str) -> bool {
     matches!(tool_name, "Edit" | "MultiEdit" | "Write")
 }
@@ -136,11 +141,7 @@ pub(crate) fn present_agent_tool_activity_inner(
     base_path: Option<&str>,
 ) -> AgentToolActivityPresentation {
     let category = classify_tool(tool_name);
-    let label = match category {
-        "read" => read_tool_label(tool_name, input, base_path),
-        "command" => command_tool_label(input),
-        _ => default_tool_summary(tool_name, input, base_path),
-    };
+    let label = tool_label(tool_name, input, base_path);
     AgentToolActivityPresentation {
         category: category.to_string(),
         summary: default_tool_summary(tool_name, input, base_path),
@@ -173,11 +174,11 @@ mod tests {
 
     #[test]
     fn classifies_mcp_tools_by_name_pattern() {
-        assert_eq!(classify_tool("mcp__notion__get_page"), "read");
-        assert_eq!(classify_tool("mcp__server__search_docs"), "read");
-        assert_eq!(classify_tool("mcp__server__create_page"), "write");
-        assert_eq!(classify_tool("mcp__server__patch_item"), "write");
-        assert_eq!(classify_tool("mcp__server__run_something"), "other");
+        assert_eq!(classify_tool("mcp__notion__get_page"), "mcp");
+        assert_eq!(classify_tool("mcp__server__search_docs"), "mcp");
+        assert_eq!(classify_tool("mcp__server__create_page"), "mcp");
+        assert_eq!(classify_tool("mcp__server__patch_item"), "mcp");
+        assert_eq!(classify_tool("mcp__server__run_something"), "mcp");
     }
 
     #[test]
@@ -193,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn presents_command_labels_with_truncation() {
+    fn presents_command_labels_without_pre_truncation() {
         let command = "a".repeat(100);
         let result = present_agent_tool_activity_inner(
             "Bash",
@@ -202,8 +203,8 @@ mod tests {
         );
 
         assert_eq!(result.category, "command");
-        assert_eq!(result.label.len(), 83);
-        assert!(result.label.ends_with("..."));
+        assert_eq!(result.label.len(), 100);
+        assert!(!result.label.ends_with("..."));
     }
 
     #[test]

@@ -1031,6 +1031,7 @@ pub(super) async fn handle_agent_message_request(
             worktree_path,
             content: typed.content.clone(),
             permission_mode: typed.permission_mode,
+            plan_mode: false,
             backend_id: typed.backend_id.clone(),
             images: if typed.images.is_empty() {
                 None
@@ -1547,6 +1548,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),

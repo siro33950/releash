@@ -8,6 +8,8 @@ pub struct AgentEditPreview {
     pub tool_name: String,
     pub operation: String,
     pub file_path: Option<String>,
+    pub original_content: String,
+    pub modified_content: String,
     pub hunks: Vec<AgentEditPreviewHunk>,
     pub warnings: Vec<String>,
 }
@@ -214,6 +216,41 @@ fn build_hunks(
         .collect()
 }
 
+fn content_pair_from_unified_diff(diff: &str) -> (String, String) {
+    let mut original = String::new();
+    let mut modified = String::new();
+
+    for line in diff.lines() {
+        if line.starts_with("@@") || line.starts_with("--- ") || line.starts_with("+++ ") {
+            continue;
+        }
+
+        if let Some(content) = line.strip_prefix('-') {
+            original.push_str(content);
+            original.push('\n');
+        } else if let Some(content) = line.strip_prefix('+') {
+            modified.push_str(content);
+            modified.push('\n');
+        } else if let Some(content) = line.strip_prefix(' ') {
+            original.push_str(content);
+            original.push('\n');
+            modified.push_str(content);
+            modified.push('\n');
+        }
+    }
+
+    (original, modified)
+}
+
+fn codex_file_change_operation(input: &serde_json::Value) -> String {
+    match input_str(input, "kind").unwrap_or("update") {
+        "add" | "create" => "Add file",
+        "delete" | "remove" => "Delete file",
+        _ => "Update file",
+    }
+    .to_string()
+}
+
 fn build_agent_edit_preview_inner(
     worktree_path: &str,
     tool_name: &str,
@@ -229,10 +266,36 @@ fn build_agent_edit_preview_inner(
             tool_name: tool.to_string(),
             operation: "Missing file path".to_string(),
             file_path: None,
+            original_content: String::new(),
+            modified_content: String::new(),
             hunks: Vec::new(),
             warnings: vec!["Tool input did not include file_path.".to_string()],
         }));
     };
+
+    if input
+        .get("codex_file_change")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        let _resolved_path = resolve_tool_file_path(worktree_path, file_path)?;
+        let diff = input_str(input, "diff").unwrap_or_default();
+        let (original, modified) = content_pair_from_unified_diff(diff);
+        let mut warnings = Vec::new();
+        if diff.trim().is_empty() {
+            warnings.push("Codex file change did not include a text diff.".to_string());
+        }
+        let hunks = build_hunks(Some(file_path), &original, &modified);
+        return Ok(Some(AgentEditPreview {
+            tool_name: tool.to_string(),
+            operation: codex_file_change_operation(input),
+            file_path: Some(file_path.to_string()),
+            original_content: original,
+            modified_content: modified,
+            hunks,
+            warnings,
+        }));
+    }
 
     let resolved_path = resolve_tool_file_path(worktree_path, file_path)?;
     let (original, mut warnings) = read_existing_file(&resolved_path)?;
@@ -300,6 +363,8 @@ fn build_agent_edit_preview_inner(
         tool_name: tool.to_string(),
         operation,
         file_path: Some(file_path.to_string()),
+        original_content: original.clone(),
+        modified_content: modified.clone(),
         hunks: build_hunks(Some(file_path), &original, &modified),
         warnings,
     }))
@@ -572,6 +637,46 @@ mod tests {
         .unwrap_err();
 
         assert!(err.contains("traversal"));
+    }
+
+    #[test]
+    fn codex_file_change_rejects_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        let err = build_agent_edit_preview_inner(
+            temp.path().to_str().unwrap(),
+            "Edit",
+            &serde_json::json!({
+                "file_path": "../outside.txt",
+                "codex_file_change": true,
+                "diff": "--- a/outside.txt\n+++ b/outside.txt\n@@ -1 +1 @@\n-old\n+new\n"
+            }),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("traversal"));
+    }
+
+    #[test]
+    fn codex_file_change_preserves_data_lines_starting_with_header_markers() {
+        let temp = tempfile::tempdir().unwrap();
+        let preview = build_agent_edit_preview_inner(
+            temp.path().to_str().unwrap(),
+            "Edit",
+            &serde_json::json!({
+                "file_path": "doc.md",
+                "codex_file_change": true,
+                "diff": "--- a/doc.md\n+++ b/doc.md\n@@ -1,3 +1,3 @@\n----title\n++++title\n----\n+---\n context\n"
+            }),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(preview.original_content.contains("---title\n"));
+        assert!(preview.modified_content.contains("+++title\n"));
+        assert!(preview.original_content.contains("---\n"));
+        assert!(preview.modified_content.contains("---\n"));
+        assert!(!preview.original_content.contains("--- a/doc.md"));
+        assert!(!preview.modified_content.contains("+++ b/doc.md"));
     }
 
     #[cfg(unix)]

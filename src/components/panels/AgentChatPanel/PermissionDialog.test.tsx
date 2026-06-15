@@ -1,11 +1,26 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resetAgentEditPreviewPanelStateForTest } from "./AgentEditPreviewPanel";
 import { PermissionDialog } from "./PermissionDialog";
 
 const mockInvoke = vi.fn().mockResolvedValue(null);
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
+vi.mock("../DiffViewerSection", () => ({
+	DiffViewerSection: ({
+		originalContent,
+		modifiedContent,
+	}: {
+		originalContent: string;
+		modifiedContent: string;
+	}) => (
+		<div data-testid="agent-diff-preview">
+			<pre>{originalContent}</pre>
+			<pre>{modifiedContent}</pre>
+		</div>
+	),
 }));
 
 function resolvedInvoke<T>(value: T): Promise<T> {
@@ -89,10 +104,32 @@ function mockPermissionPresentation(command: string, args: unknown) {
 			),
 		);
 	}
+	if (command === "get_language_from_path") {
+		return resolvedInvoke("typescript");
+	}
+	if (command === "compute_diff_hunks") {
+		const { original, modified } = args as {
+			original: string;
+			modified: string;
+		};
+		return resolvedInvoke({
+			hunks: [
+				{
+					index: 0,
+					oldStart: 1,
+					oldLines: original ? 1 : 0,
+					newStart: 1,
+					newLines: modified ? 1 : 0,
+					lines: original ? [`-${original}`, `+${modified}`] : [`+${modified}`],
+				},
+			],
+		});
+	}
 	return null;
 }
 
 beforeEach(() => {
+	resetAgentEditPreviewPanelStateForTest();
 	mockInvoke.mockClear();
 	mockInvoke.mockImplementation(
 		(command: string, args: unknown) =>
@@ -179,6 +216,8 @@ describe("PermissionDialog", () => {
 					toolName: "Edit",
 					operation: "Edit first match",
 					filePath: "src/index.ts",
+					originalContent: "old",
+					modifiedContent: "new",
 					hunks: [
 						{
 							oldStart: 1,
@@ -363,6 +402,8 @@ describe("PermissionDialog", () => {
 						toolName: "Edit",
 						operation: "Edit first match",
 						filePath: "src/index.ts",
+						originalContent: "old",
+						modifiedContent: String(input.new_string),
 						hunks: [
 							{
 								oldStart: 1,
@@ -422,6 +463,7 @@ describe("PermissionDialog", () => {
 				},
 			}),
 		);
+		await screen.findByText("Edit first match: src/index.ts");
 		await waitFor(() =>
 			expect(screen.getAllByText("preview edit").length).toBeGreaterThan(1),
 		);

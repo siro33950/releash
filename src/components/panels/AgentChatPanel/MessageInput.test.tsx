@@ -19,6 +19,8 @@ const defaultProps = {
 	isStreaming: false,
 	mode: "edit" as const,
 	onModeChange: vi.fn(),
+	planMode: false,
+	onPlanModeChange: vi.fn(),
 	models: [{ value: "claude-opus-4-8" }],
 	currentModelId: "claude-opus-4-8",
 	onModelChange: vi.fn(),
@@ -34,6 +36,26 @@ describe("MessageInput", () => {
 		expect(screen.getByTestId("message-input")).toBeDefined();
 		expect(screen.getByPlaceholderText("Send a message...")).toBeDefined();
 		expect(screen.getByLabelText("Send message")).toBeDefined();
+	});
+
+	it("renders plan mode toggle", () => {
+		render(<MessageInput {...defaultProps} />);
+		expect(screen.getByTestId("plan-mode-toggle")).toBeDefined();
+	});
+
+	it("calls onPlanModeChange with the inverted plan mode when clicked", () => {
+		const onPlanModeChange = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				planMode={true}
+				onPlanModeChange={onPlanModeChange}
+			/>,
+		);
+
+		fireEvent.click(screen.getByTestId("plan-mode-toggle"));
+
+		expect(onPlanModeChange).toHaveBeenCalledWith(false);
 	});
 
 	it("disables send button when input is empty", () => {

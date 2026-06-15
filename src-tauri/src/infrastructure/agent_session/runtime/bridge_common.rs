@@ -27,7 +27,7 @@ use crate::infrastructure::agent_session::runtime::{
 use crate::usecase::agent_session::session::create_session_internal;
 use crate::usecase::agent_session::session::{
     add_message_internal, now_timestamp, ChatMessage, ChatSession, GetSessionResponse, MessagePart,
-    MessageRole, SessionStore, SessionSummary, TokenUsage,
+    MessageRole, SessionStore, SessionSummary, SystemNotificationType, TokenUsage,
 };
 
 pub(crate) use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
@@ -63,6 +63,7 @@ pub struct PendingMessage {
     pub content: String,
     pub created_at: f64,
     pub permission_mode: String,
+    pub plan_mode: bool,
     pub images: Vec<ImageAttachment>,
     pub worktree_path: String,
     pub mentions: Vec<crate::domain::code::MentionReference>,
@@ -743,6 +744,7 @@ fn persist_streaming_parts<R: tauri::Runtime>(
     chat_session_id: &str,
     message_id: &str,
     parts: &[MessagePart],
+    completed_at: Option<f64>,
 ) {
     let data_dir = match resolve_data_dir(app) {
         Ok(d) => d,
@@ -773,7 +775,11 @@ fn persist_streaming_parts<R: tauri::Runtime>(
         msg.thinking = thinking;
         msg.activities = activities;
         msg.parts = Some(parts.to_vec());
-        session.updated_at = now_timestamp();
+        let updated_at = completed_at.unwrap_or_else(now_timestamp);
+        if let Some(completed_at) = completed_at {
+            msg.timestamp = completed_at;
+        }
+        session.updated_at = updated_at;
         if let Err(e) = session_store.save_session(&data_dir, &session) {
             log::warn!("Failed to persist streaming parts for session {chat_session_id}: {e}");
         }
@@ -787,12 +793,14 @@ fn emit_session_state_changed<R: tauri::Runtime>(
     exit_code: Option<i64>,
 ) {
     use tauri::Emitter;
+    let completed_at = exit_code.map(|_| now_timestamp());
     let _ = app.emit(
         "agent-session-state-changed",
         serde_json::json!({
             "chat_session_id": chat_session_id,
             "turn_phase": turn_phase,
             "exit_code": exit_code,
+            "completed_at": completed_at,
         }),
     );
 }
@@ -876,6 +884,17 @@ fn to_agent_stream_part_msg(part: MessagePart) -> crate::protocol::AgentStreamPa
             description,
             summary,
         },
+        MessagePart::TodoListSnapshot { items } => {
+            crate::protocol::AgentStreamPartMsg::TodoListSnapshot {
+                items: items
+                    .into_iter()
+                    .map(|item| crate::protocol::AgentTodoListItemMsg {
+                        text: item.text,
+                        completed: item.completed,
+                    })
+                    .collect(),
+            }
+        }
         MessagePart::SystemNotification {
             notification_type,
             status,
@@ -883,7 +902,7 @@ fn to_agent_stream_part_msg(part: MessagePart) -> crate::protocol::AgentStreamPa
             detail,
             hook_id,
         } => crate::protocol::AgentStreamPartMsg::SystemNotification {
-            notification_type,
+            notification_type: notification_type.as_str().to_string(),
             status,
             label,
             detail,
@@ -963,6 +982,9 @@ fn part_byte_size(part: &MessagePart) -> usize {
                 + description.as_ref().map(|s| s.len()).unwrap_or(0)
                 + summary.as_ref().map(|s| s.len()).unwrap_or(0)
         }
+        MessagePart::TodoListSnapshot { items } => {
+            items.iter().map(|item| item.text.len() + 1).sum()
+        }
         MessagePart::SystemNotification {
             notification_type,
             status,
@@ -970,7 +992,7 @@ fn part_byte_size(part: &MessagePart) -> usize {
             detail,
             hook_id,
         } => {
-            notification_type.len()
+            notification_type.as_str().len()
                 + status.len()
                 + label.len()
                 + detail.as_ref().map(|s| s.len()).unwrap_or(0)
@@ -1598,7 +1620,7 @@ fn build_set_mode_payload_for_mode(
     let obj = payload
         .as_object_mut()
         .expect("setMode payload is an object");
-    for (k, v) in bridge_permission_fields(pm, backend_id) {
+    for (k, v) in bridge_permission_fields(pm, backend_id, false) {
         obj.insert(k, v);
     }
     payload
@@ -1618,11 +1640,28 @@ fn build_set_mode_command_for_mode(
 fn bridge_permission_fields(
     pm: crate::permission::PermissionMode,
     backend_id: &str,
+    plan_mode: bool,
 ) -> Vec<(String, serde_json::Value)> {
     use crate::infrastructure::agent_session::runtime::permission_flags::{
         claude_flag_from_mode, codex_approval_policy_from_mode, codex_sandbox_mode_from_mode,
     };
     if backend_id == CODEX_BACKEND_ID {
+        if plan_mode {
+            return vec![
+                (
+                    "approvalPolicy".to_string(),
+                    serde_json::Value::String("on-request".to_string()),
+                ),
+                (
+                    "sandboxMode".to_string(),
+                    serde_json::Value::String("read-only".to_string()),
+                ),
+                (
+                    "collaborationMode".to_string(),
+                    serde_json::Value::String("plan".to_string()),
+                ),
+            ];
+        }
         vec![
             (
                 "approvalPolicy".to_string(),
@@ -1636,7 +1675,14 @@ fn bridge_permission_fields(
     } else {
         vec![(
             "permissionMode".to_string(),
-            serde_json::Value::String(claude_flag_from_mode(pm).to_string()),
+            serde_json::Value::String(
+                if plan_mode {
+                    "plan"
+                } else {
+                    claude_flag_from_mode(pm)
+                }
+                .to_string(),
+            ),
         )]
     }
 }
@@ -1736,6 +1782,158 @@ fn extract_tool_result_content(content: &serde_json::Value) -> String {
     String::new()
 }
 
+fn extract_todo_items(
+    value: &serde_json::Value,
+) -> Option<Vec<crate::usecase::agent_session::session::TodoListItem>> {
+    let items_value = value
+        .get("items")
+        .or_else(|| value.get("todos"))
+        .or_else(|| value.get("todo_list"))?;
+    let items = items_value.as_array()?;
+    let parsed = items
+        .iter()
+        .filter_map(|item| {
+            let text = item
+                .get("text")
+                .or_else(|| item.get("content"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?;
+            let completed = item
+                .get("completed")
+                .or_else(|| item.get("done"))
+                .and_then(|v| v.as_bool())
+                .or_else(|| {
+                    item.get("status").and_then(|v| {
+                        v.as_str()
+                            .map(|status| matches!(status, "completed" | "done"))
+                    })
+                })
+                .unwrap_or(false);
+            Some(crate::usecase::agent_session::session::TodoListItem {
+                text: text.to_string(),
+                completed,
+            })
+        })
+        .collect::<Vec<_>>();
+    Some(parsed)
+}
+
+fn todo_update_log(items: &[crate::usecase::agent_session::session::TodoListItem]) -> String {
+    let completed = items.iter().filter(|item| item.completed).count();
+    format!("TODO を更新しました（{completed}/{} 完了）", items.len())
+}
+
+fn push_todo_snapshot(
+    parts: &mut Vec<MessagePart>,
+    items: Vec<crate::usecase::agent_session::session::TodoListItem>,
+) {
+    parts.push(MessagePart::Text {
+        content: todo_update_log(&items),
+        parent_tool_use_id: None,
+    });
+    if let Some(existing) = parts
+        .iter_mut()
+        .rev()
+        .find(|part| matches!(part, MessagePart::TodoListSnapshot { .. }))
+    {
+        *existing = MessagePart::TodoListSnapshot { items };
+    } else {
+        parts.push(MessagePart::TodoListSnapshot { items });
+    }
+}
+
+fn push_or_update_tool_result(
+    parts: &mut Vec<MessagePart>,
+    content: String,
+    is_error: bool,
+    tool_use_id: Option<String>,
+    parent_tool_use_id: Option<String>,
+) -> Option<MessagePart> {
+    if let Some(tool_use_id_ref) = tool_use_id.as_deref() {
+        if let Some(index) = parts.iter().rposition(|part| {
+            matches!(
+                part,
+                MessagePart::ToolResult {
+                    tool_use_id: Some(id),
+                    ..
+                } if id == tool_use_id_ref
+            )
+        }) {
+            let MessagePart::ToolResult {
+                content: existing,
+                is_error: existing_error,
+                parent_tool_use_id: existing_parent,
+                ..
+            } = &mut parts[index]
+            else {
+                return None;
+            };
+            if !content.is_empty() {
+                if content.contains(existing.as_str()) || existing.is_empty() {
+                    *existing = content;
+                } else {
+                    existing.push_str(&content);
+                }
+            }
+            *existing_error = *existing_error || is_error;
+            if existing_parent.is_none() {
+                *existing_parent = parent_tool_use_id;
+            }
+            return Some(parts[index].clone());
+        }
+    }
+    parts.push(MessagePart::ToolResult {
+        content,
+        is_error,
+        tool_use_id,
+        parent_tool_use_id,
+    });
+    None
+}
+
+fn push_or_update_tool_use(
+    parts: &mut Vec<MessagePart>,
+    tool: String,
+    input: serde_json::Value,
+    id: String,
+    parent_tool_use_id: Option<String>,
+) -> Option<MessagePart> {
+    if let Some(index) = parts.iter().rposition(|part| {
+        matches!(
+            part,
+            MessagePart::ToolUse {
+                id: existing_id,
+                ..
+            } if existing_id == &id
+        )
+    }) {
+        let MessagePart::ToolUse {
+            tool: existing_tool,
+            input: existing_input,
+            parent_tool_use_id: existing_parent,
+            ..
+        } = &mut parts[index]
+        else {
+            return None;
+        };
+        *existing_tool = tool;
+        *existing_input = input;
+        if existing_parent.is_none() {
+            *existing_parent = parent_tool_use_id;
+        }
+        return Some(parts[index].clone());
+    }
+
+    parts.push(MessagePart::ToolUse {
+        tool,
+        input,
+        id,
+        parent_tool_use_id,
+    });
+    None
+}
+
 /// Returns true if the message should be forwarded as agent-sdk-message.
 /// Non-accumulated messages (meta events) are always forwarded.
 /// permission_request is accumulated (for streaming delta) but ALSO forwarded
@@ -1803,6 +2001,7 @@ fn accumulate_sdk_message(
             (false, None)
         }
         "assistant" => {
+            let mut updated_parts = Vec::new();
             if let Some(message) = msg.get("message") {
                 if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
                     for block in content {
@@ -1822,19 +2021,29 @@ fn accumulate_sdk_message(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            parts.push(MessagePart::ToolUse {
+                            if tool == "TodoWrite" {
+                                if let Some(items) = extract_todo_items(&input) {
+                                    push_todo_snapshot(parts, items);
+                                }
+                                continue;
+                            }
+                            if let Some(updated) = push_or_update_tool_use(
+                                parts,
                                 tool,
                                 input,
                                 id,
-                                parent_tool_use_id: parent_tool_use_id.clone(),
-                            });
+                                parent_tool_use_id.clone(),
+                            ) {
+                                updated_parts.push(updated);
+                            }
                         }
                     }
                 }
             }
-            (true, None)
+            (true, (!updated_parts.is_empty()).then_some(updated_parts))
         }
         "user" => {
+            let mut updated_parts = Vec::new();
             if let Some(message) = msg.get("message") {
                 if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
                     for block in content {
@@ -1859,16 +2068,61 @@ fn accumulate_sdk_message(
                                     task_id_map.insert(agent_id.to_string(), tuid.clone());
                                 }
                             }
-                            parts.push(MessagePart::ToolResult {
-                                content: content_str,
+                            if let Some(updated) = push_or_update_tool_result(
+                                parts,
+                                content_str,
                                 is_error,
                                 tool_use_id,
-                                parent_tool_use_id: parent_tool_use_id.clone(),
-                            });
+                                parent_tool_use_id.clone(),
+                            ) {
+                                updated_parts.push(updated);
+                            }
                         }
                     }
                 }
             }
+            (true, (!updated_parts.is_empty()).then_some(updated_parts))
+        }
+        "todo_list_snapshot" => {
+            if let Some(items) = extract_todo_items(msg) {
+                push_todo_snapshot(parts, items);
+                return (true, None);
+            }
+            (true, None)
+        }
+        "permission_denied" => {
+            let tool_name = msg
+                .get("tool_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Permission");
+            let tool_use_id = msg
+                .get("tool_use_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let decision_reason = msg
+                .get("decision_reason")
+                .and_then(|v| v.as_str())
+                .or_else(|| msg.get("message").and_then(|v| v.as_str()))
+                .unwrap_or("Permission denied");
+            parts.push(MessagePart::Permission {
+                request: serde_json::json!({
+                    "type": "permission_denied",
+                    "request_id": msg
+                        .get("request_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("permission-denied"),
+                    "tool_name": tool_name,
+                    "display_name": tool_name,
+                    "input": msg.get("input").cloned().unwrap_or(serde_json::Value::Null),
+                    "tool_use_id": tool_use_id,
+                    "decision_reason": decision_reason,
+                    "description": msg.get("message").and_then(|v| v.as_str()).unwrap_or(decision_reason),
+                }),
+                status: "denied".to_string(),
+                answers: None,
+                parent_tool_use_id,
+            });
             (true, None)
         }
         "permission_request" => {
@@ -1923,6 +2177,85 @@ fn accumulate_sdk_message(
                     });
                     (true, None)
                 }
+                "task_updated" => {
+                    let mut tool_use_id = msg
+                        .get("tool_use_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if tool_use_id.is_empty() {
+                        if let Some(task_id) = msg.get("task_id").and_then(|v| v.as_str()) {
+                            if let Some(mapped) = task_id_map.get(task_id) {
+                                tool_use_id = mapped.clone();
+                            }
+                        }
+                    }
+                    if tool_use_id.is_empty() {
+                        return (true, None);
+                    }
+                    let patch = msg.get("patch").unwrap_or(msg);
+                    let status = patch
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| {
+                            patch
+                                .get("error")
+                                .filter(|v| !v.is_null())
+                                .map(|_| "failed")
+                        })
+                        .or_else(|| {
+                            patch
+                                .get("is_backgrounded")
+                                .and_then(|v| v.as_bool())
+                                .filter(|value| *value)
+                                .map(|_| "backgrounded")
+                        })
+                        .unwrap_or("progress")
+                        .to_string();
+                    let description = patch
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let summary = patch
+                        .get("summary")
+                        .or_else(|| patch.get("message"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    if let Some(index) = parts.iter().rposition(|part| {
+                        matches!(
+                            part,
+                            MessagePart::TaskStatus {
+                                task_tool_use_id,
+                                ..
+                            } if task_tool_use_id == &tool_use_id
+                        )
+                    }) {
+                        let MessagePart::TaskStatus {
+                            status: existing_status,
+                            description: existing_description,
+                            summary: existing_summary,
+                            ..
+                        } = &mut parts[index]
+                        else {
+                            return (true, None);
+                        };
+                        *existing_status = status;
+                        if description.is_some() {
+                            *existing_description = description;
+                        }
+                        if summary.is_some() {
+                            *existing_summary = summary;
+                        }
+                        return (true, Some(vec![parts[index].clone()]));
+                    }
+                    parts.push(MessagePart::TaskStatus {
+                        task_tool_use_id: tool_use_id,
+                        status,
+                        description,
+                        summary,
+                    });
+                    (true, None)
+                }
                 "init" => (false, None), // init message → forward (not accumulated)
                 "compact_boundary" => {
                     // Compaction completed: find the in-progress compaction part and update it
@@ -1950,7 +2283,9 @@ fn accumulate_sdk_message(
                             ..
                         } = part
                         {
-                            if notification_type == "compaction" && status == "in_progress" {
+                            if *notification_type == SystemNotificationType::Compaction
+                                && status == "in_progress"
+                            {
                                 *status = "completed".to_string();
                                 *label = "Conversation compacted".to_string();
                                 *d = Some(detail.clone());
@@ -1964,7 +2299,7 @@ fn accumulate_sdk_message(
                     } else {
                         // No in-progress compaction found, add a completed one directly
                         parts.push(MessagePart::SystemNotification {
-                            notification_type: "compaction".to_string(),
+                            notification_type: SystemNotificationType::Compaction,
                             status: "completed".to_string(),
                             label: "Conversation compacted".to_string(),
                             detail: Some(detail),
@@ -1973,174 +2308,18 @@ fn accumulate_sdk_message(
                         (true, None)
                     }
                 }
-                "hook_started" => {
-                    let hook_name = msg
-                        .get("hook_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let hook_event = msg
-                        .get("hook_event")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let hook_id = msg
-                        .get("hook_id")
-                        .and_then(|v| v.as_str())
-                        .filter(|id| !id.is_empty())
-                        .map(|id| id.to_string());
-                    parts.push(MessagePart::SystemNotification {
-                        notification_type: "hook".to_string(),
-                        status: "in_progress".to_string(),
-                        label: format!("{hook_name} ({hook_event})"),
-                        detail: None,
-                        hook_id: hook_id.clone(),
-                    });
-                    (true, None)
-                }
-                "hook_response" => {
-                    let hook_id = msg
-                        .get("hook_id")
-                        .and_then(|v| v.as_str())
-                        .filter(|id| !id.is_empty());
-                    let outcome = msg
-                        .get("outcome")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let exit_code = msg
-                        .get("exit_code")
-                        .and_then(|v| v.as_i64())
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "?".to_string());
-                    let new_status = if outcome == "error" {
-                        "error"
-                    } else {
-                        "completed"
-                    };
-                    let detail = format!("outcome={outcome}, exit_code={exit_code}");
-
-                    // Walk parts in reverse to find the matching hook_started notification
-                    let mut updated_part = None;
-                    for part in parts.iter_mut().rev() {
-                        if let MessagePart::SystemNotification {
-                            notification_type,
-                            status,
-                            detail: d,
-                            hook_id: hid,
-                            ..
-                        } = part
-                        {
-                            if notification_type == "hook"
-                                && status == "in_progress"
-                                && hid.as_deref() == hook_id
-                            {
-                                *status = new_status.to_string();
-                                *d = Some(detail.clone());
-                                updated_part = Some(part.clone());
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(p) = updated_part {
-                        (true, Some(vec![p]))
-                    } else {
-                        // No matching hook_started found, add a standalone completed entry
-                        let hook_name = msg
-                            .get("hook_name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown");
-                        let hook_event = msg
-                            .get("hook_event")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown");
-                        parts.push(MessagePart::SystemNotification {
-                            notification_type: "hook".to_string(),
-                            status: new_status.to_string(),
-                            label: format!("{hook_name} ({hook_event})"),
-                            detail: Some(detail),
-                            hook_id: hook_id.map(|id| id.to_string()),
-                        });
-                        (true, None)
-                    }
-                }
-                "files_persisted" => {
-                    let file_paths = msg
-                        .get("filePaths")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .unwrap_or_default();
-                    parts.push(MessagePart::SystemNotification {
-                        notification_type: "files_persisted".to_string(),
-                        status: "completed".to_string(),
-                        label: "Files persisted".to_string(),
-                        detail: if file_paths.is_empty() {
-                            None
-                        } else {
-                            Some(file_paths)
-                        },
-                        hook_id: None,
-                    });
-                    (true, None)
-                }
-                "local_command_output" => {
-                    let content = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                    let truncated = if content.chars().count() > 200 {
-                        // Truncate at char boundary
-                        match content.char_indices().nth(200) {
-                            Some((byte_pos, _)) => format!("{}…", &content[..byte_pos]),
-                            None => content.to_string(),
-                        }
-                    } else {
-                        content.to_string()
-                    };
-                    parts.push(MessagePart::SystemNotification {
-                        notification_type: "local_command_output".to_string(),
-                        status: "completed".to_string(),
-                        label: "Command output".to_string(),
-                        detail: if truncated.is_empty() {
-                            None
-                        } else {
-                            Some(truncated)
-                        },
-                        hook_id: None,
-                    });
-                    (true, None)
-                }
-                "codex_realtime" => {
-                    let notification_type = msg
-                        .get("notification_type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("codex_realtime");
-                    let status = msg
-                        .get("status")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("in_progress");
-                    let label = msg
-                        .get("label")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Codex realtime");
-                    let detail = msg
-                        .get("detail")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    parts.push(MessagePart::SystemNotification {
-                        notification_type: notification_type.to_string(),
-                        status: status.to_string(),
-                        label: label.to_string(),
-                        detail,
-                        hook_id: None,
-                    });
-                    (true, None)
-                }
+                "hook_started"
+                | "hook_progress"
+                | "hook_response"
+                | "files_persisted"
+                | "local_command_output"
+                | "codex_realtime" => (true, None),
                 _ => {
                     // Check for status=compacting (subtype may be empty/"" for status messages)
                     let status = msg.get("status").and_then(|v| v.as_str()).unwrap_or("");
                     if status == "compacting" {
                         parts.push(MessagePart::SystemNotification {
-                            notification_type: "compaction".to_string(),
+                            notification_type: SystemNotificationType::Compaction,
                             status: "in_progress".to_string(),
                             label: "Compacting conversation...".to_string(),
                             detail: None,
@@ -2219,6 +2398,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
     session_id: Option<String>,
     cwd: &str,
     permission_mode: String,
+    plan_mode: bool,
     selected_model: Option<String>,
     system_prompt: Option<String>,
 ) -> Result<(), String> {
@@ -2338,6 +2518,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
     let mut init_cmd = build_init_cmd(
         cwd,
         &initial_permission_mode,
+        plan_mode,
         &session_id,
         composed_system_prompt,
         &backend_id,
@@ -2550,6 +2731,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                         &csid_stdout,
                                         mid,
                                         &final_parts,
+                                        Some(now_timestamp()),
                                     );
                                 }
                             }
@@ -2781,6 +2963,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                     &csid_stdout,
                                     mid,
                                     &persist_parts,
+                                    None,
                                 );
                             }
                         }
@@ -2916,6 +3099,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                     &csid_stdout,
                     message_id,
                     &effect.persisted_parts,
+                    Some(now_timestamp()),
                 );
             }
         }
@@ -3341,6 +3525,7 @@ fn persisted_spawn_info_from_session(
         .unwrap_or((None, None, CLAUDE_BACKEND_ID.to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -3348,6 +3533,7 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
     chat_session_id: &str,
     cwd: &str,
     permission_mode: Option<String>,
+    plan_mode: bool,
     system_prompt: Option<String>,
 ) -> Result<(), String> {
     // 抽象パーミッションモードを境界で解決・検証する。
@@ -3390,6 +3576,7 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
                 chat_session_id: chat_session_id.to_string(),
                 cwd: cwd.to_string(),
                 permission_mode: Some(resolved_permission_mode),
+                plan_mode,
                 permission_profile_id: None,
                 system_prompt,
             })
@@ -3406,6 +3593,7 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
         resume_sid,
         cwd,
         resolved_permission_mode,
+        plan_mode,
         selected_model,
         system_prompt,
     )
@@ -3422,6 +3610,7 @@ pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
     chat_session_id: &str,
     cwd: &str,
     permission_mode: &str,
+    plan_mode: bool,
     prompt: &str,
     streaming_message_id: &str,
     images: &[ImageAttachment],
@@ -3432,6 +3621,7 @@ pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
             app,
             chat_session_id,
             permission_mode,
+            plan_mode,
             prompt,
             streaming_message_id,
             images,
@@ -3461,6 +3651,7 @@ pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
                 resume_sid,
                 cwd,
                 permission_mode.to_string(),
+                plan_mode,
                 selected_model,
                 None,
             )
@@ -3490,6 +3681,7 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
     chat_session_id: &str,
     cwd: &str,
     permission_mode: &str,
+    plan_mode: bool,
     prompt: &str,
     streaming_message_id: &str,
     images: &[ImageAttachment],
@@ -3500,6 +3692,7 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
             app,
             chat_session_id,
             permission_mode,
+            plan_mode,
             prompt,
             streaming_message_id,
             images,
@@ -3528,6 +3721,7 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
                 resume_sid,
                 cwd,
                 permission_mode.to_string(),
+                plan_mode,
                 selected_model,
                 None,
             )
@@ -3564,6 +3758,7 @@ async fn start_codex_backend_turn<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     chat_session_id: &str,
     permission_mode: &str,
+    plan_mode: bool,
     prompt: &str,
     streaming_message_id: &str,
     images: &[ImageAttachment],
@@ -3580,6 +3775,7 @@ async fn start_codex_backend_turn<R: tauri::Runtime>(
                 streaming_message_id: streaming_message_id.to_string(),
                 images: images.to_vec(),
                 permission_mode: permission_mode.to_string(),
+                plan_mode,
                 permission_profile_id: None,
                 editor_context: None,
             },
@@ -3861,6 +4057,7 @@ async fn start_pending_message_turn<R: tauri::Runtime>(
         chat_session_id,
         &pending.worktree_path,
         &pending.permission_mode,
+        pending.plan_mode,
         &resolved_prompt,
         &agent_msg.id,
         &pending.images,
@@ -4621,6 +4818,7 @@ pub(crate) struct ExternalPendingTurn {
     pub queued_turn_id: String,
     pub worktree_path: String,
     pub permission_mode: String,
+    pub plan_mode: bool,
     pub permission_profile_id: Option<String>,
     pub prompt: String,
     pub agent_message_id: String,
@@ -4710,6 +4908,7 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
         queued_turn_id: pending.id,
         worktree_path: pending.worktree_path,
         permission_mode: pending.permission_mode,
+        plan_mode: pending.plan_mode,
         permission_profile_id,
         prompt,
         agent_message_id: agent_msg.id,
@@ -4872,6 +5071,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                             chat_session_id,
                             mid,
                             &final_parts,
+                            Some(now_timestamp()),
                         );
                     }
                 }
@@ -5018,6 +5218,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                         chat_session_id,
                         mid,
                         &persist_parts,
+                        None,
                     );
                 }
             }
@@ -5079,6 +5280,7 @@ struct PreparedAgentTurn {
     backend_id: String,
     worktree_path: String,
     permission_mode: String,
+    plan_mode: bool,
     prompt: String,
     agent_message_id: String,
     images: Vec<ImageAttachment>,
@@ -5089,6 +5291,7 @@ struct PreparedAgentSteer {
     session_id: String,
     backend_id: String,
     permission_mode: String,
+    plan_mode: bool,
     prompt: String,
     steering_message_id: String,
     images: Vec<ImageAttachment>,
@@ -5111,6 +5314,7 @@ async fn prepare_send_agent_message_internal(
     worktree_path: String,
     content: String,
     permission_mode: crate::permission::PermissionMode,
+    plan_mode: bool,
     backend_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::domain::code::MentionReference>>,
@@ -5135,6 +5339,10 @@ async fn prepare_send_agent_message_internal(
             session_store.update_permission_mode(data_dir, sid, &pm)?;
             session.permission_mode = pm.clone();
         }
+        if session.plan_mode != plan_mode {
+            session_store.update_plan_mode(data_dir, sid, plan_mode)?;
+            session.plan_mode = plan_mode;
+        }
         ensure_session_backend_selected(session_store, registry, data_dir, session)?
     } else {
         let resolved_backend_id = registry.resolve_backend_id(backend_id)?;
@@ -5143,13 +5351,14 @@ async fn prepare_send_agent_message_internal(
         // 選択値ではない permission_mode で永続化されたセッションが残ってしまうため
         // （Spec issues-947: セッション保存層が permission_mode の正典）、生成 API を一本化する。
         // backend の登録済み初期モデルがあれば selected_model に永続化する（Spec issues-946）。
-        crate::usecase::agent_session::session::create_session_with_initial_model(
+        crate::usecase::agent_session::session::create_session_with_initial_model_and_plan_mode(
             session_store,
             registry,
             data_dir,
             &worktree_path,
             resolved_backend_id,
             permission_mode,
+            plan_mode,
         )?
     };
     let sid = session.id.clone();
@@ -5240,6 +5449,7 @@ async fn prepare_send_agent_message_internal(
                 session_id: sid.clone(),
                 backend_id: session_backend_id.clone(),
                 permission_mode: pm.clone(),
+                plan_mode,
                 prompt: resolved_prompt,
                 steering_message_id: human_message.id.clone(),
                 images: images.clone(),
@@ -5261,6 +5471,7 @@ async fn prepare_send_agent_message_internal(
                 content: content.clone(),
                 created_at: now_timestamp(),
                 permission_mode: pm.clone(),
+                plan_mode,
                 images: images.clone(),
                 worktree_path: session_worktree_path.clone(),
                 mentions: mentions.clone(),
@@ -5317,6 +5528,7 @@ async fn prepare_send_agent_message_internal(
                 .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string()),
             worktree_path: session_worktree_path.clone(),
             permission_mode: pm.clone(),
+            plan_mode,
             prompt: resolved_prompt,
             agent_message_id: agent_msg.id.clone(),
             images: images.clone(),
@@ -5377,6 +5589,7 @@ async fn start_prepared_agent_turn(
                     streaming_message_id: turn.agent_message_id,
                     images: turn.images,
                     permission_mode: turn.permission_mode,
+                    plan_mode: turn.plan_mode,
                     permission_profile_id: None,
                     editor_context: turn.editor_context,
                 },
@@ -5391,6 +5604,7 @@ async fn start_prepared_agent_turn(
         &turn.session_id,
         &turn.worktree_path,
         &turn.permission_mode,
+        turn.plan_mode,
         &turn.prompt,
         &turn.agent_message_id,
         &turn.images,
@@ -5416,6 +5630,7 @@ async fn steer_prepared_agent_turn(
                 streaming_message_id: steer.steering_message_id,
                 images: steer.images,
                 permission_mode: steer.permission_mode,
+                plan_mode: steer.plan_mode,
                 permission_profile_id: None,
                 editor_context: steer.editor_context,
             },
@@ -5435,6 +5650,7 @@ pub async fn send_agent_message_internal(
     worktree_path: String,
     content: String,
     permission_mode: crate::permission::PermissionMode,
+    plan_mode: bool,
     backend_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::domain::code::MentionReference>>,
@@ -5461,6 +5677,7 @@ pub async fn send_agent_message_internal(
             worktree_path,
             content,
             permission_mode,
+            plan_mode,
             backend_id,
             images,
             mentions,
@@ -5489,6 +5706,8 @@ pub async fn send_agent_message_internal(
 pub struct InitSessionsResponse {
     pub sessions: Vec<SessionSummary>,
     pub active_session: Option<GetSessionResponse>,
+    pub permission_mode: String,
+    pub plan_mode: bool,
 }
 
 /// Unified command for session initialization: lists sessions, starts Bridge processes,
@@ -5537,6 +5756,8 @@ pub(crate) async fn init_agent_sessions_internal(
         Ok(InitSessionsResponse {
             sessions,
             active_session: None,
+            permission_mode: crate::permission::PermissionMode::Edit.as_str().to_string(),
+            plan_mode: false,
         })
     } else {
         // Start agent processes only for sessions that have already sent a turn or have
@@ -5564,10 +5785,26 @@ pub(crate) async fn init_agent_sessions_internal(
         } else {
             None
         };
+        let (permission_mode, plan_mode) = active
+            .as_ref()
+            .map(|response| {
+                (
+                    response.session.permission_mode.clone(),
+                    response.session.plan_mode,
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    crate::permission::PermissionMode::Edit.as_str().to_string(),
+                    false,
+                )
+            });
 
         Ok(InitSessionsResponse {
             sessions,
             active_session: active,
+            permission_mode,
+            plan_mode,
         })
     }
 }
@@ -5593,6 +5830,7 @@ async fn start_existing_session_for_summary(
                 chat_session_id: session.id.clone(),
                 cwd: session.worktree_path.clone(),
                 permission_mode: Some(session.permission_mode.clone()),
+                plan_mode: session.plan_mode,
                 permission_profile_id: session.permission_profile_id.clone(),
                 system_prompt,
             })
@@ -5607,6 +5845,7 @@ async fn start_existing_session_for_summary(
         &session.id,
         &session.worktree_path,
         Some(session.permission_mode.clone()),
+        session.plan_mode,
         system_prompt,
     )
     .await
@@ -5792,6 +6031,7 @@ pub async fn scan_agent_skills(
 fn build_init_cmd(
     cwd: &str,
     permission_mode: &str,
+    plan_mode: bool,
     session_id: &Option<String>,
     system_prompt: Option<String>,
     backend_id: &str,
@@ -5804,7 +6044,7 @@ fn build_init_cmd(
         "sessionId": session_id,
     });
     if let Some(obj) = cmd.as_object_mut() {
-        for (k, v) in bridge_permission_fields(pm, backend_id) {
+        for (k, v) in bridge_permission_fields(pm, backend_id, plan_mode) {
             obj.insert(k, v);
         }
     }
@@ -5970,6 +6210,7 @@ pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
         chat_session_id,
         cwd,
         permission_mode,
+        false,
         prompt,
         &agent_msg.id,
         &[],
@@ -6128,6 +6369,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: Some("sdk-resume-id".to_string()),
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: Some("sonnet".to_string()),
             backend_id: Some("mock".to_string()),
@@ -7758,6 +8000,7 @@ mod tests {
             "/different-request-worktree".to_string(),
             "continue completed step".to_string(),
             crate::permission::PermissionMode::Edit,
+            false,
             None,
             None,
             None,
@@ -7864,6 +8107,7 @@ mod tests {
             worktree_path,
             "regular chat".to_string(),
             crate::permission::PermissionMode::Edit,
+            false,
             None,
             None,
             None,
@@ -7908,6 +8152,7 @@ mod tests {
             worktree_path.clone(),
             "hi".to_string(),
             crate::permission::PermissionMode::Ask,
+            false,
             Some(CLAUDE_BACKEND_ID.to_string()),
             None,
             None,
@@ -7944,6 +8189,7 @@ mod tests {
             "/repo".to_string(),
             "hello codex".to_string(),
             crate::permission::PermissionMode::Edit,
+            false,
             Some(CODEX_BACKEND_ID.to_string()),
             None,
             None,
@@ -7991,6 +8237,7 @@ mod tests {
             worktree_path.clone(),
             "/status".to_string(),
             crate::permission::PermissionMode::Edit,
+            false,
             None,
             None,
             None,
@@ -8051,6 +8298,7 @@ mod tests {
             worktree_path.clone(),
             "resume step".to_string(),
             crate::permission::PermissionMode::Edit,
+            false,
             None,
             None,
             None,
@@ -8574,6 +8822,7 @@ mod tests {
             worktree_path.clone(),
             "Narrow the policy to reviewed findings.".to_string(),
             crate::permission::PermissionMode::Edit,
+            false,
             None,
             None,
             None,
@@ -8691,6 +8940,7 @@ mod tests {
             message_count: 0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
@@ -8711,6 +8961,7 @@ mod tests {
             message_count: 1,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
@@ -8741,6 +8992,7 @@ mod tests {
                 message_count: 0,
                 agent_session_id: None,
                 permission_mode: "edit".to_string(),
+                plan_mode: false,
                 permission_profile_id: None,
                 backend_id: Some("claude".to_string()),
                 workflow_step_session: workflow_step,
@@ -8779,6 +9031,7 @@ mod tests {
             message_count: 3,
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: true,
@@ -8813,6 +9066,7 @@ mod tests {
                 content: "next".to_string(),
                 created_at: 1.0,
                 permission_mode: "edit".to_string(),
+                plan_mode: false,
                 images: Vec::new(),
                 worktree_path: "/repo".to_string(),
                 mentions: Vec::new(),
@@ -8840,6 +9094,7 @@ mod tests {
             content: "next".to_string(),
             created_at: 1.0,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             images: Vec::new(),
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),
@@ -8869,6 +9124,7 @@ mod tests {
             content: "first".to_string(),
             created_at: 1.0,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             images: Vec::new(),
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),
@@ -8879,6 +9135,7 @@ mod tests {
             content: "second".to_string(),
             created_at: 2.0,
             permission_mode: "ask".to_string(),
+            plan_mode: false,
             images: Vec::new(),
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),
@@ -8909,6 +9166,7 @@ mod tests {
             content: "first".to_string(),
             created_at: 1.0,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             images: Vec::new(),
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),
@@ -8919,6 +9177,7 @@ mod tests {
             content: "second".to_string(),
             created_at: 2.0,
             permission_mode: "ask".to_string(),
+            plan_mode: false,
             images: Vec::new(),
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),
@@ -9064,6 +9323,7 @@ mod tests {
         let cmd = build_init_cmd(
             "/repo",
             "edit",
+            false,
             &Some("sess-abc".to_string()),
             None,
             CLAUDE_BACKEND_ID,
@@ -9094,7 +9354,7 @@ mod tests {
 
     #[test]
     fn init_command_without_session_id() {
-        let cmd = build_init_cmd("/repo", "edit", &None, None, CLAUDE_BACKEND_ID).unwrap();
+        let cmd = build_init_cmd("/repo", "edit", false, &None, None, CLAUDE_BACKEND_ID).unwrap();
         assert!(cmd["sessionId"].is_null());
     }
 
@@ -9863,6 +10123,39 @@ mod tests {
     }
 
     #[test]
+    fn test_accumulate_todo_snapshot_accepts_empty_items() {
+        let msg = serde_json::json!({
+            "type": "todo_list_snapshot",
+            "items": []
+        });
+        let mut parts = vec![MessagePart::TodoListSnapshot {
+            items: vec![crate::usecase::agent_session::session::TodoListItem {
+                text: "old todo".to_string(),
+                completed: false,
+            }],
+        }];
+
+        let (handled, updated) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+
+        assert!(handled);
+        assert!(updated.is_none());
+        let snapshot = parts
+            .iter()
+            .find_map(|part| match part {
+                MessagePart::TodoListSnapshot { items } => Some(items),
+                _ => None,
+            })
+            .expect("snapshot should be present");
+        assert!(snapshot.is_empty());
+    }
+
+    #[test]
+    fn test_extract_todo_items_rejects_missing_or_non_array_items() {
+        assert!(extract_todo_items(&serde_json::json!({})).is_none());
+        assert!(extract_todo_items(&serde_json::json!({ "items": "not-array" })).is_none());
+    }
+
+    #[test]
     fn test_accumulate_tool_result() {
         let msg = serde_json::json!({
             "type": "user",
@@ -10098,6 +10391,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_task_updated_in_place_returns_updated_delta() {
+        let mut parts = vec![MessagePart::TaskStatus {
+            task_tool_use_id: "toolu_task".to_string(),
+            status: "started".to_string(),
+            description: Some("Initial".to_string()),
+            summary: None,
+        }];
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "task_updated",
+            "tool_use_id": "toolu_task",
+            "patch": {
+                "status": "completed",
+                "summary": "Done"
+            }
+        });
+
+        let (handled, updated) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+
+        assert!(handled);
+        let updated = updated.expect("in-place update should be returned as delta");
+        assert_eq!(updated.len(), 1);
+        match (&parts[0], &updated[0]) {
+            (
+                MessagePart::TaskStatus {
+                    status,
+                    description,
+                    summary,
+                    ..
+                },
+                MessagePart::TaskStatus {
+                    status: delta_status,
+                    description: delta_description,
+                    summary: delta_summary,
+                    ..
+                },
+            ) => {
+                assert_eq!(status, "completed");
+                assert_eq!(description.as_deref(), Some("Initial"));
+                assert_eq!(summary.as_deref(), Some("Done"));
+                assert_eq!(delta_status, "completed");
+                assert_eq!(delta_description.as_deref(), Some("Initial"));
+                assert_eq!(delta_summary.as_deref(), Some("Done"));
+            }
+            _ => panic!("expected TaskStatus"),
+        }
+    }
+
     // --- SystemNotification accumulate tests ---
 
     #[test]
@@ -10119,7 +10461,7 @@ mod tests {
                 detail,
                 hook_id,
             } => {
-                assert_eq!(notification_type, "compaction");
+                assert_eq!(*notification_type, SystemNotificationType::Compaction);
                 assert_eq!(status, "in_progress");
                 assert_eq!(label, "Compacting conversation...");
                 assert_eq!(*detail, None);
@@ -10132,7 +10474,7 @@ mod tests {
     #[test]
     fn test_accumulate_compaction_complete_updates_existing() {
         let mut parts = vec![MessagePart::SystemNotification {
-            notification_type: "compaction".to_string(),
+            notification_type: SystemNotificationType::Compaction,
             status: "in_progress".to_string(),
             label: "Compacting conversation...".to_string(),
             detail: None,
@@ -10161,7 +10503,7 @@ mod tests {
                 detail,
                 ..
             } => {
-                assert_eq!(notification_type, "compaction");
+                assert_eq!(*notification_type, SystemNotificationType::Compaction);
                 assert_eq!(status, "completed");
                 assert_eq!(label, "Conversation compacted");
                 assert!(detail.as_ref().unwrap().contains("trigger=auto"));
@@ -10196,240 +10538,46 @@ mod tests {
     }
 
     #[test]
-    fn test_accumulate_hook_started() {
-        let msg = serde_json::json!({
-            "type": "system",
-            "subtype": "hook_started",
-            "hook_name": "SessionEnd",
-            "hook_event": "StopSession",
-            "hook_id": "hook-001"
-        });
-        let mut parts = vec![];
-        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
-        assert!(handled);
-        assert_eq!(parts.len(), 1);
-        match &parts[0] {
-            MessagePart::SystemNotification {
-                notification_type,
-                status,
-                label,
-                hook_id,
-                ..
-            } => {
-                assert_eq!(notification_type, "hook");
-                assert_eq!(status, "in_progress");
-                assert_eq!(label, "SessionEnd (StopSession)");
-                assert_eq!(hook_id.as_deref(), Some("hook-001"));
-            }
-            _ => panic!("expected SystemNotification"),
-        }
-    }
-
-    #[test]
-    fn test_accumulate_hook_response_updates_existing() {
-        let mut parts = vec![MessagePart::SystemNotification {
-            notification_type: "hook".to_string(),
-            status: "in_progress".to_string(),
-            label: "SessionEnd (StopSession)".to_string(),
-            detail: None,
-            hook_id: Some("hook-001".to_string()),
-        }];
-        let msg = serde_json::json!({
-            "type": "system",
-            "subtype": "hook_response",
-            "hook_id": "hook-001",
-            "outcome": "success",
-            "exit_code": 0
-        });
-        let (handled, updated) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
-        assert!(handled);
-        assert!(updated.is_some());
-        assert_eq!(parts.len(), 1); // Updated in-place
-        match &parts[0] {
-            MessagePart::SystemNotification { status, detail, .. } => {
-                assert_eq!(status, "completed");
-                assert!(detail.as_ref().unwrap().contains("outcome=success"));
-                assert!(detail.as_ref().unwrap().contains("exit_code=0"));
-            }
-            _ => panic!("expected SystemNotification"),
-        }
-    }
-
-    #[test]
-    fn test_accumulate_hook_response_error_status() {
-        let mut parts = vec![MessagePart::SystemNotification {
-            notification_type: "hook".to_string(),
-            status: "in_progress".to_string(),
-            label: "PreCompact (Compact)".to_string(),
-            detail: None,
-            hook_id: Some("hook-err".to_string()),
-        }];
-        let msg = serde_json::json!({
-            "type": "system",
-            "subtype": "hook_response",
-            "hook_id": "hook-err",
-            "outcome": "error",
-            "exit_code": 1
-        });
-        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
-        assert!(handled);
-        match &parts[0] {
-            MessagePart::SystemNotification { status, .. } => {
-                assert_eq!(status, "error");
-            }
-            _ => panic!("expected SystemNotification"),
-        }
-    }
-
-    #[test]
-    fn test_accumulate_files_persisted() {
-        let msg = serde_json::json!({
-            "type": "system",
-            "subtype": "files_persisted",
-            "filePaths": ["CLAUDE.md", "src/main.rs"]
-        });
-        let mut parts = vec![];
-        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
-        assert!(handled);
-        assert_eq!(parts.len(), 1);
-        match &parts[0] {
-            MessagePart::SystemNotification {
-                notification_type,
-                status,
-                label,
-                detail,
-                ..
-            } => {
-                assert_eq!(notification_type, "files_persisted");
-                assert_eq!(status, "completed");
-                assert_eq!(label, "Files persisted");
-                assert_eq!(detail.as_deref(), Some("CLAUDE.md, src/main.rs"));
-            }
-            _ => panic!("expected SystemNotification"),
-        }
-    }
-
-    #[test]
-    fn test_accumulate_local_command_output() {
-        let msg = serde_json::json!({
-            "type": "system",
-            "subtype": "local_command_output",
-            "content": "npm test output here"
-        });
-        let mut parts = vec![];
-        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
-        assert!(handled);
-        assert_eq!(parts.len(), 1);
-        match &parts[0] {
-            MessagePart::SystemNotification {
-                notification_type,
-                status,
-                label,
-                detail,
-                ..
-            } => {
-                assert_eq!(notification_type, "local_command_output");
-                assert_eq!(status, "completed");
-                assert_eq!(label, "Command output");
-                assert_eq!(detail.as_deref(), Some("npm test output here"));
-            }
-            _ => panic!("expected SystemNotification"),
-        }
-    }
-
-    #[test]
-    fn test_accumulate_local_command_output_truncates_long_content() {
-        let long_content = "a".repeat(300);
-        let msg = serde_json::json!({
-            "type": "system",
-            "subtype": "local_command_output",
-            "content": long_content
-        });
-        let mut parts = vec![];
-        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
-        assert!(handled);
-        match &parts[0] {
-            MessagePart::SystemNotification { detail, .. } => {
-                let d = detail.as_ref().unwrap();
-                assert!(d.len() <= 200 + "…".len());
-                assert!(d.ends_with('…'));
-            }
-            _ => panic!("expected SystemNotification"),
-        }
-    }
-
-    #[test]
-    fn test_accumulate_local_command_output_truncates_multibyte() {
-        let long_content = "あ".repeat(201);
-        let msg = serde_json::json!({
-            "type": "system",
-            "subtype": "local_command_output",
-            "content": long_content
-        });
-        let mut parts = vec![];
-        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
-        assert!(handled);
-        match &parts[0] {
-            MessagePart::SystemNotification { detail, .. } => {
-                let d = detail.as_ref().unwrap();
-                assert!(d.ends_with('…'));
-                let without_ellipsis = d.trim_end_matches('…');
-                assert_eq!(without_ellipsis.chars().count(), 200);
-            }
-            _ => panic!("expected SystemNotification"),
-        }
-    }
-
-    #[test]
-    fn test_accumulate_local_command_output_no_truncate_short_multibyte() {
-        let content = "あ".repeat(100);
-        let msg = serde_json::json!({
-            "type": "system",
-            "subtype": "local_command_output",
-            "content": content
-        });
-        let mut parts = vec![];
-        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
-        assert!(handled);
-        match &parts[0] {
-            MessagePart::SystemNotification { detail, .. } => {
-                let d = detail.as_ref().unwrap();
-                assert!(!d.ends_with('…'));
-                assert_eq!(d.chars().count(), 100);
-            }
-            _ => panic!("expected SystemNotification"),
-        }
-    }
-
-    #[test]
-    fn test_accumulate_codex_realtime_notification() {
-        let msg = serde_json::json!({
-            "type": "system",
-            "subtype": "codex_realtime",
-            "notification_type": "codex_realtime",
-            "status": "in_progress",
-            "label": "Codex realtime started",
-            "detail": "thread=thr_123, version=v2"
-        });
-        let mut parts = vec![];
-        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
-        assert!(handled);
-        assert_eq!(parts.len(), 1);
-        match &parts[0] {
-            MessagePart::SystemNotification {
-                notification_type,
-                status,
-                label,
-                detail,
-                hook_id,
-            } => {
-                assert_eq!(notification_type, "codex_realtime");
-                assert_eq!(status, "in_progress");
-                assert_eq!(label, "Codex realtime started");
-                assert_eq!(detail.as_deref(), Some("thread=thr_123, version=v2"));
-                assert_eq!(*hook_id, None);
-            }
-            _ => panic!("expected SystemNotification"),
+    fn test_accumulate_removed_system_subtypes_are_ignored() {
+        for msg in [
+            serde_json::json!({
+                "type": "system",
+                "subtype": "hook_started",
+                "hook_name": "SessionEnd",
+                "hook_event": "StopSession",
+                "hook_id": "hook-001"
+            }),
+            serde_json::json!({
+                "type": "system",
+                "subtype": "hook_response",
+                "hook_id": "hook-001",
+                "outcome": "success",
+                "exit_code": 0
+            }),
+            serde_json::json!({
+                "type": "system",
+                "subtype": "files_persisted",
+                "filePaths": ["CLAUDE.md", "src/main.rs"]
+            }),
+            serde_json::json!({
+                "type": "system",
+                "subtype": "local_command_output",
+                "content": "npm test output here"
+            }),
+            serde_json::json!({
+                "type": "system",
+                "subtype": "codex_realtime",
+                "notification_type": "codex_realtime",
+                "status": "in_progress",
+                "label": "Codex realtime started",
+                "detail": "thread=thr_123, version=v2"
+            }),
+        ] {
+            let mut parts = vec![];
+            let (handled, updated) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+            assert!(handled);
+            assert!(updated.is_none());
+            assert!(parts.is_empty());
         }
     }
 
@@ -10745,7 +10893,7 @@ mod tests {
 
     #[test]
     fn build_init_cmd_without_system_prompt_for_claude() {
-        let cmd = build_init_cmd("/repo", "edit", &None, None, CLAUDE_BACKEND_ID).unwrap();
+        let cmd = build_init_cmd("/repo", "edit", false, &None, None, CLAUDE_BACKEND_ID).unwrap();
         assert_eq!(cmd["type"], "init");
         assert_eq!(cmd["cwd"], "/repo");
         assert_eq!(cmd["permissionMode"], "acceptEdits");
@@ -10758,6 +10906,7 @@ mod tests {
         let cmd = build_init_cmd(
             "/repo",
             "edit",
+            false,
             &Some("prev-session".to_string()),
             Some("You are a coder.".to_string()),
             CLAUDE_BACKEND_ID,
@@ -10772,20 +10921,20 @@ mod tests {
 
     #[test]
     fn build_init_cmd_full_for_claude_emits_bypass_permissions() {
-        let cmd = build_init_cmd("/repo", "full", &None, None, CLAUDE_BACKEND_ID).unwrap();
+        let cmd = build_init_cmd("/repo", "full", false, &None, None, CLAUDE_BACKEND_ID).unwrap();
         assert_eq!(cmd["permissionMode"], "bypassPermissions");
         assert!(cmd.get("systemPrompt").is_none());
     }
 
     #[test]
     fn build_init_cmd_ask_for_claude_emits_default() {
-        let cmd = build_init_cmd("/repo", "ask", &None, None, CLAUDE_BACKEND_ID).unwrap();
+        let cmd = build_init_cmd("/repo", "ask", false, &None, None, CLAUDE_BACKEND_ID).unwrap();
         assert_eq!(cmd["permissionMode"], "default");
     }
 
     #[test]
     fn build_init_cmd_for_codex_emits_sandbox_and_approval() {
-        let cmd = build_init_cmd("/repo", "edit", &None, None, CODEX_BACKEND_ID).unwrap();
+        let cmd = build_init_cmd("/repo", "edit", false, &None, None, CODEX_BACKEND_ID).unwrap();
         assert_eq!(cmd["type"], "init");
         assert_eq!(cmd["sandboxMode"], "workspace-write");
         assert_eq!(cmd["approvalPolicy"], "on-request");
@@ -10795,10 +10944,10 @@ mod tests {
 
     #[test]
     fn build_init_cmd_for_codex_ask_and_full() {
-        let ask = build_init_cmd("/repo", "ask", &None, None, CODEX_BACKEND_ID).unwrap();
+        let ask = build_init_cmd("/repo", "ask", false, &None, None, CODEX_BACKEND_ID).unwrap();
         assert_eq!(ask["sandboxMode"], "read-only");
         assert_eq!(ask["approvalPolicy"], "on-request");
-        let full = build_init_cmd("/repo", "full", &None, None, CODEX_BACKEND_ID).unwrap();
+        let full = build_init_cmd("/repo", "full", false, &None, None, CODEX_BACKEND_ID).unwrap();
         assert_eq!(full["sandboxMode"], "danger-full-access");
         assert_eq!(full["approvalPolicy"], "never");
     }
@@ -10806,11 +10955,19 @@ mod tests {
     #[test]
     fn build_init_cmd_rejects_invalid_abstract_mode() {
         assert!(
-            build_init_cmd("/repo", "acceptEdits", &None, None, CLAUDE_BACKEND_ID).is_err(),
+            build_init_cmd(
+                "/repo",
+                "acceptEdits",
+                false,
+                &None,
+                None,
+                CLAUDE_BACKEND_ID
+            )
+            .is_err(),
             "legacy claude flag must be rejected at the boundary"
         );
-        assert!(build_init_cmd("/repo", "plan", &None, None, CLAUDE_BACKEND_ID).is_err());
-        assert!(build_init_cmd("/repo", "", &None, None, CODEX_BACKEND_ID).is_err());
+        assert!(build_init_cmd("/repo", "plan", false, &None, None, CLAUDE_BACKEND_ID).is_err());
+        assert!(build_init_cmd("/repo", "", false, &None, None, CODEX_BACKEND_ID).is_err());
     }
 
     /// spawn_bridge_process が spawn 前にパーミッションモードを検証することの担保。
@@ -10871,6 +11028,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: None,
             permission_mode: permission.to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("mock".to_string()),
@@ -11029,7 +11187,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_send_persists_selected_permission_mode_for_existing_session() {
+    async fn prepare_send_persists_selected_modes_for_existing_session() {
         // Spec issues-947: 既存セッションに対する送信時にも、検証済み permission_mode が
         // 異なれば ChatSession.permission_mode に書き戻される（保存層が単一の正典）。
         let data_dir = tempfile::tempdir().unwrap();
@@ -11058,6 +11216,7 @@ mod tests {
             "/repo".to_string(),
             "hello".to_string(),
             crate::permission::PermissionMode::Ask,
+            true,
             Some("mock".to_string()),
             None,
             None,
@@ -11067,11 +11226,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(response.session.permission_mode, "ask");
+        assert!(response.session.plan_mode);
         let saved = session_store
             .get_session(data_dir.path(), &session_id)
             .unwrap()
             .unwrap();
         assert_eq!(saved.permission_mode, "ask");
+        assert!(saved.plan_mode);
     }
 
     #[test]
@@ -12198,6 +12359,7 @@ mod tests {
             updated_at: 0.0,
             agent_session_id,
             permission_mode: "acceptEdits".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model,
             backend_id: Some(backend_id.to_string()),

@@ -68,6 +68,10 @@ function renderPart(part: MessagePart): string {
 			return `Permission ${part.status}: ${part.request.display_name ?? part.request.tool_name}`;
 		case "task_status":
 			return part.summary ?? part.description ?? `Task ${part.status}`;
+		case "todo_list_snapshot": {
+			const completed = part.items.filter((item) => item.completed).length;
+			return `TODO ${completed}/${part.items.length}`;
+		}
 		case "system_notification":
 			return part.detail ? `${part.label}: ${part.detail}` : part.label;
 		case "image":
@@ -87,6 +91,8 @@ function remotePartKey(messageId: string, part: MessagePart): string {
 			return `${messageId}:permission:${part.request.request_id}`;
 		case "task_status":
 			return `${messageId}:task_status:${part.taskToolUseId}:${part.status}`;
+		case "todo_list_snapshot":
+			return `${messageId}:todo_list:${part.items.map((item) => `${item.completed}:${item.text}`).join("|")}`;
 		case "system_notification":
 			return `${messageId}:system:${part.notificationType}:${part.status}:${part.label}`;
 		case "image":

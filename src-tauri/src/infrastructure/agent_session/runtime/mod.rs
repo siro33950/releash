@@ -102,6 +102,7 @@ pub struct SessionConfig {
     pub chat_session_id: String,
     pub cwd: String,
     pub permission_mode: Option<String>,
+    pub plan_mode: bool,
     pub permission_profile_id: Option<String>,
     pub system_prompt: Option<String>,
 }
@@ -120,6 +121,7 @@ pub struct AgentMessage {
     pub streaming_message_id: String,
     pub images: Vec<ImageAttachment>,
     pub permission_mode: String,
+    pub plan_mode: bool,
     pub permission_profile_id: Option<String>,
     pub editor_context: Option<AgentEditorContext>,
 }

@@ -397,6 +397,13 @@ pub struct AgentPermissionModeSetResponse {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTodoListItemMsg {
+    pub text: String,
+    pub completed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentStreamPartMsg {
@@ -471,6 +478,9 @@ pub enum AgentStreamPartMsg {
         description: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         summary: Option<String>,
+    },
+    TodoListSnapshot {
+        items: Vec<AgentTodoListItemMsg>,
     },
     SystemNotification {
         #[serde(rename = "notificationType")]

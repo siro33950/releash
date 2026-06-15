@@ -202,6 +202,8 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
 			sessions: [],
 			activeSession: null,
+			permissionMode: "edit",
+			planMode: false,
 		});
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
@@ -235,6 +237,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"edit",
+			false,
 			null,
 			undefined,
 			undefined,
@@ -262,6 +265,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"check this",
 			"edit",
+			false,
 			null,
 			images,
 			undefined,
@@ -290,6 +294,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"check @src/main.rs:L10-L20",
 			"edit",
+			false,
 			null,
 			undefined,
 			mentions,
@@ -317,6 +322,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"",
 			"edit",
+			false,
 			null,
 			images,
 			undefined,
@@ -342,6 +348,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"edit",
+			false,
 			null,
 			undefined,
 			undefined,
@@ -374,6 +381,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"edit",
+			false,
 			"codex",
 			undefined,
 			undefined,
@@ -403,6 +411,7 @@ describe("useAgentChat", () => {
 			"run-approval-1",
 			"adjust policy",
 			"edit",
+			false,
 			undefined,
 			undefined,
 		);
@@ -458,6 +467,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"continue",
 			"edit",
+			false,
 			null,
 			undefined,
 			undefined,
@@ -484,6 +494,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"continue parent",
 			"edit",
+			false,
 			null,
 			undefined,
 			undefined,
@@ -573,6 +584,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"edit",
+			false,
 			null,
 			undefined,
 			undefined,
@@ -652,6 +664,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"side prompt",
 			"edit",
+			false,
 			null,
 			undefined,
 			undefined,
@@ -688,6 +701,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"second",
 			"edit",
+			false,
 			null,
 			undefined,
 			undefined,
@@ -882,6 +896,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"ask",
+			false,
 			null,
 			undefined,
 			undefined,
@@ -913,6 +928,33 @@ describe("useAgentChat", () => {
 		expect(mockInvoke).toHaveBeenCalledWith("set_agent_permission_mode", {
 			chatSessionId: "s1",
 			permissionMode: "full",
+		});
+	});
+
+	it("setPlanMode immediately invokes set_agent_plan_mode for active session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
+		});
+		mockInvoke.mockClear();
+
+		act(() => {
+			result.current.setPlanMode(
+				result.current.activeSession?.id ?? null,
+				true,
+			);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith("set_agent_plan_mode", {
+			chatSessionId: "s1",
+			planMode: true,
 		});
 	});
 
@@ -1021,6 +1063,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"second",
 			"edit",
+			false,
 			null,
 			undefined,
 			undefined,
@@ -1351,6 +1394,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"edit",
+			false,
 			null,
 			undefined,
 			undefined,
@@ -2164,6 +2208,70 @@ describe("useAgentChat", () => {
 
 		expect(result.current.selectedModel).toBe("claude-4");
 		expect(result.current.availableModels).toEqual([{ value: "claude-4" }]);
+	});
+
+	it("restores permissionMode and planMode from Rust response when worktree changes", async () => {
+		const { renderHook, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		vi.mocked(sessionStore.initAgentSessions)
+			.mockResolvedValueOnce({
+				sessions: [
+					{
+						id: "s1",
+						worktreePath: "/repo-a",
+						updatedAt: 1000,
+						state: "active",
+						firstMessage: "hi",
+						messageCount: 1,
+						createdAt: 1000,
+						permissionMode: "ask",
+						planMode: true,
+					},
+				],
+				activeSession: {
+					session: {
+						id: "s1",
+						worktreePath: "/repo-a",
+						messages: [],
+						state: "active",
+						createdAt: 1000,
+						updatedAt: 1000,
+						permissionMode: "ask",
+						planMode: true,
+					},
+					turnPhase: "idle",
+					selectedModel: null,
+					availableModels: [],
+				},
+				permissionMode: "ask",
+				planMode: true,
+			} as never)
+			.mockResolvedValueOnce({
+				sessions: [],
+				activeSession: null,
+				permissionMode: "edit",
+				planMode: false,
+			} as never);
+
+		const { result, rerender } = renderHook(
+			({ worktreePath }) => useAgentChat(worktreePath),
+			{ initialProps: { worktreePath: "/repo-a" } },
+		);
+
+		await waitFor(() => {
+			expect(result.current.permissionMode).toBe("ask");
+			expect(result.current.planMode).toBe(true);
+		});
+
+		rerender({ worktreePath: "/repo-b" });
+
+		await waitFor(() => {
+			expect(result.current.permissionMode).toBe("edit");
+			expect(result.current.planMode).toBe(false);
+		});
+		expect(sessionStore.initAgentSessions).toHaveBeenCalledWith("/repo-b");
 	});
 });
 

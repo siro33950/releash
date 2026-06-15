@@ -1,7 +1,8 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { Check, Copy } from "lucide-react";
 import type { AnchorHTMLAttributes } from "react";
-import { memo, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
 import type { ImagePart, MentionReference, MessageRole } from "@/types/session";
@@ -9,6 +10,9 @@ import type { ImagePart, MentionReference, MessageRole } from "@/types/session";
 const LARGE_AGENT_MESSAGE_CHARS = 12_000;
 const LARGE_AGENT_MESSAGE_LINES = 240;
 const LARGE_AGENT_MESSAGE_PREVIEW_CHARS = 4_000;
+const LARGE_HUMAN_MESSAGE_CHARS = 3_000;
+const LARGE_HUMAN_MESSAGE_LINES = 50;
+const LARGE_HUMAN_MESSAGE_PREVIEW_CHARS = 1_200;
 const VIRTUALIZED_AGENT_MESSAGE_LINES = 600;
 const VIRTUALIZED_LINE_HEIGHT = 20;
 
@@ -23,6 +27,7 @@ interface StreamMessageProps {
 	images?: ImagePart[];
 	mentions?: MentionReference[];
 	rawMode?: boolean;
+	timestamp?: number;
 }
 
 function ExternalLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
@@ -89,16 +94,83 @@ function buildDisplayParts(
 	return parts;
 }
 
+export function formatMessageTime(timestamp?: number): string | null {
+	if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) return null;
+	const ms = timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
+	const date = new Date(ms);
+	if (Number.isNaN(date.getTime())) return null;
+	return date.toLocaleTimeString([], {
+		hour: "2-digit",
+		minute: "2-digit",
+	});
+}
+
+export function MessageCopyButton({
+	content,
+	ariaLabel = "Copy message",
+}: {
+	content: string;
+	ariaLabel?: string;
+}) {
+	const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
+		"idle",
+	);
+	useEffect(() => {
+		if (copyState === "idle") return;
+		const timeout = window.setTimeout(() => setCopyState("idle"), 1400);
+		return () => window.clearTimeout(timeout);
+	}, [copyState]);
+
+	const handleCopy = async () => {
+		if (!content) return;
+		try {
+			await navigator.clipboard.writeText(content);
+			setCopyState("copied");
+		} catch {
+			setCopyState("error");
+		}
+	};
+
+	return (
+		<button
+			type="button"
+			className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+			aria-label={ariaLabel}
+			title={copyState === "error" ? "Copy failed" : ariaLabel}
+			onClick={handleCopy}
+			disabled={!content}
+		>
+			{copyState === "copied" ? (
+				<Check className="size-3" />
+			) : (
+				<Copy className="size-3" />
+			)}
+		</button>
+	);
+}
+
 function HumanMessageContent({
 	content,
 	images,
 	mentions,
+	timestamp,
 }: {
 	content: string;
 	images?: ImagePart[];
 	mentions?: MentionReference[];
+	timestamp?: number;
 }) {
-	const displayParts = buildDisplayParts(content, mentions);
+	const [isExpanded, setIsExpanded] = useState(false);
+	const lines = lineCount(content);
+	const shouldCollapse =
+		content.length > LARGE_HUMAN_MESSAGE_CHARS ||
+		lines > LARGE_HUMAN_MESSAGE_LINES;
+	const visibleContent =
+		shouldCollapse && !isExpanded
+			? content.slice(0, LARGE_HUMAN_MESSAGE_PREVIEW_CHARS)
+			: content;
+	const displayParts = buildDisplayParts(visibleContent, mentions);
+	const formattedTime = formatMessageTime(timestamp);
 
 	const imageElements =
 		images && images.length > 0
@@ -114,9 +186,24 @@ function HumanMessageContent({
 			: null;
 
 	return (
-		<div className="bg-muted rounded-lg px-3 py-2">
+		<div className="rounded-lg border border-border bg-background px-3 py-2">
 			{imageElements && imageElements.length > 0 && (
 				<div className="flex flex-wrap gap-2 mb-2">{imageElements}</div>
+			)}
+			{shouldCollapse && !isExpanded && (
+				<div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+					<span>
+						Long message: {content.length.toLocaleString()} chars /{" "}
+						{lines.toLocaleString()} lines
+					</span>
+					<button
+						type="button"
+						className="inline-flex h-6 items-center rounded border border-border bg-background px-2 text-foreground hover:bg-muted"
+						onClick={() => setIsExpanded(true)}
+					>
+						Show full message
+					</button>
+				</div>
 			)}
 			<p className="text-sm whitespace-pre-wrap break-words">
 				{displayParts.map((part, i) => {
@@ -132,7 +219,14 @@ function HumanMessageContent({
 						<span key={key}>{part.value}</span>
 					);
 				})}
+				{shouldCollapse && !isExpanded && content.length > visibleContent.length
+					? "\n..."
+					: ""}
 			</p>
+			<div className="mt-1.5 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
+				{formattedTime && <span>{formattedTime}</span>}
+				<MessageCopyButton content={content} ariaLabel="Copy human message" />
+			</div>
 		</div>
 	);
 }
@@ -149,7 +243,7 @@ function shouldCollapseAgentMessage(content: string): boolean {
 	);
 }
 
-function AgentMarkdown({ content }: { content: string }) {
+export function AgentMarkdown({ content }: { content: string }) {
 	return (
 		<div className="markdown-preview prose prose-sm dark:prose-invert max-w-none break-words">
 			<Markdown
@@ -294,6 +388,7 @@ function StreamMessageImpl({
 	images,
 	mentions,
 	rawMode = false,
+	timestamp,
 }: StreamMessageProps) {
 	const isHuman = role === "human";
 
@@ -310,14 +405,17 @@ function StreamMessageImpl({
 	return (
 		<div
 			data-testid={`stream-message-${role}`}
-			className={`${isHuman ? "px-2" : "pt-1 pb-2 px-5"}`}
+			className={`${isHuman ? "flex justify-end px-4 py-1" : "pt-1 pb-2 px-5"}`}
 		>
 			{isHuman ? (
-				<HumanMessageContent
-					content={content}
-					images={images}
-					mentions={mentions}
-				/>
+				<div className="max-w-[min(82%,48rem)]">
+					<HumanMessageContent
+						content={content}
+						images={images}
+						mentions={mentions}
+						timestamp={timestamp}
+					/>
+				</div>
 			) : (
 				<AgentMessageContent content={content} rawMode={rawMode} />
 			)}
@@ -364,6 +462,7 @@ export const StreamMessage = memo(StreamMessageImpl, (prev, next) => {
 		prev.content === next.content &&
 		prev.role === next.role &&
 		prev.rawMode === next.rawMode &&
+		prev.timestamp === next.timestamp &&
 		shallowEqualImages(prev.images, next.images) &&
 		shallowEqualMentions(prev.mentions, next.mentions)
 	);

@@ -118,6 +118,7 @@ impl<'a, R: tauri::Runtime> SessionStartGate for RealSessionStartGate<'a, R> {
             session_id,
             worktree_path,
             permission_mode,
+            false,
             system_prompt,
         )
         .await
@@ -1482,8 +1483,11 @@ impl WorkflowEngine {
                 worktree_path,
                 settings.backend_id,
                 permission_mode,
-                settings.selected_model,
-                true,
+                crate::usecase::agent_session::session::SessionCreationAttributes {
+                    selected_model: settings.selected_model,
+                    workflow_step_session: true,
+                    ..Default::default()
+                },
             )
             .map_err(|e| WorkflowEngineError::SessionStore(format!("create step session: {e}")))?;
 
@@ -6803,6 +6807,7 @@ Do not create a temporary JSON file for this. Do not finish the step until the c
                     &cs.session_id,
                     worktree_path,
                     None,
+                    false,
                     cs.system_prompt.clone(),
                 )
                 .await
@@ -7716,6 +7721,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
@@ -11775,6 +11781,7 @@ mod tests {
             updated_at: 3.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: None,
@@ -13137,8 +13144,11 @@ mod tests {
                 "/repo",
                 settings.backend_id.clone(),
                 permission_mode,
-                settings.selected_model.clone(),
-                true,
+                crate::usecase::agent_session::session::SessionCreationAttributes {
+                    selected_model: settings.selected_model.clone(),
+                    workflow_step_session: true,
+                    ..Default::default()
+                },
             )
             .unwrap();
 
@@ -13185,8 +13195,11 @@ mod tests {
                 "/repo",
                 settings.backend_id,
                 permission_mode,
-                settings.selected_model,
-                true,
+                crate::usecase::agent_session::session::SessionCreationAttributes {
+                    selected_model: settings.selected_model,
+                    workflow_step_session: true,
+                    ..Default::default()
+                },
             )
             .unwrap();
 

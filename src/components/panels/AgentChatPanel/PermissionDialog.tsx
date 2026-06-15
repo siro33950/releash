@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronRight } from "lucide-react";
+import {
+	Check,
+	ChevronRight,
+	ClipboardCheck,
+	HelpCircle,
+	Shield,
+	X,
+} from "lucide-react";
+import type React from "react";
 import { useEffect, useId, useMemo, useState } from "react";
 import Markdown from "react-markdown";
 import { Button } from "@/components/ui/button";
@@ -10,6 +18,7 @@ import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
 import { cn } from "@/lib/utils";
 import type { PermissionRequest } from "@/types/session";
 import { AgentEditPreviewPanel } from "./AgentEditPreviewPanel";
+import { MessageCopyButton } from "./StreamMessage";
 
 interface AskQuestion {
 	question: string;
@@ -144,11 +153,56 @@ function PlanContent({
 	);
 }
 
+function PermissionKindIcon({
+	kind,
+}: {
+	kind: PermissionPresentation["kind"];
+}) {
+	const Icon =
+		kind === "exit_plan"
+			? ClipboardCheck
+			: kind === "ask_user_question"
+				? HelpCircle
+				: Shield;
+	return <Icon className="size-3.5 shrink-0" />;
+}
+
+function PermissionShell({
+	children,
+	"data-testid": dataTestId = "permission-dialog",
+}: {
+	children: React.ReactNode;
+	"data-testid"?: string;
+}) {
+	return (
+		<div
+			data-testid={dataTestId}
+			className="mx-3 my-2 overflow-hidden rounded border border-border bg-background px-2 py-2 text-xs"
+		>
+			{children}
+		</div>
+	);
+}
+
+function AnswerCard({ content }: { content: string }) {
+	return (
+		<div className="flex justify-end py-1">
+			<div className="max-w-[min(82%,48rem)] rounded-lg border border-border bg-background px-3 py-2">
+				<InlineMarkdown className="text-sm">{content}</InlineMarkdown>
+				<div className="mt-1.5 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
+					<MessageCopyButton content={content} ariaLabel="Copy answer" />
+				</div>
+			</div>
+		</div>
+	);
+}
+
 interface PermissionDialogProps {
 	request: PermissionRequest;
 	status?: "pending" | "allowed" | "denied";
 	resolvedAnswers?: Record<string, string>;
 	worktreePath?: string;
+	onOpenDiffFile?: (filePath: string) => void;
 	onAllow: (requestId: string, updatedInput?: Record<string, unknown>) => void;
 	onDeny: (requestId: string) => void;
 	onAnswer?: (requestId: string, answers: Record<string, string>) => void;
@@ -211,6 +265,7 @@ export function PermissionDialog({
 	status = "pending",
 	resolvedAnswers,
 	worktreePath,
+	onOpenDiffFile,
 	onAllow,
 	onDeny,
 	onAnswer,
@@ -405,20 +460,64 @@ export function PermissionDialog({
 		}
 
 		const hasDetail = presentation.hasResolvedDetail;
+		const answerSummary = resolvedAnswers
+			? Object.values(resolvedAnswers).join(", ")
+			: "";
+		const firstQuestion =
+			presentation.kind === "ask_user_question"
+				? (presentation.questions[0]?.question ??
+					request.description ??
+					"Question")
+				: "";
+
+		if (presentation.kind === "ask_user_question") {
+			return (
+				<PermissionShell data-testid="permission-resolved">
+					<div className="flex min-w-0 items-start gap-2 px-2 py-1 text-muted-foreground">
+						<PermissionKindIcon kind={presentation.kind} />
+						<div className="min-w-0 flex-1">
+							<InlineMarkdown className="text-foreground">
+								{firstQuestion}
+							</InlineMarkdown>
+							{answerSummary && <AnswerCard content={answerSummary} />}
+							{hasDetail && (
+								<button
+									type="button"
+									className="mt-1 inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+									onClick={() => setIsExpanded(!isExpanded)}
+								>
+									<ChevronRight
+										className={cn(
+											"size-3 shrink-0 transition-transform",
+											isExpanded && "rotate-90",
+										)}
+									/>
+									Choices
+								</button>
+							)}
+							{isExpanded && (
+								<ResolvedDetail
+									request={request}
+									presentation={presentation}
+									resolvedAnswers={resolvedAnswers}
+								/>
+							)}
+						</div>
+						{isAllowed ? (
+							<Check className="size-3.5 shrink-0" />
+						) : (
+							<X className="size-3.5 shrink-0" />
+						)}
+					</div>
+				</PermissionShell>
+			);
+		}
 
 		return (
-			<div
-				data-testid="permission-resolved"
-				className={cn(
-					"mx-3 my-1 rounded-md px-3 py-1.5 text-xs",
-					isAllowed
-						? "border border-green-500/20 bg-green-500/5 text-green-700 dark:text-green-400"
-						: "border border-red-500/20 bg-red-500/5 text-red-700 dark:text-red-400",
-				)}
-			>
+			<PermissionShell data-testid="permission-resolved">
 				<button
 					type="button"
-					className="flex items-center gap-1 w-full text-left"
+					className="flex w-full min-w-0 items-center gap-2 px-2 py-1 text-left text-muted-foreground hover:text-foreground"
 					onClick={() => hasDetail && setIsExpanded(!isExpanded)}
 					disabled={!hasDetail}
 				>
@@ -430,9 +529,13 @@ export function PermissionDialog({
 							)}
 						/>
 					)}
-					<span>
-						{isAllowed ? "✓" : "✗"} {label}
-					</span>
+					<PermissionKindIcon kind={presentation.kind} />
+					<span className="min-w-0 flex-1 truncate">{label}</span>
+					{isAllowed ? (
+						<Check className="size-3.5 shrink-0" />
+					) : (
+						<X className="size-3.5 shrink-0" />
+					)}
 				</button>
 				{isExpanded && (
 					<ResolvedDetail
@@ -441,7 +544,7 @@ export function PermissionDialog({
 						resolvedAnswers={resolvedAnswers}
 					/>
 				)}
-			</div>
+			</PermissionShell>
 		);
 	}
 
@@ -494,14 +597,15 @@ export function PermissionDialog({
 		};
 
 		return (
-			<div
-				data-testid="permission-dialog"
-				className="mx-3 my-1.5 rounded-md border border-border bg-muted/50 p-3 overflow-hidden"
-			>
+			<PermissionShell>
+				<div className="mb-2 flex items-center gap-2 px-2 text-muted-foreground">
+					<PermissionKindIcon kind={presentation.kind} />
+					<span>Question</span>
+				</div>
 				{questions.map((q, qIndex) => {
 					const questionId = `${questionIdBase}-q-${qIndex}`;
 					return (
-						<div key={q.question} className="mb-2">
+						<div key={q.question} className="mb-2 px-2">
 							<InlineMarkdown className="text-xs text-muted-foreground mb-0.5">
 								{q.header}
 							</InlineMarkdown>
@@ -524,7 +628,10 @@ export function PermissionDialog({
 											// biome-ignore lint/a11y/noLabelWithoutControl: Radix Checkbox renders an internal button element
 											<label
 												key={opt.label}
-												className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50"
+												className={cn(
+													"flex cursor-pointer items-start gap-2.5 rounded px-2 py-1.5 hover:bg-foreground/5",
+													isChecked && "bg-foreground/5",
+												)}
 											>
 												<Checkbox
 													checked={isChecked}
@@ -560,25 +667,38 @@ export function PermissionDialog({
 									className="space-y-2"
 									aria-labelledby={questionId}
 								>
-									{q.options.map((opt) => (
-										// biome-ignore lint/a11y/noLabelWithoutControl: Radix RadioGroupItem renders an internal button element
-										<label
-											key={opt.label}
-											className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50"
-										>
-											<RadioGroupItem value={opt.label} className="mt-0.5" />
-											<div className="flex flex-col flex-1 min-w-0">
-												<span className="text-sm font-medium">{opt.label}</span>
-												{opt.description && (
-													<InlineMarkdown className="text-xs text-muted-foreground">
-														{opt.description}
-													</InlineMarkdown>
+									{q.options.map((opt) => {
+										const isSelected = answers[q.question] === opt.label;
+										return (
+											// biome-ignore lint/a11y/noLabelWithoutControl: Radix RadioGroupItem renders an internal button element
+											<label
+												key={opt.label}
+												className={cn(
+													"flex cursor-pointer items-start gap-2.5 rounded px-2 py-1.5 hover:bg-foreground/5",
+													isSelected && "bg-foreground/5",
 												)}
-											</div>
-										</label>
-									))}
+											>
+												<RadioGroupItem value={opt.label} className="mt-0.5" />
+												<div className="flex flex-col flex-1 min-w-0">
+													<span className="text-sm font-medium">
+														{opt.label}
+													</span>
+													{opt.description && (
+														<InlineMarkdown className="text-xs text-muted-foreground">
+															{opt.description}
+														</InlineMarkdown>
+													)}
+												</div>
+											</label>
+										);
+									})}
 									{/* biome-ignore lint/a11y/noLabelWithoutControl: Radix RadioGroupItem renders an internal button element */}
-									<label className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50">
+									<label
+										className={cn(
+											"flex cursor-pointer items-start gap-2.5 rounded px-2 py-1.5 hover:bg-foreground/5",
+											answers[q.question] === OTHER_LABEL && "bg-foreground/5",
+										)}
+									>
 										<RadioGroupItem value={OTHER_LABEL} className="mt-0.5" />
 										<div className="flex flex-col flex-1 min-w-0">
 											<span className="text-sm font-medium">Other</span>
@@ -609,11 +729,11 @@ export function PermissionDialog({
 					size="xs"
 					onClick={handleSubmit}
 					disabled={!allAnswered}
-					className="mt-1"
+					className="mt-1 ml-2"
 				>
 					Submit
 				</Button>
-			</div>
+			</PermissionShell>
 		);
 	}
 
@@ -621,12 +741,12 @@ export function PermissionDialog({
 		const { plan, allowedPrompts } = presentation;
 
 		return (
-			<div
-				data-testid="permission-dialog"
-				className="mx-3 my-1.5 rounded-md border border-border bg-muted/50 p-3 overflow-hidden"
-			>
-				<p className="text-sm font-medium mb-2">Plan Review</p>
-				<div className="space-y-2 mb-2">
+			<PermissionShell>
+				<div className="mb-2 flex items-center gap-2 px-2 text-sm font-medium">
+					<PermissionKindIcon kind={presentation.kind} />
+					<span>Plan Review</span>
+				</div>
+				<div className="mb-2 space-y-2 px-2">
 					<PlanContent plan={plan} allowedPrompts={allowedPrompts} />
 				</div>
 				<AllowDenyButtons
@@ -634,22 +754,22 @@ export function PermissionDialog({
 					onAllow={onAllow}
 					onDeny={onDeny}
 				/>
-			</div>
+			</PermissionShell>
 		);
 	}
 
 	const toolLabel = request.title || request.display_name || request.tool_name;
 
 	return (
-		<div
-			data-testid="permission-dialog"
-			className="mx-3 my-1.5 rounded-md border border-border bg-muted/50 p-3"
-		>
-			<p className="text-sm font-medium mb-1">
-				Permission required: {toolLabel}
-			</p>
+		<PermissionShell>
+			<div className="mb-1 flex min-w-0 items-center gap-2 px-2 text-sm font-medium">
+				<PermissionKindIcon kind={presentation.kind} />
+				<span className="min-w-0 truncate">
+					Permission required: {toolLabel}
+				</span>
+			</div>
 			{request.description && (
-				<p className="text-xs text-muted-foreground mb-2">
+				<p className="mb-2 px-2 text-xs text-muted-foreground">
 					{request.description}
 				</p>
 			)}
@@ -661,9 +781,10 @@ export function PermissionDialog({
 								worktreePath={worktreePath}
 								toolName={request.tool_name}
 								input={previewInput}
+								onOpenDiffFile={onOpenDiffFile}
 							/>
 							{previewEditError && (
-								<p className="mt-1 text-xs text-destructive">
+								<p className="mt-1 px-2 text-xs text-destructive">
 									Edited preview unavailable: {previewEditError}
 								</p>
 							)}
@@ -671,7 +792,7 @@ export function PermissionDialog({
 					)}
 					<pre
 						data-testid="permission-input"
-						className="text-xs bg-muted/50 rounded p-2 mb-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-all"
+						className="mx-2 mb-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-all rounded bg-muted/40 p-2 text-xs"
 					>
 						{JSON.stringify(request.input, null, 2)}
 					</pre>
@@ -717,7 +838,7 @@ export function PermissionDialog({
 										return (
 											<div
 												key={row.key}
-												className="rounded border border-border bg-background/60 p-2"
+												className="rounded border border-border/60 p-2"
 											>
 												<div className="mb-1 flex items-center justify-between gap-2 text-xs">
 													<span className="font-medium">Edit {index + 1}</span>
@@ -772,7 +893,7 @@ export function PermissionDialog({
 				editedInput={editedInput ?? undefined}
 				showEditedAllow={canEditInput}
 			/>
-		</div>
+		</PermissionShell>
 	);
 }
 
@@ -790,7 +911,7 @@ function AllowDenyButtons({
 	showEditedAllow?: boolean;
 }) {
 	return (
-		<div className="flex gap-2">
+		<div className="flex gap-2 px-2">
 			<Button size="xs" onClick={() => onAllow(requestId)}>
 				Allow
 			</Button>

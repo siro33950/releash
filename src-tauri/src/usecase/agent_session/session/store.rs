@@ -266,6 +266,7 @@ impl SessionStore {
             updated_at: now,
             agent_session_id: None,
             permission_mode: session.permission_mode.clone(),
+            plan_mode: session.plan_mode,
             selected_model: session.selected_model.clone(),
             permission_profile_id: session.permission_profile_id.clone(),
             backend_id: session.backend_id.clone(),
@@ -410,6 +411,27 @@ impl SessionStore {
                 .ok_or_else(|| format!("Session not found: {session_id}"))?
         };
         session.permission_mode = permission_mode.as_str().to_string();
+        self.save_session(app_data_dir, &session)
+    }
+
+    pub fn update_plan_mode(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        plan_mode: bool,
+    ) -> Result<(), String> {
+        self.ensure_loaded(app_data_dir)?;
+        if let Some(err) = self.invalid_sessions.read().get(session_id) {
+            return Err(err.clone());
+        }
+        let mut session = {
+            let cache = self.cache.read();
+            cache
+                .get(session_id)
+                .cloned()
+                .ok_or_else(|| format!("Session not found: {session_id}"))?
+        };
+        session.plan_mode = plan_mode;
         self.save_session(app_data_dir, &session)
     }
 
@@ -563,6 +585,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: None,
@@ -981,6 +1004,31 @@ mod tests {
 
         let loaded = store.get_session(tmp.path(), UUID1).unwrap().unwrap();
         assert_eq!(loaded.permission_mode, "ask");
+    }
+
+    #[test]
+    fn update_plan_mode_persists() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let session = make_session(UUID1, "/repo");
+        assert!(!session.plan_mode);
+
+        store.save_session(tmp.path(), &session).unwrap();
+        store.update_plan_mode(tmp.path(), UUID1, true).unwrap();
+
+        let loaded = store.get_session(tmp.path(), UUID1).unwrap().unwrap();
+        assert!(loaded.plan_mode);
+        let summary = loaded.to_summary();
+        assert!(summary.plan_mode);
+    }
+
+    #[test]
+    fn update_plan_mode_nonexistent_session_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let result = store.update_plan_mode(tmp.path(), UUID1, true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Session not found"));
     }
 
     #[test]

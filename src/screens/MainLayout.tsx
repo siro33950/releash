@@ -70,7 +70,7 @@ function WorktreeContent({
 	rootPath: string;
 	settings: AppSettings;
 	onSettingsSave: (settings: AppSettings) => void;
-	rightPanelRef: React.Ref<PanelImperativeHandle | null>;
+	rightPanelRef: React.RefObject<PanelImperativeHandle | null>;
 	onRightResize: (size: PanelSize) => void;
 	leftPanels?: TogglePanel[];
 	branchSelector: React.ReactNode;
@@ -173,6 +173,18 @@ function WorktreeContent({
 		editorState?.activeEditorPath ??
 		initialWorkspaceState?.tabs.activeEditorPath ??
 		null;
+	const handleOpenDiffFile = useCallback(
+		(filePath: string) => {
+			s.setSelectedDiffFile(filePath);
+			if (rightPanelRef.current?.isCollapsed()) {
+				rightPanelRef.current.expand();
+			}
+			if (reviewRef.current?.isCollapsed()) {
+				reviewRef.current.expand();
+			}
+		},
+		[rightPanelRef, s.setSelectedDiffFile],
+	);
 
 	return (
 		<AgentChatProvider worktreePath={rootPath}>
@@ -197,6 +209,7 @@ function WorktreeContent({
 									activeEditorSelection={activeEditorSelection}
 									registerDropZone={s.registerDropZone}
 									sendMessageRef={sendAgentMessageRef}
+									onOpenDiffFile={handleOpenDiffFile}
 								/>
 							)}
 						</div>

@@ -295,6 +295,16 @@ fn message_search_text(message: &ChatMessage) -> String {
                         text.push_str(summary);
                     }
                 }
+                MessagePart::TodoListSnapshot { items } => {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    for item in items {
+                        text.push_str(if item.completed { "[x] " } else { "[ ] " });
+                        text.push_str(&item.text);
+                        text.push('\n');
+                    }
+                }
                 MessagePart::SystemNotification { label, detail, .. } => {
                     if !text.is_empty() {
                         text.push('\n');
@@ -619,6 +629,7 @@ pub async fn init_agent_sessions(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn start_agent_session(
     app: tauri::AppHandle,
     handles: tauri::State<
@@ -630,6 +641,7 @@ pub async fn start_agent_session(
     chat_session_id: String,
     cwd: String,
     permission_mode: Option<String>,
+    plan_mode: Option<bool>,
 ) -> Result<(), String> {
     // 外部境界（Tauri invoke）では permission_mode 欠落・対象外値を InvalidPermissionMode で拒否する。
     // None は空文字相当として扱い、内部経路の保存値フォールバックには進めない。
@@ -659,6 +671,10 @@ pub async fn start_agent_session(
             &validated_permission_mode_str,
         )?;
     }
+    let validated_plan_mode = plan_mode.unwrap_or(false);
+    if session.plan_mode != validated_plan_mode {
+        session_store.update_plan_mode(&data_dir, &chat_session_id, validated_plan_mode)?;
+    }
 
     if backend_id == crate::infrastructure::agent_session::runtime::CODEX_BACKEND_ID {
         let backend = registry
@@ -669,6 +685,7 @@ pub async fn start_agent_session(
                 chat_session_id,
                 cwd,
                 permission_mode: Some(validated_permission_mode_str),
+                plan_mode: validated_plan_mode,
                 permission_profile_id: session.permission_profile_id.clone(),
                 system_prompt: None,
             })
@@ -683,6 +700,7 @@ pub async fn start_agent_session(
         &chat_session_id,
         &cwd,
         Some(validated_permission_mode_str),
+        validated_plan_mode,
         None,
     )
     .await
@@ -705,6 +723,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
@@ -871,6 +890,7 @@ mod tests {
             updated_at: 2.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
@@ -968,6 +988,7 @@ mod tests {
             updated_at: 2.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
@@ -996,6 +1017,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
@@ -1078,6 +1100,7 @@ pub async fn send_agent_message(
     worktree_path: String,
     content: String,
     permission_mode: Option<String>,
+    plan_mode: Option<bool>,
     backend_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
@@ -1099,6 +1122,7 @@ pub async fn send_agent_message(
             worktree_path,
             content,
             permission_mode,
+            plan_mode: plan_mode.unwrap_or(false),
             backend_id,
             images,
             mentions,

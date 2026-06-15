@@ -5,12 +5,11 @@ import type {
 	AgentEditorContext,
 	BackendInfo,
 	ChatSession,
-	CodexGoal,
-	CodexRuntimeStatus,
 	ImageAttachment,
 	MentionReference,
 	ModelInfo,
 	PermissionMode,
+	PlanMode,
 	QueuedAgentTurn,
 	SessionSummary,
 	SlashCommand,
@@ -76,6 +75,7 @@ export interface UseAgentChatResult {
 	activityStatus: ActivityStatus;
 	error: string | null;
 	permissionMode: PermissionMode;
+	planMode: PlanMode;
 	sessionAgentStates: Map<string, AgentState>;
 	/**
 	 * 送信先 session を明示する API。`sessionId === null` は「新規 session を作成して送る」を
@@ -104,6 +104,7 @@ export interface UseAgentChatResult {
 	createNewSession: () => Promise<void>;
 	reorderSessions: (sessionOrder: string[]) => void;
 	setPermissionMode: (sessionId: string | null, mode: PermissionMode) => void;
+	setPlanMode: (sessionId: string | null, enabled: PlanMode) => void;
 	respondPermission: (
 		sessionId: string,
 		requestId: string,
@@ -133,10 +134,6 @@ export interface UseAgentChatResult {
 	getSessionSelectedModel: (sessionId: string) => string | null;
 	getSessionPendingQueue: (sessionId: string) => QueuedAgentTurn[];
 	getSessionLatestTokenUsage: (sessionId: string) => TokenUsage | null;
-	getSessionCodexGoal: (sessionId: string) => CodexGoal | null;
-	getSessionCodexRuntimeStatus: (
-		sessionId: string,
-	) => CodexRuntimeStatus | null;
 	getSessionRuntimeSlashCommands: (sessionId: string) => SlashCommand[];
 	cancelQueuedTurn: (
 		sessionId: string,
@@ -148,11 +145,13 @@ function startAgentProcess(
 	chatSessionId: string,
 	cwd: string,
 	permissionMode: PermissionMode,
+	planMode: PlanMode,
 ): void {
 	invoke("start_agent_session", {
 		chatSessionId,
 		cwd,
 		permissionMode,
+		planMode,
 	}).catch((e) => {
 		console.error(`Failed to start agent session ${chatSessionId}:`, e);
 	});
@@ -162,7 +161,11 @@ function dispatchSessionMeta(
 	dispatch: React.Dispatch<AgentChatAction>,
 	sessionId: string,
 	response: {
-		session: { permissionMode?: PermissionMode; backendId?: string | null };
+		session: {
+			permissionMode?: PermissionMode;
+			planMode?: PlanMode;
+			backendId?: string | null;
+		};
 		turnPhase: TurnPhase;
 		selectedModel: string;
 		availableModels: ModelInfo[];
@@ -179,6 +182,12 @@ function dispatchSessionMeta(
 		dispatch({
 			type: "SET_PERMISSION_MODE",
 			mode: response.session.permissionMode,
+		});
+	}
+	if (response.session.planMode !== undefined) {
+		dispatch({
+			type: "SET_PLAN_MODE",
+			enabled: response.session.planMode,
 		});
 	}
 	dispatch({
@@ -228,6 +237,8 @@ export function useAgentChat(
 	sessionsRef.current = state.sessions;
 	const permissionModeRef = useRef(state.permissionMode);
 	permissionModeRef.current = state.permissionMode;
+	const planModeRef = useRef(state.planMode);
+	planModeRef.current = state.planMode;
 	const turnPhasesRef = useRef(state.turnPhases);
 	turnPhasesRef.current = state.turnPhases;
 	const interruptingRef = useRef(state.interrupting);
@@ -400,6 +411,7 @@ export function useAgentChat(
 			try {
 				const wPath = worktreePathRef.current;
 				const pm = permissionModeRef.current;
+				const plan = planModeRef.current;
 				const backendId = sessionId ? null : selectedBackendIdRef.current;
 				const workflowApprovalChatSessionId =
 					workflowApprovalChatSessionIdRef.current;
@@ -412,6 +424,7 @@ export function useAgentChat(
 								workflowApprovalRunId,
 								trimmed,
 								pm,
+								plan,
 								images,
 								mentions,
 							)
@@ -421,6 +434,7 @@ export function useAgentChat(
 									wPath,
 									trimmed,
 									pm,
+									plan,
 									backendId,
 									images,
 									mentions,
@@ -431,6 +445,7 @@ export function useAgentChat(
 									wPath,
 									trimmed,
 									pm,
+									plan,
 									backendId,
 									images,
 									mentions,
@@ -552,6 +567,7 @@ export function useAgentChat(
 							sessionId,
 							worktreePathRef.current,
 							response.session.permissionMode,
+							response.session.planMode ?? false,
 						);
 					}
 				} else {
@@ -742,6 +758,25 @@ export function useAgentChat(
 		[],
 	);
 
+	const setPlanMode = useCallback(
+		(sessionId: string | null, enabled: PlanMode) => {
+			const isViewable =
+				sessionId === null || viewableIdsRef.current.has(sessionId);
+			if (isViewable) {
+				dispatch({ type: "SET_PLAN_MODE", enabled });
+			}
+			if (sessionId) {
+				invoke("set_agent_plan_mode", {
+					chatSessionId: sessionId,
+					planMode: enabled,
+				}).catch((e) => {
+					console.error("Failed to set agent plan mode:", e);
+				});
+			}
+		},
+		[],
+	);
+
 	const respondPermission = useCallback(
 		(
 			sessionId: string,
@@ -886,6 +921,14 @@ export function useAgentChat(
 		try {
 			const response = await initAgentSessions(worktreePathRef.current);
 			dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
+			dispatch({
+				type: "SET_PERMISSION_MODE",
+				mode: response.permissionMode ?? "edit",
+			});
+			dispatch({
+				type: "SET_PLAN_MODE",
+				enabled: response.planMode ?? false,
+			});
 			if (response.activeSession) {
 				dispatch({
 					type: "UPSERT_SESSION",
@@ -921,7 +964,6 @@ export function useAgentChat(
 		if (prevWorktreePathRef.current !== worktreePath) {
 			prevWorktreePathRef.current = worktreePath;
 			dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
-			dispatch({ type: "SET_PERMISSION_MODE", mode: "edit" });
 			initSessions();
 			refreshClosedSessions();
 		}
@@ -959,8 +1001,6 @@ export function useAgentChat(
 	const sessionModelsState = state.sessionModels;
 	const pendingQueuesState = state.pendingQueues;
 	const latestTokenUsageState = state.latestTokenUsage;
-	const codexGoalsState = state.codexGoals;
-	const codexRuntimeStatusesState = state.codexRuntimeStatuses;
 	const runtimeSlashCommandsState = state.runtimeSlashCommands;
 	const getSessionTurnPhase = useCallback(
 		(sessionId: string): TurnPhase => turnPhasesState[sessionId] ?? "idle",
@@ -984,14 +1024,6 @@ export function useAgentChat(
 		(sessionId: string): TokenUsage | null =>
 			latestTokenUsageState[sessionId] ?? null,
 		[latestTokenUsageState],
-	);
-	const getSessionCodexGoal = useCallback(
-		(sessionId: string) => codexGoalsState[sessionId] ?? null,
-		[codexGoalsState],
-	);
-	const getSessionCodexRuntimeStatus = useCallback(
-		(sessionId: string) => codexRuntimeStatusesState[sessionId] ?? null,
-		[codexRuntimeStatusesState],
 	);
 	const getSessionRuntimeSlashCommands = useCallback(
 		(sessionId: string): SlashCommand[] =>
@@ -1024,6 +1056,7 @@ export function useAgentChat(
 		activityStatus,
 		error: state.error,
 		permissionMode: state.permissionMode,
+		planMode: state.planMode,
 		sessionAgentStates,
 		sendMessage,
 		interrupt,
@@ -1039,6 +1072,7 @@ export function useAgentChat(
 		createNewSession,
 		reorderSessions,
 		setPermissionMode,
+		setPlanMode,
 		respondPermission,
 		availableModels: state.availableModels,
 		selectedModel,
@@ -1056,8 +1090,6 @@ export function useAgentChat(
 		getSessionSelectedModel,
 		getSessionPendingQueue,
 		getSessionLatestTokenUsage,
-		getSessionCodexGoal,
-		getSessionCodexRuntimeStatus,
 		getSessionRuntimeSlashCommands,
 		cancelQueuedTurn,
 	};

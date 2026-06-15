@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowUp, Loader2, Square, X } from "lucide-react";
+import { ArrowUp, ClipboardCheck, Loader2, Square, X } from "lucide-react";
 import {
 	useCallback,
 	useEffect,
@@ -16,6 +16,7 @@ import type {
 	MentionReference,
 	ModelInfo,
 	PermissionMode,
+	PlanMode,
 	SlashCommand,
 } from "@/types/session";
 import { BackendSelector } from "./BackendSelector";
@@ -67,6 +68,8 @@ interface MessageInputProps {
 	onCycleMode?: () => void;
 	mode: PermissionMode;
 	onModeChange: (mode: PermissionMode) => void;
+	planMode: PlanMode;
+	onPlanModeChange: (enabled: PlanMode) => void;
 	models: ModelInfo[];
 	currentModelId: string;
 	onModelChange: (modelId: string) => void;
@@ -88,6 +91,8 @@ export function MessageInput({
 	onCycleMode,
 	mode,
 	onModeChange,
+	planMode,
+	onPlanModeChange,
 	models,
 	currentModelId,
 	onModelChange,
@@ -776,6 +781,19 @@ export function MessageInput({
 							onModeChange={onModeChange}
 							disabled={false}
 						/>
+						<Button
+							type="button"
+							size="sm"
+							variant={planMode ? "secondary" : "ghost"}
+							className="h-7 gap-1.5 px-2 text-xs"
+							aria-pressed={planMode}
+							data-testid="plan-mode-toggle"
+							title={planMode ? "Plan mode on" : "Plan mode off"}
+							onClick={() => onPlanModeChange(!planMode)}
+						>
+							<ClipboardCheck className="size-3.5" />
+							<span>Plan</span>
+						</Button>
 						<ModelSelector
 							models={models}
 							currentModelId={currentModelId}

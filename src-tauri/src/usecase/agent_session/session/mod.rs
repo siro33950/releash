@@ -9,6 +9,27 @@ pub use crate::usecase::agent_session::status::TurnPhase;
 pub use open_tabs::OpenTabRegistry;
 pub use store::SessionStore;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoListItem {
+    pub text: String,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemNotificationType {
+    Compaction,
+}
+
+impl SystemNotificationType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Compaction => "compaction",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MessagePart {
@@ -84,9 +105,12 @@ pub enum MessagePart {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         summary: Option<String>,
     },
+    TodoListSnapshot {
+        items: Vec<TodoListItem>,
+    },
     SystemNotification {
         #[serde(rename = "notificationType")]
-        notification_type: String,
+        notification_type: SystemNotificationType,
         status: String,
         label: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -208,6 +232,8 @@ pub struct ChatSession {
     /// serde の default を意図的に付けない: 保存済みセッションで欠落していた場合は
     /// デシリアライズエラーで起動を拒否する（破壊的変更、Spec issues-947 参照）。
     pub permission_mode: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan_mode: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub selected_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -271,6 +297,8 @@ pub struct SessionSummary {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_session_id: Option<String>,
     pub permission_mode: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan_mode: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub permission_profile_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -313,6 +341,7 @@ impl ChatSession {
             message_count: self.messages.len(),
             agent_session_id: self.agent_session_id.clone(),
             permission_mode: self.permission_mode.clone(),
+            plan_mode: self.plan_mode,
             permission_profile_id: self.permission_profile_id.clone(),
             backend_id: self.backend_id.clone(),
             workflow_step_session: self.workflow_step_session,
@@ -389,6 +418,7 @@ pub fn parts_to_legacy(
                 }
             }
             MessagePart::TaskStatus { .. } => {}
+            MessagePart::TodoListSnapshot { .. } => {}
             MessagePart::SystemNotification { .. } => {}
             MessagePart::Image { .. } => {}
         }
@@ -442,9 +472,15 @@ pub fn create_session_internal_with_permission(
         worktree_path,
         backend_id,
         permission_mode,
-        None,
-        false,
+        SessionCreationAttributes::default(),
     )
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SessionCreationAttributes {
+    pub selected_model: Option<String>,
+    pub plan_mode: bool,
+    pub workflow_step_session: bool,
 }
 
 /// 検証済み抽象モード・selected_model・workflow_step_session フラグを初回保存で確定する内部 API。
@@ -456,15 +492,15 @@ pub fn create_session_internal_with_attributes(
     worktree_path: &str,
     backend_id: Option<String>,
     permission_mode: crate::permission::PermissionMode,
-    selected_model: Option<String>,
-    workflow_step_session: bool,
+    attributes: SessionCreationAttributes,
 ) -> Result<ChatSession, String> {
     let session = build_new_session(
         worktree_path,
         backend_id,
         permission_mode,
-        selected_model,
-        workflow_step_session,
+        attributes.selected_model,
+        attributes.plan_mode,
+        attributes.workflow_step_session,
     );
     session_store.save_session(data_dir, &session)?;
     Ok(session)
@@ -475,6 +511,7 @@ fn build_new_session(
     backend_id: Option<String>,
     permission_mode: crate::permission::PermissionMode,
     selected_model: Option<String>,
+    plan_mode: bool,
     workflow_step_session: bool,
 ) -> ChatSession {
     let now = now_timestamp();
@@ -487,6 +524,7 @@ fn build_new_session(
         updated_at: now,
         agent_session_id: None,
         permission_mode: permission_mode.as_str().to_string(),
+        plan_mode,
         selected_model,
         permission_profile_id: None,
         backend_id,
@@ -510,12 +548,33 @@ pub fn create_session_with_initial_model(
     backend_id: String,
     permission_mode: crate::permission::PermissionMode,
 ) -> Result<ChatSession, String> {
+    create_session_with_initial_model_and_plan_mode(
+        session_store,
+        registry,
+        data_dir,
+        worktree_path,
+        backend_id,
+        permission_mode,
+        false,
+    )
+}
+
+pub fn create_session_with_initial_model_and_plan_mode(
+    session_store: &SessionStore,
+    registry: &impl SessionBackendResolver,
+    data_dir: &std::path::Path,
+    worktree_path: &str,
+    backend_id: String,
+    permission_mode: crate::permission::PermissionMode,
+    plan_mode: bool,
+) -> Result<ChatSession, String> {
     let default_model = registry.default_model_for(&backend_id)?;
     let session = build_new_session(
         worktree_path,
         Some(backend_id),
         permission_mode,
         Some(default_model),
+        plan_mode,
         false,
     );
     session_store.save_session(data_dir, &session)?;
@@ -774,6 +833,7 @@ mod tests {
                 updated_at: 1000.0,
                 agent_session_id: None,
                 permission_mode: legacy.to_string(),
+                plan_mode: false,
                 permission_profile_id: None,
                 selected_model: None,
                 backend_id: None,
@@ -807,6 +867,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: None,
@@ -840,6 +901,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: None,
@@ -872,6 +934,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: None,
@@ -895,6 +958,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: None,
@@ -921,6 +985,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: Some("agent-session".to_string()),
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: None,
@@ -1059,6 +1124,7 @@ mod tests {
             updated_at: 1001.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: None,
@@ -1090,6 +1156,7 @@ mod tests {
             updated_at: 1001.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: Some("claude-opus-4-6".to_string()),
             backend_id: None,
@@ -1376,7 +1443,7 @@ mod tests {
     #[test]
     fn system_notification_serde_roundtrip() {
         let part = MessagePart::SystemNotification {
-            notification_type: "compaction".to_string(),
+            notification_type: SystemNotificationType::Compaction,
             status: "completed".to_string(),
             label: "Conversation compacted".to_string(),
             detail: Some("trigger=auto, 50000 tokens".to_string()),
@@ -1395,20 +1462,16 @@ mod tests {
     }
 
     #[test]
-    fn system_notification_with_hook_id_serde_roundtrip() {
-        let part = MessagePart::SystemNotification {
-            notification_type: "hook".to_string(),
-            status: "in_progress".to_string(),
-            label: "SessionEnd (StopSession)".to_string(),
-            detail: None,
-            hook_id: Some("hook-001".to_string()),
-        };
-        let json = serde_json::to_string(&part).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["hookId"], "hook-001");
-        assert!(v.get("detail").is_none());
-        let back: MessagePart = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, part);
+    fn system_notification_rejects_non_compaction_type() {
+        let json = r#"{
+            "type":"system_notification",
+            "notificationType":"hook",
+            "status":"in_progress",
+            "label":"SessionEnd",
+            "hookId":"hook-001"
+        }"#;
+        let parsed = serde_json::from_str::<MessagePart>(json);
+        assert!(parsed.is_err());
     }
 
     #[test]
@@ -1882,6 +1945,7 @@ mod tests {
             updated_at: 1001.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
@@ -1913,6 +1977,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
@@ -1937,6 +2002,7 @@ mod tests {
                 updated_at: 1000.0,
                 agent_session_id: None,
                 permission_mode: "edit".to_string(),
+                plan_mode: false,
                 permission_profile_id: None,
                 selected_model: None,
                 backend_id: backend_id.map(str::to_string),
