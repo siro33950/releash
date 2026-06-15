@@ -671,6 +671,10 @@ pub async fn start_agent_session(
             &validated_permission_mode_str,
         )?;
     }
+    let validated_plan_mode = plan_mode.unwrap_or(false);
+    if session.plan_mode != validated_plan_mode {
+        session_store.update_plan_mode(&data_dir, &chat_session_id, validated_plan_mode)?;
+    }
 
     if backend_id == crate::infrastructure::agent_session::runtime::CODEX_BACKEND_ID {
         let backend = registry
@@ -681,7 +685,7 @@ pub async fn start_agent_session(
                 chat_session_id,
                 cwd,
                 permission_mode: Some(validated_permission_mode_str),
-                plan_mode: plan_mode.unwrap_or(false),
+                plan_mode: validated_plan_mode,
                 permission_profile_id: session.permission_profile_id.clone(),
                 system_prompt: None,
             })
@@ -696,7 +700,7 @@ pub async fn start_agent_session(
         &chat_session_id,
         &cwd,
         Some(validated_permission_mode_str),
-        plan_mode.unwrap_or(false),
+        validated_plan_mode,
         None,
     )
     .await
@@ -719,6 +723,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
@@ -885,6 +890,7 @@ mod tests {
             updated_at: 2.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
@@ -982,6 +988,7 @@ mod tests {
             updated_at: 2.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
@@ -1010,6 +1017,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(

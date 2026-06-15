@@ -38,6 +38,26 @@ describe("MessageInput", () => {
 		expect(screen.getByLabelText("Send message")).toBeDefined();
 	});
 
+	it("renders plan mode toggle", () => {
+		render(<MessageInput {...defaultProps} />);
+		expect(screen.getByTestId("plan-mode-toggle")).toBeDefined();
+	});
+
+	it("calls onPlanModeChange with the inverted plan mode when clicked", () => {
+		const onPlanModeChange = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				planMode={true}
+				onPlanModeChange={onPlanModeChange}
+			/>,
+		);
+
+		fireEvent.click(screen.getByTestId("plan-mode-toggle"));
+
+		expect(onPlanModeChange).toHaveBeenCalledWith(false);
+	});
+
 	it("disables send button when input is empty", () => {
 		render(<MessageInput {...defaultProps} />);
 		const button = screen.getByLabelText("Send message");

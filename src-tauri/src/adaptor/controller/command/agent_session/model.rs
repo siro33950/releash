@@ -133,6 +133,17 @@ pub async fn set_agent_permission_mode(
 }
 
 #[tauri::command]
+pub async fn set_agent_plan_mode(
+    app: tauri::AppHandle,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    chat_session_id: String,
+    plan_mode: bool,
+) -> Result<(), String> {
+    let data_dir = crate::app_data_dir::resolve_data_dir(&app)?;
+    session_store.update_plan_mode(&data_dir, &chat_session_id, plan_mode)
+}
+
+#[tauri::command]
 pub async fn set_agent_model(
     app: tauri::AppHandle,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,

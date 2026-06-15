@@ -42,6 +42,7 @@ import {
 	AgentErrorBlock,
 	TaskToolActivity,
 	ToolActivity,
+	useActivityLogSessionScope,
 } from "./ActivityLog";
 import type { MessageInputHandle } from "./MessageInput";
 import { MessageInput } from "./MessageInput";
@@ -189,6 +190,10 @@ function TodoListFooter({
 
 	const completedCount = snapshot.items.filter((item) => item.completed).length;
 	const visibleItems = isExpanded ? snapshot.items : snapshot.items.slice(0, 3);
+	const visibleItemsWithKeys = visibleItems.map((item, index) => ({
+		item,
+		key: `${item.completed ? "done" : "todo"}-${index}-${item.text}`,
+	}));
 
 	return (
 		<div className="px-3 pb-2">
@@ -204,7 +209,7 @@ function TodoListFooter({
 					/>
 					<span className="shrink-0 font-medium text-foreground">TODO</span>
 					<span className="shrink-0 tabular-nums">
-						{completedCount}/{snapshot.items.length} 完了
+						{completedCount}/{snapshot.items.length} completed
 					</span>
 					<span className="min-w-0 truncate">
 						{snapshot.items
@@ -214,11 +219,8 @@ function TodoListFooter({
 				</button>
 				{isExpanded && (
 					<div className="mt-2 space-y-1 pl-5">
-						{visibleItems.map((item) => (
-							<div
-								key={`${item.completed ? "done" : "todo"}-${item.text}`}
-								className="flex min-w-0 items-start gap-2"
-							>
+						{visibleItemsWithKeys.map(({ item, key }) => (
+							<div key={key} className="flex min-w-0 items-start gap-2">
 								<span
 									className={
 										item.completed
@@ -622,6 +624,7 @@ export function ChatSessionView({
 	dropZoneName,
 	sendMessageRef,
 }: ChatSessionViewProps) {
+	useActivityLogSessionScope(session.id);
 	const messageInputRef = useRef<MessageInputHandle>(null);
 	const [isFileDragOver, setIsFileDragOver] = useState(false);
 	const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(

@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActivityEntry, MessagePart } from "@/types/session";
 import {
 	ActivityItem,
+	fallbackToolPresentationForTest,
 	resetActivityLogUiStateForTest,
+	syncActivityLogSessionScopeForTest,
 	TaskToolActivity,
 	ToolActivity,
 } from "./ActivityLog";
@@ -281,6 +283,43 @@ describe("ToolActivity", () => {
 					([command]) => command === "present_agent_tool_activity",
 				);
 				expect(nextPresentCalls).toHaveLength(1);
+			});
+		});
+
+		it("clears cached presentation when session scope changes", async () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Read",
+				input: { file_path: "/src/session.ts" },
+				id: "t-session-cache",
+			};
+			syncActivityLogSessionScopeForTest("session-a");
+			const first = render(<ToolActivity entry={entry} index={0} />);
+
+			await waitFor(() => {
+				const presentCalls = mockInvoke.mock.calls.filter(
+					([command]) => command === "present_agent_tool_activity",
+				);
+				expect(presentCalls).toHaveLength(1);
+			});
+			first.unmount();
+			const second = render(<ToolActivity entry={entry} index={0} />);
+			await waitFor(() => {
+				const presentCalls = mockInvoke.mock.calls.filter(
+					([command]) => command === "present_agent_tool_activity",
+				);
+				expect(presentCalls).toHaveLength(1);
+			});
+
+			syncActivityLogSessionScopeForTest("session-b");
+			second.unmount();
+			render(<ToolActivity entry={entry} index={0} />);
+
+			await waitFor(() => {
+				const presentCalls = mockInvoke.mock.calls.filter(
+					([command]) => command === "present_agent_tool_activity",
+				);
+				expect(presentCalls).toHaveLength(2);
 			});
 		});
 
@@ -596,6 +635,71 @@ describe("ToolActivity", () => {
 			expect(screen.queryByText(/"file_path": "\/src\/app.ts"/)).toBeNull();
 		});
 
+		it("renders undefined mcp arguments as copyable text", async () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "mcp__server__read",
+				input: { arguments: undefined },
+				id: "t-mcp-undefined",
+			};
+			render(<ToolActivity entry={entry} index={0} />);
+
+			fireEvent.click(await screen.findByText("server/read"));
+
+			expect(screen.getByText("undefined")).toBeInTheDocument();
+		});
+
+		it("uses read fallback presentation for local read tools when Rust presentation fails", async () => {
+			expect(
+				fallbackToolPresentationForTest("ToolSearch", { query: "sessions" })
+					.category,
+			).toBe("read");
+			expect(
+				fallbackToolPresentationForTest("ListMcpResourcesTool", {
+					query: "sessions",
+				}).category,
+			).toBe("read");
+			expect(
+				fallbackToolPresentationForTest("ReadMcpResourceTool", {
+					query: "sessions",
+				}).category,
+			).toBe("read");
+			mockInvoke.mockImplementation((command: string) => {
+				if (command === "present_agent_tool_activity") {
+					return Promise.reject(new Error("presentation failed"));
+				}
+				return Promise.resolve(null);
+			});
+			for (const [index, tool] of [
+				"ToolSearch",
+				"ListMcpResourcesTool",
+				"ReadMcpResourceTool",
+			].entries()) {
+				render(
+					<ToolActivity
+						entry={{
+							type: "tool_use",
+							tool,
+							input: { query: "sessions" },
+							id: `t-read-fallback-${tool}`,
+						}}
+						index={index}
+					/>,
+				);
+				await screen.findByTestId(`activity-tool-use-${index}`);
+			}
+
+			expect(screen.getByTestId("activity-tool-use-0")).toHaveTextContent(
+				"ToolSearch sessions",
+			);
+			expect(screen.getByTestId("activity-tool-use-1")).toHaveTextContent(
+				"ListMcpResourcesTool sessions",
+			);
+			expect(screen.getByTestId("activity-tool-use-2")).toHaveTextContent(
+				"ReadMcpResourceTool sessions",
+			);
+		});
+
 		it("shows Rust-built inline diff preview for edit tools", async () => {
 			mockInvoke.mockImplementation((command: string, args: unknown) => {
 				if (command === "present_agent_tool_activity") {
@@ -796,10 +900,12 @@ describe("ToolActivity", () => {
 			expect(
 				screen.getByText("Edit first match: src/stable.ts"),
 			).toBeInTheDocument();
-			const nextPreviewCalls = mockInvoke.mock.calls.filter(
-				([command]) => command === "build_agent_edit_preview",
-			);
-			expect(nextPreviewCalls).toHaveLength(1);
+			await waitFor(() => {
+				const nextPreviewCalls = mockInvoke.mock.calls.filter(
+					([command]) => command === "build_agent_edit_preview",
+				);
+				expect(nextPreviewCalls).toHaveLength(1);
+			});
 		});
 	});
 });

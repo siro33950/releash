@@ -787,6 +787,7 @@ export function MessageInput({
 							variant={planMode ? "secondary" : "ghost"}
 							className="h-7 gap-1.5 px-2 text-xs"
 							aria-pressed={planMode}
+							data-testid="plan-mode-toggle"
 							title={planMode ? "Plan mode on" : "Plan mode off"}
 							onClick={() => onPlanModeChange(!planMode)}
 						>

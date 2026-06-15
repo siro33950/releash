@@ -26,6 +26,17 @@ import type { TaskGroup } from "./toolPairing";
 
 type ToolCategory = "read" | "write" | "command" | "mcp" | "other";
 
+const READ_TOOL_NAMES = new Set([
+	"Read",
+	"Glob",
+	"Grep",
+	"WebFetch",
+	"WebSearch",
+	"ToolSearch",
+	"ListMcpResourcesTool",
+	"ReadMcpResourceTool",
+]);
+
 interface AgentToolActivityPresentation {
 	category: ToolCategory;
 	label: string;
@@ -39,11 +50,36 @@ const toolPresentationRequests = new Map<
 	Promise<AgentToolActivityPresentation>
 >();
 const activityExpansionState = new Map<string, boolean>();
+let scopedSessionId: string | null = null;
 
 export function resetActivityLogUiStateForTest() {
 	toolPresentationCache.clear();
 	toolPresentationRequests.clear();
 	activityExpansionState.clear();
+	scopedSessionId = null;
+}
+
+function clearSessionScopedActivityLogUiState() {
+	toolPresentationCache.clear();
+	activityExpansionState.clear();
+}
+
+function syncActivityLogSessionScope(sessionId: string) {
+	if (scopedSessionId === sessionId) return;
+	if (scopedSessionId !== null) {
+		clearSessionScopedActivityLogUiState();
+	}
+	scopedSessionId = sessionId;
+}
+
+export function syncActivityLogSessionScopeForTest(sessionId: string) {
+	syncActivityLogSessionScope(sessionId);
+}
+
+export function useActivityLogSessionScope(sessionId: string) {
+	useEffect(() => {
+		syncActivityLogSessionScope(sessionId);
+	}, [sessionId]);
 }
 
 function stableSerialize(value: unknown): string {
@@ -113,7 +149,7 @@ function truncateResult(
 
 function copyableText(value: unknown): string {
 	if (typeof value === "string") return value;
-	return JSON.stringify(value, null, 2);
+	return JSON.stringify(value, null, 2) ?? String(value);
 }
 
 function firstLine(content: string): { head: string; detail: string } {
@@ -298,7 +334,7 @@ function fallbackToolPresentation(
 			: {};
 	const category: ToolCategory = tool.startsWith("mcp__")
 		? "mcp"
-		: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"].includes(tool)
+		: READ_TOOL_NAMES.has(tool)
 			? "read"
 			: tool === "Bash"
 				? "command"
@@ -320,6 +356,13 @@ function fallbackToolPresentation(
 		summary,
 		editPreviewTool: ["Edit", "MultiEdit", "Write"].includes(tool),
 	};
+}
+
+export function fallbackToolPresentationForTest(
+	tool: string,
+	input: unknown,
+): AgentToolActivityPresentation {
+	return fallbackToolPresentation(tool, input);
 }
 
 function useToolActivityPresentation(

@@ -765,6 +765,14 @@ export function useAgentChat(
 			if (isViewable) {
 				dispatch({ type: "SET_PLAN_MODE", enabled });
 			}
+			if (sessionId) {
+				invoke("set_agent_plan_mode", {
+					chatSessionId: sessionId,
+					planMode: enabled,
+				}).catch((e) => {
+					console.error("Failed to set agent plan mode:", e);
+				});
+			}
 		},
 		[],
 	);
@@ -913,6 +921,14 @@ export function useAgentChat(
 		try {
 			const response = await initAgentSessions(worktreePathRef.current);
 			dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
+			dispatch({
+				type: "SET_PERMISSION_MODE",
+				mode: response.permissionMode ?? "edit",
+			});
+			dispatch({
+				type: "SET_PLAN_MODE",
+				enabled: response.planMode ?? false,
+			});
 			if (response.activeSession) {
 				dispatch({
 					type: "UPSERT_SESSION",
@@ -948,7 +964,6 @@ export function useAgentChat(
 		if (prevWorktreePathRef.current !== worktreePath) {
 			prevWorktreePathRef.current = worktreePath;
 			dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
-			dispatch({ type: "SET_PERMISSION_MODE", mode: "edit" });
 			initSessions();
 			refreshClosedSessions();
 		}

@@ -514,6 +514,7 @@ pub fn run() {
             adaptor::controller::command::agent_session::session::build_agent_task_list_report,
             adaptor::controller::command::agent_session::session::close_agent_session,
             adaptor::controller::command::agent_session::model::set_agent_permission_mode,
+            adaptor::controller::command::agent_session::model::set_agent_plan_mode,
             adaptor::controller::command::agent_session::model::set_agent_model,
             adaptor::controller::command::agent_session::model::read_codex_model_catalog,
             adaptor::controller::command::agent_session::session::set_session_backend,

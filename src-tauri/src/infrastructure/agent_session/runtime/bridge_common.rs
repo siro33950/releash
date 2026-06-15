@@ -1816,7 +1816,7 @@ fn extract_todo_items(
             })
         })
         .collect::<Vec<_>>();
-    (!parsed.is_empty()).then_some(parsed)
+    Some(parsed)
 }
 
 fn todo_update_log(items: &[crate::usecase::agent_session::session::TodoListItem]) -> String {
@@ -2221,12 +2221,7 @@ fn accumulate_sdk_message(
                         .or_else(|| patch.get("message"))
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
-                    if let Some(MessagePart::TaskStatus {
-                        status: existing_status,
-                        description: existing_description,
-                        summary: existing_summary,
-                        ..
-                    }) = parts.iter_mut().rev().find(|part| {
+                    if let Some(index) = parts.iter().rposition(|part| {
                         matches!(
                             part,
                             MessagePart::TaskStatus {
@@ -2235,6 +2230,15 @@ fn accumulate_sdk_message(
                             } if task_tool_use_id == &tool_use_id
                         )
                     }) {
+                        let MessagePart::TaskStatus {
+                            status: existing_status,
+                            description: existing_description,
+                            summary: existing_summary,
+                            ..
+                        } = &mut parts[index]
+                        else {
+                            return (true, None);
+                        };
                         *existing_status = status;
                         if description.is_some() {
                             *existing_description = description;
@@ -2242,7 +2246,7 @@ fn accumulate_sdk_message(
                         if summary.is_some() {
                             *existing_summary = summary;
                         }
-                        return (true, None);
+                        return (true, Some(vec![parts[index].clone()]));
                     }
                     parts.push(MessagePart::TaskStatus {
                         task_tool_use_id: tool_use_id,
@@ -5294,6 +5298,10 @@ async fn prepare_send_agent_message_internal(
             session_store.update_permission_mode(data_dir, sid, &pm)?;
             session.permission_mode = pm.clone();
         }
+        if session.plan_mode != plan_mode {
+            session_store.update_plan_mode(data_dir, sid, plan_mode)?;
+            session.plan_mode = plan_mode;
+        }
         ensure_session_backend_selected(session_store, registry, data_dir, session)?
     } else {
         let resolved_backend_id = registry.resolve_backend_id(backend_id)?;
@@ -5302,13 +5310,14 @@ async fn prepare_send_agent_message_internal(
         // 選択値ではない permission_mode で永続化されたセッションが残ってしまうため
         // （Spec issues-947: セッション保存層が permission_mode の正典）、生成 API を一本化する。
         // backend の登録済み初期モデルがあれば selected_model に永続化する（Spec issues-946）。
-        crate::usecase::agent_session::session::create_session_with_initial_model(
+        crate::usecase::agent_session::session::create_session_with_initial_model_and_plan_mode(
             session_store,
             registry,
             data_dir,
             &worktree_path,
             resolved_backend_id,
             permission_mode,
+            plan_mode,
         )?
     };
     let sid = session.id.clone();
@@ -5656,6 +5665,8 @@ pub async fn send_agent_message_internal(
 pub struct InitSessionsResponse {
     pub sessions: Vec<SessionSummary>,
     pub active_session: Option<GetSessionResponse>,
+    pub permission_mode: String,
+    pub plan_mode: bool,
 }
 
 /// Unified command for session initialization: lists sessions, starts Bridge processes,
@@ -5704,6 +5715,8 @@ pub(crate) async fn init_agent_sessions_internal(
         Ok(InitSessionsResponse {
             sessions,
             active_session: None,
+            permission_mode: crate::permission::PermissionMode::Edit.as_str().to_string(),
+            plan_mode: false,
         })
     } else {
         // Start agent processes only for sessions that have already sent a turn or have
@@ -5731,10 +5744,26 @@ pub(crate) async fn init_agent_sessions_internal(
         } else {
             None
         };
+        let (permission_mode, plan_mode) = active
+            .as_ref()
+            .map(|response| {
+                (
+                    response.session.permission_mode.clone(),
+                    response.session.plan_mode,
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    crate::permission::PermissionMode::Edit.as_str().to_string(),
+                    false,
+                )
+            });
 
         Ok(InitSessionsResponse {
             sessions,
             active_session: active,
+            permission_mode,
+            plan_mode,
         })
     }
 }
@@ -5760,7 +5789,7 @@ async fn start_existing_session_for_summary(
                 chat_session_id: session.id.clone(),
                 cwd: session.worktree_path.clone(),
                 permission_mode: Some(session.permission_mode.clone()),
-                plan_mode: false,
+                plan_mode: session.plan_mode,
                 permission_profile_id: session.permission_profile_id.clone(),
                 system_prompt,
             })
@@ -5775,7 +5804,7 @@ async fn start_existing_session_for_summary(
         &session.id,
         &session.worktree_path,
         Some(session.permission_mode.clone()),
-        false,
+        session.plan_mode,
         system_prompt,
     )
     .await
@@ -6299,6 +6328,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: Some("sdk-resume-id".to_string()),
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: Some("sonnet".to_string()),
             backend_id: Some("mock".to_string()),
@@ -8869,6 +8899,7 @@ mod tests {
             message_count: 0,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
@@ -8889,6 +8920,7 @@ mod tests {
             message_count: 1,
             agent_session_id: None,
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
@@ -8919,6 +8951,7 @@ mod tests {
                 message_count: 0,
                 agent_session_id: None,
                 permission_mode: "edit".to_string(),
+                plan_mode: false,
                 permission_profile_id: None,
                 backend_id: Some("claude".to_string()),
                 workflow_step_session: workflow_step,
@@ -8957,6 +8990,7 @@ mod tests {
             message_count: 3,
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: true,
@@ -10048,6 +10082,39 @@ mod tests {
     }
 
     #[test]
+    fn test_accumulate_todo_snapshot_accepts_empty_items() {
+        let msg = serde_json::json!({
+            "type": "todo_list_snapshot",
+            "items": []
+        });
+        let mut parts = vec![MessagePart::TodoListSnapshot {
+            items: vec![crate::usecase::agent_session::session::TodoListItem {
+                text: "old todo".to_string(),
+                completed: false,
+            }],
+        }];
+
+        let (handled, updated) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+
+        assert!(handled);
+        assert!(updated.is_none());
+        let snapshot = parts
+            .iter()
+            .find_map(|part| match part {
+                MessagePart::TodoListSnapshot { items } => Some(items),
+                _ => None,
+            })
+            .expect("snapshot should be present");
+        assert!(snapshot.is_empty());
+    }
+
+    #[test]
+    fn test_extract_todo_items_rejects_missing_or_non_array_items() {
+        assert!(extract_todo_items(&serde_json::json!({})).is_none());
+        assert!(extract_todo_items(&serde_json::json!({ "items": "not-array" })).is_none());
+    }
+
+    #[test]
     fn test_accumulate_tool_result() {
         let msg = serde_json::json!({
             "type": "user",
@@ -10278,6 +10345,55 @@ mod tests {
                 task_tool_use_id, ..
             } => {
                 assert_eq!(task_tool_use_id, "");
+            }
+            _ => panic!("expected TaskStatus"),
+        }
+    }
+
+    #[test]
+    fn test_task_updated_in_place_returns_updated_delta() {
+        let mut parts = vec![MessagePart::TaskStatus {
+            task_tool_use_id: "toolu_task".to_string(),
+            status: "started".to_string(),
+            description: Some("Initial".to_string()),
+            summary: None,
+        }];
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "task_updated",
+            "tool_use_id": "toolu_task",
+            "patch": {
+                "status": "completed",
+                "summary": "Done"
+            }
+        });
+
+        let (handled, updated) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+
+        assert!(handled);
+        let updated = updated.expect("in-place update should be returned as delta");
+        assert_eq!(updated.len(), 1);
+        match (&parts[0], &updated[0]) {
+            (
+                MessagePart::TaskStatus {
+                    status,
+                    description,
+                    summary,
+                    ..
+                },
+                MessagePart::TaskStatus {
+                    status: delta_status,
+                    description: delta_description,
+                    summary: delta_summary,
+                    ..
+                },
+            ) => {
+                assert_eq!(status, "completed");
+                assert_eq!(description.as_deref(), Some("Initial"));
+                assert_eq!(summary.as_deref(), Some("Done"));
+                assert_eq!(delta_status, "completed");
+                assert_eq!(delta_description.as_deref(), Some("Initial"));
+                assert_eq!(delta_summary.as_deref(), Some("Done"));
             }
             _ => panic!("expected TaskStatus"),
         }
@@ -10871,6 +10987,7 @@ mod tests {
             updated_at: 1.0,
             agent_session_id: None,
             permission_mode: permission.to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("mock".to_string()),
@@ -11029,7 +11146,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_send_persists_selected_permission_mode_for_existing_session() {
+    async fn prepare_send_persists_selected_modes_for_existing_session() {
         // Spec issues-947: 既存セッションに対する送信時にも、検証済み permission_mode が
         // 異なれば ChatSession.permission_mode に書き戻される（保存層が単一の正典）。
         let data_dir = tempfile::tempdir().unwrap();
@@ -11058,7 +11175,7 @@ mod tests {
             "/repo".to_string(),
             "hello".to_string(),
             crate::permission::PermissionMode::Ask,
-            false,
+            true,
             Some("mock".to_string()),
             None,
             None,
@@ -11068,11 +11185,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(response.session.permission_mode, "ask");
+        assert!(response.session.plan_mode);
         let saved = session_store
             .get_session(data_dir.path(), &session_id)
             .unwrap()
             .unwrap();
         assert_eq!(saved.permission_mode, "ask");
+        assert!(saved.plan_mode);
     }
 
     #[test]
@@ -12199,6 +12318,7 @@ mod tests {
             updated_at: 0.0,
             agent_session_id,
             permission_mode: "acceptEdits".to_string(),
+            plan_mode: false,
             permission_profile_id: None,
             selected_model,
             backend_id: Some(backend_id.to_string()),

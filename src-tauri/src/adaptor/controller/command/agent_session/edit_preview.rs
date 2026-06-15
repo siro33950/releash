@@ -221,7 +221,7 @@ fn content_pair_from_unified_diff(diff: &str) -> (String, String) {
     let mut modified = String::new();
 
     for line in diff.lines() {
-        if line.starts_with("@@") || line.starts_with("---") || line.starts_with("+++") {
+        if line.starts_with("@@") || line.starts_with("--- ") || line.starts_with("+++ ") {
             continue;
         }
 
@@ -278,6 +278,7 @@ fn build_agent_edit_preview_inner(
         .and_then(|value| value.as_bool())
         .unwrap_or(false)
     {
+        let _resolved_path = resolve_tool_file_path(worktree_path, file_path)?;
         let diff = input_str(input, "diff").unwrap_or_default();
         let (original, modified) = content_pair_from_unified_diff(diff);
         let mut warnings = Vec::new();
@@ -636,6 +637,46 @@ mod tests {
         .unwrap_err();
 
         assert!(err.contains("traversal"));
+    }
+
+    #[test]
+    fn codex_file_change_rejects_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        let err = build_agent_edit_preview_inner(
+            temp.path().to_str().unwrap(),
+            "Edit",
+            &serde_json::json!({
+                "file_path": "../outside.txt",
+                "codex_file_change": true,
+                "diff": "--- a/outside.txt\n+++ b/outside.txt\n@@ -1 +1 @@\n-old\n+new\n"
+            }),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("traversal"));
+    }
+
+    #[test]
+    fn codex_file_change_preserves_data_lines_starting_with_header_markers() {
+        let temp = tempfile::tempdir().unwrap();
+        let preview = build_agent_edit_preview_inner(
+            temp.path().to_str().unwrap(),
+            "Edit",
+            &serde_json::json!({
+                "file_path": "doc.md",
+                "codex_file_change": true,
+                "diff": "--- a/doc.md\n+++ b/doc.md\n@@ -1,3 +1,3 @@\n----title\n++++title\n----\n+---\n context\n"
+            }),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(preview.original_content.contains("---title\n"));
+        assert!(preview.modified_content.contains("+++title\n"));
+        assert!(preview.original_content.contains("---\n"));
+        assert!(preview.modified_content.contains("---\n"));
+        assert!(!preview.original_content.contains("--- a/doc.md"));
+        assert!(!preview.modified_content.contains("+++ b/doc.md"));
     }
 
     #[cfg(unix)]

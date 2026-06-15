@@ -368,11 +368,15 @@ export async function cancelAgentQueuedTurn(
 interface RawInitSessionsResponse {
 	sessions: SessionSummary[];
 	activeSession: RawGetSessionResponse | null;
+	permissionMode?: string;
+	planMode?: boolean;
 }
 
 export interface InitSessionsResponse {
 	sessions: SessionSummary[];
 	activeSession: GetSessionResponse | null;
+	permissionMode: PermissionMode;
+	planMode: boolean;
 }
 
 export async function initAgentSessions(
@@ -384,7 +388,12 @@ export async function initAgentSessions(
 	const activeSession = raw.activeSession
 		? convertRawGetSessionResponse(raw.activeSession)
 		: null;
-	return { sessions: raw.sessions, activeSession };
+	return {
+		sessions: raw.sessions,
+		activeSession,
+		permissionMode: normalizePermissionMode(raw.permissionMode),
+		planMode: raw.planMode ?? false,
+	};
 }
 
 export async function setSessionBackend(
