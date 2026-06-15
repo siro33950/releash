@@ -380,6 +380,12 @@ impl AppServerCodexRuntime {
                     let mut guard = state.lock().await;
                     app_server_message_to_bridge_messages(&message, &mut guard.bridge_state)
                 };
+                // session_ready（Initializing→Ready）でも、起動直後に enqueue された
+                // pending を drain する。drain が turn/completed のみだとターン未開始で
+                // キューが消費されない（再起動／履歴復帰直後に送信が発火しない不具合）。
+                let is_session_ready = bridge_messages
+                    .iter()
+                    .any(|m| m.get("type").and_then(|v| v.as_str()) == Some("session_ready"));
                 for bridge_message in bridge_messages {
                     let mut guard = state.lock().await;
                     handle_external_bridge_message(
@@ -392,7 +398,7 @@ impl AppServerCodexRuntime {
                     )
                     .await;
                 }
-                if is_turn_completed {
+                if is_turn_completed || is_session_ready {
                     if let Err(e) = start_next_app_server_pending_turn(
                         &app,
                         &session_store,
