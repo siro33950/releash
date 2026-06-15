@@ -202,6 +202,8 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
 			sessions: [],
 			activeSession: null,
+			permissionMode: "edit",
+			planMode: false,
 		});
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
