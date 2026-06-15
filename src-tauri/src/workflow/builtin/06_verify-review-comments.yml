@@ -14,7 +14,7 @@ nodes:
   - name: decide_pr_review_comment_policy
     type: approval
     model: claude-opus-4-8
-    permission: full
+    permission: edit
     instruction: verify-review-comments-decide-policy
     policy: triage
     knowledge: releash-thread-cli
@@ -22,7 +22,7 @@ nodes:
   - name: check_and_make_tasks
     type: agent
     model: claude-opus-4-8
-    permission: full
+    permission: edit
     instruction: review-fix-check-tasks
     output_contract: review-fix-tasks
     policy: reviewing
@@ -51,7 +51,7 @@ nodes:
   - name: commit_push_and_reply
     type: approval
     model: claude-opus-4-8
-    permission: full
+    permission: edit
     instruction: verify-review-comments-commit-push-reply
     policy: coding
     knowledge: releash-thread-cli
