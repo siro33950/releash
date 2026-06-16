@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetAgentEditPreviewPanelStateForTest } from "./AgentEditPreviewPanel";
@@ -939,6 +945,68 @@ describe("PermissionDialog — AskUserQuestion", () => {
 			screen.queryByLabelText("Other input for Which library should we use?"),
 		).not.toBeInTheDocument();
 	});
+
+	it("shows proposed options with the selected one highlighted after answering", async () => {
+		render(
+			<PermissionDialog
+				request={askRequest}
+				status="allowed"
+				resolvedAnswers={{ "Which library should we use?": "React" }}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+		const resolved = screen.getByTestId("permission-resolved");
+		// 「Choices」を展開すると提案された選択肢が表示される
+		await userEvent.click(await within(resolved).findByText("Choices"));
+		const options = within(resolved).getAllByTestId("resolved-option");
+		expect(options).toHaveLength(2);
+		expect(options.some((o) => o.textContent?.includes("React"))).toBe(true);
+		expect(options.some((o) => o.textContent?.includes("Vue"))).toBe(true);
+		// 選択した React だけがハイライト（data-selected=true）
+		const selected = options.filter(
+			(o) => o.getAttribute("data-selected") === "true",
+		);
+		expect(selected).toHaveLength(1);
+		expect(selected[0].textContent).toContain("React");
+	});
+
+	it("highlights a single-select option whose label contains a comma", async () => {
+		const commaRequest = {
+			...askRequest,
+			input: {
+				questions: [
+					{
+						question: "Pick a stack",
+						header: "Stack",
+						options: [
+							{ label: "React, Vite", description: "SPA" },
+							{ label: "Next.js", description: "SSR" },
+						],
+						multiSelect: false,
+					},
+				],
+			},
+		};
+		render(
+			<PermissionDialog
+				request={commaRequest}
+				status="allowed"
+				resolvedAnswers={{ "Pick a stack": "React, Vite" }}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+		const resolved = screen.getByTestId("permission-resolved");
+		await userEvent.click(await within(resolved).findByText("Choices"));
+		const options = within(resolved).getAllByTestId("resolved-option");
+		// 単一選択ではカンマを含むラベルが1要素として扱われ、正しくハイライトされる
+		const selected = options.filter(
+			(o) => o.getAttribute("data-selected") === "true",
+		);
+		expect(selected).toHaveLength(1);
+		expect(selected[0].textContent).toContain("React, Vite");
+	});
 });
 
 describe("AskUserQuestion — multiSelect", () => {
@@ -1151,7 +1219,7 @@ describe("AskUserQuestion — markdown rendering", () => {
 		expect(codeTexts).toContain("react-markdown");
 	});
 
-	it("renders resolved answer markdown as HTML", async () => {
+	it("renders resolved answer as plain text (no markdown)", () => {
 		render(
 			<PermissionDialog
 				request={{
@@ -1176,12 +1244,9 @@ describe("AskUserQuestion — markdown rendering", () => {
 			/>,
 		);
 		const resolved = screen.getByTestId("permission-resolved");
-		const button = resolved.querySelector("button");
-		expect(button).toBeTruthy();
-		await userEvent.click(button as HTMLElement);
-		expect(resolved.querySelector("code")).toBeTruthy();
-		expect(resolved.querySelector("code")?.textContent).toBe("option-A");
-		expect(resolved.querySelector("strong")).toBeTruthy();
-		expect(resolved.querySelector("strong")?.textContent).toBe("bold");
+		// 回答はユーザーの選択内容なのでプレーンテキスト表示（Markdown要素は生成しない）
+		expect(resolved.querySelector("code")).toBeNull();
+		expect(resolved.querySelector("strong")).toBeNull();
+		expect(resolved.textContent).toContain("Selected `option-A` with **bold**");
 	});
 });

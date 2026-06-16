@@ -18,7 +18,7 @@ import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
 import { cn } from "@/lib/utils";
 import type { PermissionRequest } from "@/types/session";
 import { AgentEditPreviewPanel } from "./AgentEditPreviewPanel";
-import { MessageCopyButton } from "./StreamMessage";
+import { UserMessage } from "./StreamMessage";
 
 interface AskQuestion {
 	question: string;
@@ -184,19 +184,6 @@ function PermissionShell({
 	);
 }
 
-function AnswerCard({ content }: { content: string }) {
-	return (
-		<div className="flex justify-end py-1">
-			<div className="max-w-[min(82%,48rem)] rounded-lg border border-border bg-background px-3 py-2">
-				<InlineMarkdown className="text-sm">{content}</InlineMarkdown>
-				<div className="mt-1.5 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
-					<MessageCopyButton content={content} ariaLabel="Copy answer" />
-				</div>
-			</div>
-		</div>
-	);
-}
-
 interface PermissionDialogProps {
 	request: PermissionRequest;
 	status?: "pending" | "allowed" | "denied";
@@ -231,19 +218,61 @@ function ResolvedDetail({
 		const questions = presentation.questions;
 		if (questions.length === 0) return null;
 		return (
-			<div className="mt-1.5 space-y-1">
-				{questions.map((q) => (
-					<div key={q.question} className="text-xs">
-						<InlineMarkdown className="text-muted-foreground">
-							{q.question}
-						</InlineMarkdown>
-						{resolvedAnswers?.[q.question] && (
-							<InlineMarkdown className="font-medium">
-								{resolvedAnswers[q.question]}
+			<div className="mt-1.5 space-y-2">
+				{questions.map((q) => {
+					const selectedRaw = resolvedAnswers?.[q.question] ?? "";
+					const selectedLabels = new Set(
+						selectedRaw
+							? q.multiSelect
+								? selectedRaw.split(", ")
+								: [selectedRaw]
+							: [],
+					);
+					return (
+						<div key={q.question} className="text-xs">
+							<InlineMarkdown className="text-muted-foreground">
+								{q.question}
 							</InlineMarkdown>
-						)}
-					</div>
-				))}
+							{q.options.length > 0 && (
+								<div className="mt-1 space-y-0.5">
+									{q.options.map((opt) => {
+										const isSelected = selectedLabels.has(opt.label);
+										return (
+											<div
+												key={opt.label}
+												data-testid="resolved-option"
+												data-selected={isSelected}
+												className={cn(
+													"flex items-start gap-1.5 rounded px-1.5 py-0.5",
+													isSelected
+														? "bg-foreground/5 text-foreground"
+														: "text-muted-foreground",
+												)}
+											>
+												{isSelected ? (
+													<Check className="mt-0.5 size-3 shrink-0" />
+												) : (
+													<span className="mt-0.5 size-3 shrink-0" />
+												)}
+												<span className="min-w-0">
+													<span className={isSelected ? "font-medium" : ""}>
+														{opt.label}
+													</span>
+													{opt.description && (
+														<span className="text-muted-foreground">
+															{" — "}
+															{opt.description}
+														</span>
+													)}
+												</span>
+											</div>
+										);
+									})}
+								</div>
+							)}
+						</div>
+					);
+				})}
 			</div>
 		);
 	}
@@ -448,11 +477,6 @@ export function PermissionDialog({
 		let label: string;
 		if (presentation.kind === "exit_plan") {
 			label = isAllowed ? "Plan approved" : "Plan denied";
-		} else if (presentation.kind === "ask_user_question") {
-			const answerSummary = resolvedAnswers
-				? Object.values(resolvedAnswers).join(", ")
-				: "";
-			label = answerSummary ? `Answered: ${answerSummary}` : "Answered";
 		} else {
 			const toolLabel =
 				request.title || request.display_name || request.tool_name;
@@ -472,44 +496,54 @@ export function PermissionDialog({
 
 		if (presentation.kind === "ask_user_question") {
 			return (
-				<PermissionShell data-testid="permission-resolved">
-					<div className="flex min-w-0 items-start gap-2 px-2 py-1 text-muted-foreground">
-						<PermissionKindIcon kind={presentation.kind} />
-						<div className="min-w-0 flex-1">
-							<InlineMarkdown className="text-foreground">
-								{firstQuestion}
-							</InlineMarkdown>
-							{answerSummary && <AnswerCard content={answerSummary} />}
-							{hasDetail && (
-								<button
-									type="button"
-									className="mt-1 inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
-									onClick={() => setIsExpanded(!isExpanded)}
-								>
-									<ChevronRight
-										className={cn(
-											"size-3 shrink-0 transition-transform",
-											isExpanded && "rotate-90",
-										)}
+				<div data-testid="permission-resolved">
+					{/* Agent の発言: 質問＋選択肢ウィジェット（原状） */}
+					<PermissionShell>
+						<div className="flex min-w-0 items-start gap-2 px-2 py-1 text-muted-foreground">
+							<PermissionKindIcon kind={presentation.kind} />
+							<div className="min-w-0 flex-1">
+								<InlineMarkdown className="text-foreground">
+									{firstQuestion}
+								</InlineMarkdown>
+								{hasDetail && (
+									<button
+										type="button"
+										className="mt-1 inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+										onClick={() => setIsExpanded(!isExpanded)}
+									>
+										<ChevronRight
+											className={cn(
+												"size-3 shrink-0 transition-transform",
+												isExpanded && "rotate-90",
+											)}
+										/>
+										Choices
+									</button>
+								)}
+								{isExpanded && (
+									<ResolvedDetail
+										request={request}
+										presentation={presentation}
+										resolvedAnswers={resolvedAnswers}
 									/>
-									Choices
-								</button>
-							)}
-							{isExpanded && (
-								<ResolvedDetail
-									request={request}
-									presentation={presentation}
-									resolvedAnswers={resolvedAnswers}
-								/>
+								)}
+							</div>
+							{isAllowed ? (
+								<Check className="size-3.5 shrink-0" />
+							) : (
+								<X className="size-3.5 shrink-0" />
 							)}
 						</div>
-						{isAllowed ? (
-							<Check className="size-3.5 shrink-0" />
-						) : (
-							<X className="size-3.5 shrink-0" />
-						)}
-					</div>
-				</PermissionShell>
+					</PermissionShell>
+					{/* ユーザーの発言: 選択した内容を分離表示 */}
+					{answerSummary && (
+						<div className="flex justify-end py-1">
+							<div className="max-w-[min(82%,48rem)]">
+								<UserMessage content={answerSummary} copyLabel="Copy answer" />
+							</div>
+						</div>
+					)}
+				</div>
 			);
 		}
 

@@ -149,16 +149,18 @@ export function MessageCopyButton({
 	);
 }
 
-function HumanMessageContent({
+export function UserMessage({
 	content,
 	images,
 	mentions,
 	timestamp,
+	copyLabel = "Copy message",
 }: {
 	content: string;
 	images?: ImagePart[];
 	mentions?: MentionReference[];
 	timestamp?: number;
+	copyLabel?: string;
 }) {
 	const [isExpanded, setIsExpanded] = useState(false);
 	const lines = lineCount(content);
@@ -186,7 +188,7 @@ function HumanMessageContent({
 			: null;
 
 	return (
-		<div className="rounded-lg border border-border bg-background px-3 py-2">
+		<div className="rounded-lg bg-muted px-3 py-2">
 			{imageElements && imageElements.length > 0 && (
 				<div className="flex flex-wrap gap-2 mb-2">{imageElements}</div>
 			)}
@@ -225,7 +227,7 @@ function HumanMessageContent({
 			</p>
 			<div className="mt-1.5 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
 				{formattedTime && <span>{formattedTime}</span>}
-				<MessageCopyButton content={content} ariaLabel="Copy human message" />
+				<MessageCopyButton content={content} ariaLabel={copyLabel} />
 			</div>
 		</div>
 	);
@@ -409,11 +411,12 @@ function StreamMessageImpl({
 		>
 			{isHuman ? (
 				<div className="max-w-[min(82%,48rem)]">
-					<HumanMessageContent
+					<UserMessage
 						content={content}
 						images={images}
 						mentions={mentions}
 						timestamp={timestamp}
+						copyLabel="Copy human message"
 					/>
 				</div>
 			) : (
