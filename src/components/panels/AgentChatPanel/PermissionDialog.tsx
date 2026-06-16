@@ -18,7 +18,7 @@ import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
 import { cn } from "@/lib/utils";
 import type { PermissionRequest } from "@/types/session";
 import { AgentEditPreviewPanel } from "./AgentEditPreviewPanel";
-import { MessageCopyButton } from "./StreamMessage";
+import { UserMessage } from "./StreamMessage";
 
 interface AskQuestion {
 	question: string;
@@ -180,19 +180,6 @@ function PermissionShell({
 			className="mx-3 my-2 overflow-hidden rounded border border-border bg-background px-2 py-2 text-xs"
 		>
 			{children}
-		</div>
-	);
-}
-
-function AnswerCard({ content }: { content: string }) {
-	return (
-		<div className="flex justify-end py-1">
-			<div className="max-w-[min(82%,48rem)] rounded-lg border border-border bg-background px-3 py-2">
-				<InlineMarkdown className="text-sm">{content}</InlineMarkdown>
-				<div className="mt-1.5 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
-					<MessageCopyButton content={content} ariaLabel="Copy answer" />
-				</div>
-			</div>
 		</div>
 	);
 }
@@ -483,7 +470,11 @@ export function PermissionDialog({
 								</InlineMarkdown>
 								{/* ユーザーの発言: 選択した内容 */}
 								{answer ? (
-									<AnswerCard content={answer} />
+									<div className="flex justify-end py-1">
+										<div className="max-w-[min(82%,48rem)]">
+											<UserMessage content={answer} copyLabel="Copy answer" />
+										</div>
+									</div>
 								) : (
 									<div className="text-muted-foreground italic">
 										未回答 / キャンセル

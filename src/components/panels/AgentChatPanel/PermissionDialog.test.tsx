@@ -1151,7 +1151,7 @@ describe("AskUserQuestion — markdown rendering", () => {
 		expect(codeTexts).toContain("react-markdown");
 	});
 
-	it("renders resolved answer markdown as HTML", async () => {
+	it("renders resolved answer as plain text (no markdown)", () => {
 		render(
 			<PermissionDialog
 				request={{
@@ -1176,12 +1176,11 @@ describe("AskUserQuestion — markdown rendering", () => {
 			/>,
 		);
 		const resolved = screen.getByTestId("permission-resolved");
-		const button = resolved.querySelector("button");
-		expect(button).toBeTruthy();
-		await userEvent.click(button as HTMLElement);
-		expect(resolved.querySelector("code")).toBeTruthy();
-		expect(resolved.querySelector("code")?.textContent).toBe("option-A");
-		expect(resolved.querySelector("strong")).toBeTruthy();
-		expect(resolved.querySelector("strong")?.textContent).toBe("bold");
+		// 回答はユーザーの選択内容なのでプレーンテキスト表示（Markdown要素は生成しない）
+		expect(resolved.querySelector("code")).toBeNull();
+		expect(resolved.querySelector("strong")).toBeNull();
+		expect(resolved.textContent).toContain(
+			"Selected `option-A` with **bold**",
+		);
 	});
 });
