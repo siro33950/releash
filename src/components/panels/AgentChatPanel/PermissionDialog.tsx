@@ -218,19 +218,57 @@ function ResolvedDetail({
 		const questions = presentation.questions;
 		if (questions.length === 0) return null;
 		return (
-			<div className="mt-1.5 space-y-1">
-				{questions.map((q) => (
-					<div key={q.question} className="text-xs">
-						<InlineMarkdown className="text-muted-foreground">
-							{q.question}
-						</InlineMarkdown>
-						{resolvedAnswers?.[q.question] && (
-							<InlineMarkdown className="font-medium">
-								{resolvedAnswers[q.question]}
+			<div className="mt-1.5 space-y-2">
+				{questions.map((q) => {
+					const selectedRaw = resolvedAnswers?.[q.question] ?? "";
+					const selectedLabels = new Set(
+						selectedRaw ? selectedRaw.split(", ") : [],
+					);
+					return (
+						<div key={q.question} className="text-xs">
+							<InlineMarkdown className="text-muted-foreground">
+								{q.question}
 							</InlineMarkdown>
-						)}
-					</div>
-				))}
+							{q.options.length > 0 && (
+								<div className="mt-1 space-y-0.5">
+									{q.options.map((opt) => {
+										const isSelected = selectedLabels.has(opt.label);
+										return (
+											<div
+												key={opt.label}
+												data-testid="resolved-option"
+												data-selected={isSelected}
+												className={cn(
+													"flex items-start gap-1.5 rounded px-1.5 py-0.5",
+													isSelected
+														? "bg-foreground/5 text-foreground"
+														: "text-muted-foreground",
+												)}
+											>
+												{isSelected ? (
+													<Check className="mt-0.5 size-3 shrink-0" />
+												) : (
+													<span className="mt-0.5 size-3 shrink-0" />
+												)}
+												<span className="min-w-0">
+													<span className={isSelected ? "font-medium" : ""}>
+														{opt.label}
+													</span>
+													{opt.description && (
+														<span className="text-muted-foreground">
+															{" — "}
+															{opt.description}
+														</span>
+													)}
+												</span>
+											</div>
+										);
+									})}
+								</div>
+							)}
+						</div>
+					);
+				})}
 			</div>
 		);
 	}
@@ -442,47 +480,65 @@ export function PermissionDialog({
 		}
 
 		const hasDetail = presentation.hasResolvedDetail;
+		const answerSummary = resolvedAnswers
+			? Object.values(resolvedAnswers).join(", ")
+			: "";
+		const firstQuestion =
+			presentation.kind === "ask_user_question"
+				? (presentation.questions[0]?.question ??
+					request.description ??
+					"Question")
+				: "";
 
 		if (presentation.kind === "ask_user_question") {
-			const questions =
-				presentation.questions.length > 0
-					? presentation.questions
-					: [
-							{
-								question: request.description ?? "Question",
-								header: "",
-								options: [],
-								multiSelect: false,
-							},
-						];
 			return (
-				<div
-					data-testid="permission-resolved"
-					className="mx-3 my-2 space-y-2 text-xs"
-				>
-					{questions.map((q) => {
-						const answer = resolvedAnswers?.[q.question];
-						return (
-							<div key={q.question} className="space-y-1">
-								{/* Agent の発言: 質問 */}
+				<div data-testid="permission-resolved">
+					{/* Agent の発言: 質問＋選択肢ウィジェット（原状） */}
+					<PermissionShell>
+						<div className="flex min-w-0 items-start gap-2 px-2 py-1 text-muted-foreground">
+							<PermissionKindIcon kind={presentation.kind} />
+							<div className="min-w-0 flex-1">
 								<InlineMarkdown className="text-foreground">
-									{q.question}
+									{firstQuestion}
 								</InlineMarkdown>
-								{/* ユーザーの発言: 選択した内容 */}
-								{answer ? (
-									<div className="flex justify-end py-1">
-										<div className="max-w-[min(82%,48rem)]">
-											<UserMessage content={answer} copyLabel="Copy answer" />
-										</div>
-									</div>
-								) : (
-									<div className="text-muted-foreground italic">
-										未回答 / キャンセル
-									</div>
+								{hasDetail && (
+									<button
+										type="button"
+										className="mt-1 inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+										onClick={() => setIsExpanded(!isExpanded)}
+									>
+										<ChevronRight
+											className={cn(
+												"size-3 shrink-0 transition-transform",
+												isExpanded && "rotate-90",
+											)}
+										/>
+										Choices
+									</button>
+								)}
+								{isExpanded && (
+									<ResolvedDetail
+										request={request}
+										presentation={presentation}
+										resolvedAnswers={resolvedAnswers}
+									/>
 								)}
 							</div>
-						);
-					})}
+							{isAllowed ? (
+								<Check className="size-3.5 shrink-0" />
+							) : (
+								<X className="size-3.5 shrink-0" />
+							)}
+						</div>
+					</PermissionShell>
+					{/* ユーザーの発言: 選択した内容を分離表示 */}
+					{answerSummary && (
+						<div className="flex justify-end py-1">
+							<div className="max-w-[min(82%,48rem)]">
+								<UserMessage content={answerSummary} copyLabel="Copy answer" />
+							</div>
+						</div>
+					)}
 				</div>
 			);
 		}
