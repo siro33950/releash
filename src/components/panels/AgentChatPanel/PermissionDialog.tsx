@@ -448,11 +448,6 @@ export function PermissionDialog({
 		let label: string;
 		if (presentation.kind === "exit_plan") {
 			label = isAllowed ? "Plan approved" : "Plan denied";
-		} else if (presentation.kind === "ask_user_question") {
-			const answerSummary = resolvedAnswers
-				? Object.values(resolvedAnswers).join(", ")
-				: "";
-			label = answerSummary ? `Answered: ${answerSummary}` : "Answered";
 		} else {
 			const toolLabel =
 				request.title || request.display_name || request.tool_name;
@@ -460,56 +455,44 @@ export function PermissionDialog({
 		}
 
 		const hasDetail = presentation.hasResolvedDetail;
-		const answerSummary = resolvedAnswers
-			? Object.values(resolvedAnswers).join(", ")
-			: "";
-		const firstQuestion =
-			presentation.kind === "ask_user_question"
-				? (presentation.questions[0]?.question ??
-					request.description ??
-					"Question")
-				: "";
 
 		if (presentation.kind === "ask_user_question") {
+			const questions =
+				presentation.questions.length > 0
+					? presentation.questions
+					: [
+							{
+								question: request.description ?? "Question",
+								header: "",
+								options: [],
+								multiSelect: false,
+							},
+						];
 			return (
-				<PermissionShell data-testid="permission-resolved">
-					<div className="flex min-w-0 items-start gap-2 px-2 py-1 text-muted-foreground">
-						<PermissionKindIcon kind={presentation.kind} />
-						<div className="min-w-0 flex-1">
-							<InlineMarkdown className="text-foreground">
-								{firstQuestion}
-							</InlineMarkdown>
-							{answerSummary && <AnswerCard content={answerSummary} />}
-							{hasDetail && (
-								<button
-									type="button"
-									className="mt-1 inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
-									onClick={() => setIsExpanded(!isExpanded)}
-								>
-									<ChevronRight
-										className={cn(
-											"size-3 shrink-0 transition-transform",
-											isExpanded && "rotate-90",
-										)}
-									/>
-									Choices
-								</button>
-							)}
-							{isExpanded && (
-								<ResolvedDetail
-									request={request}
-									presentation={presentation}
-									resolvedAnswers={resolvedAnswers}
-								/>
-							)}
-						</div>
-						{isAllowed ? (
-							<Check className="size-3.5 shrink-0" />
-						) : (
-							<X className="size-3.5 shrink-0" />
-						)}
-					</div>
-				</PermissionShell>
+				<div
+					data-testid="permission-resolved"
+					className="mx-3 my-2 space-y-2 text-xs"
+				>
+					{questions.map((q) => {
+						const answer = resolvedAnswers?.[q.question];
+						return (
+							<div key={q.question} className="space-y-1">
+								{/* Agent の発言: 質問 */}
+								<InlineMarkdown className="text-foreground">
+									{q.question}
+								</InlineMarkdown>
+								{/* ユーザーの発言: 選択した内容 */}
+								{answer ? (
+									<AnswerCard content={answer} />
+								) : (
+									<div className="text-muted-foreground italic">
+										未回答 / キャンセル
+									</div>
+								)}
+							</div>
+						);
+					})}
+				</div>
 			);
 		}
 
