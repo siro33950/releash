@@ -222,7 +222,11 @@ function ResolvedDetail({
 				{questions.map((q) => {
 					const selectedRaw = resolvedAnswers?.[q.question] ?? "";
 					const selectedLabels = new Set(
-						selectedRaw ? selectedRaw.split(", ") : [],
+						selectedRaw
+							? q.multiSelect
+								? selectedRaw.split(", ")
+								: [selectedRaw]
+							: [],
 					);
 					return (
 						<div key={q.question} className="text-xs">

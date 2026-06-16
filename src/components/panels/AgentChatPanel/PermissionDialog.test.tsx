@@ -970,6 +970,43 @@ describe("PermissionDialog — AskUserQuestion", () => {
 		expect(selected).toHaveLength(1);
 		expect(selected[0].textContent).toContain("React");
 	});
+
+	it("highlights a single-select option whose label contains a comma", async () => {
+		const commaRequest = {
+			...askRequest,
+			input: {
+				questions: [
+					{
+						question: "Pick a stack",
+						header: "Stack",
+						options: [
+							{ label: "React, Vite", description: "SPA" },
+							{ label: "Next.js", description: "SSR" },
+						],
+						multiSelect: false,
+					},
+				],
+			},
+		};
+		render(
+			<PermissionDialog
+				request={commaRequest}
+				status="allowed"
+				resolvedAnswers={{ "Pick a stack": "React, Vite" }}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+		const resolved = screen.getByTestId("permission-resolved");
+		await userEvent.click(await within(resolved).findByText("Choices"));
+		const options = within(resolved).getAllByTestId("resolved-option");
+		// 単一選択ではカンマを含むラベルが1要素として扱われ、正しくハイライトされる
+		const selected = options.filter(
+			(o) => o.getAttribute("data-selected") === "true",
+		);
+		expect(selected).toHaveLength(1);
+		expect(selected[0].textContent).toContain("React, Vite");
+	});
 });
 
 describe("AskUserQuestion — multiSelect", () => {
