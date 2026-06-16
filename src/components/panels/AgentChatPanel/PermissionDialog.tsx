@@ -316,9 +316,18 @@ export function PermissionDialog({
 	const [presentation, setPresentation] = useState<PermissionPresentation>(
 		emptyPermissionPresentation,
 	);
+	const [presentationReady, setPresentationReady] = useState(false);
 	const [contentEditError, setContentEditError] = useState<string | null>(null);
 	const [previewEditError, setPreviewEditError] = useState<string | null>(null);
 	const questionIdBase = useId();
+	// request.input はバックエンドのスナップショット更新ごとに新しい参照になるため、
+	// 参照を直接 effect 依存にすると内容が同じでも毎回 effect が再実行され、
+	// presentation 取得のリセット（シマー）が繰り返されてチラつく。内容ベースの
+	// 安定キーに変換して再取得を抑止する。
+	const inputKey = useMemo(
+		() => JSON.stringify(request.input ?? {}),
+		[request.input],
+	);
 	useEffect(() => {
 		setEditedInputText(JSON.stringify(request.input ?? {}, null, 2));
 		setEditedContentText("");
@@ -327,9 +336,13 @@ export function PermissionDialog({
 		setContentEditError(null);
 		setPreviewEditError(null);
 	}, [request.input]);
+	// inputKey は request.input の内容ハッシュ。参照ではなく内容で再取得を判定するため、
+	// request.input そのものではなく inputKey を依存にする（チラつき防止）。
+	// biome-ignore lint/correctness/useExhaustiveDependencies: request.input は inputKey 経由で内容監視している
 	useEffect(() => {
 		let canceled = false;
 		setPresentation(emptyPermissionPresentation());
+		setPresentationReady(false);
 		void invoke<Partial<PermissionPresentation> | null>(
 			"present_agent_permission_request",
 			{
@@ -343,17 +356,19 @@ export function PermissionDialog({
 				setPresentation(normalized);
 				setEditedContentText(normalized.directContent);
 				setMultiEditContentTexts(normalized.multiEditReplacementContents);
+				setPresentationReady(true);
 			})
 			.catch(() => {
 				if (canceled) return;
 				setPresentation(emptyPermissionPresentation());
 				setEditedContentText("");
 				setMultiEditContentTexts([]);
+				setPresentationReady(true);
 			});
 		return () => {
 			canceled = true;
 		};
-	}, [request.input, request.tool_name]);
+	}, [inputKey, request.tool_name]);
 	const canEditInput = presentation.canEditInput;
 	const canEditContent = presentation.canEditContent;
 	const canEditMultiEditContent = presentation.canEditMultiEditContent;
@@ -472,6 +487,18 @@ export function PermissionDialog({
 		[multiEditContentCount, presentation.multiEditOldStrings],
 	);
 	const previewInput = editedPreviewInput ?? editedInput ?? request.input;
+	// presentation は Rust から非同期取得するため、確定するまでは kind 依存の
+	// 分岐 UI を描画しない。確定前に汎用 UI を出すと、解決後に別 UI へ差し替わって
+	// チラつく（特に仮想化リストの再マウント時）。
+	if (!presentationReady) {
+		return (
+			<PermissionShell data-testid="permission-loading">
+				<div className="px-2 py-1">
+					<div className="h-4 w-2/3 animate-pulse rounded bg-muted-foreground/10" />
+				</div>
+			</PermissionShell>
+		);
+	}
 	if (status !== "pending") {
 		const isAllowed = status === "allowed";
 		let label: string;
@@ -537,7 +564,7 @@ export function PermissionDialog({
 					</PermissionShell>
 					{/* ユーザーの発言: 選択した内容を分離表示 */}
 					{answerSummary && (
-						<div className="flex justify-end py-1">
+						<div className="flex justify-end px-4 py-1">
 							<div className="max-w-[min(82%,48rem)]">
 								<UserMessage content={answerSummary} copyLabel="Copy answer" />
 							</div>
