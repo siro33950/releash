@@ -2813,9 +2813,10 @@ describe("AgentChatPanel session history", () => {
 			),
 		);
 
-		fireEvent.keyDown(window, { key: "g", metaKey: true });
-
-		const search = await screen.findByLabelText("Search sessions");
+		const search = await waitFor(async () => {
+			fireEvent.keyDown(window, { key: "g", metaKey: true });
+			return await screen.findByLabelText("Search sessions");
+		});
 		await waitFor(() => expect(search).toHaveFocus());
 	});
 });
