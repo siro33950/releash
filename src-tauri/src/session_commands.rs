@@ -14,10 +14,9 @@ use crate::infrastructure::agent_session::runtime::{
     AgentProcessMap, SessionHandle, CODEX_BACKEND_ID,
 };
 use crate::usecase::agent_session::session::{
-    add_message_internal, create_session_command_inner, resolve_session_backend,
-    update_session_state_in_data_dir, validate_session_permission_mode, ChatMessage, ChatSession,
-    MessageRole, OpenTabRegistry, RestoreSessionResponse, SessionState, SessionStore,
-    SessionSummary,
+    add_message_internal, resolve_session_backend, update_session_state_in_data_dir,
+    validate_session_permission_mode, ChatMessage, ChatSession, MessageRole, OpenTabRegistry,
+    RestoreSessionResponse, SessionState, SessionStore, SessionSummary,
 };
 use crate::workflow::engine::WorkflowEngine;
 
@@ -119,15 +118,30 @@ pub fn create_session(
     worktree_path: String,
     permission_mode: String,
     backend_id: Option<String>,
+    model_id: Option<String>,
 ) -> Result<ChatSession, String> {
     let data_dir = resolve_data_dir(&app)?;
-    create_session_command_inner(
+    let permission_mode =
+        crate::permission::PermissionMode::parse(&permission_mode).map_err(|e| e.to_string())?;
+    let resolved_model = match model_id.as_deref() {
+        Some(model_id) => Some(registry.resolve_model_entry(model_id)?),
+        None => None,
+    };
+    let resolved_backend_id = registry.resolve_backend_id(
+        resolved_model
+            .as_ref()
+            .map(|entry| entry.backend.clone())
+            .or(backend_id),
+    )?;
+    crate::usecase::agent_session::session::create_session_with_model_and_plan_mode(
         state.inner().as_ref(),
         registry.inner().as_ref(),
         &data_dir,
         &worktree_path,
-        &permission_mode,
-        backend_id,
+        resolved_backend_id,
+        permission_mode,
+        resolved_model.map(|entry| entry.model_id),
+        false,
     )
 }
 

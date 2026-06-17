@@ -5,6 +5,7 @@ import type { AgentSupportedCommandsUpdated } from "@/types/protocol";
 import {
 	type MessagePart,
 	type ModelInfo,
+	normalizeModelSelectionId,
 	normalizePermissionMode,
 	type PermissionRequest,
 	type SessionState,
@@ -543,6 +544,10 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		listen<ModelsUpdated>("agent-models-updated", (event) => {
 			const { chat_session_id, available_models, selected_model } =
 				event.payload;
+			const modelId = normalizeModelSelectionId(
+				available_models,
+				selected_model,
+			);
 			if (isViewable(chat_session_id, viewableRegistry)) {
 				dispatch({
 					type: "SET_AVAILABLE_MODELS",
@@ -552,7 +557,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			dispatch({
 				type: "SET_SESSION_MODEL",
 				sessionId: chat_session_id,
-				modelId: selected_model,
+				modelId,
 			});
 		}).then((fn) => {
 			if (cancelled) {

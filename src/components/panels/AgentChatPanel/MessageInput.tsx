@@ -1,14 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowUp, ClipboardCheck, Loader2, Square, X } from "lucide-react";
+import { ArrowUp, Loader2, Square, X } from "lucide-react";
 import {
 	useCallback,
 	useEffect,
+	useId,
 	useImperativeHandle,
 	useMemo,
 	useRef,
 	useState,
 } from "react";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import type {
 	AgentSkill,
 	BackendInfo,
@@ -19,7 +21,6 @@ import type {
 	PlanMode,
 	SlashCommand,
 } from "@/types/session";
-import { BackendSelector } from "./BackendSelector";
 import { MentionPopup } from "./MentionPopup";
 import { ModelSelector } from "./ModelSelector";
 import { ModeSelector } from "./ModeSelector";
@@ -73,10 +74,11 @@ interface MessageInputProps {
 	models: ModelInfo[];
 	currentModelId: string;
 	onModelChange: (modelId: string) => void;
-	backends: BackendInfo[];
 	currentBackendId: string | null;
-	onBackendChange: (backendId: string | null) => void;
-	backendDisabled: boolean;
+	canChangeBackend?: boolean;
+	backends?: BackendInfo[];
+	onBackendChange?: (backendId: string) => void;
+	backendDisabled?: boolean;
 	ref?: React.Ref<MessageInputHandle>;
 	worktreePath?: string;
 	promptSuggestion?: string | null;
@@ -96,15 +98,14 @@ export function MessageInput({
 	models,
 	currentModelId,
 	onModelChange,
-	backends,
 	currentBackendId,
-	onBackendChange,
-	backendDisabled,
+	canChangeBackend = true,
 	ref,
 	worktreePath,
 	promptSuggestion,
 	runtimeSlashCommands = [],
 }: MessageInputProps) {
+	const planModeSwitchId = useId();
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const [slashPopupDismissed, setSlashPopupDismissed] = useState(false);
@@ -770,36 +771,34 @@ export function MessageInput({
 				)}
 				<div className="flex items-center justify-between px-2 pb-2">
 					<div className="flex items-center gap-1">
-						<BackendSelector
-							backends={backends}
-							selectedBackendId={currentBackendId}
-							onBackendChange={onBackendChange}
-							disabled={backendDisabled}
+						<ModelSelector
+							models={models}
+							currentModelId={currentModelId}
+							currentBackendId={currentBackendId}
+							canChangeBackend={canChangeBackend}
+							onModelChange={onModelChange}
+							disabled={false}
 						/>
 						<ModeSelector
 							mode={mode}
 							onModeChange={onModeChange}
 							disabled={false}
 						/>
-						<Button
-							type="button"
-							size="sm"
-							variant={planMode ? "secondary" : "ghost"}
-							className="h-7 gap-1.5 px-2 text-xs"
-							aria-pressed={planMode}
-							data-testid="plan-mode-toggle"
+						<div
+							className="flex h-7 items-center gap-1.5 px-2 text-xs select-none"
 							title={planMode ? "Plan mode on" : "Plan mode off"}
-							onClick={() => onPlanModeChange(!planMode)}
 						>
-							<ClipboardCheck className="size-3.5" />
-							<span>Plan</span>
-						</Button>
-						<ModelSelector
-							models={models}
-							currentModelId={currentModelId}
-							onModelChange={onModelChange}
-							disabled={false}
-						/>
+							<label htmlFor={planModeSwitchId} className="cursor-pointer">
+								Plan
+							</label>
+							<Switch
+								id={planModeSwitchId}
+								checked={planMode}
+								onCheckedChange={(checked) => onPlanModeChange(checked)}
+								data-testid="plan-mode-toggle"
+								aria-label="Plan mode"
+							/>
+						</div>
 					</div>
 					<div className="flex items-center gap-2">
 						{isStreaming && canSend && (

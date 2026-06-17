@@ -170,6 +170,7 @@ pub enum ActivityEntry {
 }
 
 pub trait SessionBackendResolver {
+    #[cfg(test)]
     fn resolve_backend_id(&self, backend_id: Option<String>) -> Result<String, String>;
     fn default_model_for(&self, backend_id: &str) -> Result<String, String>;
     fn backend_exists(&self, backend_id: &str) -> bool;
@@ -180,6 +181,7 @@ impl<T> SessionBackendResolver for std::sync::Arc<T>
 where
     T: SessionBackendResolver + ?Sized,
 {
+    #[cfg(test)]
     fn resolve_backend_id(&self, backend_id: Option<String>) -> Result<String, String> {
         self.as_ref().resolve_backend_id(backend_id)
     }
@@ -270,7 +272,10 @@ pub struct QueuedAgentTurn {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
-    pub value: String,
+    pub id: String,
+    pub display_name: String,
+    pub backend: String,
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -540,6 +545,7 @@ fn build_new_session(
 ///
 /// `permission_mode` は検証済みの抽象 [`crate::permission::PermissionMode`] を要求し、
 /// 初回保存で確定する（Spec issues-947: セッション保存層が permission_mode の正典）。
+#[cfg(test)]
 pub fn create_session_with_initial_model(
     session_store: &SessionStore,
     registry: &impl SessionBackendResolver,
@@ -559,6 +565,7 @@ pub fn create_session_with_initial_model(
     )
 }
 
+#[cfg(test)]
 pub fn create_session_with_initial_model_and_plan_mode(
     session_store: &SessionStore,
     registry: &impl SessionBackendResolver,
@@ -568,12 +575,41 @@ pub fn create_session_with_initial_model_and_plan_mode(
     permission_mode: crate::permission::PermissionMode,
     plan_mode: bool,
 ) -> Result<ChatSession, String> {
-    let default_model = registry.default_model_for(&backend_id)?;
+    create_session_with_model_and_plan_mode(
+        session_store,
+        registry,
+        data_dir,
+        worktree_path,
+        backend_id,
+        permission_mode,
+        None,
+        plan_mode,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn create_session_with_model_and_plan_mode(
+    session_store: &SessionStore,
+    registry: &impl SessionBackendResolver,
+    data_dir: &std::path::Path,
+    worktree_path: &str,
+    backend_id: String,
+    permission_mode: crate::permission::PermissionMode,
+    selected_model: Option<String>,
+    plan_mode: bool,
+) -> Result<ChatSession, String> {
+    let selected_model = match selected_model {
+        Some(model) => model,
+        None => {
+            let default_model = registry.default_model_for(&backend_id)?;
+            crate::domain::agent_session::model_entry_id(&backend_id, &default_model)
+        }
+    };
     let session = build_new_session(
         worktree_path,
         Some(backend_id),
         permission_mode,
-        Some(default_model),
+        Some(selected_model),
         plan_mode,
         false,
     );
@@ -618,6 +654,7 @@ pub fn add_message_internal(
     Ok(message)
 }
 
+#[cfg(test)]
 pub(crate) fn create_session_command_inner(
     session_store: &SessionStore,
     registry: &impl SessionBackendResolver,
@@ -1888,7 +1925,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = fixed_model_registry();
 
-        let default_model = crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string();
+        let default_model = crate::domain::agent_session::CLAUDE_FIXED_MODELS[0];
+        let selected_model = crate::domain::agent_session::model_entry_id("claude", default_model);
 
         let session = create_session_with_initial_model(
             &store,
@@ -1899,11 +1937,11 @@ mod tests {
             crate::permission::PermissionMode::Edit,
         )
         .unwrap();
-        assert_eq!(session.selected_model, Some(default_model.clone()));
+        assert_eq!(session.selected_model, Some(selected_model.clone()));
 
         // 永続化されている (on-disk から再ロードしても保持される)
         let reloaded = store.get_session(dir.path(), &session.id).unwrap().unwrap();
-        assert_eq!(reloaded.selected_model, Some(default_model));
+        assert_eq!(reloaded.selected_model, Some(selected_model));
     }
 
     #[test]
@@ -1913,7 +1951,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = fixed_model_registry();
 
-        let default_model = crate::domain::agent_session::CODEX_FIXED_MODELS[0].to_string();
+        let default_model = crate::domain::agent_session::CODEX_FIXED_MODELS[0];
+        let selected_model = crate::domain::agent_session::model_entry_id("codex", default_model);
 
         let session = create_session_with_initial_model(
             &store,
@@ -1924,7 +1963,29 @@ mod tests {
             crate::permission::PermissionMode::Edit,
         )
         .unwrap();
-        assert_eq!(session.selected_model, Some(default_model));
+        assert_eq!(session.selected_model, Some(selected_model));
+    }
+
+    #[test]
+    fn create_session_with_model_and_plan_mode_preserves_explicit_selected_model() {
+        let store = SessionStore::default();
+        let dir = tempfile::tempdir().unwrap();
+        let registry = fixed_model_registry();
+        let selected_model = "claude:claude-sonnet-4-5".to_string();
+
+        let session = create_session_with_model_and_plan_mode(
+            &store,
+            &registry,
+            dir.path(),
+            "/repo",
+            "claude".to_string(),
+            crate::permission::PermissionMode::Edit,
+            Some(selected_model.clone()),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(session.selected_model, Some(selected_model));
     }
 
     #[test]

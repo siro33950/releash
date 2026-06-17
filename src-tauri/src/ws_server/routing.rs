@@ -400,7 +400,7 @@ mod tests {
                 let values: Vec<&str> = r.backends[0]
                     .available_models
                     .iter()
-                    .map(|m| m.value.as_str())
+                    .map(|m| m.model_id.as_str())
                     .collect();
                 // モデル一覧は config ではなく registry の fixed_models() が供給元。
                 let expected: Vec<&str> =
@@ -418,6 +418,7 @@ mod tests {
         let msg = WsMessage::AgentSessionStartRequest(AgentSessionStartRequest {
             worktree_path: "/nonexistent/repo".to_string(),
             backend_id: Some("claude".to_string()),
+            model_id: None,
             permission_mode: Some("edit".to_string()),
         });
         let result = route_message(&msg, &state, &wt).await;

@@ -14,6 +14,7 @@ import type {
 	TokenUsage,
 	TurnPhase,
 } from "@/types/session";
+import { getModelInfoBackend } from "@/types/session";
 
 export interface AgentChatState {
 	sessions: SessionSummary[];
@@ -116,6 +117,7 @@ export type AgentChatAction =
 			type: "SET_SESSION_MODEL";
 			sessionId: string;
 			modelId: string;
+			backendId?: string | null;
 	  }
 	| { type: "CLEANUP_SESSION"; sessionId: string }
 	| { type: "SET_BACKENDS"; backends: BackendInfo[]; defaultId: string | null }
@@ -160,12 +162,10 @@ function displayBackendId(state: AgentChatState): string | null {
 	return getActiveSession(state)?.backendId ?? state.selectedBackendId;
 }
 
-function modelsForDisplayBackend(state: AgentChatState): ModelInfo[] {
-	const backendId = displayBackendId(state);
-	if (!backendId) return [];
-	return backendId in state.availableModelsByBackend
-		? state.availableModelsByBackend[backendId]
-		: state.availableModels;
+function allAvailableModels(
+	availableModelsByBackend: Record<string, ModelInfo[]>,
+): ModelInfo[] {
+	return Object.values(availableModelsByBackend).flat();
 }
 
 function withBackendModels(
@@ -180,7 +180,7 @@ function withBackendModels(
 	const nextState = { ...state, availableModelsByBackend };
 	return {
 		...nextState,
-		availableModels: modelsForDisplayBackend(nextState),
+		availableModels: allAvailableModels(availableModelsByBackend),
 	};
 }
 
@@ -379,18 +379,30 @@ export function reducer(
 			};
 		}
 		case "SET_AVAILABLE_MODELS": {
-			const backendId = action.backendId ?? displayBackendId(state);
-			if (!backendId) return { ...state, availableModels: action.models };
-			return withBackendModels(state, backendId, action.models);
+			const models = action.models ?? [];
+			const backendId =
+				action.backendId ??
+				models.find((model) => getModelInfoBackend(model))?.backend ??
+				displayBackendId(state);
+			if (!backendId) return { ...state, availableModels: models };
+			return withBackendModels(state, backendId, models);
 		}
-		case "SET_SESSION_MODEL":
-			return {
+		case "SET_SESSION_MODEL": {
+			const nextState = {
 				...state,
 				sessionModels: {
 					...state.sessionModels,
 					[action.sessionId]: action.modelId,
 				},
 			};
+			if (action.backendId === undefined || action.backendId === "") {
+				return nextState;
+			}
+			return updateSessionInStore(nextState, action.sessionId, (session) => ({
+				...session,
+				backendId: action.backendId,
+			}));
+		}
 		case "CLEANUP_SESSION": {
 			const { [action.sessionId]: _tp, ...restTurnPhases } = state.turnPhases;
 			const { [action.sessionId]: _int, ...restInterrupting } =
@@ -437,9 +449,6 @@ export function reducer(
 				state.selectedBackendId ??
 				action.defaultId ??
 				(action.backends.length > 0 ? action.backends[0].id : null);
-			const activeSession = getActiveSession(state);
-			const nextDisplayBackendId =
-				activeSession?.backendId ?? (activeSession ? null : selectedBackendId);
 			const nextState = {
 				...state,
 				backends: action.backends,
@@ -448,21 +457,13 @@ export function reducer(
 			};
 			return {
 				...nextState,
-				availableModels: nextDisplayBackendId
-					? (availableModelsByBackend[nextDisplayBackendId] ?? [])
-					: activeSession
-						? state.availableModels
-						: [],
+				availableModels: allAvailableModels(availableModelsByBackend),
 			};
 		}
 		case "SET_SELECTED_BACKEND": {
-			const nextState = {
+			return {
 				...state,
 				selectedBackendId: action.backendId,
-			};
-			return {
-				...nextState,
-				availableModels: modelsForDisplayBackend(nextState),
 			};
 		}
 	}

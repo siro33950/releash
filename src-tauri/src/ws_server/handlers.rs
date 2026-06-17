@@ -720,7 +720,12 @@ pub(super) fn handle_backend_list_request(state: &WsServerState) -> Option<WsMes
 fn runtime_model_info_to_msg(
     info: crate::infrastructure::agent_session::runtime::ModelInfo,
 ) -> ModelInfoMsg {
-    ModelInfoMsg { value: info.value }
+    ModelInfoMsg {
+        id: info.id,
+        display_name: info.display_name,
+        backend: info.backend,
+        model_id: info.model_id,
+    }
 }
 
 fn runtime_backend_info_to_msg(
@@ -809,7 +814,19 @@ pub(super) async fn handle_agent_session_start_request(
 
     let registry = state.get_backend_registry();
 
-    let resolved_backend_id = match registry.resolve_backend_id(typed.backend_id.clone()) {
+    let resolved_model = match typed.model_id.as_deref() {
+        Some(model_id) => match registry.resolve_model_entry(model_id) {
+            Ok(entry) => Some(entry),
+            Err(e) => return Some(agent_session_start_error(typed.backend_id.clone(), e)),
+        },
+        None => None,
+    };
+    let requested_backend_id = resolved_model
+        .as_ref()
+        .map(|entry| entry.backend.clone())
+        .or_else(|| typed.backend_id.clone());
+
+    let resolved_backend_id = match registry.resolve_backend_id(requested_backend_id) {
         Ok(id) => id,
         Err(e) => {
             return Some(agent_session_start_error(None, e));
@@ -823,6 +840,7 @@ pub(super) async fn handle_agent_session_start_request(
         &typed.worktree_path,
         Some(resolved_backend_id.clone()),
         typed.permission_mode,
+        resolved_model.map(|entry| entry.model_id),
     ) {
         Ok(session) => Some(WsMessage::AgentSessionStartResponse(
             AgentSessionStartResponse {
@@ -1033,6 +1051,7 @@ pub(super) async fn handle_agent_message_request(
             permission_mode: typed.permission_mode,
             plan_mode: false,
             backend_id: typed.backend_id.clone(),
+            model_id: typed.model_id.clone(),
             images: if typed.images.is_empty() {
                 None
             } else {
@@ -1725,7 +1744,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_agent_model_set_request_rejects_other_backend_model_as_ws_response() {
+    async fn handle_agent_model_set_request_allows_other_backend_model_before_first_message() {
         let temp = tempfile::tempdir().unwrap();
         let session_store =
             Arc::new(crate::usecase::agent_session::session::SessionStore::default());
@@ -1747,9 +1766,16 @@ mod tests {
         )
         .await;
 
-        assert!(!resp.success);
+        assert!(resp.success);
         assert_eq!(resp.model_id.as_deref(), Some("gpt-5"));
-        assert!(resp.error.unwrap().contains("別バックエンド"));
+        assert!(resp.error.is_none());
+
+        let updated = session_store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.backend_id.as_deref(), Some("codex"));
+        assert_eq!(updated.selected_model.as_deref(), Some("gpt-5"));
     }
 
     #[tokio::test]
@@ -2158,6 +2184,7 @@ mod tests {
             content: "hello".to_string(),
             permission_mode: Some("edit".to_string()),
             backend_id: Some("claude".to_string()),
+            model_id: None,
             images: Vec::new(),
             mentions: Vec::new(),
             editor_context: None,
@@ -2182,6 +2209,7 @@ mod tests {
             content: "hello".to_string(),
             permission_mode: Some("edit".to_string()),
             backend_id: None,
+            model_id: None,
             images: Vec::new(),
             mentions: Vec::new(),
             editor_context: None,
@@ -2201,6 +2229,7 @@ mod tests {
             content: "hello".to_string(),
             permission_mode: Some("edit".to_string()),
             backend_id: None,
+            model_id: None,
             images: Vec::new(),
             mentions: Vec::new(),
             editor_context: None,
@@ -2250,6 +2279,7 @@ mod tests {
             let req = AgentSessionStartRequest {
                 worktree_path: repo_path.clone(),
                 backend_id: Some("claude".to_string()),
+                model_id: None,
                 permission_mode: Some(mode.to_string()),
             };
             let result = handle_agent_session_start_request(&req, &state).await;
@@ -2296,6 +2326,7 @@ mod tests {
             let req = AgentSessionStartRequest {
                 worktree_path: repo_path.clone(),
                 backend_id: Some("claude".to_string()),
+                model_id: None,
                 permission_mode: permission.map(|s| s.to_string()),
             };
             let result = handle_agent_session_start_request(&req, &state).await;
@@ -2340,6 +2371,7 @@ mod tests {
                 content: "hello".to_string(),
                 permission_mode: permission.map(|s| s.to_string()),
                 backend_id: Some("claude".to_string()),
+                model_id: None,
                 images: Vec::new(),
                 mentions: Vec::new(),
                 editor_context: None,

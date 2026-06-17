@@ -154,7 +154,7 @@ describe("ModelSelector", () => {
 
 		await user.click(screen.getByTestId("model-selector-trigger"));
 		// 候補は 0 件として提示され、暗黙のフォールバック候補や代替文言は含まれない。
-		expect(screen.queryAllByRole("menuitemradio")).toHaveLength(0);
+		expect(screen.queryAllByRole("menuitem")).toHaveLength(0);
 		expect(screen.queryByText("Auto")).toBeNull();
 		expect(screen.queryByText("候補なし")).toBeNull();
 	});
@@ -183,7 +183,7 @@ describe("ModelSelector", () => {
 
 		// candidate も textContent として表示され、script タグ / onerror 属性が
 		// DOM 上に副作用を持つ要素として現れない。
-		const items = screen.getAllByRole("menuitemradio");
+		const items = screen.getAllByRole("menuitem");
 		const itemTexts = items.map((el) => el.textContent ?? "");
 		expect(itemTexts).toContain(dangerous);
 		expect(itemTexts).toContain(onerrorImg);

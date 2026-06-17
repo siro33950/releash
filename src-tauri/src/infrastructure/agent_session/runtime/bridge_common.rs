@@ -3347,11 +3347,14 @@ async fn get_session_internal_with_data_dir(
             // モデル未選択状態は廃止。既存セッションの None は既定モデルへ解決して返す。
             // 応答の selected_model は常に非 null（flatten + skip_serializing_if のため、
             // None だとフィールドが脱落しフロントの必須 string 契約に反する）。
-            session.selected_model = resolve_selected_model_for_response(
+            let selected_model = resolve_selected_model_for_response(
                 session.selected_model.take(),
                 &backend_id,
                 registry,
             )?;
+            session.selected_model = selected_model.as_deref().map(|model_id| {
+                crate::domain::agent_session::model_entry_id(&backend_id, model_id)
+            });
 
             Ok(Some(GetSessionResponse {
                 session,
@@ -4458,17 +4461,35 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
         .backend_id
         .clone()
         .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string());
+    let resolved_model = match registry {
+        Some(reg) => reg.resolve_model_entry(&model_id)?,
+        None => ModelInfo::new(&backend_id, &model_id),
+    };
+    let target_backend_id = resolved_model.backend.clone();
+    let target_model_id = resolved_model.model_id.clone();
 
     // モデルは必須。常に形式検証 + 固定リスト照合を通す（モデル未選択状態は廃止）。
-    let model = model_id.as_str();
+    let model = target_model_id.as_str();
     crate::domain::agent_session::ModelId::parse(model)?;
+    if target_backend_id != backend_id {
+        if !can_change_session_backend(&session) {
+            return Err(format!(
+                "Cannot change backend after the first message has been sent: {chat_session_id}"
+            ));
+        }
+        session.backend_id = Some(target_backend_id.clone());
+        remove_stale_unstarted_agent_process(handles, data_dir, chat_session_id).await;
+    }
     if let Some(reg) = registry {
-        let session_models: Vec<String> = reg.config_models_for(&backend_id).map_err(|e| {
-            log::warn!(
-                "set_agent_model: backend '{backend_id}' の登録済みモデル一覧取得に失敗: {e}"
+        let session_models: Vec<String> =
+            reg.config_models_for(&target_backend_id).map_err(|e| {
+                log::warn!(
+                "set_agent_model: backend '{target_backend_id}' の登録済みモデル一覧取得に失敗: {e}"
             );
-            format!("バックエンド '{backend_id}' の登録済みモデル一覧を取得できません: {e}")
-        })?;
+                format!(
+                    "バックエンド '{target_backend_id}' の登録済みモデル一覧を取得できません: {e}"
+                )
+            })?;
         if !session_models.iter().any(|v| v == model) {
             // 「未登録」を伝える前に、別バックエンドに登録されていないかを問い合わせる。
             // - Ok(Some(other)) かつ other != current backend: backend mismatch として返す
@@ -4476,9 +4497,9 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
             // - Err: infrastructure 故障。warn を残して当該 backend への未登録として返す
             //   （別バックエンドに登録されているかは判定できないため、ヒントは付けない）
             match reg.resolve_backend_for_model(model) {
-                Ok(Some(bid)) if bid != backend_id => {
+                Ok(Some(bid)) if bid != target_backend_id => {
                     return Err(format!(
-                        "モデル '{model}' はバックエンド '{backend_id}' に登録されていません (別バックエンド '{bid}' に登録)"
+                        "モデル '{model}' はバックエンド '{target_backend_id}' に登録されていません (別バックエンド '{bid}' に登録)"
                     ));
                 }
                 Ok(_) => {}
@@ -4489,7 +4510,7 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
                 }
             }
             return Err(format!(
-                "モデル '{model}' はバックエンド '{backend_id}' に登録されていません"
+                "モデル '{model}' はバックエンド '{target_backend_id}' に登録されていません"
             ));
         }
     }
@@ -4498,17 +4519,17 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
     //    proc.available_models は config 単一 owner に追従させるため、active process が
     //    存在する場合も config 由来の最新値で同期する。
     //    infrastructure 故障時は Err を伝播し、proc キャッシュを空一覧で上書きしない。
-    let models_from_config = available_models_for_backend(&backend_id, registry).map_err(|e| {
+    let models_from_config = available_models_for_backend(&target_backend_id, registry).map_err(|e| {
         log::warn!(
-            "set_agent_model: backend '{backend_id}' のモデル一覧取得に失敗したため proc キャッシュ同期を中止: {e}"
+            "set_agent_model: backend '{target_backend_id}' のモデル一覧取得に失敗したため proc キャッシュ同期を中止: {e}"
         );
-        format!("バックエンド '{backend_id}' のモデル一覧を取得できません: {e}")
+        format!("バックエンド '{target_backend_id}' のモデル一覧を取得できません: {e}")
     })?;
     sync_active_process_available_models(handles, chat_session_id, &models_from_config).await;
-    set_active_process_model(handles, chat_session_id, model_id.clone()).await?;
+    set_active_process_model(handles, chat_session_id, target_model_id.clone()).await?;
 
     // 2. Persist to ChatSession
-    session.selected_model = Some(model_id.clone());
+    session.selected_model = Some(target_model_id);
     session.updated_at = now_timestamp();
     session_store.save_session(data_dir, &session)?;
 
@@ -4521,7 +4542,7 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
             build_agent_models_updated_payload(
                 chat_session_id,
                 &models_from_config,
-                Some(model_id.as_str()),
+                Some(resolved_model.id.as_str()),
             ),
         );
     }
@@ -5346,6 +5367,7 @@ async fn prepare_send_agent_message_internal(
     permission_mode: crate::permission::PermissionMode,
     plan_mode: bool,
     backend_id: Option<String>,
+    model_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::domain::code::MentionReference>>,
     editor_context: Option<AgentEditorContext>,
@@ -5375,19 +5397,28 @@ async fn prepare_send_agent_message_internal(
         }
         ensure_session_backend_selected(session_store, registry, data_dir, session)?
     } else {
-        let resolved_backend_id = registry.resolve_backend_id(backend_id)?;
+        let resolved_model = match model_id.as_deref() {
+            Some(model_id) => Some(registry.resolve_model_entry(model_id)?),
+            None => None,
+        };
+        let requested_backend_id = resolved_model
+            .as_ref()
+            .map(|entry| entry.backend.clone())
+            .or(backend_id);
+        let resolved_backend_id = registry.resolve_backend_id(requested_backend_id)?;
         // 新規セッションは検証済み抽象モードを初回保存で確定する。
         // 既定値で save → update_permission_mode の二段階保存を行うと、途中失敗時に
         // 選択値ではない permission_mode で永続化されたセッションが残ってしまうため
         // （Spec issues-947: セッション保存層が permission_mode の正典）、生成 API を一本化する。
         // backend の登録済み初期モデルがあれば selected_model に永続化する（Spec issues-946）。
-        crate::usecase::agent_session::session::create_session_with_initial_model_and_plan_mode(
+        crate::usecase::agent_session::session::create_session_with_model_and_plan_mode(
             session_store,
             registry,
             data_dir,
             &worktree_path,
             resolved_backend_id,
             permission_mode,
+            resolved_model.map(|entry| entry.model_id),
             plan_mode,
         )?
     };
@@ -5682,6 +5713,7 @@ pub async fn send_agent_message_internal(
     permission_mode: crate::permission::PermissionMode,
     plan_mode: bool,
     backend_id: Option<String>,
+    model_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::domain::code::MentionReference>>,
     editor_context: Option<AgentEditorContext>,
@@ -5709,6 +5741,7 @@ pub async fn send_agent_message_internal(
             permission_mode,
             plan_mode,
             backend_id,
+            model_id,
             images,
             mentions,
             editor_context,
@@ -7962,7 +7995,8 @@ mod tests {
         let models = available_models_for_backend(CLAUDE_BACKEND_ID, Some(&registry)).unwrap();
 
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0].value, "mock-model");
+        assert_eq!(models[0].id, "claude:mock-model");
+        assert_eq!(models[0].model_id, "mock-model");
     }
 
     #[test]
@@ -8031,6 +8065,7 @@ mod tests {
             "continue completed step".to_string(),
             crate::permission::PermissionMode::Edit,
             false,
+            None,
             None,
             None,
             None,
@@ -8142,6 +8177,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -8187,6 +8223,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -8221,6 +8258,7 @@ mod tests {
             crate::permission::PermissionMode::Edit,
             false,
             Some(CODEX_BACKEND_ID.to_string()),
+            None,
             None,
             None,
             None,
@@ -8268,6 +8306,7 @@ mod tests {
             "/status".to_string(),
             crate::permission::PermissionMode::Edit,
             false,
+            None,
             None,
             None,
             None,
@@ -8329,6 +8368,7 @@ mod tests {
             "resume step".to_string(),
             crate::permission::PermissionMode::Edit,
             false,
+            None,
             None,
             None,
             None,
@@ -8595,7 +8635,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(response.available_models.len(), 1);
-        assert_eq!(response.available_models[0].value, "mock-model");
+        assert_eq!(response.available_models[0].model_id, "mock-model");
     }
 
     #[tokio::test]
@@ -8647,9 +8687,12 @@ mod tests {
             Some(CODEX_BACKEND_ID.to_string())
         );
         // backend 切替後は新 backend の既定モデル（一覧先頭）へ解決される。
-        assert_eq!(response.session.selected_model, Some("b-model".to_string()));
+        assert_eq!(
+            response.session.selected_model,
+            Some("codex:b-model".to_string())
+        );
         assert_eq!(response.available_models.len(), 1);
-        assert_eq!(response.available_models[0].value, "b-model");
+        assert_eq!(response.available_models[0].model_id, "b-model");
     }
 
     #[tokio::test]
@@ -8853,6 +8896,7 @@ mod tests {
             "Narrow the policy to reviewed findings.".to_string(),
             crate::permission::PermissionMode::Edit,
             false,
+            None,
             None,
             None,
             None,
@@ -11251,6 +11295,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -11792,9 +11837,7 @@ mod tests {
             {
                 let mut map = handles.lock().await;
                 let mut proc = make_dummy_agent_process(child, stdin, pgid);
-                proc.available_models = vec![ModelInfo {
-                    value: "gpt-5.4".to_string(),
-                }];
+                proc.available_models = vec![ModelInfo::new(CODEX_BACKEND_ID, "gpt-5.4")];
                 proc.selected_model = Some("old-model".to_string());
                 map.insert("session-1".to_string(), proc);
             }
@@ -11808,7 +11851,7 @@ mod tests {
                 let proc = map.get("session-1").unwrap();
                 assert_eq!(proc.selected_model, Some("gpt-5.4".to_string()));
                 // available_models は process キャッシュとして変更されないこと（owner は config）。
-                assert_eq!(proc.available_models[0].value, "gpt-5.4");
+                assert_eq!(proc.available_models[0].model_id, "gpt-5.4");
             }
 
             let mut map = handles.lock().await;
@@ -11896,7 +11939,7 @@ mod tests {
                 response.session.backend_id,
                 Some(CODEX_BACKEND_ID.to_string())
             );
-            assert_eq!(response.available_models[0].value, "b-model");
+            assert_eq!(response.available_models[0].model_id, "b-model");
             assert!(handles.lock().await.get(&session.id).is_none());
             assert!(!pids_dir(temp.path())
                 .join(format!("{}.pid", session.id))
@@ -12095,7 +12138,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_agent_model_rejects_other_backend_model_as_mismatch() {
+    async fn set_agent_model_allows_other_backend_model_before_first_message() {
         let temp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(SessionStore::default());
         let session = create_session_internal(
@@ -12103,6 +12146,50 @@ mod tests {
             temp.path(),
             "/repo",
             Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let registry = make_test_registry_with_models(&["claude-4"], &["gpt-5"]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            "gpt-5".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let after = session_store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.backend_id.as_deref(), Some(CODEX_BACKEND_ID));
+        assert_eq!(after.selected_model.as_deref(), Some("gpt-5"));
+    }
+
+    #[tokio::test]
+    async fn set_agent_model_rejects_backend_change_after_first_message() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        add_message_internal(
+            &session_store,
+            temp.path(),
+            &session.id,
+            MessageRole::Human,
+            "hello",
+            None,
+            None,
         )
         .unwrap();
         let registry = make_test_registry_with_models(&["claude-4"], &["gpt-5"]);
@@ -12119,13 +12206,13 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.contains("別バックエンド"));
+        assert!(err.contains("Cannot change backend"));
 
-        // selected_model は変更されない
         let after = session_store
             .get_session(temp.path(), &session.id)
             .unwrap()
             .unwrap();
+        assert_eq!(after.backend_id.as_deref(), Some(CLAUDE_BACKEND_ID));
         assert_eq!(after.selected_model, None);
     }
 
@@ -12323,12 +12410,8 @@ mod tests {
     #[test]
     fn build_agent_models_updated_payload_emits_event_contract_fields() {
         let models = vec![
-            ModelInfo {
-                value: "a".to_string(),
-            },
-            ModelInfo {
-                value: "b".to_string(),
-            },
+            ModelInfo::new(CLAUDE_BACKEND_ID, "a"),
+            ModelInfo::new(CLAUDE_BACKEND_ID, "b"),
         ];
         let payload = build_agent_models_updated_payload("sess-1", &models, Some("a"));
 
@@ -12338,17 +12421,21 @@ mod tests {
             .expect("available_models is array");
         let values: Vec<String> = candidates
             .iter()
-            .map(|v| v["value"].as_str().unwrap().to_string())
+            .map(|v| v["modelId"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(values, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(candidates[0]["id"], "claude:a");
+        assert_eq!(candidates[0]["displayName"], "a");
+        assert_eq!(candidates[0]["backend"], "claude");
         assert_eq!(payload["selected_model"], "a");
     }
 
     #[test]
     fn build_agent_models_updated_payload_carries_selected_model_non_null() {
         // モデル未選択状態は廃止。set_agent_model は常に非 null の selected_model を emit する。
-        let payload = build_agent_models_updated_payload("sess-2", &[], Some("claude-opus-4-8"));
-        assert_eq!(payload["selected_model"], "claude-opus-4-8");
+        let payload =
+            build_agent_models_updated_payload("sess-2", &[], Some("claude:claude-opus-4-8"));
+        assert_eq!(payload["selected_model"], "claude:claude-opus-4-8");
         assert_eq!(payload["available_models"].as_array().unwrap().len(), 0);
     }
 
@@ -12469,9 +12556,7 @@ mod tests {
             let mut map = handles.lock().await;
             let mut proc = make_test_agent_process();
             proc.backend_id = CODEX_BACKEND_ID.to_string();
-            proc.available_models = vec![ModelInfo {
-                value: "stale-from-process".to_string(),
-            }];
+            proc.available_models = vec![ModelInfo::new(CODEX_BACKEND_ID, "stale-from-process")];
             proc.latest_token_usage = Some(TokenUsage {
                 input_tokens: 1200,
                 output_tokens: 34,
@@ -12495,7 +12580,7 @@ mod tests {
         let values: Vec<String> = response
             .available_models
             .into_iter()
-            .map(|m| m.value)
+            .map(|m| m.model_id)
             .collect();
         assert_eq!(values, vec!["from-config".to_string()]);
         assert_eq!(
@@ -12545,7 +12630,10 @@ mod tests {
 
         assert_eq!(
             response.session.selected_model,
-            Some(crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string())
+            Some(crate::domain::agent_session::model_entry_id(
+                CLAUDE_BACKEND_ID,
+                crate::domain::agent_session::CLAUDE_FIXED_MODELS[0],
+            ))
         );
     }
 
@@ -12638,9 +12726,7 @@ mod tests {
             let mut proc = make_test_agent_process();
             proc.backend_id = CLAUDE_BACKEND_ID.to_string();
             // process cache が stale な状態
-            proc.available_models = vec![ModelInfo {
-                value: "stale".to_string(),
-            }];
+            proc.available_models = vec![ModelInfo::new(CLAUDE_BACKEND_ID, "stale")];
             map.insert(session.id.clone(), proc);
         }
 
@@ -12662,7 +12748,7 @@ mod tests {
         let values: Vec<String> = proc
             .available_models
             .iter()
-            .map(|m| m.value.clone())
+            .map(|m| m.model_id.clone())
             .collect();
         assert_eq!(values, vec!["claude-4".to_string(), "haiku".to_string()]);
         // selected_model も反映される

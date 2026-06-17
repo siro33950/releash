@@ -430,6 +430,7 @@ mod tests {
             WsMessage::AgentSessionStartRequest(AgentSessionStartRequest {
                 worktree_path: "/repo".to_string(),
                 backend_id: Some("claude".to_string()),
+                model_id: None,
                 permission_mode: Some("edit".to_string()),
             }),
             WsMessage::AgentSessionStartResponse(AgentSessionStartResponse {
@@ -463,6 +464,7 @@ mod tests {
                 content: "hello".to_string(),
                 permission_mode: Some("edit".to_string()),
                 backend_id: Some("claude".to_string()),
+                model_id: None,
                 images: Vec::new(),
                 mentions: Vec::new(),
                 editor_context: None,

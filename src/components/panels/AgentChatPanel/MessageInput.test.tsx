@@ -6,6 +6,7 @@ import {
 	screen,
 	waitFor,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MessageInput, type MessageInputHandle } from "./MessageInput";
@@ -56,6 +57,35 @@ describe("MessageInput", () => {
 		fireEvent.click(screen.getByTestId("plan-mode-toggle"));
 
 		expect(onPlanModeChange).toHaveBeenCalledWith(false);
+	});
+
+	it("uses unique plan mode ids and toggles only the matching instance from its label", async () => {
+		const user = userEvent.setup();
+		const onFirstPlanModeChange = vi.fn();
+		const onSecondPlanModeChange = vi.fn();
+		render(
+			<>
+				<MessageInput
+					{...defaultProps}
+					onPlanModeChange={onFirstPlanModeChange}
+				/>
+				<MessageInput
+					{...defaultProps}
+					onPlanModeChange={onSecondPlanModeChange}
+				/>
+			</>,
+		);
+
+		const labels = screen.getAllByText("Plan");
+		const toggles = screen.getAllByTestId("plan-mode-toggle");
+		expect(labels[0].getAttribute("for")).toBe(toggles[0].id);
+		expect(labels[1].getAttribute("for")).toBe(toggles[1].id);
+		expect(toggles[0].id).not.toBe(toggles[1].id);
+
+		await user.click(labels[1]);
+
+		expect(onFirstPlanModeChange).not.toHaveBeenCalled();
+		expect(onSecondPlanModeChange).toHaveBeenCalledWith(true);
 	});
 
 	it("disables send button when input is empty", () => {
@@ -338,47 +368,57 @@ describe("MessageInput", () => {
 		);
 	});
 
-	it("renders enabled Agent selector when backends are available and unlocked", () => {
+	it("renders enabled model selector when models are available and unlocked", () => {
 		render(
 			<MessageInput
 				{...defaultProps}
-				backends={[
+				models={[
 					{
-						id: "claude",
-						name: "Claude",
-						available: true,
-						availableModels: [],
+						id: "claude:claude-opus-4-8",
+						displayName: "Opus 4.8",
+						backend: "claude",
+						modelId: "claude-opus-4-8",
 					},
-					{ id: "codex", name: "Codex", available: true, availableModels: [] },
 				]}
 				currentBackendId="claude"
-				backendDisabled={false}
+				currentModelId="claude:claude-opus-4-8"
+				canChangeBackend={true}
 			/>,
 		);
-		expect(screen.getByTestId("backend-selector-trigger")).toHaveTextContent(
-			"Claude",
+		expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent(
+			"Opus 4.8",
 		);
-		expect(screen.getByTestId("backend-selector-trigger")).toBeEnabled();
+		expect(screen.getByTestId("model-selector-trigger")).toBeEnabled();
 	});
 
-	it("disables Agent selector after backend is locked", () => {
+	it("disables cross-backend model options after backend is locked", async () => {
+		const user = userEvent.setup();
 		render(
 			<MessageInput
 				{...defaultProps}
-				backends={[
+				models={[
 					{
-						id: "claude",
-						name: "Claude",
-						available: true,
-						availableModels: [],
+						id: "claude:claude-opus-4-8",
+						displayName: "Opus 4.8",
+						backend: "claude",
+						modelId: "claude-opus-4-8",
 					},
-					{ id: "codex", name: "Codex", available: true, availableModels: [] },
+					{
+						id: "codex:gpt-5.4",
+						displayName: "GPT-5.4",
+						backend: "codex",
+						modelId: "gpt-5.4",
+					},
 				]}
 				currentBackendId="claude"
-				backendDisabled={true}
+				currentModelId="claude:claude-opus-4-8"
+				canChangeBackend={false}
 			/>,
 		);
-		expect(screen.getByTestId("backend-selector-trigger")).toBeDisabled();
+		await user.click(screen.getByTestId("model-selector-trigger"));
+		expect(
+			screen.getByText("GPT-5.4").closest("[role='menuitem']"),
+		).toHaveAttribute("data-disabled");
 	});
 });
 

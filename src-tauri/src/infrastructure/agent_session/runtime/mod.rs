@@ -19,7 +19,12 @@ use crate::usecase::agent_session::session::SessionStore;
 
 impl From<ModelInfo> for crate::usecase::agent_session::session::ModelInfo {
     fn from(info: ModelInfo) -> Self {
-        Self { value: info.value }
+        Self {
+            id: info.id,
+            display_name: info.display_name,
+            backend: info.backend,
+            model_id: info.model_id,
+        }
     }
 }
 
@@ -65,7 +70,22 @@ pub struct BackendInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
-    pub value: String,
+    pub id: String,
+    pub display_name: String,
+    pub backend: String,
+    pub model_id: String,
+}
+
+impl ModelInfo {
+    pub fn new(backend: &str, model_id: &str) -> Self {
+        let entry = crate::domain::agent_session::model_entry_for_backend_model(backend, model_id);
+        Self {
+            id: entry.id,
+            display_name: entry.display_name,
+            backend: entry.backend,
+            model_id: entry.model_id,
+        }
+    }
 }
 
 /// 画像添付（共通型）。全バックエンドで使用する。
@@ -356,8 +376,37 @@ impl AgentBackendRegistry {
         Ok(self
             .config_models_for(id)?
             .into_iter()
-            .map(|value| ModelInfo { value })
+            .map(|model_id| ModelInfo::new(id, &model_id))
             .collect())
+    }
+
+    pub fn resolve_model_entry(&self, entry_id: &str) -> Result<ModelInfo, String> {
+        if let Some((backend_id, model_id)) = entry_id.split_once(':') {
+            let parsed_model_id = crate::domain::agent_session::ModelId::parse(model_id)?;
+            if self.get(backend_id).is_none() {
+                return Err(format!(
+                    "バックエンド '{backend_id}' がレジストリに登録されていません"
+                ));
+            }
+            let models = self.config_models_for(backend_id)?;
+            if models
+                .iter()
+                .any(|candidate| candidate == parsed_model_id.as_str())
+            {
+                return Ok(ModelInfo::new(backend_id, parsed_model_id.as_str()));
+            }
+            return Err(format!(
+                "モデル '{model_id}' はバックエンド '{backend_id}' に登録されていません"
+            ));
+        }
+
+        let parsed_model_id = crate::domain::agent_session::ModelId::parse(entry_id)?;
+        let backend_id = self
+            .resolve_backend_for_model(parsed_model_id.as_str())?
+            .ok_or_else(|| {
+                format!("モデル '{entry_id}' はどのバックエンドにも登録されていません")
+            })?;
+        Ok(ModelInfo::new(&backend_id, parsed_model_id.as_str()))
     }
 
     /// Bridge 起動時に必要な backend 固有 runtime config を registry 経由で解決する。
@@ -510,6 +559,7 @@ fn build_registry_inner(
 }
 
 impl crate::usecase::agent_session::session::SessionBackendResolver for AgentBackendRegistry {
+    #[cfg(test)]
     fn resolve_backend_id(&self, backend_id: Option<String>) -> Result<String, String> {
         AgentBackendRegistry::resolve_backend_id(self, backend_id)
     }
@@ -816,11 +866,16 @@ mod tests {
         reg.set_config(config);
         let claude_models = reg.available_models("claude").unwrap();
         assert_eq!(claude_models.len(), 2);
-        assert_eq!(claude_models[0].value, "opus-4");
-        assert_eq!(claude_models[1].value, "haiku");
+        assert_eq!(claude_models[0].id, "claude:opus-4");
+        assert_eq!(claude_models[0].display_name, "opus-4");
+        assert_eq!(claude_models[0].backend, "claude");
+        assert_eq!(claude_models[0].model_id, "opus-4");
+        assert_eq!(claude_models[1].model_id, "haiku");
         let codex_models = reg.available_models("codex").unwrap();
         assert_eq!(codex_models.len(), 1);
-        assert_eq!(codex_models[0].value, "codex-mini");
+        assert_eq!(codex_models[0].id, "codex:codex-mini");
+        assert_eq!(codex_models[0].backend, "codex");
+        assert_eq!(codex_models[0].model_id, "codex-mini");
     }
 
     #[test]
@@ -871,6 +926,78 @@ mod tests {
         assert_eq!(reg.resolve_backend_for_model("opus-4").unwrap(), None);
     }
 
+    #[test]
+    fn resolve_model_entry_returns_registered_entry_id() {
+        let config = make_test_app_config_with_models(&["opus-4"], &["codex-mini"]);
+        let mut reg = AgentBackendRegistry::new();
+        reg.register(mock_backend("claude", "Claude"));
+        reg.register(mock_backend("codex", "Codex"));
+        reg.set_config(config);
+
+        let model = reg.resolve_model_entry("codex:codex-mini").unwrap();
+
+        assert_eq!(model.id, "codex:codex-mini");
+        assert_eq!(model.backend, "codex");
+        assert_eq!(model.model_id, "codex-mini");
+    }
+
+    #[test]
+    fn resolve_model_entry_errors_for_unregistered_entry_backend() {
+        let config = make_test_app_config_with_models(&["opus-4"], &["codex-mini"]);
+        let mut reg = AgentBackendRegistry::new();
+        reg.register(mock_backend("claude", "Claude"));
+        reg.set_config(config);
+
+        let err = reg.resolve_model_entry("missing:codex-mini").unwrap_err();
+
+        assert!(err.contains("missing"));
+        assert!(err.contains("レジストリに登録されていません"));
+    }
+
+    #[test]
+    fn resolve_model_entry_errors_for_model_missing_from_entry_backend_config() {
+        let config = make_test_app_config_with_models(&["opus-4"], &["codex-mini"]);
+        let mut reg = AgentBackendRegistry::new();
+        reg.register(mock_backend("claude", "Claude"));
+        reg.register(mock_backend("codex", "Codex"));
+        reg.set_config(config);
+
+        let err = reg.resolve_model_entry("codex:not-listed").unwrap_err();
+
+        assert!(err.contains("not-listed"));
+        assert!(err.contains("codex"));
+        assert!(err.contains("登録されていません"));
+    }
+
+    #[test]
+    fn resolve_model_entry_resolves_bare_model_id_via_backend_lookup() {
+        let config = make_test_app_config_with_models(&["opus-4"], &["codex-mini"]);
+        let mut reg = AgentBackendRegistry::new();
+        reg.register(mock_backend("claude", "Claude"));
+        reg.register(mock_backend("codex", "Codex"));
+        reg.set_config(config);
+
+        let model = reg.resolve_model_entry("codex-mini").unwrap();
+
+        assert_eq!(model.id, "codex:codex-mini");
+        assert_eq!(model.backend, "codex");
+        assert_eq!(model.model_id, "codex-mini");
+    }
+
+    #[test]
+    fn resolve_model_entry_errors_when_bare_model_id_is_not_registered_anywhere() {
+        let config = make_test_app_config_with_models(&["opus-4"], &["codex-mini"]);
+        let mut reg = AgentBackendRegistry::new();
+        reg.register(mock_backend("claude", "Claude"));
+        reg.register(mock_backend("codex", "Codex"));
+        reg.set_config(config);
+
+        let err = reg.resolve_model_entry("unknown-model").unwrap_err();
+
+        assert!(err.contains("unknown-model"));
+        assert!(err.contains("どのバックエンドにも登録されていません"));
+    }
+
     // --- 固定モデル一覧（fixed_models）優先の検証 ---
 
     #[test]
@@ -912,7 +1039,7 @@ mod tests {
             .available_models("claude")
             .unwrap()
             .into_iter()
-            .map(|m| m.value)
+            .map(|m| m.model_id)
             .collect();
         let expected_claude: Vec<String> = crate::domain::agent_session::CLAUDE_FIXED_MODELS
             .iter()
@@ -924,7 +1051,7 @@ mod tests {
             .available_models("codex")
             .unwrap()
             .into_iter()
-            .map(|m| m.value)
+            .map(|m| m.model_id)
             .collect();
         let expected_codex: Vec<String> = crate::domain::agent_session::CODEX_FIXED_MODELS
             .iter()

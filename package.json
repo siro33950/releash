@@ -31,6 +31,7 @@
 		"@dnd-kit/core": "^6.3.1",
 		"@dnd-kit/sortable": "^10.0.0",
 		"@dnd-kit/utilities": "^3.2.2",
+		"@lobehub/icons-static-svg": "^1.91.0",
 		"@noble/hashes": "^2.2.0",
 		"@openai/codex-sdk": "^0.139.0",
 		"@react-symbols/icons": "^1.4.1",

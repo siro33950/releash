@@ -590,8 +590,7 @@ describe("RemoteAgentPanel", () => {
 		expect(screen.queryByText("Other session output")).not.toBeInTheDocument();
 	});
 
-	it("locks backend selection after session start", async () => {
-		const user = userEvent.setup();
+	it("does not render a separate backend selector after session start", () => {
 		const onBackendChange = vi.fn();
 		const { emit } = renderPanel({
 			selectedBackendId: "codex",
@@ -607,12 +606,9 @@ describe("RemoteAgentPanel", () => {
 			},
 		});
 
-		const select = screen.getByLabelText("Backend");
-		expect(select).toBeDisabled();
-		expect(select).toHaveValue("codex");
-		await user.selectOptions(select, "claude");
+		expect(screen.queryByLabelText("Backend")).toBeNull();
+		expect(screen.getByLabelText("Model")).toBeInTheDocument();
 		expect(onBackendChange).not.toHaveBeenCalled();
-		expect(select).toHaveValue("codex");
 	});
 
 	it("clears running controls when agent_state_sync reports completion", () => {
@@ -719,7 +715,7 @@ describe("RemoteAgentPanel", () => {
 		});
 
 		await user.click(screen.getByLabelText("Interrupt agent"));
-		await user.selectOptions(screen.getByLabelText("Model"), "gpt-5.4");
+		await user.selectOptions(screen.getByLabelText("Model"), "codex:gpt-5.4");
 		await user.click(screen.getByText("Set"));
 
 		expect(send).toHaveBeenCalledWith({
@@ -728,7 +724,7 @@ describe("RemoteAgentPanel", () => {
 		});
 		expect(send).toHaveBeenCalledWith({
 			type: "agent_model_set_request",
-			payload: { session_id: "session-1", model_id: "gpt-5.4" },
+			payload: { session_id: "session-1", model_id: "codex:gpt-5.4" },
 		});
 	});
 
@@ -773,12 +769,12 @@ describe("RemoteAgentPanel", () => {
 
 		expect(screen.getByRole("option", { name: "gpt-5.4" })).toBeInTheDocument();
 		expect(screen.queryByRole("option", { name: "Unset" })).toBeNull();
-		await user.selectOptions(screen.getByLabelText("Model"), "gpt-5.4");
+		await user.selectOptions(screen.getByLabelText("Model"), "codex:gpt-5.4");
 		await user.click(screen.getByText("Set"));
 
 		expect(send).toHaveBeenCalledWith({
 			type: "agent_model_set_request",
-			payload: { session_id: "session-1", model_id: "gpt-5.4" },
+			payload: { session_id: "session-1", model_id: "codex:gpt-5.4" },
 		});
 	});
 
@@ -922,13 +918,16 @@ describe("RemoteAgentPanel", () => {
 		});
 
 		expect(screen.getByRole("option", { name: dangerous })).toBeInTheDocument();
-		await user.selectOptions(screen.getByLabelText("Model"), dangerous);
+		await user.selectOptions(
+			screen.getByLabelText("Model"),
+			`codex:${dangerous}`,
+		);
 		await user.click(screen.getByText("Set"));
 
 		// 登録済み候補として提示された識別子はそのまま payload に乗る。
 		expect(send).toHaveBeenCalledWith({
 			type: "agent_model_set_request",
-			payload: { session_id: "session-1", model_id: dangerous },
+			payload: { session_id: "session-1", model_id: `codex:${dangerous}` },
 		});
 
 		// option のテキストとして表示されるため、script 実行や onerror 属性の挿入は発生しない。

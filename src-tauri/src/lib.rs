@@ -516,7 +516,6 @@ pub fn run() {
             adaptor::controller::command::agent_session::model::set_agent_permission_mode,
             adaptor::controller::command::agent_session::model::set_agent_plan_mode,
             adaptor::controller::command::agent_session::model::set_agent_model,
-            adaptor::controller::command::agent_session::model::read_codex_model_catalog,
             adaptor::controller::command::agent_session::session::set_session_backend,
             adaptor::controller::command::agent_session::command_palette::present_agent_command_palette,
             adaptor::controller::command::agent_session::command_palette::is_agent_command_enabled,

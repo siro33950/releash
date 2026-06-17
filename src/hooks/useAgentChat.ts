@@ -17,6 +17,11 @@ import type {
 	TurnPhase,
 } from "@/types/session";
 import {
+	getModelInfoBackend,
+	getModelInfoId,
+	normalizeModelSelectionId,
+} from "@/types/session";
+import {
 	type AgentChatAction,
 	INITIAL_STATE,
 	reducer,
@@ -39,7 +44,6 @@ import {
 	listAgentBackends,
 	listClosedSessions,
 	listSessions,
-	readCodexModelCatalog,
 	restoreSession as restoreSessionApi,
 	sendAgentMessage,
 	sendWorkflowApprovalChatMessage,
@@ -112,6 +116,7 @@ export interface UseAgentChatResult {
 		updatedInput?: Record<string, unknown>,
 	) => void;
 	availableModels: ModelInfo[];
+	availableModelsByBackend: Record<string, ModelInfo[]>;
 	selectedModel: string | null;
 	setModel: (sessionId: string, modelId: string) => void;
 	backends: BackendInfo[];
@@ -197,7 +202,7 @@ function dispatchSessionMeta(
 	});
 	dispatch({
 		type: "SET_AVAILABLE_MODELS",
-		models: response.availableModels,
+		models: response.availableModels ?? [],
 		backendId: response.session.backendId,
 	});
 	dispatch({
@@ -245,6 +250,10 @@ export function useAgentChat(
 	interruptingRef.current = state.interrupting;
 	const selectedBackendIdRef = useRef(state.selectedBackendId);
 	selectedBackendIdRef.current = state.selectedBackendId;
+	const availableModelsRef = useRef(state.availableModels);
+	availableModelsRef.current = state.availableModels;
+	const sessionModelsRef = useRef(state.sessionModels);
+	sessionModelsRef.current = state.sessionModels;
 
 	// SDK listener gating: 表示中の session id 集合を管理する registry。
 	// 各 panel が register したものは getIds() で参照される（listener が更新を gate する）。
@@ -413,6 +422,10 @@ export function useAgentChat(
 				const pm = permissionModeRef.current;
 				const plan = planModeRef.current;
 				const backendId = sessionId ? null : selectedBackendIdRef.current;
+				const modelId =
+					sessionId || !activeSessionIdRef.current
+						? null
+						: (sessionModelsRef.current[activeSessionIdRef.current] ?? null);
 				const workflowApprovalChatSessionId =
 					workflowApprovalChatSessionIdRef.current;
 				const workflowApprovalRunId = workflowApprovalRunIdRef.current;
@@ -429,27 +442,53 @@ export function useAgentChat(
 								mentions,
 							)
 						: options?.editorContext
-							? await sendAgentMessage(
-									sessionId,
-									wPath,
-									trimmed,
-									pm,
-									plan,
-									backendId,
-									images,
-									mentions,
-									options.editorContext,
-								)
-							: await sendAgentMessage(
-									sessionId,
-									wPath,
-									trimmed,
-									pm,
-									plan,
-									backendId,
-									images,
-									mentions,
-								);
+							? modelId
+								? await sendAgentMessage(
+										sessionId,
+										wPath,
+										trimmed,
+										pm,
+										plan,
+										backendId,
+										images,
+										mentions,
+										options.editorContext,
+										modelId,
+									)
+								: await sendAgentMessage(
+										sessionId,
+										wPath,
+										trimmed,
+										pm,
+										plan,
+										backendId,
+										images,
+										mentions,
+										options.editorContext,
+									)
+							: modelId
+								? await sendAgentMessage(
+										sessionId,
+										wPath,
+										trimmed,
+										pm,
+										plan,
+										backendId,
+										images,
+										mentions,
+										undefined,
+										modelId,
+									)
+								: await sendAgentMessage(
+										sessionId,
+										wPath,
+										trimmed,
+										pm,
+										plan,
+										backendId,
+										images,
+										mentions,
+									);
 				const responseSessionId = response.session.id;
 				dispatch({ type: "UPSERT_SESSION", session: response.session });
 				dispatch({
@@ -700,11 +739,21 @@ export function useAgentChat(
 				: undefined;
 			const backendId =
 				activeSessionSnapshot?.backendId ?? selectedBackendIdRef.current;
-			const session = await createSession(
-				worktreePathRef.current,
-				permissionModeRef.current,
-				backendId,
-			);
+			const modelId = activeSessionSnapshot
+				? (sessionModelsRef.current[activeSessionSnapshot.id] ?? null)
+				: null;
+			const session = modelId
+				? await createSession(
+						worktreePathRef.current,
+						permissionModeRef.current,
+						backendId,
+						modelId,
+					)
+				: await createSession(
+						worktreePathRef.current,
+						permissionModeRef.current,
+						backendId,
+					);
 			const response = await getSession(session.id);
 			const activeSession = response?.session ?? session;
 			dispatch({ type: "UPSERT_SESSION", session: activeSession });
@@ -809,15 +858,25 @@ export function useAgentChat(
 
 	const setModel = useCallback((sessionId: string, modelId: string) => {
 		if (!sessionId) return;
+		const normalizedModelId = normalizeModelSelectionId(
+			availableModelsRef.current,
+			modelId,
+		);
+		const selectedModel = availableModelsRef.current.find(
+			(model) => getModelInfoId(model) === normalizedModelId,
+		);
 		invoke("set_agent_model", {
 			chatSessionId: sessionId,
-			modelId,
+			modelId: normalizedModelId,
 		})
 			.then(() => {
 				dispatch({
 					type: "SET_SESSION_MODEL",
 					sessionId,
-					modelId,
+					modelId: normalizedModelId,
+					backendId: selectedModel
+						? getModelInfoBackend(selectedModel)
+						: undefined,
 				});
 			})
 			.catch((e) => {
@@ -890,23 +949,6 @@ export function useAgentChat(
 	const fetchBackends = useCallback(async () => {
 		try {
 			const result = await listAgentBackends();
-			const hasCodex = result.backends.some(
-				(backend) => backend.id === "codex" && backend.available,
-			);
-			if (hasCodex) {
-				try {
-					const models = await readCodexModelCatalog();
-					if (models.length > 0) {
-						result.backends = result.backends.map((backend) =>
-							backend.id === "codex"
-								? { ...backend, availableModels: models }
-								: backend,
-						);
-					}
-				} catch (e) {
-					console.warn("Failed to fetch Codex model catalog:", e);
-				}
-			}
 			dispatch({
 				type: "SET_BACKENDS",
 				backends: result.backends,
@@ -1045,8 +1087,12 @@ export function useAgentChat(
 		[viewableRegistry],
 	);
 
-	const selectedModel =
-		state.sessionModels[state.activeSessionId ?? ""] ?? null;
+	const selectedModel = state.activeSessionId
+		? normalizeModelSelectionId(
+				state.availableModels,
+				state.sessionModels[state.activeSessionId] ?? null,
+			) || null
+		: null;
 	return {
 		sessions: state.sessions,
 		orderedSessions,
@@ -1075,6 +1121,7 @@ export function useAgentChat(
 		setPlanMode,
 		respondPermission,
 		availableModels: state.availableModels,
+		availableModelsByBackend: state.availableModelsByBackend,
 		selectedModel,
 		setModel,
 		backends: state.backends,

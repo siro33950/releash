@@ -23,7 +23,6 @@ import type { DropZoneType } from "@/hooks/useNativeFileDrop";
 import type {
 	AgentEditorContext,
 	AgentEditorSelection,
-	BackendInfo,
 	ChatMessage,
 	ChatSession,
 	ImageAttachment,
@@ -538,7 +537,6 @@ export interface ChatSessionViewProps {
 	selectedModel: string;
 	pendingQueue: QueuedAgentTurn[];
 	runtimeSlashCommands?: SlashCommand[];
-	backends: BackendInfo[];
 	selectedBackendId: string | null;
 	canChangeBackend: boolean;
 	worktreePath: string;
@@ -561,7 +559,6 @@ export interface ChatSessionViewProps {
 	onPermissionModeChange: (mode: PermissionMode) => void;
 	onPlanModeChange: (enabled: PlanMode) => void;
 	onModelChange: (modelId: string) => void;
-	onBackendChange: (backendId: string | null) => void;
 	onRespondPermission: (
 		requestId: string,
 		allow: boolean,
@@ -604,7 +601,6 @@ export function ChatSessionView({
 	selectedModel,
 	pendingQueue,
 	runtimeSlashCommands = [],
-	backends,
 	selectedBackendId,
 	canChangeBackend,
 	worktreePath,
@@ -617,7 +613,6 @@ export function ChatSessionView({
 	onPermissionModeChange,
 	onPlanModeChange,
 	onModelChange,
-	onBackendChange,
 	onRespondPermission,
 	onOpenDiffFile,
 	registerDropZone,
@@ -1548,10 +1543,8 @@ export function ChatSessionView({
 					models={availableModels}
 					currentModelId={selectedModel}
 					onModelChange={onModelChange}
-					backends={backends}
 					currentBackendId={selectedBackendId}
-					onBackendChange={onBackendChange}
-					backendDisabled={!canChangeBackend}
+					canChangeBackend={canChangeBackend}
 					worktreePath={worktreePath}
 					promptSuggestion={promptSuggestion}
 					runtimeSlashCommands={runtimeSlashCommands}

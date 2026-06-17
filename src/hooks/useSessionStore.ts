@@ -177,11 +177,13 @@ export async function createSession(
 	worktreePath: string,
 	permissionMode: PermissionMode,
 	backendId?: string | null,
+	modelId?: string | null,
 ): Promise<ChatSession> {
 	const raw = await invoke<LegacyChatSession>("create_session", {
 		worktreePath,
 		permissionMode,
 		backendId: backendId ?? null,
+		modelId: modelId ?? null,
 	});
 	return convertLegacySession(raw);
 }
@@ -278,6 +280,7 @@ export async function sendAgentMessage(
 	images?: ImageAttachment[],
 	mentions?: MentionReference[],
 	editorContext?: AgentEditorContext,
+	modelId?: string | null,
 ): Promise<SendMessageResponse> {
 	const args: {
 		chatSessionId: string | null;
@@ -286,6 +289,7 @@ export async function sendAgentMessage(
 		permissionMode: PermissionMode;
 		planMode: boolean;
 		backendId: string | null;
+		modelId: string | null;
 		images?: ImageAttachment[];
 		mentions?: MentionReference[];
 		editorContext?: AgentEditorContext;
@@ -296,6 +300,7 @@ export async function sendAgentMessage(
 		permissionMode,
 		planMode,
 		backendId: backendId ?? null,
+		modelId: modelId ?? null,
 		images: images && images.length > 0 ? images : undefined,
 		mentions: mentions && mentions.length > 0 ? mentions : undefined,
 	};
@@ -431,8 +436,4 @@ export interface BackendListResult {
 
 export async function listAgentBackends(): Promise<BackendListResult> {
 	return invoke<BackendListResult>("list_agent_backends");
-}
-
-export async function readCodexModelCatalog(): Promise<ModelInfo[]> {
-	return invoke<ModelInfo[]>("read_codex_model_catalog");
 }
