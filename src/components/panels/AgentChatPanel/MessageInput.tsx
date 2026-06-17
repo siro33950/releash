@@ -3,6 +3,7 @@ import { ArrowUp, Loader2, Square, X } from "lucide-react";
 import {
 	useCallback,
 	useEffect,
+	useId,
 	useImperativeHandle,
 	useMemo,
 	useRef,
@@ -104,6 +105,7 @@ export function MessageInput({
 	promptSuggestion,
 	runtimeSlashCommands = [],
 }: MessageInputProps) {
+	const planModeSwitchId = useId();
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const [slashPopupDismissed, setSlashPopupDismissed] = useState(false);
@@ -786,11 +788,11 @@ export function MessageInput({
 							className="flex h-7 items-center gap-1.5 px-2 text-xs select-none"
 							title={planMode ? "Plan mode on" : "Plan mode off"}
 						>
-							<label htmlFor="plan-mode-switch" className="cursor-pointer">
+							<label htmlFor={planModeSwitchId} className="cursor-pointer">
 								Plan
 							</label>
 							<Switch
-								id="plan-mode-switch"
+								id={planModeSwitchId}
 								checked={planMode}
 								onCheckedChange={(checked) => onPlanModeChange(checked)}
 								data-testid="plan-mode-toggle"

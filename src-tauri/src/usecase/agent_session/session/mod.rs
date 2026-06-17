@@ -600,7 +600,10 @@ pub fn create_session_with_model_and_plan_mode(
 ) -> Result<ChatSession, String> {
     let selected_model = match selected_model {
         Some(model) => model,
-        None => registry.default_model_for(&backend_id)?,
+        None => {
+            let default_model = registry.default_model_for(&backend_id)?;
+            crate::domain::agent_session::model_entry_id(&backend_id, &default_model)
+        }
     };
     let session = build_new_session(
         worktree_path,
@@ -1922,7 +1925,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = fixed_model_registry();
 
-        let default_model = crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string();
+        let default_model = crate::domain::agent_session::CLAUDE_FIXED_MODELS[0];
+        let selected_model = crate::domain::agent_session::model_entry_id("claude", default_model);
 
         let session = create_session_with_initial_model(
             &store,
@@ -1933,11 +1937,11 @@ mod tests {
             crate::permission::PermissionMode::Edit,
         )
         .unwrap();
-        assert_eq!(session.selected_model, Some(default_model.clone()));
+        assert_eq!(session.selected_model, Some(selected_model.clone()));
 
         // 永続化されている (on-disk から再ロードしても保持される)
         let reloaded = store.get_session(dir.path(), &session.id).unwrap().unwrap();
-        assert_eq!(reloaded.selected_model, Some(default_model));
+        assert_eq!(reloaded.selected_model, Some(selected_model));
     }
 
     #[test]
@@ -1947,7 +1951,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = fixed_model_registry();
 
-        let default_model = crate::domain::agent_session::CODEX_FIXED_MODELS[0].to_string();
+        let default_model = crate::domain::agent_session::CODEX_FIXED_MODELS[0];
+        let selected_model = crate::domain::agent_session::model_entry_id("codex", default_model);
 
         let session = create_session_with_initial_model(
             &store,
@@ -1958,7 +1963,29 @@ mod tests {
             crate::permission::PermissionMode::Edit,
         )
         .unwrap();
-        assert_eq!(session.selected_model, Some(default_model));
+        assert_eq!(session.selected_model, Some(selected_model));
+    }
+
+    #[test]
+    fn create_session_with_model_and_plan_mode_preserves_explicit_selected_model() {
+        let store = SessionStore::default();
+        let dir = tempfile::tempdir().unwrap();
+        let registry = fixed_model_registry();
+        let selected_model = "claude:claude-sonnet-4-5".to_string();
+
+        let session = create_session_with_model_and_plan_mode(
+            &store,
+            &registry,
+            dir.path(),
+            "/repo",
+            "claude".to_string(),
+            crate::permission::PermissionMode::Edit,
+            Some(selected_model.clone()),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(session.selected_model, Some(selected_model));
     }
 
     #[test]

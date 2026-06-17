@@ -395,7 +395,9 @@ export function reducer(
 					[action.sessionId]: action.modelId,
 				},
 			};
-			if (action.backendId === undefined) return nextState;
+			if (action.backendId === undefined || action.backendId === "") {
+				return nextState;
+			}
 			return updateSessionInStore(nextState, action.sessionId, (session) => ({
 				...session,
 				backendId: action.backendId,

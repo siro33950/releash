@@ -41,7 +41,7 @@ ModelEntry {
 - セッション開始前: 全バックエンドのエントリを選択可能。
 - セッション開始後（`session.messages.length > 0` または `agentSessionId` あり、または streaming 中）:
   現在の backend と異なるエントリは disabled。同一 backend のモデル間切替は許可。
-- 判定式は既存の `canChangeBackend`（`BoundSessionChat.tsx:204`）を流用し、各エントリの disabled を
+- 判定式は既存の `canChangeBackend`（`BoundSessionChat.tsx:202`）を流用し、各エントリの disabled を
   `!canChangeBackend && entry.backend !== currentBackend` で算出する。
 
 ## スコープ

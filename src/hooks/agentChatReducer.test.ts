@@ -733,6 +733,40 @@ describe("agentChatReducer", () => {
 			expect(state.sessionModels.s1).toBe("claude-4");
 			expect(state.sessionModels.s2).toBe("claude-3.5");
 		});
+
+		it("updates the session backend when backendId is non-empty", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: {
+					s1: makeSession({ backendId: "claude" }),
+				},
+			};
+			const next = reducer(state, {
+				type: "SET_SESSION_MODEL",
+				sessionId: "s1",
+				modelId: "codex:gpt-5.5",
+				backendId: "codex",
+			});
+			expect(next.sessionModels.s1).toBe("codex:gpt-5.5");
+			expect(next.sessionsById.s1?.backendId).toBe("codex");
+		});
+
+		it("keeps the existing session backend when backendId is empty", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: {
+					s1: makeSession({ backendId: "claude" }),
+				},
+			};
+			const next = reducer(state, {
+				type: "SET_SESSION_MODEL",
+				sessionId: "s1",
+				modelId: "claude:claude-opus-4-8",
+				backendId: "",
+			});
+			expect(next.sessionModels.s1).toBe("claude:claude-opus-4-8");
+			expect(next.sessionsById.s1?.backendId).toBe("claude");
+		});
 	});
 
 	describe("CLEANUP_SESSION", () => {

@@ -59,6 +59,35 @@ describe("MessageInput", () => {
 		expect(onPlanModeChange).toHaveBeenCalledWith(false);
 	});
 
+	it("uses unique plan mode ids and toggles only the matching instance from its label", async () => {
+		const user = userEvent.setup();
+		const onFirstPlanModeChange = vi.fn();
+		const onSecondPlanModeChange = vi.fn();
+		render(
+			<>
+				<MessageInput
+					{...defaultProps}
+					onPlanModeChange={onFirstPlanModeChange}
+				/>
+				<MessageInput
+					{...defaultProps}
+					onPlanModeChange={onSecondPlanModeChange}
+				/>
+			</>,
+		);
+
+		const labels = screen.getAllByText("Plan");
+		const toggles = screen.getAllByTestId("plan-mode-toggle");
+		expect(labels[0].getAttribute("for")).toBe(toggles[0].id);
+		expect(labels[1].getAttribute("for")).toBe(toggles[1].id);
+		expect(toggles[0].id).not.toBe(toggles[1].id);
+
+		await user.click(labels[1]);
+
+		expect(onFirstPlanModeChange).not.toHaveBeenCalled();
+		expect(onSecondPlanModeChange).toHaveBeenCalledWith(true);
+	});
+
 	it("disables send button when input is empty", () => {
 		render(<MessageInput {...defaultProps} />);
 		const button = screen.getByLabelText("Send message");
