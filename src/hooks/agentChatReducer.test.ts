@@ -807,7 +807,10 @@ describe("agentChatReducer", () => {
 			});
 			expect(next.backends).toEqual([backend1, backend2]);
 			expect(next.selectedBackendId).toBe("b2");
-			expect(next.availableModels).toEqual([{ value: "b2-model" }]);
+			expect(next.availableModels).toEqual([
+				{ value: "b1-model" },
+				{ value: "b2-model" },
+			]);
 			expect(next.availableModelsByBackend).toEqual({
 				b1: [{ value: "b1-model" }],
 				b2: [{ value: "b2-model" }],
@@ -868,7 +871,7 @@ describe("agentChatReducer", () => {
 				backendId: "b1",
 			});
 			expect(next.selectedBackendId).toBe("b1");
-			expect(next.availableModels).toEqual([{ value: "model-1" }]);
+			expect(next.availableModels).toEqual([]);
 		});
 
 		it("clears selectedBackendId with null", () => {

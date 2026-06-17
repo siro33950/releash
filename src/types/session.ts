@@ -38,7 +38,52 @@ export function normalizePermissionMode(
 }
 
 export interface ModelInfo {
-	value: string;
+	id?: string;
+	displayName?: string;
+	display_name?: string;
+	backend?: string;
+	modelId?: string;
+	model_id?: string;
+	value?: string;
+}
+
+export function getModelInfoModelId(model: ModelInfo): string {
+	return model.modelId ?? model.model_id ?? model.value ?? model.id ?? "";
+}
+
+export function getModelInfoDisplayName(model: ModelInfo): string {
+	return (
+		model.displayName ??
+		model.display_name ??
+		model.value ??
+		model.modelId ??
+		model.model_id ??
+		model.id ??
+		""
+	);
+}
+
+export function getModelInfoId(model: ModelInfo): string {
+	if (model.id) return model.id;
+	const modelId = getModelInfoModelId(model);
+	return model.backend && modelId ? `${model.backend}:${modelId}` : modelId;
+}
+
+export function getModelInfoBackend(model: ModelInfo): string {
+	return model.backend ?? "";
+}
+
+export function normalizeModelSelectionId(
+	models: ModelInfo[],
+	selected: string | null | undefined,
+): string {
+	if (!selected) return "";
+	const exact = models.find((model) => getModelInfoId(model) === selected);
+	if (exact) return getModelInfoId(exact);
+	const byModelId = models.find(
+		(model) => getModelInfoModelId(model) === selected,
+	);
+	return byModelId ? getModelInfoId(byModelId) : selected;
 }
 
 export interface SlashCommand {

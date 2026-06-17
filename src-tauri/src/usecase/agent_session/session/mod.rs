@@ -170,6 +170,7 @@ pub enum ActivityEntry {
 }
 
 pub trait SessionBackendResolver {
+    #[cfg(test)]
     fn resolve_backend_id(&self, backend_id: Option<String>) -> Result<String, String>;
     fn default_model_for(&self, backend_id: &str) -> Result<String, String>;
     fn backend_exists(&self, backend_id: &str) -> bool;
@@ -180,6 +181,7 @@ impl<T> SessionBackendResolver for std::sync::Arc<T>
 where
     T: SessionBackendResolver + ?Sized,
 {
+    #[cfg(test)]
     fn resolve_backend_id(&self, backend_id: Option<String>) -> Result<String, String> {
         self.as_ref().resolve_backend_id(backend_id)
     }
@@ -270,7 +272,10 @@ pub struct QueuedAgentTurn {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
-    pub value: String,
+    pub id: String,
+    pub display_name: String,
+    pub backend: String,
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -540,6 +545,7 @@ fn build_new_session(
 ///
 /// `permission_mode` は検証済みの抽象 [`crate::permission::PermissionMode`] を要求し、
 /// 初回保存で確定する（Spec issues-947: セッション保存層が permission_mode の正典）。
+#[cfg(test)]
 pub fn create_session_with_initial_model(
     session_store: &SessionStore,
     registry: &impl SessionBackendResolver,
@@ -559,6 +565,7 @@ pub fn create_session_with_initial_model(
     )
 }
 
+#[cfg(test)]
 pub fn create_session_with_initial_model_and_plan_mode(
     session_store: &SessionStore,
     registry: &impl SessionBackendResolver,
@@ -568,12 +575,38 @@ pub fn create_session_with_initial_model_and_plan_mode(
     permission_mode: crate::permission::PermissionMode,
     plan_mode: bool,
 ) -> Result<ChatSession, String> {
-    let default_model = registry.default_model_for(&backend_id)?;
+    create_session_with_model_and_plan_mode(
+        session_store,
+        registry,
+        data_dir,
+        worktree_path,
+        backend_id,
+        permission_mode,
+        None,
+        plan_mode,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn create_session_with_model_and_plan_mode(
+    session_store: &SessionStore,
+    registry: &impl SessionBackendResolver,
+    data_dir: &std::path::Path,
+    worktree_path: &str,
+    backend_id: String,
+    permission_mode: crate::permission::PermissionMode,
+    selected_model: Option<String>,
+    plan_mode: bool,
+) -> Result<ChatSession, String> {
+    let selected_model = match selected_model {
+        Some(model) => model,
+        None => registry.default_model_for(&backend_id)?,
+    };
     let session = build_new_session(
         worktree_path,
         Some(backend_id),
         permission_mode,
-        Some(default_model),
+        Some(selected_model),
         plan_mode,
         false,
     );
@@ -618,6 +651,7 @@ pub fn add_message_internal(
     Ok(message)
 }
 
+#[cfg(test)]
 pub(crate) fn create_session_command_inner(
     session_store: &SessionStore,
     registry: &impl SessionBackendResolver,

@@ -1,3 +1,5 @@
 pub(crate) mod value_objects;
 
-pub(crate) use value_objects::{ModelId, CLAUDE_FIXED_MODELS, CODEX_FIXED_MODELS};
+pub(crate) use value_objects::{
+    model_entry_for_backend_model, model_entry_id, ModelId, CLAUDE_FIXED_MODELS, CODEX_FIXED_MODELS,
+};

@@ -583,6 +583,7 @@ pub async fn send_workflow_approval_chat_message(
             permission_mode,
             plan_mode: plan_mode.unwrap_or(false),
             backend_id: None,
+            model_id: None,
             images,
             mentions,
             editor_context: None,

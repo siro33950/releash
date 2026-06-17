@@ -69,7 +69,6 @@ vi.mock("./useSessionStore", () => ({
 		backends: [],
 		defaultId: null,
 	}),
-	readCodexModelCatalog: vi.fn().mockResolvedValue([]),
 	setSessionBackend: vi.fn().mockResolvedValue({
 		session: {
 			id: "s1",
@@ -164,8 +163,6 @@ describe("useAgentChat", () => {
 		});
 		vi.mocked(sessionStore.restoreSession).mockClear();
 		vi.mocked(sessionStore.setSessionBackend).mockClear();
-		vi.mocked(sessionStore.readCodexModelCatalog).mockResolvedValue([]);
-		vi.mocked(sessionStore.readCodexModelCatalog).mockClear();
 	});
 
 	it("should define the hook", async () => {
@@ -177,45 +174,6 @@ describe("useAgentChat", () => {
 	it("should not export buildClaudeCommand (removed)", async () => {
 		const mod = await import("./useAgentChat");
 		expect((mod as Record<string, unknown>).buildClaudeCommand).toBeUndefined();
-	});
-
-	it("uses Codex app-server model catalog when available", async () => {
-		const { renderHook, waitFor } = await import("@testing-library/react");
-		const { useAgentChat } = await import("./useAgentChat");
-		const sessionStore = await import("./useSessionStore");
-
-		vi.mocked(sessionStore.listAgentBackends).mockResolvedValueOnce({
-			backends: [
-				{
-					id: "codex",
-					name: "Codex",
-					available: true,
-					availableModels: [{ value: "fixed-codex-model" }],
-				},
-			],
-			defaultId: "codex",
-		});
-		vi.mocked(sessionStore.readCodexModelCatalog).mockResolvedValueOnce([
-			{ value: "runtime-codex-model" },
-			{ value: "runtime-codex-mini" },
-		]);
-		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
-			sessions: [],
-			activeSession: null,
-			permissionMode: "edit",
-			planMode: false,
-		});
-
-		const { result } = renderHook(() => useAgentChat("/repo"));
-
-		await waitFor(() => {
-			expect(sessionStore.readCodexModelCatalog).toHaveBeenCalled();
-			expect(result.current.selectedBackendId).toBe("codex");
-			expect(result.current.availableModels).toEqual([
-				{ value: "runtime-codex-model" },
-				{ value: "runtime-codex-mini" },
-			]);
-		});
 	});
 
 	it("sendMessage calls sendAgentMessage with permissionMode", async () => {
@@ -2173,6 +2131,17 @@ describe("useAgentChat", () => {
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
 
+		vi.mocked(sessionStore.listAgentBackends).mockResolvedValueOnce({
+			backends: [
+				{
+					id: "claude",
+					name: "Claude",
+					available: true,
+					availableModels: [{ value: "claude-4" }],
+				},
+			],
+			defaultId: "claude",
+		});
 		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
 			sessions: [
 				{

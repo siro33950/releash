@@ -6,6 +6,7 @@ import {
 	waitFor,
 	within,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // jsdom does not implement scrollIntoView
@@ -239,6 +240,7 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		planMode: false,
 		setPlanMode: vi.fn(),
 		availableModels: [],
+		availableModelsByBackend: {},
 		selectedModel: null,
 		setModel: vi.fn(),
 		backends: [],
@@ -1403,7 +1405,7 @@ describe("AgentChatPanel session tabs", () => {
 		expect(createNewSession).toHaveBeenCalled();
 	});
 
-	it("enables Agent selector in the input for an empty active session", () => {
+	it("enables model selector in the input for an empty active session", () => {
 		mockUseAgentChat({
 			activeSession: {
 				id: "new-s",
@@ -1413,11 +1415,17 @@ describe("AgentChatPanel session tabs", () => {
 				createdAt: 1000,
 				updatedAt: 1000,
 				permissionMode: "edit",
+				backendId: "claude",
 			},
-			backends: [
-				{ id: "claude", name: "Claude", available: true, availableModels: [] },
-				{ id: "codex", name: "Codex", available: true, availableModels: [] },
+			availableModels: [
+				{
+					id: "claude:claude-opus-4-8",
+					displayName: "Opus 4.8",
+					backend: "claude",
+					modelId: "claude-opus-4-8",
+				},
 			],
+			selectedModel: "claude:claude-opus-4-8",
 			selectedBackendId: "claude",
 		});
 		render(
@@ -1427,10 +1435,69 @@ describe("AgentChatPanel session tabs", () => {
 			/>,
 		);
 
-		expect(screen.getByTestId("backend-selector-trigger")).toBeEnabled();
+		expect(screen.getByTestId("model-selector-trigger")).toBeEnabled();
 	});
 
-	it("disables Agent selector after the active session has messages", () => {
+	it("falls back to the first model for the active session backend", () => {
+		mockUseAgentChat({
+			activeSession: {
+				id: "codex-s",
+				worktreePath: "/repo",
+				messages: [],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+				permissionMode: "edit",
+				backendId: "codex",
+			},
+			availableModels: [
+				{
+					id: "claude:claude-opus-4-8",
+					displayName: "Opus 4.8",
+					backend: "claude",
+					modelId: "claude-opus-4-8",
+				},
+				{
+					id: "codex:gpt-5.4",
+					displayName: "GPT-5.4",
+					backend: "codex",
+					modelId: "gpt-5.4",
+				},
+			],
+			availableModelsByBackend: {
+				claude: [
+					{
+						id: "claude:claude-opus-4-8",
+						displayName: "Opus 4.8",
+						backend: "claude",
+						modelId: "claude-opus-4-8",
+					},
+				],
+				codex: [
+					{
+						id: "codex:gpt-5.4",
+						displayName: "GPT-5.4",
+						backend: "codex",
+						modelId: "gpt-5.4",
+					},
+				],
+			},
+			selectedBackendId: "codex",
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		const trigger = screen.getByTestId("model-selector-trigger");
+		expect(trigger).toHaveTextContent("GPT-5.4");
+		expect(trigger).not.toHaveTextContent("Opus 4.8");
+	});
+
+	it("disables cross-backend model options after the active session has messages", async () => {
+		const user = userEvent.setup();
 		mockUseAgentChat({
 			activeSession: {
 				id: "s1",
@@ -1447,11 +1514,23 @@ describe("AgentChatPanel session tabs", () => {
 				createdAt: 1000,
 				updatedAt: 1000,
 				permissionMode: "edit",
+				backendId: "claude",
 			},
-			backends: [
-				{ id: "claude", name: "Claude", available: true, availableModels: [] },
-				{ id: "codex", name: "Codex", available: true, availableModels: [] },
+			availableModels: [
+				{
+					id: "claude:claude-opus-4-8",
+					displayName: "Opus 4.8",
+					backend: "claude",
+					modelId: "claude-opus-4-8",
+				},
+				{
+					id: "codex:gpt-5.4",
+					displayName: "GPT-5.4",
+					backend: "codex",
+					modelId: "gpt-5.4",
+				},
 			],
+			selectedModel: "claude:claude-opus-4-8",
 			selectedBackendId: "claude",
 		});
 		render(
@@ -1461,7 +1540,10 @@ describe("AgentChatPanel session tabs", () => {
 			/>,
 		);
 
-		expect(screen.getByTestId("backend-selector-trigger")).toBeDisabled();
+		await user.click(screen.getByTestId("model-selector-trigger"));
+		expect(
+			screen.getByText("GPT-5.4").closest("[role='menuitem']"),
+		).toHaveAttribute("data-disabled");
 	});
 
 	it("calls selectSession when tab is clicked", () => {

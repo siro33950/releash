@@ -176,6 +176,7 @@ export interface BackendListResponse {
 export interface AgentSessionStartRequest {
 	worktree_path: string;
 	backend_id?: string | null;
+	model_id?: string | null;
 	permission_mode?: PermissionMode | null;
 }
 
@@ -243,6 +244,7 @@ export interface AgentMessageRequest {
 	content: string;
 	permission_mode?: PermissionMode | null;
 	backend_id?: string | null;
+	model_id?: string | null;
 	images?: ImageAttachment[];
 	mentions?: MentionReference[];
 	editor_context?: AgentEditorContext | null;

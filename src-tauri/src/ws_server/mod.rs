@@ -168,16 +168,21 @@ impl WsServerState {
         worktree_path: &str,
         backend_id: Option<String>,
         permission_mode: crate::permission::PermissionMode,
+        selected_model: Option<String>,
     ) -> Result<crate::usecase::agent_session::session::ChatSession, String> {
         #[cfg(test)]
         {
             if let Some((session_store, data_dir)) = &self.test_session_deps {
-                return crate::usecase::agent_session::session::create_session_internal_with_permission(
+                return crate::usecase::agent_session::session::create_session_internal_with_attributes(
                     session_store,
                     data_dir,
                     worktree_path,
                     backend_id,
                     permission_mode,
+                    crate::usecase::agent_session::session::SessionCreationAttributes {
+                        selected_model,
+                        ..Default::default()
+                    },
                 );
             }
         }
@@ -187,14 +192,18 @@ impl WsServerState {
             app.state::<Arc<crate::usecase::agent_session::session::SessionStore>>();
         let data_dir = crate::app_data_dir::resolve_data_dir(app)?;
         match backend_id {
-            Some(bid) => crate::usecase::agent_session::session::create_session_with_initial_model(
-                &session_store,
-                &self.backend_registry,
-                &data_dir,
-                worktree_path,
-                bid,
-                permission_mode,
-            ),
+            Some(bid) => {
+                crate::usecase::agent_session::session::create_session_with_model_and_plan_mode(
+                    &session_store,
+                    &self.backend_registry,
+                    &data_dir,
+                    worktree_path,
+                    bid,
+                    permission_mode,
+                    selected_model,
+                    false,
+                )
+            }
             None => {
                 crate::usecase::agent_session::session::create_session_internal_with_permission(
                     &session_store,

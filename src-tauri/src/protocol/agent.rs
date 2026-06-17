@@ -55,7 +55,10 @@ pub struct BackendInfoMsg {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelInfoMsg {
-    pub value: String,
+    pub id: String,
+    pub display_name: String,
+    pub backend: String,
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +84,8 @@ pub struct AgentSessionStartRequest {
     pub worktree_path: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub model_id: Option<String>,
     /// 抽象パーミッションモード（ask / edit / full）。
     /// リモート UI で選択された permission_mode をセッション開始時にセッション保存層へ反映する。
     /// 欠落・対象外値は WebSocket ハンドラで InvalidPermissionMode として拒否する。
@@ -140,6 +145,8 @@ pub struct AgentMessageRequest {
     pub permission_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub model_id: Option<String>,
     #[serde(default)]
     pub images: Vec<ImageAttachment>,
     #[serde(default)]
@@ -158,6 +165,7 @@ pub struct AgentMessageRequest {
 pub struct AgentSessionStartHandlerRequest {
     pub worktree_path: String,
     pub backend_id: Option<String>,
+    pub model_id: Option<String>,
     pub permission_mode: PermissionMode,
 }
 
@@ -170,6 +178,7 @@ impl TryFrom<&AgentSessionStartRequest> for AgentSessionStartHandlerRequest {
         Ok(Self {
             worktree_path: req.worktree_path.clone(),
             backend_id: req.backend_id.clone(),
+            model_id: req.model_id.clone(),
             permission_mode,
         })
     }
@@ -184,6 +193,7 @@ pub struct AgentMessageHandlerRequest {
     pub content: String,
     pub permission_mode: PermissionMode,
     pub backend_id: Option<String>,
+    pub model_id: Option<String>,
     pub images: Vec<ImageAttachment>,
     pub mentions: Vec<MentionReferenceInput>,
     pub editor_context: Option<AgentEditorContext>,
@@ -201,6 +211,7 @@ impl TryFrom<&AgentMessageRequest> for AgentMessageHandlerRequest {
             content: req.content.clone(),
             permission_mode,
             backend_id: req.backend_id.clone(),
+            model_id: req.model_id.clone(),
             images: req.images.clone(),
             mentions: req.mentions.clone(),
             editor_context: req.editor_context.clone(),
@@ -558,6 +569,7 @@ mod tests {
             let req = AgentSessionStartRequest {
                 worktree_path: "/repo".to_string(),
                 backend_id: Some("claude".to_string()),
+                model_id: None,
                 permission_mode: Some(value.to_string()),
             };
             let typed: AgentSessionStartHandlerRequest = (&req).try_into().unwrap();
@@ -581,6 +593,7 @@ mod tests {
             let req = AgentSessionStartRequest {
                 worktree_path: "/repo".to_string(),
                 backend_id: None,
+                model_id: None,
                 permission_mode: value.map(str::to_string),
             };
             let err = AgentSessionStartHandlerRequest::try_from(&req).unwrap_err();
@@ -600,6 +613,7 @@ mod tests {
                 content: "hi".to_string(),
                 permission_mode: Some(value.to_string()),
                 backend_id: None,
+                model_id: None,
                 images: Vec::new(),
                 mentions: Vec::new(),
                 editor_context: None,
@@ -627,6 +641,7 @@ mod tests {
                 content: "hi".to_string(),
                 permission_mode: value.map(str::to_string),
                 backend_id: None,
+                model_id: None,
                 images: Vec::new(),
                 mentions: Vec::new(),
                 editor_context: None,

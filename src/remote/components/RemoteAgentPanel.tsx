@@ -16,9 +16,13 @@ import type {
 	WsMessage,
 } from "@/types/protocol";
 import {
+	getModelInfoBackend,
+	getModelInfoDisplayName,
+	getModelInfoId,
 	type ImageAttachment,
 	type MentionReference,
 	type MessagePart,
+	normalizeModelSelectionId,
 	normalizePermissionMode,
 	PERMISSION_MODE_LABELS,
 	PERMISSION_MODES,
@@ -121,11 +125,10 @@ function syncRemoteMentionsWithText(
 		const filePath = match[1];
 		const remaining = available.get(filePath) ?? 0;
 		if (remaining === 0) continue;
-		synced.push({
-			filePath,
-			startLine: match[2] ? Number(match[2]) : undefined,
-			endLine: match[3] ? Number(match[3]) : undefined,
-		});
+		const ref: MentionReference = { filePath };
+		if (match[2]) ref.startLine = Number(match[2]);
+		if (match[3]) ref.endLine = Number(match[3]);
+		synced.push(ref);
 		available.set(filePath, remaining - 1);
 	}
 	return synced.length > 0 ? synced : undefined;
@@ -166,6 +169,7 @@ export function RemoteAgentPanel({
 	const [startedSession, setStartedSession] = useState<{
 		sessionId: string;
 		backendId: string | null;
+		agentSessionId: string | null;
 	} | null>(null);
 	const [sessionSummaries, setSessionSummaries] = useState<SessionSummary[]>(
 		[],
@@ -198,6 +202,16 @@ export function RemoteAgentPanel({
 		() => backends.filter((backend) => backend.available),
 		[backends],
 	);
+	const modelEntries = useMemo(
+		() =>
+			availableBackends.flatMap((backend) =>
+				backend.available_models.map((model) => ({
+					...model,
+					backend: getModelInfoBackend(model) || backend.id,
+				})),
+			),
+		[availableBackends],
+	);
 
 	const applySessionSnapshot = useCallback(
 		(snapshot: AgentSessionSnapshot | null) => {
@@ -212,6 +226,7 @@ export function RemoteAgentPanel({
 			setStartedSession({
 				sessionId: snapshot.id,
 				backendId: snapshot.backendId ?? null,
+				agentSessionId: snapshot.agentSessionId ?? null,
 			});
 			setMessages(
 				snapshot.messages.map((message) => ({
@@ -230,7 +245,12 @@ export function RemoteAgentPanel({
 					snapshot.turnPhase === "waiting_permission",
 			);
 			setPermissionMode(normalizePermissionMode(snapshot.permissionMode));
-			setModelId(snapshot.selectedModel ?? "");
+			setModelId(
+				normalizeModelSelectionId(
+					snapshot.availableModels ?? [],
+					snapshot.selectedModel,
+				),
+			);
 		},
 		[],
 	);
@@ -244,6 +264,7 @@ export function RemoteAgentPanel({
 						setStartedSession({
 							sessionId: msg.payload.session_id,
 							backendId: msg.payload.backend_id ?? null,
+							agentSessionId: null,
 						});
 						setMessages([]);
 						setPendingQueue([]);
@@ -288,6 +309,7 @@ export function RemoteAgentPanel({
 						setStartedSession((current) => ({
 							sessionId: msg.payload.session_id ?? current?.sessionId ?? "",
 							backendId: msg.payload.backend_id ?? current?.backendId ?? null,
+							agentSessionId: current?.agentSessionId ?? null,
 						}));
 						if (msg.payload.agent_message_id) {
 							setRunning(true);
@@ -358,7 +380,22 @@ export function RemoteAgentPanel({
 						setPendingQueue(msg.payload.pending_queue ?? []);
 						setError(null);
 					} else if (msg.type === "agent_model_set_response") {
-						setModelId(msg.payload.model_id ?? "");
+						const nextModelId = normalizeModelSelectionId(
+							modelEntries,
+							msg.payload.model_id,
+						);
+						setModelId(nextModelId);
+						const nextModel = modelEntries.find(
+							(model) => getModelInfoId(model) === nextModelId,
+						);
+						const nextBackendId = nextModel
+							? getModelInfoBackend(nextModel)
+							: null;
+						if (nextBackendId) {
+							setStartedSession((current) =>
+								current ? { ...current, backendId: nextBackendId } : current,
+							);
+						}
 						setError(null);
 					} else if (msg.type === "agent_permission_response_response") {
 						setError(null);
@@ -410,6 +447,7 @@ export function RemoteAgentPanel({
 		startedSession?.sessionId,
 		selectedWorktree,
 		applySessionSnapshot,
+		modelEntries,
 	]);
 
 	useEffect(() => {
@@ -464,12 +502,24 @@ export function RemoteAgentPanel({
 		return () => clearTimeout(timer);
 	}, [mentionQuery, mentionDismissed, status, selectedWorktree, send]);
 
-	const lockedBackendId = startedSession?.backendId ?? selectedBackendId;
+	const selectedModelId = normalizeModelSelectionId(modelEntries, modelId);
+	const selectedModel =
+		modelEntries.find((model) => getModelInfoId(model) === selectedModelId) ??
+		null;
+	const selectedModelBackendId = selectedModel
+		? getModelInfoBackend(selectedModel)
+		: null;
+	const canChangeBackend =
+		!startedSession ||
+		(!running && messages.length === 0 && !startedSession.agentSessionId);
+	const lockedBackendId =
+		(canChangeBackend ? selectedModelBackendId : null) ??
+		startedSession?.backendId ??
+		selectedBackendId;
 	const selectedBackend =
 		availableBackends.find((backend) => backend.id === lockedBackendId) ??
 		availableBackends[0] ??
 		null;
-	const selectedBackendModels = selectedBackend?.available_models ?? [];
 	const showSlashPopup =
 		draft.startsWith("/") && !draft.includes(" ") && !slashDismissed;
 	const slashQuery = draft.slice(1).toLowerCase();
@@ -492,23 +542,44 @@ export function RemoteAgentPanel({
 	// モデル未選択(null/Unset)状態は廃止。session 起動後にモデル候補があれば
 	// デフォルト = 先頭モデルを選択状態にしておき、null を送る経路を残さない。
 	useEffect(() => {
-		if (!startedSession) return;
 		if (modelId.length > 0) return;
-		const first = selectedBackendModels[0]?.value;
-		if (first) setModelId(first);
-	}, [startedSession, modelId, selectedBackendModels]);
+		const first = modelEntries[0];
+		if (!first) return;
+		const firstModelId = getModelInfoId(first);
+		setModelId(firstModelId);
+		if (!startedSession) {
+			onBackendChange(getModelInfoBackend(first) || null);
+		}
+	}, [startedSession, modelId, modelEntries, onBackendChange]);
+
+	const selectModel = (nextModelId: string) => {
+		setModelId(nextModelId);
+		if (startedSession) return;
+		const nextModel = modelEntries.find(
+			(model) => getModelInfoId(model) === nextModelId,
+		);
+		onBackendChange(nextModel ? getModelInfoBackend(nextModel) || null : null);
+	};
 
 	const startSession = () => {
 		if (status !== "connected" || !selectedBackend) return;
 		setStarting(true);
 		setError(null);
+		const modelBackendId = selectedModelBackendId ?? selectedBackend.id;
+		const payload: Extract<
+			WsMessage,
+			{ type: "agent_session_start_request" }
+		>["payload"] = {
+			worktree_path: selectedWorktree,
+			backend_id: modelBackendId,
+			permission_mode: permissionMode,
+		};
+		if (selectedModelId) {
+			payload.model_id = selectedModelId;
+		}
 		send({
 			type: "agent_session_start_request",
-			payload: {
-				worktree_path: selectedWorktree,
-				backend_id: selectedBackend.id,
-				permission_mode: permissionMode,
-			},
+			payload,
 		});
 	};
 
@@ -554,6 +625,9 @@ export function RemoteAgentPanel({
 			permission_mode: permissionMode,
 			backend_id: startedSession ? null : selectedBackend?.id,
 		};
+		if (!startedSession && selectedModelId) {
+			payload.model_id = selectedModelId;
+		}
 		if (images.length > 0) {
 			payload.images = images;
 		}
@@ -643,12 +717,12 @@ export function RemoteAgentPanel({
 
 	const applyModel = () => {
 		if (!startedSession) return;
-		if (modelId.length === 0) return;
+		if (selectedModelId.length === 0) return;
 		send({
 			type: "agent_model_set_request",
 			payload: {
 				session_id: startedSession.sessionId,
-				model_id: modelId,
+				model_id: selectedModelId,
 			},
 		});
 	};
@@ -701,43 +775,68 @@ export function RemoteAgentPanel({
 
 			<div className="flex-1 overflow-y-auto p-3 space-y-3">
 				<label className="block space-y-1">
-					<span className="text-xs text-muted-foreground">Backend</span>
+					<span className="text-xs text-muted-foreground">Model</span>
 					<select
 						className="w-full h-9 rounded border border-border bg-background px-2 text-sm"
-						value={selectedBackend?.id ?? ""}
-						onChange={(event) => onBackendChange(event.target.value || null)}
-						disabled={
-							availableBackends.length === 0 ||
-							starting ||
-							Boolean(startedSession)
-						}
+						value={selectedModelId}
+						onChange={(event) => selectModel(event.target.value)}
+						disabled={modelEntries.length === 0 || starting || backendLoading}
 					>
-						{availableBackends.map((backend) => (
-							<option key={backend.id} value={backend.id}>
-								{backend.name}
+						{modelEntries.map((model) => {
+							const modelEntryId = getModelInfoId(model);
+							const backendId = getModelInfoBackend(model);
+							return (
+								<option
+									key={modelEntryId}
+									value={modelEntryId}
+									disabled={
+										!canChangeBackend &&
+										backendId !== "" &&
+										backendId !== startedSession?.backendId
+									}
+								>
+									{getModelInfoDisplayName(model)}
+								</option>
+							);
+						})}
+					</select>
+				</label>
+
+				{selectedBackend && (
+					<div className="text-xs text-muted-foreground">
+						Provider: {selectedBackend.name}
+					</div>
+				)}
+
+				{startedSession && (
+					<div className="flex gap-2">
+						<button
+							type="button"
+							onClick={applyModel}
+							disabled={modelEntries.length > 0 && selectedModelId.length === 0}
+							className="w-full h-9 rounded border border-border text-sm disabled:opacity-50"
+						>
+							Set
+						</button>
+					</div>
+				)}
+
+				<label className="block space-y-1">
+					<span className="text-xs text-muted-foreground">Session</span>
+					<select
+						className="w-full h-9 rounded border border-border bg-background px-2 text-sm"
+						value={startedSession?.sessionId ?? ""}
+						onChange={(event) => selectSession(event.target.value)}
+						aria-label="Agent session"
+					>
+						<option value="">New Session</option>
+						{sessionSummaries.map((session) => (
+							<option key={session.id} value={session.id}>
+								{session.firstMessage || "Untitled"} ({session.messageCount})
 							</option>
 						))}
 					</select>
 				</label>
-
-				{sessionSummaries.length > 0 && (
-					<label className="block space-y-1">
-						<span className="text-xs text-muted-foreground">Session</span>
-						<select
-							className="w-full h-9 rounded border border-border bg-background px-2 text-sm"
-							value={startedSession?.sessionId ?? ""}
-							onChange={(event) => selectSession(event.target.value)}
-							aria-label="Agent session"
-						>
-							<option value="">New Session</option>
-							{sessionSummaries.map((session) => (
-								<option key={session.id} value={session.id}>
-									{session.firstMessage || "Untitled"} ({session.messageCount})
-								</option>
-							))}
-						</select>
-					</label>
-				)}
 
 				<label className="block space-y-1">
 					<span className="text-xs text-muted-foreground">Permission</span>
@@ -760,7 +859,12 @@ export function RemoteAgentPanel({
 				<button
 					type="button"
 					onClick={startSession}
-					disabled={status !== "connected" || !selectedBackend || starting}
+					disabled={
+						status !== "connected" ||
+						!selectedBackend ||
+						(modelEntries.length > 0 && selectedModelId.length === 0) ||
+						starting
+					}
 					className="inline-flex items-center justify-center gap-2 w-full h-9 rounded bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
 				>
 					{starting ? (
@@ -781,31 +885,6 @@ export function RemoteAgentPanel({
 								{startedSession.sessionId}
 							</div>
 						</div>
-					</div>
-				)}
-
-				{startedSession && (
-					<div className="flex gap-2">
-						<select
-							value={modelId}
-							onChange={(event) => setModelId(event.target.value)}
-							className="min-w-0 flex-1 h-9 rounded border border-border bg-background px-2 text-sm"
-							aria-label="Model"
-						>
-							{selectedBackendModels.map((model) => (
-								<option key={model.value} value={model.value}>
-									{model.value}
-								</option>
-							))}
-						</select>
-						<button
-							type="button"
-							onClick={applyModel}
-							disabled={modelId.length === 0}
-							className="px-3 h-9 rounded border border-border text-sm"
-						>
-							Set
-						</button>
 					</div>
 				)}
 

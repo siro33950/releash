@@ -10,6 +10,7 @@ import type {
 	MentionReference,
 	PermissionMode,
 } from "@/types/session";
+import { getModelInfoId } from "@/types/session";
 import { ChatSessionView } from "./ChatSessionView";
 
 interface BoundSessionChatProps {
@@ -70,7 +71,7 @@ export function BoundSessionChat({
 		getSessionPendingQueue = () => [],
 		getSessionRuntimeSlashCommands = () => [],
 		availableModels,
-		backends,
+		availableModelsByBackend,
 		error,
 		permissionMode: contextPermissionMode,
 		planMode,
@@ -80,7 +81,6 @@ export function BoundSessionChat({
 		setPermissionMode,
 		setPlanMode,
 		setModel,
-		setBackend,
 		respondPermission,
 	} = useAgentChatContext();
 
@@ -173,13 +173,6 @@ export function BoundSessionChat({
 		[sessionId, setModel],
 	);
 
-	const handleBackendChange = useCallback(
-		(backendId: string | null) => {
-			setBackend(sessionId, backendId);
-		},
-		[sessionId, setBackend],
-	);
-
 	const handleRespondPermission = useCallback(
 		(
 			requestId: string,
@@ -197,8 +190,13 @@ export function BoundSessionChat({
 	// 契約: Rust から届いた後の selected_model は常に非 null。session meta が
 	// 反映される前の transient な null は、デフォルト（固定リスト先頭 = 表示中
 	// backend の available models[0]）に解決して常に string を伝播する。
+	const defaultSelectedModel =
+		session.backendId == null
+			? availableModels[0]
+			: availableModelsByBackend[session.backendId]?.[0];
 	const selectedModel =
-		getSessionSelectedModel(session.id) ?? availableModels[0]?.value ?? "";
+		getSessionSelectedModel(session.id) ??
+		(defaultSelectedModel ? getModelInfoId(defaultSelectedModel) : "");
 	const pendingQueue = getSessionPendingQueue(session.id);
 	const runtimeSlashCommands = getSessionRuntimeSlashCommands(session.id);
 	const canChangeBackend =
@@ -218,7 +216,6 @@ export function BoundSessionChat({
 			selectedModel={selectedModel}
 			pendingQueue={pendingQueue}
 			runtimeSlashCommands={runtimeSlashCommands}
-			backends={backends}
 			selectedBackendId={session.backendId ?? null}
 			canChangeBackend={canChangeBackend}
 			worktreePath={worktreePath}
@@ -233,7 +230,6 @@ export function BoundSessionChat({
 			onPermissionModeChange={handlePermissionModeChange}
 			onPlanModeChange={handlePlanModeChange}
 			onModelChange={handleModelChange}
-			onBackendChange={handleBackendChange}
 			onRespondPermission={handleRespondPermission}
 			onOpenDiffFile={onOpenDiffFile}
 			registerDropZone={registerDropZone}

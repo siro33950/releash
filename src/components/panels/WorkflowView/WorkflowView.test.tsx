@@ -163,6 +163,7 @@ function mockAgentChatContext(overrides: Record<string, unknown> = {}) {
 		setPermissionMode: vi.fn(),
 		respondPermission: vi.fn(),
 		availableModels: [],
+		availableModelsByBackend: {},
 		selectedModel: null,
 		setModel: vi.fn(),
 		backends: [],
