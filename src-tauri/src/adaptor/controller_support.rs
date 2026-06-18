@@ -15,7 +15,7 @@ use crate::usecase::agent_session::session::{ChatSession, OpenTabRegistry, Sessi
 use crate::usecase::workflow::step_lifecycle::{
     ResolvedWorkflowStepSession, WorkflowStepLifecycleError,
 };
-use crate::usecase::workflow::WorkflowRuntimeUsecase;
+use crate::usecase::workflow::{WorkflowRuntimeUsecase, WorkflowStepLifecycleUsecase};
 
 pub(crate) type AgentProcessMapState = Arc<Mutex<AgentProcessMap>>;
 pub(crate) type AgentBackendRegistryState = Arc<AgentBackendRegistry>;
@@ -23,6 +23,7 @@ pub(crate) type AgentImageAttachment = ImageAttachment;
 pub(crate) type AgentSendMessageResponse = SendMessageResponse;
 pub(crate) type OpenTabRegistryState = Arc<OpenTabRegistry>;
 pub(crate) type SessionStoreState = Arc<SessionStore>;
+pub(crate) type WorkflowStepLifecycleUsecaseState = Arc<WorkflowStepLifecycleUsecase>;
 
 pub(crate) async fn build_workflow_state_view(
     state: crate::domain::workflow::WorkflowStateSnapshot,
@@ -56,20 +57,11 @@ pub(crate) async fn dispatch_agent_message_with_runtime(
     .await
 }
 
-pub(crate) async fn open_workflow_step_tab<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    handles: &AgentProcessMapState,
-    session_store: &SessionStoreState,
-    open_tabs: &OpenTabRegistryState,
+pub(crate) async fn open_workflow_step_tab(
+    step_lifecycle: &WorkflowStepLifecycleUsecaseState,
     chat_session_id: &str,
 ) -> Result<ResolvedWorkflowStepSession, WorkflowStepLifecycleError> {
-    let lifecycle = crate::adaptor::gateway::workflow::TauriWorkflowStepLifecycle::new(
-        app,
-        session_store.as_ref(),
-        handles,
-        open_tabs.as_ref(),
-    );
-    lifecycle.open_tab(chat_session_id).await
+    step_lifecycle.open_tab(chat_session_id).await
 }
 
 pub(crate) async fn emit_after_workflow_step_message<R: tauri::Runtime>(

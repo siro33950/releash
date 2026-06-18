@@ -100,6 +100,7 @@ pub(crate) use step_lifecycle_adapters::{
 pub(crate) use step_lifecycle_adapters::{
     hydrate_open_workflow_step_tabs, mark_started_step_tab_open, open_step_session_tab_state,
     release_step_runtime_on_done, resolve_step_session_with_data_dir, TauriWorkflowStepLifecycle,
+    TauriWorkflowStepLifecycleGateway,
 };
 #[cfg(test)]
 pub(crate) use worktree_gateway::PassthroughManagedWorktreeGateway;

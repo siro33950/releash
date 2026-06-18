@@ -249,6 +249,99 @@ impl<R: tauri::Runtime> WorkflowStepRuntimeGateway for TauriWorkflowStepRuntimeG
     }
 }
 
+pub(crate) struct TauriWorkflowStepLifecycleGateway {
+    app: tauri::AppHandle,
+    session_store: Arc<SessionStore>,
+    handles: Arc<Mutex<AgentProcessMap>>,
+    open_tabs: Arc<OpenTabRegistry>,
+}
+
+impl TauriWorkflowStepLifecycleGateway {
+    pub(crate) fn new(
+        app: tauri::AppHandle,
+        session_store: Arc<SessionStore>,
+        handles: Arc<Mutex<AgentProcessMap>>,
+        open_tabs: Arc<OpenTabRegistry>,
+    ) -> Self {
+        Self {
+            app,
+            session_store,
+            handles,
+            open_tabs,
+        }
+    }
+
+    fn data_dir(&self) -> Result<std::path::PathBuf, WorkflowStepLifecycleError> {
+        resolve_data_dir(&self.app)
+            .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("resolve_data_dir: {e}")))
+    }
+}
+
+impl WorkflowStepSessionGateway for TauriWorkflowStepLifecycleGateway {
+    fn resolve_step_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
+        let data_dir = self.data_dir()?;
+        resolve_step_session_with_data_dir(self.session_store.as_ref(), &data_dir, session_id)
+    }
+
+    fn open_step_tab(&self, session_id: &str) -> Result<(), WorkflowStepLifecycleError> {
+        let data_dir = self.data_dir()?;
+        open_step_session_tab_state(
+            self.session_store.as_ref(),
+            &data_dir,
+            self.open_tabs.as_ref(),
+            session_id,
+        )
+    }
+
+    fn close_step_tab(&self, session_id: &str) -> Result<bool, WorkflowStepLifecycleError> {
+        let data_dir = self.data_dir()?;
+        try_close_step_session_tab_state(
+            self.session_store.as_ref(),
+            &data_dir,
+            Some(self.open_tabs.as_ref()),
+            session_id,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkflowStepRuntimeGateway for TauriWorkflowStepLifecycleGateway {
+    async fn close_idle_runtime_on_tab_close(
+        &self,
+        session_id: &str,
+    ) -> Result<(), WorkflowStepLifecycleError> {
+        let _lifecycle_guard =
+            crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(session_id)
+                .await;
+        close_idle_step_runtime_state(&self.handles, session_id, || async {
+            crate::infrastructure::agent_session::runtime::close_agent_session_internal(
+                &self.app,
+                &self.handles,
+                session_id,
+            )
+            .await
+            .map_err(WorkflowStepLifecycleError::AgentSession)
+        })
+        .await
+    }
+
+    async fn close_runtime_on_step_done(
+        &self,
+        session_id: &str,
+    ) -> Result<(), WorkflowStepLifecycleError> {
+        crate::infrastructure::agent_session::runtime::close_agent_session_internal(
+            &self.app,
+            &self.handles,
+            session_id,
+        )
+        .await
+        .map_err(WorkflowStepLifecycleError::AgentSession)
+    }
+}
+
 pub(crate) struct TauriWorkflowStepLifecycle<'a, R: tauri::Runtime> {
     sessions: TauriWorkflowStepSessionGateway<'a, R>,
     runtime: TauriWorkflowStepRuntimeGateway<'a, R>,

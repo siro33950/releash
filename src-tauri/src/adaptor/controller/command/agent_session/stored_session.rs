@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
 
+use crate::adaptor::controller_support::WorkflowStepLifecycleUsecaseState;
 use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::codex::configured_cli_path;
 use crate::infrastructure::agent_session::runtime::codex_app_server::{
@@ -308,18 +309,17 @@ pub async fn close_session(
     state: State<'_, Arc<SessionStore>>,
     handles: State<'_, Arc<Mutex<AgentProcessMap>>>,
     open_tabs: State<'_, Arc<OpenTabRegistry>>,
+    step_lifecycle: State<'_, WorkflowStepLifecycleUsecaseState>,
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<(), String> {
-    let lifecycle = crate::adaptor::gateway::workflow::TauriWorkflowStepLifecycle::new(
-        &app,
-        state.inner().as_ref(),
-        handles.inner(),
-        open_tabs.inner().as_ref(),
-    );
-    if let Some(target) = lifecycle.close_tab_target(&session_id).await.map_err(|_| {
-        crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
-    })? {
+    if let Some(target) = step_lifecycle
+        .close_tab_target(&session_id)
+        .await
+        .map_err(|_| {
+            crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
+        })?
+    {
         crate::adaptor::controller::handler::workflow::emit_workflow_step_target_state(
             &app,
             &target,
@@ -370,18 +370,17 @@ pub async fn restore_session(
     registry: State<'_, Arc<AgentBackendRegistry>>,
     handles: State<'_, Arc<Mutex<AgentProcessMap>>>,
     open_tabs: State<'_, Arc<OpenTabRegistry>>,
+    step_lifecycle: State<'_, WorkflowStepLifecycleUsecaseState>,
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<RestoreSessionResponse, String> {
-    let lifecycle = crate::adaptor::gateway::workflow::TauriWorkflowStepLifecycle::new(
-        &app,
-        state.inner().as_ref(),
-        handles.inner(),
-        open_tabs.inner().as_ref(),
-    );
-    if let Some(target) = lifecycle.try_open_tab(&session_id).await.map_err(|_| {
-        crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
-    })? {
+    if let Some(target) = step_lifecycle
+        .try_open_tab(&session_id)
+        .await
+        .map_err(|_| {
+            crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
+        })?
+    {
         crate::adaptor::controller::handler::workflow::emit_workflow_step_target_state(
             &app,
             &target,

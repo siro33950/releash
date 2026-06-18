@@ -34,6 +34,7 @@ pub use output::WorkflowValidateOutputResult;
 use query_service::WorkflowQueryService;
 pub use query_service::{WorkflowEventView, WorkflowGetOutputResult, WorkflowStepDetailView};
 pub use runtime_command::WorkflowRuntimeUsecase;
+pub(crate) use step_lifecycle::WorkflowStepLifecycleUsecase;
 pub(crate) use step_lifecycle::{ResolvedWorkflowStepSession, WorkflowStepLifecycleError};
 
 #[derive(Clone)]

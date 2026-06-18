@@ -233,6 +233,19 @@ pub fn run() {
                 .state::<Arc<usecase::agent_session::session::SessionStore>>()
                 .inner()
                 .clone();
+            let open_tabs = app
+                .state::<Arc<usecase::agent_session::session::OpenTabRegistry>>()
+                .inner()
+                .clone();
+            let workflow_step_lifecycle_usecase = Arc::new(
+                adaptor::controller::wiring::build_workflow_step_lifecycle_usecase(
+                    app.handle().clone(),
+                    session_store.clone(),
+                    agent_handles.clone(),
+                    open_tabs,
+                ),
+            );
+            app.manage(workflow_step_lifecycle_usecase);
             let workflow_runtime_usecase =
                 Arc::new(adaptor::controller::wiring::build_workflow_runtime_usecase(
                     app.handle().clone(),

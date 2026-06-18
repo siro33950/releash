@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 #[derive(Debug, Clone)]
 pub struct ResolvedWorkflowStepSession {
     pub session_id: String,
@@ -47,6 +49,49 @@ pub(crate) trait WorkflowStepRuntimeGateway: Send + Sync {
 pub(crate) struct WorkflowStepLifecycle<'a> {
     pub(crate) sessions: &'a dyn WorkflowStepSessionGateway,
     pub(crate) runtime: &'a dyn WorkflowStepRuntimeGateway,
+}
+
+#[derive(Clone)]
+pub(crate) struct WorkflowStepLifecycleUsecase {
+    sessions: Arc<dyn WorkflowStepSessionGateway>,
+    runtime: Arc<dyn WorkflowStepRuntimeGateway>,
+}
+
+impl WorkflowStepLifecycleUsecase {
+    pub(crate) fn new(
+        sessions: Arc<dyn WorkflowStepSessionGateway>,
+        runtime: Arc<dyn WorkflowStepRuntimeGateway>,
+    ) -> Self {
+        Self { sessions, runtime }
+    }
+
+    fn lifecycle(&self) -> WorkflowStepLifecycle<'_> {
+        WorkflowStepLifecycle {
+            sessions: self.sessions.as_ref(),
+            runtime: self.runtime.as_ref(),
+        }
+    }
+
+    pub async fn open_tab(
+        &self,
+        session_id: &str,
+    ) -> Result<ResolvedWorkflowStepSession, WorkflowStepLifecycleError> {
+        self.lifecycle().open_tab(session_id).await
+    }
+
+    pub async fn try_open_tab(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
+        self.lifecycle().try_open_tab(session_id).await
+    }
+
+    pub async fn close_tab_target(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
+        self.lifecycle().close_tab_target(session_id).await
+    }
 }
 
 impl<'a> WorkflowStepLifecycle<'a> {
