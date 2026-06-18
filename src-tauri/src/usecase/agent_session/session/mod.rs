@@ -598,12 +598,11 @@ pub fn create_session_with_model_and_plan_mode(
     selected_model: Option<String>,
     plan_mode: bool,
 ) -> Result<ChatSession, String> {
+    // 永続化される selected_model は bare model_id に統一する（set_agent_model / spawn と同一規約）。
+    // 応答層（get_session）が backend スコープ付き entry id へ変換してフロントへ返す。
     let selected_model = match selected_model {
         Some(model) => model,
-        None => {
-            let default_model = registry.default_model_for(&backend_id)?;
-            crate::domain::agent_session::model_entry_id(&backend_id, &default_model)
-        }
+        None => registry.default_model_for(&backend_id)?,
     };
     let session = build_new_session(
         worktree_path,
@@ -1925,8 +1924,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = fixed_model_registry();
 
-        let default_model = crate::domain::agent_session::CLAUDE_FIXED_MODELS[0];
-        let selected_model = crate::domain::agent_session::model_entry_id("claude", default_model);
+        // 永続化される selected_model は bare model_id（entry id ではない）。
+        let default_model = crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string();
 
         let session = create_session_with_initial_model(
             &store,
@@ -1937,11 +1936,11 @@ mod tests {
             crate::permission::PermissionMode::Edit,
         )
         .unwrap();
-        assert_eq!(session.selected_model, Some(selected_model.clone()));
+        assert_eq!(session.selected_model, Some(default_model.clone()));
 
         // 永続化されている (on-disk から再ロードしても保持される)
         let reloaded = store.get_session(dir.path(), &session.id).unwrap().unwrap();
-        assert_eq!(reloaded.selected_model, Some(selected_model));
+        assert_eq!(reloaded.selected_model, Some(default_model));
     }
 
     #[test]
@@ -1951,8 +1950,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = fixed_model_registry();
 
-        let default_model = crate::domain::agent_session::CODEX_FIXED_MODELS[0];
-        let selected_model = crate::domain::agent_session::model_entry_id("codex", default_model);
+        // 永続化される selected_model は bare model_id（entry id ではない）。
+        let default_model = crate::domain::agent_session::CODEX_FIXED_MODELS[0].to_string();
 
         let session = create_session_with_initial_model(
             &store,
@@ -1963,7 +1962,7 @@ mod tests {
             crate::permission::PermissionMode::Edit,
         )
         .unwrap();
-        assert_eq!(session.selected_model, Some(selected_model));
+        assert_eq!(session.selected_model, Some(default_model));
     }
 
     #[test]
@@ -1971,7 +1970,9 @@ mod tests {
         let store = SessionStore::default();
         let dir = tempfile::tempdir().unwrap();
         let registry = fixed_model_registry();
-        let selected_model = "claude:claude-sonnet-4-5".to_string();
+        // 本番呼び出し元（controller / ws / bridge）は entry id を resolve 済みの
+        // bare model_id を渡す。usecase は受け取った値をそのまま bare で永続化する。
+        let selected_model = "claude-sonnet-4-5".to_string();
 
         let session = create_session_with_model_and_plan_mode(
             &store,
