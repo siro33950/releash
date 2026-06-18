@@ -736,9 +736,9 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
-    use crate::workflow::schema::{NodeDefinition, NodeType, Workflow};
-    use crate::workflow::state::{
-        StepHistoryEntry, TokenUsage, WorkflowExecutionState, WorkflowState,
+    use crate::domain::workflow::{
+        NodeDefinition, NodeType, StepHistoryEntry, TokenUsage, WorkflowDefinition,
+        WorkflowExecutionState, WorkflowStateSnapshot,
     };
 
     #[derive(Default)]
@@ -1613,8 +1613,8 @@ mod tests {
         }
     }
 
-    fn make_test_workflow_for_session() -> Workflow {
-        Workflow {
+    fn make_test_workflow_for_session() -> WorkflowDefinition {
+        WorkflowDefinition {
             variables: Default::default(),
             name: "review-cycle".to_string(),
             description: "Test".to_string(),
@@ -1635,7 +1635,7 @@ mod tests {
 
     #[test]
     fn workflow_state_serde_roundtrip() {
-        let state = WorkflowState {
+        let state = WorkflowStateSnapshot {
             execution_id: "exec-1".to_string(),
             workflow_name: "review-cycle".to_string(),
             state: WorkflowExecutionState::Running,
@@ -1654,7 +1654,7 @@ mod tests {
 
                     run_index: 0,
                     child_outputs: None,
-                    state: crate::workflow::state::default_step_entry_state(),
+                    state: crate::domain::workflow::value_objects::default_step_entry_state(),
                 },
                 StepHistoryEntry {
                     step_name: "implement".to_string(),
@@ -1669,7 +1669,7 @@ mod tests {
 
                     run_index: 0,
                     child_outputs: None,
-                    state: crate::workflow::state::default_step_entry_state(),
+                    state: crate::domain::workflow::value_objects::default_step_entry_state(),
                 },
             ],
             step_execution_counts: std::collections::HashMap::new(),
@@ -1687,7 +1687,7 @@ mod tests {
             updated_at: 1001.0,
         };
         let json = serde_json::to_string(&state).unwrap();
-        let back: WorkflowState = serde_json::from_str(&json).unwrap();
+        let back: WorkflowStateSnapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(back.execution_id, "exec-1");
         assert_eq!(back.workflow_name, "review-cycle");
         assert_eq!(back.state, WorkflowExecutionState::Running);
@@ -1760,7 +1760,7 @@ mod tests {
             "startedAt": 1.0,
             "updatedAt": 1.0
         }"#;
-        let result: Result<WorkflowState, _> = serde_json::from_str(json);
+        let result: Result<WorkflowStateSnapshot, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),
             "旧 workflowDefinition.steps を含む WorkflowState は新 schema で deserialize 失敗する"

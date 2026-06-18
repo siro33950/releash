@@ -14,7 +14,6 @@ use crate::usecase::agent_session::session::errors::session_target_rejected;
 use crate::usecase::agent_session::session::{
     ChatMessage, ChatSession, MessagePart, SessionState, SessionStore,
 };
-use crate::workflow::engine::WorkflowEngine;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1094,7 +1093,6 @@ pub async fn send_agent_message(
     >,
     session_store: tauri::State<'_, Arc<SessionStore>>,
     registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
-    engine: tauri::State<'_, Arc<WorkflowEngine>>,
     open_tabs: tauri::State<'_, Arc<crate::usecase::agent_session::session::OpenTabRegistry>>,
     chat_session_id: Option<String>,
     worktree_path: String,
@@ -1132,9 +1130,8 @@ pub async fn send_agent_message(
         },
     )
     .await?;
-    crate::workflow_state_events::emit_after_workflow_step_message(
+    crate::adaptor::controller::handler::workflow::emit_after_workflow_step_message(
         &app,
-        engine.inner(),
         &response.session,
         handles.inner(),
         open_tabs.inner(),

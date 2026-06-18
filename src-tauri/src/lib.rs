@@ -23,7 +23,6 @@ mod pty;
 mod qr_code;
 mod review_comments;
 mod sentry_integration;
-mod session_commands;
 mod shell_integration;
 mod tls;
 mod tray;
@@ -31,11 +30,6 @@ mod usecase;
 mod vpn_detect;
 mod watcher;
 mod webhook;
-mod workflow;
-mod workflow_state_events;
-mod workflow_state_presenter;
-mod workflow_step_lifecycle;
-mod workflow_step_lifecycle_adapters;
 mod workspace_state_store;
 mod ws_bridge;
 mod ws_server;
@@ -64,7 +58,7 @@ pub fn run() {
 
     let ws_broadcaster = Arc::new(ws_bridge::WsBroadcaster::default());
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -162,11 +156,20 @@ pub fn run() {
 
                 // code ドメインの DI 配線（gateway 実装はステートレス）。
                 let code_usecase = Arc::new(adaptor::controller::wiring::build_code_usecase());
+                let workflow_usecase = Arc::new(
+                    adaptor::controller::wiring::build_workflow_usecase_with_repository_worktrees(
+                        data_dir.clone(),
+                        repository_usecase.clone(),
+                        app_config.clone(),
+                        app.handle().clone(),
+                    ),
+                );
 
                 app.manage(AppState {
                     repository_usecase: repository_usecase.clone(),
                     repo_paths_usecase,
                     code_usecase,
+                    workflow_usecase,
                 });
             }
 
@@ -220,32 +223,7 @@ pub fn run() {
                 ));
             }
             app.manage(agent_status_center);
-            let workflow_engine = Arc::new(workflow::engine::WorkflowEngine::new(
-                Arc::new(workflow::resolver_adapters::DefaultWorkflowDefinitionResolver),
-                Arc::new(
-                    workflow::resolver_adapters::AppConfigManagedWorktreeResolver::new(
-                        repository_usecase.clone(),
-                        app_config.clone(),
-                    ),
-                ),
-            ));
-            // Run Store の永続化先（data_dir）を設定する。失敗しても起動は止めない。
             let pending_data_dir = app.path().app_data_dir().ok();
-            if let Some(data_dir) = pending_data_dir.clone() {
-                let engine_for_init = workflow_engine.clone();
-                let app_handle_for_init = app.handle().clone();
-                tauri::async_runtime::block_on(async move {
-                    engine_for_init.set_run_store_data_dir(data_dir).await;
-                    // 前回起動中に terminal event が書かれないまま終了した run を Aborted に
-                    // 強制遷移させる。in-memory `executions` map が空のこのタイミングで 1 度だけ
-                    // 走らせる（NDJSON 末尾の RunAborted append + metadata 更新）。
-                    engine_for_init
-                        .recover_orphan_runs(&app_handle_for_init)
-                        .await;
-                });
-            }
-            app.manage(workflow_engine);
-
             // AgentBackendRegistry を構築・登録
             let agent_handles = app
                 .state::<Arc<Mutex<infrastructure::agent_session::runtime::AgentProcessMap>>>()
@@ -255,6 +233,29 @@ pub fn run() {
                 .state::<Arc<usecase::agent_session::session::SessionStore>>()
                 .inner()
                 .clone();
+            let open_tabs = app
+                .state::<Arc<usecase::agent_session::session::OpenTabRegistry>>()
+                .inner()
+                .clone();
+            let workflow_step_lifecycle_usecase = Arc::new(
+                adaptor::controller::wiring::build_workflow_step_lifecycle_usecase(
+                    app.handle().clone(),
+                    session_store.clone(),
+                    agent_handles.clone(),
+                    open_tabs,
+                ),
+            );
+            app.manage(workflow_step_lifecycle_usecase);
+            let workflow_runtime_usecase =
+                Arc::new(adaptor::controller::wiring::build_workflow_runtime_usecase(
+                    app.handle().clone(),
+                    repository_usecase.clone(),
+                    app_config.clone(),
+                    session_store.clone(),
+                    agent_handles.clone(),
+                    pending_data_dir.clone(),
+                ));
+            app.manage(workflow_runtime_usecase);
             let registry = Arc::new(
                 infrastructure::agent_session::runtime::build_registry_with_runtime(
                     app_config.clone(),
@@ -266,14 +267,14 @@ pub fn run() {
             app.manage(registry.clone());
 
             // [06] CLI mutating CLI 経路の file watcher を起動する。初回 pickup は
-            // setup 済みの engine / AgentBackendRegistry を前提に dispatch するため、
-            // workflow 依存 state の登録完了後にだけ spawn する。
+            // setup 済みの WorkflowRuntimeUsecase / AgentBackendRegistry を前提に dispatch
+            // するため、workflow 依存 state の登録完了後にだけ spawn する。
             //
             // data_dir が解決できなければ watcher は spawn せず、稼働中アプリでも CLI
             // pending command は pickup されない（spec [06] CLI 起動独立性境界:
             // それでも CLI 側の書き込み完了境界は保たれる）。
             if let Some(data_dir) = pending_data_dir {
-                workflow::pending_command_watcher::spawn_pending_command_watcher(
+                adaptor::controller::wiring::spawn_workflow_pending_command_watcher(
                     app.handle().clone(),
                     data_dir.clone(),
                 );
@@ -355,241 +356,10 @@ pub fn run() {
             }
 
             Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            // PTY
-            pty::spawn_pty,
-            pty::write_pty,
-            pty::resize_pty,
-            pty::kill_pty,
-            pty::list_pty_sessions,
-            pty::get_or_spawn_pty,
-            pty::kill_ptys_by_worktree,
-            pty::gc_ptys_for_worktree,
-            // ファイル監視
-            watcher::start_watching,
-            watcher::start_git_dir_watching,
-            watcher::stop_watching,
-            // Git: diff/content（code ドメイン）
-            adaptor::controller::command::code::file_content::get_file_at_ref,
-            adaptor::controller::command::code::file_content::get_staged_content,
-            adaptor::controller::command::code::file_content::get_binary_staged_content,
-            adaptor::controller::command::code::file_content::get_file_at_branch_base,
-            adaptor::controller::command::code::file_content::get_binary_file_at_branch_base,
-            adaptor::controller::command::code::file_content::get_binary_file_at_ref,
-            adaptor::controller::command::code::diff::get_branch_diff_summary,
-            adaptor::controller::command::code::diff::build_diff_file_tree,
-            adaptor::controller::command::code::diff::get_file_navigation,
-            // Git: hunk/patch（code ドメイン）
-            adaptor::controller::command::code::hunk::compute_diff_hunks,
-            adaptor::controller::command::code::hunk::compute_hidden_ranges,
-            adaptor::controller::command::code::hunk::compute_hidden_ranges_from_content,
-            adaptor::controller::command::code::hunk::compute_visible_markdown_blocks,
-            adaptor::controller::command::code::hunk::generate_group_patch,
-            adaptor::controller::command::code::language::get_language_from_path,
-            adaptor::controller::command::code::diff::get_relative_path,
-            // Git: ブランチ（repository ドメイン）
-            adaptor::controller::command::repository::branch::list_branches,
-            adaptor::controller::command::repository::branch::get_current_branch,
-            adaptor::controller::command::repository::branch::get_default_branch,
-            adaptor::controller::command::repository::branch::git_create_branch,
-            adaptor::controller::command::repository::branch::delete_branch,
-            // Git: ステータス（repository ドメイン）
-            adaptor::controller::command::repository::status::get_git_status,
-            adaptor::controller::command::repository::status::get_status_diff_stats,
-            adaptor::controller::command::repository::log::get_git_log,
-            // Git: ステージング（code ドメイン）
-            adaptor::controller::command::code::staging::git_stage,
-            adaptor::controller::command::code::staging::git_unstage,
-            adaptor::controller::command::code::staging::git_stage_hunk,
-            adaptor::controller::command::code::staging::git_unstage_hunk,
-            // Git: ワークツリー（repository ドメイン）
-            adaptor::controller::command::repository::worktree::get_main_repo_path,
-            adaptor::controller::command::repository::worktree::get_worktree_dirty_count,
-            adaptor::controller::command::repository::worktree::list_worktrees,
-            adaptor::controller::command::repository::worktree::list_branches_with_status,
-            adaptor::controller::command::repository::worktree::create_worktree,
-            adaptor::controller::command::repository::worktree::remove_worktree,
-            // Git: 設定・ユーティリティ（repository ドメイン）
-            adaptor::controller::command::repository::util::get_cwd,
-            adaptor::controller::command::repository::util::get_repo_git_dir,
-            adaptor::controller::command::repository::git_config::get_releash_base,
-            adaptor::controller::command::repository::git_config::set_releash_base,
-            adaptor::controller::command::repository::git_config::get_branch_base,
-            adaptor::controller::command::repository::git_config::set_branch_base,
-            // Git Host
-            git_host::check_pr_provider_status,
-            git_host::fetch_pr_status,
-            git_host::get_cached_pr_status,
-            git_host::fetch_issues,
-            git_host::get_cached_issues,
-            // Notion
-            notion::query_notion_tasks,
-            notion::fetch_notion_label_options,
-            notion::save_notion_config,
-            notion::get_notion_config,
-            notion::delete_notion_config,
-            notion::validate_notion_config,
-            // アプリ設定
-            config::get_server_config,
-            config::update_server_port,
-            config::regenerate_token,
-            config::generate_hooks_config,
-            config::apply_hooks_config,
-            config::get_hooks_status,
-            config::update_telemetry_enabled,
-            config::get_notify_config,
-            config::update_notify_config,
-            config::get_remote_config,
-            config::update_remote_config,
-            config::get_workflow_config,
-            config::update_workflow_config,
-            config::get_app_settings,
-            config::update_app_settings,
-            config::update_last_server_context,
-            config::get_crash_reporting_enabled,
-            config::update_crash_reporting,
-            config::update_webhook_url,
-            config::get_external_editor,
-            config::update_external_editor,
-            config::get_mcp_config,
-            config::update_mcp_config,
-            config::regenerate_mcp_token,
-            // External Editor
-            external_editor::detect_editors,
-            external_editor::open_in_editor,
-            external_editor::open_folder_in_editor,
-            // Agent Status (Rust 中央管理)
-            adaptor::controller::command::agent_session::status::get_session_status,
-            adaptor::controller::command::agent_session::status::get_workspace_status,
-            adaptor::controller::command::agent_session::status::list_workspace_statuses,
-            adaptor::controller::command::agent_session::status::list_session_statuses,
-            // ネットワーク
-            vpn_detect::detect_vpn_tunnel,
-            vpn_detect::get_network_info,
-            qr_code::get_connection_qr,
-            // WebSocket サーバー
-            ws_server::commands::start_server,
-            ws_server::commands::stop_server,
-            ws_server::commands::get_server_status,
-            ws_server::commands::get_server_info,
-            ws_server::commands::update_terminal_startup_command,
-            // Repo paths（repository ドメイン）
-            adaptor::controller::command::repository::repo_paths::get_repo_paths,
-            adaptor::controller::command::repository::repo_paths::add_repo_path,
-            adaptor::controller::command::repository::repo_paths::remove_repo_path,
-            // MCP Server
-            mcp::start_mcp_server,
-            mcp::stop_mcp_server,
-            mcp::get_mcp_server_status,
-            mcp::get_mcp_connection_info,
-            mcp::mcp_json::get_configured_agents,
-            mcp::mcp_json::remove_agent_mcp_config,
-            mcp::mcp_json::save_and_generate_mcp_configs,
-            mcp::mcp_json::save_mcp_agent_selection,
-            mcp::mcp_json::generate_agent_mcp_config,
-            mcp::mcp_json::preview_agent_mcp_config,
-            // Workspace state
-            workspace_state_store::load_workspace_state,
-            workspace_state_store::save_workspace_state,
-            // Review comments
-            review_comments::list_review_threads,
-            review_comments::get_review_thread,
-            review_comments::create_review_thread,
-            review_comments::append_review_comment,
-            review_comments::resolve_review_thread,
-            review_comments::delete_review_thread,
-            review_comments::get_review_thread_history,
-            review_comments::build_review_thread_handoff,
-            // File Mention（code ドメイン）
-            adaptor::controller::command::code::mention::list_mentionable_files,
-            adaptor::controller::command::code::mention::read_codex_mentionable_files,
-            adaptor::controller::command::code::mention::sync_mentions_with_text,
-            // Agent Backend Registry
-            adaptor::controller::command::agent_session::backend::list_agent_backends,
-            // Agent SDK
-            adaptor::controller::command::agent_session::session::start_agent_session,
-            adaptor::controller::command::agent_session::session::interrupt_agent_query,
-            adaptor::controller::command::agent_session::session::cancel_agent_queued_turn,
-            adaptor::controller::command::agent_session::session::build_agent_task_list_report,
-            adaptor::controller::command::agent_session::session::close_agent_session,
-            adaptor::controller::command::agent_session::model::set_agent_permission_mode,
-            adaptor::controller::command::agent_session::model::set_agent_plan_mode,
-            adaptor::controller::command::agent_session::model::set_agent_model,
-            adaptor::controller::command::agent_session::session::set_session_backend,
-            adaptor::controller::command::agent_session::command_palette::present_agent_command_palette,
-            adaptor::controller::command::agent_session::command_palette::is_agent_command_enabled,
-            adaptor::controller::command::agent_session::command_palette::get_agent_shortcut_settings,
-            adaptor::controller::command::agent_session::command_palette::update_agent_shortcut_settings,
-            adaptor::controller::command::agent_session::command_palette::reset_agent_shortcut_settings,
-            adaptor::controller::command::agent_session::permission::present_agent_permission_request,
-            adaptor::controller::command::agent_session::permission::respond_agent_permission,
-            adaptor::controller::command::agent_session::session::send_agent_message,
-            adaptor::controller::command::agent_session::session::search_agent_sessions,
-            adaptor::controller::command::agent_session::session::search_agent_thread_messages,
-            adaptor::controller::command::agent_session::session::init_agent_sessions,
-            adaptor::controller::command::agent_session::action::scan_agent_skills,
-            adaptor::controller::command::agent_session::action::read_codex_skill_catalog,
-            adaptor::controller::command::agent_session::edit_preview::build_agent_edited_multi_edit_tool_input,
-            adaptor::controller::command::agent_session::edit_preview::build_agent_edited_multi_edit_tool_input_all,
-            adaptor::controller::command::agent_session::edit_preview::build_agent_edited_tool_input,
-            adaptor::controller::command::agent_session::edit_preview::build_agent_edit_preview,
-            adaptor::controller::command::agent_session::suggestion::build_agent_prompt_suggestion,
-            adaptor::controller::command::agent_session::tool_activity::present_agent_tool_activity,
-            adaptor::controller::command::agent_session::image::prepare_image_attachment,
-            adaptor::controller::command::agent_session::image::prepare_image_attachments_from_paths,
-            adaptor::controller::command::agent_session::paste::prepare_pasted_text_block,
-            adaptor::controller::command::agent_session::paste::expand_pasted_text_blocks,
-            // Session
-            session_commands::list_sessions,
-            adaptor::controller::command::agent_session::session::get_session,
-            session_commands::create_session,
-            session_commands::close_session,
-            session_commands::restore_session,
-            session_commands::list_closed_sessions,
-            session_commands::archive_session,
-            session_commands::archive_open_session,
-            session_commands::fork_session,
-            session_commands::set_session_title,
-            session_commands::add_message,
-            session_commands::update_session_state,
-            session_commands::update_session_agent_info,
-            // Workflow
-            workflow::commands::list_workflows,
-            workflow::commands::get_workflow,
-            workflow::commands::save_workflow,
-            workflow::commands::delete_workflow,
-            workflow::commands::open_workflow_in_editor,
-            workflow::commands::start_workflow,
-            workflow::commands::abort_workflow,
-            workflow::commands::get_workflow_state,
-            workflow::commands::approve_workflow_step,
-            workflow::commands::send_workflow_approval_chat_message,
-            workflow::commands::open_workflow_step_tab,
-            workflow::commands::list_workflow_runs,
-            workflow::commands::get_workflow_run,
-            workflow::commands::get_workflow_run_log,
-            workflow::commands::get_workflow_run_state,
-            workflow::commands::get_workflow_step_detail,
-            workflow::commands::resolve_active_run_by_worktree,
-            workflow::commands::resolve_worktree_by_run,
-            workflow::commands::list_facets,
-            workflow::commands::get_facet,
-            workflow::commands::save_facet,
-            workflow::commands::delete_facet,
-            workflow::commands::diagnose_all_cmd,
-            workflow::commands::list_facet_summaries,
-            workflow::commands::duplicate_workflow,
-            workflow::commands::duplicate_facet,
-            workflow::commands::open_facet_in_editor,
-            workflow::commands::render_facet_preview,
-            workflow::commands::get_automation_config_dir,
-            workflow::commands::workflow_submit_output,
-            workflow::commands::workflow_validate_output,
-            workflow::commands::workflow_get_output,
-            // Menu
-            menu::set_menu_items_enabled,
-        ])
+        });
+
+    let builder = adaptor::controller::command::register_all(builder);
+    builder
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {

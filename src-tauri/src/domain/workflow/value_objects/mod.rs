@@ -1,0 +1,30 @@
+mod approval_decision;
+mod contract;
+mod definition;
+mod facet;
+mod ids;
+mod outcome_commit_mode;
+mod run;
+mod state;
+mod step_output;
+
+pub use approval_decision::ApprovalDecision;
+pub use contract::{ContractType, ContractValidationResult, ContractViolation};
+pub use definition::{
+    ChildNodeDefinition, CollectConfig, CycleGuard, NodeDefinition, NodeType, ParallelAggregate,
+    ReduceStrategy, ResolvedFacets, TransitionRule, WorkflowDefinition, WorkflowSummary,
+    MAX_NODES_PER_WORKFLOW, MAX_PARALLEL_CHILDREN,
+};
+pub use facet::{FacetKey, FacetKind, FacetSummary};
+pub use ids::{NodeName, RunId, WorkflowName, WorktreePath};
+pub use outcome_commit_mode::OutcomeCommitMode;
+pub use run::{
+    RunListFilter, RunStatus, RunStatusFilter, TerminalRunStatus, TriggerSource, WorkflowRunRecord,
+    WorkflowRunSummary,
+};
+pub use state::{ApprovalOperations, WorkflowExecutionState, WorkflowStateSnapshot};
+pub use step_output::{
+    default_step_entry_state, ChildOutputSnapshot, ParallelStepState, StepHistoryEntry, StepOutput,
+    TokenUsage, STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED,
+    STEP_STATE_INTERRUPTED, STEP_STATE_PENDING, STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
+};

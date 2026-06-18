@@ -8,6 +8,7 @@
 //! 読み取りも含めた唯一の入口は `RepositoryUsecase`。read model（DTO）生成の協力者である
 //! `RepositoryQueryService` は Usecase 内部に閉じ込め、外部へ直接配らない。
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::code::branch_base::BranchBaseResolverGateway;
@@ -23,10 +24,32 @@ use crate::adaptor::gateway::repository::log::LogGateway;
 use crate::adaptor::gateway::repository::status::StatusGateway;
 use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::{
+    EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
+};
+use crate::adaptor::gateway::workflow::{
+    RepositoryManagedWorktreeGateway, TauriWorkflowExternalEditorGateway,
+    TauriWorkflowRuntimeCommandGateway, TauriWorkflowStepLifecycleGateway,
+    WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
+    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository, WorkflowFacetFileRepository,
+    WorkflowRunFileRepository, WorkflowSecretSourceConfigGateway,
+    WorkflowStateProjectionLogRepository, WorkflowStepDetailProjectionLogRepository,
+};
+use crate::config::AppConfig;
+use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
+use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::usecase::agent_session::session::{OpenTabRegistry, SessionStore};
 use crate::usecase::code_query_service::CodeQueryService;
 use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::repository_query_service::RepositoryQueryService;
 use crate::usecase::repository_usecase::RepositoryUsecase;
+use crate::usecase::workflow::ports::ExternalEditorGateway;
+use crate::usecase::workflow::query_service::WorkflowQueryService;
+use crate::usecase::workflow::{
+    WorkflowRuntimeUsecase, WorkflowStepLifecycleUsecase, WorkflowUsecase,
+};
+use tokio::sync::Mutex;
 
 /// git ベースの repository usecase を既定の gateway 実装で構築する。
 /// Entity の読み書きは Repository gateway へ、read model 生成は `WorktreeGateway` が実装する
@@ -57,4 +80,119 @@ pub(crate) fn build_code_usecase() -> CodeUsecase {
         Arc::new(BranchBaseResolverGateway::new(Arc::new(GitConfigGateway))),
     );
     CodeUsecase::new(Arc::new(StagingGateway), query)
+}
+
+/// workflow usecase を既定の file gateway 実装で構築する。
+/// 既存の workflow YAML / facet markdown / run metadata / event log 形式を保持しつつ、
+/// controller の read-only 経路を `WorkflowUsecase` に寄せる。
+#[cfg(test)]
+pub(crate) fn build_workflow_usecase(data_dir: impl Into<std::path::PathBuf>) -> WorkflowUsecase {
+    build_workflow_usecase_with_gateways(
+        data_dir,
+        Arc::new(PassthroughManagedWorktreeGateway),
+        Arc::new(NoopWorkflowExternalEditorGateway),
+        Arc::new(EmptySecretSourceGateway),
+    )
+}
+
+pub(crate) fn build_workflow_usecase_with_repository_worktrees<R: tauri::Runtime + 'static>(
+    data_dir: impl Into<std::path::PathBuf>,
+    repository_usecase: Arc<RepositoryUsecase>,
+    app_config: Arc<AppConfig>,
+    app: tauri::AppHandle<R>,
+) -> WorkflowUsecase {
+    build_workflow_usecase_with_gateways(
+        data_dir,
+        Arc::new(RepositoryManagedWorktreeGateway::new(
+            repository_usecase,
+            app_config.clone(),
+        )),
+        Arc::new(TauriWorkflowExternalEditorGateway::new(
+            app,
+            app_config.clone(),
+        )),
+        Arc::new(WorkflowSecretSourceConfigGateway::new(app_config)),
+    )
+}
+
+fn build_workflow_usecase_with_gateways(
+    data_dir: impl Into<std::path::PathBuf>,
+    worktrees: Arc<dyn ManagedWorktreeGateway>,
+    editors: Arc<dyn ExternalEditorGateway>,
+    secrets: Arc<dyn SecretSourceGateway>,
+) -> WorkflowUsecase {
+    let data_dir = data_dir.into();
+    let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
+    let facets_base_dir = workflows_dir.clone();
+    let runs = Arc::new(WorkflowRunFileRepository::new(data_dir.clone()));
+    let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
+        workflows_dir.clone(),
+        facets_base_dir.clone(),
+    ));
+    let facets = Arc::new(WorkflowFacetFileRepository::new(facets_base_dir.clone()));
+    let events = Arc::new(WorkflowEventLogRepository::new(data_dir.clone()));
+    let state_projection = Arc::new(WorkflowStateProjectionLogRepository::new(data_dir.clone()));
+    let step_details = Arc::new(WorkflowStepDetailProjectionLogRepository::new(data_dir));
+    let diagnostics = Arc::new(WorkflowDiagnosticsFileGateway::new(
+        workflows_dir.clone(),
+        facets_base_dir,
+    ));
+    let config_paths = Arc::new(WorkflowConfigPathFileGateway::new(workflows_dir));
+    let query = WorkflowQueryService::new(
+        runs,
+        definitions.clone(),
+        facets.clone(),
+        events,
+        state_projection,
+        step_details,
+    );
+    WorkflowUsecase::new(
+        query,
+        definitions,
+        facets,
+        worktrees,
+        editors,
+        diagnostics,
+        config_paths,
+        secrets,
+    )
+}
+
+pub(crate) fn build_workflow_runtime_usecase(
+    app: tauri::AppHandle,
+    repository_usecase: Arc<RepositoryUsecase>,
+    app_config: Arc<AppConfig>,
+    session_store: Arc<SessionStore>,
+    handles: Arc<Mutex<AgentProcessMap>>,
+    data_dir: Option<PathBuf>,
+) -> WorkflowRuntimeUsecase {
+    WorkflowRuntimeUsecase::new(Arc::new(
+        TauriWorkflowRuntimeCommandGateway::new_with_default_engine(
+            app,
+            repository_usecase,
+            app_config,
+            session_store,
+            handles,
+            data_dir,
+        ),
+    ))
+}
+
+pub(crate) fn build_workflow_step_lifecycle_usecase(
+    app: tauri::AppHandle,
+    session_store: Arc<SessionStore>,
+    handles: Arc<Mutex<AgentProcessMap>>,
+    open_tabs: Arc<OpenTabRegistry>,
+) -> WorkflowStepLifecycleUsecase {
+    let gateway = Arc::new(TauriWorkflowStepLifecycleGateway::new(
+        app,
+        session_store,
+        handles,
+        open_tabs,
+    ));
+    WorkflowStepLifecycleUsecase::new(gateway.clone(), gateway)
+}
+
+pub(crate) fn spawn_workflow_pending_command_watcher(app: tauri::AppHandle, data_dir: PathBuf) {
+    crate::adaptor::gateway::workflow::spawn_pending_command_watcher(app, data_dir);
 }

@@ -108,6 +108,7 @@ impl PathAliases {
     /// 公開対象の alias key 一覧（namespace `path_alias.<key>` の `<key>` 部分）。
     ///
     /// facet 展開エンジン側で「既知 alias key」を判定する際に使う。
+    #[cfg(test)]
     pub fn known_keys() -> &'static [&'static str] {
         &["releash"]
     }

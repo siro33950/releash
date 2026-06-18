@@ -64,8 +64,8 @@ fn validate_path(path: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn open_path_with_opener(
-    app: &tauri::AppHandle,
+pub(crate) fn open_path_with_opener<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     path: &str,
     editor: &str,
     label: &str,

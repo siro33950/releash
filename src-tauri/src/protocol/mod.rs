@@ -4,7 +4,6 @@ mod branch;
 mod error;
 mod pty;
 mod review;
-mod workflow;
 mod worktree;
 
 pub use agent::*;
@@ -13,9 +12,9 @@ pub use branch::*;
 pub use error::*;
 pub use pty::*;
 pub use review::*;
-pub use workflow::*;
 pub use worktree::*;
 
+use crate::adaptor::protocol::workflow::WorkflowStateSync;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -385,12 +384,12 @@ mod tests {
             }),
             WsMessage::WorkflowStateSync(Box::new(WorkflowStateSync {
                 worktree_path: "/repo".to_string(),
-                workflow_state: crate::protocol::WorkflowStateView::from_parts(
-                    crate::workflow_state_presenter::workflow_state_to_view(
-                        crate::workflow::state::WorkflowState {
+                workflow_state: crate::adaptor::protocol::workflow::WorkflowStateView::from_parts(
+                    crate::adaptor::presenter::workflow::workflow_state_to_view(
+                        crate::domain::workflow::WorkflowStateSnapshot {
                             execution_id: "exec-1".to_string(),
                             workflow_name: "test".to_string(),
-                            state: crate::workflow::state::WorkflowExecutionState::Running,
+                            state: crate::domain::workflow::WorkflowExecutionState::Running,
                             current_step_index: 0,
                             current_step_name: "step1".to_string(),
                             current_session_id: Some("step-session-1".to_string()),
@@ -398,14 +397,14 @@ mod tests {
                             step_history: vec![],
                             step_execution_counts: std::collections::HashMap::new(),
                             step_outputs: std::collections::HashMap::new(),
-                            workflow_definition: crate::workflow::schema::Workflow {
+                            workflow_definition: crate::domain::workflow::WorkflowDefinition {
                                 variables: Default::default(),
                                 name: "test".to_string(),
                                 description: "test".to_string(),
                                 builtin: false,
                                 nodes: vec![],
                             },
-                            total_token_usage: crate::workflow::state::TokenUsage::default(),
+                            total_token_usage: crate::domain::workflow::TokenUsage::default(),
                             workflow_variables: std::collections::HashMap::new(),
                             step_states: std::collections::HashMap::new(),
                             active_parallel_steps: vec![],
