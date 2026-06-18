@@ -103,7 +103,7 @@ pub struct AgentProcess {
     /// Currently selected model for this session (None = SDK default).
     pub selected_model: Option<String>,
     /// Token usage from the latest `result` message (extracted from modelUsage).
-    /// Consumed by turn_complete handler and passed to WorkflowEngine.
+    /// Consumed by turn_complete handler and passed to the workflow runtime usecase.
     pub last_result_token_usage: Option<(u64, u64)>,
     /// Token usage from the latest SDK result, retained for desktop status display.
     pub latest_token_usage: Option<TokenUsage>,
@@ -2690,8 +2690,8 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                     "turn_complete" => {
                         let exit_code = msg.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
                         // session_runtime_lock の保持はローカル proc 状態遷移の
-                        // 区間に限定する。engine.on_turn_complete や pending message
-                        // 消費は lock を保持しない経路で行い、それらが必要に応じ
+                        // 区間に限定する。workflow turn-complete usecase や pending
+                        // message 消費は lock を保持しない経路で行い、それらが必要に応じ
                         // 自前で lock を取得する設計とする（再入デッドロックを防ぐ）。
                         let was_streaming;
                         let raw_parts;
@@ -4997,47 +4997,34 @@ fn spawn_workflow_turn_complete_notification<R: tauri::Runtime>(
     token_usage: Option<(u64, u64)>,
     pending: Option<PendingMessage>,
 ) {
-    let wf_engine: Option<Arc<crate::workflow::engine::WorkflowEngine>> = app
-        .try_state::<Arc<crate::workflow::engine::WorkflowEngine>>()
+    let workflow_runtime: Option<Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>> = app
+        .try_state::<Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>()
         .map(|s| Arc::clone(&s));
     let handle = tokio::runtime::Handle::current();
     std::thread::spawn(move || {
         handle.block_on(async move {
-            if let Some(engine) = wf_engine {
-                if engine.is_running(&chat_session_id).await {
-                    match resolve_data_dir(&app) {
-                        Ok(data_dir) => {
-                            let store =
-                                crate::workflow::pending_command::PendingCommandStore::new(
-                                    &data_dir,
-                                );
-                            crate::workflow::pending_command_watcher::process_pending_submit_output_pickup(
-                                &app, &store,
-                            )
-                            .await;
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "pending SubmitOutput pickup skipped for {chat_session_id}: resolve_data_dir failed: {e}"
-                            );
-                        }
+            if let Some(runtime) = workflow_runtime {
+                let final_text_parts = final_parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        MessagePart::Text { content, .. } => Some(content.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                let token_usage = token_usage.map(|(input_tokens, output_tokens)| {
+                    crate::usecase::workflow::ports::WorkflowTurnTokenUsage {
+                        input_tokens,
+                        output_tokens,
                     }
-                    if let Err(e) = engine
-                        .on_turn_complete(
-                            &app,
-                            &session_store,
-                            &handles,
-                            &chat_session_id,
-                            exit_code,
-                            &final_parts,
-                            token_usage,
-                        )
-                        .await
-                    {
-                        log::error!(
-                            "Workflow on_turn_complete error for {chat_session_id}: {e}"
-                        );
-                    }
+                });
+                let command = crate::usecase::workflow::ports::WorkflowTurnCompleteCommand {
+                    chat_session_id: chat_session_id.clone(),
+                    exit_code,
+                    final_text_parts,
+                    token_usage,
+                };
+                if let Err(e) = runtime.complete_turn(command).await {
+                    log::error!("Workflow turn completion error for {chat_session_id}: {e}");
                 }
             }
             if let Some(pending) = pending {
@@ -5807,7 +5794,7 @@ pub(crate) async fn init_agent_sessions_internal(
 ) -> Result<InitSessionsResponse, String> {
     let data_dir = resolve_data_dir(app)?;
 
-    crate::workflow_step_lifecycle_adapters::hydrate_open_workflow_step_tabs(
+    crate::adaptor::gateway::workflow::hydrate_open_workflow_step_tabs(
         session_store,
         &data_dir,
         &worktree_path,
@@ -6284,12 +6271,12 @@ pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
+    use crate::adaptor::gateway::workflow::test_support::TestRuntimeKernel;
     use crate::infrastructure::agent_session::runtime::{
         AgentBackend, AgentBackendRegistry, AgentMessage, PermissionResponse, SessionConfig,
         SessionHandle,
     };
-    use crate::workflow::engine::WorkflowEngine;
-    use crate::workflow::state::WorkflowExecutionState;
     use async_trait::async_trait;
 
     fn approved_fix_policy_output(policy: &str, review_step: &str) -> String {
@@ -8090,25 +8077,27 @@ mod tests {
         );
     }
 
-    fn workflow_state_for_runtime_test(session_id: &str) -> crate::workflow::state::WorkflowState {
-        crate::workflow::state::WorkflowState {
+    fn workflow_state_for_runtime_test(
+        session_id: &str,
+    ) -> crate::domain::workflow::WorkflowStateSnapshot {
+        crate::domain::workflow::WorkflowStateSnapshot {
             execution_id: "exec-runtime".to_string(),
             workflow_name: "wf".to_string(),
-            state: WorkflowExecutionState::Running,
+            state: crate::domain::workflow::WorkflowExecutionState::Running,
             current_step_index: 0,
             current_step_name: "step".to_string(),
             current_session_id: Some(session_id.to_string()),
             total_steps: 1,
             step_history: Vec::new(),
             step_execution_counts: HashMap::new(),
-            workflow_definition: crate::workflow::schema::Workflow {
+            workflow_definition: crate::domain::workflow::WorkflowDefinition {
                 variables: Default::default(),
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
                 nodes: vec![],
             },
-            total_token_usage: crate::workflow::state::TokenUsage::default(),
+            total_token_usage: crate::domain::workflow::TokenUsage::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
             active_parallel_steps: vec![],
@@ -8155,12 +8144,13 @@ mod tests {
             .await
             .insert(step_session.id.clone(), make_test_agent_process());
 
-        let before = crate::workflow_state_events::build_workflow_state_projection(
-            workflow_state_for_runtime_test(&step_session.id),
-            Some(&handles),
-            Some(&open_tabs),
-        )
-        .await;
+        let before =
+            crate::adaptor::gateway::workflow::build_workflow_state_projection_from_snapshot(
+                workflow_state_for_runtime_test(&step_session.id),
+                Some(&handles),
+                Some(&open_tabs),
+            )
+            .await;
 
         let (_response, prepared_turn) = prepare_send_agent_message_internal(
             &crate::adaptor::controller::wiring::build_code_usecase(),
@@ -8184,12 +8174,13 @@ mod tests {
 
         assert!(prepared_turn.is_some());
         assert!(handles.lock().await.contains_key(&step_session.id));
-        let after = crate::workflow_state_events::build_workflow_state_projection(
-            workflow_state_for_runtime_test(&step_session.id),
-            Some(&handles),
-            Some(&open_tabs),
-        )
-        .await;
+        let after =
+            crate::adaptor::gateway::workflow::build_workflow_state_projection_from_snapshot(
+                workflow_state_for_runtime_test(&step_session.id),
+                Some(&handles),
+                Some(&open_tabs),
+            )
+            .await;
         assert_eq!(
             before.runtime_states[&step_session.id].runtime_active,
             after.runtime_states[&step_session.id].runtime_active
@@ -8815,7 +8806,7 @@ mod tests {
     async fn approval_chat_adjustment_send_path_keeps_session_state() {
         let worktree = tempfile::tempdir().unwrap();
         let worktree_path = worktree.path().to_string_lossy().to_string();
-        let engine = Arc::new(WorkflowEngine::new_for_test());
+        let engine = Arc::new(TestRuntimeKernel::new_for_test());
         let data_dir = tempfile::tempdir().unwrap();
         let session_store = Arc::new(SessionStore::default());
         let session = create_session_internal(

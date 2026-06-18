@@ -11,28 +11,38 @@ use std::sync::OnceLock;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::event::WorkflowEvent;
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::pending_command::PendingCommandStore;
+use crate::adaptor::gateway::workflow::{
+    PendingWorkflowCommandFileRepository, RepoPathsManagedWorktreeGateway,
+    WorkflowDefinitionFileRepository, WorkflowEventLogRepository, WorkflowFacetFileRepository,
+    WorkflowRunFileRepository, WorkflowStateProjectionLogRepository,
+};
+use crate::adaptor::presenter::workflow::workflow_state_to_view;
+use crate::adaptor::protocol::workflow::WorkflowStateView;
 use crate::config::read_config_if_exists;
-use crate::protocol::WorkflowStateView;
+use crate::domain::workflow::ApprovalInputError;
+use crate::domain::workflow::{
+    approval_rules, contract, secret_masker, ContractValidationResult, FacetKind, FacetRepository,
+    ManagedWorktreeGateway, RunId, RunListFilter, RunStatusFilter, WorkflowDefinitionRepository,
+    WorkflowRunRepository, WorkflowRunSummary, WorkflowSummary,
+};
 use crate::review_comments::{
     AuthorScope, ReviewActor, ReviewCommentStore, ReviewTarget, ReviewThreadFilter,
     ReviewThreadState,
 };
 use crate::usecase::agent_session::session::{SessionState, SessionStore};
 use crate::usecase::agent_session::status::current_timestamp;
-use crate::workflow::command_input::{
-    validate_optional_comment_text, validate_reject_reason_text, CommandInputError,
+use crate::usecase::workflow::command::WorkflowPendingCommandUsecase;
+use crate::usecase::workflow::event_draft;
+use crate::usecase::workflow::ports::{
+    PendingWorkflowCommand, WorkflowEventDraft, WorkflowEventRepository,
+    WorkflowStateProjectionRepository,
 };
-use crate::workflow::event::WorkflowEvent;
-use crate::workflow::event_projection::reconstruct_state_from_events;
-use crate::workflow::log::WorkflowEventLog;
-use crate::workflow::pending_command::{CliRequestPayload, PendingCommand, PendingCommandStore};
-use crate::workflow::run::{
-    iter_valid_run_metadata, project_runs_to_summaries, running_workflow_names_from_metadata,
-    RunListFilter, RunStatusFilter, WorkflowRunSummary,
-};
-use crate::workflow::storage;
-use crate::workflow::worktree::canonicalize_managed_worktree_path_inner;
-use crate::workflow_state_presenter::workflow_state_to_view;
 
 /// `releash` CLI のトップ args。
 ///
@@ -61,8 +71,8 @@ enum TopCommand {
 
 /// CLI の workflow サブコマンド集合。
 ///
-/// engine domain の `workflow::command::WorkflowCommand`（state mutating typed
-/// command）と語彙衝突しないよう CLI 側は `WorkflowSubcommand` として分離する
+/// workflow runtime の mutation usecase と語彙衝突しないよう CLI 側は
+/// `WorkflowSubcommand` として分離する
 /// （spec [05] read-only と mutating の分離 / observation source-of-truth の境界）。
 #[derive(Subcommand, Debug)]
 enum WorkflowSubcommand {
@@ -258,7 +268,7 @@ pub fn run() -> i32 {
             return e.exit_code();
         }
     };
-    let workflows_dir = storage::workflows_dir();
+    let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
     // data_dir は List / Runs / Status / Logs それぞれの branch 内で解決する。
     // List も workflow_runs/ 由来の `is_running` 反映のため data_dir を必要とするが、
     // 各 branch 内で解決することで未到達の branch では I/O を走らせない。
@@ -481,7 +491,7 @@ fn cmd_runs(
         }
     };
     // [05] API / CLI 等価性境界: Tauri API 経路と同じ
-    // `canonicalize_managed_worktree_path_inner` を経由する。
+    // ManagedWorktreeGateway を経由する。
     // 相対パス / symlink で同一 worktree を指定した場合に API / CLI の観測結果が
     // 分岐しないようにするだけでなく、managed worktree かどうかの検証も同じ
     // ルートで実施する（spec L92-96 API / CLI の意味的等価性境界）。
@@ -493,7 +503,7 @@ fn cmd_runs(
         status: status_filter,
         worktree_path,
     };
-    let summaries = list_runs_file_direct(data_dir, filter);
+    let summaries = list_runs_file_direct(data_dir, filter)?;
     if json {
         let text =
             serde_json::to_string_pretty(&summaries).map_err(|e| format!("serialize runs: {e}"))?;
@@ -563,6 +573,31 @@ fn cmd_enqueue_pending(
     Ok(())
 }
 
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+enum CliRequestPayload {
+    Approve {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        node_name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        comment: Option<String>,
+    },
+    Reject {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        node_name: Option<String>,
+        reason: String,
+    },
+    Abort {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        node_name: Option<String>,
+    },
+    SubmitOutput {
+        step_name: String,
+        contract: String,
+        structured_output: serde_json::Value,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingEnqueueOutput {
     run_id: String,
@@ -594,14 +629,27 @@ fn enqueue_pending_command(
             "Workflow run not found: {run_id}"
         )));
     }
-    let store = PendingCommandStore::new(data_dir);
-    let command = PendingCommand::new(run_id.to_string(), payload, current_timestamp());
-    let path = store
-        .write_pending(&command)
-        .map_err(|e| CliError::Other(format!("Failed to enqueue pending command: {e}")))?;
+    let command_id = uuid::Uuid::new_v4().to_string();
+    let requested_at = current_timestamp();
+    let payload = serde_json::to_value(payload)
+        .map_err(|e| CliError::Other(format!("Failed to serialize pending command: {e}")))?;
+    WorkflowPendingCommandUsecase::new(std::sync::Arc::new(
+        PendingWorkflowCommandFileRepository::new(data_dir.to_path_buf()),
+    ))
+    .enqueue_pending_command(PendingWorkflowCommand {
+        command_id: command_id.clone(),
+        run_id: run_id.to_string(),
+        requested_at,
+        payload,
+    })
+    .map_err(|e| CliError::Other(format!("Failed to enqueue pending command: {e}")))?;
+    let path = data_dir
+        .join("workflow_pending")
+        .join("pending")
+        .join(format!("{command_id}.json"));
     Ok(PendingEnqueueOutput {
-        run_id: command.run_id,
-        request_id: command.id,
+        run_id: run_id.to_string(),
+        request_id: command_id,
         path: path.display().to_string(),
     })
 }
@@ -609,10 +657,12 @@ fn enqueue_pending_command(
 /// `--reason` 必須化境界（spec [06] 振る舞い定義 Rule: 却下要求には却下理由が伴う）。
 /// `clap` で `--reason` を必須化済みだが、空白のみの入力は CLI 入口で拒否する。
 ///
-/// 文字数上限 / 空白判定はドメイン pure helper（`command_input::validate_reject_reason_text`）
+/// 文字数上限 / 空白判定はドメイン pure helper
+/// （`approval_rules::validate_reject_reason_text`）
 /// に集約し、CLI 層は `CliError::InvalidInput` への map に閉じる（review R2-01）。
 fn validate_reject_reason(reason: &str) -> Result<(), CliError> {
-    validate_reject_reason_text(reason, "--reason").map_err(command_input_error_to_cli_error)
+    approval_rules::validate_reject_reason_text(reason, "--reason")
+        .map_err(approval_input_error_to_cli_error)
 }
 
 /// 任意の自由記述テキスト（例: `--comment`）の長さを CLI 入口で検証する。
@@ -622,10 +672,11 @@ fn validate_optional_cli_text_len(
     value: Option<&str>,
     label: &'static str,
 ) -> Result<(), CliError> {
-    validate_optional_comment_text(value, label).map_err(command_input_error_to_cli_error)
+    approval_rules::validate_optional_comment_text(value, label)
+        .map_err(approval_input_error_to_cli_error)
 }
 
-fn command_input_error_to_cli_error(err: CommandInputError) -> CliError {
+fn approval_input_error_to_cli_error(err: ApprovalInputError) -> CliError {
     CliError::InvalidInput(err.to_string())
 }
 
@@ -944,17 +995,13 @@ fn cmd_output_submit(
         )));
     }
     // [08] preflight と本 submit (`handle_submit_output`) で同一の前処理 + validation を
-    // 共有するため、`preprocess_and_validate_output_with_secrets` 経由で呼ぶ。
+    // 共有するため、domain の secret masking + contract metadata validation 経由で呼ぶ。
     // CLI は別プロセスでアプリ状態 (`AppConfig` / `AppHandle`) を持たないため、ここでは
     // `secrets = &[]` で呼び、最終的な masking 込み判定は engine 側 watcher 経由で再評価される
     // （spec [08] CLI 完了基準: pending を書き出した時点で CLI は完了、最終判定は engine 側）。
-    match crate::workflow::engine::WorkflowEngine::preprocess_and_validate_output_with_secrets(
-        contract,
-        structured_output.clone(),
-        &[],
-    ) {
-        crate::workflow::contract::ContractValidationResult::Valid { .. } => {}
-        crate::workflow::contract::ContractValidationResult::Invalid(violation) => {
+    match validate_cli_contract_output(contract, structured_output.clone()) {
+        ContractValidationResult::Valid { .. } => {}
+        ContractValidationResult::Invalid(violation) => {
             return Err(CliError::InvalidInput(format!(
                 "contract violation ({}): {}",
                 violation.reason, violation.details
@@ -991,24 +1038,18 @@ fn cmd_output_validate(
     let value: serde_json::Value = serde_json::from_str(&raw_json)
         .map_err(|e| CliError::InvalidInput(format!("Failed to parse JSON: {e}")))?;
     // [08] preflight と本 submit (`handle_submit_output`) で同一の前処理 + validation を
-    // 共有するため、`preprocess_and_validate_output_with_secrets` 経由で呼ぶ。
+    // 共有するため、domain の secret masking + contract metadata validation 経由で呼ぶ。
     // CLI は別プロセスでアプリ状態を持たないため、ここでは `secrets = &[]` で呼ぶ
     // （最終 masking 込み judging は engine 側で再評価される）。
-    match crate::workflow::engine::WorkflowEngine::preprocess_and_validate_output_with_secrets(
-        &contract,
-        value,
-        &[],
-    ) {
-        crate::workflow::contract::ContractValidationResult::Valid { .. } => {
+    match validate_cli_contract_output(&contract, value) {
+        ContractValidationResult::Valid { .. } => {
             println!("ok: contract '{contract}' is satisfied");
             Ok(())
         }
-        crate::workflow::contract::ContractValidationResult::Invalid(violation) => {
-            Err(CliError::InvalidInput(format!(
-                "contract violation ({}): {}",
-                violation.reason, violation.details
-            )))
-        }
+        ContractValidationResult::Invalid(violation) => Err(CliError::InvalidInput(format!(
+            "contract violation ({}): {}",
+            violation.reason, violation.details
+        ))),
     }
 }
 
@@ -1026,7 +1067,7 @@ fn cmd_output_get(data_dir: &Path, run_id: &str, step: &str, json: bool) -> Resu
     // `output validate` と対称に `InvalidInput` を返す。`not_submitted` 出力は
     // 「step は存在するが未提出」専用とする。
     let _contract = resolve_step_output_contract_via_log(data_dir, run_id, step)?;
-    let events = read_log(data_dir, run_id)?;
+    let events = read_domain_log(data_dir, run_id)?;
     let view = build_output_get_view(events, step);
     if json {
         let text =
@@ -1101,30 +1142,50 @@ fn read_submit_input_json(
 /// event log の `RunStarted` から workflow definition を取り出し、step の
 /// `output_contract` を解決する。
 ///
-/// 経路本体は pure helper
-/// `workflow::contract::resolve_step_output_contract_from_events` に委譲し、CLI
-/// 層は `ContractLookupError` を `CliError` に射影するだけを担う（[08]
-/// アーキテクチャ概要: Contract 解決は engine と CLI 双方から再利用される
-/// pure 関数。CLI 層は engine internals に依存しない境界）。
+/// 経路本体は usecase の event draft helper に委譲し、CLI 層は
+/// `ContractLookupError` を `CliError` に射影するだけを担う。
 fn resolve_step_output_contract_via_log(
     data_dir: &Path,
     run_id: &str,
     step: &str,
 ) -> Result<String, CliError> {
-    let events = read_log(data_dir, run_id)?;
-    crate::workflow::contract::resolve_step_output_contract_from_events(&events, step).map_err(
-        |err| match err {
-            crate::workflow::contract::ContractLookupError::RunNotFound => {
+    let events = read_domain_log(data_dir, run_id)?;
+    event_draft::resolve_step_output_contract_from_drafts(&events, step, run_id).map_err(|err| {
+        match err {
+            contract::ContractLookupError::RunNotFound { .. } => {
                 CliError::NotFound(format!("Workflow run not found: {run_id}"))
             }
-            crate::workflow::contract::ContractLookupError::NoOutputContract {
+            contract::ContractLookupError::InvalidRunStartedPayload { details } => {
+                CliError::InvalidInput(details)
+            }
+            contract::ContractLookupError::NoOutputContract {
                 workflow_name,
                 step,
             } => CliError::InvalidInput(format!(
                 "step '{step}' has no output_contract in workflow '{workflow_name}'"
             )),
-        },
-    )
+        }
+    })
+}
+
+fn read_domain_log(data_dir: &Path, run_id: &str) -> Result<Vec<WorkflowEventDraft>, CliError> {
+    let run_id_value =
+        RunId::new(run_id.to_string()).map_err(|e| CliError::InvalidInput(e.to_string()))?;
+    WorkflowEventLogRepository::new(data_dir.to_path_buf())
+        .read(&run_id_value)
+        .map_err(|e| CliError::Other(e.to_string()))
+}
+
+fn validate_cli_contract_output(
+    contract_type: &str,
+    structured_output: serde_json::Value,
+) -> ContractValidationResult {
+    let contract_definition = WorkflowFacetFileRepository::new_default()
+        .get(FacetKind::Contract, contract_type)
+        .ok();
+    let redacted =
+        secret_masker::mask_sensitive_structured_output(contract_type, structured_output, &[]);
+    contract::validate_contract_value_with_definition(redacted, contract_definition.as_deref())
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1142,11 +1203,11 @@ enum OutputGetView {
     NotSubmitted,
 }
 
-fn build_output_get_view(events: Vec<WorkflowEvent>, step: &str) -> OutputGetView {
+fn build_output_get_view(events: Vec<WorkflowEventDraft>, step: &str) -> OutputGetView {
     // 最新の OutputSubmitted は pure projection helper（spec [08] L165 / 振る舞い定義
     // Rule 3）に集約する。CLI / Tauri 経路はそれぞれ自層の DTO（OutputGetView /
     // WorkflowGetOutputResponse）へ map するだけで挙動を共有する。
-    match crate::workflow::event_projection::latest_output_submitted_for(&events, step) {
+    match event_draft::latest_output_submitted_from_drafts(&events, step) {
         Some(snapshot) => OutputGetView::Submitted {
             contract: snapshot.contract,
             structured_output: snapshot.structured_output,
@@ -1166,14 +1227,15 @@ fn cmd_logs(data_dir: &Path, run_id: &str, json: bool) -> Result<(), CliError> {
             "Workflow run not found: {run_id}"
         )));
     }
-    let events = read_log(data_dir, run_id)?;
+    let events = read_domain_log(data_dir, run_id)?;
     if json {
+        let views: Vec<_> = events.iter().map(event_draft_to_cli_log_json).collect();
         let text =
-            serde_json::to_string_pretty(&events).map_err(|e| format!("serialize log: {e}"))?;
+            serde_json::to_string_pretty(&views).map_err(|e| format!("serialize log: {e}"))?;
         println!("{text}");
     } else {
         for event in &events {
-            println!("{}", format_event(event));
+            println!("{}", format_event_draft(event));
         }
     }
     Ok(())
@@ -1189,35 +1251,52 @@ fn cmd_logs(data_dir: &Path, run_id: &str, json: bool) -> Result<(), CliError> {
 fn list_workflows_file_direct(
     workflows_dir: &Path,
     data_dir: &Path,
-) -> Result<Vec<crate::workflow::schema::Summary>, CliError> {
-    let mut summaries = storage::list_workflows(workflows_dir).map_err(|e| e.to_string())?;
-    let running = running_workflow_names_from_metadata(data_dir);
-    for s in &mut summaries {
-        s.is_running = running.contains(&s.name);
-    }
-    Ok(summaries)
+) -> Result<Vec<WorkflowSummary>, CliError> {
+    let running: Vec<String> = running_workflow_names_file_direct(data_dir)?
+        .into_iter()
+        .collect();
+    WorkflowDefinitionFileRepository::new(workflows_dir.to_path_buf(), workflows_dir.to_path_buf())
+        .list(&running)
+        .map_err(|e| CliError::Other(e.to_string()))
 }
 
-/// `workflow_runs/` を file-direct で走査し、filter を適用した summary 一覧を返す。
-/// API 経路（`RunStore::list_runs`）と同じ `project_runs_to_summaries` を経由することで
+fn running_workflow_names_file_direct(
+    data_dir: &Path,
+) -> Result<std::collections::HashSet<String>, CliError> {
+    Ok(list_runs_file_direct(
+        data_dir,
+        RunListFilter {
+            status: Some(RunStatusFilter::Active),
+            worktree_path: None,
+        },
+    )?
+    .into_iter()
+    .map(|run| run.workflow_name)
+    .collect())
+}
+
+/// `workflow_runs/` を file-direct repository 経由で走査し、filter を適用した
+/// domain summary 一覧を返す。API 経路と同じ `WorkflowRunRepository` port に寄せることで
 /// 観測ロジックの divergence を防ぐ（spec [05] API / CLI の意味的等価性境界）。
-fn list_runs_file_direct(data_dir: &Path, filter: RunListFilter) -> Vec<WorkflowRunSummary> {
-    let runs = iter_valid_run_metadata(data_dir);
-    project_runs_to_summaries(runs, &filter)
+fn list_runs_file_direct(
+    data_dir: &Path,
+    filter: RunListFilter,
+) -> Result<Vec<WorkflowRunSummary>, CliError> {
+    WorkflowRunFileRepository::new(data_dir.to_path_buf())
+        .list_runs(filter)
+        .map_err(|e| CliError::Other(e.to_string()))
 }
 
 fn get_run_summary_file_direct(data_dir: &Path, run_id: &str) -> Option<WorkflowRunSummary> {
-    if uuid::Uuid::parse_str(run_id).is_err() {
-        return None;
-    }
-    iter_valid_run_metadata(data_dir)
-        .iter()
-        .find(|run| run.run_id == run_id)
-        .map(WorkflowRunSummary::from)
+    let run_id = RunId::new(run_id.to_string()).ok()?;
+    WorkflowRunFileRepository::new(data_dir.to_path_buf())
+        .get_run(&run_id)
+        .ok()
+        .flatten()
 }
 
 /// [05] API / CLI 等価性境界: Tauri 側 `canonicalize_managed_worktree_path`
-/// と同じ `canonicalize_managed_worktree_path_inner` を CLI 経路でも経由する。
+/// と同じ `ManagedWorktreeGateway` を CLI 経路でも経由する。
 /// data_dir 配下の `releash.toml` から `last_repo_paths` / `last_root_path` を読み出して
 /// repo_paths を組み立て、managed worktree かどうかを Tauri API と同一ロジックで検証する。
 ///
@@ -1247,9 +1326,13 @@ fn canonicalize_cli_worktree_filter_path(
     };
     // CLI は独立したエントリポイント（composition root）として repository usecase を
     // 組み立て、Tauri 経路と同一ロジックで検証する。
-    let usecase = crate::adaptor::controller::wiring::build_repository_usecase();
-    canonicalize_managed_worktree_path_inner(&usecase, repo_paths, worktree_path.to_string())
-        .map_err(CliError::InvalidInput)
+    let gateway = RepoPathsManagedWorktreeGateway::new(
+        std::sync::Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+        repo_paths,
+    );
+    gateway
+        .resolve(worktree_path)
+        .map_err(|e| CliError::InvalidInput(e.to_string()))
 }
 
 fn validate_run_id(run_id: &str) -> Result<(), CliError> {
@@ -1258,19 +1341,17 @@ fn validate_run_id(run_id: &str) -> Result<(), CliError> {
         .map_err(|_| CliError::InvalidInput("Invalid run_id format (must be UUID)".to_string()))
 }
 
-fn read_log(data_dir: &Path, run_id: &str) -> Result<Vec<WorkflowEvent>, CliError> {
-    let event_log = WorkflowEventLog::new(data_dir);
-    event_log.read_log(run_id).map_err(CliError::Other)
-}
-
 /// Spec [05] API / CLI 等価性境界: Tauri `get_workflow_run_state` と同じ
 /// `WorkflowStateView` shape を CLI 側でも返すため、再構築した `WorkflowState` を
 /// `workflow_state_to_view` 経由で投影し、`runtime_states` 空 HashMap で
 /// `WorkflowStateView::from_parts` に通す（CLI は engine の in-memory runtime を
 /// 観測しない）。
 fn reconstruct_state_view(data_dir: &Path, run_id: &str) -> Result<WorkflowStateView, CliError> {
-    let events = read_log(data_dir, run_id)?;
-    let state = reconstruct_state_from_events(run_id, &events).map_err(CliError::Other)?;
+    let run_id =
+        RunId::new(run_id.to_string()).map_err(|e| CliError::InvalidInput(e.to_string()))?;
+    let state = WorkflowStateProjectionLogRepository::new(data_dir.to_path_buf())
+        .get_state(&run_id)
+        .map_err(|e| CliError::Other(e.to_string()))?;
     let state = state
         .ok_or_else(|| CliError::NotFound(format!("No event log available for run: {run_id}")))?;
     Ok(WorkflowStateView::from_parts(
@@ -1288,38 +1369,65 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn format_event(event: &WorkflowEvent) -> String {
-    let kind = match event {
-        WorkflowEvent::RunStarted { .. } => "RunStarted",
-        WorkflowEvent::NodeStarted { .. } => "NodeStarted",
-        WorkflowEvent::NodeCompleted { .. } => "NodeCompleted",
-        WorkflowEvent::NodeFailed { .. } => "NodeFailed",
-        WorkflowEvent::ApprovalRequested { .. } => "ApprovalRequested",
-        WorkflowEvent::ApprovalResolved { .. } => "ApprovalResolved",
-        WorkflowEvent::RunCompleted { .. } => "RunCompleted",
-        WorkflowEvent::RunFailed { .. } => "RunFailed",
-        WorkflowEvent::RunAborted { .. } => "RunAborted",
-        WorkflowEvent::OutputCollected { .. } => "OutputCollected",
-        WorkflowEvent::ParallelStarted { .. } => "ParallelStarted",
-        WorkflowEvent::ParallelChildStarted { .. } => "ParallelChildStarted",
-        WorkflowEvent::ParallelChildCompleted { .. } => "ParallelChildCompleted",
-        WorkflowEvent::ParallelCompleted { .. } => "ParallelCompleted",
-        WorkflowEvent::ContractRepairRequested { .. } => "ContractRepairRequested",
-        WorkflowEvent::CliMutationRequested { .. } => "CliMutationRequested",
-        WorkflowEvent::OutputSubmitted { .. } => "OutputSubmitted",
-        WorkflowEvent::CliMutationRejected { .. } => "CliMutationRejected",
+fn event_draft_to_cli_log_json(event: &WorkflowEventDraft) -> serde_json::Value {
+    let mut object = match event.payload.clone() {
+        serde_json::Value::Object(object) => object,
+        other => {
+            let mut object = serde_json::Map::new();
+            object.insert("payload".to_string(), other);
+            object
+        }
     };
-    match serde_json::to_string(event) {
+    object.insert(
+        "event".to_string(),
+        serde_json::Value::String(event.event_kind.clone()),
+    );
+    object.insert(
+        "run_id".to_string(),
+        serde_json::Value::String(event.run_id.clone()),
+    );
+    object.insert("timestamp".to_string(), serde_json::json!(event.timestamp));
+    serde_json::Value::Object(object)
+}
+
+fn format_event_draft(event: &WorkflowEventDraft) -> String {
+    let kind = event_kind_display_name(&event.event_kind);
+    let view = event_draft_to_cli_log_json(event);
+    match serde_json::to_string(&view) {
         Ok(json) => format!("{kind} {json}"),
         Err(_) => kind.to_string(),
+    }
+}
+
+fn event_kind_display_name(kind: &str) -> &str {
+    match kind {
+        "run_started" => "RunStarted",
+        "node_started" => "NodeStarted",
+        "node_completed" => "NodeCompleted",
+        "node_failed" => "NodeFailed",
+        "approval_requested" => "ApprovalRequested",
+        "approval_resolved" => "ApprovalResolved",
+        "run_completed" => "RunCompleted",
+        "run_failed" => "RunFailed",
+        "run_aborted" => "RunAborted",
+        "output_collected" => "OutputCollected",
+        "parallel_started" => "ParallelStarted",
+        "parallel_child_started" => "ParallelChildStarted",
+        "parallel_child_completed" => "ParallelChildCompleted",
+        "parallel_completed" => "ParallelCompleted",
+        "contract_repair_requested" => "ContractRepairRequested",
+        "cli_mutation_requested" => "CliMutationRequested",
+        "output_submitted" => "OutputSubmitted",
+        "cli_mutation_rejected" => "CliMutationRejected",
+        other => other,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::command_input::MAX_APPROVAL_COMMENT_CHARS;
-    use crate::workflow::run::{RunStatus, TriggerSource, WorkflowRun};
+    use crate::adaptor::gateway::workflow::run::{RunStatus, TriggerSource, WorkflowRun};
+    use crate::domain::workflow::approval_rules::MAX_APPROVAL_COMMENT_CHARS;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1724,7 +1832,14 @@ models = ["opus"]
             &make_run(&done_id, "/wt/b", RunStatus::Completed, 90.0),
         );
 
-        let all = list_runs_file_direct(tmp.path(), RunListFilter::default());
+        let all = list_runs_file_direct(
+            tmp.path(),
+            RunListFilter {
+                status: None,
+                worktree_path: None,
+            },
+        )
+        .unwrap();
         assert_eq!(all.len(), 2);
         // active が先頭
         assert_eq!(all[0].run_id, active_id);
@@ -1736,7 +1851,8 @@ models = ["opus"]
                 status: Some(RunStatusFilter::Active),
                 worktree_path: None,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(active_only.len(), 1);
         assert_eq!(active_only[0].run_id, active_id);
 
@@ -1746,7 +1862,8 @@ models = ["opus"]
                 status: Some(RunStatusFilter::Terminal),
                 worktree_path: None,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(terminal_only.len(), 1);
         assert_eq!(terminal_only[0].run_id, done_id);
     }
@@ -1772,7 +1889,8 @@ models = ["opus"]
                 status: None,
                 worktree_path: Some("/wt/a".to_string()),
             },
-        );
+        )
+        .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].run_id, run_a);
     }
@@ -1788,7 +1906,7 @@ models = ["opus"]
         let summary = get_run_summary_file_direct(tmp.path(), &run_id).unwrap();
         assert_eq!(summary.run_id, run_id);
         assert_eq!(summary.worktree_path, "/wt/a");
-        assert_eq!(summary.status, RunStatus::Running);
+        assert_eq!(format!("{:?}", summary.status), "Running");
         assert_eq!(summary.started_at, 100.0);
     }
 
@@ -1817,7 +1935,7 @@ models = ["opus"]
             workflow_name: workflow_name.to_string(),
             workflow_file_stem: workflow_name.to_string(),
             worktree_path: worktree.to_string(),
-            workflow_definition: crate::workflow::schema::Workflow {
+            workflow_definition: crate::adaptor::gateway::workflow::schema::Workflow {
                 variables: Default::default(),
                 name: workflow_name.to_string(),
                 description: "test".to_string(),
@@ -1880,6 +1998,21 @@ models = ["opus"]
     }
 
     #[test]
+    fn cli_log_json_view_matches_existing_event_wire_shape() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(13);
+        let legacy = run_started_event(&run_id, "wf", "/wt/cli-logs-shape");
+        write_event_log(tmp.path(), &run_id, std::slice::from_ref(&legacy));
+
+        let events = read_domain_log(tmp.path(), &run_id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            event_draft_to_cli_log_json(&events[0]),
+            serde_json::to_value(legacy).unwrap()
+        );
+    }
+
+    #[test]
     fn cmd_logs_returns_not_found_for_missing_run() {
         let tmp = TempDir::new().unwrap();
         let result = cmd_logs(tmp.path(), &test_uuid(98), false);
@@ -1899,8 +2032,8 @@ models = ["opus"]
     /// read_log / reconstruct_state_view）が同じ観測結果を返すことを直接検証する。
     #[tokio::test]
     async fn api_and_cli_observation_paths_produce_equivalent_results() {
-        use crate::workflow::event_projection::reconstruct_state_from_events;
-        use crate::workflow::run::RunStore;
+        use crate::adaptor::gateway::workflow::event_projection::reconstruct_state_from_events;
+        use crate::adaptor::gateway::workflow::run::RunStore;
 
         let tmp = TempDir::new().unwrap();
         let run_id = test_uuid(21);
@@ -1920,16 +2053,25 @@ models = ["opus"]
         );
 
         // CLI 経路
-        let cli_summaries = list_runs_file_direct(tmp.path(), RunListFilter::default());
+        let cli_summaries = list_runs_file_direct(
+            tmp.path(),
+            RunListFilter {
+                status: None,
+                worktree_path: None,
+            },
+        )
+        .unwrap();
         let cli_summary = get_run_summary_file_direct(tmp.path(), &run_id)
             .expect("CLI summary must be available");
-        let cli_events = read_log(tmp.path(), &run_id).unwrap();
+        let cli_events = read_domain_log(tmp.path(), &run_id).unwrap();
         let cli_state_view = reconstruct_state_view(tmp.path(), &run_id).unwrap();
 
         // API 経路（RunStore は active in-memory map + workflow_runs/ file の両方を参照）
         let store = RunStore::default();
         store.set_data_dir(tmp.path().to_path_buf()).await;
-        let api_summaries = store.list_runs(RunListFilter::default()).await;
+        let api_summaries = store
+            .list_runs(crate::adaptor::gateway::workflow::run::RunListFilter::default())
+            .await;
         let api_summary = store
             .get_run(&run_id)
             .await
@@ -1939,7 +2081,11 @@ models = ["opus"]
             .unwrap()
             .unwrap();
         let api_state_view = WorkflowStateView::from_parts(
-            workflow_state_to_view(api_state),
+            workflow_state_to_view(
+                crate::adaptor::gateway::workflow::state::workflow_state_to_domain_snapshot(
+                    api_state,
+                ),
+            ),
             std::collections::HashMap::new(),
         );
 
@@ -1947,12 +2093,15 @@ models = ["opus"]
         assert_eq!(api_summaries.len(), cli_summaries.len());
         for (a, c) in api_summaries.iter().zip(cli_summaries.iter()) {
             assert_eq!(a.run_id, c.run_id);
-            assert_eq!(a.status, c.status);
+            assert_eq!(format!("{:?}", a.status), format!("{:?}", c.status));
             assert_eq!(a.worktree_path, c.worktree_path);
         }
         // 単一 summary の一致
         assert_eq!(api_summary.run_id, cli_summary.run_id);
-        assert_eq!(api_summary.status, cli_summary.status);
+        assert_eq!(
+            format!("{:?}", api_summary.status),
+            format!("{:?}", cli_summary.status)
+        );
         assert_eq!(api_summary.worktree_path, cli_summary.worktree_path);
         // event log の件数 / 種別の一致
         assert_eq!(api_events.len(), cli_events.len());
@@ -1969,7 +2118,7 @@ models = ["opus"]
     /// と同じ workflow template 集合 + `is_running` フラグを返すことを直接検証する。
     #[tokio::test]
     async fn list_workflows_file_direct_reflects_running_active_metadata() {
-        use crate::workflow::storage;
+        use crate::adaptor::gateway::workflow::storage;
 
         let tmp = TempDir::new().unwrap();
         let workflows_dir = tmp.path().join("workflows");
@@ -2013,7 +2162,7 @@ models = ["opus"]
 
         // API 側と等価性: storage::list_workflows + (active metadata 由来の running set)。
         let mut api_summaries = storage::list_workflows(&workflows_dir).unwrap();
-        let api_running = running_workflow_names_from_metadata(tmp.path());
+        let api_running = running_workflow_names_file_direct(tmp.path()).unwrap();
         for s in &mut api_summaries {
             s.is_running = api_running.contains(&s.name);
         }
@@ -2025,18 +2174,18 @@ models = ["opus"]
 
     /// Spec [05] API / CLI 等価性境界: list_workflows の API 経路は
     /// `engine.running_workflow_names()`（in-memory `executions` map 由来）を
-    /// running source とし、CLI は `running_workflow_names_from_metadata`
+    /// running source とし、CLI は repository file-direct の active run query
     /// （`workflow_runs/` file 由来）を使う。engine が active run を登録すると
     /// 両 source が同期して同一 running 集合を返すことを実 API 経路で検証する
     /// （spec L92-96 / L160-162）。
     #[tokio::test]
     async fn engine_running_workflow_names_matches_cli_file_direct_after_register_active() {
-        use crate::workflow::engine::WorkflowEngine;
-        use crate::workflow::schema::{NodeDefinition, NodeType, Workflow};
-        use crate::workflow::state::WorkflowExecutionState;
+        use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType, Workflow};
+        use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
+        use crate::adaptor::gateway::workflow::test_support::TestRuntimeKernel;
 
         let tmp = TempDir::new().unwrap();
-        let engine = WorkflowEngine::new_for_test();
+        let engine = TestRuntimeKernel::new_for_test();
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
@@ -2064,7 +2213,7 @@ models = ["opus"]
             .await;
 
         let api_running = engine.running_workflow_names().await;
-        let cli_running = running_workflow_names_from_metadata(tmp.path());
+        let cli_running = running_workflow_names_file_direct(tmp.path()).unwrap();
         assert_eq!(
             api_running, cli_running,
             "API path engine.running_workflow_names() must equal CLI file-direct set"
@@ -2073,7 +2222,7 @@ models = ["opus"]
     }
 
     /// Spec [05] API / CLI 等価性境界: CLI `--worktree` 入力は
-    /// `canonicalize_managed_worktree_path_inner` 経由で managed worktree 検証を
+    /// `ManagedWorktreeGateway` 経由で managed worktree 検証を
     /// 通過する。configured repo path に紐づかない非 canonical 入力は
     /// CLI 側で InvalidInput として弾かれる（API 側と同一エラー経路）。
     #[test]
@@ -2119,12 +2268,12 @@ models = ["opus"]
     }
 
     /// Spec [05] API / CLI 等価性境界: `list_workflows` Tauri command が委譲する実
-    /// inner 関数（`workflow::commands::list_workflows_inner`）と CLI 側の
+    /// inner 関数（`adaptor::controller::command::workflow::list_workflows_inner`）と CLI 側の
     /// `list_workflows_file_direct` を、同一 tempdir / 同一 running 集合に対して比較し、
     /// 両者が JSON shape として完全に一致することを境界仕様として担保する。
     ///
     /// engine.running_workflow_names()（in-memory）と
-    /// running_workflow_names_from_metadata()（file-direct）は engine の同期書き込み
+    /// repository file-direct の active run query は engine の同期書き込み
     /// 境界により等価。本テストでは CLI 側と同じ source（file-direct）で running 集合を
     /// 構築して inner に渡し、両経路の出力 shape が等価であることを検証する。
     #[test]
@@ -2163,9 +2312,12 @@ models = ["opus"]
         );
 
         // API 経路: list_workflows_inner（Tauri command が委譲する実関数）
-        let running = running_workflow_names_from_metadata(tmp.path());
-        let api_summaries =
-            crate::workflow::commands::list_workflows_inner(&running, &workflows_dir).unwrap();
+        let running = running_workflow_names_file_direct(tmp.path()).unwrap();
+        let api_summaries = crate::adaptor::controller::command::workflow::list_workflows_inner(
+            &running,
+            &workflows_dir,
+        )
+        .unwrap();
 
         // CLI 経路: list_workflows_file_direct
         let cli_summaries = list_workflows_file_direct(&workflows_dir, tmp.path()).unwrap();
@@ -2372,14 +2524,14 @@ models = ["opus"]
         step_name: &str,
         contract: &str,
     ) {
-        let workflow = crate::workflow::schema::Workflow {
+        let workflow = crate::adaptor::gateway::workflow::schema::Workflow {
             variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
-            nodes: vec![crate::workflow::schema::NodeDefinition {
+            nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
                 name: step_name.to_string(),
-                node_type: crate::workflow::schema::NodeType::Agent,
+                node_type: crate::adaptor::gateway::workflow::schema::NodeType::Agent,
                 output_contract: Some(contract.to_string()),
                 ..Default::default()
             }],
@@ -2406,7 +2558,7 @@ models = ["opus"]
     /// `contract` / structured_output が永続化される（spec [08] CLI 完了基準）。
     #[test]
     fn cmd_output_submit_writes_pending_file_with_typed_payload() {
-        use crate::workflow::pending_command::PendingCommandPayload;
+        use crate::adaptor::gateway::workflow::pending_command::PendingCommandPayload;
         let tmp = TempDir::new().unwrap();
         let run_id = test_uuid(91);
         seed_submit_workflow_log(
@@ -2445,7 +2597,7 @@ models = ["opus"]
     /// [08] CLI 完了基準境界: `--file` 入力でも pending file が書き出される。
     #[test]
     fn cmd_output_submit_writes_pending_file_from_file_arg() {
-        use crate::workflow::pending_command::PendingCommandPayload;
+        use crate::adaptor::gateway::workflow::pending_command::PendingCommandPayload;
         let tmp = TempDir::new().unwrap();
         let input_file = tmp.path().join("input.json");
         std::fs::write(&input_file, b"{\"verdict\":\"LGTM\"}").unwrap();
@@ -2617,14 +2769,14 @@ models = ["opus"]
         let tmp = TempDir::new().unwrap();
         let run_id = test_uuid(95);
         // RunStarted event に workflow definition を埋め込む
-        let yaml = crate::workflow::schema::Workflow {
+        let yaml = crate::adaptor::gateway::workflow::schema::Workflow {
             variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
-            nodes: vec![crate::workflow::schema::NodeDefinition {
+            nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
                 name: "review".to_string(),
-                node_type: crate::workflow::schema::NodeType::Agent,
+                node_type: crate::adaptor::gateway::workflow::schema::NodeType::Agent,
                 output_contract: Some("spec-directory".to_string()),
                 ..Default::default()
             }],
@@ -2679,7 +2831,7 @@ models = ["opus"]
         let run_file_after = std::fs::read_to_string(&run_file_path).unwrap();
         assert_eq!(run_file_before, run_file_after);
         // 既存の OutputSubmitted がそのまま残る（reconstruct で step_outputs slot が不変）
-        let view = build_output_get_view(event_log_after.clone(), "review");
+        let view = build_output_get_view(read_domain_log(tmp.path(), &run_id).unwrap(), "review");
         assert!(matches!(
             view,
             OutputGetView::Submitted {
@@ -2695,14 +2847,14 @@ models = ["opus"]
     fn cmd_output_validate_returns_err_for_invalid_contract_input() {
         let tmp = TempDir::new().unwrap();
         let run_id = test_uuid(96);
-        let workflow = crate::workflow::schema::Workflow {
+        let workflow = crate::adaptor::gateway::workflow::schema::Workflow {
             variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
-            nodes: vec![crate::workflow::schema::NodeDefinition {
+            nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
                 name: "review".to_string(),
-                node_type: crate::workflow::schema::NodeType::Agent,
+                node_type: crate::adaptor::gateway::workflow::schema::NodeType::Agent,
                 output_contract: Some("spec-directory".to_string()),
                 ..Default::default()
             }],
@@ -2753,7 +2905,7 @@ models = ["opus"]
         })
         .unwrap();
 
-        let view = build_output_get_view(log.read_log(&run_id).unwrap(), "review");
+        let view = build_output_get_view(read_domain_log(tmp.path(), &run_id).unwrap(), "review");
         assert!(matches!(
             view,
             OutputGetView::Submitted {
@@ -2778,7 +2930,7 @@ models = ["opus"]
         log.append(&run_started_event(&run_id, "wf", "/wt/get-empty"))
             .unwrap();
 
-        let view = build_output_get_view(log.read_log(&run_id).unwrap(), "review");
+        let view = build_output_get_view(read_domain_log(tmp.path(), &run_id).unwrap(), "review");
         assert!(matches!(view, OutputGetView::NotSubmitted));
     }
 
@@ -2818,7 +2970,7 @@ models = ["opus"]
         })
         .unwrap();
 
-        let view = build_output_get_view(log.read_log(&run_id).unwrap(), "review");
+        let view = build_output_get_view(read_domain_log(tmp.path(), &run_id).unwrap(), "review");
         match view {
             OutputGetView::Submitted {
                 structured_output, ..
@@ -2913,7 +3065,10 @@ models = ["opus"]
         let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].command.run_id, run_id);
-        assert_eq!(entries[0].command.payload, payload);
+        assert_eq!(
+            serde_json::to_value(&entries[0].command.payload).unwrap(),
+            serde_json::to_value(&payload).unwrap()
+        );
     }
 
     #[test]
@@ -2934,7 +3089,10 @@ models = ["opus"]
         assert_eq!(output.run_id, run_id);
         let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].command.payload, payload);
+        assert_eq!(
+            serde_json::to_value(&entries[0].command.payload).unwrap(),
+            serde_json::to_value(&payload).unwrap()
+        );
     }
 
     #[test]
@@ -2954,7 +3112,10 @@ models = ["opus"]
         assert_eq!(output.run_id, run_id);
         let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].command.payload, payload);
+        assert_eq!(
+            serde_json::to_value(&entries[0].command.payload).unwrap(),
+            serde_json::to_value(&payload).unwrap()
+        );
     }
 
     /// [06] CLI 入力の信頼境界: `cmd_enqueue_pending` は run_id の UUID 形式を弾く。

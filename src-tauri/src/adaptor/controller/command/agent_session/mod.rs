@@ -8,5 +8,6 @@ pub(crate) mod paste;
 pub(crate) mod permission;
 pub(crate) mod session;
 pub(crate) mod status;
+pub(crate) mod stored_session;
 pub(crate) mod suggestion;
 pub(crate) mod tool_activity;

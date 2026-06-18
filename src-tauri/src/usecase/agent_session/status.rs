@@ -133,9 +133,9 @@ impl AgentStatusCenter {
     /// `WorkflowExecutionState` を Workspace 集約に寄与する `AgentState` にマップする。
     /// `Aborted` はユーザー意図で停止したものとして「集約対象外（None）」扱いにする。
     pub fn workflow_execution_state_to_agent_state(
-        state: &crate::workflow::state::WorkflowExecutionState,
+        state: &crate::domain::workflow::WorkflowExecutionState,
     ) -> Option<AgentState> {
-        use crate::workflow::state::WorkflowExecutionState;
+        use crate::domain::workflow::WorkflowExecutionState;
         match state {
             WorkflowExecutionState::Running => Some(AgentState::Running),
             WorkflowExecutionState::WaitingApproval => Some(AgentState::Waiting),
@@ -954,7 +954,7 @@ mod tests {
 
     #[test]
     fn workflow_execution_state_to_agent_state_maps_each_variant() {
-        use crate::workflow::state::WorkflowExecutionState;
+        use crate::domain::workflow::WorkflowExecutionState;
         assert_eq!(
             AgentStatusCenter::workflow_execution_state_to_agent_state(
                 &WorkflowExecutionState::Running

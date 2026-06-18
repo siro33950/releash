@@ -1023,14 +1023,10 @@ pub(super) async fn handle_agent_message_request(
     }
 
     let handles = app
-        .state::<Arc<tokio::sync::Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>>()
-        .inner()
-        .clone();
+		.state::<Arc<tokio::sync::Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>>()
+		.inner()
+		.clone();
     let registry = state.get_backend_registry().clone();
-    let engine = app
-        .state::<Arc<crate::workflow::engine::WorkflowEngine>>()
-        .inner()
-        .clone();
     let open_tabs = app
         .state::<Arc<crate::usecase::agent_session::session::OpenTabRegistry>>()
         .inner()
@@ -1071,9 +1067,8 @@ pub(super) async fn handle_agent_message_request(
 
     match response {
         Ok(response) => {
-            crate::workflow_state_events::emit_after_workflow_step_message(
+            crate::adaptor::controller::handler::workflow::emit_after_workflow_step_message(
                 app,
-                &engine,
                 &response.session,
                 &handles,
                 &open_tabs,

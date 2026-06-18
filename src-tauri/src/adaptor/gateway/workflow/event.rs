@@ -1,0 +1,679 @@
+//! [04] Command / Event Boundary: workflow engine が発行する append-only な事実列の型。
+//!
+//! 旧 `WorkflowLogEvent` 列挙体は本 issue で完全廃止し、本ファイルの `WorkflowEvent` に
+//! 完全置換する。旧 NDJSON 在庫は破棄前提（互換 wrapper は導入しない）。
+//!
+//! 仕様詳細は `docs/spec/issues-1013.md` / `docs/workflow-engine-model-boundary.md` 参照。
+//! `CompleteNode` / `FailNode` に相当する内部 typed 遷移 command は [05] で導入する。
+
+use serde::{Deserialize, Serialize};
+
+use crate::adaptor::gateway::workflow::schema::Workflow;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+impl TokenUsage {
+    pub fn add(&mut self, other: &TokenUsage) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+    }
+}
+
+/// workflow engine が発行する append-only な事実列の型。
+///
+/// `run_id` を主語とし、過去事実は書き換えない（撤回も追加 event として表現する）。
+/// NDJSON 永続化時の tag は `event` フィールドに snake_case で出力される。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "event")]
+pub enum WorkflowEvent {
+    /// start workflow primitive を engine が受理し、新しい run を開始した。
+    RunStarted {
+        run_id: String,
+        workflow_name: String,
+        workflow_file_stem: String,
+        worktree_path: String,
+        /// reconstruct 経路の必須フィールド（[02] 互換境界）。
+        workflow_definition: Workflow,
+        timestamp: f64,
+    },
+    /// node が実行開始された（agent / approval / bash いずれも対象）。
+    NodeStarted {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        execution_count: u32,
+        timestamp: f64,
+    },
+    /// node が完了した（approval 経由の completion も含む）。
+    NodeCompleted {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token_usage: Option<TokenUsage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        structured_output: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        run_index: Option<u32>,
+        timestamp: f64,
+    },
+    /// node が失敗した。
+    NodeFailed {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        reason: String,
+        timestamp: f64,
+    },
+    /// approval runtime primitive の受理直前に、approval 対象の到達を記録する。
+    ApprovalRequested {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        timestamp: f64,
+    },
+    /// approval node に対するユーザー判断（approve / reject / abort）が受理された。
+    ApprovalResolved {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        decision: ApprovalDecisionRecord,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        comment: Option<String>,
+        timestamp: f64,
+    },
+    /// run 全体が成功完了した。
+    RunCompleted {
+        run_id: String,
+        workflow_name: String,
+        total_token_usage: TokenUsage,
+        timestamp: f64,
+    },
+    /// run 全体が失敗終了した。
+    RunFailed {
+        run_id: String,
+        workflow_name: String,
+        reason: String,
+        timestamp: f64,
+    },
+    /// abort runtime primitive の受理結果として run が中断された。
+    RunAborted {
+        run_id: String,
+        workflow_name: String,
+        timestamp: f64,
+    },
+    /// collect step の reduce 結果。
+    OutputCollected {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        node_outputs: Vec<CollectedOutputEntry>,
+        reduce_strategy: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reduce_result: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reduce_structured_output: Option<serde_json::Value>,
+        timestamp: f64,
+    },
+    /// 並列ブロックが開始された（parent node の入口マーカー）。
+    ParallelStarted {
+        run_id: String,
+        workflow_name: String,
+        parent_node_name: String,
+        child_node_names: Vec<String>,
+        timestamp: f64,
+    },
+    /// 並列ブロックの子 node が実行開始された。
+    ParallelChildStarted {
+        run_id: String,
+        workflow_name: String,
+        parent_node_name: String,
+        child_node_name: String,
+        session_id: String,
+        execution_count: u32,
+        timestamp: f64,
+    },
+    /// 並列ブロックの子 node が完了した。
+    ParallelChildCompleted {
+        run_id: String,
+        workflow_name: String,
+        parent_node_name: String,
+        child_node_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token_usage: Option<TokenUsage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        structured_output: Option<serde_json::Value>,
+        run_index: u32,
+        timestamp: f64,
+    },
+    /// 並列ブロック全体が完了し、aggregate 評価結果に基づき遷移する。
+    ParallelCompleted {
+        run_id: String,
+        workflow_name: String,
+        parent_node_name: String,
+        aggregate_result: String,
+        timestamp: f64,
+    },
+    /// output_contract repair prompt が送信された。
+    ContractRepairRequested {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        attempt: u32,
+        violation_reason: String,
+        timestamp: f64,
+    },
+    /// [06] CLI 経路で workflow run に対する mutation が engine に到達した事実。
+    ///
+    /// approval / abort mutation を CLI 経由で
+    /// engine が受け取ったことを `run_id` 主語で append-only に記録する。stale target /
+    /// validation reject でも engine 到達後の拒否は記録する。実 state
+    /// 変化の事実は引き続き `ApprovalResolved` / `RunAborted` で表現し、本 variant
+    /// は「いつ・どの経路から・何が要求されたか」を観測経路から透過的に読めるよう
+    /// にするためのもの（spec [06] 観測経路境界）。
+    ///
+    /// `request` の自由記述（reason / comment）は平文で永続化される。秘匿情報を
+    /// 含めない運用前提（spec [06] 要求の運用境界）。
+    CliMutationRequested {
+        run_id: String,
+        workflow_name: String,
+        /// 外部 caller が発行した state 変化要求の id。engine 側の重複 dispatch を
+        /// 冪等化する key。pending file store の entry id は adapter 側で本値へ
+        /// 写像し、event log には pending store の実装詳細を露出しない。
+        request_id: String,
+        request: CliMutationRequestRecord,
+        /// CLI が pending command を書き出した時刻（caller 側 timestamp）。
+        requested_at: f64,
+        /// engine が本 event を受理・追記した時刻（commit timestamp）。
+        timestamp: f64,
+    },
+    /// [08] step に対する構造化出力が contract 適合判定を経て確定した事実。
+    ///
+    /// CLI / in-process 経路が engine の submit-output primitive で受理され、
+    /// contract 適合判定 → `step_outputs` / `workflow_variables` 更新と同一
+    /// トランザクションで append される。contract 不適合・stale step・不在 step
+    /// などの拒否は本 event を残さない（spec [08] OutputSubmitted append の
+    /// 不可分性境界）。
+    OutputSubmitted {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        /// 対象 step の `output_contract`。
+        contract: String,
+        /// contract 適合判定を通過した構造化出力。
+        structured_output: serde_json::Value,
+        /// CLI pending command 経由で提出された場合の caller 側 request id。
+        /// in-process 経路（Tauri command 等）で提出された場合は `None`。
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        request_id: Option<String>,
+        /// caller が pending command を書き出した時刻（Unix 秒）。
+        /// in-process 経路では `None`。
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        submitted_at: Option<f64>,
+        /// engine が本 event を append した時刻。
+        timestamp: f64,
+    },
+    /// [06] / [08] CLI 経路の mutation が engine 判断によって拒否された事実
+    /// （5-3 / 5-4 修正）。
+    ///
+    /// `CliMutationRequested` が「リクエストを受理した事実」であるのに対し、
+    /// 本 event は「engine が無効と判断して状態を変えなかった事実」を表す。
+    /// 両者は独立に発火し、両方記録される場合（reject rule なし node への
+    /// reject 等）と本 event のみ記録される場合（SubmitOutput の silent-drop
+    /// だった経路）がある。
+    ///
+    /// spec [08] Rule 1「SubmitOutput の拒否は事実履歴に残さない」の意味は、
+    /// accepted のメイン履歴（`OutputSubmitted` / `CliMutationRequested`）に
+    /// 出ないことを指すと再定義する。観測経路用の補助履歴として本 event は
+    /// 並列に追記される。
+    ///
+    /// `request` の自由記述（reason / comment）は平文で永続化される（spec
+    /// [06] 要求の運用境界と同じ）。
+    CliMutationRejected {
+        run_id: String,
+        workflow_name: String,
+        /// 元のリクエスト id（`CliMutationRequested` と同じ値）。
+        request_id: String,
+        /// 拒否されたリクエストの内容。SubmitOutput の場合は payload 本体を
+        /// 含めず `step_name` と `contract` のみ。
+        request: CliMutationRequestRecord,
+        /// 拒否理由の typed 分類。CLI ユーザはここを見て後続操作を判断する。
+        reason: CliMutationRejectionReason,
+        /// 人間可読の拒否理由（`WorkflowEngineError::to_string()` 由来）。
+        message: String,
+        /// caller が pending command を書き出した時刻（Unix 秒）。
+        requested_at: f64,
+        /// engine が本 event を append した時刻。
+        timestamp: f64,
+    },
+}
+
+/// [06] CLI mutating CLI が要求した内容の typed 表現。
+///
+/// 各 variant の `node_name` は対象 node の限定の有無を表す（`None` = run 全体 /
+/// 現在の承認待ち node を engine 側で解決する、`Some` = caller が明示的に node
+/// を限定）。`Reject` の `reason` は CLI 入口で必須化済み。
+///
+/// `SubmitOutput` variant は `CliMutationRejected` でのみ使用する（accepted 経路
+/// は `OutputSubmitted` event が一次表現）。payload 本体は容量が大きい可能性が
+/// あるため `step_name` と `contract` のみを保持する。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum CliMutationRequestRecord {
+    Approve {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        node_name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        comment: Option<String>,
+    },
+    Reject {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        node_name: Option<String>,
+        reason: String,
+    },
+    Abort {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        node_name: Option<String>,
+    },
+    /// SubmitOutput リクエストの拒否事実用 representation（accepted 経路では
+    /// 使用しない）。容量肥大を避けるため structured_output 本体は含めない。
+    SubmitOutput { step_name: String, contract: String },
+}
+
+/// [06] / [08] `CliMutationRejected` event の typed 拒否理由（5-3 / 5-4 修正）。
+///
+/// CLI ユーザはこの分類を読んで「再試行可能か」「workflow 設計の問題か」を
+/// 判断する。新しい拒否理由が判明した場合は variant を追加する（破壊変更ではなく
+/// `serde(rename_all = "snake_case")` の蓄積的拡張として扱う）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliMutationRejectionReason {
+    /// 対象 run が engine から見つからない（CLI 側 5-2 チェックを通り抜けた
+    /// race condition 等）。
+    RunNotFound,
+    /// 対象 run が terminal 状態のため mutation を受け付けない。
+    RunNotActive,
+    /// 対象 node が workflow に存在しない。
+    NodeNotFound,
+    /// 現在 approval を待っていない node に approve/reject を要求した。
+    NotWaitingApproval,
+    /// 5-4: reject rule が定義されていない approval node に reject を要求した。
+    NoRejectRule,
+    /// 5-3: 構造化出力の受領を受け付けていない step に submit を要求した
+    /// （pending 等）。
+    StepNotAccepting,
+    /// 構造化出力の contract が step の expected と一致しない。
+    ContractMismatch,
+    /// 上記いずれにも分類されない、engine の InvalidState / Validation 由来の拒否。
+    Other,
+}
+
+/// approval 判断結果の typed 表現。NDJSON 上は snake_case として出力される。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecisionRecord {
+    Approve,
+    Reject,
+    Abort,
+}
+
+/// collect step の各子要素出力エントリ。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectedOutputEntry {
+    pub node_name: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub structured_output: Option<serde_json::Value>,
+}
+
+impl WorkflowEvent {
+    /// event の primary key となる `run_id` を返す。
+    pub fn run_id(&self) -> &str {
+        match self {
+            Self::RunStarted { run_id, .. }
+            | Self::NodeStarted { run_id, .. }
+            | Self::NodeCompleted { run_id, .. }
+            | Self::NodeFailed { run_id, .. }
+            | Self::ApprovalRequested { run_id, .. }
+            | Self::ApprovalResolved { run_id, .. }
+            | Self::RunCompleted { run_id, .. }
+            | Self::RunFailed { run_id, .. }
+            | Self::RunAborted { run_id, .. }
+            | Self::OutputCollected { run_id, .. }
+            | Self::ParallelStarted { run_id, .. }
+            | Self::ParallelChildStarted { run_id, .. }
+            | Self::ParallelChildCompleted { run_id, .. }
+            | Self::ParallelCompleted { run_id, .. }
+            | Self::ContractRepairRequested { run_id, .. }
+            | Self::CliMutationRequested { run_id, .. }
+            | Self::OutputSubmitted { run_id, .. }
+            | Self::CliMutationRejected { run_id, .. } => run_id,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_workflow() -> Workflow {
+        use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType};
+        Workflow {
+            variables: Default::default(),
+            name: "wf".to_string(),
+            description: "".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "n1".to_string(),
+                node_type: NodeType::Agent,
+                instruction: Some("do".to_string()),
+                ..NodeDefinition::default()
+            }],
+        }
+    }
+
+    #[test]
+    fn run_started_serializes_with_event_tag() {
+        let event = WorkflowEvent::RunStarted {
+            run_id: "00000000-0000-0000-0000-000000000001".to_string(),
+            workflow_name: "wf".to_string(),
+            workflow_file_stem: "wf".to_string(),
+            worktree_path: "/repo".to_string(),
+            workflow_definition: minimal_workflow(),
+            timestamp: 1.0,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event\":\"run_started\""));
+        assert!(json.contains("\"run_id\":\"00000000-0000-0000-0000-000000000001\""));
+        let back: WorkflowEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, WorkflowEvent::RunStarted { .. }));
+    }
+
+    /// approval 判断結果は典型的な NDJSON 観測者から snake_case で読める。
+    #[test]
+    fn approval_resolved_decision_serde_round_trips() {
+        for decision in [
+            ApprovalDecisionRecord::Approve,
+            ApprovalDecisionRecord::Reject,
+            ApprovalDecisionRecord::Abort,
+        ] {
+            let event = WorkflowEvent::ApprovalResolved {
+                run_id: "00000000-0000-0000-0000-000000000002".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                decision,
+                comment: Some("c".to_string()),
+                timestamp: 2.0,
+            };
+            let json = serde_json::to_string(&event).unwrap();
+            assert!(json.contains("\"event\":\"approval_resolved\""));
+            let back: WorkflowEvent = serde_json::from_str(&json).unwrap();
+            match back {
+                WorkflowEvent::ApprovalResolved {
+                    decision: back_decision,
+                    ..
+                } => assert_eq!(back_decision, decision),
+                _ => panic!("expected ApprovalResolved"),
+            }
+        }
+    }
+
+    /// [06] CLI 経由 mutation 要求の事実は `WorkflowEvent` 列に typed event として
+    /// 記録される（spec [06] 観測経路境界）。3 種の payload variant が
+    /// 観測経路から平文で読み出せる shape として round-trip する。
+    #[test]
+    fn cli_mutation_requested_serde_round_trips_all_variants() {
+        let approve = WorkflowEvent::CliMutationRequested {
+            run_id: "00000000-0000-0000-0000-000000000400".to_string(),
+            workflow_name: "wf".to_string(),
+            request_id: "00000000-0000-0000-0000-000000000500".to_string(),
+            request: CliMutationRequestRecord::Approve {
+                node_name: Some("review".to_string()),
+                comment: Some("LGTM".to_string()),
+            },
+            requested_at: 100.0,
+            timestamp: 101.0,
+        };
+        let reject = WorkflowEvent::CliMutationRequested {
+            run_id: "00000000-0000-0000-0000-000000000401".to_string(),
+            workflow_name: "wf".to_string(),
+            request_id: "00000000-0000-0000-0000-000000000501".to_string(),
+            request: CliMutationRequestRecord::Reject {
+                node_name: None,
+                reason: "must rework".to_string(),
+            },
+            requested_at: 200.0,
+            timestamp: 201.0,
+        };
+        let abort = WorkflowEvent::CliMutationRequested {
+            run_id: "00000000-0000-0000-0000-000000000402".to_string(),
+            workflow_name: "wf".to_string(),
+            request_id: "00000000-0000-0000-0000-000000000502".to_string(),
+            request: CliMutationRequestRecord::Abort {
+                node_name: Some("review".to_string()),
+            },
+            requested_at: 300.0,
+            timestamp: 301.0,
+        };
+        for event in [approve, reject, abort] {
+            let json = serde_json::to_string(&event).unwrap();
+            assert!(json.contains("\"event\":\"cli_mutation_requested\""));
+            let back: WorkflowEvent = serde_json::from_str(&json).unwrap();
+            let json2 = serde_json::to_string(&back).unwrap();
+            assert_eq!(json, json2);
+        }
+    }
+
+    /// [06] 自由記述データの観測経路境界: reason / comment は平文として
+    /// NDJSON serialize 結果に出現する（マスキング・短縮されない）。
+    #[test]
+    fn cli_mutation_requested_reason_and_comment_appear_in_serialized_json_verbatim() {
+        let reject = WorkflowEvent::CliMutationRequested {
+            run_id: "00000000-0000-0000-0000-000000000403".to_string(),
+            workflow_name: "wf".to_string(),
+            request_id: "00000000-0000-0000-0000-000000000503".to_string(),
+            request: CliMutationRequestRecord::Reject {
+                node_name: None,
+                reason: "free-form reject reason".to_string(),
+            },
+            requested_at: 100.0,
+            timestamp: 101.0,
+        };
+        let reject_json = serde_json::to_string(&reject).unwrap();
+        assert!(reject_json.contains("free-form reject reason"));
+
+        let approve = WorkflowEvent::CliMutationRequested {
+            run_id: "00000000-0000-0000-0000-000000000404".to_string(),
+            workflow_name: "wf".to_string(),
+            request_id: "00000000-0000-0000-0000-000000000504".to_string(),
+            request: CliMutationRequestRecord::Approve {
+                node_name: None,
+                comment: Some("free-form approve comment".to_string()),
+            },
+            requested_at: 102.0,
+            timestamp: 103.0,
+        };
+        let approve_json = serde_json::to_string(&approve).unwrap();
+        assert!(approve_json.contains("free-form approve comment"));
+    }
+
+    /// `WorkflowEvent::run_id()` がすべての variant で primary key を露出する。
+    #[test]
+    fn run_id_accessor_exposes_primary_key_for_all_variants() {
+        let rid = "00000000-0000-0000-0000-000000000003";
+        let events = vec![
+            WorkflowEvent::RunStarted {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                workflow_file_stem: "w".to_string(),
+                worktree_path: "/r".to_string(),
+                workflow_definition: minimal_workflow(),
+                timestamp: 0.0,
+            },
+            WorkflowEvent::NodeStarted {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                node_name: "n".to_string(),
+                execution_count: 1,
+                timestamp: 0.0,
+            },
+            WorkflowEvent::NodeCompleted {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                node_name: "n".to_string(),
+                result: None,
+                session_id: None,
+                token_usage: None,
+                structured_output: None,
+                run_index: None,
+                timestamp: 0.0,
+            },
+            WorkflowEvent::NodeFailed {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                node_name: "n".to_string(),
+                reason: "x".to_string(),
+                timestamp: 0.0,
+            },
+            WorkflowEvent::ApprovalRequested {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                node_name: "n".to_string(),
+                timestamp: 0.0,
+            },
+            WorkflowEvent::ApprovalResolved {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                node_name: "n".to_string(),
+                decision: ApprovalDecisionRecord::Approve,
+                comment: None,
+                timestamp: 0.0,
+            },
+            WorkflowEvent::RunCompleted {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                total_token_usage: TokenUsage::default(),
+                timestamp: 0.0,
+            },
+            WorkflowEvent::RunFailed {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                reason: "x".to_string(),
+                timestamp: 0.0,
+            },
+            WorkflowEvent::RunAborted {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                timestamp: 0.0,
+            },
+        ];
+        for event in events {
+            assert_eq!(event.run_id(), rid);
+        }
+    }
+
+    /// 5-3 / 5-4 修正: `CliMutationRejected` event が全ての `request` variant
+    /// （SubmitOutput 含む）について NDJSON 上で round-trip し、`event` タグが
+    /// `cli_mutation_rejected` として出力される。`reason` は snake_case で
+    /// 出力される。
+    #[test]
+    fn cli_mutation_rejected_serde_round_trips_all_variants() {
+        let cases = vec![
+            (
+                WorkflowEvent::CliMutationRejected {
+                    run_id: "00000000-0000-0000-0000-000000000600".to_string(),
+                    workflow_name: "wf".to_string(),
+                    request_id: "00000000-0000-0000-0000-000000000700".to_string(),
+                    request: CliMutationRequestRecord::Reject {
+                        node_name: Some("plan_architecture".to_string()),
+                        reason: "rule なし node 拒否".to_string(),
+                    },
+                    reason: CliMutationRejectionReason::NoRejectRule,
+                    message: "Step 'plan_architecture' does not allow reject".to_string(),
+                    requested_at: 100.0,
+                    timestamp: 101.0,
+                },
+                "no_reject_rule",
+            ),
+            (
+                WorkflowEvent::CliMutationRejected {
+                    run_id: "00000000-0000-0000-0000-000000000601".to_string(),
+                    workflow_name: "wf".to_string(),
+                    request_id: "00000000-0000-0000-0000-000000000701".to_string(),
+                    request: CliMutationRequestRecord::SubmitOutput {
+                        step_name: "plan_fix_policy".to_string(),
+                        contract: "fix-policy".to_string(),
+                    },
+                    reason: CliMutationRejectionReason::StepNotAccepting,
+                    message: "step 'plan_fix_policy' is not currently accepting structured output"
+                        .to_string(),
+                    requested_at: 200.0,
+                    timestamp: 201.0,
+                },
+                "step_not_accepting",
+            ),
+            (
+                WorkflowEvent::CliMutationRejected {
+                    run_id: "00000000-0000-0000-0000-000000000602".to_string(),
+                    workflow_name: "wf".to_string(),
+                    request_id: "00000000-0000-0000-0000-000000000702".to_string(),
+                    request: CliMutationRequestRecord::Approve {
+                        node_name: None,
+                        comment: None,
+                    },
+                    reason: CliMutationRejectionReason::NotWaitingApproval,
+                    message: "approval target stale".to_string(),
+                    requested_at: 300.0,
+                    timestamp: 301.0,
+                },
+                "not_waiting_approval",
+            ),
+        ];
+        for (event, reason_str) in cases {
+            let json = serde_json::to_string(&event).unwrap();
+            assert!(
+                json.contains("\"event\":\"cli_mutation_rejected\""),
+                "event tag must be snake_case `cli_mutation_rejected`, got: {json}"
+            );
+            assert!(
+                json.contains(&format!("\"reason\":\"{reason_str}\"")),
+                "reason must serialize as snake_case `{reason_str}`, got: {json}"
+            );
+            let back: WorkflowEvent = serde_json::from_str(&json).unwrap();
+            let json2 = serde_json::to_string(&back).unwrap();
+            assert_eq!(json, json2);
+        }
+    }
+
+    /// 5-3 / 5-4 修正: `CliMutationRejected` event の `run_id()` accessor が
+    /// `run_id` を返す。
+    #[test]
+    fn cli_mutation_rejected_run_id_accessor_returns_run_id() {
+        let rid = "00000000-0000-0000-0000-000000000888";
+        let event = WorkflowEvent::CliMutationRejected {
+            run_id: rid.to_string(),
+            workflow_name: "wf".to_string(),
+            request_id: "00000000-0000-0000-0000-000000000999".to_string(),
+            request: CliMutationRequestRecord::Abort { node_name: None },
+            reason: CliMutationRejectionReason::Other,
+            message: "x".to_string(),
+            requested_at: 0.0,
+            timestamp: 0.0,
+        };
+        assert_eq!(event.run_id(), rid);
+    }
+}

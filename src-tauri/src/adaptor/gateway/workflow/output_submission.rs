@@ -1,0 +1,629 @@
+use std::collections::HashMap;
+
+use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain;
+use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
+use crate::adaptor::gateway::workflow::event::WorkflowEvent;
+use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
+use crate::adaptor::gateway::workflow::schema::Workflow;
+use crate::adaptor::gateway::workflow::state::{StepOutput, WorkflowExecutionState};
+use crate::domain::workflow::services::{
+    contract as workflow_contract, secret_masker, submission as domain_submission,
+};
+use crate::domain::workflow::{ContractType, ContractValidationResult, NodeName};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubmissionParallelChildState {
+    Running,
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+pub(crate) struct SubmissionParallelChild<'a> {
+    pub(crate) step_name: &'a str,
+    pub(crate) state: SubmissionParallelChildState,
+}
+
+pub(crate) struct SubmissionParallelRun<'a> {
+    pub(crate) parent_step_name: &'a str,
+    pub(crate) children: &'a [SubmissionParallelChild<'a>],
+}
+
+#[derive(Debug)]
+pub(crate) struct SubmittedOutputMutation {
+    pub(crate) workflow_name: String,
+    prior_step_output: Option<StepOutput>,
+    prior_workflow_variables: HashMap<String, String>,
+}
+
+pub(crate) struct ValidatedSubmissionOutput {
+    pub(crate) structured_output: serde_json::Value,
+    pub(crate) result: Option<String>,
+    pub(crate) workflow_variables: HashMap<String, String>,
+}
+
+pub(crate) fn validate_submit_output_request(
+    run_id: &str,
+    step_name: &str,
+    contract: &str,
+) -> Result<(), WorkflowEngineError> {
+    uuid::Uuid::parse_str(run_id)
+        .map_err(|_| WorkflowEngineError::ValidationError("run_id must be UUID".to_string()))?;
+    NodeName::new(step_name).map_err(|_| {
+        WorkflowEngineError::ValidationError("step_name must not be empty".to_string())
+    })?;
+    ContractType::new(contract).map_err(|_| {
+        WorkflowEngineError::ValidationError("contract must not be empty".to_string())
+    })?;
+    Ok(())
+}
+
+pub(crate) fn validate_submission_output_with_secrets(
+    contract: &str,
+    structured_output: serde_json::Value,
+    secrets: &[String],
+) -> Result<ValidatedSubmissionOutput, WorkflowEngineError> {
+    let redacted =
+        secret_masker::mask_sensitive_structured_output(contract, structured_output, secrets);
+    let contract_definition = crate::adaptor::gateway::workflow::builtin::get_builtin_facet(
+        crate::adaptor::gateway::workflow::facet::FacetKind::Contract,
+        contract,
+    );
+    match workflow_contract::validate_contract_value_with_definition(redacted, contract_definition)
+    {
+        ContractValidationResult::Valid {
+            structured_output,
+            result,
+        } => {
+            let workflow_variables =
+                workflow_contract::extract_workflow_variables_from_contract_output(
+                    Some(contract),
+                    Some(&structured_output),
+                );
+            Ok(ValidatedSubmissionOutput {
+                structured_output,
+                result,
+                workflow_variables,
+            })
+        }
+        ContractValidationResult::Invalid(violation) => {
+            Err(WorkflowEngineError::ValidationError(format!(
+                "contract validation failed ({}): {}",
+                violation.reason, violation.details
+            )))
+        }
+    }
+}
+
+pub(crate) fn is_accepting_submission_target(
+    workflow: &Workflow,
+    current_step_index: usize,
+    parallel_run: Option<SubmissionParallelRun<'_>>,
+    step_name: &str,
+) -> bool {
+    let workflow = workflow_definition_to_domain(workflow);
+    let parallel_children = parallel_run.as_ref().map(|parallel| {
+        parallel
+            .children
+            .iter()
+            .map(|child| domain_submission::SubmissionParallelChild {
+                step_name: child.step_name,
+                state: match child.state {
+                    SubmissionParallelChildState::Running => {
+                        domain_submission::SubmissionParallelChildState::Running
+                    }
+                    SubmissionParallelChildState::Completed => {
+                        domain_submission::SubmissionParallelChildState::Completed
+                    }
+                    SubmissionParallelChildState::Failed => {
+                        domain_submission::SubmissionParallelChildState::Failed
+                    }
+                    SubmissionParallelChildState::Interrupted => {
+                        domain_submission::SubmissionParallelChildState::Interrupted
+                    }
+                },
+            })
+            .collect::<Vec<_>>()
+    });
+    let parallel_run =
+        parallel_run
+            .as_ref()
+            .map(|parallel| domain_submission::SubmissionParallelRun {
+                parent_step_name: parallel.parent_step_name,
+                children: parallel_children.as_deref().unwrap_or(&[]),
+            });
+    domain_submission::is_accepting_submission_target(
+        &workflow,
+        current_step_index,
+        parallel_run,
+        step_name,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_validated_submission(
+    exec: &mut WorkflowExecution,
+    run_id: &str,
+    step_name: &str,
+    contract: &str,
+    validated_output: &serde_json::Value,
+    validated_result: Option<String>,
+    contract_vars: HashMap<String, String>,
+    timestamp: f64,
+) -> Result<SubmittedOutputMutation, WorkflowEngineError> {
+    match exec.state {
+        WorkflowExecutionState::Running | WorkflowExecutionState::WaitingApproval => {}
+        _ => {
+            return Err(WorkflowEngineError::InvalidState(format!(
+                "run {run_id} is not accepting structured output (state: {})",
+                exec.state.as_str()
+            )));
+        }
+    }
+
+    let workflow = workflow_definition_to_domain(&exec.workflow);
+    let expected_contract = workflow_contract::lookup_step_output_contract(&workflow, step_name)
+        .ok_or_else(|| {
+            WorkflowEngineError::ValidationError(format!(
+                "step '{step_name}' is not a valid submission target"
+            ))
+        })?;
+    if expected_contract != contract {
+        return Err(WorkflowEngineError::ValidationError(format!(
+            "contract mismatch: step '{step_name}' expects '{expected_contract}', got '{contract}'"
+        )));
+    }
+
+    let parallel_children = exec.parallel_run.as_ref().map(|parallel| {
+        parallel
+            .children
+            .iter()
+            .map(|child| SubmissionParallelChild {
+                step_name: child.step_name.as_str(),
+                state: (&child.state).into(),
+            })
+            .collect::<Vec<_>>()
+    });
+    let parallel_run = exec
+        .parallel_run
+        .as_ref()
+        .map(|parallel| SubmissionParallelRun {
+            parent_step_name: parallel.parent_step_name.as_str(),
+            children: parallel_children.as_deref().unwrap_or(&[]),
+        });
+    if !is_accepting_submission_target(
+        &exec.workflow,
+        exec.current_step_index,
+        parallel_run,
+        step_name,
+    ) {
+        return Err(WorkflowEngineError::InvalidState(format!(
+            "step '{step_name}' is not currently accepting structured output"
+        )));
+    }
+
+    let run_index = exec
+        .step_execution_counts
+        .get(step_name)
+        .copied()
+        .unwrap_or(0);
+    let mutation = SubmittedOutputMutation {
+        workflow_name: exec.workflow.name.clone(),
+        prior_step_output: exec.step_outputs.get(step_name).cloned(),
+        prior_workflow_variables: exec.workflow_variables.clone(),
+    };
+    exec.step_outputs.insert(
+        step_name.to_string(),
+        StepOutput {
+            step_name: step_name.to_string(),
+            run_index,
+            session_id: None,
+            result: validated_result,
+            structured_output: Some(validated_output.clone()),
+            output_contract: Some(contract.to_string()),
+            token_usage: None,
+            completed_at: timestamp,
+        },
+    );
+    if !contract_vars.is_empty() {
+        exec.workflow_variables.extend(contract_vars);
+    }
+    Ok(mutation)
+}
+
+pub(crate) fn rollback_validated_submission(
+    exec: &mut WorkflowExecution,
+    step_name: &str,
+    mutation: SubmittedOutputMutation,
+) {
+    match mutation.prior_step_output {
+        Some(prior) => {
+            exec.step_outputs.insert(step_name.to_string(), prior);
+        }
+        None => {
+            exec.step_outputs.remove(step_name);
+        }
+    }
+    exec.workflow_variables = mutation.prior_workflow_variables;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn output_submitted_event(
+    run_id: &str,
+    workflow_name: &str,
+    step_name: &str,
+    contract: String,
+    structured_output: serde_json::Value,
+    request_id: Option<String>,
+    submitted_at: Option<f64>,
+    timestamp: f64,
+) -> WorkflowEvent {
+    WorkflowEvent::OutputSubmitted {
+        run_id: run_id.to_string(),
+        workflow_name: workflow_name.to_string(),
+        node_name: step_name.to_string(),
+        contract,
+        structured_output,
+        request_id,
+        submitted_at,
+        timestamp,
+    }
+}
+
+pub(crate) fn submitted_step_output_for(
+    step_outputs: &HashMap<String, StepOutput>,
+    step_name: &str,
+    run_index: u32,
+    contract: &str,
+) -> Option<StepOutput> {
+    let output = step_outputs.get(step_name)?;
+    if output.run_index == run_index
+        && output.output_contract.as_deref() == Some(contract)
+        && output.structured_output.is_some()
+    {
+        Some(output.clone())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn resolved_output_contract_definition_for(
+    workflow: &Workflow,
+    step_name: &str,
+    contract: &str,
+) -> Option<String> {
+    for node in &workflow.nodes {
+        if node.name == step_name && node.output_contract.as_deref() == Some(contract) {
+            return node
+                .resolved_facets
+                .output_contract
+                .as_deref()
+                .map(workflow_contract::strip_contract_validation_metadata);
+        }
+        if let Some(children) = node.parallel_children.as_ref() {
+            for child in children {
+                if child.name == step_name && child.output_contract.as_deref() == Some(contract) {
+                    return child
+                        .resolved_facets
+                        .output_contract
+                        .as_deref()
+                        .map(workflow_contract::strip_contract_validation_metadata);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
+    use crate::adaptor::gateway::workflow::schema::{
+        ChildNodeDefinition, NodeDefinition, NodeType, ResolvedFacets,
+    };
+    use crate::adaptor::gateway::workflow::state::{TokenUsage, WorkflowExecutionState};
+    use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
+
+    fn workflow_with_parallel() -> Workflow {
+        Workflow {
+            name: "wf".to_string(),
+            nodes: vec![NodeDefinition {
+                name: "parallel-review".to_string(),
+                node_type: NodeType::Parallel,
+                parallel_children: Some(vec![
+                    ChildNodeDefinition {
+                        name: "review-a".to_string(),
+                        output_contract: Some("review-verdict".to_string()),
+                        resolved_facets: ResolvedFacets {
+                            output_contract: Some(
+                                "Visible contract\n```contract-validation\n{}\n```".to_string(),
+                            ),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    ChildNodeDefinition {
+                        name: "review-b".to_string(),
+                        output_contract: Some("review-verdict".to_string()),
+                        ..Default::default()
+                    },
+                ]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn step_output(run_index: u32, contract: Option<&str>, structured: bool) -> StepOutput {
+        StepOutput {
+            step_name: "review-a".to_string(),
+            run_index,
+            session_id: None,
+            result: Some("LGTM".to_string()),
+            structured_output: structured.then(|| serde_json::json!({"verdict": "LGTM"})),
+            output_contract: contract.map(ToOwned::to_owned),
+            token_usage: Some(TokenUsage::default()),
+            completed_at: 1000.0,
+        }
+    }
+
+    fn running_execution() -> WorkflowExecution {
+        WorkflowExecution {
+            id: "run-1".to_string(),
+            workflow: Workflow {
+                name: "wf".to_string(),
+                nodes: vec![NodeDefinition {
+                    name: "review".to_string(),
+                    output_contract: Some("review-verdict".to_string()),
+                    ..NodeDefinition::default()
+                }],
+                ..Workflow::default()
+            },
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0,
+            step_execution_counts: HashMap::from([("review".to_string(), 2)]),
+            step_history: Vec::new(),
+            workflow_defaults: WorkflowDefaults {
+                backend_id: None,
+                permission_mode: "edit".to_string(),
+            },
+            worktree_path: "/tmp/wt".to_string(),
+            started_at: 1.0,
+            updated_at: 2.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn accepting_submission_target_accepts_only_running_parallel_child() {
+        let children = [
+            SubmissionParallelChild {
+                step_name: "review-a",
+                state: SubmissionParallelChildState::Running,
+            },
+            SubmissionParallelChild {
+                step_name: "review-b",
+                state: SubmissionParallelChildState::Completed,
+            },
+        ];
+        let parallel_run = SubmissionParallelRun {
+            parent_step_name: "parallel-review",
+            children: &children,
+        };
+
+        assert!(is_accepting_submission_target(
+            &workflow_with_parallel(),
+            0,
+            Some(parallel_run),
+            "review-a",
+        ));
+
+        let parallel_run = SubmissionParallelRun {
+            parent_step_name: "parallel-review",
+            children: &children,
+        };
+        assert!(!is_accepting_submission_target(
+            &workflow_with_parallel(),
+            0,
+            Some(parallel_run),
+            "review-b",
+        ));
+    }
+
+    #[test]
+    fn submitted_step_output_requires_matching_run_index_contract_and_structured_output() {
+        let outputs = HashMap::from([(
+            "review-a".to_string(),
+            step_output(2, Some("review-verdict"), true),
+        )]);
+
+        assert!(submitted_step_output_for(&outputs, "review-a", 2, "review-verdict").is_some());
+        assert!(submitted_step_output_for(&outputs, "review-a", 1, "review-verdict").is_none());
+        assert!(submitted_step_output_for(&outputs, "review-a", 2, "other-contract").is_none());
+
+        let outputs = HashMap::from([(
+            "review-a".to_string(),
+            step_output(2, Some("review-verdict"), false),
+        )]);
+        assert!(submitted_step_output_for(&outputs, "review-a", 2, "review-verdict").is_none());
+    }
+
+    #[test]
+    fn resolved_output_contract_definition_strips_validation_metadata_for_parallel_child() {
+        assert_eq!(
+            resolved_output_contract_definition_for(
+                &workflow_with_parallel(),
+                "review-a",
+                "review-verdict",
+            )
+            .as_deref(),
+            Some("Visible contract")
+        );
+    }
+
+    #[test]
+    fn validate_submit_output_request_rejects_invalid_identity_fields() {
+        assert!(matches!(
+            validate_submit_output_request("not-a-uuid", "review", "review-verdict"),
+            Err(WorkflowEngineError::ValidationError(message))
+                if message == "run_id must be UUID"
+        ));
+        assert!(matches!(
+            validate_submit_output_request(
+                "00000000-0000-0000-0000-000000000001",
+                " ",
+                "review-verdict"
+            ),
+            Err(WorkflowEngineError::ValidationError(message))
+                if message == "step_name must not be empty"
+        ));
+        assert!(matches!(
+            validate_submit_output_request("00000000-0000-0000-0000-000000000001", "review", ""),
+            Err(WorkflowEngineError::ValidationError(message))
+                if message == "contract must not be empty"
+        ));
+    }
+
+    #[test]
+    fn validate_submission_output_with_secrets_extracts_workflow_variables() {
+        let validated = validate_submission_output_with_secrets(
+            "spec-directory",
+            serde_json::json!({
+                "spec_dir": "docs/specs/feat-token",
+                "design": "design.md"
+            }),
+            &["SECRET_TOKEN".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            validated
+                .workflow_variables
+                .get("spec_dir")
+                .map(String::as_str),
+            Some("docs/specs/feat-token")
+        );
+        assert_eq!(
+            validated.structured_output["spec_dir"],
+            "docs/specs/feat-token"
+        );
+    }
+
+    #[test]
+    fn output_submitted_event_preserves_external_shape() {
+        let event = output_submitted_event(
+            "run-1",
+            "wf",
+            "review",
+            "review-verdict".to_string(),
+            serde_json::json!({"verdict": "LGTM"}),
+            Some("request-1".to_string()),
+            Some(10.0),
+            20.0,
+        );
+
+        assert!(matches!(
+            event,
+            WorkflowEvent::OutputSubmitted {
+                run_id,
+                workflow_name,
+                node_name,
+                contract,
+                request_id: Some(request_id),
+                submitted_at: Some(submitted_at),
+                timestamp,
+                ..
+            } if run_id == "run-1"
+                && workflow_name == "wf"
+                && node_name == "review"
+                && contract == "review-verdict"
+                && request_id == "request-1"
+                && (submitted_at - 10.0).abs() < f64::EPSILON
+                && (timestamp - 20.0).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn apply_validated_submission_updates_step_output_and_workflow_variables() {
+        let mut exec = running_execution();
+        let mutation = apply_validated_submission(
+            &mut exec,
+            "run-1",
+            "review",
+            "review-verdict",
+            &serde_json::json!({"verdict": "LGTM"}),
+            Some("LGTM".to_string()),
+            HashMap::from([("spec_dir".to_string(), "docs/specs/x".to_string())]),
+            42.0,
+        )
+        .unwrap();
+
+        assert_eq!(mutation.workflow_name, "wf");
+        let output = exec.step_outputs.get("review").unwrap();
+        assert_eq!(output.run_index, 2);
+        assert_eq!(output.output_contract.as_deref(), Some("review-verdict"));
+        assert_eq!(output.result.as_deref(), Some("LGTM"));
+        assert_eq!(output.completed_at, 42.0);
+        assert_eq!(
+            exec.workflow_variables.get("spec_dir").map(String::as_str),
+            Some("docs/specs/x")
+        );
+    }
+
+    #[test]
+    fn apply_validated_submission_rejects_contract_mismatch_without_mutation() {
+        let mut exec = running_execution();
+        let err = apply_validated_submission(
+            &mut exec,
+            "run-1",
+            "review",
+            "other-contract",
+            &serde_json::json!({"verdict": "LGTM"}),
+            Some("LGTM".to_string()),
+            HashMap::new(),
+            42.0,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
+        assert!(exec.step_outputs.is_empty());
+    }
+
+    #[test]
+    fn rollback_validated_submission_restores_previous_output_and_variables() {
+        let mut exec = running_execution();
+        exec.step_outputs.insert(
+            "review".to_string(),
+            step_output(1, Some("review-verdict"), true),
+        );
+        exec.workflow_variables
+            .insert("spec_dir".to_string(), "docs/specs/old".to_string());
+        let mutation = apply_validated_submission(
+            &mut exec,
+            "run-1",
+            "review",
+            "review-verdict",
+            &serde_json::json!({"verdict": "NEEDS_WORK"}),
+            Some("NEEDS_WORK".to_string()),
+            HashMap::from([("spec_dir".to_string(), "docs/specs/new".to_string())]),
+            42.0,
+        )
+        .unwrap();
+
+        rollback_validated_submission(&mut exec, "review", mutation);
+
+        let output = exec.step_outputs.get("review").unwrap();
+        assert_eq!(output.run_index, 1);
+        assert_eq!(output.result.as_deref(), Some("LGTM"));
+        assert_eq!(
+            exec.workflow_variables.get("spec_dir").map(String::as_str),
+            Some("docs/specs/old")
+        );
+    }
+}

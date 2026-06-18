@@ -925,4 +925,43 @@ mod tests {
         assert_no_forbidden_production_patterns("domain/workflow", &external_dependency_patterns);
         assert_no_forbidden_production_patterns("usecase/workflow", &external_dependency_patterns);
     }
+
+    #[test]
+    fn workflow_controller_production_uses_usecase_boundary_only() {
+        let forbidden_patterns = [
+            concat!("crate", "::", "adaptor", "::gateway", "::workflow"),
+            concat!("adaptor", "::gateway", "::workflow"),
+            concat!("crate", "::", "infrastructure", "::workflow"),
+            concat!("infrastructure", "::workflow"),
+        ];
+
+        assert_no_forbidden_production_patterns(
+            "adaptor/controller/command/workflow",
+            &forbidden_patterns,
+        );
+        assert_no_forbidden_production_patterns(
+            "adaptor/controller/handler/workflow",
+            &forbidden_patterns,
+        );
+    }
+
+    #[test]
+    fn workflow_legacy_entrypoints_are_removed() {
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for relative_path in [
+            "workflow",
+            concat!("infrastructure", "/workflow"),
+            "workflow_state_events.rs",
+            "workflow_state_presenter.rs",
+            "workflow_step_lifecycle.rs",
+            "workflow_step_lifecycle_adapters.rs",
+            "session_commands.rs",
+            concat!("protocol", "/workflow.rs"),
+        ] {
+            assert!(
+                !source_root.join(relative_path).exists(),
+                "{relative_path} must not remain as a workflow compatibility shim"
+            );
+        }
+    }
 }
