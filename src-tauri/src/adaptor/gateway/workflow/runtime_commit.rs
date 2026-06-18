@@ -56,12 +56,6 @@ pub(crate) struct RequiredEventCommit<'a> {
     pub(crate) append_error_context: &'a str,
 }
 
-pub(crate) struct ApprovalApplication {
-    pub(crate) effective_result: String,
-    pub(crate) structured_output: Option<serde_json::Value>,
-    pub(crate) output_contract: Option<String>,
-}
-
 /// ロック内で確定した遷移結果。ロック外で永続化・AgentSession起動を行うための情報を持つ。
 pub(crate) enum StepOutcome {
     /// 状態を永続化・ブロードキャストするだけ（終了状態遷移など）

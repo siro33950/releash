@@ -8959,8 +8959,8 @@ mod tests {
         // [08] このテストの責務は「send path で session が破壊されず維持されること」のみに限定する。
         // typed structured output の contract 検証（typed な step_outputs 更新の保証）は
         // SubmitOutput を経由する CLI/API 経路でしか発生しないため、本テストでは保証しない。
-        // contract 検証経路の回帰テストは `workflow::contract` の単体テスト群および
-        // `workflow::engine` の SubmitOutput 経路テストで別途カバーする。
+        // contract 検証経路の回帰テストは domain contract の単体テスト群および
+        // SubmitOutput の CLI/API 経路テストで別途カバーする。
         // ここでは「session の最新 Agent メッセージが上書きされて存在すること」のみ確認する。
         assert_eq!(latest_agent.id, agent.id);
 

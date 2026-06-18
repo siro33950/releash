@@ -566,6 +566,22 @@ impl WorkflowExecution {
         }
     }
 
+    /// turn_complete後の状態変更 plan を domain service で組み立てる。
+    pub(crate) fn plan_turn_complete_mutation(
+        &self,
+        exit_code: i64,
+    ) -> Result<workflow_transition::TurnCompleteMutationPlan, WorkflowEngineError> {
+        let workflow = workflow_definition_to_domain(&self.workflow);
+        let state = workflow_execution_state_to_domain(&self.state);
+        workflow_transition::plan_turn_complete_mutation(
+            &workflow,
+            self.current_step_index,
+            &state,
+            exit_code,
+        )
+        .map_err(workflow_error_to_engine_error)
+    }
+
     /// approvalモードの判定ロジック（純粋関数）。
     pub(crate) fn decide_approval_action(
         &self,
@@ -573,12 +589,7 @@ impl WorkflowExecution {
     ) -> Result<ApprovalAction, WorkflowEngineError> {
         let workflow = workflow_definition_to_domain(&self.workflow);
         let state = workflow_execution_state_to_domain(&self.state);
-        let decision = match decision {
-            ApprovalDecision::Approve => DomainApprovalDecision::Approve { comment: None },
-            ApprovalDecision::Reject { comment } => DomainApprovalDecision::Reject {
-                reason: comment.clone(),
-            },
-        };
+        let decision = approval_decision_to_domain(decision);
         match workflow_transition::decide_approval_action(
             &workflow,
             self.current_step_index,
@@ -592,6 +603,33 @@ impl WorkflowExecution {
                 Ok(ApprovalAction::TransitionTo(target))
             }
         }
+    }
+
+    pub(crate) fn plan_approval_application(
+        &self,
+        decision: &ApprovalDecision,
+        application: workflow_transition::ApprovalApplication,
+    ) -> Result<workflow_transition::ApprovalApplicationPlan, WorkflowEngineError> {
+        let workflow = workflow_definition_to_domain(&self.workflow);
+        let state = workflow_execution_state_to_domain(&self.state);
+        let decision = approval_decision_to_domain(decision);
+        workflow_transition::plan_approval_application(
+            &workflow,
+            self.current_step_index,
+            &state,
+            &decision,
+            application,
+        )
+        .map_err(workflow_error_to_engine_error)
+    }
+}
+
+fn approval_decision_to_domain(decision: &ApprovalDecision) -> DomainApprovalDecision {
+    match decision {
+        ApprovalDecision::Approve => DomainApprovalDecision::Approve { comment: None },
+        ApprovalDecision::Reject { comment } => DomainApprovalDecision::Reject {
+            reason: comment.clone(),
+        },
     }
 }
 

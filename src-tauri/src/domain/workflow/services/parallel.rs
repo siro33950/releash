@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use regex::RegexBuilder;
 
 use crate::domain::workflow::value_objects::{
-    CollectConfig, ParallelAggregate, ReduceStrategy, StepOutput,
+    default_step_entry_state, ChildOutputSnapshot, CollectConfig, ParallelAggregate,
+    ReduceStrategy, StepHistoryEntry, StepOutput, TokenUsage,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +19,32 @@ pub struct ParallelReduceResult {
 pub struct ParallelChildOutputMerge {
     pub structured_output: Option<serde_json::Value>,
     pub output_contract: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParallelChildCompletionInput {
+    pub step_name: String,
+    pub session_id: String,
+    pub result: Option<String>,
+    pub token_usage: TokenUsage,
+    pub run_index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParallelParentTransitionPlan {
+    Advance,
+    TransitionTo {
+        target_node_name: String,
+        aggregate_result: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParallelParentCompletionPlan {
+    pub child_step_names: Vec<String>,
+    pub parent_step_output: StepOutput,
+    pub history_entry: StepHistoryEntry,
+    pub transition: ParallelParentTransitionPlan,
 }
 
 pub fn merge_parallel_child_completion_output(
@@ -128,6 +155,108 @@ pub fn apply_reduce(
     }
 }
 
+pub fn plan_parallel_parent_completion(
+    parent_step_name: &str,
+    parent_run_index: u32,
+    aggregate: Option<&ParallelAggregate>,
+    children: &[ParallelChildCompletionInput],
+    step_outputs: &HashMap<String, StepOutput>,
+    timestamp: f64,
+) -> ParallelParentCompletionPlan {
+    let child_step_names: Vec<String> = children
+        .iter()
+        .map(|child| child.step_name.clone())
+        .collect();
+    let mut combined_tokens = TokenUsage::default();
+    for child in children {
+        combined_tokens.add(&child.token_usage);
+    }
+
+    let mut children_output = serde_json::Map::new();
+    for child_name in &child_step_names {
+        if let Some(output) = step_outputs.get(child_name) {
+            children_output.insert(
+                child_name.clone(),
+                output
+                    .structured_output
+                    .clone()
+                    .unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
+
+    let child_outputs = children
+        .iter()
+        .map(|child| {
+            let output = step_outputs.get(&child.step_name);
+            ChildOutputSnapshot {
+                step_name: child.step_name.clone(),
+                session_id: output
+                    .and_then(|output| output.session_id.clone())
+                    .or_else(|| Some(child.session_id.clone())),
+                result: output
+                    .and_then(|output| output.result.clone())
+                    .or_else(|| child.result.clone()),
+                run_index: child.run_index,
+                completed_at: output
+                    .map(|output| output.completed_at)
+                    .unwrap_or(timestamp),
+                structured_output: output.and_then(|output| output.structured_output.clone()),
+                output_contract: output.and_then(|output| output.output_contract.clone()),
+                state: default_step_entry_state(),
+            }
+        })
+        .collect();
+
+    let (transition, history_result) = if let Some(aggregate) = aggregate {
+        let agg_result = evaluate_aggregate(aggregate, step_outputs, &child_step_names);
+        let aggregate_result = if agg_result { "then" } else { "else" }.to_string();
+        let target_node_name = if agg_result {
+            aggregate.then.clone()
+        } else {
+            aggregate.r#else.clone()
+        };
+        (
+            ParallelParentTransitionPlan::TransitionTo {
+                target_node_name,
+                aggregate_result: aggregate_result.clone(),
+            },
+            aggregate_result,
+        )
+    } else {
+        (
+            ParallelParentTransitionPlan::Advance,
+            "complete".to_string(),
+        )
+    };
+
+    ParallelParentCompletionPlan {
+        child_step_names,
+        parent_step_output: StepOutput {
+            step_name: parent_step_name.to_string(),
+            run_index: parent_run_index,
+            session_id: None,
+            result: None,
+            structured_output: Some(serde_json::Value::Object(children_output)),
+            output_contract: None,
+            token_usage: Some(combined_tokens.clone()),
+            completed_at: timestamp,
+        },
+        history_entry: StepHistoryEntry {
+            step_name: parent_step_name.to_string(),
+            completed_at: timestamp,
+            result: Some(history_result),
+            session_id: None,
+            token_usage: Some(combined_tokens),
+            structured_output: None,
+            run_index: parent_run_index,
+            child_outputs: Some(child_outputs),
+            state: default_step_entry_state(),
+        },
+        transition,
+    }
+}
+
 fn non_empty_array(entries: Vec<serde_json::Value>) -> Option<serde_json::Value> {
     if entries.is_empty() {
         None
@@ -232,6 +361,19 @@ mod parallel_tests {
         }
     }
 
+    fn completed_child(step_name: &str, result: Option<&str>) -> ParallelChildCompletionInput {
+        ParallelChildCompletionInput {
+            step_name: step_name.to_string(),
+            session_id: format!("session-{step_name}"),
+            result: result.map(str::to_string),
+            token_usage: TokenUsage {
+                input_tokens: 2,
+                output_tokens: 3,
+            },
+            run_index: 1,
+        }
+    }
+
     #[test]
     fn test_reduce_last_最新completed_atの出力を選ぶ() {
         let collect = CollectConfig {
@@ -246,6 +388,79 @@ mod parallel_tests {
             apply_reduce(&collect, &outputs).result.as_deref(),
             Some("new")
         );
+    }
+
+    #[test]
+    fn plan_parallel_parent_completion_builds_history_output_and_then_transition() {
+        let aggregate = ParallelAggregate {
+            all_match: Some("LGTM".to_string()),
+            any_match: None,
+            then: "ship".to_string(),
+            r#else: "fix".to_string(),
+        };
+        let children = vec![
+            completed_child("review-a", Some("LGTM")),
+            completed_child("review-b", Some("LGTM")),
+        ];
+        let outputs = HashMap::from([
+            (
+                "review-a".to_string(),
+                output("review-a", Some("LGTM"), 10.0),
+            ),
+            (
+                "review-b".to_string(),
+                output("review-b", Some("LGTM"), 11.0),
+            ),
+        ]);
+
+        let plan = plan_parallel_parent_completion(
+            "parallel-review",
+            2,
+            Some(&aggregate),
+            &children,
+            &outputs,
+            12.0,
+        );
+
+        assert_eq!(
+            plan.transition,
+            ParallelParentTransitionPlan::TransitionTo {
+                target_node_name: "ship".to_string(),
+                aggregate_result: "then".to_string()
+            }
+        );
+        assert_eq!(plan.history_entry.step_name, "parallel-review");
+        assert_eq!(plan.history_entry.result.as_deref(), Some("then"));
+        assert_eq!(
+            plan.history_entry
+                .token_usage
+                .as_ref()
+                .map(|usage| (usage.input_tokens, usage.output_tokens)),
+            Some((4, 6))
+        );
+        assert_eq!(
+            plan.parent_step_output
+                .structured_output
+                .as_ref()
+                .and_then(|value| value.as_object())
+                .map(|object| object.len()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn plan_parallel_parent_completion_without_aggregate_advances() {
+        let children = vec![completed_child("review-a", Some("LGTM"))];
+        let outputs = HashMap::from([(
+            "review-a".to_string(),
+            output("review-a", Some("LGTM"), 10.0),
+        )]);
+
+        let plan =
+            plan_parallel_parent_completion("parallel-review", 1, None, &children, &outputs, 12.0);
+
+        assert_eq!(plan.transition, ParallelParentTransitionPlan::Advance);
+        assert_eq!(plan.history_entry.result.as_deref(), Some("complete"));
     }
 
     #[test]

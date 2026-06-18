@@ -15,6 +15,7 @@ use super::step_session_boundary::StepSessionInfo;
 use super::step_session_boundary::{dispatch_session_start, SessionStartGate};
 use super::step_session_boundary::{RealStepSessionDeps, StepSessionDeps};
 use crate::adaptor::gateway::workflow::approval_runtime as workflow_approval_runtime;
+use crate::adaptor::gateway::workflow::domain_mapping::transition_rule_from_domain;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::event::{ApprovalDecisionRecord, WorkflowEvent};
 use crate::adaptor::gateway::workflow::event_log_query::{
@@ -42,13 +43,12 @@ use crate::adaptor::gateway::workflow::run::{
     RunStatus, RunStore, RunStoreError, TerminalRunStatus, TriggerSource, WorkflowRun,
 };
 use crate::adaptor::gateway::workflow::runtime_commit::{
-    self as workflow_runtime_commit, AbortOutcome, AbortTargetLookup, ApprovalApplication,
-    CommandMutationRollback, RequiredEventCommit, StepOutcome,
+    self as workflow_runtime_commit, AbortOutcome, AbortTargetLookup, CommandMutationRollback,
+    RequiredEventCommit, StepOutcome,
 };
 use crate::adaptor::gateway::workflow::runtime_events as workflow_runtime_events;
 use crate::adaptor::gateway::workflow::runtime_state::{
-    ApprovalAction, ApprovalDecision, ParallelChildState, SessionWorkflowRef, TurnCompleteAction,
-    WorkflowExecution,
+    ApprovalDecision, ParallelChildState, SessionWorkflowRef, WorkflowExecution,
 };
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::runtime_state::{CycleGuardResult, NextStepDecision};
@@ -74,6 +74,7 @@ use crate::adaptor::gateway::workflow::turn_completion;
 use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::history::RuntimeStartFailureKind;
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
+use crate::domain::workflow::services::transition as workflow_transition;
 use crate::domain::workflow::OutcomeCommitMode;
 use crate::domain::workflow::STEP_STATE_FAILED;
 #[cfg(test)]
@@ -1178,29 +1179,23 @@ impl WorkflowRuntimeService {
                     output_tokens: output,
                 });
             }
-            let action = exec.decide_turn_complete_action(exit_code);
+            let plan = exec.plan_turn_complete_mutation(exit_code)?;
 
-            let result = match action {
-                TurnCompleteAction::NotRunning => return Ok(()),
-                TurnCompleteAction::SessionError {
-                    step_name,
-                    exit_code,
+            match plan {
+                workflow_transition::TurnCompleteMutationPlan::NotRunning => return Ok(()),
+                workflow_transition::TurnCompleteMutationPlan::SessionError {
+                    history_result,
+                    failure_reason,
+                    ..
                 } => {
                     if exec.is_terminal() {
                         return Ok(());
                     }
                     let snapshot_before = exec.clone();
-                    let entry = exec.make_step_history_entry(
-                        Some(format!("error (exit_code: {})", exit_code)),
-                        None,
-                        None,
-                    );
+                    let entry = exec.make_step_history_entry(Some(history_result), None, None);
                     exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
-                        reason: format!(
-                            "AgentSession error at step '{}' (exit_code: {})",
-                            step_name, exit_code
-                        ),
+                        reason: failure_reason,
                     };
                     exec.updated_at = current_timestamp();
                     Ok(TurnCommit {
@@ -1209,13 +1204,12 @@ impl WorkflowRuntimeService {
                         rollback_snapshot: (exec.id.clone(), snapshot_before),
                     })
                 }
-                TurnCompleteAction::WaitApproval => {
+                workflow_transition::TurnCompleteMutationPlan::RequestApproval { node_name } => {
                     if exec.is_terminal() {
                         return Ok(());
                     }
                     let snapshot_before = exec.clone();
                     let workflow_name = exec.workflow.name.clone();
-                    let node_name = exec.workflow.nodes[exec.current_step_index].name.clone();
                     exec.state = WorkflowExecutionState::WaitingApproval;
                     exec.updated_at = current_timestamp();
                     Ok(TurnCommit {
@@ -1229,21 +1223,20 @@ impl WorkflowRuntimeService {
                         rollback_snapshot: (exec.id.clone(), snapshot_before),
                     })
                 }
-                TurnCompleteAction::UnexpectedNodeType {
-                    step_name,
-                    node_type,
+                workflow_transition::TurnCompleteMutationPlan::UnexpectedNodeType {
+                    failure_reason,
+                    ..
                 } => {
                     if exec.is_terminal() {
                         return Ok(());
                     }
                     let snapshot_before = exec.clone();
-                    let reason = format!(
-                        "Workflow engine reached turn_complete for unexpected node type {:?} at step '{}' (this should have been rejected upstream)",
-                        node_type, step_name
-                    );
-                    let entry = exec.make_step_history_entry(Some(reason.clone()), None, None);
+                    let entry =
+                        exec.make_step_history_entry(Some(failure_reason.clone()), None, None);
                     exec.step_history.push(entry);
-                    exec.state = WorkflowExecutionState::Failed { reason };
+                    exec.state = WorkflowExecutionState::Failed {
+                        reason: failure_reason,
+                    };
                     exec.updated_at = current_timestamp();
                     Ok(TurnCommit {
                         outcome: StepOutcome::Persist(exec.to_workflow_state()),
@@ -1251,9 +1244,15 @@ impl WorkflowRuntimeService {
                         rollback_snapshot: (exec.id.clone(), snapshot_before),
                     })
                 }
-                TurnCompleteAction::AutoEvaluate { rules, step_name } => Err((rules, step_name)),
-            };
-            result
+                workflow_transition::TurnCompleteMutationPlan::AutoEvaluate {
+                    rules,
+                    node_name,
+                } => {
+                    let rules: Vec<TransitionRule> =
+                        rules.into_iter().map(transition_rule_from_domain).collect();
+                    Err((rules, node_name))
+                }
+            }
         };
 
         match action_or_outcome {
@@ -1360,24 +1359,26 @@ impl WorkflowRuntimeService {
     fn apply_approval_application(
         exec: &mut WorkflowExecution,
         decision: &ApprovalDecision,
-        application: ApprovalApplication,
+        application: workflow_transition::ApprovalApplication,
     ) -> Result<StepOutcome, WorkflowEngineError> {
-        let action = exec.decide_approval_action(decision)?;
-        let outcome = match action {
-            ApprovalAction::Advance => {
+        let plan = exec.plan_approval_application(decision, application)?;
+        let outcome = match plan.transition {
+            workflow_transition::ApprovalApplicationTransition::Advance => {
+                let completion = plan.completion;
                 let entry = exec.make_step_history_entry(
-                    Some(application.effective_result),
-                    application.structured_output,
-                    application.output_contract,
+                    Some(completion.result),
+                    completion.structured_output,
+                    completion.output_contract,
                 );
                 exec.step_history.push(entry);
                 exec.apply_advance()
             }
-            ApprovalAction::TransitionTo(target) => {
+            workflow_transition::ApprovalApplicationTransition::TransitionTo(target) => {
+                let completion = plan.completion;
                 let entry = exec.make_step_history_entry(
-                    Some(application.effective_result),
-                    application.structured_output,
-                    application.output_contract,
+                    Some(completion.result),
+                    completion.structured_output,
+                    completion.output_contract,
                 );
                 exec.step_history.push(entry);
                 exec.apply_transition(&target)?
@@ -1605,7 +1606,7 @@ impl WorkflowRuntimeService {
             let outcome = Self::apply_approval_application(
                 exec,
                 &decision,
-                ApprovalApplication {
+                workflow_transition::ApprovalApplication {
                     effective_result,
                     structured_output,
                     output_contract: application_output_contract,
@@ -2068,7 +2069,7 @@ impl WorkflowRuntimeService {
             .and_then(|output| output.structured_output.clone());
 
         // ロック内: 子ステップの状態更新 + 全完了チェック
-        let (all_completed, outcome_opt, exec_snapshot_before) = {
+        let (all_completed, outcome_opt, exec_snapshot_before, progress_events) = {
             let mut execs = self.executions.lock().await;
             let exec = execs
                 .get_mut(run_id)
@@ -2190,23 +2191,18 @@ impl WorkflowRuntimeService {
             // [08] child の StepOutput は CLI / Tauri 経由の SubmitOutput でのみ確定する。
             // ここでは step_outputs slot に触れず、SubmitOutput 済みの値を保持したまま
             // 親 ParallelChildCompleted の事実だけを event log に積む。
-
-            // ParallelStepCompleted ログ
-            self.write_log(
-                app,
-                WorkflowEvent::ParallelChildCompleted {
-                    run_id: exec.id.clone(),
-                    workflow_name: exec.workflow.name.clone(),
-                    parent_node_name: pr.parent_step_name.clone(),
-                    child_node_name: child_name,
-                    result: child_result.clone(),
-                    session_id: session_id.to_string(),
-                    token_usage: Some(child_token_usage.clone()),
-                    structured_output: child_structured_output.clone(),
-                    run_index: child_run_index,
-                    timestamp: current_timestamp(),
-                },
-            );
+            let mut progress_events = vec![WorkflowEvent::ParallelChildCompleted {
+                run_id: exec.id.clone(),
+                workflow_name: exec.workflow.name.clone(),
+                parent_node_name: pr.parent_step_name.clone(),
+                child_node_name: child_name,
+                result: child_result.clone(),
+                session_id: session_id.to_string(),
+                token_usage: Some(child_token_usage.clone()),
+                structured_output: child_structured_output.clone(),
+                run_index: child_run_index,
+                timestamp: current_timestamp(),
+            }];
 
             // 全完了チェック
             let all_done = pr
@@ -2222,172 +2218,66 @@ impl WorkflowRuntimeService {
                     false,
                     Some(StepOutcome::Persist(snapshot)),
                     exec_snapshot_before,
+                    progress_events,
                 )
             } else {
-                // 全完了 → 親ブロック名でstep_outputsに集約登録 + aggregate評価 + 遷移
                 let aggregate = pr.aggregate.clone();
                 let parent_step_name = pr.parent_step_name.clone();
-                let child_step_names: Vec<String> =
-                    pr.children.iter().map(|c| c.step_name.clone()).collect();
-
-                // 子ステップの個別StepOutputは既に登録済み（行1401-1413）
-                // 親名での集約登録は parallel_run クリア後に行う
-                // token_usageはStepHistoryEntryに直接渡す
                 let parent_run_index = exec
                     .step_execution_counts
                     .get(&parent_step_name)
                     .copied()
                     .unwrap_or(1);
-                let mut combined_tokens = TokenUsage::default();
-                for child in &pr.children {
-                    combined_tokens.add(&child.token_usage);
-                }
-
-                // 並列子ステップのスナップショットを保存（履歴表示用）
-                // StepOutputがない子（output_contractなし）はParallelChildRunからフォールバック
-                let child_snapshots: Vec<
-                    crate::adaptor::gateway::workflow::state::ChildOutputSnapshot,
-                > = pr
-                    .children
-                    .iter()
-                    .map(|child| {
-                        let child_so = exec.step_outputs.get(&child.step_name);
-                        crate::adaptor::gateway::workflow::state::ChildOutputSnapshot {
-                            step_name: child.step_name.clone(),
-                            session_id: child_so
-                                .and_then(|o| o.session_id.clone())
-                                .or_else(|| Some(child.session_id.clone())),
-                            result: child_so
-                                .and_then(|o| o.result.clone())
-                                .or(child.result.clone()),
-                            run_index: child.run_index,
-                            completed_at: child_so
-                                .map(|o| o.completed_at)
-                                .unwrap_or_else(current_timestamp),
-                            structured_output: child_so.and_then(|o| o.structured_output.clone()),
-                            output_contract: child_so.and_then(|o| o.output_contract.clone()),
-                            state: crate::adaptor::gateway::workflow::state::default_step_entry_state(
-                            ),
-                        }
-                    })
-                    .collect();
+                let completed_at = current_timestamp();
+                let completion_plan = workflow_parallel_runtime::plan_parallel_parent_completion(
+                    &parent_step_name,
+                    parent_run_index,
+                    aggregate.as_ref(),
+                    &pr.children,
+                    &exec.step_outputs,
+                    completed_at,
+                );
+                let parallel_completed_result = match &completion_plan.transition {
+                    workflow_parallel_runtime::ParallelParentCompletionTransition::Advance => {
+                        "advance".to_string()
+                    }
+                    workflow_parallel_runtime::ParallelParentCompletionTransition::TransitionTo {
+                        aggregate_result,
+                        ..
+                    } => aggregate_result.clone(),
+                };
+                progress_events.push(WorkflowEvent::ParallelCompleted {
+                    run_id: exec.id.clone(),
+                    workflow_name: exec.workflow.name.clone(),
+                    parent_node_name: parent_step_name.clone(),
+                    aggregate_result: parallel_completed_result,
+                    timestamp: current_timestamp(),
+                });
 
                 exec.parallel_run = None;
-                exec.updated_at = current_timestamp();
+                exec.updated_at = completed_at;
+                exec.step_outputs
+                    .insert(parent_step_name.clone(), completion_plan.parent_step_output);
+                exec.current_step_token_usage = TokenUsage::default();
+                exec.current_session_id = None;
+                exec.step_history.push(completion_plan.history_entry);
 
-                // 並列ブロック親名でstep_outputsに集約登録
-                // 後続ステップがpass_output_fromで親名を参照できるようにする
-                {
-                    let mut children_output = serde_json::Map::new();
-                    for child_name in &child_step_names {
-                        if let Some(child_so) = exec.step_outputs.get(child_name) {
-                            children_output.insert(
-                                child_name.clone(),
-                                child_so
-                                    .structured_output
-                                    .clone()
-                                    .unwrap_or(serde_json::Value::Null),
-                            );
-                        }
+                let outcome = match completion_plan.transition {
+                    workflow_parallel_runtime::ParallelParentCompletionTransition::Advance => {
+                        exec.apply_advance()
                     }
-                    exec.step_outputs.insert(
-                        parent_step_name.clone(),
-                        StepOutput {
-                            step_name: parent_step_name.clone(),
-                            run_index: parent_run_index,
-                            session_id: None,
-                            result: None,
-                            structured_output: Some(serde_json::Value::Object(children_output)),
-                            output_contract: None,
-                            token_usage: Some(combined_tokens.clone()),
-                            completed_at: current_timestamp(),
-                        },
-                    );
-                }
-
-                let outcome = if let Some(ref agg) = aggregate {
-                    // aggregate評価
-                    let agg_result = workflow_parallel_runtime::evaluate_aggregate(
-                        agg,
-                        &exec.step_outputs,
-                        &child_step_names,
-                    );
-                    let target = if agg_result { &agg.then } else { &agg.r#else };
-
-                    // ParallelCompleted ログ
-                    self.write_log(
-                        app,
-                        WorkflowEvent::ParallelCompleted {
-                            run_id: exec.id.clone(),
-                            workflow_name: exec.workflow.name.clone(),
-                            parent_node_name: parent_step_name.clone(),
-                            aggregate_result: if agg_result {
-                                "then".to_string()
-                            } else {
-                                "else".to_string()
-                            },
-                            timestamp: current_timestamp(),
-                        },
-                    );
-
-                    // 履歴エントリ追加（並列ブロックの完了として）
-                    let entry = StepHistoryEntry {
-                        step_name: parent_step_name.clone(),
-                        completed_at: current_timestamp(),
-                        result: Some(if agg_result {
-                            "then".to_string()
-                        } else {
-                            "else".to_string()
-                        }),
-                        session_id: None,
-                        token_usage: Some(combined_tokens),
-                        structured_output: None,
-
-                        run_index: parent_run_index,
-                        child_outputs: Some(child_snapshots.clone()),
-                        state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
-                    };
-                    exec.current_step_token_usage = TokenUsage::default();
-                    exec.current_session_id = None;
-                    exec.step_history.push(entry);
-
-                    exec.apply_transition(target)?
-                } else {
-                    // aggregateなし → 通常のadvance
-
-                    // ParallelCompleted ログ
-                    self.write_log(
-                        app,
-                        WorkflowEvent::ParallelCompleted {
-                            run_id: exec.id.clone(),
-                            workflow_name: exec.workflow.name.clone(),
-                            parent_node_name: parent_step_name.clone(),
-                            aggregate_result: "advance".to_string(),
-                            timestamp: current_timestamp(),
-                        },
-                    );
-
-                    let entry = StepHistoryEntry {
-                        step_name: parent_step_name.clone(),
-                        completed_at: current_timestamp(),
-                        result: Some("complete".to_string()),
-                        session_id: None,
-                        token_usage: Some(combined_tokens),
-                        structured_output: None,
-
-                        run_index: parent_run_index,
-                        child_outputs: Some(child_snapshots),
-                        state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
-                    };
-                    exec.current_step_token_usage = TokenUsage::default();
-                    exec.current_session_id = None;
-                    exec.step_history.push(entry);
-
-                    exec.apply_advance()
+                    workflow_parallel_runtime::ParallelParentCompletionTransition::TransitionTo {
+                        target_node_name,
+                        ..
+                    } => exec.apply_transition(&target_node_name)?,
                 };
-                (true, Some(outcome), exec_snapshot_before)
+                (true, Some(outcome), exec_snapshot_before, progress_events)
             }
         };
+
+        for event in progress_events {
+            self.write_log(app, event);
+        }
 
         if let Some(outcome) = outcome_opt {
             if all_completed {
@@ -3992,7 +3882,7 @@ impl WorkflowRuntimeService {
         Self::apply_approval_application(
             exec,
             &decision,
-            ApprovalApplication {
+            workflow_transition::ApprovalApplication {
                 effective_result,
                 structured_output,
                 output_contract: application_output_contract,

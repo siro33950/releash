@@ -5,7 +5,8 @@ use tokio::sync::Mutex;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::domain_mapping::step_output_to_domain;
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    collect_config_to_domain, parallel_aggregate_to_domain, step_outputs_to_domain,
+    collect_config_to_domain, parallel_aggregate_to_domain, step_history_entry_from_domain,
+    step_output_from_domain, step_outputs_to_domain, token_usage_to_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::event::{CollectedOutputEntry, WorkflowEvent};
@@ -159,6 +160,21 @@ pub(crate) struct ReduceTransitionResult {
     pub(crate) snapshot_before: WorkflowExecution,
 }
 
+pub(crate) enum ParallelParentCompletionTransition {
+    Advance,
+    TransitionTo {
+        target_node_name: String,
+        aggregate_result: String,
+    },
+}
+
+pub(crate) struct ParallelParentCompletionPlan {
+    pub(crate) child_step_names: Vec<String>,
+    pub(crate) parent_step_output: StepOutput,
+    pub(crate) history_entry: crate::adaptor::gateway::workflow::state::StepHistoryEntry,
+    pub(crate) transition: ParallelParentCompletionTransition,
+}
+
 /// reduce処理の結果。
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ReduceResult {
@@ -272,6 +288,54 @@ pub(crate) fn evaluate_aggregate(
     let aggregate = parallel_aggregate_to_domain(aggregate);
     let step_outputs = step_outputs_to_domain(step_outputs);
     workflow_parallel::evaluate_aggregate(&aggregate, &step_outputs, child_step_names)
+}
+
+pub(crate) fn plan_parallel_parent_completion(
+    parent_step_name: &str,
+    parent_run_index: u32,
+    aggregate: Option<&ParallelAggregate>,
+    children: &[ParallelChildRun],
+    step_outputs: &HashMap<String, StepOutput>,
+    timestamp: f64,
+) -> ParallelParentCompletionPlan {
+    let aggregate = aggregate.map(parallel_aggregate_to_domain);
+    let children: Vec<workflow_parallel::ParallelChildCompletionInput> = children
+        .iter()
+        .map(|child| workflow_parallel::ParallelChildCompletionInput {
+            step_name: child.step_name.clone(),
+            session_id: child.session_id.clone(),
+            result: child.result.clone(),
+            token_usage: token_usage_to_domain(&child.token_usage),
+            run_index: child.run_index,
+        })
+        .collect();
+    let step_outputs = step_outputs_to_domain(step_outputs);
+    let plan = workflow_parallel::plan_parallel_parent_completion(
+        parent_step_name,
+        parent_run_index,
+        aggregate.as_ref(),
+        &children,
+        &step_outputs,
+        timestamp,
+    );
+    let transition = match plan.transition {
+        workflow_parallel::ParallelParentTransitionPlan::Advance => {
+            ParallelParentCompletionTransition::Advance
+        }
+        workflow_parallel::ParallelParentTransitionPlan::TransitionTo {
+            target_node_name,
+            aggregate_result,
+        } => ParallelParentCompletionTransition::TransitionTo {
+            target_node_name,
+            aggregate_result,
+        },
+    };
+    ParallelParentCompletionPlan {
+        child_step_names: plan.child_step_names,
+        parent_step_output: step_output_from_domain(plan.parent_step_output),
+        history_entry: step_history_entry_from_domain(plan.history_entry),
+        transition,
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,7 @@
 use super::*;
 use crate::adaptor::gateway::workflow::approval_runtime::MAX_APPROVAL_COMMENT_CHARS;
+use crate::adaptor::gateway::workflow::runtime_state::{ApprovalAction, TurnCompleteAction};
+use crate::domain::workflow::services::transition::ApprovalApplication;
 use crate::infrastructure::agent_session::runtime::{
     AgentBackend, AgentBackendRegistry, AgentMessage as BackendAgentMessage, PermissionResponse,
     SessionConfig as BackendSessionConfig, SessionHandle as BackendSessionHandle,

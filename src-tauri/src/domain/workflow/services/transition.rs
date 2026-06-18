@@ -49,6 +49,55 @@ pub enum ApprovalTransitionDecision {
     TransitionTo(String),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum TurnCompleteMutationPlan {
+    SessionError {
+        node_name: String,
+        exit_code: i64,
+        history_result: String,
+        failure_reason: String,
+    },
+    AutoEvaluate {
+        rules: Vec<TransitionRule>,
+        node_name: String,
+    },
+    RequestApproval {
+        node_name: String,
+    },
+    UnexpectedNodeType {
+        node_name: String,
+        node_type: NodeType,
+        failure_reason: String,
+    },
+    NotRunning,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalApplication {
+    pub effective_result: String,
+    pub structured_output: Option<serde_json::Value>,
+    pub output_contract: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalCompletion {
+    pub result: String,
+    pub structured_output: Option<serde_json::Value>,
+    pub output_contract: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApprovalApplicationTransition {
+    Advance,
+    TransitionTo(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalApplicationPlan {
+    pub completion: ApprovalCompletion,
+    pub transition: ApprovalApplicationTransition,
+}
+
 pub fn decide_next_node(workflow: &WorkflowDefinition, current_index: usize) -> NextNodeDecision {
     if current_index + 1 >= workflow.nodes.len() {
         NextNodeDecision::Completed
@@ -121,6 +170,56 @@ pub fn decide_turn_complete_action(
     }
 }
 
+pub fn plan_turn_complete_mutation(
+    workflow: &WorkflowDefinition,
+    current_index: usize,
+    state: &WorkflowExecutionState,
+    exit_code: i64,
+) -> Result<TurnCompleteMutationPlan, WorkflowError> {
+    let decision = decide_turn_complete_action(workflow, current_index, state, exit_code)?;
+    let plan = match decision {
+        TurnCompleteDecision::SessionError {
+            node_name,
+            exit_code,
+        } => TurnCompleteMutationPlan::SessionError {
+            history_result: format!("error (exit_code: {exit_code})"),
+            failure_reason: format!(
+                "AgentSession error at step '{node_name}' (exit_code: {exit_code})"
+            ),
+            node_name,
+            exit_code,
+        },
+        TurnCompleteDecision::AutoEvaluate { rules, node_name } => {
+            TurnCompleteMutationPlan::AutoEvaluate { rules, node_name }
+        }
+        TurnCompleteDecision::WaitApproval => {
+            let node_name = workflow
+                .nodes
+                .get(current_index)
+                .ok_or_else(|| {
+                    WorkflowError::validation(format!(
+                        "node index out of range: {current_index}"
+                    ))
+                })?
+                .name
+                .clone();
+            TurnCompleteMutationPlan::RequestApproval { node_name }
+        }
+        TurnCompleteDecision::UnexpectedNodeType {
+            node_name,
+            node_type,
+        } => TurnCompleteMutationPlan::UnexpectedNodeType {
+            failure_reason: format!(
+                "Workflow engine reached turn_complete for unexpected node type {node_type:?} at step '{node_name}' (this should have been rejected upstream)"
+            ),
+            node_name,
+            node_type,
+        },
+        TurnCompleteDecision::NotRunning => TurnCompleteMutationPlan::NotRunning,
+    };
+    Ok(plan)
+}
+
 pub fn decide_approval_action(
     workflow: &WorkflowDefinition,
     current_index: usize,
@@ -154,6 +253,29 @@ pub fn decide_approval_action(
             "Abort is not an approval transition",
         )),
     }
+}
+
+pub fn plan_approval_application(
+    workflow: &WorkflowDefinition,
+    current_index: usize,
+    state: &WorkflowExecutionState,
+    decision: &ApprovalDecision,
+    application: ApprovalApplication,
+) -> Result<ApprovalApplicationPlan, WorkflowError> {
+    let transition = match decide_approval_action(workflow, current_index, state, decision)? {
+        ApprovalTransitionDecision::Advance => ApprovalApplicationTransition::Advance,
+        ApprovalTransitionDecision::TransitionTo(target) => {
+            ApprovalApplicationTransition::TransitionTo(target)
+        }
+    };
+    Ok(ApprovalApplicationPlan {
+        completion: ApprovalCompletion {
+            result: application.effective_result,
+            structured_output: application.structured_output,
+            output_contract: application.output_contract,
+        },
+        transition,
+    })
 }
 
 pub fn evaluate_auto_rules(text: &str, rules: &[TransitionRule]) -> Option<(String, String)> {
@@ -248,6 +370,24 @@ mod tests {
     }
 
     #[test]
+    fn plan_turn_complete_mutation_builds_domain_failure_details() {
+        let workflow = workflow(vec![node("agent", NodeType::Agent)]);
+
+        let plan = plan_turn_complete_mutation(&workflow, 0, &WorkflowExecutionState::Running, 42)
+            .unwrap();
+
+        assert_eq!(
+            plan,
+            TurnCompleteMutationPlan::SessionError {
+                node_name: "agent".to_string(),
+                exit_code: 42,
+                history_result: "error (exit_code: 42)".to_string(),
+                failure_reason: "AgentSession error at step 'agent' (exit_code: 42)".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn decide_approval_action_uses_reject_rule() {
         let mut approval = node("approve", NodeType::Approval);
         approval.transition_rules = vec![TransitionRule {
@@ -267,6 +407,41 @@ mod tests {
             )
             .unwrap(),
             ApprovalTransitionDecision::TransitionTo("fix".to_string())
+        );
+    }
+
+    #[test]
+    fn plan_approval_application_keeps_completion_data_and_reject_target() {
+        let mut approval = node("approve", NodeType::Approval);
+        approval.transition_rules = vec![TransitionRule {
+            r#match: "reject".to_string(),
+            next: "fix".to_string(),
+        }];
+        let workflow = workflow(vec![approval, node("fix", NodeType::Agent)]);
+
+        let plan = plan_approval_application(
+            &workflow,
+            0,
+            &WorkflowExecutionState::WaitingApproval,
+            &ApprovalDecision::Reject {
+                reason: "needs work".to_string(),
+            },
+            ApprovalApplication {
+                effective_result: "reject".to_string(),
+                structured_output: Some(serde_json::json!({ "decision": "reject" })),
+                output_contract: Some("approval-contract".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.transition,
+            ApprovalApplicationTransition::TransitionTo("fix".to_string())
+        );
+        assert_eq!(plan.completion.result, "reject");
+        assert_eq!(
+            plan.completion.output_contract.as_deref(),
+            Some("approval-contract")
         );
     }
 

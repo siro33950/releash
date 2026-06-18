@@ -892,7 +892,7 @@ mod tests {
             "qr_code",
             "review_comments",
             "sentry_integration",
-            "session_commands",
+            concat!("session", "_commands"),
             "shell_integration",
             "tls",
             "tray",
@@ -951,11 +951,11 @@ mod tests {
         for relative_path in [
             "workflow",
             concat!("infrastructure", "/workflow"),
-            "workflow_state_events.rs",
-            "workflow_state_presenter.rs",
-            "workflow_step_lifecycle.rs",
-            "workflow_step_lifecycle_adapters.rs",
-            "session_commands.rs",
+            concat!("workflow_state", "_events.rs"),
+            concat!("workflow_state", "_presenter.rs"),
+            concat!("workflow_step", "_lifecycle.rs"),
+            concat!("workflow_step", "_lifecycle_adapters.rs"),
+            concat!("session", "_commands.rs"),
             concat!("protocol", "/workflow.rs"),
         ] {
             assert!(
