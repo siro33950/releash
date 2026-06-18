@@ -420,9 +420,11 @@ mod tests {
         }
     }
 
+    type StepDetailKey = (String, String, Option<u32>);
+
     #[derive(Default)]
     struct FakeStepDetailProjectionRepository {
-        details: Mutex<HashMap<(String, String, Option<u32>), serde_json::Value>>,
+        details: Mutex<HashMap<StepDetailKey, serde_json::Value>>,
     }
 
     impl FakeStepDetailProjectionRepository {

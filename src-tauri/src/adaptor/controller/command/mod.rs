@@ -1,7 +1,13 @@
 pub(crate) mod agent_session;
 pub(crate) mod code;
+pub(crate) mod external_editor;
+pub(crate) mod hooks;
+pub(crate) mod notification;
+pub(crate) mod pty_session;
+pub(crate) mod remote_access;
 pub(crate) mod repository;
 pub(crate) mod workflow;
+pub(crate) mod workspace_state;
 
 type InvokeHandler = Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync>;
 
@@ -53,16 +59,6 @@ impl CommandRouter {
 
 pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     let app_handler: InvokeHandler = Box::new(tauri::generate_handler![
-
-            // PTY
-            crate::pty::spawn_pty,
-            crate::pty::write_pty,
-            crate::pty::resize_pty,
-            crate::pty::kill_pty,
-            crate::pty::list_pty_sessions,
-            crate::pty::get_or_spawn_pty,
-            crate::pty::kill_ptys_by_worktree,
-            crate::pty::gc_ptys_for_worktree,
             // ファイル監視
             crate::watcher::start_watching,
             crate::watcher::start_git_dir_watching,
@@ -131,12 +127,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::config::get_server_config,
             crate::config::update_server_port,
             crate::config::regenerate_token,
-            crate::config::generate_hooks_config,
-            crate::config::apply_hooks_config,
-            crate::config::get_hooks_status,
             crate::config::update_telemetry_enabled,
-            crate::config::get_notify_config,
-            crate::config::update_notify_config,
             crate::config::get_remote_config,
             crate::config::update_remote_config,
             crate::config::get_workflow_config,
@@ -146,25 +137,14 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::config::update_last_server_context,
             crate::config::get_crash_reporting_enabled,
             crate::config::update_crash_reporting,
-            crate::config::update_webhook_url,
-            crate::config::get_external_editor,
-            crate::config::update_external_editor,
             crate::config::get_mcp_config,
             crate::config::update_mcp_config,
             crate::config::regenerate_mcp_token,
-            // External Editor
-            crate::external_editor::detect_editors,
-            crate::external_editor::open_in_editor,
-            crate::external_editor::open_folder_in_editor,
             // Agent Status (Rust 中央管理)
             crate::adaptor::controller::command::agent_session::status::get_session_status,
             crate::adaptor::controller::command::agent_session::status::get_workspace_status,
             crate::adaptor::controller::command::agent_session::status::list_workspace_statuses,
             crate::adaptor::controller::command::agent_session::status::list_session_statuses,
-            // ネットワーク
-            crate::vpn_detect::detect_vpn_tunnel,
-            crate::vpn_detect::get_network_info,
-            crate::qr_code::get_connection_qr,
             // WebSocket サーバー
             crate::ws_server::commands::start_server,
             crate::ws_server::commands::stop_server,
@@ -186,9 +166,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::mcp::mcp_json::save_mcp_agent_selection,
             crate::mcp::mcp_json::generate_agent_mcp_config,
             crate::mcp::mcp_json::preview_agent_mcp_config,
-            // Workspace state
-            crate::workspace_state_store::load_workspace_state,
-            crate::workspace_state_store::save_workspace_state,
             // Review comments
             crate::review_comments::list_review_threads,
             crate::review_comments::get_review_thread,
@@ -256,6 +233,12 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
 
         ]);
     let mut router = CommandRouter::new(app_handler);
+    external_editor::register(&mut router);
+    hooks::register(&mut router);
+    notification::register(&mut router);
+    pty_session::register(&mut router);
+    remote_access::register(&mut router);
+    workspace_state::register(&mut router);
     workflow::register(&mut router);
     builder.invoke_handler(move |invoke: tauri::ipc::Invoke<tauri::Wry>| router.handle(invoke))
 }

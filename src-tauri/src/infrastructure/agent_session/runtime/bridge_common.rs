@@ -1418,7 +1418,7 @@ fn apply_bridge_eof_crash(
     effect
 }
 
-/// 状態遷移時に AgentStatusCenter へ通知し、必要に応じて Webhook 送信を行う統一エントリ。
+/// 状態遷移時に AgentStatusCenter へ通知する統一エントリ。
 /// session_store から ChatSession を引いて worktree_path / SessionState を取得する。
 /// `session_state_override` を渡すと、ストア値より優先される（Bridge crash 時など）。
 pub(crate) fn notify_status_transition<R: tauri::Runtime>(
@@ -1428,8 +1428,6 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
     turn_phase: TurnPhase,
     session_state_override: Option<crate::usecase::agent_session::session::SessionState>,
 ) {
-    use crate::config::AppConfig;
-    use crate::focus_tracker::FocusTracker;
     use crate::usecase::agent_session::status::{
         current_timestamp, AgentStatusCenter, SessionStatus, TurnPhaseRepr,
     };
@@ -1472,31 +1470,6 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
             .try_state::<Arc<crate::ws_bridge::WsBroadcaster>>()
             .map(|state| state.inner().clone());
         crate::agent_status_events::emit_agent_status_changes(app, broadcaster.as_deref(), changes);
-    }
-
-    // Webhook 送信（Slack/Discord）
-    if let (Some(cfg_state), Some(ft_state)) = (
-        app.try_state::<Arc<AppConfig>>(),
-        app.try_state::<Arc<parking_lot::Mutex<FocusTracker>>>(),
-    ) {
-        if let Ok(cfg) = cfg_state.get_config() {
-            let notify = cfg.server.notify.clone();
-            let url = notify.webhook_url.clone();
-            if !url.is_empty() && crate::webhook::should_notify(&notify, &agent_state, &ft_state) {
-                let agent_state_msg = crate::protocol::AgentState::from(agent_state.clone());
-                let sync = crate::protocol::AgentStateSync {
-                    worktree_path: worktree_path.clone(),
-                    state: agent_state_msg,
-                    exit_code: None,
-                    timestamp: current_timestamp(),
-                    session_id: Some(chat_session_id.to_string()),
-                    pty_id: None,
-                };
-                tokio::spawn(async move {
-                    crate::webhook::send_webhook(&url, &sync).await;
-                });
-            }
-        }
     }
 }
 

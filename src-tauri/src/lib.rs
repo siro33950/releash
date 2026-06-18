@@ -6,7 +6,6 @@ pub mod cli;
 mod cli_install;
 mod config;
 mod domain;
-mod external_editor;
 mod focus_tracker;
 mod git;
 mod git_host;
@@ -19,18 +18,11 @@ mod other;
 mod path_aliases;
 mod permission;
 mod protocol;
-mod pty;
-mod qr_code;
 mod review_comments;
 mod sentry_integration;
-mod shell_integration;
-mod tls;
 mod tray;
 mod usecase;
-mod vpn_detect;
 mod watcher;
-mod webhook;
-mod workspace_state_store;
 mod ws_bridge;
 mod ws_server;
 
@@ -68,14 +60,13 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
         ))
-        .manage(Arc::new(
-            workspace_state_store::WorkspaceStateStore::default(),
-        ))
         .manage(Arc::new(review_comments::ReviewCommentStore::default()))
         .manage(Arc::new(
             usecase::agent_session::session::SessionStore::default(),
         ))
-        .manage(Arc::new(pty::PtyManager::default()))
+        .manage(Arc::new(
+            adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default(),
+        ))
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::clone(&ws_broadcaster))
         .manage(Arc::new(tokio::sync::Mutex::new(
@@ -93,6 +84,9 @@ pub fn run() {
         ))
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
+            app.manage(Arc::new(
+                adaptor::gateway::workspace_state::WorkspaceStateStore::new(data_dir.clone()),
+            ));
             // spec issues-1054 Implementation Freedom (L104): 別 Releash binary 由来の
             // RELEASH_DATA_DIR inherit (例: prod 版 Releash の Terminal Panel から起動
             // した shell から dev binary を起動した場合) を「ユーザー明示指定」と誤認しないよう、
@@ -176,6 +170,60 @@ pub fn run() {
             let focus_tracker =
                 Arc::new(parking_lot::Mutex::new(focus_tracker::FocusTracker::new()));
             app.manage(focus_tracker.clone());
+
+            {
+                let app_config_for_notification = app_config.clone();
+                let focus_tracker_for_notification = focus_tracker.clone();
+                let session_store_state = app
+                    .state::<Arc<usecase::agent_session::session::SessionStore>>()
+                    .inner()
+                    .clone();
+                session_store_state.register_state_change_listener(Arc::new(
+                    move |session_id, worktree_path, new_state| {
+                        use adaptor::gateway::notification::{
+                            config_notify_to_domain, ReqwestWebhookSenderGateway,
+                        };
+                        use domain::notification::{AgentNotificationState, NotificationEvent};
+                        use usecase::agent_session::session::SessionState;
+
+                        let notify = match app_config_for_notification.get_config() {
+                            Ok(config) => config_notify_to_domain(config.server.notify),
+                            Err(e) => {
+                                log::warn!("Failed to load notification config: {e}");
+                                return;
+                            }
+                        };
+                        let inactive = focus_tracker_for_notification
+                            .lock()
+                            .is_inactive(notify.inactive_timeout_minutes);
+                        let state = match new_state {
+                            SessionState::Active => AgentNotificationState::Running,
+                            SessionState::Idle => AgentNotificationState::Waiting,
+                            SessionState::Done | SessionState::Closed | SessionState::Archived => {
+                                AgentNotificationState::Done
+                            }
+                            SessionState::Error => AgentNotificationState::Error,
+                        };
+                        let event = NotificationEvent {
+                            worktree_path: worktree_path.to_string(),
+                            state,
+                            exit_code: None,
+                            timestamp: usecase::agent_session::status::current_timestamp(),
+                            session_id: Some(session_id.to_string()),
+                            pty_id: None,
+                        };
+                        tauri::async_runtime::spawn(async move {
+                            usecase::notification::usecase::on_agent_status_changed(
+                                notify,
+                                inactive,
+                                event,
+                                &ReqwestWebhookSenderGateway,
+                            )
+                            .await;
+                        });
+                    },
+                ));
+            }
 
             let ft = focus_tracker.clone();
             let window = app.get_webview_window("main");

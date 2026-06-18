@@ -623,7 +623,7 @@ mod aggregate_tests {
         assert_eq!(snapshot.step_states["plan"], "completed");
         assert_eq!(snapshot.step_states["approve"], "waiting_approval");
         assert_eq!(snapshot.total_token_usage.input_tokens, 2);
-        assert_eq!(snapshot.approval_operations.unwrap().can_reject, true);
+        assert!(snapshot.approval_operations.unwrap().can_reject);
         assert_eq!(exec.task(), Some("task"));
     }
 

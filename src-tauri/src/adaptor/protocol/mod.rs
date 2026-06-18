@@ -5,4 +5,5 @@
 
 pub(crate) mod code;
 pub(crate) mod mention;
+pub(crate) mod pty;
 pub(crate) mod workflow;
