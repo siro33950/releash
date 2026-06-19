@@ -2,7 +2,6 @@ mod agent;
 mod auth;
 mod branch;
 mod error;
-mod pty;
 mod review;
 mod worktree;
 
@@ -10,10 +9,13 @@ pub use agent::*;
 pub use auth::*;
 pub use branch::*;
 pub use error::*;
-pub use pty::*;
 pub use review::*;
 pub use worktree::*;
 
+use crate::adaptor::protocol::pty::{
+    PtyExitMsg, PtyInput, PtyKillRequest, PtyKillResponse, PtyOutputMsg, PtyOutputRequest,
+    PtyReady, PtyResize, PtySpawnRequest, PtySpawnResponse,
+};
 use crate::adaptor::protocol::workflow::WorkflowStateSync;
 use serde::{Deserialize, Serialize};
 
@@ -179,6 +181,10 @@ pub fn deserialize_message(json: &str) -> Result<WsMessage, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptor::protocol::pty::{
+        PtyExitMsg, PtyInput, PtyKillRequest, PtyKillResponse, PtyOutputMsg, PtyOutputRequest,
+        PtyReady, PtyResize, PtySpawnRequest, PtySpawnResponse,
+    };
 
     #[test]
     fn serialize_auth_challenge() {

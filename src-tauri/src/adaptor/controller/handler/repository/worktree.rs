@@ -1,15 +1,17 @@
 //! worktree 責務の WebSocket ハンドラ（薄い入口）。
 //!
 //! query service で worktree を読み、response メッセージへ整形する。worktree 選択時の
-//! broadcaster / pty_manager 連携（トランスポート副作用）は引数で受け取る。
+//! broadcaster / PTY runtime gateway 連携（トランスポート副作用）は引数で受け取る。
 
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
+use crate::adaptor::protocol::pty::PtyReady;
 use crate::git_host::PrCache;
 use crate::protocol::*;
-use crate::pty::PtyManager;
+use crate::usecase::pty_session::{ports::PtySessionGateway, query_service as pty_query_service};
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::ws_bridge::WsBroadcaster;
 
@@ -109,7 +111,7 @@ pub(crate) async fn handle_worktree_select_request(
     repo_paths: Vec<String>,
     usecase: Arc<RepositoryUsecase>,
     broadcaster: &Arc<WsBroadcaster>,
-    pty_manager: Option<&Arc<PtyManager>>,
+    pty_session_runtime_gateway: Option<&Arc<PtySessionRuntimeGateway>>,
     selected_worktree: &Arc<Mutex<Option<String>>>,
 ) -> Option<WsMessage> {
     if repo_paths.is_empty() {
@@ -152,10 +154,10 @@ pub(crate) async fn handle_worktree_select_request(
         error: None,
     }));
 
-    if let Some(pm) = pty_manager {
-        for session in pm.list_pty_sessions() {
+    if let Some(gateway) = pty_session_runtime_gateway {
+        for session in pty_query_service::list(gateway.as_ref()) {
             if session.worktree_path.as_deref() == Some(&requested_path) {
-                let (cols, rows) = pm.get_pty_size(session.pty_id).unwrap_or((80, 24));
+                let (cols, rows) = gateway.get_pty_size(session.pty_id).unwrap_or((80, 24));
                 broadcaster.try_send(WsMessage::PtyReady(PtyReady {
                     pty_id: session.pty_id,
                     cols,

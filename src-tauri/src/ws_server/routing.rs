@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use crate::adaptor::controller::handler::pty_session as pty_handler;
 use crate::adaptor::controller::handler::repository as repository_handler;
 use crate::protocol::*;
 
@@ -14,13 +15,13 @@ pub(super) async fn route_message(
     selected_worktree: &Arc<Mutex<Option<String>>>,
 ) -> Option<WsMessage> {
     match msg {
-        WsMessage::PtyInput(input) => handle_pty_input(input, state),
+        WsMessage::PtyInput(input) => pty_handler::handle_pty_input(input, state),
         WsMessage::PtyResize(_) => None,
         WsMessage::PtySpawnRequest(req) => {
-            handle_pty_spawn_request(req, state, selected_worktree).await
+            pty_handler::handle_pty_spawn_request(req, state, selected_worktree).await
         }
-        WsMessage::PtyOutputRequest(req) => handle_pty_output_request(req, state),
-        WsMessage::PtyKillRequest(req) => handle_pty_kill_request(req, state).await,
+        WsMessage::PtyOutputRequest(req) => pty_handler::handle_pty_output_request(req, state),
+        WsMessage::PtyKillRequest(req) => pty_handler::handle_pty_kill_request(req, state).await,
         WsMessage::BranchInfoRequest(_) => {
             repository_handler::branch::handle_branch_info_request(
                 state.repository_usecase(),
@@ -49,7 +50,7 @@ pub(super) async fn route_message(
                 state.get_repo_paths(),
                 Arc::clone(state.repository_usecase()),
                 state.broadcaster(),
-                state.pty_manager(),
+                state.pty_session_runtime_gateway(),
                 selected_worktree,
             )
             .await
@@ -110,6 +111,9 @@ mod tests {
 
     use tokio::sync::Mutex;
 
+    use crate::adaptor::protocol::pty::{
+        PtyInput, PtyKillRequest, PtyOutputRequest, PtySpawnRequest,
+    };
     use crate::config::AppConfig;
     use crate::protocol::*;
     use crate::ws_bridge::WsBroadcaster;
@@ -156,7 +160,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_route_pty_input_without_manager_returns_none() {
+    async fn test_route_pty_input_without_pty_runtime_gateway_returns_none() {
         let state = test_state();
         let wt = test_selected_worktree();
         let msg = WsMessage::PtyInput(PtyInput {
@@ -184,8 +188,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_route_pty_spawn_request_without_pty_manager() {
-        let state = test_state(); // pty_manager = None
+    async fn test_route_pty_spawn_request_without_pty_runtime_gateway() {
+        let state = test_state(); // PTY runtime gateway = None
         let wt = Arc::new(Mutex::new(Some("/tmp/test".to_string())));
         let msg = WsMessage::PtySpawnRequest(PtySpawnRequest {
             cols: 80,
@@ -316,8 +320,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_route_pty_kill_without_pty_manager() {
-        let state = test_state(); // pty_manager = None
+    async fn test_route_pty_kill_without_pty_runtime_gateway() {
+        let state = test_state(); // PTY runtime gateway = None
         let wt = test_selected_worktree();
         let msg = WsMessage::PtyKillRequest(PtyKillRequest { pty_id: 1 });
         let result = route_message(&msg, &state, &wt).await;
@@ -332,8 +336,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_route_pty_output_without_pty_manager() {
-        let state = test_state(); // pty_manager = None
+    async fn test_route_pty_output_without_pty_runtime_gateway() {
+        let state = test_state(); // PTY runtime gateway = None
         let wt = test_selected_worktree();
         let msg = WsMessage::PtyOutputRequest(PtyOutputRequest { pty_id: 1 });
         let result = route_message(&msg, &state, &wt).await;

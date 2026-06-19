@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
 use crate::config::AppConfig;
 use crate::git_host::PrCache;
-use crate::pty::PtyManager;
 use crate::ws_bridge::WsBroadcaster;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -69,7 +69,7 @@ pub(crate) struct WsServerState {
     rate_limits: Arc<Mutex<HashMap<std::net::IpAddr, rate_limit::RateLimitEntry>>>,
     remote_dir: Option<PathBuf>,
     broadcaster: Arc<WsBroadcaster>,
-    pty_manager: Option<Arc<PtyManager>>,
+    pty_session_runtime_gateway: Option<Arc<PtySessionRuntimeGateway>>,
     repo_paths: Arc<parking_lot::RwLock<Vec<String>>>,
     terminal_startup_command: Arc<parking_lot::RwLock<String>>,
     app_config: Arc<AppConfig>,
@@ -99,7 +99,7 @@ impl WsServerState {
     pub(crate) fn new(
         remote_dir: Option<PathBuf>,
         broadcaster: Arc<WsBroadcaster>,
-        pty_manager: Option<Arc<PtyManager>>,
+        pty_session_runtime_gateway: Option<Arc<PtySessionRuntimeGateway>>,
         repo_paths: Arc<parking_lot::RwLock<Vec<String>>>,
         app_config: Arc<AppConfig>,
         app_handle: Option<tauri::AppHandle>,
@@ -113,7 +113,7 @@ impl WsServerState {
             rate_limits: Arc::new(Mutex::new(HashMap::new())),
             remote_dir,
             broadcaster,
-            pty_manager,
+            pty_session_runtime_gateway,
             repo_paths,
             terminal_startup_command: Arc::new(parking_lot::RwLock::new(String::new())),
             app_config,
@@ -230,8 +230,12 @@ impl WsServerState {
         &self.broadcaster
     }
 
-    pub(crate) fn pty_manager(&self) -> Option<&Arc<PtyManager>> {
-        self.pty_manager.as_ref()
+    pub(crate) fn pty_session_runtime_gateway(&self) -> Option<&Arc<PtySessionRuntimeGateway>> {
+        self.pty_session_runtime_gateway.as_ref()
+    }
+
+    pub(crate) fn app_handle(&self) -> Option<&tauri::AppHandle> {
+        self.app_handle.as_ref()
     }
 
     pub(crate) fn pr_cache(&self) -> &Arc<PrCache> {

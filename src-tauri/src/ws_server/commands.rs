@@ -23,7 +23,9 @@ pub async fn start_server_core(
     let handle = app.state::<WsServerHandle>();
     let config_state = app.state::<Arc<AppConfig>>();
     let broadcaster = app.state::<Arc<WsBroadcaster>>();
-    let pty_manager = app.state::<Arc<crate::pty::PtyManager>>();
+    let pty_session_runtime_gateway = app
+        .state::<Arc<crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway>>(
+        );
     let pr_cache = app.state::<Arc<crate::git_host::PrCache>>();
     let shared_repo_paths = app.state::<SharedRepoPaths>();
 
@@ -36,7 +38,7 @@ pub async fn start_server_core(
 
     let mut cfg = config_state.get_config()?;
 
-    let detected = crate::vpn_detect::detect_all_interfaces();
+    let detected = crate::adaptor::gateway::remote_access::network_impl::detect_all_interfaces();
     let mode = if detected.iter().any(|i| i.kind == "vpn" && i.ip == bind_ip) {
         "vpn".to_string()
     } else {
@@ -53,7 +55,15 @@ pub async fn start_server_core(
         .app_data_dir()
         .map_err(|e| format!("データディレクトリの取得失敗: {e}"))?;
     if cfg.server.tls.cert.is_empty() || cfg.server.tls.key.is_empty() {
-        let (cert_path, key_path) = crate::tls::ensure_self_signed_cert(bind_ip_addr, &data_dir)?;
+        let cert_gateway =
+            crate::adaptor::gateway::remote_access::certificate_impl::TlsCertificateGateway;
+        let (cert_path, key_path) =
+            crate::usecase::remote_access::certificate_usecase::ensure_self_signed_cert(
+                &cert_gateway,
+                bind_ip_addr,
+                &data_dir,
+            )
+            .map_err(|e| e.to_string())?;
         cfg.server.tls.cert = cert_path.to_string_lossy().to_string();
         cfg.server.tls.key = key_path.to_string_lossy().to_string();
     }
@@ -85,7 +95,7 @@ pub async fn start_server_core(
     let server_state = Arc::new(WsServerState::new(
         remote_dir,
         Arc::clone(&broadcaster),
-        Some(Arc::clone(&pty_manager)),
+        Some(Arc::clone(&pty_session_runtime_gateway)),
         Arc::clone(shared_repo_paths.inner()),
         Arc::clone(config_state.inner()),
         Some(app.clone()),

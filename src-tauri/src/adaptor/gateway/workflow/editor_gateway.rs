@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::adaptor::gateway::external_editor::TauriEditorLauncherGateway;
 use crate::adaptor::gateway::workflow::{builtin, facet, storage};
 use crate::config::AppConfig;
+use crate::domain::external_editor::EditorLauncherGateway as _;
 use crate::domain::workflow::WorkflowError;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
 
@@ -48,13 +50,9 @@ impl<R: tauri::Runtime + 'static> ExternalEditorGateway for TauriWorkflowExterna
             .map_err(WorkflowError::external)?
             .app
             .external_editor;
-        crate::external_editor::open_path_with_opener(
-            &self.app,
-            &path.to_string_lossy(),
-            &editor,
-            "ワークフロー",
-        )
-        .map_err(WorkflowError::external)
+        TauriEditorLauncherGateway::new(self.app.clone())
+            .open_path(&path.to_string_lossy(), &editor, "ワークフロー")
+            .map_err(WorkflowError::external)
     }
 
     fn open_facet(&self, kind: &str, key: &str) -> Result<(), WorkflowError> {
@@ -65,13 +63,9 @@ impl<R: tauri::Runtime + 'static> ExternalEditorGateway for TauriWorkflowExterna
             .map_err(WorkflowError::external)?
             .app
             .external_editor;
-        crate::external_editor::open_path_with_opener(
-            &self.app,
-            &path.to_string_lossy(),
-            &editor,
-            "ファセット",
-        )
-        .map_err(WorkflowError::external)
+        TauriEditorLauncherGateway::new(self.app.clone())
+            .open_path(&path.to_string_lossy(), &editor, "ファセット")
+            .map_err(WorkflowError::external)
     }
 }
 

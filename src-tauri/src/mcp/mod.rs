@@ -220,7 +220,9 @@ pub async fn restart_mcp_server_if_running(
 // ---------------------------------------------------------------------------
 
 fn build_mcp_state(app: &tauri::AppHandle) -> Result<McpSharedState, String> {
-    let pty_manager = app.state::<Arc<crate::pty::PtyManager>>();
+    let pty_session_runtime_gateway = app
+        .state::<Arc<crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway>>(
+        );
     let app_config = app.state::<Arc<crate::config::AppConfig>>();
     let broadcaster = app.state::<Arc<crate::ws_bridge::WsBroadcaster>>();
     let shared_repo_paths =
@@ -230,7 +232,7 @@ fn build_mcp_state(app: &tauri::AppHandle) -> Result<McpSharedState, String> {
 
     Ok(McpSharedState {
         repo_paths: Arc::clone(shared_repo_paths.inner()),
-        pty_manager: Arc::clone(&pty_manager),
+        pty_session_runtime_gateway: Arc::clone(&pty_session_runtime_gateway),
         app_config: Arc::clone(app_config.inner()),
         broadcaster: Arc::clone(&broadcaster),
         app_data_dir,

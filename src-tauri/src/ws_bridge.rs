@@ -176,7 +176,7 @@ impl WsBroadcaster {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::PtyOutputMsg;
+    use crate::adaptor::protocol::pty::PtyOutputMsg;
 
     #[test]
     fn empty_buffer_returns_empty_string() {

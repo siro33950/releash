@@ -286,12 +286,14 @@ mod tests {
             crate::config::ReleashConfig::default(),
             PathBuf::from("/tmp/test-config.toml"),
         ));
-        let pty_manager = Arc::new(crate::pty::PtyManager::default());
+        let pty_session_runtime_gateway = Arc::new(
+            crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default(),
+        );
         let broadcaster = Arc::new(crate::ws_bridge::WsBroadcaster::default());
 
         let state = McpSharedState {
             repo_paths: Arc::new(parking_lot::RwLock::new(repo_paths)),
-            pty_manager,
+            pty_session_runtime_gateway,
             app_config,
             broadcaster,
             app_data_dir: None,

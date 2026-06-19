@@ -71,10 +71,12 @@ pub(super) async fn start_ws_server(
     let addr = format!("{}:{}", bind_addr, cfg.server.port);
 
     let tls_acceptor = if cfg.server.tls.enabled {
-        Some(crate::tls::load_tls_config(
-            &cfg.server.tls.cert,
-            &cfg.server.tls.key,
-        )?)
+        Some(
+            crate::adaptor::gateway::remote_access::certificate_impl::load_tls_config(
+                &cfg.server.tls.cert,
+                &cfg.server.tls.key,
+            )?,
+        )
     } else {
         None
     };
