@@ -698,7 +698,7 @@ function TaskStatusIcon({ status }: { status: string }) {
 	switch (status) {
 		case "running":
 		case "progress":
-			return <Loader2 className="size-3 shrink-0 animate-spin" />;
+			return <Layers className="size-3 shrink-0" />;
 		case "completed":
 			return <CheckCircle2 className="size-3 shrink-0" />;
 		case "failed":

@@ -1138,8 +1138,8 @@ describe("TaskToolActivity", () => {
 		);
 
 		const el = screen.getByTestId("activity-task-0");
-		// Running task shows spinner
-		expect(el.querySelector(".animate-spin")).not.toBeNull();
+		// Running task shows exactly one spinner (no duplicate status-icon spinner)
+		expect(el.querySelectorAll(".animate-spin").length).toBe(1);
 		// Children not visible (collapsed by default)
 		expect(screen.queryByTestId("activity-tool-use-1")).toBeNull();
 	});
