@@ -1,7 +1,7 @@
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-use crate::domain::remote_access::{DetectedInterface, VpnInterface};
+use crate::domain::remote_access::{DetectedInterface, RemoteAccessError, VpnInterface};
 
 pub trait NetworkInterfaceGateway: Send + Sync {
     fn detect_vpn_ip(&self) -> Option<VpnInterface>;
@@ -13,9 +13,9 @@ pub trait CertificateGateway: Send + Sync {
         &self,
         ip: IpAddr,
         data_dir: &Path,
-    ) -> Result<(PathBuf, PathBuf), String>;
+    ) -> Result<(PathBuf, PathBuf), RemoteAccessError>;
 }
 
 pub trait QrRenderGateway: Send + Sync {
-    fn generate_qr_svg(&self, data: &str) -> Result<String, String>;
+    fn generate_qr_svg(&self, data: &str) -> Result<String, RemoteAccessError>;
 }

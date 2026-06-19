@@ -49,4 +49,5 @@ pub fn get_connection_qr(
         &config.server.token,
         server_handle.is_tls_enabled(),
     )
+    .map_err(|e| e.to_string())
 }

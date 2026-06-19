@@ -213,13 +213,16 @@ pub fn run() {
                             pty_id: None,
                         };
                         tauri::async_runtime::spawn(async move {
-                            usecase::notification::usecase::on_agent_status_changed(
+                            if let Err(e) = usecase::notification::usecase::on_agent_status_changed(
                                 notify,
                                 inactive,
                                 event,
                                 &ReqwestWebhookSenderGateway,
                             )
-                            .await;
+                            .await
+                            {
+                                log::warn!("Failed to send agent notification: {e}");
+                            }
                         });
                     },
                 ));

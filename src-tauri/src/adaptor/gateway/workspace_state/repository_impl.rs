@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::domain::workspace_state::services::filter_missing_files;
-use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateRepository};
+use crate::domain::workspace_state::{
+    WorkspaceState, WorkspaceStateError, WorkspaceStateRepository,
+};
+use crate::usecase::workspace_state::dto::WorkspaceStateDto;
 
 pub struct WorkspaceStateStore {
     app_data_dir: PathBuf,
@@ -39,7 +42,9 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         }
 
         let data = std::fs::read_to_string(&file_path).ok()?;
-        let state: WorkspaceState = serde_json::from_str(&data).ok()?;
+        let state: WorkspaceState = serde_json::from_str::<WorkspaceStateDto>(&data)
+            .ok()
+            .map(WorkspaceState::from)?;
         let state = filter_missing_files(state, worktree_root);
 
         self.entries
@@ -48,11 +53,12 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         Some(state)
     }
 
-    fn save(&self, worktree_name: &str) -> Result<(), String> {
+    fn save(&self, worktree_name: &str) -> Result<(), WorkspaceStateError> {
         let _guard = self.file_lock.lock();
 
         let dir = state_dir(&self.app_data_dir);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {e}"))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| WorkspaceStateError::Message(format!("Failed to create dir: {e}")))?;
 
         let file_path = state_file(&self.app_data_dir, worktree_name);
         let state = {
@@ -62,9 +68,10 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
                 None => return Ok(()),
             }
         };
-        let json = serde_json::to_string_pretty(&state)
-            .map_err(|e| format!("Failed to serialize: {e}"))?;
-        std::fs::write(&file_path, json).map_err(|e| format!("Failed to write: {e}"))?;
+        let json = serde_json::to_string_pretty(&WorkspaceStateDto::from(state))
+            .map_err(|e| WorkspaceStateError::Message(format!("Failed to serialize: {e}")))?;
+        std::fs::write(&file_path, json)
+            .map_err(|e| WorkspaceStateError::Message(format!("Failed to write: {e}")))?;
         Ok(())
     }
 
@@ -150,5 +157,19 @@ mod tests {
         assert!(store.get("wt1").is_none());
         store.set("wt1", make_state());
         assert_eq!(store.get("wt1").unwrap().tabs.editors.len(), 2);
+    }
+
+    #[test]
+    fn save_returns_workspace_state_error_when_state_dir_cannot_be_created() {
+        let dir = TempDir::new().unwrap();
+        let app_data_file = dir.path().join("app-data");
+        std::fs::write(&app_data_file, "not a directory").unwrap();
+
+        let store = WorkspaceStateStore::new(app_data_file);
+        store.set("wt1", make_state());
+
+        let err = store.save("wt1").unwrap_err();
+        assert!(matches!(err, WorkspaceStateError::Message(_)));
+        assert!(err.to_string().contains("Failed to create dir"));
     }
 }

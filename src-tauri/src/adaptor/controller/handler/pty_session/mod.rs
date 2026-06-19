@@ -17,7 +17,7 @@ pub(crate) fn handle_pty_input(input: &PtyInput, state: &WsServerState) -> Optio
         if let Err(e) = io_usecase::write(gateway.as_ref(), input.pty_id, &input.data) {
             return Some(WsMessage::Error(ErrorMsg {
                 code: "PTY_WRITE_ERROR".to_string(),
-                message: e,
+                message: e.to_string(),
             }));
         }
     }
@@ -94,7 +94,7 @@ pub(crate) async fn handle_pty_spawn_request(
         Ok(Err(e)) => Some(WsMessage::PtySpawnResponse(PtySpawnResponse {
             success: false,
             pty_id: None,
-            error: Some(e),
+            error: Some(e.to_string()),
         })),
         Err(e) => Some(join_error_msg(e)),
     }
@@ -152,7 +152,7 @@ pub(crate) async fn handle_pty_kill_request(
             Ok(Err(e)) => Some(WsMessage::PtyKillResponse(PtyKillResponse {
                 success: false,
                 pty_id,
-                error: Some(e),
+                error: Some(e.to_string()),
             })),
             Err(e) => Some(join_error_msg(e)),
         }

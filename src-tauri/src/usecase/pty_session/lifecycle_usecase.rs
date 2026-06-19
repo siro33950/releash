@@ -1,9 +1,10 @@
+use crate::usecase::pty_session::error::UsecaseError;
 use crate::usecase::pty_session::ports::PtySessionGateway;
 
-pub fn kill(manager: &impl PtySessionGateway, pty_id: u64) -> Result<(), String> {
+pub fn kill(manager: &impl PtySessionGateway, pty_id: u64) -> Result<(), UsecaseError> {
     let snapshot = manager
         .snapshot(pty_id)
-        .ok_or_else(|| format!("PTY {} not found", pty_id))?;
+        .ok_or_else(|| UsecaseError::Gateway(format!("PTY {} not found", pty_id)))?;
     if !snapshot.exited {
         manager.kill_runtime(pty_id)?;
     }

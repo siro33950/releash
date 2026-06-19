@@ -1,5 +1,5 @@
 #[derive(Debug, thiserror::Error)]
-pub enum RemoteAccessError {
+pub enum WorkspaceStateError {
     #[error("{0}")]
     Message(String),
 }

@@ -8,7 +8,7 @@ use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
 
 use crate::domain::remote_access::services::is_cert_expired;
-use crate::domain::remote_access::CertificateGateway;
+use crate::domain::remote_access::{CertificateGateway, RemoteAccessError};
 
 pub struct TlsCertificateGateway;
 
@@ -43,9 +43,10 @@ impl CertificateGateway for TlsCertificateGateway {
         &self,
         ip: IpAddr,
         data_dir: &Path,
-    ) -> Result<(PathBuf, PathBuf), String> {
+    ) -> Result<(PathBuf, PathBuf), RemoteAccessError> {
         let tls_dir = data_dir.join("tls");
-        std::fs::create_dir_all(&tls_dir).map_err(|e| format!("TLSディレクトリ作成失敗: {e}"))?;
+        std::fs::create_dir_all(&tls_dir)
+            .map_err(|e| RemoteAccessError::Message(format!("TLSディレクトリ作成失敗: {e}")))?;
 
         let cert_path = tls_dir.join("cert.pem");
         let key_path = tls_dir.join("key.pem");
@@ -64,25 +65,28 @@ impl CertificateGateway for TlsCertificateGateway {
 
         let san = rcgen::SanType::IpAddress(ip);
         let mut params = rcgen::CertificateParams::new(vec!["releash-server".to_string()])
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| RemoteAccessError::Message(e.to_string()))?;
         params.subject_alt_names.push(san);
 
-        let key_pair = rcgen::KeyPair::generate().map_err(|e| e.to_string())?;
+        let key_pair =
+            rcgen::KeyPair::generate().map_err(|e| RemoteAccessError::Message(e.to_string()))?;
         let cert = params
             .self_signed(&key_pair)
-            .map_err(|e| format!("自己署名証明書の生成失敗: {e}"))?;
+            .map_err(|e| RemoteAccessError::Message(format!("自己署名証明書の生成失敗: {e}")))?;
 
-        std::fs::write(&cert_path, cert.pem()).map_err(|e| format!("証明書の書き込み失敗: {e}"))?;
+        std::fs::write(&cert_path, cert.pem())
+            .map_err(|e| RemoteAccessError::Message(format!("証明書の書き込み失敗: {e}")))?;
         std::fs::write(&key_path, key_pair.serialize_pem())
-            .map_err(|e| format!("秘密鍵の書き込み失敗: {e}"))?;
+            .map_err(|e| RemoteAccessError::Message(format!("秘密鍵の書き込み失敗: {e}")))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| format!("秘密鍵のパーミッション設定失敗: {e}"))?;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).map_err(
+                |e| RemoteAccessError::Message(format!("秘密鍵のパーミッション設定失敗: {e}")),
+            )?;
         }
         std::fs::write(&ip_path, ip.to_string())
-            .map_err(|e| format!("IP記録の書き込み失敗: {e}"))?;
+            .map_err(|e| RemoteAccessError::Message(format!("IP記録の書き込み失敗: {e}")))?;
 
         log::info!("自己署名証明書を生成しました: {}", cert_path.display());
 

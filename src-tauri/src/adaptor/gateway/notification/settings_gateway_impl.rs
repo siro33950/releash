@@ -46,3 +46,18 @@ pub fn config_notify_to_domain(notify: NotifySection) -> NotifyConfig {
         inactive_timeout_minutes: notify.inactive_timeout_minutes,
     }
 }
+
+pub fn domain_notify_to_config(notify: NotifyConfig) -> NotifySection {
+    NotifySection {
+        webhook_url: notify.webhook_url,
+        on_running: notify.on_running,
+        on_done: notify.on_done,
+        on_error: notify.on_error,
+        on_waiting: notify.on_waiting,
+        desktop_mode: match notify.desktop_mode {
+            DesktopNotifyMode::Always => ConfigDesktopNotifyMode::Always,
+            DesktopNotifyMode::WhenInactive => ConfigDesktopNotifyMode::WhenInactive,
+        },
+        inactive_timeout_minutes: notify.inactive_timeout_minutes,
+    }
+}

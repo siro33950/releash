@@ -1,13 +1,14 @@
-use crate::domain::remote_access::QrRenderGateway;
+use crate::domain::remote_access::{QrRenderGateway, RemoteAccessError};
 
 pub struct QrCodeRenderGateway;
 
 impl QrRenderGateway for QrCodeRenderGateway {
-    fn generate_qr_svg(&self, data: &str) -> Result<String, String> {
+    fn generate_qr_svg(&self, data: &str) -> Result<String, RemoteAccessError> {
         use qrcode::render::svg;
         use qrcode::QrCode;
 
-        let code = QrCode::new(data).map_err(|e| format!("QRコード生成失敗: {e}"))?;
+        let code = QrCode::new(data)
+            .map_err(|e| RemoteAccessError::Message(format!("QRコード生成失敗: {e}")))?;
         let svg = code
             .render::<svg::Color>()
             .min_dimensions(200, 200)

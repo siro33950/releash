@@ -13,6 +13,7 @@ use crate::domain::pty_session::services::{
 };
 use crate::protocol::WsMessage;
 use crate::usecase::pty_session::dto::FoundPtySession;
+use crate::usecase::pty_session::error::UsecaseError;
 use crate::usecase::pty_session::ports::{PtyBackendSpawnRequest, PtySessionGateway};
 use crate::ws_bridge::WsBroadcaster;
 
@@ -177,7 +178,7 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
         &self,
         app: &Self::AppContext,
         request: PtyBackendSpawnRequest,
-    ) -> Result<Self::Runtime, String> {
+    ) -> Result<Self::Runtime, UsecaseError> {
         let integration_dir = if request.exec_command.is_some() {
             None
         } else {
@@ -194,9 +195,9 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
         match crate::path_aliases::prepare_child_env(app.path().app_data_dir().ok()) {
             Ok(env) => extra_env.extend(env),
             Err(e) => {
-                return Err(format!(
+                return Err(UsecaseError::Gateway(format!(
                     "failed to prepare alias child env for PTY spawn: {e}"
-                ));
+                )));
             }
         }
         if let Some(mcp_handle) = app.try_state::<crate::mcp::McpServerHandle>() {
@@ -218,16 +219,19 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
             }
         }
 
-        let backend_session = self.backend.spawn(SpawnConfig {
-            rows: request.rows,
-            cols: request.cols,
-            cwd: request.cwd,
-            shell,
-            integration_dir,
-            pty_id: request.pty_id,
-            extra_env,
-            exec_command: request.exec_command,
-        })?;
+        let backend_session = self
+            .backend
+            .spawn(SpawnConfig {
+                rows: request.rows,
+                cols: request.cols,
+                cwd: request.cwd,
+                shell,
+                integration_dir,
+                pty_id: request.pty_id,
+                extra_env,
+                exec_command: request.exec_command,
+            })
+            .map_err(UsecaseError::from)?;
 
         let killer = backend_session.child.clone_killer();
         Ok(PtyRuntime {
@@ -246,20 +250,21 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
         self.runtimes.lock().insert(pty_id, runtime);
     }
 
-    fn start_output_reader(&self, app: &Self::AppContext, pty_id: u64) -> Result<(), String> {
+    fn start_output_reader(&self, app: &Self::AppContext, pty_id: u64) -> Result<(), UsecaseError> {
         let (reader, child, output_buffer) = {
             let mut runtimes = self.runtimes.lock();
             let runtime = runtimes
                 .get_mut(&pty_id)
-                .ok_or_else(|| format!("PTY {} not found", pty_id))?;
-            let reader = runtime
-                .reader
-                .take()
-                .ok_or_else(|| format!("PTY {} output reader already started", pty_id))?;
-            let child = runtime
-                .child
-                .take()
-                .ok_or_else(|| format!("PTY {} child already moved to output reader", pty_id))?;
+                .ok_or_else(|| UsecaseError::Gateway(format!("PTY {} not found", pty_id)))?;
+            let reader = runtime.reader.take().ok_or_else(|| {
+                UsecaseError::Gateway(format!("PTY {} output reader already started", pty_id))
+            })?;
+            let child = runtime.child.take().ok_or_else(|| {
+                UsecaseError::Gateway(format!(
+                    "PTY {} child already moved to output reader",
+                    pty_id
+                ))
+            })?;
             (reader, child, Arc::clone(&runtime.output_buffer))
         };
         spawn_output_reader(app.clone(), pty_id, reader, child, output_buffer);
@@ -307,25 +312,25 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
             .map(|session| session.snapshot())
     }
 
-    fn write(&self, pty_id: u64, data: &str) -> Result<(), String> {
+    fn write(&self, pty_id: u64, data: &str) -> Result<(), UsecaseError> {
         let writer = {
             let runtimes = self.runtimes.lock();
             let runtime = runtimes
                 .get(&pty_id)
-                .ok_or_else(|| format!("PTY {} not found", pty_id))?;
+                .ok_or_else(|| UsecaseError::Gateway(format!("PTY {} not found", pty_id)))?;
             Arc::clone(&runtime.writer)
         };
         let mut writer = writer.lock();
         writer
             .write_all(data.as_bytes())
-            .map_err(|e| format!("Failed to write to PTY: {}", e))?;
+            .map_err(|e| UsecaseError::Gateway(format!("Failed to write to PTY: {}", e)))?;
         writer
             .flush()
-            .map_err(|e| format!("Failed to flush: {}", e))?;
+            .map_err(|e| UsecaseError::Gateway(format!("Failed to flush: {}", e)))?;
         Ok(())
     }
 
-    fn resize(&self, pty_id: u64, rows: u16, cols: u16) -> Result<(), String> {
+    fn resize(&self, pty_id: u64, rows: u16, cols: u16) -> Result<(), UsecaseError> {
         if rows == 0 || cols == 0 {
             return Ok(());
         }
@@ -333,37 +338,37 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
             let runtimes = self.runtimes.lock();
             let runtime = runtimes
                 .get(&pty_id)
-                .ok_or_else(|| format!("PTY {} not found", pty_id))?;
+                .ok_or_else(|| UsecaseError::Gateway(format!("PTY {} not found", pty_id)))?;
             Arc::clone(&runtime.resizer)
         };
         let result = resizer.lock().resize(rows, cols);
-        result
+        result.map_err(UsecaseError::from)
     }
 
-    fn get_pty_size(&self, pty_id: u64) -> Result<(u16, u16), String> {
+    fn get_pty_size(&self, pty_id: u64) -> Result<(u16, u16), UsecaseError> {
         let resizer = {
             let runtimes = self.runtimes.lock();
             let runtime = runtimes
                 .get(&pty_id)
-                .ok_or_else(|| format!("PTY {} not found", pty_id))?;
+                .ok_or_else(|| UsecaseError::Gateway(format!("PTY {} not found", pty_id)))?;
             Arc::clone(&runtime.resizer)
         };
         let result = resizer.lock().get_size();
-        result
+        result.map_err(UsecaseError::from)
     }
 
-    fn kill_runtime(&self, pty_id: u64) -> Result<(), String> {
+    fn kill_runtime(&self, pty_id: u64) -> Result<(), UsecaseError> {
         let killer = {
             let runtimes = self.runtimes.lock();
             let runtime = runtimes
                 .get(&pty_id)
-                .ok_or_else(|| format!("PTY {} not found", pty_id))?;
+                .ok_or_else(|| UsecaseError::Gateway(format!("PTY {} not found", pty_id)))?;
             Arc::clone(&runtime.killer)
         };
         let result = killer
             .lock()
             .kill()
-            .map_err(|e| format!("Failed to kill PTY {}: {}", pty_id, e));
+            .map_err(|e| UsecaseError::Gateway(format!("Failed to kill PTY {}: {}", pty_id, e)));
         result
     }
 
@@ -412,7 +417,7 @@ mod tests {
         let gateway = PtySessionRuntimeGateway::default();
         let result = gateway.write(99999, "hello");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not found"));
+        assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
     #[test]
@@ -420,7 +425,7 @@ mod tests {
         let gateway = PtySessionRuntimeGateway::default();
         let result = gateway.resize(99999, 24, 80);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not found"));
+        assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
     #[test]
@@ -436,7 +441,7 @@ mod tests {
         let gateway = PtySessionRuntimeGateway::default();
         let result = gateway.get_pty_size(99999);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not found"));
+        assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
     #[test]

@@ -31,7 +31,8 @@ pub fn spawn_pty(
         worktree_path,
         label,
         pty_kind,
-    )?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(pty_id)
 }
 
@@ -42,6 +43,7 @@ pub fn write_pty(
     data: String,
 ) -> Result<(), String> {
     crate::usecase::pty_session::io_usecase::write(state.inner().as_ref(), pty_id, &data)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -52,7 +54,8 @@ pub fn resize_pty(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    crate::usecase::pty_session::io_usecase::resize(state.inner().as_ref(), pty_id, rows, cols)?;
+    crate::usecase::pty_session::io_usecase::resize(state.inner().as_ref(), pty_id, rows, cols)
+        .map_err(|e| e.to_string())?;
     if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
         ws.try_send(WsMessage::PtyResize(PtyResize { pty_id, rows, cols }));
     }
@@ -70,7 +73,8 @@ pub fn kill_pty(
     state: State<'_, Arc<PtySessionRuntimeGateway>>,
     pty_id: u64,
 ) -> Result<(), String> {
-    crate::usecase::pty_session::lifecycle_usecase::kill(state.inner().as_ref(), pty_id)?;
+    crate::usecase::pty_session::lifecycle_usecase::kill(state.inner().as_ref(), pty_id)
+        .map_err(|e| e.to_string())?;
     if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
         ws.remove_pty_output_buffer(pty_id);
     }
@@ -102,6 +106,7 @@ pub fn get_or_spawn_pty(
         label,
         pty_kind,
     )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

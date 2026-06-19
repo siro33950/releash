@@ -1,5 +1,6 @@
 use crate::domain::pty_session::{entities::PtySession, entities::PtySessionSnapshot};
 use crate::usecase::pty_session::dto::FoundPtySession;
+use crate::usecase::pty_session::error::UsecaseError;
 
 pub struct PtyBackendSpawnRequest {
     pub pty_id: u64,
@@ -18,9 +19,9 @@ pub(crate) trait PtySessionGateway {
         &self,
         app: &Self::AppContext,
         request: PtyBackendSpawnRequest,
-    ) -> Result<Self::Runtime, String>;
+    ) -> Result<Self::Runtime, UsecaseError>;
     fn insert_session(&self, session: PtySession, runtime: Self::Runtime);
-    fn start_output_reader(&self, app: &Self::AppContext, pty_id: u64) -> Result<(), String>;
+    fn start_output_reader(&self, app: &Self::AppContext, pty_id: u64) -> Result<(), UsecaseError>;
     fn find_by_session_key(&self, session_key: &str) -> Option<FoundPtySession>;
     fn snapshot(&self, pty_id: u64) -> Option<PtySessionSnapshot>;
     fn list_snapshots(&self) -> Vec<PtySessionSnapshot>;
@@ -28,9 +29,9 @@ pub(crate) trait PtySessionGateway {
     fn select_gc_targets(&self, worktree_path: &str, keep_session_keys: &[String]) -> Vec<u64>;
     fn remove_session(&self, pty_id: u64) -> Option<PtySessionSnapshot>;
 
-    fn write(&self, pty_id: u64, data: &str) -> Result<(), String>;
-    fn resize(&self, pty_id: u64, rows: u16, cols: u16) -> Result<(), String>;
-    fn get_pty_size(&self, pty_id: u64) -> Result<(u16, u16), String>;
-    fn kill_runtime(&self, pty_id: u64) -> Result<(), String>;
+    fn write(&self, pty_id: u64, data: &str) -> Result<(), UsecaseError>;
+    fn resize(&self, pty_id: u64, rows: u16, cols: u16) -> Result<(), UsecaseError>;
+    fn get_pty_size(&self, pty_id: u64) -> Result<(u16, u16), UsecaseError>;
+    fn kill_runtime(&self, pty_id: u64) -> Result<(), UsecaseError>;
     fn remove_if_exited(&self, pty_id: u64);
 }

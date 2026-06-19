@@ -1,5 +1,6 @@
 use crate::domain::pty_session::{entities::PtySession, PtyKind};
 use crate::usecase::pty_session::dto::GetOrSpawnPtyResult;
+use crate::usecase::pty_session::error::UsecaseError;
 use crate::usecase::pty_session::ports::{PtyBackendSpawnRequest, PtySessionGateway};
 
 #[allow(clippy::too_many_arguments)]
@@ -12,7 +13,7 @@ pub fn spawn<G: PtySessionGateway>(
     worktree_path: Option<String>,
     label: Option<String>,
     kind: PtyKind,
-) -> Result<(u64, String), String> {
+) -> Result<(u64, String), UsecaseError> {
     let pty_id = manager.next_pty_id();
     let session_key = uuid::Uuid::new_v4().to_string();
     let runtime = manager.spawn_backend(
@@ -46,7 +47,7 @@ pub fn get_or_spawn<G: PtySessionGateway>(
     worktree_path: String,
     label: Option<String>,
     kind: PtyKind,
-) -> Result<GetOrSpawnPtyResult, String> {
+) -> Result<GetOrSpawnPtyResult, UsecaseError> {
     if let Some(key) = &session_key {
         if let Some(found) = manager.find_by_session_key(key) {
             return Ok(GetOrSpawnPtyResult {

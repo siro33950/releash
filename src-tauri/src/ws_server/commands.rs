@@ -62,7 +62,8 @@ pub async fn start_server_core(
                 &cert_gateway,
                 bind_ip_addr,
                 &data_dir,
-            )?;
+            )
+            .map_err(|e| e.to_string())?;
         cfg.server.tls.cert = cert_path.to_string_lossy().to_string();
         cfg.server.tls.key = key_path.to_string_lossy().to_string();
     }

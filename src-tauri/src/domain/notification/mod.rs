@@ -3,6 +3,7 @@ pub(crate) mod gateway;
 pub(crate) mod services;
 pub(crate) mod value_objects;
 
+pub use error::NotificationError;
 pub use gateway::WebhookSenderGateway;
 pub use value_objects::{
     AgentNotificationState, DesktopNotifyMode, NotificationEvent, NotifyConfig,
