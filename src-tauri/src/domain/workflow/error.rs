@@ -4,25 +4,35 @@
 //! implementations. The domain layer must not depend on git2, tauri, tokio, or
 //! filesystem-specific error types.
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowError {
-    #[error("{0}")]
     External(String),
-    #[error("{0}")]
     Rule(String),
-    #[error("validation_error: {0}")]
     Validation(String),
-    #[error("invalid_state: {0}")]
     InvalidState(String),
-    #[error("not_found: {0}")]
     NotFound(String),
-    #[error("already_active: {0}")]
     AlreadyActive(String),
-    #[error("unauthorized_worktree: {0}")]
     UnauthorizedWorktree(String),
-    #[error("unauthorized_approval_target: {0}")]
     UnauthorizedApprovalTarget(String),
 }
+
+impl std::fmt::Display for WorkflowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::External(msg) | Self::Rule(msg) => f.write_str(msg),
+            Self::Validation(msg) => write!(f, "validation_error: {msg}"),
+            Self::InvalidState(msg) => write!(f, "invalid_state: {msg}"),
+            Self::NotFound(msg) => write!(f, "not_found: {msg}"),
+            Self::AlreadyActive(msg) => write!(f, "already_active: {msg}"),
+            Self::UnauthorizedWorktree(msg) => write!(f, "unauthorized_worktree: {msg}"),
+            Self::UnauthorizedApprovalTarget(msg) => {
+                write!(f, "unauthorized_approval_target: {msg}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WorkflowError {}
 
 impl WorkflowError {
     pub fn external(message: impl Into<String>) -> Self {

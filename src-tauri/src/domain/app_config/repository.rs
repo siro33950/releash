@@ -1,9 +1,13 @@
 use crate::domain::app_config::error::AppConfigError;
 use crate::domain::app_config::value_objects::{AppConfigDocument, NotionRepoConfig};
 
+pub type ConfigUpdate =
+    Box<dyn FnOnce(&mut AppConfigDocument) -> Result<(), AppConfigError> + Send>;
+
 pub trait ConfigRepository: Send + Sync {
     fn load(&self) -> Result<AppConfigDocument, AppConfigError>;
     fn save(&self, config: AppConfigDocument) -> Result<(), AppConfigError>;
+    fn update(&self, f: ConfigUpdate) -> Result<(), AppConfigError>;
 }
 
 pub trait AgentConfigRepository: Send + Sync {

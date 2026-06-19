@@ -2,15 +2,18 @@ use std::sync::Arc;
 
 use crate::adaptor::gateway::remote_access::{QrCodeRenderGateway, SystemNetworkInterfaceGateway};
 use crate::domain::app_config::ConfigRepository;
-use crate::domain::remote_access::{DetectedInterface, QrCodeResult};
+use crate::usecase::remote_access::dto::{DetectedInterfaceDto, QrCodeResultDto};
 use crate::ws_server::WsServerHandle;
 
 #[tauri::command]
-pub async fn get_network_info() -> Result<Vec<DetectedInterface>, String> {
+pub async fn get_network_info() -> Result<Vec<DetectedInterfaceDto>, String> {
     tokio::task::spawn_blocking(|| {
         crate::usecase::remote_access::network_usecase::get_network_info(
             &SystemNetworkInterfaceGateway,
         )
+        .into_iter()
+        .map(Into::into)
+        .collect()
     })
     .await
     .map_err(|e| format!("task join error: {e}"))
@@ -37,7 +40,7 @@ pub async fn detect_vpn_tunnel() -> Result<Option<serde_json::Value>, String> {
 pub fn get_connection_qr(
     state: tauri::State<'_, Arc<dyn ConfigRepository>>,
     server_handle: tauri::State<'_, WsServerHandle>,
-) -> Result<QrCodeResult, String> {
+) -> Result<QrCodeResultDto, String> {
     let config = state.load().map_err(|e| e.to_string())?;
     let bind = server_handle
         .active_bind()
@@ -49,5 +52,6 @@ pub fn get_connection_qr(
         &config.server.token,
         server_handle.is_tls_enabled(),
     )
+    .map(Into::into)
     .map_err(|e| e.to_string())
 }

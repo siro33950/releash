@@ -8,13 +8,13 @@ pub struct McpConfigParams {
     pub token: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpConnectionInfo {
     pub url: String,
     pub token: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpServerStatus {
     pub running: bool,
     pub port: Option<u16>,

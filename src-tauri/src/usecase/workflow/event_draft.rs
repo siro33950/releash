@@ -1,16 +1,9 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::domain::workflow::contract::{self, ContractLookupError, OutputSubmittedSnapshot};
-use crate::domain::workflow::WorkflowDefinition;
+use crate::domain::workflow::contract::{ContractLookupError, OutputSubmittedSnapshot};
 
 use super::ports::WorkflowEventDraft;
-
-#[derive(Debug, Deserialize)]
-struct RunStartedDraftPayload {
-    #[serde(alias = "workflowDefinition")]
-    workflow_definition: WorkflowDefinition,
-}
 
 pub(crate) fn resolve_step_output_contract_from_drafts(
     events: &[WorkflowEventDraft],
@@ -21,24 +14,78 @@ pub(crate) fn resolve_step_output_contract_from_drafts(
         .iter()
         .find(|event| event.event_kind == "run_started")
         .map(|event| {
-            serde_json::from_value::<RunStartedDraftPayload>(event.payload.clone()).map_err(|err| {
+            run_started_workflow_from_payload(&event.payload).map_err(|details| {
                 ContractLookupError::InvalidRunStartedPayload {
-                    details: format!("invalid payload for run_started event: {err}"),
+                    details: format!("invalid payload for run_started event: {details}"),
                 }
             })
         })
         .transpose()?
-        .map(|payload| payload.workflow_definition)
         .ok_or_else(|| ContractLookupError::RunNotFound {
             run_id: run_id.to_string(),
         })?;
 
-    contract::lookup_step_output_contract(&workflow, step_name).ok_or_else(|| {
-        ContractLookupError::NoOutputContract {
+    lookup_step_output_contract(workflow.definition, step_name)
+        .map_err(|details| ContractLookupError::InvalidRunStartedPayload {
+            details: format!("invalid payload for run_started event: {details}"),
+        })?
+        .ok_or_else(|| ContractLookupError::NoOutputContract {
             workflow_name: workflow.name,
             step: step_name.to_string(),
+        })
+}
+
+struct RunStartedWorkflow<'a> {
+    name: String,
+    definition: &'a Value,
+}
+
+fn run_started_workflow_from_payload(payload: &Value) -> Result<RunStartedWorkflow<'_>, String> {
+    let definition = payload
+        .get("workflow_definition")
+        .or_else(|| payload.get("workflowDefinition"))
+        .ok_or_else(|| "missing workflow_definition".to_string())?;
+    let name = definition
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "workflow_definition.name must be a string".to_string())?
+        .to_string();
+    Ok(RunStartedWorkflow { name, definition })
+}
+
+fn lookup_step_output_contract(
+    workflow: &Value,
+    step_name: &str,
+) -> Result<Option<String>, String> {
+    let nodes = workflow
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "workflow_definition.nodes must be an array".to_string())?;
+    for node in nodes {
+        if node.get("name").and_then(Value::as_str) == Some(step_name) {
+            return output_contract_from_node(node);
         }
-    })
+        if let Some(children) = node.get("parallel_children") {
+            let children = children
+                .as_array()
+                .ok_or_else(|| "parallel_children must be an array".to_string())?;
+            for child in children {
+                if child.get("name").and_then(Value::as_str) == Some(step_name) {
+                    return output_contract_from_node(child);
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn output_contract_from_node(node: &Value) -> Result<Option<String>, String> {
+    match node.get("output_contract") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if value.trim().is_empty() => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err("output_contract must be a string".to_string()),
+    }
 }
 
 #[derive(Debug, Deserialize)]

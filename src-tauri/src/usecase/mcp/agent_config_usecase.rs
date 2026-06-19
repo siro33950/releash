@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use crate::domain::mcp::gateway::{AgentConfigGateway, AgentConfigGenerateResult};
+use crate::domain::mcp::gateway::AgentConfigGateway;
 use crate::domain::mcp::services::{normalize_agent_types, validate_generation_credentials};
 use crate::domain::mcp::value_objects::{AgentKind, McpConfigParams};
+use crate::usecase::mcp::dto::GenerateResult;
 use crate::usecase::mcp::error::UsecaseError;
 
 pub struct McpAgentConfigUsecase<G: AgentConfigGateway> {
@@ -24,7 +25,7 @@ impl<G: AgentConfigGateway> McpAgentConfigUsecase<G> {
         &self,
         agent_types: Vec<String>,
         params: &McpConfigParams,
-    ) -> Result<Vec<AgentConfigGenerateResult>, String> {
+    ) -> Result<Vec<GenerateResult>, String> {
         let agent_types = normalize_agent_types(agent_types)
             .map_err(UsecaseError::from)
             .map_err(String::from)?;
@@ -39,6 +40,7 @@ impl<G: AgentConfigGateway> McpAgentConfigUsecase<G> {
                     .map_err(String::from)?;
                 self.gateway
                     .generate(agent, params)
+                    .map(GenerateResult::from)
                     .map_err(UsecaseError::from)
                     .map_err(String::from)
             })
@@ -74,6 +76,7 @@ impl<G: AgentConfigGateway> McpAgentConfigUsecase<G> {
     }
 
     pub fn remove(&self, agent_type: String) -> Result<bool, String> {
+        let agent_type = agent_type.trim().to_lowercase();
         let agent = AgentKind::parse(&agent_type)
             .map_err(UsecaseError::from)
             .map_err(String::from)?;
@@ -87,17 +90,20 @@ impl<G: AgentConfigGateway> McpAgentConfigUsecase<G> {
         &self,
         agent_type: String,
         params: &McpConfigParams,
-    ) -> Result<AgentConfigGenerateResult, String> {
+    ) -> Result<GenerateResult, String> {
+        let agent_type = agent_type.trim().to_lowercase();
         let agent = AgentKind::parse(&agent_type)
             .map_err(UsecaseError::from)
             .map_err(String::from)?;
         self.gateway
             .generate(agent, params)
+            .map(GenerateResult::from)
             .map_err(UsecaseError::from)
             .map_err(String::from)
     }
 
     pub fn preview(&self, agent_type: String, params: &McpConfigParams) -> Result<String, String> {
+        let agent_type = agent_type.trim().to_lowercase();
         let agent = AgentKind::parse(&agent_type)
             .map_err(UsecaseError::from)
             .map_err(String::from)?;
@@ -113,6 +119,7 @@ mod mcp_agent_config_usecase_tests {
     use std::sync::{Arc, Mutex};
 
     use crate::domain::mcp::error::McpError;
+    use crate::domain::mcp::gateway::AgentConfigGenerateResult;
 
     use super::*;
 
@@ -179,6 +186,37 @@ mod mcp_agent_config_usecase_tests {
         assert_eq!(
             *gateway.generated.lock().unwrap(),
             vec!["claude".to_string(), "codex".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_単体api_エージェント種別を正規化する() {
+        // Given
+        let gateway = Arc::new(FakeAgentConfigGateway {
+            generated: Mutex::new(vec![]),
+        });
+        let usecase = McpAgentConfigUsecase::new(gateway.clone());
+        let params = McpConfigParams {
+            port: 19801,
+            token: "token".to_string(),
+        };
+
+        // When / Then
+        assert!(usecase.remove(" Claude ".to_string()).unwrap());
+        assert_eq!(
+            usecase
+                .generate(" Claude ".to_string(), &params)
+                .unwrap()
+                .agent,
+            "claude"
+        );
+        assert_eq!(
+            usecase.preview(" Claude ".to_string(), &params).unwrap(),
+            "claude"
+        );
+        assert_eq!(
+            *gateway.generated.lock().unwrap(),
+            vec!["claude".to_string()]
         );
     }
 }

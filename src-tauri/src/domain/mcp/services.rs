@@ -13,13 +13,16 @@ pub fn mcp_url(port: u16) -> String {
 }
 
 pub fn is_authorized_bearer(header: Option<&str>, expected_token: &str) -> bool {
+    if expected_token.trim().is_empty() {
+        return false;
+    }
     let Some(header) = header else {
         return false;
     };
     let mut parts = header.splitn(2, ' ');
     let scheme = parts.next().unwrap_or_default();
-    let token = parts.next().unwrap_or_default();
-    scheme.eq_ignore_ascii_case("bearer") && token == expected_token
+    let token = parts.next().unwrap_or_default().trim();
+    scheme.eq_ignore_ascii_case("bearer") && !token.is_empty() && token == expected_token
 }
 
 pub fn normalize_agent_types(agent_types: Vec<String>) -> Result<Vec<String>, McpError> {
@@ -70,6 +73,16 @@ mod services_tests {
         assert!(is_authorized_bearer(Some("bearer abc"), "abc"));
         assert!(!is_authorized_bearer(Some("Bearer other"), "abc"));
         assert!(!is_authorized_bearer(None, "abc"));
+    }
+
+    #[test]
+    fn test_bearer認証_期待トークン空は拒否する() {
+        assert!(!is_authorized_bearer(Some("Bearer "), ""));
+    }
+
+    #[test]
+    fn test_bearer認証_空トークンは拒否する() {
+        assert!(!is_authorized_bearer(Some("Bearer "), "abc"));
     }
 
     #[test]

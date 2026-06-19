@@ -2,16 +2,20 @@ use tauri::State;
 
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
-use crate::domain::repository::Branch;
 use crate::other::AppError;
+use crate::usecase::repository_dto::BranchDto;
 
 #[tauri::command]
 pub async fn list_branches(
     state: State<'_, AppState>,
     repo_path: String,
-) -> Result<Vec<Branch>, AppError> {
+) -> Result<Vec<BranchDto>, AppError> {
     let uc = state.repository_usecase.clone();
-    run_blocking(move || uc.list_branches(&repo_path)).await
+    run_blocking(move || {
+        uc.list_branches(&repo_path)
+            .map(|branches| branches.into_iter().map(Into::into).collect())
+    })
+    .await
 }
 
 #[tauri::command]

@@ -6,9 +6,9 @@ use tauri::State;
 use crate::adaptor::gateway::mcp::{AgentConfigGatewayImpl, McpServerGatewayImpl};
 use crate::domain::app_config::ConfigRepository;
 use crate::domain::mcp::services::normalize_agent_types;
-use crate::domain::mcp::value_objects::{McpConfigParams, McpConnectionInfo, McpServerStatus};
+use crate::domain::mcp::value_objects::{McpConfigParams, McpServerStatus};
 use crate::usecase::app_config::AppConfigUsecase;
-use crate::usecase::mcp::dto::GenerateResult;
+use crate::usecase::mcp::dto::{GenerateResult, McpConnectionInfoDto, McpServerStatusDto};
 use crate::usecase::mcp::{McpAgentConfigUsecase, McpLifecycleUsecase, McpQueryService};
 
 fn app_config_usecase(app_config: Arc<dyn ConfigRepository>) -> AppConfigUsecase {
@@ -32,8 +32,8 @@ fn map_join_error(error: tokio::task::JoinError) -> String {
 }
 
 #[tauri::command]
-pub async fn start_mcp_server(app: tauri::AppHandle) -> Result<McpConnectionInfo, String> {
-    lifecycle_usecase().start(&app).await
+pub async fn start_mcp_server(app: tauri::AppHandle) -> Result<McpConnectionInfoDto, String> {
+    lifecycle_usecase().start(&app).await.map(Into::into)
 }
 
 #[tauri::command]
@@ -42,16 +42,23 @@ pub async fn stop_mcp_server(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_mcp_server_status(app: tauri::AppHandle) -> McpServerStatus {
-    lifecycle_usecase().status(&app).unwrap_or(McpServerStatus {
-        running: false,
-        port: None,
-    })
+pub fn get_mcp_server_status(app: tauri::AppHandle) -> McpServerStatusDto {
+    lifecycle_usecase()
+        .status(&app)
+        .unwrap_or(McpServerStatus {
+            running: false,
+            port: None,
+        })
+        .into()
 }
 
 #[tauri::command]
-pub fn get_mcp_connection_info(app: tauri::AppHandle) -> Option<McpConnectionInfo> {
-    lifecycle_usecase().connection_info(&app).ok().flatten()
+pub fn get_mcp_connection_info(app: tauri::AppHandle) -> Option<McpConnectionInfoDto> {
+    lifecycle_usecase()
+        .connection_info(&app)
+        .ok()
+        .flatten()
+        .map(Into::into)
 }
 
 #[tauri::command]
@@ -80,10 +87,6 @@ pub async fn save_and_generate_mcp_configs(
     let agent_types = agent_usecase.normalize_agent_types(agent_types)?;
     let removed_agents = agent_usecase.normalize_agent_types(removed_agents)?;
 
-    if !removed_agents.is_empty() {
-        agent_usecase.remove_many(removed_agents)?;
-    }
-
     let config_usecase = app_config_usecase(state.inner().clone());
     tokio::task::spawn_blocking(move || config_usecase.update_mcp_config(port, token))
         .await
@@ -91,6 +94,10 @@ pub async fn save_and_generate_mcp_configs(
         .map_err(String::from)?;
 
     lifecycle_usecase().restart_if_running(&app).await?;
+
+    if !removed_agents.is_empty() {
+        agent_usecase.remove_many(removed_agents)?;
+    }
 
     if agent_types.is_empty() {
         return Ok(vec![]);

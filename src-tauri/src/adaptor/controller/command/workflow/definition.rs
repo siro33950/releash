@@ -1,10 +1,12 @@
 use crate::adaptor::controller::state::AppState;
-use crate::domain::workflow::{WorkflowDefinition, WorkflowSummary};
+use crate::usecase::workflow::dto::{
+    workflow_from_dto, workflow_summary_to_dto, workflow_to_dto, WorkflowDto, WorkflowSummaryDto,
+};
 
 #[tauri::command]
 pub async fn list_workflows(
     state: tauri::State<'_, AppState>,
-) -> Result<Vec<WorkflowSummary>, String> {
+) -> Result<Vec<WorkflowSummaryDto>, String> {
     let query = state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
         let running_names: Vec<String> = query
@@ -18,6 +20,7 @@ pub async fn list_workflows(
             .collect();
         query
             .list_workflows(&running_names)
+            .map(|summaries| summaries.into_iter().map(workflow_summary_to_dto).collect())
             .map_err(|e| e.to_string())
     })
     .await
@@ -28,13 +31,14 @@ pub async fn list_workflows(
 pub async fn get_workflow(
     state: tauri::State<'_, AppState>,
     name: String,
-) -> Result<WorkflowDefinition, String> {
+) -> Result<WorkflowDto, String> {
     let query = state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
         query
             .get_workflow(&name)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("ワークフロー '{name}' が見つかりません"))
+            .map(|workflow| workflow_to_dto(&workflow))
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
@@ -43,11 +47,12 @@ pub async fn get_workflow(
 #[tauri::command]
 pub async fn save_workflow(
     state: tauri::State<'_, AppState>,
-    workflow: WorkflowDefinition,
+    workflow: WorkflowDto,
     original_name: Option<String>,
 ) -> Result<(), String> {
     let usecase = state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
+        let workflow = workflow_from_dto(workflow);
         usecase
             .save_workflow(workflow, original_name.as_deref())
             .map_err(|e| e.to_string())

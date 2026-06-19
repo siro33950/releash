@@ -555,8 +555,9 @@ fn build_registry_inner(
     registry.register(codex);
 
     // config.toml の設定を適用
-    if let Ok(default_id) = config.default_agent_backend() {
-        registry.set_default(default_id);
+    match config.default_agent_backend() {
+        Ok(default_id) => registry.set_default(default_id),
+        Err(e) => log::warn!("failed to read default backend from config: {e}"),
     }
     registry.set_config(config);
 

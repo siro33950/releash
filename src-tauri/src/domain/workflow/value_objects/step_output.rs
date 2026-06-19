@@ -1,7 +1,4 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -26,75 +23,51 @@ pub fn default_step_entry_state() -> String {
     STEP_STATE_COMPLETED.to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StepHistoryEntry {
     pub step_name: String,
     pub completed_at: f64,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub result: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token_usage: Option<TokenUsage>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub structured_output: Option<serde_json::Value>,
-    #[serde(default)]
     pub run_index: u32,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub child_outputs: Option<Vec<ChildOutputSnapshot>>,
-    #[serde(default = "default_step_entry_state")]
     pub state: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChildOutputSnapshot {
     pub step_name: String,
     pub session_id: Option<String>,
     pub result: Option<String>,
     pub run_index: u32,
     pub completed_at: f64,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub structured_output: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub output_contract: Option<String>,
-    #[serde(default = "default_step_entry_state")]
     pub state: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParallelStepState {
     pub step_name: String,
     pub state: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub result: Option<String>,
     pub run_index: u32,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub completed_at: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub structured_output: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub output_contract: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StepOutput {
     pub step_name: String,
     pub run_index: u32,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub result: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub structured_output: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub output_contract: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token_usage: Option<TokenUsage>,
     pub completed_at: f64,
 }
@@ -118,13 +91,7 @@ mod step_output_tests {
     }
 
     #[test]
-    fn test_step_history_state欠落はcompletedに戻す() {
-        let entry: StepHistoryEntry = serde_json::from_value(serde_json::json!({
-            "stepName": "review",
-            "completedAt": 1.0,
-            "runIndex": 0
-        }))
-        .unwrap();
-        assert_eq!(entry.state, "completed");
+    fn test_default_step_entry_stateはcompletedを返す() {
+        assert_eq!(default_step_entry_state(), "completed");
     }
 }

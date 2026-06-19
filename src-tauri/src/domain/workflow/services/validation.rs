@@ -4,7 +4,6 @@ use crate::domain::workflow::{
     WorkflowName,
 };
 use regex::RegexBuilder;
-use serde::Serialize;
 use std::collections::HashSet;
 use std::fmt;
 
@@ -323,15 +322,6 @@ impl fmt::Display for ValidationError {
 }
 
 impl std::error::Error for ValidationError {}
-
-impl Serialize for ValidationError {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
 
 pub fn validate_name(name: &str) -> Result<(), ValidationError> {
     match WorkflowName::new(name) {

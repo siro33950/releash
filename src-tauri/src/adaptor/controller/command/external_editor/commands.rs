@@ -4,11 +4,15 @@ use crate::adaptor::gateway::external_editor::{
     EditorSettingsConfigGateway, MacInstalledEditorGateway, TauriEditorLauncherGateway,
 };
 use crate::domain::app_config::ConfigRepository;
-use crate::domain::external_editor::{EditorInfo, EditorSettingsGateway};
+use crate::domain::external_editor::EditorSettingsGateway;
+use crate::usecase::external_editor::dto::EditorInfoDto;
 
 #[tauri::command]
-pub fn detect_editors() -> Vec<EditorInfo> {
+pub fn detect_editors() -> Vec<EditorInfoDto> {
     crate::usecase::external_editor::detect_usecase::detect_editors(&MacInstalledEditorGateway)
+        .into_iter()
+        .map(Into::into)
+        .collect()
 }
 
 #[tauri::command]

@@ -1,5 +1,6 @@
 use crate::adaptor::controller::state::AppState;
-use crate::domain::workflow::{FacetKind, FacetSummary};
+use crate::domain::workflow::FacetKind;
+use crate::usecase::workflow::dto::{facet_summary_to_dto, FacetSummaryDto};
 
 fn parse_domain_facet_kind(kind: &str) -> Result<FacetKind, String> {
     match kind {
@@ -73,12 +74,17 @@ pub async fn delete_facet(
 pub async fn list_facet_summaries(
     state: tauri::State<'_, AppState>,
     kind: String,
-) -> Result<Vec<FacetSummary>, String> {
+) -> Result<Vec<FacetSummaryDto>, String> {
     let kind = parse_domain_facet_kind(&kind)?;
     let query = state.workflow_usecase.clone();
-    tokio::task::spawn_blocking(move || query.list_facet_summaries(kind).map_err(|e| e.to_string()))
-        .await
-        .map_err(|e| format!("task join error: {e}"))?
+    tokio::task::spawn_blocking(move || {
+        query
+            .list_facet_summaries(kind)
+            .map(|summaries| summaries.into_iter().map(facet_summary_to_dto).collect())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[tauri::command]

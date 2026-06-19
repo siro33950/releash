@@ -12,7 +12,7 @@ pub struct RawInterface {
     pub ip: Ipv4Addr,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone)]
 pub struct DetectedInterface {
     pub name: String,
     pub ip: String,

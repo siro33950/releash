@@ -1,7 +1,15 @@
-#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpError {
-    #[error("{0}")]
     InvalidInput(String),
-    #[error("{0}")]
     Gateway(String),
 }
+
+impl std::fmt::Display for McpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInput(msg) | Self::Gateway(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for McpError {}

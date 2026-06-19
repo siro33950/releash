@@ -1,14 +1,6 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalDecision {
-    Approve {
-        #[serde(default)]
-        comment: Option<String>,
-    },
-    Reject {
-        reason: String,
-    },
+    Approve { comment: Option<String> },
+    Reject { reason: String },
     Abort,
 }

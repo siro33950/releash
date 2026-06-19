@@ -41,8 +41,13 @@ pub struct CodexBackend {
 
 pub(crate) fn configured_cli_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<String> {
     app.try_state::<std::sync::Arc<dyn crate::domain::app_config::AgentConfigRepository>>()
-        .and_then(|cfg_state| cfg_state.codex_cli_path().ok())
-        .flatten()
+        .and_then(|cfg_state| match cfg_state.codex_cli_path() {
+            Ok(path) => path,
+            Err(e) => {
+                log::warn!("failed to read codex cli path from config: {e}");
+                None
+            }
+        })
         .filter(|path| !path.trim().is_empty())
 }
 

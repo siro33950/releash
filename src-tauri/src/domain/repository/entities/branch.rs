@@ -1,7 +1,5 @@
-use serde::{Deserialize, Serialize};
-
 /// ブランチ（ローカル / リモート）を表すエンティティ。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {
     pub name: String,
     pub is_remote: bool,

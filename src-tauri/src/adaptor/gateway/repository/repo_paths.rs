@@ -25,13 +25,11 @@ impl RepoPathsGateway {
     }
 
     fn save_paths(&self, paths: Vec<String>) -> Result<(), RepositoryError> {
-        let mut config = self
-            .app_config
-            .load()
-            .map_err(|e| RepositoryError::External(e.to_string()))?;
-        config.app.last_repo_paths = paths;
         self.app_config
-            .save(config)
+            .update(Box::new(move |config| {
+                config.app.last_repo_paths = paths;
+                Ok(())
+            }))
             .map_err(|e| RepositoryError::External(e.to_string()))
     }
 }

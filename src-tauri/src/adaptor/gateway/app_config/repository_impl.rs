@@ -7,7 +7,8 @@ use std::sync::Mutex;
 
 use crate::domain::app_config::error::AppConfigError;
 use crate::domain::app_config::repository::{
-    AgentConfigRepository, ConfigRepository, ConfigSecretRepository, NotionConfigRepository,
+    AgentConfigRepository, ConfigRepository, ConfigSecretRepository, ConfigUpdate,
+    NotionConfigRepository,
 };
 use crate::domain::app_config::services::generate_token;
 use crate::domain::app_config::value_objects as domain_vo;
@@ -64,6 +65,17 @@ impl ConfigRepository for AppConfig {
             Ok(())
         })
         .map_err(AppConfigError::Repository)
+    }
+
+    fn update(&self, f: ConfigUpdate) -> Result<(), AppConfigError> {
+        let mut config = self
+            .config
+            .lock()
+            .map_err(|e| AppConfigError::Repository(format!("ロック取得失敗: {e}")))?;
+        let mut domain = config_to_domain(&config);
+        f(&mut domain)?;
+        apply_domain_to_config(&mut config, domain);
+        write_config(&self.config_path, &config).map_err(AppConfigError::Repository)
     }
 }
 

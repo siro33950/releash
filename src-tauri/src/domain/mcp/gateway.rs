@@ -31,7 +31,7 @@ pub trait AgentConfigGateway: Send + Sync {
     fn preview(&self, agent: AgentKind, params: &McpConfigParams) -> Result<String, McpError>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentConfigGenerateResult {
     pub agent: String,
     pub file_path: String,

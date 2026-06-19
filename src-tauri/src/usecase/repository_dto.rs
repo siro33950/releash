@@ -1,10 +1,88 @@
 //! repository ユースケースの read model（DTO）。
 //!
-//! Entity と同形になる単純な読み取りは Entity（`domain::repository` の各 Entity）を
-//! そのまま返すため、ここに 1:1 の DTO は置かない。ここに定義するのは、対応する単一
-//! Entity を持たない集約 read model のみ。
+//! Command / protocol 境界で JSON 化する読み取り結果をここに集約する。
+//! domain entity と同形の単純な読み取りも、serde 依存を domain に戻さないため
+//! 1:1 DTO 経由で返す。
 
 use serde::{Deserialize, Serialize};
+
+use crate::domain::repository::{Branch, Commit, FileDiffStat, FileStatus};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BranchDto {
+    pub name: String,
+    pub is_remote: bool,
+}
+
+impl From<Branch> for BranchDto {
+    fn from(branch: Branch) -> Self {
+        Self {
+            name: branch.name,
+            is_remote: branch.is_remote,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommitDto {
+    pub hash: String,
+    pub short_hash: String,
+    pub message: String,
+    pub author_name: String,
+    pub author_email: String,
+    pub timestamp: i64,
+}
+
+impl From<Commit> for CommitDto {
+    fn from(commit: Commit) -> Self {
+        Self {
+            hash: commit.hash,
+            short_hash: commit.short_hash,
+            message: commit.message,
+            author_name: commit.author_name,
+            author_email: commit.author_email,
+            timestamp: commit.timestamp,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileStatusDto {
+    pub path: String,
+    pub index_status: String,
+    pub worktree_status: String,
+}
+
+impl From<FileStatus> for FileStatusDto {
+    fn from(status: FileStatus) -> Self {
+        Self {
+            path: status.path,
+            index_status: status.index_status,
+            worktree_status: status.worktree_status,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileDiffStatDto {
+    pub path: String,
+    pub index_additions: u32,
+    pub index_deletions: u32,
+    pub wt_additions: u32,
+    pub wt_deletions: u32,
+}
+
+impl From<FileDiffStat> for FileDiffStatDto {
+    fn from(stat: FileDiffStat) -> Self {
+        Self {
+            path: stat.path,
+            index_additions: stat.index_additions,
+            index_deletions: stat.index_deletions,
+            wt_additions: stat.wt_additions,
+            wt_deletions: stat.wt_deletions,
+        }
+    }
+}
 
 /// ワークツリー一覧の 1 エントリ（旧 `WorktreeEntry`）の read model。
 ///

@@ -22,25 +22,29 @@ impl AppConfigUsecase {
     }
 
     pub fn update_telemetry_enabled(&self, enabled: bool) -> Result<(), UsecaseError> {
-        let mut config = self.repository.load()?;
-        config.telemetry_enabled = enabled;
-        self.repository.save(config)?;
+        self.repository.update(Box::new(move |config| {
+            config.telemetry_enabled = enabled;
+            Ok(())
+        }))?;
         Ok(())
     }
 
     pub fn update_server_port(&self, port: u16) -> Result<(), UsecaseError> {
         validate_port("server_port", port)?;
-        let mut config = self.repository.load()?;
-        config.server.port = port;
-        self.repository.save(config)?;
+        self.repository.update(Box::new(move |config| {
+            config.server.port = port;
+            Ok(())
+        }))?;
         Ok(())
     }
 
     pub fn regenerate_token(&self) -> Result<String, UsecaseError> {
-        let mut config = self.repository.load()?;
-        config.server.token = generate_token();
-        let token = config.server.token.clone();
-        self.repository.save(config)?;
+        let token = generate_token();
+        let next_token = token.clone();
+        self.repository.update(Box::new(move |config| {
+            config.server.token = next_token;
+            Ok(())
+        }))?;
         Ok(token)
     }
 
@@ -52,28 +56,32 @@ impl AppConfigUsecase {
                 "mcp_token must not be empty".to_string(),
             ));
         }
-        let mut config = self.repository.load()?;
-        config.server.mcp_port = port;
-        config.server.mcp_token = token;
-        self.repository.save(config)?;
+        self.repository.update(Box::new(move |config| {
+            config.server.mcp_port = port;
+            config.server.mcp_token = token;
+            Ok(())
+        }))?;
         Ok(())
     }
 
     pub fn regenerate_mcp_token(&self) -> Result<String, UsecaseError> {
-        let mut config = self.repository.load()?;
-        config.server.mcp_token = generate_token();
-        let token = config.server.mcp_token.clone();
-        self.repository.save(config)?;
+        let token = generate_token();
+        let next_token = token.clone();
+        self.repository.update(Box::new(move |config| {
+            config.server.mcp_token = next_token;
+            Ok(())
+        }))?;
         Ok(token)
     }
 
     pub fn update_app_settings(&self, app: AppSettings) -> Result<(), UsecaseError> {
-        let mut config = self.repository.load()?;
-        config.app.close_to_tray = app.close_to_tray;
-        config.app.auto_launch = app.auto_launch;
-        config.app.start_minimized = app.start_minimized;
-        config.app.agent_shortcuts = app.agent_shortcuts;
-        self.repository.save(config)?;
+        self.repository.update(Box::new(move |config| {
+            config.app.close_to_tray = app.close_to_tray;
+            config.app.auto_launch = app.auto_launch;
+            config.app.start_minimized = app.start_minimized;
+            config.app.agent_shortcuts = app.agent_shortcuts;
+            Ok(())
+        }))?;
         Ok(())
     }
 
@@ -82,34 +90,38 @@ impl AppConfigUsecase {
         last_root_path: String,
         last_bind_ip: String,
     ) -> Result<(), UsecaseError> {
-        let mut config = self.repository.load()?;
-        if !last_root_path.is_empty() && config.app.last_repo_paths.is_empty() {
-            config.app.last_repo_paths = vec![last_root_path.clone()];
-        }
-        config.app.last_root_path = last_root_path;
-        config.app.last_bind_ip = last_bind_ip;
-        self.repository.save(config)?;
+        self.repository.update(Box::new(move |config| {
+            if !last_root_path.is_empty() && config.app.last_repo_paths.is_empty() {
+                config.app.last_repo_paths = vec![last_root_path.clone()];
+            }
+            config.app.last_root_path = last_root_path;
+            config.app.last_bind_ip = last_bind_ip;
+            Ok(())
+        }))?;
         Ok(())
     }
 
     pub fn update_remote_config(&self, remote: RemoteConfig) -> Result<(), UsecaseError> {
-        let mut config = self.repository.load()?;
-        config.remote = remote;
-        self.repository.save(config)?;
+        self.repository.update(Box::new(move |config| {
+            config.remote = remote;
+            Ok(())
+        }))?;
         Ok(())
     }
 
     pub fn update_workflow_config(&self, workflow: WorkflowConfig) -> Result<(), UsecaseError> {
-        let mut config = self.repository.load()?;
-        config.workflow = workflow;
-        self.repository.save(config)?;
+        self.repository.update(Box::new(move |config| {
+            config.workflow = workflow;
+            Ok(())
+        }))?;
         Ok(())
     }
 
     pub fn update_crash_reporting(&self, enabled: bool) -> Result<(), UsecaseError> {
-        let mut config = self.repository.load()?;
-        config.telemetry.crash_reporting = enabled;
-        self.repository.save(config)?;
+        self.repository.update(Box::new(move |config| {
+            config.telemetry.crash_reporting = enabled;
+            Ok(())
+        }))?;
         Ok(())
     }
 }
@@ -128,7 +140,7 @@ mod app_config_usecase_tests {
     use std::sync::{Arc, Mutex};
 
     use crate::domain::app_config::error::AppConfigError;
-    use crate::domain::app_config::repository::ConfigRepository;
+    use crate::domain::app_config::repository::{ConfigRepository, ConfigUpdate};
     use crate::domain::app_config::value_objects::*;
     use crate::domain::notification::DesktopNotifyMode;
 
@@ -154,6 +166,11 @@ mod app_config_usecase_tests {
         fn save(&self, config: AppConfigDocument) -> Result<(), AppConfigError> {
             *self.config.lock().unwrap() = config;
             Ok(())
+        }
+
+        fn update(&self, f: ConfigUpdate) -> Result<(), AppConfigError> {
+            let mut config = self.config.lock().unwrap();
+            f(&mut config)
         }
     }
 

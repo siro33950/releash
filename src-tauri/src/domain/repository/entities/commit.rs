@@ -1,7 +1,5 @@
-use serde::{Deserialize, Serialize};
-
 /// コミット履歴の 1 エントリを表すエンティティ。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
     pub hash: String,
     pub short_hash: String,

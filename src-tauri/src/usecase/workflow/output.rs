@@ -335,6 +335,7 @@ mod tests {
 
     fn run_started(run_id: &str, definition: WorkflowDefinition) -> WorkflowEventDraft {
         let workflow_name = definition.name.clone();
+        let definition = crate::usecase::workflow::dto::workflow_to_dto(&definition);
         WorkflowEventDraft {
             run_id: run_id.to_string(),
             event_kind: "run_started".to_string(),

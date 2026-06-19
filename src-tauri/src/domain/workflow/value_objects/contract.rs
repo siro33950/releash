@@ -1,8 +1,6 @@
-use serde::{Deserialize, Serialize};
-
 use crate::domain::workflow::WorkflowError;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ContractType(String);
 
 impl ContractType {
@@ -19,7 +17,7 @@ impl ContractType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractValidationResult {
     Valid {
         structured_output: serde_json::Value,
@@ -28,7 +26,7 @@ pub enum ContractValidationResult {
     Invalid(ContractViolation),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractViolation {
     pub reason: String,
     pub details: String,

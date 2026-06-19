@@ -7,6 +7,7 @@
 pub(crate) mod approval_chat;
 pub(crate) mod command;
 mod definition;
+pub(crate) mod dto;
 pub(crate) mod event_draft;
 mod facet;
 mod output;

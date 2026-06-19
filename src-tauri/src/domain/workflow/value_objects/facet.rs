@@ -1,9 +1,6 @@
-use serde::{Deserialize, Serialize};
-
 use crate::domain::workflow::WorkflowError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FacetKind {
     Policy,
     Knowledge,
@@ -22,7 +19,7 @@ impl FacetKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FacetKey(String);
 
 impl FacetKey {
@@ -46,7 +43,7 @@ impl FacetKey {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FacetSummary {
     pub key: String,
     pub kind: String,

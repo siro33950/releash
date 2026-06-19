@@ -1,11 +1,10 @@
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub struct WorkspaceTabEntry {
     pub path: String,
     pub name: String,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct WorkspaceTabsState {
     pub editors: Vec<WorkspaceTabEntry>,
     pub active_editor_path: Option<String>,

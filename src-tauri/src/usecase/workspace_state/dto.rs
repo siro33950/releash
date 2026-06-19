@@ -1,11 +1,26 @@
-use crate::domain::workspace_state::value_objects::{WorkspaceLayoutState, WorkspaceTabsState};
+use crate::domain::workspace_state::value_objects::{
+    workspace_tabs_state::WorkspaceTabEntry, WorkspaceLayoutState, WorkspaceTabsState,
+};
 use crate::domain::workspace_state::WorkspaceState;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WorkspaceStateDto {
     pub version: u32,
-    pub tabs: WorkspaceTabsState,
+    pub tabs: WorkspaceTabsStateDto,
     pub layout: WorkspaceLayoutStateDto,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct WorkspaceTabEntryDto {
+    pub path: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceTabsStateDto {
+    pub editors: Vec<WorkspaceTabEntryDto>,
+    pub active_editor_path: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -26,7 +41,7 @@ impl From<WorkspaceState> for WorkspaceStateDto {
     fn from(state: WorkspaceState) -> Self {
         Self {
             version: state.version,
-            tabs: state.tabs,
+            tabs: state.tabs.into(),
             layout: state.layout.into(),
         }
     }
@@ -36,8 +51,44 @@ impl From<WorkspaceStateDto> for WorkspaceState {
     fn from(dto: WorkspaceStateDto) -> Self {
         Self {
             version: dto.version,
-            tabs: dto.tabs,
+            tabs: dto.tabs.into(),
             layout: dto.layout.into(),
+        }
+    }
+}
+
+impl From<WorkspaceTabsState> for WorkspaceTabsStateDto {
+    fn from(tabs: WorkspaceTabsState) -> Self {
+        Self {
+            editors: tabs.editors.into_iter().map(Into::into).collect(),
+            active_editor_path: tabs.active_editor_path,
+        }
+    }
+}
+
+impl From<WorkspaceTabsStateDto> for WorkspaceTabsState {
+    fn from(dto: WorkspaceTabsStateDto) -> Self {
+        Self {
+            editors: dto.editors.into_iter().map(Into::into).collect(),
+            active_editor_path: dto.active_editor_path,
+        }
+    }
+}
+
+impl From<WorkspaceTabEntry> for WorkspaceTabEntryDto {
+    fn from(entry: WorkspaceTabEntry) -> Self {
+        Self {
+            path: entry.path,
+            name: entry.name,
+        }
+    }
+}
+
+impl From<WorkspaceTabEntryDto> for WorkspaceTabEntry {
+    fn from(dto: WorkspaceTabEntryDto) -> Self {
+        Self {
+            path: dto.path,
+            name: dto.name,
         }
     }
 }

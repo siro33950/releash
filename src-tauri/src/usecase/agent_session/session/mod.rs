@@ -1597,7 +1597,7 @@ mod tests {
         assert_eq!(activities, None);
     }
 
-    // ---- WorkflowState serde ----
+    // ---- WorkflowState wire view serde ----
 
     fn make_session_test_node(
         name: &str,
@@ -1633,7 +1633,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_state_serde_roundtrip() {
+    fn workflow_state_view_serde_roundtrip() {
         let state = WorkflowStateSnapshot {
             execution_id: "exec-1".to_string(),
             workflow_name: "review-cycle".to_string(),
@@ -1685,11 +1685,16 @@ mod tests {
             started_at: 999.0,
             updated_at: 1001.0,
         };
-        let json = serde_json::to_string(&state).unwrap();
-        let back: WorkflowStateSnapshot = serde_json::from_str(&json).unwrap();
+        let view = crate::adaptor::presenter::workflow::workflow_state_to_view(state);
+        let json = serde_json::to_string(&view).unwrap();
+        let back: crate::adaptor::protocol::workflow::WorkflowStateFieldsView =
+            serde_json::from_str(&json).unwrap();
         assert_eq!(back.execution_id, "exec-1");
         assert_eq!(back.workflow_name, "review-cycle");
-        assert_eq!(back.state, WorkflowExecutionState::Running);
+        assert_eq!(
+            back.state,
+            crate::adaptor::protocol::workflow::WorkflowExecutionStateView::Running
+        );
         assert_eq!(back.current_step_index, 2);
         assert_eq!(back.current_step_name, "review");
         assert_eq!(back.total_steps, 4);
@@ -1699,39 +1704,42 @@ mod tests {
     }
 
     #[test]
-    fn workflow_execution_state_failed_tagged_enum_format() {
-        let state = WorkflowExecutionState::Failed {
+    fn workflow_execution_state_view_failed_tagged_enum_format() {
+        let state = crate::adaptor::protocol::workflow::WorkflowExecutionStateView::Failed {
             reason: "exit code 1".to_string(),
         };
         let json = serde_json::to_string(&state).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "failed");
         assert_eq!(v["reason"], "exit code 1");
-        let back: WorkflowExecutionState = serde_json::from_str(&json).unwrap();
+        let back: crate::adaptor::protocol::workflow::WorkflowExecutionStateView =
+            serde_json::from_str(&json).unwrap();
         assert_eq!(back, state);
     }
 
     #[test]
-    fn workflow_execution_state_all_variants_serde() {
+    fn workflow_execution_state_view_all_variants_serde() {
+        use crate::adaptor::protocol::workflow::WorkflowExecutionStateView;
+
         let variants = vec![
-            WorkflowExecutionState::Running,
-            WorkflowExecutionState::WaitingApproval,
-            WorkflowExecutionState::Completed,
-            WorkflowExecutionState::Failed {
+            WorkflowExecutionStateView::Running,
+            WorkflowExecutionStateView::WaitingApproval,
+            WorkflowExecutionStateView::Completed,
+            WorkflowExecutionStateView::Failed {
                 reason: "err".to_string(),
             },
-            WorkflowExecutionState::Aborted,
+            WorkflowExecutionStateView::Aborted,
         ];
         for state in variants {
             let json = serde_json::to_string(&state).unwrap();
-            let back: WorkflowExecutionState = serde_json::from_str(&json).unwrap();
+            let back: WorkflowExecutionStateView = serde_json::from_str(&json).unwrap();
             assert_eq!(back, state);
         }
     }
 
     // 撤去済み: `chat_session_with_workflow_state_roundtrip` は ChatSession.workflow_state
     // フィールド廃止により役目を終えた。WorkflowState の serde roundtrip は
-    // workflow/state.rs 側の単体テストで担保される。在庫 JSON の workflow_state は
+    // adaptor/protocol/workflow.rs 側の view 型で担保される。在庫 JSON の workflow_state は
     // serde の unknown_field 既定挙動で silently 読み捨てられる（破棄前提）。
 
     /// [02] schema 境界: 旧表現（`workflowDefinition.steps`）を含む WorkflowState JSON は
@@ -1759,7 +1767,8 @@ mod tests {
             "startedAt": 1.0,
             "updatedAt": 1.0
         }"#;
-        let result: Result<WorkflowStateSnapshot, _> = serde_json::from_str(json);
+        let result: Result<crate::adaptor::protocol::workflow::WorkflowStateFieldsView, _> =
+            serde_json::from_str(json);
         assert!(
             result.is_err(),
             "旧 workflowDefinition.steps を含む WorkflowState は新 schema で deserialize 失敗する"

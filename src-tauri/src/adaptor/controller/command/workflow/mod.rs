@@ -464,7 +464,7 @@ mod tests {
     use crate::adaptor::gateway::workflow::run::{RunStatus, TriggerSource};
     use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType};
     use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
-    use crate::domain::workflow::{ApprovalDecision, RunStatus as DomainRunStatus};
+    use crate::domain::workflow::ApprovalDecision;
     use std::collections::HashSet;
     use std::path::Path;
     use tempfile::TempDir;
@@ -2519,8 +2519,14 @@ mod tests {
             .await
             .expect("list_workflow_runs must succeed");
         assert_eq!(all.len(), 2);
-        assert_eq!(all[0].status, DomainRunStatus::Running);
-        assert_eq!(all[1].status, DomainRunStatus::Completed);
+        assert_eq!(
+            all[0].status,
+            crate::usecase::workflow::dto::RunStatusDto::Running
+        );
+        assert_eq!(
+            all[1].status,
+            crate::usecase::workflow::dto::RunStatusDto::Completed
+        );
 
         let terminal = list_workflow_runs(
             app.state::<AppState>(),
@@ -2652,7 +2658,10 @@ mod tests {
         let found = found.expect("run must be found");
         assert_eq!(found.run_id, run_id);
         assert_eq!(found.worktree_path, worktree_path);
-        assert_eq!(found.status, DomainRunStatus::Running);
+        assert_eq!(
+            found.status,
+            crate::usecase::workflow::dto::RunStatusDto::Running
+        );
 
         let missing = get_workflow_run(app.state::<AppState>(), read_only_test_uuid(99))
             .await
