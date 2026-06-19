@@ -6,7 +6,7 @@ use rmcp::model::*;
 use rmcp::schemars;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 
-use super::state::McpSharedState;
+use crate::adaptor::gateway::mcp::state::McpSharedState;
 
 // ---------------------------------------------------------------------------
 // Module-specific error type
@@ -280,12 +280,13 @@ mod tests {
     use std::path::PathBuf;
 
     fn make_server(repo_paths: Vec<String>) -> ReleashMcpServer {
-        use crate::mcp::state::McpSharedState;
+        use crate::adaptor::gateway::mcp::state::McpSharedState;
 
-        let app_config = Arc::new(crate::config::AppConfig::new(
-            crate::config::ReleashConfig::default(),
-            PathBuf::from("/tmp/test-config.toml"),
-        ));
+        let app_config: Arc<dyn crate::domain::app_config::ConfigRepository> =
+            Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+                crate::adaptor::gateway::app_config::ReleashConfig::default(),
+                PathBuf::from("/tmp/test-config.toml"),
+            ));
         let pty_session_runtime_gateway = Arc::new(
             crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default(),
         );

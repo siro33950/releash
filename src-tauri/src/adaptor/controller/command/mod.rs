@@ -1,7 +1,9 @@
 pub(crate) mod agent_session;
+pub(crate) mod app_config;
 pub(crate) mod code;
 pub(crate) mod external_editor;
 pub(crate) mod hooks;
+pub(crate) mod mcp;
 pub(crate) mod notification;
 pub(crate) mod pty_session;
 pub(crate) mod remote_access;
@@ -124,22 +126,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::notion::delete_notion_config,
             crate::notion::validate_notion_config,
             // アプリ設定
-            crate::config::get_server_config,
-            crate::config::update_server_port,
-            crate::config::regenerate_token,
-            crate::config::update_telemetry_enabled,
-            crate::config::get_remote_config,
-            crate::config::update_remote_config,
-            crate::config::get_workflow_config,
-            crate::config::update_workflow_config,
-            crate::config::get_app_settings,
-            crate::config::update_app_settings,
-            crate::config::update_last_server_context,
-            crate::config::get_crash_reporting_enabled,
-            crate::config::update_crash_reporting,
-            crate::config::get_mcp_config,
-            crate::config::update_mcp_config,
-            crate::config::regenerate_mcp_token,
             // Agent Status (Rust 中央管理)
             crate::adaptor::controller::command::agent_session::status::get_session_status,
             crate::adaptor::controller::command::agent_session::status::get_workspace_status,
@@ -156,16 +142,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::repository::repo_paths::add_repo_path,
             crate::adaptor::controller::command::repository::repo_paths::remove_repo_path,
             // MCP Server
-            crate::mcp::start_mcp_server,
-            crate::mcp::stop_mcp_server,
-            crate::mcp::get_mcp_server_status,
-            crate::mcp::get_mcp_connection_info,
-            crate::mcp::mcp_json::get_configured_agents,
-            crate::mcp::mcp_json::remove_agent_mcp_config,
-            crate::mcp::mcp_json::save_and_generate_mcp_configs,
-            crate::mcp::mcp_json::save_mcp_agent_selection,
-            crate::mcp::mcp_json::generate_agent_mcp_config,
-            crate::mcp::mcp_json::preview_agent_mcp_config,
             // Review comments
             crate::review_comments::list_review_threads,
             crate::review_comments::get_review_thread,
@@ -233,8 +209,10 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
 
         ]);
     let mut router = CommandRouter::new(app_handler);
+    app_config::register(&mut router);
     external_editor::register(&mut router);
     hooks::register(&mut router);
+    mcp::register(&mut router);
     notification::register(&mut router);
     pty_session::register(&mut router);
     remote_access::register(&mut router);

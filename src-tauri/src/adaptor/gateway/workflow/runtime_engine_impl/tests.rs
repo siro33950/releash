@@ -59,11 +59,14 @@ fn make_workflow_test_registry(
     claude_models: &[&str],
     codex_models: &[&str],
 ) -> AgentBackendRegistry {
-    let mut cfg = crate::config::ReleashConfig::default();
+    let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
     cfg.agents.claude.models = claude_models.iter().map(|s| s.to_string()).collect();
     cfg.agents.codex.models = codex_models.iter().map(|s| s.to_string()).collect();
     let tmp = tempfile::NamedTempFile::new().unwrap();
-    let app_cfg = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+    let app_cfg = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+        cfg,
+        tmp.path().to_path_buf(),
+    ));
     let mut registry = AgentBackendRegistry::new();
     registry.register(Arc::new(WorkflowMockBackend {
         backend_id: "claude".to_string(),
@@ -1455,7 +1458,7 @@ fn mask_sensitive_text_redacts_policy_secrets() {
 
 #[test]
 fn configured_secret_values_include_notion_api_tokens() {
-    let mut cfg = crate::config::ReleashConfig::default();
+    let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
     cfg.server.token = "SERVER_TOKEN_123".to_string();
     cfg.server.mcp_token = "MCP_TOKEN_123456".to_string();
     cfg.notion.insert(
@@ -1467,7 +1470,12 @@ fn configured_secret_values_include_notion_api_tokens() {
         },
     );
 
-    let secrets = secret_source::collect_configured_secret_values_from_config(&cfg);
+    let config_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
+        Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+            cfg,
+            std::path::PathBuf::from("/tmp/test-releash.toml"),
+        ));
+    let secrets = config_repository.configured_secret_values().unwrap();
     assert!(secrets.contains(&"SERVER_TOKEN_123".to_string()));
     assert!(secrets.contains(&"MCP_TOKEN_123456".to_string()));
     assert!(secrets.contains(&"NOTION_TOKEN_123456".to_string()));
@@ -5941,13 +5949,19 @@ mod dispatch_boundary_tests {
     type DispatchTestApp = tauri::App<tauri::test::MockRuntime>;
 
     fn make_dispatch_app() -> DispatchTestApp {
-        let mut config = crate::config::ReleashConfig::default();
+        let mut config = crate::adaptor::gateway::app_config::ReleashConfig::default();
         config.app.last_repo_paths = Vec::new();
         config.agents.default = Some("codex".to_string());
-        let app_config = Arc::new(crate::config::AppConfig::new(
+        let app_config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
             config,
             TempDir::new().unwrap().path().join("config.toml"),
         ));
+        let config_repository: Arc<dyn crate::domain::app_config::ConfigRepository> =
+            app_config.clone();
+        let agent_config_repository: Arc<dyn crate::domain::app_config::AgentConfigRepository> =
+            app_config.clone();
+        let config_secret_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
+            app_config.clone();
         // 実 backend と同じ供給経路（fixed_models()）で claude / codex の固定モデルを
         // 供給する mock backend を登録する。builtin workflow が使う claude-opus-4-8 /
         // gpt-5.5 が production と同一経路で解決され、dispatch フロー検証を維持できる。
@@ -5967,7 +5981,7 @@ mod dispatch_boundary_tests {
                 .collect(),
         }));
         registry.set_default(Some("codex".to_string()));
-        registry.set_config(Arc::clone(&app_config));
+        registry.set_config(agent_config_repository.clone());
         let registry = Arc::new(registry);
         let data_dir =
             std::env::temp_dir().join(format!("releash-dispatch-{}", uuid::Uuid::new_v4()));
@@ -5979,7 +5993,7 @@ mod dispatch_boundary_tests {
         let repo_paths_gateway =
             crate::adaptor::gateway::repository::repo_paths::RepoPathsGateway::new(
                 shared_repo_paths,
-                Arc::clone(&app_config),
+                config_repository.clone(),
             );
         // テスト用 stub: 通知は no-op で受け流す。
         let repo_paths_notifier = Arc::new(NoopRepoPathsNotifier);
@@ -5995,6 +6009,9 @@ mod dispatch_boundary_tests {
         tauri::test::mock_builder()
             .manage(crate::app_data_dir::TestDataDir(data_dir))
             .manage(app_config)
+            .manage(config_repository)
+            .manage(agent_config_repository)
+            .manage(config_secret_repository)
             .manage(registry)
             .manage(crate::adaptor::controller::state::AppState {
                 repository_usecase,
@@ -6077,12 +6094,10 @@ mod dispatch_boundary_tests {
     }
 
     fn configure_managed_repo(app: &DispatchTestApp, repo_path: &std::path::Path) {
-        app.state::<Arc<crate::config::AppConfig>>()
-            .with_config_mut(|config| {
-                config.app.last_repo_paths = vec![repo_path.to_string_lossy().to_string()];
-                Ok(())
-            })
-            .unwrap();
+        let config_repository = app.state::<Arc<dyn crate::domain::app_config::ConfigRepository>>();
+        let mut config = config_repository.load().unwrap();
+        config.app.last_repo_paths = vec![repo_path.to_string_lossy().to_string()];
+        config_repository.save(config).unwrap();
     }
 
     /// Spec [04]: ApprovalResolved event は decision を typed (snake_case) で記録し、

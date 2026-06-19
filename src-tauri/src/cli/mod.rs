@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
+use crate::adaptor::gateway::app_config::read_config_if_exists;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 #[cfg(test)]
@@ -24,7 +25,6 @@ use crate::adaptor::gateway::workflow::{
 };
 use crate::adaptor::presenter::workflow::workflow_state_to_view;
 use crate::adaptor::protocol::workflow::WorkflowStateView;
-use crate::config::read_config_if_exists;
 use crate::domain::workflow::ApprovalInputError;
 use crate::domain::workflow::{
     approval_rules, contract, secret_masker, ContractValidationResult, FacetKind, FacetRepository,
@@ -2252,9 +2252,9 @@ models = ["opus"]
         // CLI 用 data_dir に releash.toml を配置し、repo を configured repo として登録。
         let data_dir = tempfile::TempDir::new().unwrap();
         let config_path = data_dir.path().join("releash.toml");
-        let mut config = crate::config::ReleashConfig::default();
+        let mut config = crate::adaptor::gateway::app_config::ReleashConfig::default();
         config.app.last_repo_paths = vec![repo_dir.path().to_string_lossy().to_string()];
-        crate::config::write_config(&config_path, &config).unwrap();
+        crate::adaptor::gateway::app_config::write_config(&config_path, &config).unwrap();
 
         // 末尾スラッシュ / `.` を含む非 canonical 入力で呼び出しても、canonicalize した
         // 絶対パスが返り、その値は worktree_path.canonicalize() と一致する。

@@ -9,7 +9,7 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
-use crate::config::ReleashConfig;
+use crate::domain::app_config::value_objects::AppConfigDocument;
 
 use super::session::handle_ws_session;
 use super::WsServerState;
@@ -52,7 +52,7 @@ pub(super) fn content_type_for(path: &str) -> &'static str {
 }
 
 pub(super) async fn start_ws_server(
-    cfg: &ReleashConfig,
+    cfg: &AppConfigDocument,
     server_state: Arc<WsServerState>,
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), String> {

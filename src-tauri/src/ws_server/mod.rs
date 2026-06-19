@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
-use crate::config::AppConfig;
+use crate::domain::app_config::ConfigRepository;
 use crate::git_host::PrCache;
 use crate::ws_bridge::WsBroadcaster;
 
@@ -72,7 +72,7 @@ pub(crate) struct WsServerState {
     pty_session_runtime_gateway: Option<Arc<PtySessionRuntimeGateway>>,
     repo_paths: Arc<parking_lot::RwLock<Vec<String>>>,
     terminal_startup_command: Arc<parking_lot::RwLock<String>>,
-    app_config: Arc<AppConfig>,
+    app_config: Arc<dyn ConfigRepository>,
     app_handle: Option<tauri::AppHandle>,
     tls_enabled: bool,
     pr_cache: Arc<PrCache>,
@@ -101,7 +101,7 @@ impl WsServerState {
         broadcaster: Arc<WsBroadcaster>,
         pty_session_runtime_gateway: Option<Arc<PtySessionRuntimeGateway>>,
         repo_paths: Arc<parking_lot::RwLock<Vec<String>>>,
-        app_config: Arc<AppConfig>,
+        app_config: Arc<dyn ConfigRepository>,
         app_handle: Option<tauri::AppHandle>,
         tls_enabled: bool,
         pr_cache: Arc<PrCache>,
@@ -251,7 +251,7 @@ impl WsServerState {
     }
 
     pub(crate) fn current_token(&self) -> Result<String, String> {
-        let config = self.app_config.get_config()?;
+        let config = self.app_config.load().map_err(|e| e.to_string())?;
         Ok(config.server.token.clone())
     }
 }
@@ -260,7 +260,7 @@ impl WsServerState {
 mod tests {
     use std::sync::Arc;
 
-    use crate::config::AppConfig;
+    use crate::adaptor::gateway::app_config::AppConfig;
     use crate::protocol::deserialize_message;
     use crate::ws_bridge::WsBroadcaster;
 
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn test_get_repo_paths_returns_initial() {
-        let config = crate::config::ReleashConfig::default();
+        let config = crate::adaptor::gateway::app_config::ReleashConfig::default();
         let app_config = Arc::new(AppConfig::new(
             config,
             std::path::PathBuf::from("/tmp/test-releash.toml"),

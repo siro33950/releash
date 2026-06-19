@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths;
-use crate::config::AppConfig;
+use crate::domain::app_config::ConfigRepository;
 use crate::ws_bridge::WsBroadcaster;
 
 use super::http::start_ws_server;
@@ -21,7 +21,7 @@ pub async fn start_server_core(
     bind_ip: String,
 ) -> Result<StartServerResult, String> {
     let handle = app.state::<WsServerHandle>();
-    let config_state = app.state::<Arc<AppConfig>>();
+    let config_state = app.state::<Arc<dyn ConfigRepository>>();
     let broadcaster = app.state::<Arc<WsBroadcaster>>();
     let pty_session_runtime_gateway = app
         .state::<Arc<crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway>>(
@@ -36,7 +36,7 @@ pub async fn start_server_core(
         }
     }
 
-    let mut cfg = config_state.get_config()?;
+    let mut cfg = config_state.load().map_err(|e| e.to_string())?;
 
     let detected = crate::adaptor::gateway::remote_access::network_impl::detect_all_interfaces();
     let mode = if detected.iter().any(|i| i.kind == "vpn" && i.ip == bind_ip) {
@@ -128,10 +128,10 @@ pub async fn start_server_core(
     );
 
     // Save last bind IP
-    let _ = config_state.with_config_mut(|config| {
+    if let Ok(mut config) = config_state.load() {
         config.app.last_bind_ip = bind_ip.clone();
-        Ok(())
-    });
+        let _ = config_state.save(config);
+    }
 
     Ok(StartServerResult { ip: bind_ip, mode })
 }

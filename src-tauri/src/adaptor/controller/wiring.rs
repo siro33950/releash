@@ -36,7 +36,7 @@ use crate::adaptor::gateway::workflow::{
     WorkflowRunFileRepository, WorkflowSecretSourceConfigGateway,
     WorkflowStateProjectionLogRepository, WorkflowStepDetailProjectionLogRepository,
 };
-use crate::config::AppConfig;
+use crate::domain::app_config::{ConfigRepository, ConfigSecretRepository};
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::usecase::agent_session::session::{OpenTabRegistry, SessionStore};
@@ -98,7 +98,8 @@ pub(crate) fn build_workflow_usecase(data_dir: impl Into<std::path::PathBuf>) ->
 pub(crate) fn build_workflow_usecase_with_repository_worktrees<R: tauri::Runtime + 'static>(
     data_dir: impl Into<std::path::PathBuf>,
     repository_usecase: Arc<RepositoryUsecase>,
-    app_config: Arc<AppConfig>,
+    app_config: Arc<dyn ConfigRepository>,
+    config_secrets: Arc<dyn ConfigSecretRepository>,
     app: tauri::AppHandle<R>,
 ) -> WorkflowUsecase {
     build_workflow_usecase_with_gateways(
@@ -107,11 +108,8 @@ pub(crate) fn build_workflow_usecase_with_repository_worktrees<R: tauri::Runtime
             repository_usecase,
             app_config.clone(),
         )),
-        Arc::new(TauriWorkflowExternalEditorGateway::new(
-            app,
-            app_config.clone(),
-        )),
-        Arc::new(WorkflowSecretSourceConfigGateway::new(app_config)),
+        Arc::new(TauriWorkflowExternalEditorGateway::new(app, app_config)),
+        Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets)),
     )
 }
 
@@ -161,7 +159,7 @@ fn build_workflow_usecase_with_gateways(
 pub(crate) fn build_workflow_runtime_usecase(
     app: tauri::AppHandle,
     repository_usecase: Arc<RepositoryUsecase>,
-    app_config: Arc<AppConfig>,
+    app_config: Arc<dyn ConfigRepository>,
     session_store: Arc<SessionStore>,
     handles: Arc<Mutex<AgentProcessMap>>,
     data_dir: Option<PathBuf>,

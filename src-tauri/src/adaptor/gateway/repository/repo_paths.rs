@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use crate::config::AppConfig;
+use crate::domain::app_config::ConfigRepository;
 use crate::domain::repository::{normalize_repo_path, RepoPathsRepository, RepositoryError};
 
 /// 登録済みリポジトリパス一覧のメモリ共有リスト。
@@ -16,12 +16,23 @@ pub type SharedRepoPaths = Arc<parking_lot::RwLock<Vec<String>>>;
 /// `RepoPathsRepository` の実装。
 pub struct RepoPathsGateway {
     shared: SharedRepoPaths,
-    app_config: Arc<AppConfig>,
+    app_config: Arc<dyn ConfigRepository>,
 }
 
 impl RepoPathsGateway {
-    pub fn new(shared: SharedRepoPaths, app_config: Arc<AppConfig>) -> Self {
+    pub fn new(shared: SharedRepoPaths, app_config: Arc<dyn ConfigRepository>) -> Self {
         Self { shared, app_config }
+    }
+
+    fn save_paths(&self, paths: Vec<String>) -> Result<(), RepositoryError> {
+        let mut config = self
+            .app_config
+            .load()
+            .map_err(|e| RepositoryError::External(e.to_string()))?;
+        config.app.last_repo_paths = paths;
+        self.app_config
+            .save(config)
+            .map_err(|e| RepositoryError::External(e.to_string()))
     }
 }
 
@@ -44,12 +55,7 @@ impl RepoPathsRepository for RepoPathsGateway {
         let mut new_paths = paths.clone();
         new_paths.push(normalized);
 
-        self.app_config
-            .with_config_mut(|config| {
-                config.app.last_repo_paths = new_paths.clone();
-                Ok(())
-            })
-            .map_err(RepositoryError::External)?;
+        self.save_paths(new_paths.clone())?;
 
         *paths = new_paths;
         Ok(true)
@@ -68,12 +74,7 @@ impl RepoPathsRepository for RepoPathsGateway {
             return Ok(false);
         }
 
-        self.app_config
-            .with_config_mut(|config| {
-                config.app.last_repo_paths = new_paths.clone();
-                Ok(())
-            })
-            .map_err(RepositoryError::External)?;
+        self.save_paths(new_paths.clone())?;
 
         *paths = new_paths;
         Ok(true)
@@ -83,14 +84,14 @@ impl RepoPathsRepository for RepoPathsGateway {
 #[cfg(test)]
 mod repo_paths_gateway_tests {
     use super::*;
-    use crate::config::{AppConfig, ReleashConfig};
+    use crate::adaptor::gateway::app_config::{AppConfig, ReleashConfig};
     use tempfile::TempDir;
 
     fn make_gateway(dir: &TempDir) -> RepoPathsGateway {
         let shared: SharedRepoPaths = Arc::new(parking_lot::RwLock::new(Vec::new()));
         let path = dir.path().join("releash.toml");
         let config = ReleashConfig::default();
-        let app_config = Arc::new(AppConfig::new(config, path));
+        let app_config: Arc<dyn ConfigRepository> = Arc::new(AppConfig::new(config, path));
         RepoPathsGateway::new(shared, app_config)
     }
 
@@ -163,7 +164,7 @@ mod repo_paths_gateway_tests {
         gw.add("/repo/a").unwrap();
         gw.add("/repo/b").unwrap();
 
-        let cfg = gw.app_config.get_config().unwrap();
+        let cfg = gw.app_config.load().unwrap();
         assert_eq!(cfg.app.last_repo_paths, vec!["/repo/a", "/repo/b"]);
     }
 
@@ -176,7 +177,7 @@ mod repo_paths_gateway_tests {
         gw.add("/repo/b").unwrap();
         gw.remove("/repo/a").unwrap();
 
-        let cfg = gw.app_config.get_config().unwrap();
+        let cfg = gw.app_config.load().unwrap();
         assert_eq!(cfg.app.last_repo_paths, vec!["/repo/b"]);
     }
 }

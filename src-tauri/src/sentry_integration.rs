@@ -2,7 +2,7 @@ use sentry::ClientInitGuard;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::config::{load_or_create_config, ReleashConfig};
+use crate::adaptor::gateway::app_config::{load_or_create_config, ReleashConfig};
 
 const SENTRY_DSN: &str = env!("SENTRY_DSN");
 

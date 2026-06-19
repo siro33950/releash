@@ -4,7 +4,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
-use crate::config::AppConfig;
+use crate::domain::app_config::ConfigRepository;
 use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::ws_bridge::WsBroadcaster;
@@ -14,7 +14,7 @@ pub struct McpSharedState {
     pub repo_paths: Arc<RwLock<Vec<String>>>,
     #[allow(dead_code)]
     pub pty_session_runtime_gateway: Arc<PtySessionRuntimeGateway>,
-    pub app_config: Arc<AppConfig>,
+    pub app_config: Arc<dyn ConfigRepository>,
     #[allow(dead_code)] // Used in Phase I (mobile WebSocket broadcast)
     pub broadcaster: Arc<WsBroadcaster>,
     #[allow(dead_code)] // Retained: may be needed by future MCP tools
@@ -31,10 +31,11 @@ mod tests {
     use std::path::PathBuf;
 
     fn make_state() -> McpSharedState {
-        let app_config = Arc::new(crate::config::AppConfig::new(
-            crate::config::ReleashConfig::default(),
-            PathBuf::from("/tmp/test-config.toml"),
-        ));
+        let app_config: Arc<dyn ConfigRepository> =
+            Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+                crate::adaptor::gateway::app_config::ReleashConfig::default(),
+                PathBuf::from("/tmp/test-config.toml"),
+            ));
         let pty_session_runtime_gateway = Arc::new(PtySessionRuntimeGateway::default());
         let broadcaster = Arc::new(WsBroadcaster::default());
 

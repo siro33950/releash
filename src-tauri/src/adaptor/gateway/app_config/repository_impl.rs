@@ -1,259 +1,20 @@
-use rand::distr::Alphanumeric;
-use rand::RngExt;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
-use crate::notion::types::NotionRepoConfig;
+use crate::domain::app_config::error::AppConfigError;
+use crate::domain::app_config::repository::{
+    AgentConfigRepository, ConfigRepository, ConfigSecretRepository, NotionConfigRepository,
+};
+use crate::domain::app_config::services::generate_token;
+use crate::domain::app_config::value_objects as domain_vo;
 
-const TOKEN_LENGTH: usize = 48;
+use super::config_models::{apply_domain_to_config, config_to_domain, ReleashConfig};
+
 static CONFIG_WRITE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn default_true() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReleashConfig {
-    #[serde(default = "default_true")]
-    pub telemetry_enabled: bool,
-    #[serde(default)]
-    pub server: ServerSection,
-    #[serde(default)]
-    pub telemetry: TelemetrySection,
-    #[serde(default)]
-    pub notion: HashMap<String, NotionRepoConfig>,
-    #[serde(default)]
-    pub remote: RemoteSection,
-    #[serde(default)]
-    pub app: AppSection,
-    #[serde(default)]
-    pub agents: AgentsSection,
-    #[serde(default)]
-    pub workflow: WorkflowSection,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AgentsSection {
-    pub default: Option<String>,
-    #[serde(default)]
-    pub claude: ClaudeAgentSection,
-    #[serde(default)]
-    pub codex: CodexAgentSection,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct WorkflowSection {
-    #[serde(default)]
-    pub approval_auto_approve: bool,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ClaudeAgentSection {
-    /// registry の `fixed_models()` が優先されるため通常未使用（互換用に残す）。
-    #[serde(default)]
-    pub models: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CodexAgentSection {
-    pub cli_path: Option<String>,
-    /// registry の `fixed_models()` が優先されるため通常未使用（互換用に残す）。
-    #[serde(default)]
-    pub models: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct RemoteSection {
-    #[serde(default)]
-    pub auto_start: bool,
-    #[serde(default)]
-    pub auto_start_on_lan: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppSection {
-    #[serde(default = "default_true")]
-    pub close_to_tray: bool,
-    #[serde(default)]
-    pub auto_launch: bool,
-    #[serde(default)]
-    pub start_minimized: bool,
-    #[serde(default)]
-    pub last_root_path: String,
-    #[serde(default)]
-    pub last_repo_paths: Vec<String>,
-    #[serde(default)]
-    pub last_bind_ip: String,
-    #[serde(default)]
-    pub external_editor: String,
-    #[serde(default)]
-    pub agent_shortcuts: AgentShortcutSection,
-}
-
-impl Default for AppSection {
-    fn default() -> Self {
-        Self {
-            close_to_tray: true,
-            auto_launch: false,
-            start_minimized: false,
-            last_root_path: String::new(),
-            last_repo_paths: Vec::new(),
-            last_bind_ip: String::new(),
-            external_editor: String::new(),
-            agent_shortcuts: AgentShortcutSection::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AgentShortcutSection {
-    #[serde(default)]
-    pub overrides: HashMap<String, String>,
-}
-
-fn default_crash_reporting() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TelemetrySection {
-    #[serde(default = "default_crash_reporting")]
-    pub crash_reporting: bool,
-}
-
-impl Default for TelemetrySection {
-    fn default() -> Self {
-        Self {
-            crash_reporting: true,
-        }
-    }
-}
-
-impl Default for ReleashConfig {
-    fn default() -> Self {
-        Self {
-            telemetry_enabled: true,
-            server: ServerSection::default(),
-            telemetry: TelemetrySection::default(),
-            notion: HashMap::new(),
-            remote: RemoteSection::default(),
-            app: AppSection::default(),
-            agents: AgentsSection::default(),
-            workflow: WorkflowSection::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerSection {
-    #[serde(default = "default_bind")]
-    pub bind: String,
-    #[serde(default = "default_port")]
-    pub port: u16,
-    #[serde(default = "default_hook_port")]
-    pub hook_port: u16,
-    #[serde(default)]
-    pub token: String,
-    #[serde(default = "default_mcp_port")]
-    pub mcp_port: u16,
-    #[serde(default)]
-    pub mcp_token: String,
-    #[serde(default)]
-    pub tls: TlsSection,
-    #[serde(default)]
-    pub notify: NotifySection,
-}
-
-fn default_mcp_port() -> u16 {
-    19801
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum DesktopNotifyMode {
-    #[default]
-    Always,
-    WhenInactive,
-}
-
-fn default_inactive_timeout() -> u32 {
-    2
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NotifySection {
-    #[serde(default)]
-    pub webhook_url: String,
-    #[serde(default)]
-    pub on_running: bool,
-    #[serde(default = "default_true")]
-    pub on_done: bool,
-    #[serde(default = "default_true")]
-    pub on_error: bool,
-    #[serde(default = "default_true")]
-    pub on_waiting: bool,
-    #[serde(default)]
-    pub desktop_mode: DesktopNotifyMode,
-    #[serde(default = "default_inactive_timeout")]
-    pub inactive_timeout_minutes: u32,
-}
-
-impl Default for NotifySection {
-    fn default() -> Self {
-        Self {
-            webhook_url: String::new(),
-            on_running: false,
-            on_done: true,
-            on_error: true,
-            on_waiting: true,
-            desktop_mode: DesktopNotifyMode::default(),
-            inactive_timeout_minutes: default_inactive_timeout(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TlsSection {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub cert: String,
-    #[serde(default)]
-    pub key: String,
-}
-
-fn default_bind() -> String {
-    "127.0.0.1".to_string()
-}
-
-fn default_port() -> u16 {
-    9700
-}
-
-fn default_hook_port() -> u16 {
-    19700
-}
-
-impl Default for ServerSection {
-    fn default() -> Self {
-        Self {
-            bind: default_bind(),
-            port: default_port(),
-            hook_port: default_hook_port(),
-            token: String::new(),
-            mcp_port: default_mcp_port(),
-            mcp_token: String::new(),
-            tls: TlsSection::default(),
-            notify: NotifySection::default(),
-        }
-    }
-}
 
 pub struct AppConfig {
     config: Mutex<ReleashConfig>,
@@ -288,30 +49,152 @@ impl AppConfig {
         write_config(&self.config_path, &config)?;
         Ok(result)
     }
+}
 
-    /// 指定バックエンドの `agents.<backend>.models` を返す。
-    /// スキーマ未対応のバックエンドは `Err`。
-    pub fn models_for_backend(&self, backend_id: &str) -> Result<Vec<String>, String> {
-        let config = self
-            .config
-            .lock()
-            .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        match backend_id {
-            "claude" => Ok(config.agents.claude.models.clone()),
-            "codex" => Ok(config.agents.codex.models.clone()),
-            _ => Err(format!(
-                "config schema にバックエンド '{backend_id}' のモデル一覧が存在しません"
-            )),
-        }
+impl ConfigRepository for AppConfig {
+    fn load(&self) -> Result<domain_vo::AppConfigDocument, AppConfigError> {
+        self.get_config()
+            .map(|config| config_to_domain(&config))
+            .map_err(AppConfigError::Repository)
+    }
+
+    fn save(&self, config: domain_vo::AppConfigDocument) -> Result<(), AppConfigError> {
+        self.with_config_mut(|current| {
+            apply_domain_to_config(current, config);
+            Ok(())
+        })
+        .map_err(AppConfigError::Repository)
     }
 }
 
-pub fn generate_token() -> String {
-    rand::rng()
-        .sample_iter(&Alphanumeric)
-        .take(TOKEN_LENGTH)
-        .map(char::from)
-        .collect()
+impl AgentConfigRepository for AppConfig {
+    fn default_agent_backend(&self) -> Result<Option<String>, AppConfigError> {
+        self.get_config()
+            .map(|config| config.agents.default)
+            .map_err(AppConfigError::Repository)
+    }
+
+    fn models_for_backend(&self, backend_id: &str) -> Result<Vec<String>, AppConfigError> {
+        let config = self.get_config().map_err(AppConfigError::Repository)?;
+        match backend_id {
+            "claude" => Ok(config.agents.claude.models),
+            "codex" => Ok(config.agents.codex.models),
+            _ => Err(AppConfigError::InvalidInput(format!(
+                "config schema にバックエンド '{backend_id}' のモデル一覧が存在しません"
+            ))),
+        }
+    }
+
+    fn codex_cli_path(&self) -> Result<Option<String>, AppConfigError> {
+        self.get_config()
+            .map(|config| config.agents.codex.cli_path)
+            .map_err(AppConfigError::Repository)
+    }
+}
+
+impl ConfigSecretRepository for AppConfig {
+    fn configured_secret_values(&self) -> Result<Vec<String>, AppConfigError> {
+        self.get_config()
+            .map(|config| {
+                let mut values = Vec::new();
+                for value in [
+                    config.server.token,
+                    config.server.mcp_token,
+                    config.server.notify.webhook_url,
+                ] {
+                    if value.len() >= 8 {
+                        values.push(value);
+                    }
+                }
+                for notion in config.notion.into_values() {
+                    if notion.api_token.len() >= 8 {
+                        values.push(notion.api_token);
+                    }
+                }
+                values
+            })
+            .map_err(AppConfigError::Repository)
+    }
+}
+
+impl NotionConfigRepository for AppConfig {
+    fn get(&self, repo_path: &str) -> Result<Option<domain_vo::NotionRepoConfig>, AppConfigError> {
+        self.get_config()
+            .map(|config| config.notion.get(repo_path).cloned().map(notion_to_domain))
+            .map_err(AppConfigError::Repository)
+    }
+
+    fn upsert(
+        &self,
+        repo_path: String,
+        config: domain_vo::NotionRepoConfig,
+    ) -> Result<(), AppConfigError> {
+        self.with_config_mut(|current| {
+            current.notion.insert(repo_path, notion_to_model(config));
+            Ok(())
+        })
+        .map_err(AppConfigError::Repository)
+    }
+
+    fn remove(&self, repo_path: &str) -> Result<(), AppConfigError> {
+        self.with_config_mut(|current| {
+            current.notion.remove(repo_path);
+            Ok(())
+        })
+        .map_err(AppConfigError::Repository)
+    }
+}
+
+fn notion_to_domain(config: crate::notion::types::NotionRepoConfig) -> domain_vo::NotionRepoConfig {
+    domain_vo::NotionRepoConfig {
+        api_token: config.api_token,
+        database_id: config.database_id,
+        property_mapping: notion_mapping_to_domain(config.property_mapping),
+    }
+}
+
+fn notion_to_model(config: domain_vo::NotionRepoConfig) -> crate::notion::types::NotionRepoConfig {
+    crate::notion::types::NotionRepoConfig {
+        api_token: config.api_token,
+        database_id: config.database_id,
+        property_mapping: notion_mapping_to_model(config.property_mapping),
+    }
+}
+
+fn notion_mapping_to_domain(
+    mapping: crate::notion::types::PropertyMapping,
+) -> domain_vo::NotionPropertyMapping {
+    domain_vo::NotionPropertyMapping {
+        title: mapping.title,
+        labels: mapping
+            .labels
+            .into_iter()
+            .map(|label| domain_vo::NotionLabelProperty {
+                name: label.name,
+                property_type: label.property_type,
+            })
+            .collect(),
+        branch_name: mapping.branch_name,
+        branch_prefix: mapping.branch_prefix,
+    }
+}
+
+fn notion_mapping_to_model(
+    mapping: domain_vo::NotionPropertyMapping,
+) -> crate::notion::types::PropertyMapping {
+    crate::notion::types::PropertyMapping {
+        title: mapping.title,
+        labels: mapping
+            .labels
+            .into_iter()
+            .map(|label| crate::notion::types::LabelProperty {
+                name: label.name,
+                property_type: label.property_type,
+            })
+            .collect(),
+        branch_name: mapping.branch_name,
+        branch_prefix: mapping.branch_prefix,
+    }
 }
 
 /// 読み取り専用の config ローダ。
@@ -422,289 +305,15 @@ fn write_config_tmp_file(tmp_path: &Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub async fn update_telemetry_enabled(
-    state: tauri::State<'_, Arc<AppConfig>>,
-    enabled: bool,
-) -> Result<(), String> {
-    let app_config = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let mut config = app_config
-            .config
-            .lock()
-            .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        config.telemetry_enabled = enabled;
-        write_config(&app_config.config_path, &config)?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-}
-
-#[tauri::command]
-pub fn get_server_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<ServerSection, String> {
-    let config = state
-        .config
-        .lock()
-        .map_err(|e| format!("ロック取得失敗: {e}"))?;
-    Ok(config.server.clone())
-}
-
-#[tauri::command]
-pub async fn update_server_port(
-    state: tauri::State<'_, Arc<AppConfig>>,
-    port: u16,
-) -> Result<(), String> {
-    let app_config = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let mut config = app_config
-            .config
-            .lock()
-            .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        config.server.port = port;
-        write_config(&app_config.config_path, &config)?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-}
-
-#[tauri::command]
-pub async fn regenerate_token(state: tauri::State<'_, Arc<AppConfig>>) -> Result<String, String> {
-    let app_config = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let mut config = app_config
-            .config
-            .lock()
-            .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        config.server.token = generate_token();
-        write_config(&app_config.config_path, &config)?;
-        Ok(config.server.token.clone())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpConfig {
-    pub port: u16,
-    pub token: String,
-}
-
-#[tauri::command]
-pub fn get_mcp_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<McpConfig, String> {
-    let config = state
-        .config
-        .lock()
-        .map_err(|e| format!("ロック取得失敗: {e}"))?;
-    Ok(McpConfig {
-        port: config.server.mcp_port,
-        token: config.server.mcp_token.clone(),
-    })
-}
-
-#[tauri::command]
-pub async fn update_mcp_config(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppConfig>>,
-    port: u16,
-    token: String,
-) -> Result<(), String> {
-    let token = token.trim().to_string();
-    if port == 0 {
-        return Err("mcp_port must be between 1 and 65535".to_string());
-    }
-    if token.is_empty() {
-        return Err("mcp_token must not be empty".to_string());
-    }
-    let app_config = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let mut config = app_config
-            .config
-            .lock()
-            .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        config.server.mcp_port = port;
-        config.server.mcp_token = token;
-        write_config(&app_config.config_path, &config)?;
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))??;
-
-    crate::mcp::restart_mcp_server_if_running(&app).await?;
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn regenerate_mcp_token(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppConfig>>,
-) -> Result<String, String> {
-    let app_config = state.inner().clone();
-    let new_token = tokio::task::spawn_blocking(move || {
-        let mut config = app_config
-            .config
-            .lock()
-            .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        config.server.mcp_token = generate_token();
-        write_config(&app_config.config_path, &config)?;
-        Ok::<String, String>(config.server.mcp_token.clone())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))??;
-
-    crate::mcp::restart_mcp_server_if_running(&app).await?;
-    Ok(new_token)
-}
-
-#[tauri::command]
-pub fn get_app_settings(state: tauri::State<'_, Arc<AppConfig>>) -> Result<AppSection, String> {
-    let config = state
-        .config
-        .lock()
-        .map_err(|e| format!("ロック取得失敗: {e}"))?;
-    Ok(config.app.clone())
-}
-
-#[tauri::command]
-pub async fn update_app_settings(
-    state: tauri::State<'_, Arc<AppConfig>>,
-    app: AppSection,
-) -> Result<(), String> {
-    let app_config = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let mut config = app_config
-            .config
-            .lock()
-            .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        config.app.close_to_tray = app.close_to_tray;
-        config.app.auto_launch = app.auto_launch;
-        config.app.start_minimized = app.start_minimized;
-        config.app.agent_shortcuts = app.agent_shortcuts;
-        write_config(&app_config.config_path, &config)?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-}
-
-#[tauri::command]
-pub async fn update_last_server_context(
-    state: tauri::State<'_, Arc<AppConfig>>,
-    last_root_path: String,
-    last_bind_ip: String,
-) -> Result<(), String> {
-    let app_config = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let mut config = app_config
-            .config
-            .lock()
-            .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        if !last_root_path.is_empty() && config.app.last_repo_paths.is_empty() {
-            config.app.last_repo_paths = vec![last_root_path.clone()];
-        }
-        config.app.last_root_path = last_root_path;
-        config.app.last_bind_ip = last_bind_ip;
-        write_config(&app_config.config_path, &config)?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-}
-
-#[tauri::command]
-pub fn get_remote_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<RemoteSection, String> {
-    let config = state
-        .config
-        .lock()
-        .map_err(|e| format!("ロック取得失敗: {e}"))?;
-    Ok(config.remote.clone())
-}
-
-#[tauri::command]
-pub async fn update_remote_config(
-    state: tauri::State<'_, Arc<AppConfig>>,
-    remote: RemoteSection,
-) -> Result<(), String> {
-    let app_config = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let mut config = app_config
-            .config
-            .lock()
-            .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        config.remote = remote;
-        write_config(&app_config.config_path, &config)?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-}
-
-#[tauri::command]
-pub fn get_workflow_config(
-    state: tauri::State<'_, Arc<AppConfig>>,
-) -> Result<WorkflowSection, String> {
-    let config = state
-        .config
-        .lock()
-        .map_err(|e| format!("ロック取得失敗: {e}"))?;
-    Ok(config.workflow.clone())
-}
-
-#[tauri::command]
-pub async fn update_workflow_config(
-    state: tauri::State<'_, Arc<AppConfig>>,
-    workflow: WorkflowSection,
-) -> Result<(), String> {
-    let app_config = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let mut config = app_config
-            .config
-            .lock()
-            .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        config.workflow = workflow;
-        write_config(&app_config.config_path, &config)?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-}
-
-#[tauri::command]
-pub fn get_crash_reporting_enabled(
-    state: tauri::State<'_, Arc<AppConfig>>,
-) -> Result<bool, String> {
-    let config = state
-        .config
-        .lock()
-        .map_err(|e| format!("ロック取得失敗: {e}"))?;
-    Ok(config.telemetry.crash_reporting)
-}
-
-#[tauri::command]
-pub async fn update_crash_reporting(
-    state: tauri::State<'_, Arc<AppConfig>>,
-    enabled: bool,
-) -> Result<(), String> {
-    let app_config = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let mut config = app_config
-            .config
-            .lock()
-            .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        config.telemetry.crash_reporting = enabled;
-        write_config(&app_config.config_path, &config)?;
-        crate::sentry_integration::set_crash_reporting_enabled(enabled);
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::config_models::{
+        AgentsSection, AppSection, DesktopNotifyMode, NotifySection, RemoteSection, WorkflowSection,
+    };
     use super::*;
+    use crate::domain::app_config::services::TOKEN_LENGTH;
     use crate::domain::hooks::services::build_hooks_json;
+    use crate::notion::types::NotionRepoConfig;
     use tempfile::TempDir;
 
     fn config_path(dir: &TempDir) -> PathBuf {

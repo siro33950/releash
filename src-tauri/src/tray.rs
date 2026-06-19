@@ -107,8 +107,9 @@ fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
 fn handle_start_server(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let config = {
-            let config_state = app.state::<std::sync::Arc<crate::config::AppConfig>>();
-            match config_state.get_config() {
+            let config_state =
+                app.state::<std::sync::Arc<dyn crate::domain::app_config::ConfigRepository>>();
+            match config_state.load() {
                 Ok(c) => c,
                 Err(e) => {
                     log::error!("Failed to get config for tray start: {e}");

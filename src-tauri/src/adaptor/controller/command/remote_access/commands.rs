@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::adaptor::gateway::remote_access::{QrCodeRenderGateway, SystemNetworkInterfaceGateway};
-use crate::config::AppConfig;
+use crate::domain::app_config::ConfigRepository;
 use crate::domain::remote_access::{DetectedInterface, QrCodeResult};
 use crate::ws_server::WsServerHandle;
 
@@ -35,10 +35,10 @@ pub async fn detect_vpn_tunnel() -> Result<Option<serde_json::Value>, String> {
 
 #[tauri::command]
 pub fn get_connection_qr(
-    state: tauri::State<'_, Arc<AppConfig>>,
+    state: tauri::State<'_, Arc<dyn ConfigRepository>>,
     server_handle: tauri::State<'_, WsServerHandle>,
 ) -> Result<QrCodeResult, String> {
-    let config = state.get_config()?;
+    let config = state.load().map_err(|e| e.to_string())?;
     let bind = server_handle
         .active_bind()
         .unwrap_or_else(|| config.server.bind.clone());

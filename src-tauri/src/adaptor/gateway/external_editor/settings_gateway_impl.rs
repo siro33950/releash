@@ -1,28 +1,32 @@
 use std::sync::Arc;
 
-use crate::config::AppConfig;
+use crate::domain::app_config::ConfigRepository;
 use crate::domain::external_editor::EditorSettingsGateway;
 
 #[derive(Clone)]
 pub struct EditorSettingsConfigGateway {
-    config: Arc<AppConfig>,
+    config: Arc<dyn ConfigRepository>,
 }
 
 impl EditorSettingsConfigGateway {
-    pub fn new(config: Arc<AppConfig>) -> Self {
+    pub fn new(config: Arc<dyn ConfigRepository>) -> Self {
         Self { config }
     }
 }
 
 impl EditorSettingsGateway for EditorSettingsConfigGateway {
     fn selected_editor(&self) -> Result<String, String> {
-        Ok(self.config.get_config()?.app.external_editor)
+        Ok(self
+            .config
+            .load()
+            .map_err(|e| e.to_string())?
+            .app
+            .external_editor)
     }
 
     fn update_selected_editor(&self, editor: String) -> Result<(), String> {
-        self.config.with_config_mut(|config| {
-            config.app.external_editor = editor;
-            Ok(())
-        })
+        let mut config = self.config.load().map_err(|e| e.to_string())?;
+        config.app.external_editor = editor;
+        self.config.save(config).map_err(|e| e.to_string())
     }
 }

@@ -14,7 +14,7 @@ use tauri::Manager;
 use tauri::State;
 use tokio::sync::Mutex;
 
-use crate::config::AppConfig;
+use crate::domain::app_config::AgentConfigRepository;
 use crate::usecase::agent_session::session::SessionStore;
 
 impl From<ModelInfo> for crate::usecase::agent_session::session::ModelInfo {
@@ -254,7 +254,10 @@ pub trait AgentBackend: Send + Sync {
     }
 
     /// Bridge 起動時に必要なバックエンド固有の設定を返す。
-    fn runtime_config(&self, _app_config: Option<&AppConfig>) -> BackendRuntimeConfig {
+    fn runtime_config(
+        &self,
+        _app_config: Option<&dyn AgentConfigRepository>,
+    ) -> BackendRuntimeConfig {
         BackendRuntimeConfig::default()
     }
 
@@ -267,7 +270,7 @@ pub trait AgentBackend: Send + Sync {
 pub struct AgentBackendRegistry {
     backends: Vec<(String, Arc<dyn AgentBackend>, bool)>,
     default_id: Option<String>,
-    config: Option<Arc<AppConfig>>,
+    config: Option<Arc<dyn AgentConfigRepository>>,
 }
 
 impl AgentBackendRegistry {
@@ -281,7 +284,7 @@ impl AgentBackendRegistry {
 
     /// `AppConfig` を関連付ける。`available_models()` / `resolve_backend_for_model()` は
     /// この config の `agents.<backend>.models` を参照する。
-    pub fn set_config(&mut self, config: Arc<AppConfig>) {
+    pub fn set_config(&mut self, config: Arc<dyn AgentConfigRepository>) {
         self.config = Some(config);
     }
 
@@ -312,7 +315,9 @@ impl AgentBackendRegistry {
             .config
             .as_ref()
             .ok_or_else(|| "AppConfig not attached to registry".to_string())?;
-        config.models_for_backend(backend_id)
+        config
+            .models_for_backend(backend_id)
+            .map_err(|e| e.to_string())
     }
 
     /// バックエンドを登録する。同一IDの重複登録は無視する。
@@ -418,7 +423,7 @@ impl AgentBackendRegistry {
         let backend = self
             .get(id)
             .ok_or_else(|| format!("バックエンド '{id}' がレジストリに登録されていません"))?;
-        let app_config = app.try_state::<Arc<AppConfig>>();
+        let app_config = app.try_state::<Arc<dyn AgentConfigRepository>>();
         Ok(backend.runtime_config(app_config.as_deref().map(Arc::as_ref)))
     }
 
@@ -512,13 +517,13 @@ pub fn list_agent_backends(registry: State<'_, Arc<AgentBackendRegistry>>) -> Ba
 
 /// config.toml `[agents]` セクションからレジストリを構築する。
 #[allow(dead_code)]
-pub fn build_registry(config: Arc<AppConfig>) -> AgentBackendRegistry {
+pub fn build_registry(config: Arc<dyn AgentConfigRepository>) -> AgentBackendRegistry {
     build_registry_inner(config, None, None)
 }
 
 /// 実アプリ用: CodexBackend に AgentProcess bridge runtime を接続して登録する。
 pub fn build_registry_with_runtime(
-    config: Arc<AppConfig>,
+    config: Arc<dyn AgentConfigRepository>,
     app: tauri::AppHandle,
     handles: Arc<Mutex<bridge_common::AgentProcessMap>>,
     session_store: Arc<SessionStore>,
@@ -535,7 +540,7 @@ pub fn build_registry_with_runtime(
 }
 
 fn build_registry_inner(
-    config: Arc<AppConfig>,
+    config: Arc<dyn AgentConfigRepository>,
     claude_backend: Option<Arc<dyn AgentBackend>>,
     codex_backend: Option<Arc<dyn AgentBackend>>,
 ) -> AgentBackendRegistry {
@@ -550,8 +555,8 @@ fn build_registry_inner(
     registry.register(codex);
 
     // config.toml の設定を適用
-    if let Ok(cfg) = config.get_config() {
-        registry.set_default(cfg.agents.default.clone());
+    if let Ok(default_id) = config.default_agent_backend() {
+        registry.set_default(default_id);
     }
     registry.set_config(config);
 
@@ -580,6 +585,7 @@ impl crate::usecase::agent_session::session::SessionBackendResolver for AgentBac
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptor::gateway::app_config::AppConfig;
     struct MockBackend {
         backend_id: String,
         backend_name: String,
@@ -628,10 +634,10 @@ mod tests {
         })
     }
 
-    fn make_test_app_config() -> Arc<AppConfig> {
+    fn make_test_app_config() -> Arc<dyn AgentConfigRepository> {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         Arc::new(AppConfig::new(
-            crate::config::ReleashConfig::default(),
+            crate::adaptor::gateway::app_config::ReleashConfig::default(),
             tmp.path().to_path_buf(),
         ))
     }
@@ -639,8 +645,8 @@ mod tests {
     fn make_test_app_config_with_models(
         claude_models: &[&str],
         codex_models: &[&str],
-    ) -> Arc<AppConfig> {
-        let mut cfg = crate::config::ReleashConfig::default();
+    ) -> Arc<dyn AgentConfigRepository> {
+        let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
         cfg.agents.claude.models = claude_models.iter().map(|s| s.to_string()).collect();
         cfg.agents.codex.models = codex_models.iter().map(|s| s.to_string()).collect();
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -832,9 +838,9 @@ mod tests {
 
     #[test]
     fn build_registry_applies_default_from_config() {
-        let mut cfg = crate::config::ReleashConfig::default();
+        let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
         cfg.agents.default = Some("codex".to_string());
-        let config = Arc::new(AppConfig::new(
+        let config: Arc<dyn AgentConfigRepository> = Arc::new(AppConfig::new(
             cfg,
             std::path::PathBuf::from("/tmp/test-releash.toml"),
         ));

@@ -4,13 +4,11 @@ mod agent_status_events;
 mod app_data_dir;
 pub mod cli;
 mod cli_install;
-mod config;
 mod domain;
 mod focus_tracker;
 mod git;
 mod git_host;
 mod infrastructure;
-mod mcp;
 mod menu;
 mod native_drop;
 mod notion;
@@ -29,7 +27,10 @@ mod ws_server;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use config::{load_or_create_config, AppConfig};
+use adaptor::gateway::app_config::{load_or_create_config, AppConfig};
+use domain::app_config::{
+    AgentConfigRepository, ConfigRepository, ConfigSecretRepository, NotionConfigRepository,
+};
 use tauri::Manager;
 use tauri_plugin_aptabase::EventTracker;
 use tokio::sync::Mutex;
@@ -78,7 +79,7 @@ pub fn run() {
         .manage(ws_server::WsServerHandle::default())
         .manage(Arc::new(git_host::PrCache::new()))
         .manage(Arc::new(git_host::IssueCache::new()))
-        .manage(mcp::McpServerHandle::default())
+        .manage(adaptor::gateway::mcp::McpServerHandle::default())
         .manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
             parking_lot::RwLock::new(Vec::new()),
         ))
@@ -102,7 +103,14 @@ pub fn run() {
                 .plugin(tauri_plugin_aptabase::Builder::new("A-US-6336372584").build())?;
 
             let app_config = Arc::new(AppConfig::new(config, config_path));
-            app.manage(app_config.clone());
+            let config_repository: Arc<dyn ConfigRepository> = app_config.clone();
+            let agent_config_repository: Arc<dyn AgentConfigRepository> = app_config.clone();
+            let config_secret_repository: Arc<dyn ConfigSecretRepository> = app_config.clone();
+            let notion_config_repository: Arc<dyn NotionConfigRepository> = app_config.clone();
+            app.manage(config_repository.clone());
+            app.manage(agent_config_repository.clone());
+            app.manage(config_secret_repository.clone());
+            app.manage(notion_config_repository.clone());
 
             // Initialize shared repo_paths from config
             let shared_repo_paths = app
@@ -110,7 +118,7 @@ pub fn run() {
                 .inner()
                 .clone();
             {
-                if let Ok(cfg) = app_config.get_config() {
+                if let Ok(cfg) = config_repository.load() {
                     let paths: Vec<String> = cfg
                         .app
                         .last_repo_paths
@@ -136,7 +144,7 @@ pub fn run() {
                 use usecase::repo_paths_usecase::RepoPathsUsecase;
 
                 let repo_paths_gateway =
-                    RepoPathsGateway::new(shared_repo_paths.clone(), app_config.clone());
+                    RepoPathsGateway::new(shared_repo_paths.clone(), config_repository.clone());
                 // 変更通知（repo-paths-changed）の送信 infra を NotifyGateway として注入。
                 let repo_paths_notifier = Arc::new(
                     adaptor::gateway::repository::notify::RepoPathsNotifyGateway::new(
@@ -154,7 +162,8 @@ pub fn run() {
                     adaptor::controller::wiring::build_workflow_usecase_with_repository_worktrees(
                         data_dir.clone(),
                         repository_usecase.clone(),
-                        app_config.clone(),
+                        config_repository.clone(),
+                        config_secret_repository.clone(),
                         app.handle().clone(),
                     ),
                 );
@@ -172,7 +181,7 @@ pub fn run() {
             app.manage(focus_tracker.clone());
 
             {
-                let app_config_for_notification = app_config.clone();
+                let config_repository_for_notification = config_repository.clone();
                 let focus_tracker_for_notification = focus_tracker.clone();
                 let session_store_state = app
                     .state::<Arc<usecase::agent_session::session::SessionStore>>()
@@ -180,14 +189,12 @@ pub fn run() {
                     .clone();
                 session_store_state.register_state_change_listener(Arc::new(
                     move |session_id, worktree_path, new_state| {
-                        use adaptor::gateway::notification::{
-                            config_notify_to_domain, ReqwestWebhookSenderGateway,
-                        };
+                        use adaptor::gateway::notification::ReqwestWebhookSenderGateway;
                         use domain::notification::{AgentNotificationState, NotificationEvent};
                         use usecase::agent_session::session::SessionState;
 
-                        let notify = match app_config_for_notification.get_config() {
-                            Ok(config) => config_notify_to_domain(config.server.notify),
+                        let notify = match config_repository_for_notification.load() {
+                            Ok(config) => config.server.notify,
                             Err(e) => {
                                 log::warn!("Failed to load notification config: {e}");
                                 return;
@@ -301,7 +308,7 @@ pub fn run() {
                 Arc::new(adaptor::controller::wiring::build_workflow_runtime_usecase(
                     app.handle().clone(),
                     repository_usecase.clone(),
-                    app_config.clone(),
+                    config_repository.clone(),
                     session_store.clone(),
                     agent_handles.clone(),
                     pending_data_dir.clone(),
@@ -309,7 +316,7 @@ pub fn run() {
             app.manage(workflow_runtime_usecase);
             let registry = Arc::new(
                 infrastructure::agent_session::runtime::build_registry_with_runtime(
-                    app_config.clone(),
+                    agent_config_repository.clone(),
                     app.handle().clone(),
                     agent_handles,
                     session_store,
@@ -349,11 +356,13 @@ pub fn run() {
             // --hidden flag: auto-launch scenario
             let is_hidden = std::env::args().any(|a| a == "--hidden");
             if is_hidden {
-                let start_minimized = app_config.get_config().is_ok_and(|c| c.app.start_minimized);
+                let start_minimized = config_repository
+                    .load()
+                    .is_ok_and(|c| c.app.start_minimized);
                 if start_minimized {
                     if let Some(window) = app.get_webview_window("main") {
                         let close_to_tray =
-                            app_config.get_config().is_ok_and(|c| c.app.close_to_tray);
+                            config_repository.load().is_ok_and(|c| c.app.close_to_tray);
                         if close_to_tray {
                             let _ = window.hide();
                         } else {
@@ -364,7 +373,10 @@ pub fn run() {
             }
 
             // Auto-start server if configured
-            let auto_start_config = app_config.get_config().ok().filter(|c| c.remote.auto_start);
+            let auto_start_config = config_repository
+                .load()
+                .ok()
+                .filter(|c| c.remote.auto_start);
             if let Some(cfg) = auto_start_config {
                 let bind_ip = cfg.app.last_bind_ip.clone();
                 if !bind_ip.is_empty() {
@@ -383,7 +395,9 @@ pub fn run() {
             {
                 let mcp_app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = mcp::auto_start_mcp_server(&mcp_app_handle).await {
+                    if let Err(e) =
+                        adaptor::gateway::mcp::auto_start_mcp_server(&mcp_app_handle).await
+                    {
                         log::error!("MCP server auto-start failed: {e}");
                     }
                 });
@@ -421,8 +435,8 @@ pub fn run() {
             } => {
                 api.prevent_close();
                 let close_to_tray = app_handle
-                    .try_state::<Arc<AppConfig>>()
-                    .and_then(|cfg| cfg.get_config().ok())
+                    .try_state::<Arc<dyn ConfigRepository>>()
+                    .and_then(|cfg| cfg.load().ok())
                     .is_none_or(|c| c.app.close_to_tray);
 
                 if let Some(window) = app_handle.get_webview_window(&label) {

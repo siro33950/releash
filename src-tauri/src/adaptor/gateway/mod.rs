@@ -1,6 +1,8 @@
+pub(crate) mod app_config;
 pub(crate) mod code;
 pub(crate) mod external_editor;
 pub(crate) mod hooks;
+pub(crate) mod mcp;
 pub(crate) mod notification;
 pub(crate) mod pty_session;
 pub(crate) mod remote_access;

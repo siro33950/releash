@@ -15,8 +15,6 @@ use crate::adaptor::gateway::workflow::storage;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::test_support::TestRuntimeKernel;
 #[cfg(test)]
-use crate::config::AppConfig;
-#[cfg(test)]
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::permission::PermissionMode;
 #[cfg(test)]
@@ -562,15 +560,23 @@ mod tests {
     }
 
     fn make_adapter_app() -> AdapterTestApp {
-        let mut config = crate::config::ReleashConfig::default();
+        let mut config = crate::adaptor::gateway::app_config::ReleashConfig::default();
         config.agents.codex.models = vec!["default".to_string(), "gpt-5.5".to_string()];
         config.agents.default = Some("codex".to_string());
-        let app_config = Arc::new(crate::config::AppConfig::new(
+        let app_config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
             config,
             TempDir::new().unwrap().path().join("config.toml"),
         ));
+        let config_repository: Arc<dyn crate::domain::app_config::ConfigRepository> =
+            app_config.clone();
+        let agent_config_repository: Arc<dyn crate::domain::app_config::AgentConfigRepository> =
+            app_config.clone();
+        let config_secret_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
+            app_config.clone();
         let registry = Arc::new(
-            crate::infrastructure::agent_session::runtime::build_registry(Arc::clone(&app_config)),
+            crate::infrastructure::agent_session::runtime::build_registry(
+                agent_config_repository.clone(),
+            ),
         );
         let data_dir =
             std::env::temp_dir().join(format!("releash-command-adapter-{}", uuid::Uuid::new_v4()));
@@ -578,6 +584,9 @@ mod tests {
         tauri::test::mock_builder()
             .manage(crate::app_data_dir::TestDataDir(data_dir))
             .manage(app_config)
+            .manage(config_repository)
+            .manage(agent_config_repository)
+            .manage(config_secret_repository)
             .manage(registry)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("tauri mock test app must build")
@@ -2383,11 +2392,18 @@ mod tests {
         let repository_usecase =
             Arc::new(crate::adaptor::controller::wiring::build_repository_usecase());
         app.manage(repository_usecase.clone());
-        let app_config = app.state::<Arc<AppConfig>>().inner().clone();
+        let config_repository = app
+            .state::<Arc<dyn crate::domain::app_config::ConfigRepository>>()
+            .inner()
+            .clone();
+        let config_secret_repository = app
+            .state::<Arc<dyn crate::domain::app_config::ConfigSecretRepository>>()
+            .inner()
+            .clone();
         let repo_paths_gateway =
             crate::adaptor::gateway::repository::repo_paths::RepoPathsGateway::new(
                 <crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths>::default(),
-                app_config,
+                config_repository.clone(),
             );
         let repo_paths_usecase =
             Arc::new(crate::usecase::repo_paths_usecase::RepoPathsUsecase::new(
@@ -2402,7 +2418,8 @@ mod tests {
                 crate::adaptor::controller::wiring::build_workflow_usecase_with_repository_worktrees(
                     data_dir.clone(),
                     repository_usecase,
-                    app.state::<Arc<AppConfig>>().inner().clone(),
+                    config_repository,
+                    config_secret_repository,
                     app.handle().clone(),
                 ),
             ),
@@ -2445,12 +2462,10 @@ mod tests {
         repo.worktree("managed-wt", &worktree_path, None).unwrap();
         let canonical = worktree_path.canonicalize().unwrap();
         let canonical_str = canonical.to_string_lossy().to_string();
-        app.state::<Arc<AppConfig>>()
-            .with_config_mut(|config| {
-                config.app.last_repo_paths = vec![repo_path.to_string_lossy().to_string()];
-                Ok(())
-            })
-            .unwrap();
+        let config_repository = app.state::<Arc<dyn crate::domain::app_config::ConfigRepository>>();
+        let mut config = config_repository.load().unwrap();
+        config.app.last_repo_paths = vec![repo_path.to_string_lossy().to_string()];
+        config_repository.save(config).unwrap();
         (
             app,
             engine,

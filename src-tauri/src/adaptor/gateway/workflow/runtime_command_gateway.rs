@@ -6,7 +6,7 @@ use crate::adaptor::gateway::workflow::pending_command::{
 };
 use crate::adaptor::gateway::workflow::runtime_state::ApprovalDecision as RuntimeApprovalDecision;
 use crate::app_data_dir::resolve_data_dir;
-use crate::config::AppConfig;
+use crate::domain::app_config::ConfigRepository;
 use crate::domain::workflow::{
     ApprovalDecision, TriggerSource, WorkflowDefinition, WorkflowError, WorkflowStateSnapshot,
 };
@@ -62,7 +62,7 @@ impl TauriWorkflowRuntimeCommandGateway {
     pub(crate) fn new_with_default_engine(
         app: tauri::AppHandle,
         repository_usecase: Arc<RepositoryUsecase>,
-        app_config: Arc<AppConfig>,
+        app_config: Arc<dyn ConfigRepository>,
         session_store: Arc<SessionStore>,
         handles: Arc<Mutex<AgentProcessMap>>,
         data_dir: Option<PathBuf>,

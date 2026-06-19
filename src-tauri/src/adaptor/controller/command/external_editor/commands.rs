@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::adaptor::gateway::external_editor::{
     EditorSettingsConfigGateway, MacInstalledEditorGateway, TauriEditorLauncherGateway,
 };
-use crate::config::AppConfig;
+use crate::domain::app_config::ConfigRepository;
 use crate::domain::external_editor::{EditorInfo, EditorSettingsGateway};
 
 #[tauri::command]
@@ -14,7 +14,7 @@ pub fn detect_editors() -> Vec<EditorInfo> {
 #[tauri::command]
 pub fn open_in_editor(
     app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppConfig>>,
+    state: tauri::State<'_, Arc<dyn ConfigRepository>>,
     file_path: String,
 ) -> Result<(), String> {
     let launcher = TauriEditorLauncherGateway::new(app);
@@ -25,7 +25,7 @@ pub fn open_in_editor(
 #[tauri::command]
 pub fn open_folder_in_editor(
     app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppConfig>>,
+    state: tauri::State<'_, Arc<dyn ConfigRepository>>,
     folder_path: String,
 ) -> Result<(), String> {
     let launcher = TauriEditorLauncherGateway::new(app);
@@ -38,13 +38,15 @@ pub fn open_folder_in_editor(
 }
 
 #[tauri::command]
-pub fn get_external_editor(state: tauri::State<'_, Arc<AppConfig>>) -> Result<String, String> {
+pub fn get_external_editor(
+    state: tauri::State<'_, Arc<dyn ConfigRepository>>,
+) -> Result<String, String> {
     EditorSettingsConfigGateway::new(state.inner().clone()).selected_editor()
 }
 
 #[tauri::command]
 pub async fn update_external_editor(
-    state: tauri::State<'_, Arc<AppConfig>>,
+    state: tauri::State<'_, Arc<dyn ConfigRepository>>,
     editor: String,
 ) -> Result<(), String> {
     let settings = EditorSettingsConfigGateway::new(state.inner().clone());
