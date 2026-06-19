@@ -243,7 +243,7 @@ describe("agent-session-state-changed event", () => {
 		});
 	});
 
-	it("dispatches SET_TURN_PHASE and UPDATE_SESSION_STATE on idle with exit_code", () => {
+	it("dispatches SET_TURN_PHASE and UPDATE_SESSION_STATE (done) on idle with exit_code", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -274,7 +274,7 @@ describe("agent-session-state-changed event", () => {
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "UPDATE_SESSION_STATE",
 			sessionId: "session-1",
-			state: "idle",
+			state: "done",
 		});
 	});
 

@@ -439,7 +439,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 					request: null,
 				});
 
-				const newState: SessionState = exit_code === 0 ? "idle" : "error";
+				const newState: SessionState = exit_code === 0 ? "done" : "error";
 				if (isViewable(chat_session_id, viewableRegistry)) {
 					dispatch({
 						type: "UPDATE_SESSION_STATE",
