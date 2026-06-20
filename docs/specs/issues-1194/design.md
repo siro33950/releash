@@ -12,11 +12,11 @@
 
 ### 採用方針（要約）
 
-1. **ターン完了時にバッファを解放する**: `final_parts` をスナップショットした直後に `streaming_parts` と coalescing カウンタをクリアする（`last_message_id` / `task_id_map` は post-turn のため保持）。これにより、ターン完了直後の idle 状態で `streaming_parts.is_empty()` が成立する（AC1 の不変条件）。
+1. **ターン完了時のバッファ解放はガード条件付きにする**: `final_parts` をスナップショットした直後、`exit_code != 0 || pending_stream_part_count == 0` の場合だけ `streaming_parts` と coalescing カウンタをクリアする（`last_message_id` / `task_id_map` は post-turn のため保持）。正常完了かつ `pending_stream_part_count > 0` の場合は、pending 分の payload 確定に必要な parts を一時保持し、post-turn 処理で解放する。
 2. **post-turn の base は永続ストアから遅延再構築する**: post-turn イベントを処理する際、`streaming_parts` が空であれば、`last_message_id` に対応する**永続化済みメッセージの `parts`** を `streaming_parts` へ再シードしてから `accumulate_sdk_message` する。これにより以降の emit／persist は従来どおり「累積全体」を生成でき、外部振る舞いは不変（R2/R3）。
-3. **post-turn 処理後に再びバッファを解放する**: 各 post-turn delta の emit／persist 用 payload を確定したのち `streaming_parts` を再クリアする。次の post-turn イベントは（直前 delta を含む）最新の永続メッセージから再シードするため、複数 post-turn が連続しても累積は保持されず、かつ内容は一致する。
+3. **post-turn 処理後に再びバッファを解放する**: 各 post-turn delta の emit／persist 用 payload を確定したのち `streaming_parts` を再クリアする。次の post-turn イベントは（直前 delta を含む）最新の永続メッセージから再シードするため、複数 post-turn が連続しても累積は保持されず、かつ内容は一致する。R1 の「完了ターン分の parts が常駐し続けない」は、すべてのターン完了直後ではなく、即時解放条件を満たす完了直後、または post-turn 処理完了後から次ターンまでの idle 期間で成立する。
 
-この設計は「**完了ターン分の parts をメモリに常駐させない（実解放）**」と「**emit/persist/履歴復元の外部振る舞い不変**」を同時に満たす。retain（メモリ保持）系の代替は「§リスクと代替案」で却下理由を述べる。
+この設計は「**完了ターン分の parts をメモリに常駐させない（実解放）**」と「**emit/persist/履歴復元の外部振る舞い不変**」を同時に満たす。正常完了かつ `pending_stream_part_count > 0` のターンだけは parts を post-turn 処理まで残すが、payload 確定後に解放するため、次ターンまでの idle 期間に完了ターン分の parts が常駐し続ける状態は残らない。retain（メモリ保持）系の代替は「§リスクと代替案」で却下理由を述べる。
 
 ## 変更対象
 
@@ -24,7 +24,7 @@
 
 | 箇所 | 変更 |
 |---|---|
-| `run_turn_complete_transition_locked`（L1237 付近） | `final_parts` スナップショット後に完了ターン分バッファを解放（新ヘルパー呼び出し） |
+| `run_turn_complete_transition_locked`（L1237 付近） | `final_parts` スナップショット後、`exit_code != 0 || pending_stream_part_count == 0` の場合だけ完了ターン分バッファを解放（新ヘルパー呼び出し）。正常完了かつ `pending_stream_part_count > 0` の場合は post-turn 処理まで保持 |
 | 新ヘルパー `release_completed_turn_streaming_buffer`（追加） | `streaming_parts` と coalescing カウンタをクリア。`last_message_id` / `task_id_map` は保持 |
 | 新ヘルパー `reseed_post_turn_base_from_store`（追加） | 永続メッセージ parts を `streaming_parts` へ再シード（base 再構築） |
 | stdout reader の post-turn 分岐（`_ =>`、L3054-3137 付近） | post-turn かつ `streaming_parts` 空なら base 再シード → accumulate。payload 確定後に再クリア |
@@ -95,11 +95,14 @@ run_turn_complete_transition_locked:
   final_parts = consolidate_parts_from_slice(streaming_parts)  // 既存スナップショット
   final_msg_id = streaming_message_id.take()               // 既存
   if final_msg_id.is_some(): last_message_id = final_msg_id // 既存（post-turn 用）
-  release_completed_turn_streaming_buffer(proc)            // ★追加: バッファ解放
+  if exit_code != 0 || pending_stream_part_count == 0:
+      release_completed_turn_streaming_buffer(proc)        // ★追加: 異常終了または pending なしなら即時解放
+  else:
+      streaming_parts を保持                            // 正常完了かつ pending>0。post-turn 処理で解放
   return TurnCompleteTransition { ... }                    // 既存（final_parts 等は move 済み）
 ```
 
-完了後の最終 persist（`persist_streaming_parts(mid, &final_parts, Some(completed_at))`）は呼び出し側で `final_parts`（ヘルパーが返したスナップショット）を使うため、`streaming_parts` をクリアしても emit/persist 内容は不変（R3）。`final_parts` は `streaming_parts` のクリア前に確定済み。
+完了後の最終 persist（`persist_streaming_parts(mid, &final_parts, Some(completed_at))`）は呼び出し側で `final_parts`（ヘルパーが返したスナップショット）を使うため、即時解放分岐で `streaming_parts` をクリアしても emit/persist 内容は不変（R3）。`final_parts` は `streaming_parts` のクリア前に確定済み。正常完了かつ `pending_stream_part_count > 0` の場合は、pending 分の post-turn payload 確定まで parts を残し、post-turn 分岐の `release_completed_turn_streaming_buffer(proc)` で解放する。したがって R1 の保証時点は「常にターン完了直後」ではなく、「即時解放条件を満たす完了直後、または post-turn 処理完了後から次ターンまでの idle 期間」である。
 
 ### post-turn イベント（両経路の `_ =>` 分岐）
 
@@ -152,9 +155,9 @@ consolidate(consolidate(A) ++ B) == consolidate(A ++ B)
 
 新規テスト:
 
-1. **正常系・解放（AC1 / R1）**: `streaming_parts` に複数 parts を積んだ proc に対し `run_turn_complete_transition_locked` を実行 → 戻り値 `final_parts` が従来同等の consolidated 内容であり、かつ `proc.streaming_parts.is_empty()` を assert。`last_message_id` が保持されていることも assert。
+1. **正常系・即時解放（AC1 / R1）**: `streaming_parts` に複数 parts を積み、`pending_stream_part_count == 0` の proc に対し `run_turn_complete_transition_locked` を実行 → 戻り値 `final_parts` が従来同等の consolidated 内容であり、かつ `proc.streaming_parts.is_empty()` を assert。`last_message_id` が保持されていることも assert。
 2. **post-turn 再シード → 内容一致（AC2 / R2）**: 完了で解放済み（`streaming_parts` 空、`last_message_id = mid`）の状態を作り、永続ストアに base parts を持つメッセージを用意。post-turn delta を accumulate する経路を駆動し、emit/persist に渡る consolidated payload が「base ++ delta の consolidated」と一致することを assert（旧挙動＝ base を保持し続けた場合の payload と同値）。
-3. **複数 post-turn 連続（R2 複数シナリオ）**: 2 件以上の post-turn delta を順に処理し、各処理後に `streaming_parts` が再び空であること、最終的に永続化されるメッセージ内容が全 delta を欠落・重複なく含むことを assert。
+3. **pending あり完了 → post-turn 解放（R1 / R2 複数シナリオ）**: 正常完了かつ `pending_stream_part_count > 0` では `run_turn_complete_transition_locked` 直後に parts が保持されることを assert。その後 2 件以上の post-turn delta を順に処理し、各処理後に `streaming_parts` が再び空であること、最終的に永続化されるメッセージ内容が全 delta を欠落・重複なく含むことを assert。
 4. **解放等価性（R3）**: 同一の生 parts 列に対し「旧: 保持し続けて consolidate」「新: 解放→再シード→consolidate」の emit/persist payload が一致することを、`consolidate(consolidate(A)++B) == consolidate(A++B)` のプロパティとして検証するユニットテスト。
 5. **再シード失敗フォールバック（エッジ）**: get_session が None／エラーのスタブで post-turn を駆動し、既存メッセージを破壊せず（persist スキップ）warn 経路に入ることを確認。
 
