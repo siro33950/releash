@@ -197,6 +197,10 @@ async function handleInit(cmd) {
 		options.allowDangerouslySkipPermissions = true;
 	}
 
+	if (cmd.model) {
+		options.model = cmd.model;
+	}
+
 	const INTERACTIVE_TOOLS = ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"];
 
 	options.canUseTool = (toolName, input, meta) => {
