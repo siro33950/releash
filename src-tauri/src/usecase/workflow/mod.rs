@@ -697,8 +697,8 @@ mod tests {
     struct FakeSecretSourceGateway;
 
     impl SecretSourceGateway for FakeSecretSourceGateway {
-        fn configured_secret_values(&self) -> Vec<String> {
-            vec!["token-123".to_string()]
+        fn configured_secret_values(&self) -> Result<Vec<String>, WorkflowError> {
+            Ok(vec!["token-123".to_string()])
         }
     }
 

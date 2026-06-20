@@ -7,5 +7,5 @@ pub trait ManagedWorktreeGateway: Send + Sync {
 }
 
 pub trait SecretSourceGateway: Send + Sync {
-    fn configured_secret_values(&self) -> Vec<String>;
+    fn configured_secret_values(&self) -> Result<Vec<String>, WorkflowError>;
 }

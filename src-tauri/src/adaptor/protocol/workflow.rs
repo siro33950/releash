@@ -351,4 +351,67 @@ mod tests {
         assert!(value["runtimeStates"][session_id]["runtime_active"].is_null());
         assert!(value["runtimeStates"][session_id]["tab_open"].is_null());
     }
+
+    #[test]
+    fn workflow_execution_state_view_failed_tagged_enum_format() {
+        let state = WorkflowExecutionStateView::Failed {
+            reason: "exit code 1".to_string(),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "failed");
+        assert_eq!(v["reason"], "exit code 1");
+        let back: WorkflowExecutionStateView = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, state);
+    }
+
+    #[test]
+    fn workflow_execution_state_view_all_variants_serde() {
+        let variants = vec![
+            WorkflowExecutionStateView::Running,
+            WorkflowExecutionStateView::WaitingApproval,
+            WorkflowExecutionStateView::Completed,
+            WorkflowExecutionStateView::Failed {
+                reason: "err".to_string(),
+            },
+            WorkflowExecutionStateView::Aborted,
+        ];
+        for state in variants {
+            let json = serde_json::to_string(&state).unwrap();
+            let back: WorkflowExecutionStateView = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, state);
+        }
+    }
+
+    /// [02] schema 境界: 旧表現（`workflowDefinition.steps`）を含む WorkflowState JSON は
+    /// 新 `Workflow` schema（`nodes` 必須 + `deny_unknown_fields`）として deserialize に失敗する。
+    /// これにより旧表現の進行中状態は新バージョンに引き継がれない。
+    #[test]
+    fn legacy_workflow_state_with_steps_fails_to_deserialize() {
+        let json = r#"{
+            "executionId": "exec-1",
+            "workflowName": "legacy",
+            "state": { "type": "running" },
+            "currentStepIndex": 0,
+            "currentStepName": "x",
+            "totalSteps": 1,
+            "stepHistory": [],
+            "stepExecutionCounts": {},
+            "workflowDefinition": {
+                "name": "legacy",
+                "description": "",
+                "builtin": false,
+                "steps": [{"name":"x","mode":"auto","instruction":"x"}]
+            },
+            "totalTokenUsage": { "inputTokens": 0, "outputTokens": 0 },
+            "stepStates": {},
+            "startedAt": 1.0,
+            "updatedAt": 1.0
+        }"#;
+        let result: Result<WorkflowStateFieldsView, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "旧 workflowDefinition.steps を含む WorkflowState は新 schema で deserialize 失敗する"
+        );
+    }
 }

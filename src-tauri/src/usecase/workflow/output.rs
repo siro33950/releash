@@ -46,7 +46,7 @@ impl WorkflowOutputUsecase {
         let events = self.query.read_events(run_id)?;
         let contract_type = resolve_step_output_contract_from_drafts(&events, step_name, run_id)?;
         let contract_definition = self.facets.get(FacetKind::Contract, &contract_type).ok();
-        let secrets = self.secrets.configured_secret_values();
+        let secrets = self.secrets.configured_secret_values()?;
         let redacted = secret_masker::mask_sensitive_structured_output(
             &contract_type,
             structured_output,
@@ -282,8 +282,8 @@ mod tests {
     struct FakeSecretSourceGateway;
 
     impl SecretSourceGateway for FakeSecretSourceGateway {
-        fn configured_secret_values(&self) -> Vec<String> {
-            vec!["token-123".to_string()]
+        fn configured_secret_values(&self) -> Result<Vec<String>, WorkflowError> {
+            Ok(vec!["token-123".to_string()])
         }
     }
 
