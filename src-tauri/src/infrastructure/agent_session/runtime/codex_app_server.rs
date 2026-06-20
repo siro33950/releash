@@ -428,8 +428,11 @@ fn file_change_metadata_without_diff(change: &Value) -> Value {
     let Some(object) = change.as_object() else {
         return change.clone();
     };
-    let mut metadata = object.clone();
-    metadata.remove("diff");
+    let metadata = object
+        .iter()
+        .filter(|(key, _)| key.as_str() != "diff")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
     Value::Object(metadata)
 }
 
