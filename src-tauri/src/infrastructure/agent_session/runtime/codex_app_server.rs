@@ -424,6 +424,15 @@ fn file_change_tool_use_id(item_id: &str, change: &Value, index: usize) -> Strin
     format!("{item_id}:{suffix}")
 }
 
+fn file_change_metadata_without_diff(change: &Value) -> Value {
+    let Some(object) = change.as_object() else {
+        return change.clone();
+    };
+    let mut metadata = object.clone();
+    metadata.remove("diff");
+    Value::Object(metadata)
+}
+
 fn file_change_tool_messages(item_id: &str, changes: &Value, is_error: bool) -> Vec<Value> {
     let Some(changes) = changes.as_array() else {
         return Vec::new();
@@ -441,7 +450,7 @@ fn file_change_tool_messages(item_id: &str, changes: &Value, is_error: bool) -> 
                 "codex_file_change": true,
                 "kind": file_change_kind(change),
                 "diff": diff,
-                "changes": [change.clone()],
+                "changes": [file_change_metadata_without_diff(change)],
             });
             let content = if diff.is_empty() {
                 serde_json::to_string(change)
@@ -2035,6 +2044,16 @@ mod tests {
         assert_eq!(
             patch[0]["message"]["content"][0]["input"]["codex_file_change"],
             true
+        );
+        assert_eq!(
+            patch[0]["message"]["content"][0]["input"]["diff"],
+            "@@ -1 +1 @@\n-old\n+new\n"
+        );
+        assert!(
+            patch[0]["message"]["content"][0]["input"]["changes"][0]
+                .get("diff")
+                .is_none(),
+            "raw changes metadata must not duplicate the display diff"
         );
         assert_eq!(
             patch[1]["message"]["content"][0]["tool_use_id"],
