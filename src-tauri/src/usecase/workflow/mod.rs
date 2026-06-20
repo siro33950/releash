@@ -942,8 +942,36 @@ mod tests {
             &forbidden_patterns,
         );
         assert_no_forbidden_production_patterns(
-            "adaptor/controller/handler/workflow",
-            &forbidden_patterns,
+            "adaptor/controller/command/agent_session",
+            &[concat!(
+                "crate",
+                "::",
+                "adaptor",
+                "::",
+                "controller",
+                "::",
+                "handler"
+            )],
+        );
+
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let handler_root = source_root.join("adaptor/controller/handler");
+        let mut handler_files = Vec::new();
+        if handler_root.exists() {
+            collect_rs_files(&handler_root, &mut handler_files);
+        }
+        assert!(
+            handler_files.is_empty(),
+            "controller/handler must remain empty after WebSocket handlers are removed: {}",
+            handler_files
+                .iter()
+                .map(|path| path
+                    .strip_prefix(&source_root)
+                    .unwrap_or(path)
+                    .display()
+                    .to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 

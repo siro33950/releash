@@ -320,7 +320,7 @@ pub async fn close_session(
             crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
         })?
     {
-        crate::adaptor::controller::handler::workflow::emit_workflow_step_target_state(
+        crate::adaptor::controller_support::emit_workflow_step_target_state(
             &app,
             &target,
             handles.inner(),
@@ -381,7 +381,7 @@ pub async fn restore_session(
             crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
         })?
     {
-        crate::adaptor::controller::handler::workflow::emit_workflow_step_target_state(
+        crate::adaptor::controller_support::emit_workflow_step_target_state(
             &app,
             &target,
             handles.inner(),

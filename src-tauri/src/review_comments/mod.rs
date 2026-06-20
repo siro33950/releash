@@ -37,16 +37,6 @@ pub struct ReviewActorDto {
 }
 
 impl ReviewActorDto {
-    #[cfg(test)]
-    pub(crate) fn human() -> Self {
-        Self {
-            kind: ReviewActorKind::Human,
-            backend_id: None,
-            model: None,
-            display_name: "Human".to_string(),
-        }
-    }
-
     pub fn participant_key(&self) -> String {
         match self.kind {
             ReviewActorKind::Human => "human".to_string(),

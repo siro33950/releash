@@ -1,19 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RemotePanel } from "@/components/panels/RemotePanel";
 import { SettingsModal } from "@/components/panels/SettingsModal";
 import { UpdateDialog } from "@/components/UpdateDialog";
-import {
-	Dialog,
-	DialogContent,
-	DialogHeader,
-	DialogTitle,
-} from "@/components/ui/dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WorkspaceList } from "@/components/workspace/WorkspaceList";
 import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
-import { useRemoteAutoStart } from "@/hooks/useRemoteAutoStart";
 import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
@@ -21,7 +13,6 @@ import { useWorkspaceNavigation } from "@/hooks/useWorkspaceNavigation";
 import { setTelemetryEnabled } from "@/lib/telemetry";
 import { MainLayout } from "@/screens/MainLayout";
 import type { ProviderStatus, WorktreeEntry } from "@/types/git";
-import { buildTerminalCommand } from "@/types/settings";
 
 function App() {
 	const { settings, updateSettings, updateTheme } = useSettings();
@@ -30,12 +21,10 @@ function App() {
 		useWorkspaceNavigation();
 	const { repoPaths, addRepo, removeRepo, initFromCwd } = useRepoList();
 
-	const [initializing, setInitializing] = useState(true);
-	useRemoteAutoStart(!initializing);
+	const [, setInitializing] = useState(true);
 	const [, setProviderStatuses] = useState<
 		Record<string, ProviderStatus | null>
 	>({});
-	const [showRemote, setShowRemote] = useState(false);
 	const [showAppSettings, setShowAppSettings] = useState(false);
 
 	useEffect(() => {
@@ -136,15 +125,6 @@ function App() {
 			"theme-dark": () => updateTheme("dark"),
 			"theme-light": () => updateTheme("light"),
 			"back-to-kanban": () => {},
-			"remote-start-server": () => setShowRemote(true),
-			"remote-stop-server": async () => {
-				try {
-					await invoke("stop_server");
-				} catch (e) {
-					console.error("Failed to stop server:", e);
-				}
-			},
-			"remote-show-qr": () => setShowRemote(true),
 		}),
 		[handleAddRepo, updateTheme],
 	);
@@ -164,7 +144,6 @@ function App() {
 				selectedRootPath={selectedRootPath}
 				onSelectWorktree={handleSelectWorktree}
 				onAddRepo={handleAddRepo}
-				onShowRemote={() => setShowRemote(true)}
 				onShowSettings={() => setShowAppSettings(true)}
 			/>
 		),
@@ -180,18 +159,6 @@ function App() {
 				onSettingsSave={updateSettings}
 				leftNav={leftNav}
 			/>
-
-			{/* Remote Dialog */}
-			<Dialog open={showRemote} onOpenChange={setShowRemote}>
-				<DialogContent className="max-w-lg">
-					<DialogHeader>
-						<DialogTitle>Remote Access</DialogTitle>
-					</DialogHeader>
-					<RemotePanel
-						terminalStartupCommand={buildTerminalCommand(settings)}
-					/>
-				</DialogContent>
-			</Dialog>
 
 			{/* App Settings */}
 			<SettingsModal

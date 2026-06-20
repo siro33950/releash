@@ -5,7 +5,6 @@ import {
 	ChevronDown,
 	ChevronRight,
 	Filter,
-	Globe,
 	Home,
 	LayoutList,
 	Loader2,
@@ -60,7 +59,6 @@ interface WorkspaceListProps {
 		repoName?: string,
 	) => void;
 	onAddRepo: () => void;
-	onShowRemote: () => void;
 	onShowSettings: () => void;
 }
 
@@ -414,7 +412,6 @@ export function WorkspaceList({
 	selectedRootPath,
 	onSelectWorktree,
 	onAddRepo,
-	onShowRemote,
 	onShowSettings,
 }: WorkspaceListProps) {
 	const [groupMode, setGroupMode] = useState<GroupMode>("repository");
@@ -579,15 +576,6 @@ export function WorkspaceList({
 					Add Repository
 				</Button>
 				<div className="flex items-center gap-0.5">
-					<Button
-						size="icon"
-						variant="ghost"
-						className="size-7"
-						onClick={onShowRemote}
-						title="Remote"
-					>
-						<Globe className="size-3.5" />
-					</Button>
 					<Button
 						size="icon"
 						variant="ghost"

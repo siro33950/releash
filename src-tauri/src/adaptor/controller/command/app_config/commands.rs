@@ -3,8 +3,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::adaptor::gateway::app_config::{
-    app_to_domain, app_to_model, remote_to_domain, remote_to_model, server_to_model,
-    workflow_to_domain, workflow_to_model, AppSection, McpConfig, RemoteSection, ServerSection,
+    app_to_domain, app_to_model, workflow_to_domain, workflow_to_model, AppSection, McpConfig,
     WorkflowSection,
 };
 use crate::adaptor::gateway::mcp::McpServerGatewayImpl;
@@ -32,38 +31,6 @@ pub async fn update_telemetry_enabled(
 ) -> Result<(), String> {
     let usecase = build_usecase(state.inner().clone());
     tokio::task::spawn_blocking(move || usecase.update_telemetry_enabled(enabled))
-        .await
-        .map_err(map_join_error)?
-        .map_err(String::from)
-}
-
-#[tauri::command]
-pub fn get_server_config(
-    state: State<'_, Arc<dyn ConfigRepository>>,
-) -> Result<ServerSection, String> {
-    let usecase = build_usecase(state.inner().clone());
-    let server = usecase.query().get_server_config().map_err(String::from)?;
-    Ok(server_to_model(server))
-}
-
-#[tauri::command]
-pub async fn update_server_port(
-    state: State<'_, Arc<dyn ConfigRepository>>,
-    port: u16,
-) -> Result<(), String> {
-    let usecase = build_usecase(state.inner().clone());
-    tokio::task::spawn_blocking(move || usecase.update_server_port(port))
-        .await
-        .map_err(map_join_error)?
-        .map_err(String::from)
-}
-
-#[tauri::command]
-pub async fn regenerate_token(
-    state: State<'_, Arc<dyn ConfigRepository>>,
-) -> Result<String, String> {
-    let usecase = build_usecase(state.inner().clone());
-    tokio::task::spawn_blocking(move || usecase.regenerate_token())
         .await
         .map_err(map_join_error)?
         .map_err(String::from)
@@ -123,43 +90,6 @@ pub async fn update_app_settings(
     let usecase = build_usecase(state.inner().clone());
     let app = app_to_domain(&app);
     tokio::task::spawn_blocking(move || usecase.update_app_settings(app))
-        .await
-        .map_err(map_join_error)?
-        .map_err(String::from)
-}
-
-#[tauri::command]
-pub async fn update_last_server_context(
-    state: State<'_, Arc<dyn ConfigRepository>>,
-    last_root_path: String,
-    last_bind_ip: String,
-) -> Result<(), String> {
-    let usecase = build_usecase(state.inner().clone());
-    tokio::task::spawn_blocking(move || {
-        usecase.update_last_server_context(last_root_path, last_bind_ip)
-    })
-    .await
-    .map_err(map_join_error)?
-    .map_err(String::from)
-}
-
-#[tauri::command]
-pub fn get_remote_config(
-    state: State<'_, Arc<dyn ConfigRepository>>,
-) -> Result<RemoteSection, String> {
-    let usecase = build_usecase(state.inner().clone());
-    let remote = usecase.query().get_remote_config().map_err(String::from)?;
-    Ok(remote_to_model(remote))
-}
-
-#[tauri::command]
-pub async fn update_remote_config(
-    state: State<'_, Arc<dyn ConfigRepository>>,
-    remote: RemoteSection,
-) -> Result<(), String> {
-    let usecase = build_usecase(state.inner().clone());
-    let remote = remote_to_domain(&remote);
-    tokio::task::spawn_blocking(move || usecase.update_remote_config(remote))
         .await
         .map_err(map_join_error)?
         .map_err(String::from)

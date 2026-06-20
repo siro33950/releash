@@ -187,6 +187,7 @@ impl RepositoryUsecase {
     /// `dirty_count`（status 全走査）/ `base_branch`（git_config 読み）を必要としない
     /// 用途のために、worktree 集約の slim な一覧だけを取得する（[`list_worktrees`] の
     /// 重い合成を避ける）。
+    #[allow(dead_code)]
     pub fn list_worktree_paths(&self, repo_path: &str) -> Result<Vec<String>, UsecaseError> {
         Ok(self
             .worktree

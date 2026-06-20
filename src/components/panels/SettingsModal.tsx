@@ -7,7 +7,6 @@ import {
 	Code,
 	Copy,
 	GitBranch,
-	Globe,
 	Loader2,
 	Monitor,
 	Palette,
@@ -49,7 +48,6 @@ import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { useAutomation } from "@/hooks/useAutomation";
 import { useMcpConfig } from "@/hooks/useMcpConfig";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
-import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 import { useWebhookConfig } from "@/hooks/useWebhookConfig";
 import { trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
@@ -312,7 +310,6 @@ type SettingsSection =
 	| "notion"
 	| "agent"
 	| "mcp"
-	| "remote"
 	| "background"
 	| "notifications"
 	| "automation"
@@ -329,7 +326,6 @@ const SETTINGS_SECTIONS: {
 	{ id: "notion", label: "Notion", icon: BookOpen },
 	{ id: "agent", label: "Agent", icon: Bot },
 	{ id: "mcp", label: "MCP", icon: Plug },
-	{ id: "remote", label: "Remote", icon: Globe },
 	{ id: "background", label: "Background", icon: Monitor },
 	{ id: "notifications", label: "Notifications", icon: Bell },
 	{ id: "automation", label: "Automation", icon: Workflow },
@@ -1078,76 +1074,6 @@ function AgentSection({
 	);
 }
 
-function RemoteSection({
-	remote,
-}: {
-	remote: ReturnType<typeof useRemoteConfig>;
-}) {
-	return (
-		<div className="flex flex-col gap-2">
-			{remote.loading ? (
-				<div className="flex items-center justify-center py-4">
-					<Loader2 className="size-4 animate-spin text-muted-foreground" />
-				</div>
-			) : (
-				<>
-					<div className="flex items-center gap-2">
-						<Checkbox
-							id="remote-auto-start"
-							checked={remote.draft.auto_start}
-							onCheckedChange={(checked) =>
-								remote.setDraft((d) => ({
-									...d,
-									auto_start: checked === true,
-									auto_start_on_lan:
-										checked === true ? d.auto_start_on_lan : false,
-								}))
-							}
-						/>
-						<label
-							htmlFor="remote-auto-start"
-							className={`${labelClass} cursor-pointer`}
-						>
-							Auto-start remote server
-						</label>
-					</div>
-
-					<div
-						className={`flex items-center gap-2 ml-4 ${remote.draft.auto_start ? "" : "cursor-not-allowed opacity-50"}`}
-					>
-						<Checkbox
-							id="remote-auto-start-lan"
-							checked={remote.draft.auto_start_on_lan}
-							disabled={!remote.draft.auto_start}
-							onCheckedChange={(checked) =>
-								remote.setDraft((d) => ({
-									...d,
-									auto_start_on_lan: checked === true,
-								}))
-							}
-						/>
-						<label
-							htmlFor="remote-auto-start-lan"
-							className={`${labelClass} ${remote.draft.auto_start ? "cursor-pointer" : ""}`}
-						>
-							Allow auto-start on LAN
-						</label>
-					</div>
-
-					<p className="text-[10px] text-muted-foreground">
-						Auto-starts on VPN connection. Auto-start on LAN can be controlled
-						above.
-					</p>
-
-					{remote.error && (
-						<p className="text-xs text-destructive">{remote.error}</p>
-					)}
-				</>
-			)}
-		</div>
-	);
-}
-
 function BackgroundSection({
 	background,
 }: {
@@ -1522,7 +1448,6 @@ export function SettingsModal({
 	});
 	const { activeSection, draft, appDirty, saving } = state;
 	const webhook = useWebhookConfig();
-	const remote = useRemoteConfig();
 	const background = useBackgroundConfig();
 	const repos = useRepoChanges();
 	const notion = useNotionSettings(repoPaths);
@@ -1605,7 +1530,6 @@ export function SettingsModal({
 	}, [hooks.config]);
 
 	const { isDirty: webhookIsDirty, save: webhookSave } = webhook;
-	const { isDirty: remoteIsDirty, save: remoteSave } = remote;
 	const { isDirty: backgroundIsDirty, save: backgroundSave } = background;
 	const { isDirty: reposIsDirty, save: reposSave } = repos;
 	const { isDirty: notionIsDirty, save: notionSave } = notion;
@@ -1620,9 +1544,6 @@ export function SettingsModal({
 			onSave(draft);
 			if (webhookIsDirty) {
 				await webhookSave();
-			}
-			if (remoteIsDirty) {
-				await remoteSave();
 			}
 			if (backgroundIsDirty) {
 				await backgroundSave();
@@ -1649,7 +1570,7 @@ export function SettingsModal({
 				trackEvent("settings_saved");
 			}
 		} catch {
-			// webhook/remote の保存失敗はフック内部でerror stateに反映されUIに表示される
+			// webhook などの保存失敗はフック内部でerror stateに反映されUIに表示される
 			dispatchSettings({ type: "SAVE_ERROR" });
 		} finally {
 			dispatchSettings({ type: "SAVE_END" });
@@ -1659,8 +1580,6 @@ export function SettingsModal({
 		onSave,
 		webhookIsDirty,
 		webhookSave,
-		remoteIsDirty,
-		remoteSave,
 		backgroundIsDirty,
 		backgroundSave,
 		reposIsDirty,
@@ -1680,7 +1599,6 @@ export function SettingsModal({
 	const isDirty =
 		appDirty ||
 		webhookIsDirty ||
-		remoteIsDirty ||
 		backgroundIsDirty ||
 		reposIsDirty ||
 		notionIsDirty ||
@@ -1741,8 +1659,6 @@ export function SettingsModal({
 				);
 			case "mcp":
 				return <McpSettingsSection mcp={mcp} />;
-			case "remote":
-				return <RemoteSection remote={remote} />;
 			case "background":
 				return <BackgroundSection background={background} />;
 			case "notifications":

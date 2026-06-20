@@ -82,15 +82,6 @@ test.describe("Settings Modal", () => {
 		);
 	});
 
-	test("remote section", async ({ page }) => {
-		await openSettings(page);
-		await switchSettingsTab(page, "Remote");
-		await expect(page).toHaveScreenshot(
-			"worktree-settings-remote.png",
-			{ mask: xtermMask(page) },
-		);
-	});
-
 	test("notifications section", async ({ page }) => {
 		await openSettings(page);
 		await switchSettingsTab(page, "Notifications");

@@ -320,7 +320,7 @@ fn write_config_tmp_file(tmp_path: &Path, content: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::super::config_models::{
-        AgentsSection, AppSection, DesktopNotifyMode, NotifySection, RemoteSection, WorkflowSection,
+        AgentsSection, AppSection, DesktopNotifyMode, NotifySection, WorkflowSection,
     };
     use super::*;
     use crate::domain::app_config::services::TOKEN_LENGTH;
@@ -648,31 +648,7 @@ webhook_url = "https://hooks.slack.com/old"
     }
 
     #[test]
-    fn remote_section_defaults() {
-        let remote = RemoteSection::default();
-        assert!(!remote.auto_start);
-        assert!(!remote.auto_start_on_lan);
-    }
-
-    #[test]
-    fn remote_section_roundtrip() {
-        let dir = TempDir::new().unwrap();
-        let path = config_path(&dir);
-
-        let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
-        config.remote.auto_start = true;
-        config.remote.auto_start_on_lan = true;
-        write_config(&path, &config).unwrap();
-
-        let reloaded = fs::read_to_string(&path).unwrap();
-        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
-        assert!(reloaded.remote.auto_start);
-        assert!(reloaded.remote.auto_start_on_lan);
-    }
-
-    #[test]
-    fn existing_config_without_remote_gets_defaults() {
+    fn old_remote_section_is_ignored() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
 
@@ -681,12 +657,16 @@ webhook_url = "https://hooks.slack.com/old"
 bind = "127.0.0.1"
 port = 9700
 token = "existing_token_value_here_with_enough_length_!!"
+
+[remote]
+auto_start = true
+auto_start_on_lan = true
 "#;
         fs::write(&path, content).unwrap();
 
         let config = load_or_create_config(&path).unwrap();
-        assert!(!config.remote.auto_start);
-        assert!(!config.remote.auto_start_on_lan);
+        assert_eq!(config.server.bind, "127.0.0.1");
+        assert_eq!(config.server.port, 9700);
     }
 
     #[test]
@@ -735,7 +715,6 @@ token = "existing_token_value_here_with_enough_length_!!"
         assert!(!app.start_minimized);
         assert!(app.last_root_path.is_empty());
         assert!(app.last_repo_paths.is_empty());
-        assert!(app.last_bind_ip.is_empty());
         assert!(app.external_editor.is_empty());
     }
 
@@ -751,7 +730,6 @@ token = "existing_token_value_here_with_enough_length_!!"
         config.app.start_minimized = true;
         config.app.last_root_path = "/repo/path".to_string();
         config.app.last_repo_paths = vec!["/repo/path".to_string(), "/repo/path2".to_string()];
-        config.app.last_bind_ip = "10.0.0.1".to_string();
         config.app.external_editor = "/Applications/Cursor.app".to_string();
         write_config(&path, &config).unwrap();
 
@@ -765,7 +743,6 @@ token = "existing_token_value_here_with_enough_length_!!"
             reloaded.app.last_repo_paths,
             vec!["/repo/path", "/repo/path2"]
         );
-        assert_eq!(reloaded.app.last_bind_ip, "10.0.0.1");
         assert_eq!(reloaded.app.external_editor, "/Applications/Cursor.app");
     }
 
@@ -788,11 +765,10 @@ token = "existing_token_value_here_with_enough_length_!!"
         assert!(!config.app.start_minimized);
         assert!(config.app.last_root_path.is_empty());
         assert!(config.app.last_repo_paths.is_empty());
-        assert!(config.app.last_bind_ip.is_empty());
     }
 
     #[test]
-    fn old_config_without_last_repo_paths_gets_empty_default() {
+    fn old_config_without_last_repo_paths_gets_empty_default_and_ignores_last_bind_ip() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
 
@@ -811,7 +787,6 @@ last_bind_ip = "192.168.1.1"
         let config = load_or_create_config(&path).unwrap();
         assert_eq!(config.app.last_root_path, "/old/single/repo");
         assert!(config.app.last_repo_paths.is_empty());
-        assert_eq!(config.app.last_bind_ip, "192.168.1.1");
     }
 
     #[test]

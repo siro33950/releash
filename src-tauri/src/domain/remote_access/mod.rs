@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub(crate) mod error;
 pub(crate) mod gateway;
 pub(crate) mod services;

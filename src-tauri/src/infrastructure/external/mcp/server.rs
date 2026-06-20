@@ -225,7 +225,7 @@ impl ReleashMcpServer {
         let code_usecase = Arc::clone(&self.state.code_usecase);
 
         let (content, line_count) = tokio::task::spawn_blocking(move || {
-            crate::ws_server::validation::validate_relative_path(&file_path, &worktree_path)
+            crate::adaptor::controller_support::validate_relative_path(&file_path, &worktree_path)
                 .map_err(crate::domain::code::CodeError::Rule)?;
             let full_path = std::path::Path::new(&worktree_path).join(&file_path);
             let full_path_str = full_path.to_string_lossy().to_string();

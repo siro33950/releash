@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use crate::domain::app_config::repository::ConfigRepository;
-use crate::domain::app_config::value_objects::{
-    AppSettings, RemoteConfig, ServerConfig, WorkflowConfig,
-};
+use crate::domain::app_config::value_objects::{AppSettings, ServerConfig, WorkflowConfig};
 use crate::usecase::app_config::dto::McpConfigDto;
 use crate::usecase::app_config::error::UsecaseError;
 
@@ -16,6 +14,7 @@ impl AppConfigQueryService {
         Self { repository }
     }
 
+    #[allow(dead_code)]
     pub fn get_server_config(&self) -> Result<ServerConfig, UsecaseError> {
         Ok(self.repository.load()?.server)
     }
@@ -30,10 +29,6 @@ impl AppConfigQueryService {
 
     pub fn get_app_settings(&self) -> Result<AppSettings, UsecaseError> {
         Ok(self.repository.load()?.app)
-    }
-
-    pub fn get_remote_config(&self) -> Result<RemoteConfig, UsecaseError> {
-        Ok(self.repository.load()?.remote)
     }
 
     pub fn get_workflow_config(&self) -> Result<WorkflowConfig, UsecaseError> {

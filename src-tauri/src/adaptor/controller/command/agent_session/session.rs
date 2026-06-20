@@ -1130,7 +1130,7 @@ pub async fn send_agent_message(
         },
     )
     .await?;
-    crate::adaptor::controller::handler::workflow::emit_after_workflow_step_message(
+    crate::adaptor::controller_support::emit_after_workflow_step_message(
         &app,
         &response.session,
         handles.inner(),

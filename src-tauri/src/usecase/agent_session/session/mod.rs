@@ -464,6 +464,7 @@ pub fn create_session_internal(
 /// 検証済みの抽象 [`crate::permission::PermissionMode`] を初回保存で確定するセッション生成 API。
 /// WS handler や message → 新規 session 経路から呼び、edit デフォルトで保存→update の二段階を回避する
 /// （Spec issues-947: セッション保存層が permission_mode の正典）。
+#[allow(dead_code)]
 pub fn create_session_internal_with_permission(
     session_store: &SessionStore,
     data_dir: &std::path::Path,
@@ -1638,8 +1639,8 @@ mod tests {
         assert_eq!(session.backend_id, None);
     }
 
-    // Spec issues-947: WS handler の AgentSessionStartRequest 経路は
-    // `create_session_internal_with_permission` で session を生成し、検証済み抽象モードを
+    // Spec issues-947: セッション開始経路は `create_session_internal_with_permission`
+    // で session を生成し、検証済み抽象モードを
     // 初回保存で確定する。ask / edit / full それぞれが保存済みセッションの
     // permission_mode として選択値どおりに記録されることを確認する。
     #[test]

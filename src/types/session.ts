@@ -12,7 +12,7 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
 
 /**
  * UI 表示用の抽象パーミッションモードラベル（共通定義）。
- * ModeSelector / StepEditor / RemoteAgentPanel など全 UI で共有し、
+ * ModeSelector / StepEditor など全 UI で共有し、
  * 3 択の表示差分や変更漏れを防ぐ。
  */
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {

@@ -26,11 +26,6 @@ pub mod ids {
     // Worktree
     pub const BACK_TO_KANBAN: &str = "back-to-kanban";
 
-    // Remote
-    pub const REMOTE_START_SERVER: &str = "remote-start-server";
-    pub const REMOTE_STOP_SERVER: &str = "remote-stop-server";
-    pub const REMOTE_SHOW_QR: &str = "remote-show-qr";
-
     // App
     pub const SETTINGS: &str = "settings";
 }
@@ -156,20 +151,6 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         .item(&back_to_kanban)
         .build()?;
 
-    // ---- Remote menu ----
-    let remote_start =
-        MenuItemBuilder::with_id(ids::REMOTE_START_SERVER, "Start Server").build(handle)?;
-    let remote_stop =
-        MenuItemBuilder::with_id(ids::REMOTE_STOP_SERVER, "Stop Server").build(handle)?;
-    let remote_qr = MenuItemBuilder::with_id(ids::REMOTE_SHOW_QR, "Show QR Code").build(handle)?;
-
-    let remote_menu = SubmenuBuilder::new(handle, "Remote")
-        .item(&remote_start)
-        .item(&remote_stop)
-        .separator()
-        .item(&remote_qr)
-        .build()?;
-
     // ---- Window menu ----
     let window_menu = SubmenuBuilder::new(handle, "Window")
         .minimize()
@@ -188,7 +169,6 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             &git_menu,
             &terminal_menu,
             &worktree_menu,
-            &remote_menu,
             &window_menu,
         ],
     )?;

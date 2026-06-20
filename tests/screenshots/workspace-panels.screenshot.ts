@@ -192,36 +192,6 @@ test.describe("Workspace Panels", () => {
 	});
 
 	// -------------------------------------------------------
-	// RemotePanel
-	// -------------------------------------------------------
-	test.describe("Remote Panel", () => {
-		test("server stopped", async ({ page }) => {
-			await setupWorkspaceManager(page, {
-				get_server_info: null,
-			});
-			await switchToView(page, "Remote");
-			await page.waitForTimeout(500);
-			await expect(page).toHaveScreenshot(
-				"workspace-remote-stopped.png",
-				{ mask: xtermMask(page) },
-			);
-		});
-
-		test("no repo available", async ({ page }) => {
-			await setupWorkspaceManager(page, {
-				get_server_info: null,
-				get_network_info: [],
-			});
-			await switchToView(page, "Remote");
-			await page.waitForTimeout(500);
-			await expect(page).toHaveScreenshot(
-				"workspace-remote-no-repo.png",
-				{ mask: xtermMask(page) },
-			);
-		});
-	});
-
-	// -------------------------------------------------------
 	// Settings (WorkspaceManager context)
 	// -------------------------------------------------------
 	test("workspace settings panel", async ({ page }) => {
