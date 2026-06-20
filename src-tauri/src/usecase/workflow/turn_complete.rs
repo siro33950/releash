@@ -23,6 +23,10 @@ impl WorkflowTurnCompleteUsecase {
         }
     }
 
+    pub async fn is_session_running(&self, chat_session_id: &str) -> bool {
+        self.runtime.is_session_running(chat_session_id).await
+    }
+
     pub async fn complete_turn(
         &self,
         command: WorkflowTurnCompleteCommand,

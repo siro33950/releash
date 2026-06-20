@@ -1050,7 +1050,7 @@ fn prepare_streaming_flush(proc: &AgentProcess) -> Option<StreamingFlushSnapshot
     if proc.pending_stream_part_count == 0 {
         return None;
     }
-    let parts = consolidate_parts(proc.streaming_parts.clone());
+    let parts = consolidate_parts_from_slice(&proc.streaming_parts);
     Some(StreamingFlushSnapshot {
         part_count: parts.len(),
         buffer_len: proc.pending_stream_part_count,
@@ -1207,7 +1207,7 @@ where
 struct TurnCompleteTransition {
     was_streaming: bool,
     final_msg_id: Option<String>,
-    raw_parts: Vec<MessagePart>,
+    final_parts: Vec<MessagePart>,
     turn_token_usage: Option<(u64, u64)>,
 }
 
@@ -1233,7 +1233,7 @@ where
     };
     proc.turn_phase = TurnPhase::Idle;
     let turn_token_usage = proc.last_result_token_usage.take();
-    let raw_parts = proc.streaming_parts.clone();
+    let final_parts = consolidate_parts_from_slice(&proc.streaming_parts);
     let final_msg_id = proc.streaming_message_id.take();
     if final_msg_id.is_some() {
         proc.last_message_id.clone_from(&final_msg_id);
@@ -1241,7 +1241,7 @@ where
     TurnCompleteTransition {
         was_streaming,
         final_msg_id,
-        raw_parts,
+        final_parts,
         turn_token_usage,
     }
 }
@@ -1407,7 +1407,7 @@ fn apply_bridge_eof_crash(
         };
         streaming_parts.push(part.clone());
         effect.error_delta.push(part);
-        effect.persisted_parts = consolidate_parts(streaming_parts.clone());
+        effect.persisted_parts = consolidate_parts_from_slice(streaming_parts);
     }
 
     if was_streaming || was_initializing {
@@ -1670,8 +1670,8 @@ fn build_set_model_command(model_id: &str) -> String {
 
 /// Append text/thinking chunk to streaming parts as an individual part.
 /// Each chunk is retained as a separate `MessagePart`; consolidation into
-/// merged same-type runs is performed by `consolidate_parts` when generating
-/// emit/persist payloads.
+/// merged same-type runs is performed by `consolidate_parts_from_slice` when
+/// generating emit/persist payloads.
 fn append_to_parts(
     parts: &mut Vec<MessagePart>,
     part_type: &str,
@@ -1696,10 +1696,10 @@ fn append_to_parts(
 /// During streaming, `append_to_parts` keeps each chunk as an individual part;
 /// this helper produces the consolidated view used both for streaming emit
 /// payloads (via `prepare_streaming_flush`) and for persistence.
-fn consolidate_parts(parts: Vec<MessagePart>) -> Vec<MessagePart> {
+fn consolidate_parts_from_slice(parts: &[MessagePart]) -> Vec<MessagePart> {
     let mut result: Vec<MessagePart> = Vec::with_capacity(parts.len());
     for part in parts {
-        match (&part, result.last_mut()) {
+        match (part, result.last_mut()) {
             (
                 MessagePart::Text {
                     content,
@@ -1713,6 +1713,16 @@ fn consolidate_parts(parts: Vec<MessagePart>) -> Vec<MessagePart> {
                 last_content.push_str(content);
             }
             (
+                MessagePart::Text {
+                    content,
+                    parent_tool_use_id,
+                },
+                _,
+            ) => result.push(MessagePart::Text {
+                content: content.clone(),
+                parent_tool_use_id: parent_tool_use_id.clone(),
+            }),
+            (
                 MessagePart::Thinking {
                     content,
                     parent_tool_use_id,
@@ -1724,8 +1734,18 @@ fn consolidate_parts(parts: Vec<MessagePart>) -> Vec<MessagePart> {
             ) if parent_tool_use_id == last_pid => {
                 last_content.push_str(content);
             }
+            (
+                MessagePart::Thinking {
+                    content,
+                    parent_tool_use_id,
+                },
+                _,
+            ) => result.push(MessagePart::Thinking {
+                content: content.clone(),
+                parent_tool_use_id: parent_tool_use_id.clone(),
+            }),
             _ => {
-                result.push(part);
+                result.push(part.clone());
             }
         }
     }
@@ -1842,18 +1862,26 @@ fn push_or_update_tool_result(
             else {
                 return None;
             };
+            let mut delta_content = String::new();
             if !content.is_empty() {
                 if content.contains(existing.as_str()) || existing.is_empty() {
+                    delta_content = content.clone();
                     *existing = content;
                 } else {
                     existing.push_str(&content);
+                    delta_content = content;
                 }
             }
             *existing_error = *existing_error || is_error;
             if existing_parent.is_none() {
                 *existing_parent = parent_tool_use_id;
             }
-            return Some(parts[index].clone());
+            return Some(MessagePart::ToolResult {
+                content: delta_content,
+                is_error: *existing_error,
+                tool_use_id: Some(tool_use_id_ref.to_string()),
+                parent_tool_use_id: existing_parent.clone(),
+            });
         }
     }
     parts.push(MessagePart::ToolResult {
@@ -2667,7 +2695,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         // message 消費は lock を保持しない経路で行い、それらが必要に応じ
                         // 自前で lock を取得する設計とする（再入デッドロックを防ぐ）。
                         let was_streaming;
-                        let raw_parts;
+                        let final_parts;
                         let final_msg_id;
                         let turn_token_usage;
                         {
@@ -2694,7 +2722,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                 );
                                 was_streaming = effect.was_streaming;
                                 turn_token_usage = effect.turn_token_usage;
-                                raw_parts = effect.raw_parts;
+                                final_parts = effect.final_parts;
                                 final_msg_id = effect.final_msg_id;
 
                                 // User turn succeeded: persist agent_session_id to SessionStore
@@ -2714,15 +2742,12 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                 }
                             } else {
                                 was_streaming = false;
-                                raw_parts = Vec::new();
+                                final_parts = Vec::new();
                                 final_msg_id = None;
                                 turn_token_usage = None;
                             }
                             // _runtime_guard はこのスコープを抜けて drop される
                         }
-
-                        // Consolidate text/thinking chunks outside lock
-                        let final_parts = consolidate_parts(raw_parts);
 
                         // Final persist of streaming buffer
                         if was_streaming {
@@ -2791,7 +2816,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                 Arc::clone(&handles_stdout),
                                 csid_stdout.clone(),
                                 exit_code,
-                                final_parts.clone(),
+                                final_parts,
                                 turn_token_usage,
                                 pending,
                             );
@@ -2890,7 +2915,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         // coalescing buffer, and flush when warranted. We hold the
                         // lock across the flush so the emit observes consistent
                         // state with `streaming_parts`.
-                        let (accumulated, emit_msg_id, should_persist, raw_persist_parts) = {
+                        let (accumulated, emit_msg_id, should_persist, persist_parts) = {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 let in_streaming = proc.state == BridgeState::Streaming
@@ -2942,12 +2967,12 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                                 as u64;
                                         let should_persist =
                                             post_turn || elapsed_persist >= PERSIST_INTERVAL_MS;
-                                        let raw_persist_parts = if should_persist {
-                                            proc.streaming_parts.clone()
+                                        let persist_parts = if should_persist {
+                                            consolidate_parts_from_slice(&proc.streaming_parts)
                                         } else {
                                             Vec::new()
                                         };
-                                        (true, mid, should_persist, raw_persist_parts)
+                                        (true, mid, should_persist, persist_parts)
                                     }
                                 }
                             } else {
@@ -2959,7 +2984,6 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         if should_persist {
                             if let Some(ref mid) = emit_msg_id {
                                 last_persist_time = Instant::now();
-                                let persist_parts = consolidate_parts(raw_persist_parts);
                                 persist_streaming_parts(
                                     &session_store_clone,
                                     &app_stdout,
@@ -3257,7 +3281,7 @@ async fn get_session_internal_with_data_dir(
     match session {
         None => Ok(None),
         Some(mut session) => {
-            let (turn_phase, raw_parts, streaming_mid, pending_queue, latest_token_usage) = {
+            let (turn_phase, streaming_parts, streaming_mid, pending_queue, latest_token_usage) = {
                 let map = handles.lock().await;
                 if let Some(proc) = map.get(session_id) {
                     // Prefer the newest queued pending message's permission_mode when present,
@@ -3276,7 +3300,7 @@ async fn get_session_internal_with_data_dir(
                     if proc.state == BridgeState::Streaming {
                         (
                             phase,
-                            proc.streaming_parts.clone(),
+                            consolidate_parts_from_slice(&proc.streaming_parts),
                             proc.streaming_message_id.clone(),
                             pending_queue,
                             latest_token_usage,
@@ -3291,10 +3315,9 @@ async fn get_session_internal_with_data_dir(
 
             if turn_phase == TurnPhase::Streaming || turn_phase == TurnPhase::WaitingPermission {
                 if let Some(ref mid) = streaming_mid {
-                    let parts = consolidate_parts(raw_parts);
-                    if !parts.is_empty() {
+                    if !streaming_parts.is_empty() {
                         if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *mid) {
-                            msg.parts = Some(parts);
+                            msg.parts = Some(streaming_parts);
                         }
                     }
                 }
@@ -4946,6 +4969,16 @@ pub(crate) async fn finish_external_pending_message_turn_start(chat_session_id: 
     clear_pending_turn_starting(chat_session_id).await;
 }
 
+fn workflow_final_text_parts(final_parts: &[MessagePart]) -> Vec<String> {
+    final_parts
+        .iter()
+        .filter_map(|part| match part {
+            MessagePart::Text { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// turn_complete 後の Workflow Engine 通知と pending message 消費を、
 /// `session_runtime_lock` を保持しない経路で実施する共通ヘルパー。
 ///
@@ -4977,27 +5010,23 @@ fn spawn_workflow_turn_complete_notification<R: tauri::Runtime>(
     std::thread::spawn(move || {
         handle.block_on(async move {
             if let Some(runtime) = workflow_runtime {
-                let final_text_parts = final_parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        MessagePart::Text { content, .. } => Some(content.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                let token_usage = token_usage.map(|(input_tokens, output_tokens)| {
-                    crate::usecase::workflow::ports::WorkflowTurnTokenUsage {
-                        input_tokens,
-                        output_tokens,
+                if runtime.is_session_running(&chat_session_id).await {
+                    let final_text_parts = workflow_final_text_parts(&final_parts);
+                    let token_usage = token_usage.map(|(input_tokens, output_tokens)| {
+                        crate::usecase::workflow::ports::WorkflowTurnTokenUsage {
+                            input_tokens,
+                            output_tokens,
+                        }
+                    });
+                    let command = crate::usecase::workflow::ports::WorkflowTurnCompleteCommand {
+                        chat_session_id: chat_session_id.clone(),
+                        exit_code,
+                        final_text_parts,
+                        token_usage,
+                    };
+                    if let Err(e) = runtime.complete_turn(command).await {
+                        log::error!("Workflow turn completion error for {chat_session_id}: {e}");
                     }
-                });
-                let command = crate::usecase::workflow::ports::WorkflowTurnCompleteCommand {
-                    chat_session_id: chat_session_id.clone(),
-                    exit_code,
-                    final_text_parts,
-                    token_usage,
-                };
-                if let Err(e) = runtime.complete_turn(command).await {
-                    log::error!("Workflow turn completion error for {chat_session_id}: {e}");
                 }
             }
             if let Some(pending) = pending {
@@ -5072,7 +5101,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             let Some(effect) = effect else {
                 return;
             };
-            let final_parts = consolidate_parts(effect.raw_parts);
+            let final_parts = effect.final_parts;
             if effect.was_streaming {
                 if let Some(ref mid) = effect.final_msg_id {
                     if !final_parts.is_empty() {
@@ -5122,7 +5151,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                     Arc::clone(handles),
                     chat_session_id.to_string(),
                     exit_code,
-                    final_parts.clone(),
+                    final_parts,
                     effect.turn_token_usage,
                     pending,
                 );
@@ -5167,7 +5196,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             );
         }
         _ => {
-            let (accumulated, emit_msg_id, should_persist, raw_persist_parts) = {
+            let (accumulated, emit_msg_id, should_persist, persist_parts) = {
                 let mut map = handles.lock().await;
                 if let Some(proc) = map.get_mut(chat_session_id) {
                     let in_streaming =
@@ -5206,12 +5235,12 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                                 state.last_persist_time.elapsed().as_millis() as u64;
                             let should_persist =
                                 post_turn || elapsed_persist >= PERSIST_INTERVAL_MS;
-                            let raw_persist_parts = if should_persist {
-                                proc.streaming_parts.clone()
+                            let persist_parts = if should_persist {
+                                consolidate_parts_from_slice(&proc.streaming_parts)
                             } else {
                                 Vec::new()
                             };
-                            (true, mid, should_persist, raw_persist_parts)
+                            (true, mid, should_persist, persist_parts)
                         }
                     }
                 } else {
@@ -5222,7 +5251,6 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             if should_persist {
                 if let Some(ref mid) = emit_msg_id {
                     state.last_persist_time = Instant::now();
-                    let persist_parts = consolidate_parts(raw_persist_parts);
                     persist_streaming_parts(
                         session_store,
                         app,
@@ -10667,7 +10695,7 @@ mod tests {
                 parent_tool_use_id: None,
             },
         ];
-        let result = consolidate_parts(parts);
+        let result = consolidate_parts_from_slice(&parts);
         assert_eq!(result.len(), 1);
         match &result[0] {
             MessagePart::Text { content, .. } => assert_eq!(content, "Hello world"),
@@ -10687,7 +10715,7 @@ mod tests {
                 parent_tool_use_id: None,
             },
         ];
-        let result = consolidate_parts(parts);
+        let result = consolidate_parts_from_slice(&parts);
         assert_eq!(result.len(), 2);
     }
 
@@ -10703,7 +10731,7 @@ mod tests {
                 parent_tool_use_id: Some("parent1".to_string()),
             },
         ];
-        let result = consolidate_parts(parts);
+        let result = consolidate_parts_from_slice(&parts);
         assert_eq!(result.len(), 2);
     }
 
@@ -10725,7 +10753,7 @@ mod tests {
                 parent_tool_use_id: None,
             },
         ];
-        let result = consolidate_parts(parts);
+        let result = consolidate_parts_from_slice(&parts);
         assert_eq!(result.len(), 3);
         assert!(matches!(&result[0], MessagePart::Text { content, .. } if content == "Hello"));
         assert!(matches!(&result[1], MessagePart::ToolUse { .. }));
@@ -10748,12 +10776,66 @@ mod tests {
                 parent_tool_use_id: None,
             },
         ];
-        let result = consolidate_parts(parts);
+        let result = consolidate_parts_from_slice(&parts);
         assert_eq!(result.len(), 1);
         match &result[0] {
             MessagePart::Text { content, .. } => assert_eq!(content, "abc"),
             _ => panic!("expected Text"),
         }
+    }
+
+    #[test]
+    fn tool_result_append_update_returns_delta_while_cumulative_stays_full() {
+        let mut parts = vec![MessagePart::ToolResult {
+            content: "hello".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+        }];
+
+        let delta = push_or_update_tool_result(
+            &mut parts,
+            " world".to_string(),
+            false,
+            Some("tool-1".to_string()),
+            None,
+        )
+        .expect("existing tool result should return a delta marker");
+
+        assert!(matches!(
+            &parts[0],
+            MessagePart::ToolResult { content, .. } if content == "hello world"
+        ));
+        assert!(matches!(
+            delta,
+            MessagePart::ToolResult { content, .. } if content == " world"
+        ));
+        assert_eq!(consolidate_parts_from_slice(&parts), parts);
+    }
+
+    #[test]
+    fn workflow_final_text_parts_extracts_only_text_in_order() {
+        let parts = vec![
+            MessagePart::Text {
+                content: "one".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolResult {
+                content: "ignored".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Text {
+                content: "two".to_string(),
+                parent_tool_use_id: Some("tool-1".to_string()),
+            },
+        ];
+
+        assert_eq!(
+            workflow_final_text_parts(&parts),
+            vec!["one".to_string(), "two".to_string()]
+        );
     }
 
     #[test]

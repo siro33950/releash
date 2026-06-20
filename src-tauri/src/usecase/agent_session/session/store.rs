@@ -1,5 +1,6 @@
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -321,19 +322,24 @@ impl SessionStore {
         // cache / ファイルへの書き込み前に検証・正規化し、legacy 入力を新規保存値へ漏らさない。
         let permission_mode = crate::permission::PermissionMode::parse(&session.permission_mode)
             .map_err(|e| e.to_string())?;
-        let mut normalized_session = session.clone();
-        normalized_session.permission_mode = permission_mode.as_str().to_string();
+        let normalized_session;
+        let session = if session.permission_mode == permission_mode.as_str() {
+            session
+        } else {
+            normalized_session = {
+                let mut session = session.clone();
+                session.permission_mode = permission_mode.as_str().to_string();
+                session
+            };
+            &normalized_session
+        };
         // file_lock を保持したまま listener を同期実行すると、listener から
         // save_session / set_session_state などへ再入したときに parking_lot::Mutex の
         // 自己デッドロックが発生する。lock スコープは永続化と cache 更新までに限定し、
         // 通知に必要なデータを返してからスコープを抜けて listener を呼ぶ。
-        let state_changed = self.persist_and_update_cache(app_data_dir, &normalized_session)?;
+        let state_changed = self.persist_and_update_cache(app_data_dir, session)?;
         if state_changed {
-            self.notify_state_change(
-                &normalized_session.id,
-                &normalized_session.worktree_path,
-                &normalized_session.state,
-            );
+            self.notify_state_change(&session.id, &session.worktree_path, &session.state);
         }
         Ok(())
     }
@@ -347,20 +353,30 @@ impl SessionStore {
         let dir = sessions_dir(app_data_dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {e}"))?;
         let file = session_file(app_data_dir, &session.id)?;
-        let json = serde_json::to_string_pretty(session)
-            .map_err(|e| format!("Failed to serialize session: {e}"))?;
         // Atomic write: write to .tmp then rename to avoid partial reads on crash
         let tmp_file = file.with_extension("json.tmp");
-        std::fs::write(&tmp_file, json)
-            .map_err(|e| format!("Failed to write session temp file: {e}"))?;
+        let write_result = (|| -> Result<(), String> {
+            let file = std::fs::File::create(&tmp_file)
+                .map_err(|e| format!("Failed to write session temp file: {e}"))?;
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer_pretty(&mut writer, session)
+                .map_err(|e| format!("Failed to serialize session: {e}"))?;
+            writer
+                .flush()
+                .map_err(|e| format!("Failed to flush session temp file: {e}"))?;
+            Ok(())
+        })();
+        if let Err(err) = write_result {
+            let _ = std::fs::remove_file(&tmp_file);
+            return Err(err);
+        }
         std::fs::rename(&tmp_file, &file)
             .map_err(|e| format!("Failed to rename session temp file: {e}"))?;
-        let prev = self
-            .cache
-            .write()
-            .insert(session.id.clone(), session.clone());
+        let mut cache = self.cache.write();
+        let state_changed = cache.get(&session.id).map(|p| &p.state) != Some(&session.state);
+        cache.insert(session.id.clone(), session.clone());
         self.invalid_sessions.write().remove(&session.id);
-        Ok(prev.as_ref().map(|p| &p.state) != Some(&session.state))
+        Ok(state_changed)
     }
 
     /// `SessionState` の遷移を購読するリスナーを登録する。
@@ -500,15 +516,15 @@ impl SessionStore {
             let Some(file_session_id) = file_session_id else {
                 continue;
             };
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
+            let file = match std::fs::File::open(&path) {
+                Ok(file) => file,
                 Err(e) => {
                     log::error!("Failed to read session file {:?}: {e}", path.display());
                     invalid_sessions.insert(file_session_id, invalid_session_error_message());
                     continue;
                 }
             };
-            match serde_json::from_str::<ChatSession>(&content) {
+            match serde_json::from_reader::<_, ChatSession>(BufReader::new(file)) {
                 Ok(session) => {
                     if session.id != file_session_id {
                         log::error!(
@@ -606,6 +622,19 @@ mod tests {
         let loaded = loaded.unwrap();
         assert_eq!(loaded.id, UUID1);
         assert_eq!(loaded.messages.len(), 1);
+    }
+
+    #[test]
+    fn save_session_preserves_pretty_json_representation() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let session = make_session(UUID1, "/repo");
+
+        store.save_session(tmp.path(), &session).unwrap();
+
+        let saved = std::fs::read_to_string(session_file(tmp.path(), UUID1).unwrap()).unwrap();
+        let expected = serde_json::to_string_pretty(&session).unwrap();
+        assert_eq!(saved, expected);
     }
 
     #[test]

@@ -76,6 +76,10 @@ impl WorkflowRuntimeUsecase {
         self.turn_complete.complete_turn(command).await
     }
 
+    pub async fn is_session_running(&self, chat_session_id: &str) -> bool {
+        self.turn_complete.is_session_running(chat_session_id).await
+    }
+
     pub async fn get_state_by_run_id(
         &self,
         run_id: &str,

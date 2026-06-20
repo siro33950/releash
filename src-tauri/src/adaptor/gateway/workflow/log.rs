@@ -24,6 +24,16 @@ pub struct WorkflowEventLog {
 static LOG_FILE_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[derive(Clone)]
+struct CachedWorkflowLog {
+    len: u64,
+    modified: SystemTime,
+    events: Arc<Vec<WorkflowEvent>>,
+}
+
+static LOG_FILE_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedWorkflowLog>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 fn log_file_lock(path: &Path) -> Arc<Mutex<()>> {
     let mut locks = LOG_FILE_LOCKS.lock();
     Arc::clone(
@@ -93,6 +103,7 @@ impl WorkflowEventLog {
         let path = self.log_path(&run_id);
         let lock = log_file_lock(&path);
         let _guard = lock.lock();
+        let old_cache_key = workflow_log_cache_key(&path);
         let existing = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -118,6 +129,7 @@ impl WorkflowEventLog {
             let _ = fs::remove_file(&temp_path);
             return Err(e);
         }
+        update_workflow_log_cache_after_append(&path, old_cache_key, existing.is_empty(), events);
         Ok(())
     }
 
@@ -141,6 +153,14 @@ impl WorkflowEventLog {
             return Ok(vec![]);
         }
 
+        if let Some((len, modified)) = workflow_log_cache_key(&path) {
+            if let Some(cached) = LOG_FILE_CACHE.lock().get(&path) {
+                if cached.len == len && cached.modified == modified {
+                    return Ok(cached.events.as_ref().clone());
+                }
+            }
+        }
+
         let content =
             fs::read_to_string(&path).map_err(|e| format!("Failed to read log file: {e}"))?;
         let mut events = Vec::new();
@@ -151,6 +171,16 @@ impl WorkflowEventLog {
             let event: WorkflowEvent =
                 serde_json::from_str(line).map_err(|e| format!("Failed to parse log line: {e}"))?;
             events.push(event);
+        }
+        if let Some((len, modified)) = workflow_log_cache_key(&path) {
+            LOG_FILE_CACHE.lock().insert(
+                path,
+                CachedWorkflowLog {
+                    len,
+                    modified,
+                    events: Arc::new(events.clone()),
+                },
+            );
         }
         Ok(events)
     }
@@ -194,6 +224,52 @@ impl WorkflowEventLog {
             }
         }
         Ok(ids)
+    }
+}
+
+fn workflow_log_cache_key(path: &Path) -> Option<(u64, SystemTime)> {
+    let metadata = fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    Some((metadata.len(), modified))
+}
+
+fn update_workflow_log_cache_after_append(
+    path: &Path,
+    old_cache_key: Option<(u64, SystemTime)>,
+    existing_was_empty: bool,
+    appended: &[WorkflowEvent],
+) {
+    let Some((len, modified)) = workflow_log_cache_key(path) else {
+        LOG_FILE_CACHE.lock().remove(path);
+        return;
+    };
+
+    let mut cache = LOG_FILE_CACHE.lock();
+    let next_events = match cache.get(path) {
+        Some(cached)
+            if old_cache_key.is_some_and(|(old_len, old_modified)| {
+                cached.len == old_len && cached.modified == old_modified
+            }) =>
+        {
+            let mut events = cached.events.as_ref().clone();
+            events.extend_from_slice(appended);
+            Some(events)
+        }
+        _ if existing_was_empty => Some(appended.to_vec()),
+        _ => None,
+    };
+
+    if let Some(events) = next_events {
+        cache.insert(
+            path.to_path_buf(),
+            CachedWorkflowLog {
+                len,
+                modified,
+                events: Arc::new(events),
+            },
+        );
+    } else {
+        cache.remove(path);
     }
 }
 
@@ -364,6 +440,42 @@ mod tests {
             WorkflowEvent::ApprovalResolved { .. }
         ));
         assert!(matches!(read_back[1], WorkflowEvent::RunAborted { .. }));
+    }
+
+    #[test]
+    fn read_log_after_cached_read_observes_incremental_append() {
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        let run_id = "00000000-0000-0000-0000-000000000701";
+
+        log.append(&WorkflowEvent::ApprovalResolved {
+            run_id: run_id.to_string(),
+            workflow_name: "wf".to_string(),
+            node_name: "review".to_string(),
+            decision: ApprovalDecisionRecord::Approve,
+            comment: None,
+            timestamp: 1.0,
+        })
+        .unwrap();
+        assert_eq!(log.read_log(run_id).unwrap().len(), 1);
+
+        log.append(&WorkflowEvent::RunAborted {
+            run_id: run_id.to_string(),
+            workflow_name: "wf".to_string(),
+            timestamp: 2.0,
+        })
+        .unwrap();
+
+        let read_back = log.read_log(run_id).unwrap();
+        assert_eq!(read_back.len(), 2);
+        assert!(matches!(
+            read_back[0],
+            WorkflowEvent::ApprovalResolved { timestamp: 1.0, .. }
+        ));
+        assert!(matches!(
+            read_back[1],
+            WorkflowEvent::RunAborted { timestamp: 2.0, .. }
+        ));
     }
 
     /// [04] atomic batch append: 入力 event が異なる run_id を含む場合は append 前に
