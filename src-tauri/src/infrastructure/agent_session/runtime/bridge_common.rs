@@ -64,6 +64,27 @@ pub enum TurnPhase {
     WaitingPermission,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum TurnOrigin {
+    #[default]
+    Desktop,
+    Headless,
+}
+
+impl TurnOrigin {
+    fn permission_timeout_applies(self) -> bool {
+        matches!(self, Self::Headless)
+    }
+}
+
+fn turn_origin_for_session(session: &ChatSession) -> TurnOrigin {
+    if session.workflow_step_session {
+        TurnOrigin::Headless
+    } else {
+        TurnOrigin::Desktop
+    }
+}
+
 /// A message queued while the agent is streaming, consumed on turn_complete.
 pub struct PendingMessage {
     pub id: String,
@@ -137,6 +158,17 @@ pub struct AgentProcess {
     /// itself when it exits (turn ended and the buffer drained). Used to
     /// avoid spawning a duplicate timer on overlapping turn starts.
     streaming_timer_active: bool,
+    /// Last meaningful SDK/bridge progress observed for the current turn.
+    pub last_progress_at: Option<Instant>,
+    /// Timestamp of the current turn phase; used for permission wait timeout.
+    pub turn_phase_since: Instant,
+    /// Origin of the current turn. Headless turns apply permission timeout.
+    turn_origin: TurnOrigin,
+    /// Monotonic per-process turn sequence. Watchdogs capture it to avoid
+    /// acting on a later turn that reused the same bridge process.
+    pub turn_seq: u64,
+    /// True while a per-turn stale watchdog task is alive.
+    turn_watchdog_active: bool,
 }
 
 #[cfg(test)]
@@ -173,6 +205,11 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         pending_stream_bytes: 0,
         last_stream_emit_at: None,
         streaming_timer_active: false,
+        last_progress_at: None,
+        turn_phase_since: Instant::now(),
+        turn_origin: TurnOrigin::Desktop,
+        turn_seq: 0,
+        turn_watchdog_active: false,
     }
 }
 
@@ -366,8 +403,42 @@ pub(crate) async fn write_bridge_command(
     Ok(())
 }
 
+async fn write_bridge_command_for_captured_turn(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    captured_gen_id: u64,
+    captured_turn_seq: u64,
+    payload: serde_json::Value,
+) -> Result<bool, String> {
+    let data = format!("{payload}\n");
+    let mut map = handles.lock().await;
+    let Some(proc) = map.get_mut(chat_session_id) else {
+        return Ok(false);
+    };
+    if proc.generation_id != captured_gen_id || proc.turn_seq != captured_turn_seq {
+        return Ok(false);
+    }
+    proc.stdin
+        .write_all(data.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to write bridge command: {e}"))?;
+    proc.stdin
+        .flush()
+        .await
+        .map_err(|e| format!("Failed to flush bridge command: {e}"))?;
+    Ok(true)
+}
+
 const PERSIST_INTERVAL_MS: u64 = 1000;
 const BRIDGE_EOF_ERROR_MESSAGE: &str = "Bridge process exited unexpectedly.";
+pub(crate) const STALE_EXIT_CODE: i64 = 124;
+const STALE_TIMEOUT_SECS: u64 = 180;
+const PERMISSION_TIMEOUT_SECS: u64 = 300;
+const STALE_RECOVERY_GRACE_SECS: u64 = 10;
+const WATCHDOG_TICK_SECS: u64 = 5;
+const STALE_ERROR_MESSAGE: &str = "Claude 応答が停止したため中断しました。もう一度お試しください。";
+const PERMISSION_TIMEOUT_ERROR_MESSAGE: &str =
+    "権限承認の待機がタイムアウトしたため中断しました。もう一度お試しください。";
 
 /// Aggregation interval for `agent-streaming-updated` / `AgentStreamSync`.
 /// Roughly 30fps — balances UI smoothness against re-render cost.
@@ -382,6 +453,42 @@ const STREAMING_PENDING_PART_LIMIT: usize = 1000;
 /// Same semantics as `STREAMING_PENDING_PART_LIMIT`: flush threshold in normal
 /// operation, soft cap (allowed to overflow) while delivery is failing.
 const STREAMING_PENDING_BYTE_LIMIT: usize = 256 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnLivenessTimeout {
+    Stale,
+    PermissionTimeout,
+}
+
+impl TurnLivenessTimeout {
+    fn user_message(self) -> &'static str {
+        match self {
+            Self::Stale => STALE_ERROR_MESSAGE,
+            Self::PermissionTimeout => PERMISSION_TIMEOUT_ERROR_MESSAGE,
+        }
+    }
+}
+
+fn evaluate_turn_liveness(
+    turn_phase: TurnPhase,
+    turn_origin: TurnOrigin,
+    last_progress_at: Option<Instant>,
+    turn_phase_since: Instant,
+    now: Instant,
+) -> Option<TurnLivenessTimeout> {
+    match turn_phase {
+        TurnPhase::Streaming => {
+            let base = last_progress_at.unwrap_or(turn_phase_since);
+            (now.duration_since(base) > Duration::from_secs(STALE_TIMEOUT_SECS))
+                .then_some(TurnLivenessTimeout::Stale)
+        }
+        TurnPhase::WaitingPermission if turn_origin.permission_timeout_applies() => {
+            (now.duration_since(turn_phase_since) > Duration::from_secs(PERMISSION_TIMEOUT_SECS))
+                .then_some(TurnLivenessTimeout::PermissionTimeout)
+        }
+        TurnPhase::Idle | TurnPhase::WaitingPermission => None,
+    }
+}
 
 fn backend_runtime_config<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -481,6 +588,22 @@ impl AgentProcess {
         self.last_stream_emit_at = None;
         self.last_message_id = None;
         self.task_id_map.clear();
+    }
+
+    fn begin_turn_liveness(&mut self, origin: TurnOrigin) {
+        let now = Instant::now();
+        self.turn_seq = self.turn_seq.saturating_add(1);
+        self.turn_origin = origin;
+        self.last_progress_at = Some(now);
+        self.turn_phase_since = now;
+    }
+
+    fn touch_liveness(&mut self) {
+        self.last_progress_at = Some(Instant::now());
+    }
+
+    fn mark_turn_phase_since_now(&mut self) {
+        self.turn_phase_since = Instant::now();
     }
 
     /// Write setMode commands to the Bridge stdin before a turn starts.
@@ -1197,6 +1320,7 @@ where
     let was_streaming = flush_streaming_before_transition(proc, chat_session_id, emit_stream);
     if was_streaming {
         proc.turn_phase = TurnPhase::WaitingPermission;
+        proc.mark_turn_phase_since_now();
     }
     PermissionRequestTransition {
         did_transition: was_streaming,
@@ -1229,6 +1353,9 @@ fn run_turn_complete_transition_locked<F>(
 where
     F: FnMut(&str, &[MessagePart]) -> (bool, bool),
 {
+    if proc.turn_phase == TurnPhase::Idle && proc.state != BridgeState::Initializing {
+        return TurnCompleteTransition::default();
+    }
     let was_streaming = flush_streaming_before_transition(proc, chat_session_id, emit_stream);
     proc.state = if exit_code == 0 {
         BridgeState::Ready
@@ -1236,6 +1363,9 @@ where
         BridgeState::Crashed
     };
     proc.turn_phase = TurnPhase::Idle;
+    proc.turn_phase_since = Instant::now();
+    proc.last_progress_at = None;
+    proc.turn_watchdog_active = false;
     let turn_token_usage = proc.last_result_token_usage.take();
     let final_parts = consolidate_parts_from_slice(&proc.streaming_parts);
     let final_msg_id = proc.streaming_message_id.take();
@@ -1247,6 +1377,64 @@ where
         final_msg_id,
         final_parts,
         turn_token_usage,
+    }
+}
+
+fn finalize_turn_as_timeout_locked<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    timeout: TurnLivenessTimeout,
+    emit_stream: F,
+) -> TurnCompleteTransition
+where
+    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+{
+    if proc.turn_phase == TurnPhase::Idle {
+        return TurnCompleteTransition::default();
+    }
+    let error_part = MessagePart::Error {
+        content: timeout.user_message().to_string(),
+        parent_tool_use_id: None,
+    };
+    proc.streaming_parts.push(error_part.clone());
+    enqueue_pending_delta(proc, &[error_part]);
+    run_turn_complete_transition_locked(proc, chat_session_id, STALE_EXIT_CODE, emit_stream)
+}
+
+#[derive(Debug, Default)]
+struct BridgeErrorTransition {
+    turn_complete: TurnCompleteTransition,
+    was_initializing: bool,
+    context_restore_failed_on_init: bool,
+}
+
+fn run_bridge_error_transition_locked<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    msg: &serde_json::Value,
+    emit_stream: F,
+) -> BridgeErrorTransition
+where
+    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+{
+    let was_initializing = proc.state == BridgeState::Initializing;
+    if proc.state == BridgeState::Streaming {
+        let prev_len = proc.streaming_parts.len();
+        accumulate_sdk_message(msg, &mut proc.streaming_parts, &mut proc.task_id_map);
+        let delta: Vec<MessagePart> = proc.streaming_parts[prev_len..].to_vec();
+        if !delta.is_empty() {
+            enqueue_pending_delta(proc, &delta);
+        }
+    }
+    let turn_complete = run_turn_complete_transition_locked(proc, chat_session_id, 1, emit_stream);
+    let context_restore_failed_on_init = !turn_complete.was_streaming
+        && was_initializing
+        && proc.context_carry_on_ready.take().is_some();
+
+    BridgeErrorTransition {
+        turn_complete,
+        was_initializing,
+        context_restore_failed_on_init,
     }
 }
 
@@ -1280,6 +1468,8 @@ where
     let did_transition = proc.turn_phase == TurnPhase::WaitingPermission;
     if did_transition {
         proc.turn_phase = TurnPhase::Streaming;
+        proc.mark_turn_phase_since_now();
+        proc.touch_liveness();
     }
     let new_status = if behavior == "allow" {
         "allowed"
@@ -1368,58 +1558,58 @@ fn delta_has_tool_event(delta: &[MessagePart]) -> bool {
 }
 
 #[derive(Debug, Default)]
-struct BridgeEofCrashEffect {
-    was_streaming: bool,
+struct BridgeEofCrashTransition {
+    turn_complete: TurnCompleteTransition,
     was_initializing: bool,
-    message_id: Option<String>,
-    error_delta: Vec<MessagePart>,
-    persisted_parts: Vec<MessagePart>,
     sdk_error_message: Option<String>,
+    context_restore_failed_on_init: bool,
 }
 
-fn apply_bridge_eof_crash(
+fn run_bridge_eof_crash_transition_locked<F>(
     generation_matches: bool,
-    state: &mut BridgeState,
-    turn_phase: &mut TurnPhase,
-    streaming_message_id: Option<&str>,
-    streaming_parts: &mut Vec<MessagePart>,
-    backend_id: &str,
-) -> BridgeEofCrashEffect {
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    emit_stream: F,
+) -> BridgeEofCrashTransition
+where
+    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+{
     if !generation_matches {
-        return BridgeEofCrashEffect::default();
+        return BridgeEofCrashTransition::default();
     }
 
-    let was_streaming = *state == BridgeState::Streaming;
-    let was_initializing = *state == BridgeState::Initializing;
-    let mut effect = BridgeEofCrashEffect {
-        was_streaming,
-        was_initializing,
-        message_id: streaming_message_id.map(str::to_string),
-        error_delta: Vec::new(),
-        persisted_parts: Vec::new(),
-        sdk_error_message: None,
+    let was_streaming = proc.state == BridgeState::Streaming;
+    let was_initializing = proc.state == BridgeState::Initializing;
+    let sdk_error_message = if was_streaming || was_initializing {
+        Some(format!("{}: {BRIDGE_EOF_ERROR_MESSAGE}", proc.backend_id))
+    } else {
+        None
     };
-
-    if was_streaming || was_initializing {
-        effect.sdk_error_message = Some(format!("{backend_id}: {BRIDGE_EOF_ERROR_MESSAGE}"));
-    }
 
     if was_streaming {
         let part = MessagePart::Error {
             content: format!("Error: {BRIDGE_EOF_ERROR_MESSAGE}"),
             parent_tool_use_id: None,
         };
-        streaming_parts.push(part.clone());
-        effect.error_delta.push(part);
-        effect.persisted_parts = consolidate_parts_from_slice(streaming_parts);
+        proc.streaming_parts.push(part.clone());
+        enqueue_pending_delta(proc, &[part]);
     }
 
-    if was_streaming || was_initializing {
-        *state = BridgeState::Crashed;
-        *turn_phase = TurnPhase::Idle;
-    }
+    let turn_complete = if was_streaming || was_initializing {
+        run_turn_complete_transition_locked(proc, chat_session_id, -1, emit_stream)
+    } else {
+        TurnCompleteTransition::default()
+    };
+    let context_restore_failed_on_init = !turn_complete.was_streaming
+        && was_initializing
+        && proc.context_carry_on_ready.take().is_some();
 
-    effect
+    BridgeEofCrashTransition {
+        turn_complete,
+        was_initializing,
+        sdk_error_message,
+        context_restore_failed_on_init,
+    }
 }
 
 /// 状態遷移時に AgentStatusCenter へ通知する統一エントリ。
@@ -1947,6 +2137,41 @@ fn should_forward_sdk_message(accumulated: bool, msg_type: &str) -> bool {
     !accumulated || msg_type == "permission_request"
 }
 
+struct SdkMessageAccumulation {
+    handled: bool,
+    updated_parts: Option<Vec<MessagePart>>,
+    liveness: bool,
+}
+
+fn is_explicit_liveness_progress_message(msg: &serde_json::Value) -> bool {
+    msg.get("type").and_then(|v| v.as_str()) == Some("system")
+        && matches!(
+            msg.get("subtype").and_then(|v| v.as_str()),
+            Some("task_started" | "task_notification" | "task_progress" | "task_updated")
+        )
+}
+
+fn accumulate_sdk_message_with_liveness(
+    msg: &serde_json::Value,
+    parts: &mut Vec<MessagePart>,
+    task_id_map: &mut HashMap<String, String>,
+) -> SdkMessageAccumulation {
+    let prev_len = parts.len();
+    let (handled, updated_parts) = accumulate_sdk_message(msg, parts, task_id_map);
+    let liveness = handled
+        && (parts.len() > prev_len
+            || updated_parts
+                .as_ref()
+                .is_some_and(|parts| !parts.is_empty())
+            || is_explicit_liveness_progress_message(msg));
+
+    SdkMessageAccumulation {
+        handled,
+        updated_parts,
+        liveness,
+    }
+}
+
 /// Extract background task ID from tool_result content.
 /// Handles both Task tool ("agentId: a72ca50") and Bash tool ("with ID: b8625ae") formats.
 fn extract_agent_id(content: &str) -> Option<&str> {
@@ -2375,6 +2600,19 @@ pub(crate) fn session_specific_env_overrides(
     env
 }
 
+fn claude_bridge_watchdog_env_overrides() -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "CLAUDE_STREAM_IDLE_TIMEOUT_MS",
+            (STALE_TIMEOUT_SECS * 1000).to_string(),
+        ),
+        ("CLAUDE_ENABLE_STREAM_WATCHDOG", "1".to_string()),
+        ("CLAUDE_ENABLE_BYTE_WATCHDOG", "1".to_string()),
+        ("CLAUDE_CODE_MAX_RETRIES", "10".to_string()),
+        ("API_TIMEOUT_MS", "600000".to_string()),
+    ]
+}
+
 /// ユーザー指定の system_prompt に Releash CLI の long help を append する。
 ///
 /// spec issues-1022 "Agent process environment contract": Agent process の
@@ -2470,6 +2708,9 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
         .ok()
         .flatten();
     for (k, v) in session_specific_env_overrides(chat_session_id, base_branch.as_deref()) {
+        cmd.env(k, v);
+    }
+    for (k, v) in claude_bridge_watchdog_env_overrides() {
         cmd.env(k, v);
     }
 
@@ -2590,6 +2831,11 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                 pending_stream_bytes: 0,
                 last_stream_emit_at: None,
                 streaming_timer_active: false,
+                last_progress_at: None,
+                turn_phase_since: Instant::now(),
+                turn_origin: TurnOrigin::Desktop,
+                turn_seq: 0,
+                turn_watchdog_active: false,
             },
         );
     }
@@ -2815,12 +3061,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         // 区間に限定する。workflow turn-complete usecase や pending
                         // message 消費は lock を保持しない経路で行い、それらが必要に応じ
                         // 自前で lock を取得する設計とする（再入デッドロックを防ぐ）。
-                        let was_streaming;
-                        let final_parts;
-                        let final_msg_id;
-                        let turn_token_usage;
-                        let context_restore_failed_on_init;
-                        {
+                        let (effect, context_restore_failed_on_init) = {
                             let _runtime_guard = acquire_session_runtime_lock(&csid_stdout).await;
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
@@ -2842,16 +3083,12 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                         )
                                     },
                                 );
-                                was_streaming = effect.was_streaming;
-                                turn_token_usage = effect.turn_token_usage;
-                                final_parts = effect.final_parts;
-                                final_msg_id = effect.final_msg_id;
-                                context_restore_failed_on_init = !was_streaming
+                                let context_restore_failed_on_init = !effect.was_streaming
                                     && exit_code != 0
                                     && proc.context_carry_on_ready.take().is_some();
 
                                 // User turn succeeded: persist agent_session_id to SessionStore
-                                if was_streaming && exit_code == 0 {
+                                if effect.was_streaming && exit_code == 0 {
                                     if let Some(sid) = &proc.sdk_session_id {
                                         if let Ok(data_dir) = resolve_data_dir(&app_stdout) {
                                             if let Ok(Some(mut session)) = session_store_clone
@@ -2865,34 +3102,15 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                         }
                                     }
                                 }
+                                (effect, context_restore_failed_on_init)
                             } else {
-                                was_streaming = false;
-                                final_parts = Vec::new();
-                                final_msg_id = None;
-                                turn_token_usage = None;
-                                context_restore_failed_on_init = false;
+                                (TurnCompleteTransition::default(), false)
                             }
                             // _runtime_guard はこのスコープを抜けて drop される
-                        }
-
-                        // Final persist of streaming buffer
-                        if was_streaming {
-                            if let Some(ref mid) = final_msg_id {
-                                if !final_parts.is_empty() {
-                                    persist_streaming_parts(
-                                        &session_store_clone,
-                                        &app_stdout,
-                                        &csid_stdout,
-                                        mid,
-                                        &final_parts,
-                                        Some(now_timestamp()),
-                                    );
-                                }
-                            }
-                        }
+                        };
 
                         // Resume failure (error during init) → clear stale agent_session_id
-                        if !was_streaming && exit_code != 0 {
+                        if !effect.was_streaming && exit_code != 0 {
                             persist_context_carry_failed_after_init_error(
                                 &app_stdout,
                                 &session_store_clone,
@@ -2903,45 +3121,16 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         }
 
                         // Emit state change only for user turns (was Streaming)
-                        if was_streaming {
-                            emit_session_state_changed(
-                                &app_stdout,
-                                &csid_stdout,
-                                TurnPhase::Idle,
-                                Some(exit_code),
-                            );
-                            // AgentStatusCenter にも通知（exit_code 非0 なら Error 扱い）
-                            let override_state = if exit_code != 0 {
-                                Some(crate::usecase::agent_session::session::SessionState::Error)
-                            } else {
-                                None
-                            };
-                            notify_status_transition(
-                                &app_stdout,
-                                &session_store_clone,
-                                &csid_stdout,
-                                TurnPhase::Idle,
-                                override_state,
-                            );
-
-                            // Workflow engine への通知と pending message 消費は
-                            // session_runtime_lock を保持しない経路で実施する。
-                            // 共通ヘルパーが内部で thread::spawn + block_on し、ここの
-                            // lock スコープから切り離す（engine 内で同 session への turn
-                            // 再投入があると再入デッドロックするため）。pending は
-                            // 同期文脈で先に取り出してから渡す。
-                            let pending = take_pending_message(&handles_stdout, &csid_stdout).await;
-                            spawn_workflow_turn_complete_notification(
-                                app_stdout.clone(),
-                                Arc::clone(&session_store_clone),
-                                Arc::clone(&handles_stdout),
-                                csid_stdout.clone(),
-                                exit_code,
-                                final_parts,
-                                turn_token_usage,
-                                pending,
-                            );
-                        }
+                        complete_streaming_turn_post_lock(
+                            &app_stdout,
+                            &session_store_clone,
+                            &handles_stdout,
+                            &csid_stdout,
+                            exit_code,
+                            effect,
+                            true,
+                        )
+                        .await;
                     }
                     "error" => {
                         let error_msg = msg
@@ -2950,60 +3139,44 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                             .unwrap_or("Unknown bridge error");
                         log::error!("Bridge error [{}]: {}", csid_stdout, error_msg);
 
-                        // Accumulate the error part, enqueue it for emission, and
-                        // force-flush so the UI surfaces the failure immediately.
-                        {
+                        let transition = {
+                            let _runtime_guard = acquire_session_runtime_lock(&csid_stdout).await;
                             let mut map = handles_stdout.lock().await;
-                            if let Some(proc) = map.get_mut(&csid_stdout) {
-                                if proc.state == BridgeState::Streaming {
-                                    let prev_len = proc.streaming_parts.len();
-                                    accumulate_sdk_message(
-                                        &msg,
-                                        &mut proc.streaming_parts,
-                                        &mut proc.task_id_map,
-                                    );
-                                    let delta: Vec<MessagePart> =
-                                        proc.streaming_parts[prev_len..].to_vec();
-                                    let mid = proc.streaming_message_id.clone();
-                                    if !delta.is_empty() {
-                                        enqueue_pending_delta(proc, &delta);
-                                    }
-                                    if let Some(ref mid) = mid {
-                                        flush_streaming(&app_stdout, proc, &csid_stdout, mid);
-                                    }
-                                }
-                            }
-                        }
+                            map.get_mut(&csid_stdout).map(|proc| {
+                                run_bridge_error_transition_locked(
+                                    proc,
+                                    &csid_stdout,
+                                    &msg,
+                                    |mid, parts| {
+                                        emit_streaming_parts(
+                                            &app_stdout,
+                                            &csid_stdout,
+                                            mid,
+                                            parts.to_vec(),
+                                        )
+                                    },
+                                )
+                            })
+                        };
 
                         let _ = app_stdout.emit("agent-sdk-message", &msg);
 
-                        // Transition to Crashed for both Streaming and Initializing states
-                        let (was_streaming, was_initializing, context_restore_failed_on_init) = {
-                            let mut map = handles_stdout.lock().await;
-                            if let Some(proc) = map.get_mut(&csid_stdout) {
-                                let ws = proc.state == BridgeState::Streaming;
-                                let wi = proc.state == BridgeState::Initializing;
-                                let failed_context =
-                                    wi && proc.context_carry_on_ready.take().is_some();
-                                if ws || wi {
-                                    proc.state = BridgeState::Crashed;
-                                    proc.turn_phase = TurnPhase::Idle;
-                                }
-                                (ws, wi, failed_context)
-                            } else {
-                                (false, false, false)
-                            }
-                        };
-                        if was_streaming {
-                            emit_session_state_changed(
-                                &app_stdout,
-                                &csid_stdout,
-                                TurnPhase::Idle,
-                                Some(1),
-                            );
-                        }
-                        // Bridge crash: AgentStatusCenter に Error として通知
-                        if was_streaming || was_initializing {
+                        let transition = transition.unwrap_or_default();
+                        let was_initializing = transition.was_initializing;
+                        let context_restore_failed_on_init =
+                            transition.context_restore_failed_on_init;
+                        let turn_complete = transition.turn_complete;
+                        complete_streaming_turn_post_lock(
+                            &app_stdout,
+                            &session_store_clone,
+                            &handles_stdout,
+                            &csid_stdout,
+                            1,
+                            turn_complete,
+                            true,
+                        )
+                        .await;
+                        if was_initializing {
                             notify_status_transition(
                                 &app_stdout,
                                 &session_store_clone,
@@ -3056,17 +3229,20 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                     (false, None, false, Vec::new())
                                 } else {
                                     let prev_len = proc.streaming_parts.len();
-                                    let (acc, updated_parts) = accumulate_sdk_message(
+                                    let accumulation = accumulate_sdk_message_with_liveness(
                                         &msg,
                                         &mut proc.streaming_parts,
                                         &mut proc.task_id_map,
                                     );
-                                    if !acc {
+                                    if !accumulation.handled {
                                         (false, None, false, Vec::new())
                                     } else {
+                                        if in_streaming && accumulation.liveness {
+                                            proc.touch_liveness();
+                                        }
                                         let mut delta: Vec<MessagePart> =
                                             proc.streaming_parts[prev_len..].to_vec();
-                                        if let Some(up) = updated_parts {
+                                        if let Some(up) = accumulation.updated_parts {
                                             delta.extend(up);
                                         }
                                         let mid = if in_streaming {
@@ -3211,37 +3387,24 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
         // Streaming 中の終了だけでなく、Initializing (session_ready 前) の終了も
         // AgentStatusCenter に Error として伝搬させる。Initializing の場合は
         // turn_id=-1 を伴う Idle emit は行わない（streaming が無かったため）。
-        let (effect, context_carry_failed_after_init_error) = {
+        let transition = {
+            let _runtime_guard = acquire_session_runtime_lock(&csid_stdout).await;
             let mut map = handles_stdout.lock().await;
             if let Some(proc) = map.get_mut(&csid_stdout) {
-                let streaming_message_id = proc.streaming_message_id.clone();
                 let generation_matches = proc.generation_id == captured_gen_id;
-                let backend_id = proc.backend_id.clone();
-                let context_carry_failed_after_init_error = generation_matches
-                    && proc.state == BridgeState::Initializing
-                    && proc.context_carry_on_ready.take().is_some();
-                let effect = apply_bridge_eof_crash(
+                run_bridge_eof_crash_transition_locked(
                     generation_matches,
-                    &mut proc.state,
-                    &mut proc.turn_phase,
-                    streaming_message_id.as_deref(),
-                    &mut proc.streaming_parts,
-                    &backend_id,
-                );
-                // Enqueue the synthetic crash delta into the coalescing buffer and
-                // force-flush so the UI sees the error before the Idle transition.
-                if let (Some(mid), false) =
-                    (streaming_message_id.as_ref(), effect.error_delta.is_empty())
-                {
-                    enqueue_pending_delta(proc, &effect.error_delta);
-                    flush_streaming(&app_stdout, proc, &csid_stdout, mid);
-                }
-                (effect, context_carry_failed_after_init_error)
+                    proc,
+                    &csid_stdout,
+                    |mid, parts| {
+                        emit_streaming_parts(&app_stdout, &csid_stdout, mid, parts.to_vec())
+                    },
+                )
             } else {
-                (BridgeEofCrashEffect::default(), false)
+                BridgeEofCrashTransition::default()
             }
         };
-        if context_carry_failed_after_init_error {
+        if transition.context_restore_failed_on_init {
             persist_context_carry_failed_after_init_error(
                 &app_stdout,
                 &session_store_clone,
@@ -3250,7 +3413,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                 true,
             );
         }
-        if let Some(message) = effect.sdk_error_message.as_deref() {
+        if let Some(message) = transition.sdk_error_message.as_deref() {
             let _ = app_stdout.emit(
                 "agent-sdk-message",
                 serde_json::json!({
@@ -3260,28 +3423,20 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                 }),
             );
         }
-        if let Some(message_id) = effect.message_id.as_deref() {
-            if !effect.persisted_parts.is_empty() {
-                persist_streaming_parts(
-                    &session_store_clone,
-                    &app_stdout,
-                    &csid_stdout,
-                    message_id,
-                    &effect.persisted_parts,
-                    Some(now_timestamp()),
-                );
-            }
-        }
+        let was_initializing = transition.was_initializing;
+        let effect = transition.turn_complete;
         if effect.was_streaming {
-            emit_session_state_changed(&app_stdout, &csid_stdout, TurnPhase::Idle, Some(-1));
-            notify_status_transition(
+            complete_streaming_turn_post_lock(
                 &app_stdout,
                 &session_store_clone,
+                &handles_stdout,
                 &csid_stdout,
-                TurnPhase::Idle,
-                Some(crate::usecase::agent_session::session::SessionState::Error),
-            );
-        } else if effect.was_initializing {
+                -1,
+                effect,
+                true,
+            )
+            .await;
+        } else if was_initializing {
             notify_status_transition(
                 &app_stdout,
                 &session_store_clone,
@@ -3309,6 +3464,403 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
     // would hold `AgentProcessMap` lock every 33ms even while idle.
 
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TurnWatchdogDecision {
+    Continue,
+    Timeout(TurnLivenessTimeout),
+    BreakClearFlag,
+    BreakKeepFlag,
+}
+
+fn turn_watchdog_decision(
+    proc: &AgentProcess,
+    captured_gen_id: u64,
+    captured_turn_seq: u64,
+    now: Instant,
+) -> TurnWatchdogDecision {
+    if proc.generation_id != captured_gen_id || proc.turn_seq != captured_turn_seq {
+        return TurnWatchdogDecision::BreakKeepFlag;
+    }
+    if proc.turn_phase == TurnPhase::Idle || proc.state == BridgeState::Crashed {
+        return TurnWatchdogDecision::BreakClearFlag;
+    }
+    match evaluate_turn_liveness(
+        proc.turn_phase,
+        proc.turn_origin,
+        proc.last_progress_at,
+        proc.turn_phase_since,
+        now,
+    ) {
+        Some(timeout) => TurnWatchdogDecision::Timeout(timeout),
+        None => TurnWatchdogDecision::Continue,
+    }
+}
+
+fn try_mark_turn_watchdog_active(proc: &mut AgentProcess) -> bool {
+    if proc.turn_watchdog_active {
+        return false;
+    }
+    proc.turn_watchdog_active = true;
+    true
+}
+
+async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &Arc<SessionStore>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    exit_code: i64,
+    effect: TurnCompleteTransition,
+    consume_pending: bool,
+) {
+    if !effect.was_streaming {
+        return;
+    }
+
+    if let Some(ref mid) = effect.final_msg_id {
+        if !effect.final_parts.is_empty() {
+            persist_streaming_parts(
+                session_store,
+                app,
+                chat_session_id,
+                mid,
+                &effect.final_parts,
+                Some(now_timestamp()),
+            );
+        }
+    }
+
+    emit_session_state_changed(app, chat_session_id, TurnPhase::Idle, Some(exit_code));
+    let override_state = if exit_code != 0 {
+        Some(crate::usecase::agent_session::session::SessionState::Error)
+    } else {
+        None
+    };
+    notify_status_transition(
+        app,
+        session_store,
+        chat_session_id,
+        TurnPhase::Idle,
+        override_state,
+    );
+
+    let pending = if consume_pending {
+        take_pending_message(handles, chat_session_id).await
+    } else {
+        None
+    };
+    spawn_workflow_turn_complete_notification(
+        app.clone(),
+        Arc::clone(session_store),
+        Arc::clone(handles),
+        chat_session_id.to_string(),
+        exit_code,
+        effect.final_parts,
+        effect.turn_token_usage,
+        pending,
+    );
+}
+
+struct TimeoutFinalizeOutcome {
+    completed: bool,
+    continue_watchdog: bool,
+    captured_pgid: Option<u32>,
+}
+
+struct TimeoutFinalizeTransition {
+    effect: Option<TurnCompleteTransition>,
+    continue_watchdog: bool,
+    captured_pgid: Option<u32>,
+}
+
+fn run_timeout_finalize_transition_locked<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    captured_gen_id: u64,
+    captured_turn_seq: u64,
+    now: Instant,
+    emit_stream: F,
+) -> TimeoutFinalizeTransition
+where
+    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+{
+    let timeout = match turn_watchdog_decision(proc, captured_gen_id, captured_turn_seq, now) {
+        TurnWatchdogDecision::Timeout(timeout) => timeout,
+        TurnWatchdogDecision::Continue => {
+            return TimeoutFinalizeTransition {
+                effect: None,
+                continue_watchdog: true,
+                captured_pgid: None,
+            };
+        }
+        TurnWatchdogDecision::BreakClearFlag => {
+            proc.turn_watchdog_active = false;
+            return TimeoutFinalizeTransition {
+                effect: None,
+                continue_watchdog: false,
+                captured_pgid: None,
+            };
+        }
+        TurnWatchdogDecision::BreakKeepFlag => {
+            return TimeoutFinalizeTransition {
+                effect: None,
+                continue_watchdog: false,
+                captured_pgid: None,
+            };
+        }
+    };
+
+    #[cfg(unix)]
+    let captured_pgid = proc.pgid;
+    #[cfg(not(unix))]
+    let captured_pgid = None;
+
+    let effect = finalize_turn_as_timeout_locked(proc, chat_session_id, timeout, emit_stream);
+    TimeoutFinalizeTransition {
+        effect: Some(effect),
+        continue_watchdog: false,
+        captured_pgid,
+    }
+}
+
+async fn finalize_timed_out_turn<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    captured_gen_id: u64,
+    captured_turn_seq: u64,
+) -> TimeoutFinalizeOutcome {
+    let transition;
+    {
+        let _runtime_guard = acquire_session_runtime_lock(chat_session_id).await;
+        let mut map = handles.lock().await;
+        let Some(proc) = map.get_mut(chat_session_id) else {
+            return TimeoutFinalizeOutcome {
+                completed: false,
+                continue_watchdog: false,
+                captured_pgid: None,
+            };
+        };
+        transition = run_timeout_finalize_transition_locked(
+            proc,
+            chat_session_id,
+            captured_gen_id,
+            captured_turn_seq,
+            Instant::now(),
+            |mid, parts| emit_streaming_parts(app, chat_session_id, mid, parts.to_vec()),
+        );
+    }
+
+    let Some(effect) = transition.effect else {
+        return TimeoutFinalizeOutcome {
+            completed: false,
+            continue_watchdog: transition.continue_watchdog,
+            captured_pgid: transition.captured_pgid,
+        };
+    };
+
+    if !effect.was_streaming {
+        return TimeoutFinalizeOutcome {
+            completed: false,
+            continue_watchdog: false,
+            captured_pgid: transition.captured_pgid,
+        };
+    }
+
+    complete_streaming_turn_post_lock(
+        app,
+        session_store,
+        handles,
+        chat_session_id,
+        STALE_EXIT_CODE,
+        effect,
+        true,
+    )
+    .await;
+
+    TimeoutFinalizeOutcome {
+        completed: true,
+        continue_watchdog: false,
+        captured_pgid: transition.captured_pgid,
+    }
+}
+
+async fn recover_timed_out_bridge<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    captured_gen_id: u64,
+    captured_turn_seq: u64,
+    captured_pgid: Option<u32>,
+) {
+    let interrupt_sent = match write_bridge_command_for_captured_turn(
+        handles,
+        chat_session_id,
+        captured_gen_id,
+        captured_turn_seq,
+        serde_json::json!({ "type": "interrupt" }),
+    )
+    .await
+    {
+        Ok(sent) => sent,
+        Err(e) => {
+            log::warn!("Failed to interrupt timed-out bridge {chat_session_id}: {e}");
+            false
+        }
+    };
+
+    if interrupt_sent {
+        tokio::time::sleep(Duration::from_secs(STALE_RECOVERY_GRACE_SECS)).await;
+    }
+
+    let (remove_current_pid_file, sweep_captured_pgid) = {
+        let mut map = handles.lock().await;
+        mark_timed_out_bridge_for_recovery_locked(
+            &mut map,
+            chat_session_id,
+            captured_gen_id,
+            captured_turn_seq,
+            captured_pgid,
+        )
+    };
+
+    #[cfg(unix)]
+    {
+        if let (true, Some(pg)) = (sweep_captured_pgid, captured_pgid) {
+            sweep_process_group(pg).await;
+        }
+        if remove_current_pid_file {
+            if let Ok(data_dir) = resolve_data_dir(app) {
+                remove_pgid(&data_dir, chat_session_id);
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        if remove_current_pid_file {
+            let _ = app;
+        }
+    }
+}
+
+fn mark_timed_out_bridge_for_recovery_locked(
+    map: &mut AgentProcessMap,
+    chat_session_id: &str,
+    captured_gen_id: u64,
+    captured_turn_seq: u64,
+    captured_pgid: Option<u32>,
+) -> (bool, bool) {
+    if let Some(proc) = map.get_mut(chat_session_id) {
+        if proc.generation_id == captured_gen_id
+            && proc.turn_seq == captured_turn_seq
+            && proc.state != BridgeState::Ready
+        {
+            proc.state = BridgeState::Crashed;
+            proc.turn_phase = TurnPhase::Idle;
+            proc.turn_watchdog_active = false;
+            proc.last_progress_at = None;
+            proc.mark_turn_phase_since_now();
+            return (true, true);
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        let current_owns_captured_pgid = captured_pgid.is_some_and(|pg| {
+            map.get(chat_session_id)
+                .and_then(|proc| proc.pgid)
+                .is_some_and(|current_pg| current_pg == pg)
+        });
+        (
+            false,
+            captured_pgid.is_some() && !current_owns_captured_pgid,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = captured_pgid;
+        (false, false)
+    }
+}
+
+fn spawn_turn_watchdog<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    proc: &mut AgentProcess,
+) {
+    if !try_mark_turn_watchdog_active(proc) {
+        return;
+    }
+    let app_watchdog = app.clone();
+    let handles_watchdog = Arc::clone(handles);
+    let session_store_watchdog = Arc::clone(session_store);
+    let csid_watchdog = chat_session_id.to_string();
+    let captured_gen_id = proc.generation_id;
+    let captured_turn_seq = proc.turn_seq;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(WATCHDOG_TICK_SECS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let decision = {
+                let mut map = handles_watchdog.lock().await;
+                let Some(proc) = map.get_mut(&csid_watchdog) else {
+                    break;
+                };
+                match turn_watchdog_decision(
+                    proc,
+                    captured_gen_id,
+                    captured_turn_seq,
+                    Instant::now(),
+                ) {
+                    TurnWatchdogDecision::BreakClearFlag => {
+                        proc.turn_watchdog_active = false;
+                        TurnWatchdogDecision::BreakClearFlag
+                    }
+                    other => other,
+                }
+            };
+
+            match decision {
+                TurnWatchdogDecision::Continue => {}
+                TurnWatchdogDecision::BreakKeepFlag | TurnWatchdogDecision::BreakClearFlag => break,
+                TurnWatchdogDecision::Timeout(_) => {
+                    let outcome = finalize_timed_out_turn(
+                        &app_watchdog,
+                        &handles_watchdog,
+                        &session_store_watchdog,
+                        &csid_watchdog,
+                        captured_gen_id,
+                        captured_turn_seq,
+                    )
+                    .await;
+                    if outcome.completed {
+                        recover_timed_out_bridge(
+                            &app_watchdog,
+                            &handles_watchdog,
+                            &csid_watchdog,
+                            captured_gen_id,
+                            captured_turn_seq,
+                            outcome.captured_pgid,
+                        )
+                        .await;
+                        break;
+                    }
+                    if outcome.continue_watchdog {
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+    });
 }
 
 /// Loop control decision for the per-turn streaming timer. Extracted as a
@@ -4185,6 +4737,18 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
 
 /// Core logic for starting a new agent turn: spawn Bridge if needed, send prompt.
 /// Used by send_agent_message and pending message consumption.
+fn turn_origin_for_chat_session<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &SessionStore,
+    chat_session_id: &str,
+) -> Result<TurnOrigin, String> {
+    let data_dir = resolve_data_dir(app)?;
+    let session = session_store
+        .get_session(&data_dir, chat_session_id)?
+        .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
+    Ok(turn_origin_for_session(&session))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -4198,6 +4762,7 @@ pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
+    let origin = turn_origin_for_chat_session(app, session_store, chat_session_id)?;
     let spawn_info = get_persisted_spawn_info(app, session_store, chat_session_id)?;
     if spawn_info.backend_id == CODEX_BACKEND_ID {
         return start_codex_backend_turn(
@@ -4214,12 +4779,14 @@ pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
 
     start_agent_turn_with_runtime_spawner(
         Some(app),
+        Some(session_store),
         handles,
         chat_session_id,
         permission_mode,
         prompt,
         streaming_message_id,
         images,
+        origin,
         || async {
             wait_until_session_close_finished(chat_session_id).await;
             let spawn_info = get_persisted_spawn_info_before_turn(
@@ -4274,6 +4841,7 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
+    let origin = turn_origin_for_chat_session(app, session_store, chat_session_id)?;
     let spawn_info = get_persisted_spawn_info(app, session_store, chat_session_id)?;
     if spawn_info.backend_id == CODEX_BACKEND_ID {
         return start_codex_backend_turn(
@@ -4290,12 +4858,14 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
 
     start_agent_turn_with_runtime_spawner_locked(
         Some(app),
+        Some(session_store),
         handles,
         chat_session_id,
         permission_mode,
         prompt,
         streaming_message_id,
         images,
+        origin,
         || async {
             let spawn_info = get_persisted_spawn_info_before_turn(
                 app,
@@ -4379,12 +4949,14 @@ async fn start_codex_backend_turn<R: tauri::Runtime>(
 #[allow(clippy::too_many_arguments)]
 async fn start_agent_turn_with_runtime_spawner<R: tauri::Runtime, F, Fut>(
     app: Option<&tauri::AppHandle<R>>,
+    session_store: Option<&Arc<SessionStore>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
     permission_mode: &str,
     prompt: &str,
     streaming_message_id: &str,
     images: &[ImageAttachment],
+    origin: TurnOrigin,
     spawn_runtime: F,
 ) -> Result<(), String>
 where
@@ -4395,12 +4967,14 @@ where
     let _runtime_guard = acquire_session_runtime_lock(chat_session_id).await;
     start_agent_turn_with_runtime_spawner_locked(
         app,
+        session_store,
         handles,
         chat_session_id,
         permission_mode,
         prompt,
         streaming_message_id,
         images,
+        origin,
         spawn_runtime,
     )
     .await
@@ -4409,12 +4983,14 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn start_agent_turn_with_runtime_spawner_locked<R: tauri::Runtime, F, Fut>(
     app: Option<&tauri::AppHandle<R>>,
+    session_store: Option<&Arc<SessionStore>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
     permission_mode: &str,
     prompt: &str,
     streaming_message_id: &str,
     images: &[ImageAttachment],
+    origin: TurnOrigin,
     spawn_runtime: F,
 ) -> Result<(), String>
 where
@@ -4442,6 +5018,7 @@ where
             proc.turn_phase = TurnPhase::Streaming;
             proc.streaming_message_id = Some(streaming_message_id.to_string());
             proc.reset_streaming_state_for_new_turn();
+            proc.begin_turn_liveness(origin);
             proc.stdin
                 .write_all(data.as_bytes())
                 .await
@@ -4452,6 +5029,9 @@ where
                 .map_err(|e| format!("Failed to flush message: {e}"))?;
             if let Some(app) = app {
                 spawn_streaming_timer(app, handles, chat_session_id, proc);
+                if let Some(session_store) = session_store {
+                    spawn_turn_watchdog(app, handles, session_store, chat_session_id, proc);
+                }
             }
         } else {
             return Err(format!("No agent process for session {chat_session_id}"));
@@ -4552,6 +5132,9 @@ async fn crash_agent_process_for_context_reinject<R: tauri::Runtime>(
     };
     proc.state = BridgeState::Crashed;
     proc.turn_phase = TurnPhase::Idle;
+    proc.turn_watchdog_active = false;
+    proc.last_progress_at = None;
+    proc.mark_turn_phase_since_now();
     proc.sdk_session_id = None;
     proc.context_carry_on_ready = None;
     #[cfg(unix)]
@@ -5476,6 +6059,11 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
                 pending_stream_bytes: 0,
                 last_stream_emit_at: None,
                 streaming_timer_active: false,
+                last_progress_at: None,
+                turn_phase_since: Instant::now(),
+                turn_origin: TurnOrigin::Desktop,
+                turn_seq: 0,
+                turn_watchdog_active: false,
             },
         );
     }
@@ -5838,50 +6426,72 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             }
         }
         "error" => {
-            let (_was_streaming, was_initializing, context_restore_failed_on_init) = {
+            let transition = {
+                let _runtime_guard = acquire_session_runtime_lock(chat_session_id).await;
                 let mut map = handles.lock().await;
-                if let Some(proc) = map.get_mut(chat_session_id) {
-                    let was_streaming = proc.state == BridgeState::Streaming;
-                    let was_initializing = proc.state == BridgeState::Initializing;
-                    let context_restore_failed =
-                        was_initializing && proc.context_carry_on_ready.take().is_some();
-                    if proc.state == BridgeState::Streaming {
-                        let prev_len = proc.streaming_parts.len();
-                        accumulate_sdk_message(
-                            &msg,
-                            &mut proc.streaming_parts,
-                            &mut proc.task_id_map,
-                        );
-                        let delta: Vec<MessagePart> = proc.streaming_parts[prev_len..].to_vec();
-                        let mid = proc.streaming_message_id.clone();
-                        if !delta.is_empty() {
-                            enqueue_pending_delta(proc, &delta);
-                        }
-                        if let Some(ref mid) = mid {
-                            flush_streaming(app, proc, chat_session_id, mid);
-                        }
-                    }
-                    if proc.state == BridgeState::Streaming
-                        || proc.state == BridgeState::Initializing
-                    {
-                        proc.state = BridgeState::Crashed;
-                        proc.turn_phase = TurnPhase::Idle;
-                    }
-                    (was_streaming, was_initializing, context_restore_failed)
-                } else {
-                    (false, false, false)
-                }
+                map.get_mut(chat_session_id).map(|proc| {
+                    run_bridge_error_transition_locked(proc, chat_session_id, &msg, |mid, parts| {
+                        emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
+                    })
+                })
             };
             let _ = app.emit("agent-sdk-message", &msg);
-            emit_session_state_changed(app, chat_session_id, TurnPhase::Idle, Some(1));
-            notify_status_transition(
-                app,
-                session_store,
-                chat_session_id,
-                TurnPhase::Idle,
-                Some(crate::usecase::agent_session::session::SessionState::Error),
-            );
-            if was_initializing
+
+            let transition = transition.unwrap_or_default();
+            let effect = transition.turn_complete;
+            if effect.was_streaming {
+                if let Some(ref mid) = effect.final_msg_id {
+                    if !effect.final_parts.is_empty() {
+                        persist_streaming_parts(
+                            session_store,
+                            app,
+                            chat_session_id,
+                            mid,
+                            &effect.final_parts,
+                            Some(now_timestamp()),
+                        );
+                    }
+                }
+                emit_session_state_changed(app, chat_session_id, TurnPhase::Idle, Some(1));
+                notify_status_transition(
+                    app,
+                    session_store,
+                    chat_session_id,
+                    TurnPhase::Idle,
+                    Some(crate::usecase::agent_session::session::SessionState::Error),
+                );
+                let pending = {
+                    let is_legacy_bridge = {
+                        let map = handles.lock().await;
+                        map.get(chat_session_id)
+                            .is_some_and(|proc| proc.backend_id != CODEX_BACKEND_ID)
+                    };
+                    if is_legacy_bridge {
+                        take_pending_message(handles, chat_session_id).await
+                    } else {
+                        None
+                    }
+                };
+                spawn_workflow_turn_complete_notification(
+                    app.clone(),
+                    Arc::clone(session_store),
+                    Arc::clone(handles),
+                    chat_session_id.to_string(),
+                    1,
+                    effect.final_parts,
+                    effect.turn_token_usage,
+                    pending,
+                );
+            } else if transition.was_initializing {
+                notify_status_transition(
+                    app,
+                    session_store,
+                    chat_session_id,
+                    TurnPhase::Idle,
+                    Some(crate::usecase::agent_session::session::SessionState::Error),
+                );
+            }
+            if transition.was_initializing
                 || msg
                     .get("clear_session_id")
                     .and_then(|v| v.as_bool())
@@ -5895,12 +6505,12 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                     app,
                     session_store,
                     chat_session_id,
-                    was_initializing
+                    transition.was_initializing
                         || msg
                             .get("clear_session_id")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false),
-                    context_restore_failed_on_init
+                    transition.context_restore_failed_on_init
                         || msg
                             .get("context_carry_failed")
                             .and_then(|v| v.as_bool())
@@ -5920,17 +6530,20 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                         (false, None, false, Vec::new())
                     } else {
                         let prev_len = proc.streaming_parts.len();
-                        let (acc, updated_parts) = accumulate_sdk_message(
+                        let accumulation = accumulate_sdk_message_with_liveness(
                             &msg,
                             &mut proc.streaming_parts,
                             &mut proc.task_id_map,
                         );
-                        if !acc {
+                        if !accumulation.handled {
                             (false, None, false, Vec::new())
                         } else {
+                            if in_streaming && accumulation.liveness {
+                                proc.touch_liveness();
+                            }
                             let mut delta: Vec<MessagePart> =
                                 proc.streaming_parts[prev_len..].to_vec();
-                            if let Some(up) = updated_parts {
+                            if let Some(up) = accumulation.updated_parts {
                                 delta.extend(up);
                             }
                             let mid = if in_streaming {
@@ -7021,6 +7634,22 @@ mod tests {
         )
     }
 
+    fn pending_message_for_test(id: &str, content: &str, created_at: f64) -> PendingMessage {
+        PendingMessage {
+            id: id.to_string(),
+            content: content.to_string(),
+            created_at,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            images: Vec::new(),
+            worktree_path: "/repo".to_string(),
+            mentions: Vec::new(),
+            editor_context: None,
+            existing_human_message_id: None,
+            existing_agent_message_id: None,
+        }
+    }
+
     struct MockModelBackend {
         backend_id: String,
         #[allow(dead_code)]
@@ -7634,25 +8263,22 @@ mod tests {
         proc.context_carry_on_ready = Some(ContextCarryState::Resumed);
         handles.lock().await.insert(session.id.clone(), proc);
 
-        let (effect, context_carry_failed_after_init_error) = {
+        let (was_initializing, context_carry_failed_after_init_error) = {
             let mut map = handles.lock().await;
             let proc = map.get_mut(&session.id).unwrap();
             let generation_matches = proc.generation_id == 42;
-            let backend_id = proc.backend_id.clone();
-            let context_carry_failed_after_init_error = generation_matches
-                && proc.state == BridgeState::Initializing
-                && proc.context_carry_on_ready.take().is_some();
-            let effect = apply_bridge_eof_crash(
+            let transition = run_bridge_eof_crash_transition_locked(
                 generation_matches,
-                &mut proc.state,
-                &mut proc.turn_phase,
-                None,
-                &mut proc.streaming_parts,
-                &backend_id,
+                proc,
+                &session.id,
+                |_mid, _parts| (true, true),
             );
-            (effect, context_carry_failed_after_init_error)
+            (
+                transition.was_initializing,
+                transition.context_restore_failed_on_init,
+            )
         };
-        assert!(effect.was_initializing);
+        assert!(was_initializing);
         assert!(context_carry_failed_after_init_error);
         persist_context_carry_failed_after_init_error(
             &app.handle(),
@@ -7705,20 +8331,14 @@ mod tests {
             let mut map = handles.lock().await;
             let proc = map.get_mut(&session.id).unwrap();
             let generation_matches = proc.generation_id == 7;
-            let backend_id = proc.backend_id.clone();
-            let context_carry_failed_after_init_error = generation_matches
-                && proc.state == BridgeState::Initializing
-                && proc.context_carry_on_ready.take().is_some();
-            let effect = apply_bridge_eof_crash(
+            let transition = run_bridge_eof_crash_transition_locked(
                 generation_matches,
-                &mut proc.state,
-                &mut proc.turn_phase,
-                None,
-                &mut proc.streaming_parts,
-                &backend_id,
+                proc,
+                &session.id,
+                |_mid, _parts| (true, true),
             );
-            assert!(effect.was_initializing);
-            context_carry_failed_after_init_error
+            assert!(transition.was_initializing);
+            transition.context_restore_failed_on_init
         };
         assert!(!context_carry_failed_after_init_error);
         if context_carry_failed_after_init_error {
@@ -7849,6 +8469,109 @@ mod tests {
         let pending = proc.pending_messages.pop_front().unwrap();
         assert_eq!(pending.id, "queued-before-crash");
         assert_eq!(pending.content, "continue after reinject");
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn timed_out_recovery_preserves_remaining_pending_messages_for_replacement() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "timeout-with-multiple-pending".to_string();
+        let mut timed_out = make_test_agent_process();
+        let _ = timed_out.child.kill().await;
+        timed_out.generation_id = 42;
+        timed_out.turn_seq = 7;
+        timed_out.state = BridgeState::Crashed;
+        timed_out.turn_phase = TurnPhase::Idle;
+        timed_out
+            .pending_messages
+            .push_back(pending_message_for_test(
+                "queued-after-timeout-1",
+                "first remaining",
+                1.0,
+            ));
+        timed_out
+            .pending_messages
+            .push_back(pending_message_for_test(
+                "queued-after-timeout-2",
+                "second remaining",
+                2.0,
+            ));
+        handles.lock().await.insert(session_id.clone(), timed_out);
+
+        {
+            let mut map = handles.lock().await;
+            let (remove_pid_file, _sweep_pgid) =
+                mark_timed_out_bridge_for_recovery_locked(&mut map, &session_id, 42, 7, None);
+            assert!(remove_pid_file);
+            assert!(
+                map.contains_key(&session_id),
+                "timeout recovery must retain crashed runtime so pending queue can be preserved"
+            );
+        }
+
+        ensure_runtime_for_turn(&handles, &session_id, {
+            let handles = Arc::clone(&handles);
+            let session_id = session_id.clone();
+            move || async move {
+                handles
+                    .lock()
+                    .await
+                    .insert(session_id, make_test_agent_process());
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+        let mut proc = handles
+            .lock()
+            .await
+            .remove("timeout-with-multiple-pending")
+            .unwrap();
+        let pending_ids = proc
+            .pending_messages
+            .iter()
+            .map(|pending| pending.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pending_ids,
+            vec!["queued-after-timeout-1", "queued-after-timeout-2"]
+        );
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn ensure_runtime_for_turn_spawns_fresh_runtime_after_timeout_crash() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "timed-out-runtime".to_string();
+        let mut timed_out = make_test_agent_process();
+        let _ = timed_out.child.kill().await;
+        timed_out.state = BridgeState::Crashed;
+        timed_out.turn_phase = TurnPhase::Idle;
+        handles.lock().await.insert(session_id.clone(), timed_out);
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+
+        ensure_runtime_for_turn(&handles, &session_id, {
+            let handles = Arc::clone(&handles);
+            let session_id = session_id.clone();
+            let spawn_count = Arc::clone(&spawn_count);
+            move || async move {
+                spawn_count.fetch_add(1, Ordering::SeqCst);
+                handles
+                    .lock()
+                    .await
+                    .insert(session_id, make_test_agent_process());
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+        let mut proc = handles.lock().await.remove("timed-out-runtime").unwrap();
+        assert_eq!(proc.state, BridgeState::Ready);
         let _ = proc.child.kill().await;
     }
 
@@ -8738,7 +9461,8 @@ mod tests {
                 parts_count: parts.len(),
                 tail_text: match parts.last() {
                     Some(MessagePart::Text { content, .. })
-                    | Some(MessagePart::Thinking { content, .. }) => Some(content.clone()),
+                    | Some(MessagePart::Thinking { content, .. })
+                    | Some(MessagePart::Error { content, .. }) => Some(content.clone()),
                     _ => None,
                 },
             });
@@ -8791,6 +9515,213 @@ mod tests {
                 exit_code: Some(exit_code),
             });
         }
+    }
+
+    #[test]
+    fn liveness_marks_streaming_stale_after_last_progress_timeout() {
+        let now = Instant::now();
+        let timeout = evaluate_turn_liveness(
+            TurnPhase::Streaming,
+            TurnOrigin::Desktop,
+            Some(now - Duration::from_secs(STALE_TIMEOUT_SECS + 1)),
+            now - Duration::from_secs(STALE_TIMEOUT_SECS + 1),
+            now,
+        );
+
+        assert_eq!(timeout, Some(TurnLivenessTimeout::Stale));
+    }
+
+    #[test]
+    fn liveness_keeps_streaming_alive_when_progress_is_recent() {
+        let now = Instant::now();
+        let timeout = evaluate_turn_liveness(
+            TurnPhase::Streaming,
+            TurnOrigin::Desktop,
+            Some(now - Duration::from_secs(STALE_TIMEOUT_SECS - 1)),
+            now - Duration::from_secs(STALE_TIMEOUT_SECS + 10),
+            now,
+        );
+
+        assert_eq!(timeout, None);
+    }
+
+    #[test]
+    fn liveness_permission_timeout_applies_only_to_headless() {
+        let now = Instant::now();
+        let since = now - Duration::from_secs(PERMISSION_TIMEOUT_SECS + 1);
+
+        assert_eq!(
+            evaluate_turn_liveness(
+                TurnPhase::WaitingPermission,
+                TurnOrigin::Headless,
+                None,
+                since,
+                now,
+            ),
+            Some(TurnLivenessTimeout::PermissionTimeout)
+        );
+        assert_eq!(
+            evaluate_turn_liveness(
+                TurnPhase::WaitingPermission,
+                TurnOrigin::Desktop,
+                None,
+                since,
+                now,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn turn_origin_is_derived_from_session_workflow_step_flag() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let mut session =
+            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
+
+        assert_eq!(turn_origin_for_session(&session), TurnOrigin::Desktop);
+
+        session.workflow_step_session = true;
+        assert_eq!(turn_origin_for_session(&session), TurnOrigin::Headless);
+    }
+
+    #[tokio::test]
+    async fn touch_liveness_resets_streaming_stale_clock() {
+        let mut proc = make_streaming_test_process();
+        let stale_base = Instant::now() - Duration::from_secs(STALE_TIMEOUT_SECS + 1);
+        proc.last_progress_at = Some(stale_base);
+        proc.turn_phase_since = stale_base;
+
+        assert_eq!(
+            turn_watchdog_decision(&proc, proc.generation_id, proc.turn_seq, Instant::now()),
+            TurnWatchdogDecision::Timeout(TurnLivenessTimeout::Stale)
+        );
+
+        proc.touch_liveness();
+        assert_eq!(
+            turn_watchdog_decision(&proc, proc.generation_id, proc.turn_seq, Instant::now()),
+            TurnWatchdogDecision::Continue
+        );
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn timeout_finalize_rechecks_liveness_and_continues_when_progress_arrives_after_decision()
+    {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness(TurnOrigin::Desktop);
+        proc.turn_watchdog_active = true;
+        let captured_gen_id = proc.generation_id;
+        let captured_turn_seq = proc.turn_seq;
+        let stale_base = Instant::now() - Duration::from_secs(STALE_TIMEOUT_SECS + 1);
+        proc.last_progress_at = Some(stale_base);
+        proc.turn_phase_since = stale_base;
+
+        let decision_now = Instant::now();
+        assert_eq!(
+            turn_watchdog_decision(&proc, captured_gen_id, captured_turn_seq, decision_now),
+            TurnWatchdogDecision::Timeout(TurnLivenessTimeout::Stale)
+        );
+
+        proc.last_progress_at = Some(decision_now);
+        let mut events = Vec::new();
+        let transition = run_timeout_finalize_transition_locked(
+            &mut proc,
+            "csid",
+            captured_gen_id,
+            captured_turn_seq,
+            decision_now,
+            recording_emit(&mut events),
+        );
+
+        assert!(transition.effect.is_none());
+        assert!(transition.continue_watchdog);
+        assert_eq!(proc.state, BridgeState::Streaming);
+        assert_eq!(proc.turn_phase, TurnPhase::Streaming);
+        assert!(proc.turn_watchdog_active);
+        assert!(proc.streaming_parts.is_empty());
+        assert!(events.is_empty());
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn finalize_timeout_adds_error_part_and_completes_as_failure() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness(TurnOrigin::Desktop);
+        let partial = MessagePart::Text {
+            content: "partial response".to_string(),
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(partial.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&partial));
+        let mut events = Vec::new();
+
+        let effect = finalize_turn_as_timeout_locked(
+            &mut proc,
+            "csid",
+            TurnLivenessTimeout::Stale,
+            recording_emit(&mut events),
+        );
+
+        assert!(effect.was_streaming);
+        assert_eq!(proc.state, BridgeState::Crashed);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        assert_eq!(effect.final_msg_id.as_deref(), Some("m1"));
+        assert!(effect.final_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Text { content, .. } if content == "partial response"
+        )));
+        assert!(effect.final_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Error { content, .. } if content == STALE_ERROR_MESSAGE
+        )));
+        assert_eq!(proc.pending_stream_part_count, 0);
+        assert!(!proc.turn_watchdog_active);
+        assert_eq!(events.len(), 1);
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn late_turn_complete_after_timeout_does_not_restore_ready_state() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness(TurnOrigin::Desktop);
+        let _ = finalize_turn_as_timeout_locked(
+            &mut proc,
+            "csid",
+            TurnLivenessTimeout::Stale,
+            |_mid, _parts| (true, true),
+        );
+
+        let effect =
+            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+
+        assert!(!effect.was_streaming);
+        assert_eq!(proc.state, BridgeState::Crashed);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn timed_out_recovery_interrupt_is_scoped_to_captured_turn() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.generation_id = 2;
+        proc.turn_seq = 7;
+        handles.lock().await.insert("csid".to_string(), proc);
+
+        let sent = write_bridge_command_for_captured_turn(
+            &handles,
+            "csid",
+            1,
+            6,
+            serde_json::json!({ "type": "interrupt" }),
+        )
+        .await
+        .unwrap();
+
+        assert!(!sent, "must not interrupt a later bridge turn");
+        let mut proc = handles.lock().await.remove("csid").unwrap();
+        let _ = proc.child.kill().await;
     }
 
     /// Drive the production `respond_agent_permission` lock-block via
@@ -9023,82 +9954,45 @@ mod tests {
         assert_eq!(proc.turn_phase, TurnPhase::Streaming);
     }
 
-    /// Drive the production `bridge error` lock-block: accumulate an error
-    /// part, enqueue it as a pending delta, force-flush via the same
-    /// `force_flush_pending_streaming` helper the production reader uses,
-    /// then push a `StateChanged(Idle)` event to mirror the post-lock
-    /// `emit_session_state_changed`. Mirrors `bridge_common.rs:1982-2038`.
+    /// Drive the production `bridge error` lock-block via
+    /// `run_bridge_error_transition_locked`, then mirror the post-lock
+    /// `emit_session_state_changed`.
     fn drive_bridge_error_path(
         proc: &mut AgentProcess,
         chat_session_id: &str,
-        error_part: MessagePart,
+        error_message: &str,
         events: &mut Vec<RecordedEmit>,
-    ) {
-        let was_streaming = proc.state == BridgeState::Streaming;
-        let mid = proc.streaming_message_id.clone();
-        if was_streaming {
-            proc.streaming_parts.push(error_part.clone());
-            enqueue_pending_delta(proc, std::slice::from_ref(&error_part));
-            if let Some(ref mid) = mid {
-                force_flush_pending_streaming(proc, chat_session_id, mid, |parts| {
-                    events.push(RecordedEmit::StreamingFlush {
-                        parts_count: parts.len(),
-                        tail_text: match parts.last() {
-                            Some(MessagePart::Error { content, .. })
-                            | Some(MessagePart::Text { content, .. })
-                            | Some(MessagePart::Thinking { content, .. }) => Some(content.clone()),
-                            _ => None,
-                        },
-                    });
-                    (true, true)
-                });
-            }
-            // Mirror production: state transitions to Crashed → Idle after flush.
-            proc.state = BridgeState::Crashed;
-            proc.turn_phase = TurnPhase::Idle;
+    ) -> BridgeErrorTransition {
+        let msg = serde_json::json!({
+            "type": "error",
+            "message": error_message,
+        });
+        let transition =
+            run_bridge_error_transition_locked(proc, chat_session_id, &msg, recording_emit(events));
+        if transition.turn_complete.was_streaming {
             events.push(RecordedEmit::StateChanged {
                 phase: TurnPhase::Idle,
                 exit_code: Some(1),
             });
         }
+        transition
     }
 
-    /// Drive the production `EOF crash` lock-block: run
-    /// `apply_bridge_eof_crash`, enqueue the synthetic error delta, force-flush
-    /// via the same helper the production reader uses, then push a
+    /// Drive the production `EOF crash` lock-block via
+    /// `run_bridge_eof_crash_transition_locked`, then push a
     /// `StateChanged(Idle)` event to mirror `emit_session_state_changed`.
-    /// Mirrors `bridge_common.rs:2268-2333`.
     fn drive_bridge_eof_crash_path(
         proc: &mut AgentProcess,
         chat_session_id: &str,
         events: &mut Vec<RecordedEmit>,
     ) {
-        let streaming_message_id = proc.streaming_message_id.clone();
-        let backend_id = proc.backend_id.clone();
-        let effect = apply_bridge_eof_crash(
+        let transition = run_bridge_eof_crash_transition_locked(
             true,
-            &mut proc.state,
-            &mut proc.turn_phase,
-            streaming_message_id.as_deref(),
-            &mut proc.streaming_parts,
-            &backend_id,
+            proc,
+            chat_session_id,
+            recording_emit(events),
         );
-        if let (Some(mid), false) = (streaming_message_id.as_ref(), effect.error_delta.is_empty()) {
-            enqueue_pending_delta(proc, &effect.error_delta);
-            force_flush_pending_streaming(proc, chat_session_id, mid, |parts| {
-                events.push(RecordedEmit::StreamingFlush {
-                    parts_count: parts.len(),
-                    tail_text: match parts.last() {
-                        Some(MessagePart::Error { content, .. })
-                        | Some(MessagePart::Text { content, .. })
-                        | Some(MessagePart::Thinking { content, .. }) => Some(content.clone()),
-                        _ => None,
-                    },
-                });
-                (true, true)
-            });
-        }
-        if effect.was_streaming {
+        if transition.turn_complete.was_streaming {
             events.push(RecordedEmit::StateChanged {
                 phase: TurnPhase::Idle,
                 exit_code: Some(-1),
@@ -9122,14 +10016,20 @@ mod tests {
         proc.streaming_parts.push(pending_text.clone());
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&pending_text));
 
-        let error_part = MessagePart::Error {
-            content: "Error: bridge reported failure".to_string(),
-            parent_tool_use_id: None,
-        };
         let mut events = Vec::new();
-        drive_bridge_error_path(&mut proc, "csid", error_part, &mut events);
+        let transition =
+            drive_bridge_error_path(&mut proc, "csid", "bridge reported failure", &mut events);
 
         assert_eq!(events.len(), 2, "flush emit then state emit");
+        assert!(transition.turn_complete.was_streaming);
+        assert!(transition
+            .turn_complete
+            .final_parts
+            .iter()
+            .any(|part| matches!(
+                part,
+                MessagePart::Error { content, .. } if content == "Error: bridge reported failure"
+            )));
         match &events[0] {
             RecordedEmit::StreamingFlush {
                 parts_count,
@@ -9181,7 +10081,7 @@ mod tests {
                 parts_count,
                 tail_text,
             } => {
-                // cumulative: pending Text + apply_bridge_eof_crash が積んだ Error。
+                // cumulative: pending Text + EOF transition が積んだ Error。
                 assert_eq!(*parts_count, 2);
                 assert!(
                     tail_text
@@ -9262,57 +10162,60 @@ mod tests {
         proc
     }
 
-    #[test]
-    fn bridge_eof_crash_adds_error_part_for_streaming_message() {
-        let mut state = BridgeState::Streaming;
-        let mut turn_phase = TurnPhase::Streaming;
-        let mut parts = vec![MessagePart::Text {
+    #[tokio::test]
+    async fn bridge_eof_crash_adds_error_part_for_streaming_message() {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        proc.streaming_message_id = Some("message-1".to_string());
+        proc.streaming_parts.push(MessagePart::Text {
             content: "partial".to_string(),
             parent_tool_use_id: None,
-        }];
+        });
 
-        let effect = apply_bridge_eof_crash(
-            true,
-            &mut state,
-            &mut turn_phase,
-            Some("message-1"),
-            &mut parts,
-            "mock",
+        let transition =
+            run_bridge_eof_crash_transition_locked(true, &mut proc, "csid", |_mid, _parts| {
+                (true, true)
+            });
+
+        assert_eq!(proc.state, BridgeState::Crashed);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        assert!(transition.turn_complete.was_streaming);
+        assert_eq!(
+            transition.turn_complete.final_msg_id.as_deref(),
+            Some("message-1")
         );
-
-        assert_eq!(state, BridgeState::Crashed);
-        assert_eq!(turn_phase, TurnPhase::Idle);
-        assert!(effect.was_streaming);
-        assert_eq!(effect.message_id.as_deref(), Some("message-1"));
-        assert_eq!(effect.error_delta.len(), 1);
-        assert_eq!(effect.persisted_parts.len(), 2);
-        assert!(effect
+        assert_eq!(transition.turn_complete.final_parts.len(), 2);
+        assert!(transition
             .sdk_error_message
             .as_deref()
             .unwrap()
             .contains("mock"));
         assert!(matches!(
-            &effect.error_delta[0],
+            &transition.turn_complete.final_parts[1],
             MessagePart::Error { content, .. }
                 if content.contains("Bridge process exited unexpectedly")
         ));
+        let _ = proc.child.kill().await;
     }
 
-    #[test]
-    fn bridge_eof_crash_marks_initializing_without_streaming_part() {
-        let mut state = BridgeState::Initializing;
-        let mut turn_phase = TurnPhase::Idle;
-        let mut parts = Vec::new();
+    #[tokio::test]
+    async fn bridge_eof_crash_marks_initializing_without_streaming_part() {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Initializing;
+        proc.turn_phase = TurnPhase::Idle;
 
-        let effect =
-            apply_bridge_eof_crash(true, &mut state, &mut turn_phase, None, &mut parts, "mock");
+        let transition =
+            run_bridge_eof_crash_transition_locked(true, &mut proc, "csid", |_mid, _parts| {
+                (true, true)
+            });
 
-        assert_eq!(state, BridgeState::Crashed);
-        assert_eq!(turn_phase, TurnPhase::Idle);
-        assert!(effect.was_initializing);
-        assert!(effect.error_delta.is_empty());
-        assert!(effect.persisted_parts.is_empty());
-        assert!(effect.sdk_error_message.is_some());
+        assert_eq!(proc.state, BridgeState::Crashed);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        assert!(transition.was_initializing);
+        assert!(transition.turn_complete.final_parts.is_empty());
+        assert!(transition.sdk_error_message.is_some());
+        let _ = proc.child.kill().await;
     }
 
     #[test]
@@ -9798,12 +10701,14 @@ mod tests {
 
         start_agent_turn_with_runtime_spawner(
             None::<&tauri::AppHandle>,
+            None,
             &handles,
             &session_id,
             "edit",
             "resume step",
             "agent-msg-1",
             &[],
+            TurnOrigin::Desktop,
             {
                 let handles = Arc::clone(&handles);
                 let session_id = session_id.clone();
@@ -9843,12 +10748,14 @@ mod tests {
 
         start_agent_turn_with_runtime_spawner(
             None::<&tauri::AppHandle>,
+            None,
             &handles,
             &session_id,
             "edit",
             "continue step",
             "agent-msg-2",
             &[],
+            TurnOrigin::Desktop,
             {
                 let spawn_count = Arc::clone(&spawn_count);
                 move || async move {
@@ -9880,12 +10787,14 @@ mod tests {
             tokio::spawn(async move {
                 start_agent_turn_with_runtime_spawner(
                     None::<&tauri::AppHandle>,
+                    None,
                     &handles,
                     &session_id,
                     "edit",
                     "resume step",
                     "agent-msg-locked",
                     &[],
+                    TurnOrigin::Desktop,
                     {
                         let handles = Arc::clone(&handles);
                         let session_id = session_id.clone();
@@ -9935,12 +10844,14 @@ mod tests {
             async move {
                 start_agent_turn_with_runtime_spawner(
                     None::<&tauri::AppHandle>,
+                    None,
                     &handles,
                     &session_id,
                     "edit",
                     "first",
                     "agent-msg-1",
                     &[],
+                    TurnOrigin::Desktop,
                     {
                         let handles = Arc::clone(&handles);
                         let session_id = session_id.clone();
@@ -9965,12 +10876,14 @@ mod tests {
             async move {
                 start_agent_turn_with_runtime_spawner(
                     None::<&tauri::AppHandle>,
+                    None,
                     &handles,
                     &session_id,
                     "edit",
                     "second",
                     "agent-msg-2",
                     &[],
+                    TurnOrigin::Desktop,
                     {
                         let handles = Arc::clone(&handles);
                         let session_id = session_id.clone();
@@ -10289,6 +11202,11 @@ mod tests {
                 pending_stream_bytes: 0,
                 last_stream_emit_at: None,
                 streaming_timer_active: false,
+                last_progress_at: None,
+                turn_phase_since: Instant::now(),
+                turn_origin: TurnOrigin::Desktop,
+                turn_seq: 0,
+                turn_watchdog_active: false,
             },
         );
 
@@ -11602,6 +12520,24 @@ mod tests {
     }
 
     #[test]
+    fn test_accumulation_liveness_tracks_visible_part_changes() {
+        let msg = serde_json::json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "Hello"}
+            }
+        });
+        let mut parts = vec![];
+        let accumulation =
+            accumulate_sdk_message_with_liveness(&msg, &mut parts, &mut HashMap::new());
+
+        assert!(accumulation.handled);
+        assert!(accumulation.liveness);
+        assert_eq!(parts.len(), 1);
+    }
+
+    #[test]
     fn test_accumulate_tool_use() {
         let msg = serde_json::json!({
             "type": "assistant",
@@ -12084,6 +13020,77 @@ mod tests {
             assert!(updated.is_none());
             assert!(parts.is_empty());
         }
+    }
+
+    #[test]
+    fn test_accumulation_liveness_ignores_removed_system_subtypes() {
+        for msg in [
+            serde_json::json!({
+                "type": "system",
+                "subtype": "hook_started",
+                "hook_name": "SessionEnd",
+                "hook_event": "StopSession",
+                "hook_id": "hook-001"
+            }),
+            serde_json::json!({
+                "type": "system",
+                "subtype": "hook_progress",
+                "hook_id": "hook-001",
+                "message": "running"
+            }),
+            serde_json::json!({
+                "type": "system",
+                "subtype": "hook_response",
+                "hook_id": "hook-001",
+                "outcome": "success",
+                "exit_code": 0
+            }),
+            serde_json::json!({
+                "type": "system",
+                "subtype": "files_persisted",
+                "filePaths": ["CLAUDE.md", "src/main.rs"]
+            }),
+            serde_json::json!({
+                "type": "system",
+                "subtype": "local_command_output",
+                "content": "npm test output here"
+            }),
+            serde_json::json!({
+                "type": "system",
+                "subtype": "codex_realtime",
+                "notification_type": "codex_realtime",
+                "status": "in_progress",
+                "label": "Codex realtime started",
+                "detail": "thread=thr_123, version=v2"
+            }),
+        ] {
+            let mut parts = vec![];
+            let accumulation =
+                accumulate_sdk_message_with_liveness(&msg, &mut parts, &mut HashMap::new());
+
+            assert!(accumulation.handled);
+            assert!(!accumulation.liveness);
+            assert!(accumulation.updated_parts.is_none());
+            assert!(parts.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_accumulation_liveness_accepts_explicit_progress_notifications() {
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-001",
+            "patch": {"status": "progress", "summary": "still running"}
+        });
+        let mut parts = vec![];
+        let accumulation =
+            accumulate_sdk_message_with_liveness(&msg, &mut parts, &mut HashMap::new());
+
+        assert!(accumulation.handled);
+        assert!(accumulation.liveness);
+        assert!(accumulation.updated_parts.is_none());
+        assert!(parts.is_empty());
     }
 
     #[test]
@@ -12778,6 +13785,11 @@ mod tests {
             pending_stream_bytes: 0,
             last_stream_emit_at: None,
             streaming_timer_active: false,
+            last_progress_at: None,
+            turn_phase_since: Instant::now(),
+            turn_origin: TurnOrigin::Desktop,
+            turn_seq: 0,
+            turn_watchdog_active: false,
         };
         (proc, stdout)
     }
@@ -13484,6 +14496,11 @@ mod tests {
                 pending_stream_bytes: 0,
                 last_stream_emit_at: None,
                 streaming_timer_active: false,
+                last_progress_at: None,
+                turn_phase_since: Instant::now(),
+                turn_origin: TurnOrigin::Desktop,
+                turn_seq: 0,
+                turn_watchdog_active: false,
             }
         }
 
@@ -14517,6 +15534,36 @@ mod tests {
         assert!(
             !env.iter().any(|(k, _)| *k == "RELEASH_BASE_BRANCH"),
             "RELEASH_BASE_BRANCH must not be set when base branch cannot be resolved"
+        );
+    }
+
+    #[test]
+    fn claude_bridge_watchdog_env_uses_existing_native_levers() {
+        let env = claude_bridge_watchdog_env_overrides();
+        let keys: Vec<&str> = env.iter().map(|(key, _)| *key).collect();
+
+        assert_eq!(
+            keys,
+            vec![
+                "CLAUDE_STREAM_IDLE_TIMEOUT_MS",
+                "CLAUDE_ENABLE_STREAM_WATCHDOG",
+                "CLAUDE_ENABLE_BYTE_WATCHDOG",
+                "CLAUDE_CODE_MAX_RETRIES",
+                "API_TIMEOUT_MS",
+            ]
+        );
+        assert!(!keys.contains(&"CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"));
+        assert_eq!(
+            env.iter()
+                .find_map(|(key, value)| (*key == "CLAUDE_ENABLE_STREAM_WATCHDOG")
+                    .then_some(value.as_str())),
+            Some("1")
+        );
+        assert_eq!(
+            env.iter()
+                .find_map(|(key, value)| (*key == "CLAUDE_STREAM_IDLE_TIMEOUT_MS")
+                    .then_some(value.as_str())),
+            Some("180000")
         );
     }
 }

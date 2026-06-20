@@ -299,6 +299,13 @@ async function handleInit(cmd) {
 				}
 				continue;
 			}
+			if (!closed && !gotResult) {
+				emit({
+					type: "turn_complete",
+					session_id: currentSessionId || null,
+					exit_code: 1,
+				});
+			}
 			break;
 		} catch (e) {
 			if (currentAbortController?.signal?.aborted) {
