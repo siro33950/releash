@@ -1,11 +1,17 @@
 use crate::adaptor::gateway::workflow::engine_error::{
     classify_cli_mutation_rejection_reason, WorkflowEngineError,
 };
-use crate::adaptor::gateway::workflow::event::{CliMutationRequestRecord, WorkflowEvent};
+use crate::adaptor::gateway::workflow::event::{
+    CliMutationRequestRecord, RunAbortedChildOutcome, RunAbortedChildOutputSnapshot,
+    RunAbortedStepSnapshot, WorkflowEvent,
+};
 use crate::adaptor::gateway::workflow::internal_node_command::InternalNodeCommand;
 use crate::adaptor::gateway::workflow::route_context::CommandCommitContext;
 use crate::adaptor::gateway::workflow::runtime_commit::StepOutcome;
-use crate::adaptor::gateway::workflow::state::{WorkflowExecutionState, WorkflowState};
+use crate::adaptor::gateway::workflow::state::{
+    ChildOutputSnapshot, StepHistoryEntry, WorkflowExecutionState, WorkflowState,
+};
+use crate::domain::workflow::{STEP_STATE_ABORTED, STEP_STATE_COMPLETED};
 
 /// [05] internal dispatch path: engine 内部の node 完了 / 失敗 typed command の
 /// 単一 commit 関数。`InternalNodeCommand::CompleteNode` / `FailNode` を受け取り、
@@ -439,6 +445,11 @@ pub(crate) fn required_events_for_approval_commit(
                 events.push(WorkflowEvent::RunAborted {
                     run_id: snapshot.execution_id.clone(),
                     workflow_name: snapshot.workflow_name.clone(),
+                    aborted_step: snapshot
+                        .step_history
+                        .last()
+                        .filter(|entry| entry.state == STEP_STATE_ABORTED)
+                        .map(run_aborted_step_snapshot_from_history_entry),
                     timestamp: snapshot.updated_at,
                 });
             }
@@ -472,6 +483,49 @@ pub(crate) fn required_events_for_approval_commit(
         set_workflow_event_timestamp(event, commit_timestamp);
     }
     Ok(events)
+}
+
+pub(crate) fn run_aborted_step_snapshot_from_history_entry(
+    entry: &StepHistoryEntry,
+) -> RunAbortedStepSnapshot {
+    RunAbortedStepSnapshot {
+        step_name: entry.step_name.clone(),
+        completed_at: entry.completed_at,
+        result: entry.result.clone(),
+        session_id: entry.session_id.clone(),
+        token_usage: entry.token_usage.clone(),
+        structured_output: entry.structured_output.clone(),
+        run_index: entry.run_index,
+        child_outputs: entry.child_outputs.as_ref().map(|children| {
+            children
+                .iter()
+                .map(run_aborted_child_snapshot_from_child_output)
+                .collect()
+        }),
+    }
+}
+
+fn run_aborted_child_snapshot_from_child_output(
+    child: &ChildOutputSnapshot,
+) -> RunAbortedChildOutputSnapshot {
+    RunAbortedChildOutputSnapshot {
+        step_name: child.step_name.clone(),
+        session_id: child.session_id.clone(),
+        result: child.result.clone(),
+        run_index: child.run_index,
+        completed_at: child.completed_at,
+        structured_output: child.structured_output.clone(),
+        output_contract: child.output_contract.clone(),
+        outcome: run_aborted_child_outcome_from_state(&child.state),
+    }
+}
+
+fn run_aborted_child_outcome_from_state(state: &str) -> RunAbortedChildOutcome {
+    if state == STEP_STATE_COMPLETED {
+        RunAbortedChildOutcome::Completed
+    } else {
+        RunAbortedChildOutcome::Aborted
+    }
 }
 
 pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
@@ -527,7 +581,7 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::Workflow;
     use crate::adaptor::gateway::workflow::state::{
-        default_step_entry_state, StepHistoryEntry, TokenUsage,
+        default_step_entry_state, ChildOutputSnapshot, StepHistoryEntry, TokenUsage,
     };
     use crate::{
         adaptor::gateway::workflow::event::CliMutationRejectionReason,
@@ -608,6 +662,48 @@ mod tests {
                 && workflow_name == "wf"
                 && (*timestamp - 42.0).abs() < f64::EPSILON
         ));
+    }
+
+    #[test]
+    fn run_aborted_snapshot_maps_child_display_state_to_typed_outcome() {
+        let entry = StepHistoryEntry {
+            step_name: "parallel-review".to_string(),
+            completed_at: 42.0,
+            result: None,
+            session_id: None,
+            token_usage: None,
+            structured_output: None,
+            run_index: 1,
+            child_outputs: Some(vec![
+                ChildOutputSnapshot {
+                    step_name: "child-a".to_string(),
+                    session_id: Some("session-a".to_string()),
+                    result: Some("ok".to_string()),
+                    run_index: 1,
+                    completed_at: 40.0,
+                    structured_output: None,
+                    output_contract: None,
+                    state: STEP_STATE_COMPLETED.to_string(),
+                },
+                ChildOutputSnapshot {
+                    step_name: "child-b".to_string(),
+                    session_id: Some("session-b".to_string()),
+                    result: None,
+                    run_index: 1,
+                    completed_at: 42.0,
+                    structured_output: None,
+                    output_contract: None,
+                    state: STEP_STATE_ABORTED.to_string(),
+                },
+            ]),
+            state: STEP_STATE_ABORTED.to_string(),
+        };
+
+        let snapshot = run_aborted_step_snapshot_from_history_entry(&entry);
+        let children = snapshot.child_outputs.expect("child outputs are preserved");
+
+        assert_eq!(children[0].outcome, RunAbortedChildOutcome::Completed);
+        assert_eq!(children[1].outcome, RunAbortedChildOutcome::Aborted);
     }
 
     #[test]

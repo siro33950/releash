@@ -456,6 +456,7 @@ mod tests {
     };
     use super::*;
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
+    use crate::adaptor::gateway::workflow::event_projection::reconstruct_state_from_events;
     use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
     use crate::adaptor::gateway::workflow::resolver::{
         ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
@@ -463,7 +464,7 @@ mod tests {
     };
     use crate::adaptor::gateway::workflow::run::{RunStatus, TriggerSource};
     use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType};
-    use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
+    use crate::adaptor::gateway::workflow::state::{WorkflowExecutionState, WorkflowState};
     use crate::domain::workflow::ApprovalDecision;
     use std::collections::HashSet;
     use std::path::Path;
@@ -611,14 +612,19 @@ mod tests {
         engine: &Arc<TestRuntimeKernel>,
     ) -> std::path::PathBuf {
         let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        engine
-            .set_run_store_data_dir(data_dir.join("workflow_runs"))
-            .await;
+        engine.set_run_store_data_dir(data_dir.clone()).await;
         data_dir
     }
 
     fn read_adapter_events(data_dir: &Path, run_id: &str) -> Vec<WorkflowEvent> {
         WorkflowEventLog::new(data_dir).read_log(run_id).unwrap()
+    }
+
+    fn project_adapter_state(data_dir: &Path, run_id: &str) -> WorkflowState {
+        let events = read_adapter_events(data_dir, run_id);
+        reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .expect("adapter events must project state")
     }
 
     async fn start_adapter_run(
@@ -770,14 +776,8 @@ mod tests {
         )
         .await;
 
-        let adapter_state = adapter_engine
-            .get_state_by_run_id(&adapter_run_id)
-            .await
-            .expect("adapter start must create state");
-        let direct_state = direct_engine
-            .get_state_by_run_id(&direct_run_id)
-            .await
-            .expect("direct start must create state");
+        let adapter_state = project_adapter_state(&adapter_data_dir, &adapter_run_id);
+        let direct_state = project_adapter_state(&direct_data_dir, &direct_run_id);
         assert_eq!(adapter_state.state, direct_state.state);
         assert_eq!(
             adapter_state.current_step_name,
@@ -845,19 +845,11 @@ mod tests {
             .expect("direct abort primitive must succeed");
 
         assert_eq!(
-            adapter_engine
-                .get_state_by_run_id(&adapter_run_id)
-                .await
-                .unwrap()
-                .state,
+            project_adapter_state(&adapter_data_dir, &adapter_run_id).state,
             WorkflowExecutionState::Aborted
         );
         assert_eq!(
-            direct_engine
-                .get_state_by_run_id(&direct_run_id)
-                .await
-                .unwrap()
-                .state,
+            project_adapter_state(&direct_data_dir, &direct_run_id).state,
             WorkflowExecutionState::Aborted
         );
         assert_eq!(
@@ -934,14 +926,8 @@ mod tests {
             .await
             .expect("direct approval primitive must succeed");
 
-        let adapter_state = adapter_engine
-            .get_state_by_run_id(&adapter_run_id)
-            .await
-            .unwrap();
-        let direct_state = direct_engine
-            .get_state_by_run_id(&direct_run_id)
-            .await
-            .unwrap();
+        let adapter_state = project_adapter_state(&adapter_data_dir, &adapter_run_id);
+        let direct_state = project_adapter_state(&direct_data_dir, &direct_run_id);
         assert_eq!(adapter_state.state, WorkflowExecutionState::Completed);
         assert_eq!(direct_state.state, WorkflowExecutionState::Completed);
         assert_eq!(
@@ -1020,14 +1006,8 @@ mod tests {
             .await
             .expect("direct reject primitive must succeed");
 
-        let adapter_state = adapter_engine
-            .get_state_by_run_id(&adapter_run_id)
-            .await
-            .unwrap();
-        let direct_state = direct_engine
-            .get_state_by_run_id(&direct_run_id)
-            .await
-            .unwrap();
+        let adapter_state = project_adapter_state(&adapter_data_dir, &adapter_run_id);
+        let direct_state = project_adapter_state(&direct_data_dir, &direct_run_id);
         assert_eq!(adapter_state.state, direct_state.state);
         assert_eq!(
             adapter_run_status(&adapter_engine, &adapter_run_id).await,
@@ -1096,16 +1076,8 @@ mod tests {
             .expect("direct approval abort primitive must succeed");
 
         assert_eq!(
-            adapter_engine
-                .get_state_by_run_id(&adapter_run_id)
-                .await
-                .unwrap()
-                .state,
-            direct_engine
-                .get_state_by_run_id(&direct_run_id)
-                .await
-                .unwrap()
-                .state
+            project_adapter_state(&adapter_data_dir, &adapter_run_id).state,
+            project_adapter_state(&direct_data_dir, &direct_run_id).state
         );
         assert_eq!(
             adapter_engine.list_completed_runs().await[0].status,
@@ -1197,8 +1169,8 @@ mod tests {
             crate::adaptor::gateway::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
         );
 
-        let ui_state = ui_engine.get_state_by_run_id(&ui_run_id).await.unwrap();
-        let cli_state = cli_engine.get_state_by_run_id(&cli_run_id).await.unwrap();
+        let ui_state = project_adapter_state(&ui_data_dir, &ui_run_id);
+        let cli_state = project_adapter_state(&cli_data_dir, &cli_run_id);
         assert_eq!(ui_state.state, cli_state.state);
         assert_eq!(
             adapter_run_status(&ui_engine, &ui_run_id).await,
@@ -1277,8 +1249,8 @@ mod tests {
             crate::adaptor::gateway::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
         );
 
-        let ui_state = ui_engine.get_state_by_run_id(&ui_run_id).await.unwrap();
-        let cli_state = cli_engine.get_state_by_run_id(&cli_run_id).await.unwrap();
+        let ui_state = project_adapter_state(&ui_data_dir, &ui_run_id);
+        let cli_state = project_adapter_state(&cli_data_dir, &cli_run_id);
         assert_eq!(ui_state.state, cli_state.state);
         assert_eq!(
             adapter_run_status(&ui_engine, &ui_run_id).await,
@@ -1350,8 +1322,8 @@ mod tests {
             crate::adaptor::gateway::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
         );
 
-        let ui_state = ui_engine.get_state_by_run_id(&ui_run_id).await.unwrap();
-        let cli_state = cli_engine.get_state_by_run_id(&cli_run_id).await.unwrap();
+        let ui_state = project_adapter_state(&ui_data_dir, &ui_run_id);
+        let cli_state = project_adapter_state(&cli_data_dir, &cli_run_id);
         assert_eq!(ui_state.state, WorkflowExecutionState::Aborted);
         assert_eq!(cli_state.state, WorkflowExecutionState::Aborted);
         assert_eq!(

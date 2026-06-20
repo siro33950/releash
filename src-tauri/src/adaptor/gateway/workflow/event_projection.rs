@@ -13,11 +13,14 @@ use crate::adaptor::gateway::workflow::event::{
     ApprovalDecisionRecord, CliMutationRejectionReason, CliMutationRequestRecord,
     CollectedOutputEntry,
 };
-use crate::adaptor::gateway::workflow::event::{TokenUsage as EventTokenUsage, WorkflowEvent};
+use crate::adaptor::gateway::workflow::event::{
+    RunAbortedChildOutcome, RunAbortedChildOutputSnapshot, RunAbortedStepSnapshot,
+    TokenUsage as EventTokenUsage, WorkflowEvent,
+};
 use crate::adaptor::gateway::workflow::schema::{NodeType, Workflow};
 use crate::adaptor::gateway::workflow::state::{
-    ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState,
-    WorkflowState,
+    ChildOutputSnapshot, ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage,
+    WorkflowExecutionState, WorkflowState,
 };
 use crate::domain::workflow::services::{
     contract as workflow_contract, parallel as workflow_parallel,
@@ -34,6 +37,46 @@ const SECONDS_TO_MS: f64 = 1000.0;
 #[inline]
 fn seconds_to_ms(value: f64) -> f64 {
     value * SECONDS_TO_MS
+}
+
+fn step_history_entry_from_run_aborted_snapshot(
+    snapshot: &RunAbortedStepSnapshot,
+) -> StepHistoryEntry {
+    StepHistoryEntry {
+        step_name: snapshot.step_name.clone(),
+        completed_at: snapshot.completed_at,
+        result: snapshot.result.clone(),
+        session_id: snapshot.session_id.clone(),
+        token_usage: snapshot.token_usage.clone(),
+        structured_output: snapshot.structured_output.clone(),
+        run_index: snapshot.run_index,
+        child_outputs: snapshot.child_outputs.as_ref().map(|children| {
+            children
+                .iter()
+                .map(child_output_from_run_aborted_snapshot)
+                .collect()
+        }),
+        state: STEP_STATE_ABORTED.to_string(),
+    }
+}
+
+fn child_output_from_run_aborted_snapshot(
+    snapshot: &RunAbortedChildOutputSnapshot,
+) -> ChildOutputSnapshot {
+    ChildOutputSnapshot {
+        step_name: snapshot.step_name.clone(),
+        session_id: snapshot.session_id.clone(),
+        result: snapshot.result.clone(),
+        run_index: snapshot.run_index,
+        completed_at: snapshot.completed_at,
+        structured_output: snapshot.structured_output.clone(),
+        output_contract: snapshot.output_contract.clone(),
+        state: match snapshot.outcome {
+            RunAbortedChildOutcome::Completed => STEP_STATE_COMPLETED,
+            RunAbortedChildOutcome::Aborted => STEP_STATE_ABORTED,
+        }
+        .to_string(),
+    }
 }
 
 /// spec issues-1023: event 列から (step_name, run_index) ごとの started/completed/duration を
@@ -450,6 +493,7 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 run_id,
                 workflow_name,
                 timestamp,
+                ..
             } => WorkflowEventView::RunAborted {
                 run_id,
                 workflow_name,
@@ -1075,81 +1119,99 @@ pub(crate) fn reconstruct_state_from_events(
                 active_parallel_steps.clear();
                 updated_at = *timestamp;
             }
-            WorkflowEvent::RunAborted { timestamp, .. } => {
+            WorkflowEvent::RunAborted {
+                aborted_step,
+                timestamp,
+                ..
+            } => {
                 exec_state = WorkflowExecutionState::Aborted;
 
-                // spec issues-1023: 中断時に走っていた current step / parallel
-                // children を `step_history` に "aborted" 状態として記録する。
-                // session log への到達経路（child の session_id）を残すために
-                // active_parallel_steps の snapshot を child_outputs に転写する。
-                // 通常 step 経路では projection 上 `current_session_id` は
-                // 追えないため、entry の session_id は None になる（ライブ
-                // engine 経路では engine 側で session_id を入れる）。
-                // spec issues-1023: 同名 step の retry を中断したケース（例:
-                // `plan#1` 完了 → `plan#2` 開始 → RunAborted）でも aborted entry を
-                // 残せるよう、step_name に加えて run_index も比較する。step_name のみ
-                // 比較すると `plan#1` の完了 entry に当たって `plan#2` の aborted
-                // entry の追加がスキップされ、session log への到達経路が失われる。
-                let current_run_index = step_execution_counts.get(&current_step_name).copied();
-                let already_in_history = step_history.last().is_some_and(|e| {
-                    e.step_name == current_step_name && Some(e.run_index) == current_run_index
-                });
-                let current_started = current_run_index.is_some();
+                if let Some(aborted_step) = aborted_step {
+                    let aborted_step = step_history_entry_from_run_aborted_snapshot(aborted_step);
+                    let already_in_history = step_history.last().is_some_and(|entry| {
+                        entry.step_name == aborted_step.step_name
+                            && entry.run_index == aborted_step.run_index
+                            && entry.state == aborted_step.state
+                    });
+                    if !already_in_history {
+                        step_history.push(aborted_step);
+                    }
+                } else {
+                    // spec issues-1023: 中断時に走っていた current step / parallel
+                    // children を `step_history` に "aborted" 状態として記録する。
+                    // session log への到達経路（child の session_id）を残すために
+                    // active_parallel_steps の snapshot を child_outputs に転写する。
+                    // 旧 RunAborted event は通常 step の current_session_id を持たないため、
+                    // 通常 step entry の session_id は None になる。
+                    // spec issues-1023: 同名 step の retry を中断したケース（例:
+                    // `plan#1` 完了 → `plan#2` 開始 → RunAborted）でも aborted entry を
+                    // 残せるよう、step_name に加えて run_index も比較する。step_name のみ
+                    // 比較すると `plan#1` の完了 entry に当たって `plan#2` の aborted
+                    // entry の追加がスキップされ、session log への到達経路が失われる。
+                    let current_run_index = step_execution_counts.get(&current_step_name).copied();
+                    let already_in_history = step_history.last().is_some_and(|e| {
+                        e.step_name == current_step_name && Some(e.run_index) == current_run_index
+                    });
+                    let current_started = current_run_index.is_some();
 
-                if !active_parallel_steps.is_empty() {
-                    let parent_run_index = step_execution_counts
-                        .get(&current_step_name)
-                        .copied()
-                        .unwrap_or(0);
-                    let child_snapshots: Vec<
-                        crate::adaptor::gateway::workflow::state::ChildOutputSnapshot,
-                    > = active_parallel_steps
-                        .iter()
-                        .map(|child| {
-                            let snapshot_state = if child.state == STEP_STATE_COMPLETED {
-                                STEP_STATE_COMPLETED
-                            } else {
-                                STEP_STATE_ABORTED
-                            };
-                            crate::adaptor::gateway::workflow::state::ChildOutputSnapshot {
-                                step_name: child.step_name.clone(),
-                                session_id: child.session_id.clone(),
-                                result: child.result.clone(),
-                                run_index: child.run_index,
-                                completed_at: child.completed_at.unwrap_or(*timestamp),
-                                structured_output: child.structured_output.clone(),
-                                output_contract: child.output_contract.clone(),
-                                state: snapshot_state.to_string(),
-                            }
-                        })
-                        .collect();
-                    step_history.push(StepHistoryEntry {
-                        step_name: current_step_name.clone(),
-                        completed_at: *timestamp,
-                        result: None,
-                        session_id: None,
-                        token_usage: None,
-                        structured_output: None,
-                        run_index: parent_run_index,
-                        child_outputs: Some(child_snapshots),
-                        state: STEP_STATE_ABORTED.to_string(),
-                    });
-                } else if current_started && !already_in_history && !current_step_name.is_empty() {
-                    let run_index = step_execution_counts
-                        .get(&current_step_name)
-                        .copied()
-                        .unwrap_or(0);
-                    step_history.push(StepHistoryEntry {
-                        step_name: current_step_name.clone(),
-                        completed_at: *timestamp,
-                        result: None,
-                        session_id: None,
-                        token_usage: None,
-                        structured_output: None,
-                        run_index,
-                        child_outputs: None,
-                        state: STEP_STATE_ABORTED.to_string(),
-                    });
+                    if !active_parallel_steps.is_empty() {
+                        let parent_run_index = step_execution_counts
+                            .get(&current_step_name)
+                            .copied()
+                            .unwrap_or(0);
+                        let child_snapshots: Vec<
+                            crate::adaptor::gateway::workflow::state::ChildOutputSnapshot,
+                        > = active_parallel_steps
+                            .iter()
+                            .map(|child| {
+                                let snapshot_state = if child.state == STEP_STATE_COMPLETED {
+                                    STEP_STATE_COMPLETED
+                                } else {
+                                    STEP_STATE_ABORTED
+                                };
+                                crate::adaptor::gateway::workflow::state::ChildOutputSnapshot {
+                                    step_name: child.step_name.clone(),
+                                    session_id: child.session_id.clone(),
+                                    result: child.result.clone(),
+                                    run_index: child.run_index,
+                                    completed_at: child.completed_at.unwrap_or(*timestamp),
+                                    structured_output: child.structured_output.clone(),
+                                    output_contract: child.output_contract.clone(),
+                                    state: snapshot_state.to_string(),
+                                }
+                            })
+                            .collect();
+                        step_history.push(StepHistoryEntry {
+                            step_name: current_step_name.clone(),
+                            completed_at: *timestamp,
+                            result: None,
+                            session_id: None,
+                            token_usage: None,
+                            structured_output: None,
+                            run_index: parent_run_index,
+                            child_outputs: Some(child_snapshots),
+                            state: STEP_STATE_ABORTED.to_string(),
+                        });
+                    } else if current_started
+                        && !already_in_history
+                        && !current_step_name.is_empty()
+                    {
+                        let run_index = step_execution_counts
+                            .get(&current_step_name)
+                            .copied()
+                            .unwrap_or(0);
+                        step_history.push(StepHistoryEntry {
+                            step_name: current_step_name.clone(),
+                            completed_at: *timestamp,
+                            result: None,
+                            session_id: None,
+                            token_usage: None,
+                            structured_output: None,
+                            run_index,
+                            child_outputs: None,
+                            state: STEP_STATE_ABORTED.to_string(),
+                        });
+                    }
                 }
 
                 active_parallel_steps.clear();
@@ -1566,6 +1628,7 @@ mod tests {
             WorkflowEvent::RunAborted {
                 run_id: "exec-pa".to_string(),
                 workflow_name: "wf".to_string(),
+                aborted_step: None,
                 timestamp: 2.0,
             },
         ];
@@ -1616,6 +1679,7 @@ mod tests {
             WorkflowEvent::RunAborted {
                 run_id: "exec-abort-current".to_string(),
                 workflow_name: "wf".to_string(),
+                aborted_step: None,
                 timestamp: 2.0,
             },
         ];
@@ -1630,6 +1694,81 @@ mod tests {
         assert_eq!(entry.session_id, None);
         assert_eq!(entry.run_index, 1);
         assert!(entry.child_outputs.is_none());
+    }
+
+    /// issues-1196: `RunAborted.aborted_step` は event 専用 snapshot として永続化し、
+    /// projection 境界で `StepHistoryEntry` に変換する。
+    #[test]
+    fn projection_uses_run_aborted_step_snapshot_when_present() {
+        let snapshot = workflow_with_nodes("wf", vec!["plan"]);
+        let events = vec![
+            run_started("exec-abort-snapshot", snapshot),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-abort-snapshot".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                execution_count: 1,
+                timestamp: 1.0,
+            },
+            WorkflowEvent::RunAborted {
+                run_id: "exec-abort-snapshot".to_string(),
+                workflow_name: "wf".to_string(),
+                aborted_step: Some(RunAbortedStepSnapshot {
+                    step_name: "plan".to_string(),
+                    completed_at: 2.0,
+                    result: None,
+                    session_id: Some("session-plan".to_string()),
+                    token_usage: None,
+                    structured_output: None,
+                    run_index: 1,
+                    child_outputs: Some(vec![
+                        RunAbortedChildOutputSnapshot {
+                            step_name: "child-completed".to_string(),
+                            session_id: Some("session-child-completed".to_string()),
+                            result: Some("ok".to_string()),
+                            run_index: 1,
+                            completed_at: 1.5,
+                            structured_output: None,
+                            output_contract: None,
+                            outcome: RunAbortedChildOutcome::Completed,
+                        },
+                        RunAbortedChildOutputSnapshot {
+                            step_name: "child-aborted".to_string(),
+                            session_id: Some("session-child-aborted".to_string()),
+                            result: None,
+                            run_index: 1,
+                            completed_at: 2.0,
+                            structured_output: None,
+                            output_contract: None,
+                            outcome: RunAbortedChildOutcome::Aborted,
+                        },
+                    ]),
+                }),
+                timestamp: 2.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events("exec-abort-snapshot", &events)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(state.state, WorkflowExecutionState::Aborted);
+        assert_eq!(state.step_history.len(), 1);
+        let entry = &state.step_history[0];
+        assert_eq!(entry.step_name, "plan");
+        assert_eq!(entry.session_id.as_deref(), Some("session-plan"));
+        assert_eq!(entry.state.as_str(), STEP_STATE_ABORTED);
+        let children = entry.child_outputs.as_ref().expect("children restored");
+        let completed_child = children
+            .iter()
+            .find(|child| child.step_name == "child-completed")
+            .expect("completed child restored");
+        assert_eq!(completed_child.state.as_str(), STEP_STATE_COMPLETED);
+        let aborted_child = children
+            .iter()
+            .find(|child| child.step_name == "child-aborted")
+            .expect("aborted child restored");
+        assert_eq!(aborted_child.state.as_str(), STEP_STATE_ABORTED);
     }
 
     /// spec issues-1023: parallel ブロック実行中に一部 child が完了し、残りが
@@ -1687,6 +1826,7 @@ mod tests {
             WorkflowEvent::RunAborted {
                 run_id: "exec-mixed".to_string(),
                 workflow_name: "wf".to_string(),
+                aborted_step: None,
                 timestamp: 2.0,
             },
         ];

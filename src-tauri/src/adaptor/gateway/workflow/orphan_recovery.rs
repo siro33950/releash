@@ -20,6 +20,7 @@ pub(crate) fn orphan_run_recovery_items(
             let event = WorkflowEvent::RunAborted {
                 run_id: run_id.clone(),
                 workflow_name: run.workflow_name.clone(),
+                aborted_step: None,
                 timestamp,
             };
             OrphanRunRecoveryItem {
@@ -68,6 +69,7 @@ mod tests {
                 run_id,
                 workflow_name,
                 timestamp,
+                ..
             } if run_id == "run-1"
                 && workflow_name == "wf-1"
                 && (*timestamp - 42.0).abs() < f64::EPSILON
@@ -78,6 +80,7 @@ mod tests {
                 run_id,
                 workflow_name,
                 timestamp,
+                ..
             } if run_id == "run-2"
                 && workflow_name == "wf-2"
                 && (*timestamp - 42.0).abs() < f64::EPSILON

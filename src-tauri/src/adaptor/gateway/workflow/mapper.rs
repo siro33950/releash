@@ -341,6 +341,7 @@ pub(crate) fn domain_event_draft_to_legacy(
             Ok(legacy_event::WorkflowEvent::RunAborted {
                 run_id: event.run_id.clone(),
                 workflow_name: payload.workflow_name,
+                aborted_step: None,
                 timestamp: event.timestamp,
             })
         }
