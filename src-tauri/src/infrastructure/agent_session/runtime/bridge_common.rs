@@ -7090,7 +7090,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             if effect.was_streaming {
                 if let Some(ref mid) = effect.final_msg_id {
                     if !effect.final_parts.is_empty() {
-                        persist_streaming_parts(
+                        let persisted = persist_streaming_parts(
                             session_store,
                             app,
                             chat_session_id,
@@ -7098,6 +7098,14 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                             &effect.final_parts,
                             Some(now_timestamp()),
                         );
+                        if persisted {
+                            clear_post_turn_store_base_untrusted_for_message(
+                                handles,
+                                chat_session_id,
+                                mid,
+                            )
+                            .await;
+                        }
                     }
                 }
                 emit_session_state_changed(app, chat_session_id, TurnPhase::Idle, Some(1));
@@ -11680,6 +11688,167 @@ mod tests {
                 phase: TurnPhase::Idle,
                 exit_code: Some(-1),
             });
+        }
+    }
+
+    #[tokio::test]
+    async fn bridge_error_persist_success_clears_untrusted_and_allows_post_turn_update() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(SessionStore::default());
+        let mut session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CODEX_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let message_id = "m1";
+        let empty_parts: Vec<MessagePart> = Vec::new();
+        let (content, thinking, activities) = parts_to_legacy(&empty_parts);
+        session.messages.push(ChatMessage {
+            id: message_id.to_string(),
+            role: MessageRole::Agent,
+            content,
+            thinking,
+            activities,
+            parts: Some(empty_parts),
+            timestamp: 10.0,
+            mentions: None,
+        });
+        store.save_session(temp.path(), &session).unwrap();
+
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_streaming_test_process();
+        proc.backend_id = CODEX_BACKEND_ID.to_string();
+        let streaming_parts = vec![
+            MessagePart::Text {
+                content: "before error".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolUse {
+                tool: "Bash".to_string(),
+                input: serde_json::json!({ "cmd": "date" }),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        proc.streaming_parts.extend(streaming_parts.clone());
+        enqueue_pending_delta(&mut proc, &streaming_parts);
+        handles.lock().await.insert(session.id.clone(), proc);
+        let mut state = ExternalBridgeMessageState::default();
+
+        handle_external_bridge_message(
+            &app.handle(),
+            &store,
+            &handles,
+            &session.id,
+            serde_json::json!({
+                "type": "error",
+                "message": "bridge reported failure",
+            }),
+            &mut state,
+        )
+        .await;
+
+        {
+            let map = handles.lock().await;
+            let proc = map.get(&session.id).unwrap();
+            assert!(proc.post_turn_base_untrusted_message_id.is_none());
+            assert_eq!(proc.last_message_id.as_deref(), Some(message_id));
+        }
+
+        handle_external_bridge_message(
+            &app.handle(),
+            &store,
+            &handles,
+            &session.id,
+            post_turn_tool_result_message("tool-1", "post-turn result"),
+            &mut state,
+        )
+        .await;
+
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        let loaded_message = loaded
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .unwrap();
+        assert!(loaded_message
+            .parts
+            .as_deref()
+            .unwrap()
+            .iter()
+            .any(|part| matches!(
+                part,
+                MessagePart::ToolResult { content, .. } if content == "post-turn result"
+            )));
+
+        let removed_proc = handles.lock().await.remove(&session.id);
+        if let Some(mut proc) = removed_proc {
+            let _ = proc.child.kill().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn bridge_error_persist_failure_keeps_untrusted() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CODEX_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_streaming_test_process();
+        proc.backend_id = CODEX_BACKEND_ID.to_string();
+        let streaming_parts = vec![MessagePart::Text {
+            content: "before error".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(streaming_parts.clone());
+        enqueue_pending_delta(&mut proc, &streaming_parts);
+        handles.lock().await.insert(session.id.clone(), proc);
+        let mut state = ExternalBridgeMessageState::default();
+
+        handle_external_bridge_message(
+            &app.handle(),
+            &store,
+            &handles,
+            &session.id,
+            serde_json::json!({
+                "type": "error",
+                "message": "bridge reported failure",
+            }),
+            &mut state,
+        )
+        .await;
+
+        {
+            let map = handles.lock().await;
+            let proc = map.get(&session.id).unwrap();
+            assert_eq!(
+                proc.post_turn_base_untrusted_message_id.as_deref(),
+                Some("m1")
+            );
+        }
+
+        let removed_proc = handles.lock().await.remove(&session.id);
+        if let Some(mut proc) = removed_proc {
+            let _ = proc.child.kill().await;
         }
     }
 
