@@ -1,6 +1,10 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import crypto from "node:crypto";
-import { buildSystemPromptOption } from "./bridge-utils.mjs";
+import {
+	buildSystemPromptOption,
+	shouldContinueBridgeLoopAfterQueryEnd,
+	shouldResolvePromptForCurrentQuery,
+} from "./bridge-utils.mjs";
 
 const pendingPermissions = new Map();
 const messageQueue = [];
@@ -12,6 +16,7 @@ let closed = false;
 let sessionReady = false;
 let currentModelId = null;
 let pendingRestoreContext = null;
+let currentQueryPromptState = null;
 
 /**
  * AsyncGenerator that yields prompts to the SDK.
@@ -20,10 +25,12 @@ let pendingRestoreContext = null;
  * for the next yield.
  *
  * IMPORTANT: Do NOT close this generator while the SDK is processing (#9705).
- * Only return (close) on explicit "close" command after the turn has completed.
+ * It can return only after the turn has completed or an explicit close command
+ * has arrived, so follow-up prompts are handled by the next query.
  */
-async function* promptGenerator() {
+async function* promptGenerator(promptState) {
 	while (!closed) {
+		if (promptState.completedResult) return;
 		if (messageQueue.length > 0) {
 			yield messageQueue.shift();
 			continue;
@@ -33,12 +40,23 @@ async function* promptGenerator() {
 		});
 		messageResolve = null;
 		if (prompt === null) return;
+		if (promptState.completedResult) {
+			messageQueue.unshift(prompt);
+			return;
+		}
 		yield prompt;
 	}
 }
 
 function emit(obj) {
 	process.stdout.write(JSON.stringify(obj) + "\n");
+}
+
+function closePendingPromptForCurrentQuery() {
+	if (messageResolve) {
+		messageResolve(null);
+		messageResolve = null;
+	}
 }
 
 let stdinBuffer = "";
@@ -125,7 +143,14 @@ function handleCommand(cmd) {
 			break;
 		case "message": {
 			const msg = toUserMessage(applyRestoreContext(cmd.prompt), cmd.images);
-			if (messageResolve) {
+			if (
+				shouldResolvePromptForCurrentQuery({
+					hasPendingPromptResolver: Boolean(messageResolve),
+					completedResultForCurrentQuery: Boolean(
+						currentQueryPromptState?.completedResult,
+					),
+				})
+			) {
 				messageResolve(msg);
 			} else {
 				messageQueue.push(msg);
@@ -241,7 +266,9 @@ async function handleInit(cmd) {
 		}
 
 		messageResolve = null;
-		const generator = promptGenerator();
+		const promptState = { completedResult: false };
+		currentQueryPromptState = promptState;
+		const generator = promptGenerator(promptState);
 		currentQuery = query({ prompt: generator, options });
 
 		if (!sessionReady) {
@@ -262,13 +289,9 @@ async function handleInit(cmd) {
 		}
 
 		let gotResult = false;
+		let turnExitCode = null;
 		try {
 			for await (const message of currentQuery) {
-				// New turn started after a previous result — reset per-turn flag
-				if (gotResult && message.type !== "result") {
-					gotResult = false;
-				}
-
 				if (message.session_id && message.session_id !== currentSessionId) {
 					currentSessionId = message.session_id;
 					emit({ type: "session_ready", session_id: message.session_id });
@@ -278,25 +301,37 @@ async function handleInit(cmd) {
 
 				if (message.type === "result") {
 					gotResult = true;
+					promptState.completedResult = true;
 					const hasErrors =
 						message.errors && Array.isArray(message.errors) && message.errors.length > 0;
+					turnExitCode = hasErrors ? 1 : 0;
 					emit({
 						type: "turn_complete",
 						session_id: message.session_id || null,
-						exit_code: hasErrors ? 1 : 0,
+						exit_code: turnExitCode,
 					});
+					closePendingPromptForCurrentQuery();
 				}
 			}
 			// abort が throw せず正常完了した場合もループを継続
 			if (currentAbortController.signal.aborted) {
 				pendingPermissions.clear();
+				closePendingPromptForCurrentQuery();
 				if (!gotResult) {
+					turnExitCode = 0;
 					emit({
 						type: "turn_complete",
 						session_id: currentSessionId || null,
 						exit_code: 0,
 					});
 				}
+				if (shouldContinueBridgeLoopAfterQueryEnd({ closed, turnExitCode })) {
+					continue;
+				}
+				break;
+			}
+			closePendingPromptForCurrentQuery();
+			if (shouldContinueBridgeLoopAfterQueryEnd({ closed, turnExitCode })) {
 				continue;
 			}
 			if (!closed && !gotResult) {
@@ -310,14 +345,19 @@ async function handleInit(cmd) {
 		} catch (e) {
 			if (currentAbortController?.signal?.aborted) {
 				pendingPermissions.clear();
+				closePendingPromptForCurrentQuery();
 				if (!gotResult) {
+					turnExitCode = 0;
 					emit({
 						type: "turn_complete",
 						session_id: currentSessionId || null,
 						exit_code: 0,
 					});
 				}
-				continue;
+				if (shouldContinueBridgeLoopAfterQueryEnd({ closed, turnExitCode })) {
+					continue;
+				}
+				break;
 			}
 			const stderrText = stderrChunks.join("").trim();
 			emit({

@@ -1563,6 +1563,9 @@ struct BridgeEofCrashTransition {
     was_initializing: bool,
     sdk_error_message: Option<String>,
     context_restore_failed_on_init: bool,
+    /// Ready/Idle EOF means the process is not reusable. Callers can remove it
+    /// immediately only when no pending queue needs to survive until respawn.
+    should_evict: bool,
 }
 
 fn run_bridge_eof_crash_transition_locked<F>(
@@ -1580,6 +1583,9 @@ where
 
     let was_streaming = proc.state == BridgeState::Streaming;
     let was_initializing = proc.state == BridgeState::Initializing;
+    // Ready/Idle EOF: the turn already completed but the child exited, so the
+    // process is no longer reusable and must be evicted before the next send.
+    let should_evict = proc.state == BridgeState::Ready && proc.turn_phase == TurnPhase::Idle;
     let sdk_error_message = if was_streaming || was_initializing {
         Some(format!("{}: {BRIDGE_EOF_ERROR_MESSAGE}", proc.backend_id))
     } else {
@@ -1609,6 +1615,75 @@ where
         was_initializing,
         sdk_error_message,
         context_restore_failed_on_init,
+        should_evict,
+    }
+}
+
+fn retire_ready_eof_runtime_locked(map: &mut AgentProcessMap, chat_session_id: &str) -> bool {
+    let has_pending_messages = map
+        .get(chat_session_id)
+        .is_some_and(|proc| !proc.pending_messages.is_empty());
+
+    if has_pending_messages {
+        if let Some(proc) = map.get_mut(chat_session_id) {
+            // Keep the dead process as a non-user-visible respawn marker so
+            // ensure_runtime_for_turn can carry pending_messages into the next
+            // runtime through the same path as other crashed replacements.
+            proc.state = BridgeState::Crashed;
+            proc.turn_phase = TurnPhase::Idle;
+        }
+        false
+    } else {
+        map.remove(chat_session_id).is_some()
+    }
+}
+
+fn ready_idle_child_exited(proc: &mut AgentProcess, chat_session_id: &str) -> bool {
+    if proc.state != BridgeState::Ready || proc.turn_phase != TurnPhase::Idle {
+        return false;
+    }
+
+    match proc.child.try_wait() {
+        Ok(Some(_status)) => true,
+        Ok(None) => false,
+        Err(e) => {
+            log::warn!("Failed to inspect ready agent process {chat_session_id}: {e}");
+            false
+        }
+    }
+}
+
+enum RuntimeSpawnDecision {
+    Missing,
+    Replace(Box<AgentProcess>),
+    Reuse,
+}
+
+fn take_runtime_requiring_spawn_locked(
+    map: &mut AgentProcessMap,
+    chat_session_id: &str,
+) -> RuntimeSpawnDecision {
+    let Some(proc) = map.get_mut(chat_session_id) else {
+        return RuntimeSpawnDecision::Missing;
+    };
+
+    let should_replace = if proc.state == BridgeState::Crashed {
+        true
+    } else if ready_idle_child_exited(proc, chat_session_id) {
+        proc.state = BridgeState::Crashed;
+        proc.turn_phase = TurnPhase::Idle;
+        true
+    } else {
+        false
+    };
+
+    if should_replace {
+        RuntimeSpawnDecision::Replace(Box::new(
+            map.remove(chat_session_id)
+                .expect("runtime existed when replacement was requested"),
+        ))
+    } else {
+        RuntimeSpawnDecision::Reuse
     }
 }
 
@@ -3387,23 +3462,34 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
         // Streaming 中の終了だけでなく、Initializing (session_ready 前) の終了も
         // AgentStatusCenter に Error として伝搬させる。Initializing の場合は
         // turn_id=-1 を伴う Idle emit は行わない（streaming が無かったため）。
-        let transition = {
+        let (transition, should_remove_pid_file) = {
             let _runtime_guard = acquire_session_runtime_lock(&csid_stdout).await;
             let mut map = handles_stdout.lock().await;
             if let Some(proc) = map.get_mut(&csid_stdout) {
                 let generation_matches = proc.generation_id == captured_gen_id;
-                run_bridge_eof_crash_transition_locked(
+                let transition = run_bridge_eof_crash_transition_locked(
                     generation_matches,
                     proc,
                     &csid_stdout,
                     |mid, parts| {
                         emit_streaming_parts(&app_stdout, &csid_stdout, mid, parts.to_vec())
                     },
-                )
+                );
+                // Ready/Idle EOF: the completed-but-dead process must be retired so
+                // the next send re-spawns instead of writing into a dead runtime.
+                let should_remove_pid_file = transition.should_evict
+                    && retire_ready_eof_runtime_locked(&mut map, &csid_stdout);
+                (transition, should_remove_pid_file)
             } else {
-                BridgeEofCrashTransition::default()
+                (BridgeEofCrashTransition::default(), false)
             }
         };
+        if should_remove_pid_file {
+            #[cfg(unix)]
+            if let Ok(data_dir) = resolve_data_dir(&app_stdout) {
+                remove_pgid(&data_dir, &csid_stdout);
+            }
+        }
         if transition.context_restore_failed_on_init {
             persist_context_carry_failed_after_init_error(
                 &app_stdout,
@@ -5054,16 +5140,14 @@ where
     let mut preserved_pending_messages = VecDeque::new();
     let needs_spawn = {
         let mut map = handles.lock().await;
-        match map.get(chat_session_id) {
-            None => true,
-            Some(proc) if proc.state == BridgeState::Crashed => {
-                if let Some(mut proc) = map.remove(chat_session_id) {
-                    preserved_pending_messages.append(&mut proc.pending_messages);
-                    removed_crashed_process = Some(proc);
-                }
+        match take_runtime_requiring_spawn_locked(&mut map, chat_session_id) {
+            RuntimeSpawnDecision::Missing => true,
+            RuntimeSpawnDecision::Replace(mut proc) => {
+                preserved_pending_messages.append(&mut proc.pending_messages);
+                removed_crashed_process = Some(*proc);
                 true
             }
-            _ => false,
+            RuntimeSpawnDecision::Reuse => false,
         }
     };
 
@@ -5074,18 +5158,16 @@ where
     let _spawn_guard = acquire_spawn_session_guard(chat_session_id).await;
     let needs_spawn_after_wait = {
         let mut map = handles.lock().await;
-        match map.get(chat_session_id) {
-            None => true,
-            Some(proc) if proc.state == BridgeState::Crashed => {
-                if let Some(mut proc) = map.remove(chat_session_id) {
-                    preserved_pending_messages.append(&mut proc.pending_messages);
-                    if removed_crashed_process.is_none() {
-                        removed_crashed_process = Some(proc);
-                    }
+        match take_runtime_requiring_spawn_locked(&mut map, chat_session_id) {
+            RuntimeSpawnDecision::Missing => true,
+            RuntimeSpawnDecision::Replace(mut proc) => {
+                preserved_pending_messages.append(&mut proc.pending_messages);
+                if removed_crashed_process.is_none() {
+                    removed_crashed_process = Some(*proc);
                 }
                 true
             }
-            _ => false,
+            RuntimeSpawnDecision::Reuse => false,
         }
     };
     if needs_spawn_after_wait {
@@ -7650,6 +7732,10 @@ mod tests {
         }
     }
 
+    fn test_pending_message(id: &str, content: &str) -> PendingMessage {
+        pending_message_for_test(id, content, 1.0)
+    }
+
     struct MockModelBackend {
         backend_id: String,
         #[allow(dead_code)]
@@ -8426,6 +8512,168 @@ mod tests {
 
         assert_eq!(result.unwrap_err(), "spawn failed");
         assert!(!handles.lock().await.contains_key("step-session-spawn-fail"));
+    }
+
+    #[tokio::test]
+    async fn ensure_runtime_for_turn_spawns_when_ready_idle_child_exited_before_eof() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "ready-idle-exited-before-eof".to_string();
+        let spawn_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut ready = make_test_agent_process();
+        ready.state = BridgeState::Ready;
+        ready.turn_phase = TurnPhase::Idle;
+        ready
+            .pending_messages
+            .push_back(test_pending_message("queued-after-result", "continue"));
+        ready.child.start_kill().unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        handles.lock().await.insert(session_id.clone(), ready);
+
+        ensure_runtime_for_turn(&handles, &session_id, {
+            let handles = Arc::clone(&handles);
+            let session_id = session_id.clone();
+            let spawn_count = Arc::clone(&spawn_count);
+            move || async move {
+                spawn_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                handles
+                    .lock()
+                    .await
+                    .insert(session_id, make_test_agent_process());
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(spawn_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let mut proc = handles
+            .lock()
+            .await
+            .remove("ready-idle-exited-before-eof")
+            .unwrap();
+        assert_eq!(proc.pending_messages.len(), 1);
+        assert_eq!(
+            proc.pending_messages.pop_front().unwrap().id,
+            "queued-after-result"
+        );
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn ensure_runtime_for_turn_spawns_after_ready_eof_eviction() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "ready-eof-evicted".to_string();
+        let spawn_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut ready = make_test_agent_process();
+        let _ = ready.child.kill().await;
+        ready.state = BridgeState::Ready;
+        ready.turn_phase = TurnPhase::Idle;
+        ready.generation_id = 42;
+        handles.lock().await.insert(session_id.clone(), ready);
+
+        {
+            let mut map = handles.lock().await;
+            let should_evict = {
+                let proc = map.get_mut(&session_id).unwrap();
+                let generation_matches = proc.generation_id == 42;
+                let transition = run_bridge_eof_crash_transition_locked(
+                    generation_matches,
+                    proc,
+                    &session_id,
+                    |_mid, _parts| (true, true),
+                );
+                let should_evict = transition.should_evict;
+                assert!(should_evict);
+                should_evict
+            };
+            if should_evict {
+                let removed = retire_ready_eof_runtime_locked(&mut map, &session_id);
+                assert!(removed);
+            }
+            assert!(!map.contains_key(&session_id));
+        }
+
+        ensure_runtime_for_turn(&handles, &session_id, {
+            let handles = Arc::clone(&handles);
+            let session_id = session_id.clone();
+            let spawn_count = Arc::clone(&spawn_count);
+            move || async move {
+                spawn_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                handles
+                    .lock()
+                    .await
+                    .insert(session_id, make_test_agent_process());
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(spawn_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(handles.lock().await.contains_key("ready-eof-evicted"));
+        let mut spawned = handles.lock().await.remove("ready-eof-evicted").unwrap();
+        let _ = spawned.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn ready_eof_with_pending_queue_preserves_pending_when_respawning() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "ready-eof-pending".to_string();
+        let mut ready = make_test_agent_process();
+        let _ = ready.child.kill().await;
+        ready.state = BridgeState::Ready;
+        ready.turn_phase = TurnPhase::Idle;
+        ready.generation_id = 7;
+        ready
+            .pending_messages
+            .push_back(test_pending_message("queued-2", "second pending"));
+        ready
+            .pending_messages
+            .push_back(test_pending_message("queued-3", "third pending"));
+        handles.lock().await.insert(session_id.clone(), ready);
+
+        {
+            let mut map = handles.lock().await;
+            let proc = map.get_mut(&session_id).unwrap();
+            let generation_matches = proc.generation_id == 7;
+            let transition = run_bridge_eof_crash_transition_locked(
+                generation_matches,
+                proc,
+                &session_id,
+                |_mid, _parts| (true, true),
+            );
+            assert!(transition.should_evict);
+            let removed = retire_ready_eof_runtime_locked(&mut map, &session_id);
+            assert!(!removed);
+
+            let proc = map.get(&session_id).unwrap();
+            assert_eq!(proc.state, BridgeState::Crashed);
+            assert_eq!(proc.turn_phase, TurnPhase::Idle);
+            assert_eq!(proc.pending_messages.len(), 2);
+        }
+
+        ensure_runtime_for_turn(&handles, &session_id, {
+            let handles = Arc::clone(&handles);
+            let session_id = session_id.clone();
+            move || async move {
+                handles
+                    .lock()
+                    .await
+                    .insert(session_id, make_test_agent_process());
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+        let mut proc = handles.lock().await.remove("ready-eof-pending").unwrap();
+        let pending_ids: Vec<&str> = proc
+            .pending_messages
+            .iter()
+            .map(|pending| pending.id.as_str())
+            .collect();
+        assert_eq!(pending_ids, vec!["queued-2", "queued-3"]);
+        let _ = proc.child.kill().await;
     }
 
     #[tokio::test]
@@ -10191,6 +10439,7 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("mock"));
+        assert!(!transition.should_evict);
         assert!(matches!(
             &transition.turn_complete.final_parts[1],
             MessagePart::Error { content, .. }
@@ -10213,8 +10462,50 @@ mod tests {
         assert_eq!(proc.state, BridgeState::Crashed);
         assert_eq!(proc.turn_phase, TurnPhase::Idle);
         assert!(transition.was_initializing);
+        assert!(!transition.should_evict);
         assert!(transition.turn_complete.final_parts.is_empty());
         assert!(transition.sdk_error_message.is_some());
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn bridge_eof_ready_idle_requests_eviction_without_error() {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Ready;
+        proc.turn_phase = TurnPhase::Idle;
+
+        let transition =
+            run_bridge_eof_crash_transition_locked(true, &mut proc, "csid", |_mid, _parts| {
+                (true, true)
+            });
+
+        // Ready/Idle EOF leaves the state untouched but flags the runtime for eviction.
+        assert_eq!(proc.state, BridgeState::Ready);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        assert!(!transition.was_initializing);
+        assert!(transition.should_evict);
+        assert!(transition.turn_complete.final_parts.is_empty());
+        assert!(transition.sdk_error_message.is_none());
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn bridge_eof_generation_mismatch_does_not_evict_or_mutate() {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Ready;
+        proc.turn_phase = TurnPhase::Idle;
+
+        let transition =
+            run_bridge_eof_crash_transition_locked(false, &mut proc, "csid", |_mid, _parts| {
+                (true, true)
+            });
+
+        assert_eq!(proc.state, BridgeState::Ready);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        assert!(!transition.should_evict);
+        assert!(!transition.was_initializing);
+        assert!(transition.turn_complete.final_parts.is_empty());
+        assert!(transition.sdk_error_message.is_none());
         let _ = proc.child.kill().await;
     }
 
