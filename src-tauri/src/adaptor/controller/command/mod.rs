@@ -8,6 +8,7 @@ pub(crate) mod pty_session;
 pub(crate) mod repository;
 pub(crate) mod workflow;
 pub(crate) mod workspace_state;
+pub(crate) mod workspace_tree;
 
 type InvokeHandler = Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync>;
 
@@ -195,6 +196,11 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::agent_session::stored_session::add_message,
             crate::adaptor::controller::command::agent_session::stored_session::update_session_state,
             crate::adaptor::controller::command::agent_session::stored_session::update_session_agent_info,
+            // Workspace tree
+            crate::adaptor::controller::command::workspace_tree::list_workspace_worktree_nodes,
+            crate::adaptor::controller::command::workspace_tree::list_workspace_workflow_history,
+            crate::adaptor::controller::command::workspace_tree::archive_workspace_workflow_run,
+            crate::adaptor::controller::command::workspace_tree::restore_workspace_workflow_run,
             // Menu
             crate::menu::set_menu_items_enabled,
 

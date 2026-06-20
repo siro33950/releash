@@ -1,16 +1,22 @@
 /**
- * spec issues-1023 Rule「利用者は中央エリアから Workflow 観測モードへ切り替えられる」
+ * spec issues-1220 Rule「中央表示は CenterSelection から導出される」
  *
- * MainLayout 近傍の統合テスト。中央 ViewToolbar の mode toggle を click すると、
- * 中央エリアの AgentChatPanel と入れ替わりに WorkflowView が表示されること、
- * および右パネル上半分は常に ReviewPanel 専用であることを担保する。
+ * MainLayout 近傍の統合テスト。Workspace tree から workflowRun selection request が
+ * 渡ると、中央エリアの AgentChatPanel と入れ替わりに WorkflowView が表示されることを
+ * 担保する。
  */
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 // jsdom does not implement scrollIntoView / ResizeObserver
 Element.prototype.scrollIntoView = vi.fn();
+
+const agentChatPanelProps = vi.hoisted(() => ({
+	current: null as {
+		onNewSessionCreated?: (sessionId: string) => void;
+	} | null,
+}));
 
 vi.mock("react-resizable-panels", () => ({
 	Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -46,6 +52,16 @@ vi.mock("@/hooks/useBaseBranch", () => ({
 		localBranches: ["main", "feature"],
 	}),
 }));
+vi.mock("@/hooks/useWorkflowState", () => ({
+	useWorkflowState: () => ({ workflowState: null }),
+}));
+vi.mock("@/contexts/AgentChatContext", () => ({
+	AgentChatProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+vi.mock("@/contexts/ReviewThreadHandoffContext", () => ({
+	ReviewThreadHandoffProvider: ({ children }: { children: React.ReactNode }) =>
+		children,
+}));
 
 vi.mock("@/screens/useWorktreeState", () => ({
 	useWorktreeState: () => ({
@@ -68,7 +84,12 @@ vi.mock("@/screens/useWorktreeState", () => ({
 }));
 
 vi.mock("@/components/panels/AgentChatPanel", () => ({
-	AgentChatPanel: () => <div data-testid="agent-chat-panel-mock" />,
+	AgentChatPanel: (props: {
+		onNewSessionCreated?: (sessionId: string) => void;
+	}) => {
+		agentChatPanelProps.current = props;
+		return <div data-testid="agent-chat-panel-mock" />;
+	},
 }));
 vi.mock("@/components/panels/ReviewPanel", () => ({
 	ReviewPanel: () => <div data-testid="review-panel-mock" />,
@@ -91,38 +112,9 @@ vi.mock("@/screens/WorktreeViewDialogs", () => ({
 vi.mock("@/components/layout/BranchSelector", () => ({
 	BranchSelector: () => <div data-testid="branch-selector-mock" />,
 }));
-// ViewToolbar の mode 切替UIを直接レンダリングする軽量モック。
-// 中央エリアの "Agent mode" / "Workflow mode" toggle を click したときに
-// onModeChange が呼ばれることを再現する。
 vi.mock("@/components/layout/ViewToolbar", () => ({
-	ViewToolbar: ({
-		rightSlot,
-		mode,
-		onModeChange,
-	}: {
-		rightSlot?: React.ReactNode;
-		mode?: "agent" | "workflow";
-		onModeChange?: (mode: "agent" | "workflow") => void;
-	}) => (
-		<div data-testid="view-toolbar-mock">
-			{mode !== undefined && onModeChange !== undefined && (
-				<>
-					<button
-						type="button"
-						aria-label="Agent mode"
-						aria-pressed={mode === "agent"}
-						onClick={() => onModeChange("agent")}
-					/>
-					<button
-						type="button"
-						aria-label="Workflow mode"
-						aria-pressed={mode === "workflow"}
-						onClick={() => onModeChange("workflow")}
-					/>
-				</>
-			)}
-			{rightSlot}
-		</div>
+	ViewToolbar: ({ rightSlot }: { rightSlot?: React.ReactNode }) => (
+		<div data-testid="view-toolbar-mock">{rightSlot}</div>
 	),
 }));
 
@@ -130,7 +122,7 @@ const { MainLayout } = await import("./MainLayout");
 const { DEFAULT_SETTINGS } = await import("@/types/settings");
 const defaultSettings = DEFAULT_SETTINGS;
 
-describe("MainLayout center mode switch", () => {
+describe("MainLayout center selection", () => {
 	it("renders AgentChatPanel and ReviewPanel by default", () => {
 		render(
 			<TooltipProvider>
@@ -147,7 +139,7 @@ describe("MainLayout center mode switch", () => {
 		expect(screen.queryByTestId("workflow-view-mock")).toBeNull();
 	});
 
-	it("mounts WorkflowView with selectedRootPath when Workflow mode is selected", () => {
+	it("mounts WorkflowView with selectedRootPath when workflowRun selection is requested", async () => {
 		render(
 			<TooltipProvider>
 				<MainLayout
@@ -155,17 +147,54 @@ describe("MainLayout center mode switch", () => {
 					settings={defaultSettings}
 					onSettingsSave={vi.fn()}
 					leftNav={<div />}
+					centerSelectionRequest={{
+						kind: "workflowRun",
+						worktreePath: "/managed/wt",
+						runId: "run-1",
+						requestId: 1,
+					}}
 				/>
 			</TooltipProvider>,
 		);
 
-		fireEvent.click(screen.getByLabelText("Workflow mode"));
-
-		const panel = screen.getByTestId("workflow-view-mock");
+		const panel = await screen.findByTestId("workflow-view-mock");
 		expect(panel).toBeInTheDocument();
 		expect(panel).toHaveAttribute("data-worktree-path", "/managed/wt");
 		// AgentChat は中央から消え、Review は右パネルで残る
 		expect(screen.queryByTestId("agent-chat-panel-mock")).toBeNull();
-		expect(screen.getByTestId("review-panel-mock")).toBeInTheDocument();
+		await waitFor(() => {
+			expect(screen.getByTestId("review-panel-mock")).toBeInTheDocument();
+		});
+	});
+
+	it("resolves newAgentSession selection to the created agent session", () => {
+		agentChatPanelProps.current = null;
+		const onCenterSelectionResolved = vi.fn();
+		render(
+			<TooltipProvider>
+				<MainLayout
+					selectedRootPath="/managed/wt"
+					settings={defaultSettings}
+					onSettingsSave={vi.fn()}
+					leftNav={<div />}
+					centerSelectionRequest={{
+						kind: "newAgentSession",
+						worktreePath: "/managed/wt",
+						requestId: 1,
+					}}
+					onCenterSelectionResolved={onCenterSelectionResolved}
+				/>
+			</TooltipProvider>,
+		);
+
+		act(() => {
+			agentChatPanelProps.current?.onNewSessionCreated?.("new-s");
+		});
+
+		expect(onCenterSelectionResolved).toHaveBeenCalledWith({
+			kind: "agentSession",
+			worktreePath: "/managed/wt",
+			sessionId: "new-s",
+		});
 	});
 });

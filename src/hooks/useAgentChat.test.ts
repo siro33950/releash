@@ -1178,8 +1178,9 @@ describe("useAgentChat", () => {
 			newSession as never,
 		);
 
+		let createdSessionId: string | null = null;
 		await act(async () => {
-			await result.current.createNewSession();
+			createdSessionId = await result.current.createNewSession();
 		});
 
 		expect(sessionStore.createSession).toHaveBeenCalledWith(
@@ -1188,6 +1189,7 @@ describe("useAgentChat", () => {
 			null,
 		);
 		expect(result.current.activeSession).toEqual(newSession);
+		expect(createdSessionId).toBe("new-s");
 		expect(mockInvoke).not.toHaveBeenCalledWith(
 			"start_agent_session",
 			expect.anything(),

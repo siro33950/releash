@@ -10,11 +10,7 @@ import {
 import { BranchSelector } from "@/components/layout/BranchSelector";
 
 import { RightPanelHeader } from "@/components/layout/RightPanelHeader";
-import {
-	type CenterMode,
-	type TogglePanel,
-	ViewToolbar,
-} from "@/components/layout/ViewToolbar";
+import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { AgentChatPanel } from "@/components/panels/AgentChatPanel";
 import { ReviewPanel } from "@/components/panels/ReviewPanel";
 import { RightSidebarBottom } from "@/components/panels/RightSidebarBottom";
@@ -44,12 +40,18 @@ import type { ThreadNavigationTarget } from "@/types/diffComment";
 import type { AgentEditorSelection, MentionReference } from "@/types/session";
 import type { AppSettings } from "@/types/settings";
 import type { WorkspaceState } from "@/types/workspace-state";
+import type {
+	CenterSelection,
+	CenterSelectionRequest,
+} from "@/types/workspace-tree";
 
 interface MainLayoutProps {
 	selectedRootPath: string | null;
 	settings: AppSettings;
 	onSettingsSave: (settings: AppSettings) => void;
 	leftNav: React.ReactNode;
+	centerSelectionRequest?: CenterSelectionRequest | null;
+	onCenterSelectionResolved?: (selection: CenterSelection) => void;
 }
 
 function WorktreeContent({
@@ -61,8 +63,9 @@ function WorktreeContent({
 	leftPanels,
 	branchSelector,
 	togglePanels,
-	centerMode,
-	onCenterModeChange,
+	centerSelection,
+	centerSelectionRequest,
+	onCenterSelectionResolved,
 	initialWorkspaceState,
 	internalStateMapRef,
 	baseBranch,
@@ -75,8 +78,9 @@ function WorktreeContent({
 	leftPanels?: TogglePanel[];
 	branchSelector: React.ReactNode;
 	togglePanels: TogglePanel[];
-	centerMode: CenterMode;
-	onCenterModeChange: (mode: CenterMode) => void;
+	centerSelection: CenterSelection | null;
+	centerSelectionRequest?: CenterSelectionRequest | null;
+	onCenterSelectionResolved?: (selection: CenterSelection) => void;
 	initialWorkspaceState?: WorkspaceState;
 	internalStateMapRef: React.MutableRefObject<
 		Map<string, InternalWorktreeState>
@@ -173,6 +177,23 @@ function WorktreeContent({
 		editorState?.activeEditorPath ??
 		initialWorkspaceState?.tabs.activeEditorPath ??
 		null;
+	const scopedCenterSelection =
+		centerSelection?.worktreePath === rootPath ? centerSelection : null;
+	const scopedCenterSelectionRequest =
+		centerSelectionRequest?.worktreePath === rootPath
+			? centerSelectionRequest
+			: null;
+	const showWorkflow = scopedCenterSelection?.kind === "workflowRun";
+	const handleNewSessionCreated = useCallback(
+		(sessionId: string) => {
+			onCenterSelectionResolved?.({
+				kind: "agentSession",
+				worktreePath: rootPath,
+				sessionId,
+			});
+		},
+		[onCenterSelectionResolved, rootPath],
+	);
 	const handleOpenDiffFile = useCallback(
 		(filePath: string) => {
 			s.setSelectedDiffFile(filePath);
@@ -192,24 +213,24 @@ function WorktreeContent({
 				{/* Center */}
 				<Panel id="center" defaultSize="50%" minSize="30%">
 					<div className="h-full relative overflow-hidden flex flex-col">
-						<ViewToolbar
-							leftPanels={leftPanels}
-							rightSlot={branchSelector}
-							mode={centerMode}
-							onModeChange={onCenterModeChange}
-						/>
+						<ViewToolbar leftPanels={leftPanels} rightSlot={branchSelector} />
 						<div className="flex-1 overflow-hidden">
-							{centerMode === "workflow" ? (
-								<WorkflowView worktreePath={rootPath} />
+							{showWorkflow ? (
+								<WorkflowView
+									worktreePath={rootPath}
+									selectionRequest={scopedCenterSelectionRequest}
+								/>
 							) : (
 								<AgentChatPanel
 									worktreePath={rootPath}
+									selectionRequest={scopedCenterSelectionRequest}
 									activeEditorPath={activeEditorPath}
 									openEditorPaths={openEditorPaths}
 									activeEditorSelection={activeEditorSelection}
 									registerDropZone={s.registerDropZone}
 									sendMessageRef={sendAgentMessageRef}
 									onOpenDiffFile={handleOpenDiffFile}
+									onNewSessionCreated={handleNewSessionCreated}
 								/>
 							)}
 						</div>
@@ -329,16 +350,21 @@ export function MainLayout({
 	settings,
 	onSettingsSave,
 	leftNav,
+	centerSelectionRequest,
+	onCenterSelectionResolved,
 }: MainLayoutProps) {
 	const leftNavRef = useRef<PanelImperativeHandle>(null);
 	const rightPanelRef = useRef<PanelImperativeHandle>(null);
 
 	const [leftNavVisible, setLeftNavVisible] = useState(true);
 	const [rightVisible, setRightVisible] = useState(true);
-	// spec issues-1023: 中央エリアの表示モード。Agent / Workflow を並列に切り替える。
-	// 初期値は Agent。worktree 切替は本 layout 側 key で別ツリーになるため、
-	// 本 state は MainLayout のライフサイクルに紐づける（永続化はしない）。
-	const [centerMode, setCenterMode] = useState<CenterMode>("agent");
+	const [centerSelection, setCenterSelection] =
+		useState<CenterSelection | null>(null);
+
+	useEffect(() => {
+		if (!centerSelectionRequest) return;
+		setCenterSelection(centerSelectionRequest);
+	}, [centerSelectionRequest]);
 
 	// --- Workspace state persistence ---
 	const { internalStateMapRef, getInitialState, stateReady } =
@@ -497,8 +523,9 @@ export function MainLayout({
 								leftPanels={leftNavVisible ? undefined : [leftToggle]}
 								branchSelector={rightSlotContent}
 								togglePanels={togglePanels}
-								centerMode={centerMode}
-								onCenterModeChange={setCenterMode}
+								centerSelection={centerSelection}
+								centerSelectionRequest={centerSelectionRequest}
+								onCenterSelectionResolved={onCenterSelectionResolved}
 								initialWorkspaceState={getInitialState(selectedRootPath)}
 								internalStateMapRef={internalStateMapRef}
 								baseBranch={baseBranch}

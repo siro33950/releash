@@ -172,6 +172,7 @@ pub fn run() {
                     repo_paths_usecase,
                     code_usecase,
                     workflow_usecase,
+                    workflow_archive_index_lock: Arc::new(tokio::sync::Mutex::new(())),
                 });
             }
 

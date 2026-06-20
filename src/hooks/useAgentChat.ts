@@ -54,6 +54,8 @@ import { useWorktreeSessionStatuses } from "./useWorktreeSessionStatuses";
 
 export type { ActivityStatus } from "./deriveActivityStatus";
 
+const DEFAULT_SESSION_TITLE = "NewSession";
+
 type RefreshSessionsOptions = { reconcileActiveSession?: boolean };
 export type SendMessageOptions = {
 	activateNewSession?: boolean;
@@ -105,7 +107,7 @@ export interface UseAgentChatResult {
 	restoreSession: (sessionId: string) => Promise<void>;
 	forkSession: (sessionId: string) => Promise<void>;
 	setSessionTitle: (sessionId: string, title: string | null) => Promise<string>;
-	createNewSession: () => Promise<void>;
+	createNewSession: () => Promise<string | null>;
 	reorderSessions: (sessionOrder: string[]) => void;
 	setPermissionMode: (sessionId: string | null, mode: PermissionMode) => void;
 	setPlanMode: (sessionId: string | null, enabled: PlanMode) => void;
@@ -720,7 +722,7 @@ export function useAgentChat(
 				const summary = await setSessionTitleApi(sessionId, title);
 				await refreshSessions();
 				await refreshClosedSessions();
-				return summary.firstMessage || "New session";
+				return summary.firstMessage || DEFAULT_SESSION_TITLE;
 			} catch (e) {
 				dispatch({
 					type: "SET_ERROR",
@@ -732,7 +734,7 @@ export function useAgentChat(
 		[refreshSessions, refreshClosedSessions],
 	);
 
-	const createNewSession = useCallback(async () => {
+	const createNewSession = useCallback(async (): Promise<string | null> => {
 		try {
 			const activeSessionSnapshot = activeSessionIdRef.current
 				? sessionsByIdRef.current[activeSessionIdRef.current]
@@ -769,11 +771,13 @@ export function useAgentChat(
 				dispatchSessionMeta(dispatch, session.id, response);
 			}
 			await refreshSessions();
+			return activeSession.id;
 		} catch (e) {
 			dispatch({
 				type: "SET_ERROR",
 				error: `セッション作成に失敗: ${e}`,
 			});
+			return null;
 		}
 	}, [refreshSessions]);
 

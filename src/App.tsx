@@ -13,6 +13,10 @@ import { useWorkspaceNavigation } from "@/hooks/useWorkspaceNavigation";
 import { setTelemetryEnabled } from "@/lib/telemetry";
 import { MainLayout } from "@/screens/MainLayout";
 import type { ProviderStatus, WorktreeEntry } from "@/types/git";
+import type {
+	CenterSelection,
+	CenterSelectionRequest,
+} from "@/types/workspace-tree";
 
 function App() {
 	const { settings, updateSettings, updateTheme } = useSettings();
@@ -26,6 +30,8 @@ function App() {
 		Record<string, ProviderStatus | null>
 	>({});
 	const [showAppSettings, setShowAppSettings] = useState(false);
+	const [centerSelectionRequest, setCenterSelectionRequest] =
+		useState<CenterSelectionRequest | null>(null);
 
 	useEffect(() => {
 		setTelemetryEnabled(settings.telemetryEnabled);
@@ -105,10 +111,41 @@ function App() {
 	}, [addRepo, openWorktreeTab]);
 
 	const handleSelectWorktree = useCallback(
-		(rootPath: string, branchName?: string, repoName?: string) => {
+		(
+			rootPath: string,
+			branchName?: string,
+			repoName?: string,
+			centerSelection?: CenterSelection,
+		) => {
 			openWorktreeTab(rootPath, branchName, repoName);
+			if (centerSelection) {
+				setCenterSelectionRequest((prev) => ({
+					...centerSelection,
+					requestId: (prev?.requestId ?? 0) + 1,
+					branchName,
+					repoName,
+				}));
+			}
 		},
 		[openWorktreeTab],
+	);
+
+	const handleCenterSelectionResolved = useCallback(
+		(centerSelection: CenterSelection) => {
+			setCenterSelectionRequest((prev) => ({
+				...centerSelection,
+				requestId: (prev?.requestId ?? 0) + 1,
+				branchName:
+					prev?.worktreePath === centerSelection.worktreePath
+						? prev.branchName
+						: undefined,
+				repoName:
+					prev?.worktreePath === centerSelection.worktreePath
+						? prev.repoName
+						: undefined,
+			}));
+		},
+		[],
 	);
 
 	const isWorktreeActive = selectedWorktreeId != null;
@@ -142,12 +179,19 @@ function App() {
 			<WorkspaceList
 				repoPaths={repoPaths}
 				selectedRootPath={selectedRootPath}
+				centerSelection={centerSelectionRequest}
 				onSelectWorktree={handleSelectWorktree}
 				onAddRepo={handleAddRepo}
 				onShowSettings={() => setShowAppSettings(true)}
 			/>
 		),
-		[repoPaths, selectedRootPath, handleSelectWorktree, handleAddRepo],
+		[
+			repoPaths,
+			selectedRootPath,
+			centerSelectionRequest,
+			handleSelectWorktree,
+			handleAddRepo,
+		],
 	);
 
 	return (
@@ -158,6 +202,8 @@ function App() {
 				settings={settings}
 				onSettingsSave={updateSettings}
 				leftNav={leftNav}
+				centerSelectionRequest={centerSelectionRequest}
+				onCenterSelectionResolved={handleCenterSelectionResolved}
 			/>
 
 			{/* App Settings */}
