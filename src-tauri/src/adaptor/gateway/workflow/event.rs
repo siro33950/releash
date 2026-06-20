@@ -24,6 +24,50 @@ impl TokenUsage {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAbortedStepSnapshot {
+    pub step_name: String,
+    pub completed_at: f64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub token_usage: Option<TokenUsage>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub structured_output: Option<serde_json::Value>,
+    #[serde(default)]
+    pub run_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub child_outputs: Option<Vec<RunAbortedChildOutputSnapshot>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunAbortedChildOutcome {
+    Completed,
+    Aborted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAbortedChildOutputSnapshot {
+    pub step_name: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result: Option<String>,
+    pub run_index: u32,
+    pub completed_at: f64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub structured_output: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub output_contract: Option<String>,
+    #[serde(alias = "state")]
+    pub outcome: RunAbortedChildOutcome,
+}
+
 /// workflow engine が発行する append-only な事実列の型。
 ///
 /// `run_id` を主語とし、過去事実は書き換えない（撤回も追加 event として表現する）。
@@ -109,6 +153,8 @@ pub enum WorkflowEvent {
     RunAborted {
         run_id: String,
         workflow_name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        aborted_step: Option<RunAbortedStepSnapshot>,
         timestamp: f64,
     },
     /// collect step の reduce 結果。
@@ -403,6 +449,52 @@ mod tests {
         assert!(matches!(back, WorkflowEvent::RunStarted { .. }));
     }
 
+    #[test]
+    fn run_aborted_step_snapshot_serializes_without_step_history_display_state() {
+        let event = WorkflowEvent::RunAborted {
+            run_id: "00000000-0000-0000-0000-000000000801".to_string(),
+            workflow_name: "wf".to_string(),
+            aborted_step: Some(RunAbortedStepSnapshot {
+                step_name: "review".to_string(),
+                completed_at: 2.0,
+                result: None,
+                session_id: Some("session-review".to_string()),
+                token_usage: None,
+                structured_output: None,
+                run_index: 1,
+                child_outputs: Some(vec![RunAbortedChildOutputSnapshot {
+                    step_name: "child-review".to_string(),
+                    session_id: Some("session-child-review".to_string()),
+                    result: None,
+                    run_index: 1,
+                    completed_at: 2.0,
+                    structured_output: None,
+                    output_contract: None,
+                    outcome: RunAbortedChildOutcome::Aborted,
+                }]),
+            }),
+            timestamp: 2.0,
+        };
+
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["event"].as_str(), Some("run_aborted"));
+        let aborted_step = value
+            .get("aborted_step")
+            .expect("aborted_step snapshot must be present");
+        assert_eq!(aborted_step["stepName"].as_str(), Some("review"));
+        assert_eq!(aborted_step["sessionId"].as_str(), Some("session-review"));
+        assert!(
+            aborted_step.get("state").is_none(),
+            "RunAborted stores an event snapshot, not StepHistoryEntry"
+        );
+        let child = &aborted_step["childOutputs"][0];
+        assert!(
+            child.get("state").is_none(),
+            "RunAborted child snapshot stores an event fact, not read-model state"
+        );
+        assert_eq!(child["outcome"].as_str(), Some("aborted"));
+    }
+
     /// approval 判断結果は典型的な NDJSON 観測者から snake_case で読める。
     #[test]
     fn approval_resolved_decision_serde_round_trips() {
@@ -578,6 +670,7 @@ mod tests {
             WorkflowEvent::RunAborted {
                 run_id: rid.to_string(),
                 workflow_name: "w".to_string(),
+                aborted_step: None,
                 timestamp: 0.0,
             },
         ];

@@ -174,6 +174,8 @@ pub struct WorkflowRuntimeService {
     worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
     #[cfg(test)]
     fail_next_required_event_append: AtomicBool,
+    #[cfg(test)]
+    abort_after_lookup_gate: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
 }
 
 struct ParallelChildStartedLogObserver<'a, R: tauri::Runtime> {
@@ -222,6 +224,8 @@ impl WorkflowRuntimeService {
             worktree_resolver,
             #[cfg(test)]
             fail_next_required_event_append: AtomicBool::new(false),
+            #[cfg(test)]
+            abort_after_lookup_gate: Mutex::new(None),
         }
     }
 
@@ -272,6 +276,18 @@ impl WorkflowRuntimeService {
             })
             .await
             .unwrap();
+        if let Some(data_dir) = self.run_store.data_dir_for_test().await {
+            WorkflowEventLog::new(&data_dir)
+                .append(&WorkflowEvent::RunStarted {
+                    run_id: run_id.clone(),
+                    workflow_name: workflow.name.clone(),
+                    workflow_file_stem: workflow.name.clone(),
+                    worktree_path: worktree_path.clone(),
+                    workflow_definition: workflow.clone(),
+                    timestamp: now,
+                })
+                .unwrap();
+        }
         self.executions.lock().await.insert(
             run_id.clone(),
             WorkflowExecution {
@@ -302,6 +318,34 @@ impl WorkflowRuntimeService {
     pub(crate) fn fail_next_required_event_append_for_test(&self) {
         self.fail_next_required_event_append
             .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_abort_after_lookup_for_test(
+        &self,
+        lookup_completed: Arc<tokio::sync::Notify>,
+        continue_precommit: Arc<tokio::sync::Notify>,
+    ) {
+        *self.abort_after_lookup_gate.lock().await = Some((lookup_completed, continue_precommit));
+    }
+
+    #[cfg(test)]
+    async fn wait_abort_after_lookup_for_test(&self) {
+        let gate = self.abort_after_lookup_gate.lock().await.take();
+        if let Some((lookup_completed, continue_precommit)) = gate {
+            lookup_completed.notify_one();
+            continue_precommit.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn contains_execution_for_test(&self, run_id: &str) -> bool {
+        self.executions.lock().await.contains_key(run_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn executions_len_for_test(&self) -> usize {
+        self.executions.lock().await.len()
     }
 
     /// テスト専用: 指定 run の `current_step_index` を移動させて stale 状態を作る。
@@ -1812,16 +1856,23 @@ impl WorkflowRuntimeService {
                 parallel_session_ids,
             } => (current_step_session_id, parallel_session_ids),
         };
+        #[cfg(test)]
+        self.wait_abort_after_lookup_for_test().await;
 
         // 2. [04] pre-commit (rollback 可能): mutation 直前 snapshot を取得し、
         //    state を Aborted に遷移させる。競合で terminal 化していた場合は
         //    AlreadyTerminal で返す。
         let timestamp = current_timestamp();
         let run_store_snapshot_before = self.run_store.active_run_snapshot(run_id).await;
-        let (snapshot_before, snapshot_state, workflow_name_for_event) = {
+        let (snapshot_before, snapshot_state, workflow_name_for_event, aborted_step_for_event) = {
             let mut execs = self.executions.lock().await;
             let Some(exec) = execs.get_mut(run_id) else {
-                return Ok(AbortOutcome::NotFound);
+                drop(execs);
+                return Ok(if self.has_terminal_run_record(run_id).await {
+                    AbortOutcome::AlreadyTerminal
+                } else {
+                    AbortOutcome::NotFound
+                });
             };
             if !exec.is_active() {
                 return Ok(AbortOutcome::AlreadyTerminal);
@@ -1845,6 +1896,7 @@ impl WorkflowRuntimeService {
             }
             let snapshot_before = exec.clone();
             let workflow_name = exec.workflow.name.clone();
+            let mut aborted_step_for_event = None;
 
             // spec issues-1023: state を Aborted にする前に、中断時の current step /
             // parallel children を `step_history` に "aborted" entry として記録する。
@@ -1853,17 +1905,31 @@ impl WorkflowRuntimeService {
             // 明示クリアして `to_workflow_state()` 経由の二重表示を防ぐ。
             if exec.parallel_run.is_some() {
                 if let Some(entry) = exec.make_aborted_parallel_history_entry(timestamp) {
+                    aborted_step_for_event = Some(
+                        workflow_runtime_events::run_aborted_step_snapshot_from_history_entry(
+                            &entry,
+                        ),
+                    );
                     exec.step_history.push(entry);
                 }
                 exec.parallel_run = None;
             } else {
                 let current_step_name = exec.workflow.nodes[exec.current_step_index].name.clone();
-                let already_in_history = exec
-                    .step_history
-                    .last()
-                    .is_some_and(|e| e.step_name == current_step_name);
+                let current_run_index = exec
+                    .step_execution_counts
+                    .get(&current_step_name)
+                    .copied()
+                    .unwrap_or(1);
+                let already_in_history = exec.step_history.last().is_some_and(|e| {
+                    e.step_name == current_step_name && e.run_index == current_run_index
+                });
                 if !already_in_history {
                     let entry = exec.make_aborted_history_entry(timestamp);
+                    aborted_step_for_event = Some(
+                        workflow_runtime_events::run_aborted_step_snapshot_from_history_entry(
+                            &entry,
+                        ),
+                    );
                     exec.step_history.push(entry);
                 }
             }
@@ -1871,7 +1937,12 @@ impl WorkflowRuntimeService {
             exec.state = WorkflowExecutionState::Aborted;
             exec.updated_at = timestamp;
             let snapshot_state = exec.to_workflow_state();
-            (snapshot_before, snapshot_state, workflow_name)
+            (
+                snapshot_before,
+                snapshot_state,
+                workflow_name,
+                aborted_step_for_event,
+            )
         };
 
         // 3. [04] commit point: RunAborted を必須 append。失敗時は
@@ -1881,6 +1952,7 @@ impl WorkflowRuntimeService {
         let aborted_event = WorkflowEvent::RunAborted {
             run_id: run_id.to_string(),
             workflow_name: workflow_name_for_event.clone(),
+            aborted_step: aborted_step_for_event,
             timestamp,
         };
         let mut required_events = vec![aborted_event];
@@ -1964,28 +2036,42 @@ impl WorkflowRuntimeService {
         .await;
         self.cleanup_session_workflow_refs_by_run_id(run_id).await;
         workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
+        self.release_terminal_execution(run_id).await;
     }
 
     async fn abort_target_lookup(&self, run_id: &str) -> AbortTargetLookup {
-        let execs = self.executions.lock().await;
-        let Some(exec) = execs.get(run_id) else {
-            return AbortTargetLookup::NotFound;
-        };
-        if !exec.is_active() {
-            return AbortTargetLookup::AlreadyTerminal;
+        {
+            let execs = self.executions.lock().await;
+            if let Some(exec) = execs.get(run_id) {
+                if !exec.is_active() {
+                    return AbortTargetLookup::AlreadyTerminal;
+                }
+                let current_step_session_id = exec.current_session_id.clone();
+                let parallel_session_ids = exec.parallel_run.as_ref().map(|pr| {
+                    pr.children
+                        .iter()
+                        .filter(|c| c.state == ParallelChildState::Running)
+                        .map(|c| c.session_id.clone())
+                        .collect::<Vec<_>>()
+                });
+                return AbortTargetLookup::Active {
+                    current_step_session_id,
+                    parallel_session_ids,
+                };
+            }
         }
-        let current_step_session_id = exec.current_session_id.clone();
-        let parallel_session_ids = exec.parallel_run.as_ref().map(|pr| {
-            pr.children
-                .iter()
-                .filter(|c| c.state == ParallelChildState::Running)
-                .map(|c| c.session_id.clone())
-                .collect::<Vec<_>>()
-        });
-        AbortTargetLookup::Active {
-            current_step_session_id,
-            parallel_session_ids,
+        if self.has_terminal_run_record(run_id).await {
+            AbortTargetLookup::AlreadyTerminal
+        } else {
+            AbortTargetLookup::NotFound
         }
+    }
+
+    async fn has_terminal_run_record(&self, run_id: &str) -> bool {
+        self.run_store
+            .get_run_record(run_id)
+            .await
+            .is_some_and(|run| run.status.is_terminal())
     }
 
     /// 並列子ステップの完了を処理する。
@@ -2177,6 +2263,7 @@ impl WorkflowRuntimeService {
                     .await;
                 self.cleanup_session_workflow_refs_by_run_id(&snapshot.execution_id)
                     .await;
+                self.release_terminal_execution(run_id).await;
                 return Ok(());
             }
 
@@ -2327,7 +2414,14 @@ impl WorkflowRuntimeService {
     /// `run_id` から `WorkflowState` を取得する。
     pub async fn get_state_by_run_id(&self, run_id: &str) -> Option<WorkflowState> {
         let execs = self.executions.lock().await;
-        execs.get(run_id).map(|e| e.to_workflow_state())
+        execs.get(run_id).map(|exec| exec.to_workflow_state())
+    }
+
+    async fn release_terminal_execution(&self, run_id: &str) {
+        let mut execs = self.executions.lock().await;
+        if execs.get(run_id).is_some_and(|exec| exec.is_terminal()) {
+            execs.remove(run_id);
+        }
     }
 
     /// 起動環境別の `releash` alias 名を返す（spec issues-1054）。
@@ -2739,6 +2833,7 @@ impl WorkflowRuntimeService {
             .await;
             self.cleanup_session_workflow_refs_by_run_id(&run_id).await;
             workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot.clone()).await;
+            self.release_terminal_execution(&run_id).await;
             return Ok(());
         }
 
@@ -2776,6 +2871,9 @@ impl WorkflowRuntimeService {
             self.cleanup_session_workflow_refs_by_run_id(&run_id).await;
         }
         workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot.clone()).await;
+        if is_terminal {
+            self.release_terminal_execution(&run_id).await;
+        }
         Ok(())
     }
 
@@ -3327,6 +3425,9 @@ impl WorkflowRuntimeService {
             self.cleanup_session_workflow_refs_by_run_id(&run_id).await;
         }
         workflow_runtime_session::broadcast_state(app, worktree_path, snapshot.clone()).await;
+        if is_terminal {
+            self.release_terminal_execution(&run_id).await;
+        }
     }
 
     /// 既存呼び出し元（on_turn_complete 等）から使う一括 helper。pre-commit と post-commit

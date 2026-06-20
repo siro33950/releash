@@ -451,6 +451,11 @@ impl RunStore {
         self.data_dir.lock().await.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) async fn data_dir_for_test(&self) -> Option<PathBuf> {
+        self.data_dir().await
+    }
+
     async fn persistence_dir(&self) -> Result<Option<PathBuf>, RunStoreError> {
         match self.data_dir().await {
             Some(dir) => Ok(Some(dir)),

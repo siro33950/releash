@@ -6645,17 +6645,11 @@ mod dispatch_boundary_tests {
             .await
             .unwrap();
 
-        // (1) engine.executions の state は Failed に遷移している。
-        {
-            let execs = engine.executions.lock().await;
-            let exec = execs
-                .get(&run_id)
-                .expect("execution must remain after Failed");
-            assert!(matches!(
-                exec.state,
-                WorkflowExecutionState::Failed { ref reason } if reason == "node failure"
-            ));
-        }
+        // (1) terminal 化した execution は runtime map から即時解放される。
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "terminal execution must be released after Failed"
+        );
 
         // (2) RunStore の status も Failed terminal に同期される。
         let run = engine
@@ -6685,6 +6679,128 @@ mod dispatch_boundary_tests {
         assert!(
             run_failed.is_some(),
             "RunFailed event must follow NodeFailed; got: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_child_failure_releases_terminal_execution_after_broadcast() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/parallel-child-failure";
+        let failed_child_session_id = "parallel-child-failed-session";
+        let interrupted_child_session_id = "parallel-child-interrupted-session";
+        let workflow = Workflow {
+            variables: Default::default(),
+            name: "parallel-failure-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "parallel-review".to_string(),
+                node_type: NodeType::Parallel,
+                parallel_children: Some(vec![
+                    make_parallel_step("review-a"),
+                    make_parallel_step("review-b"),
+                ]),
+                ..NodeDefinition::default()
+            }],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 0;
+        exec.current_session_id = None;
+        exec.step_execution_counts = HashMap::from([
+            ("parallel-review".to_string(), 1),
+            ("review-a".to_string(), 1),
+            ("review-b".to_string(), 1),
+        ]);
+        exec.parallel_run = Some(ParallelRunState {
+            parent_step_name: "parallel-review".to_string(),
+            aggregate: None,
+            children: vec![
+                ParallelChildRun {
+                    step_name: "review-a".to_string(),
+                    session_id: failed_child_session_id.to_string(),
+                    state: ParallelChildState::Running,
+                    result: None,
+                    structured_output: None,
+                    output_contract: None,
+                    token_usage: TokenUsage::default(),
+                    run_index: 1,
+                },
+                ParallelChildRun {
+                    step_name: "review-b".to_string(),
+                    session_id: interrupted_child_session_id.to_string(),
+                    state: ParallelChildState::Running,
+                    result: None,
+                    structured_output: None,
+                    output_contract: None,
+                    token_usage: TokenUsage::default(),
+                    run_index: 1,
+                },
+            ],
+        });
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        {
+            let mut refs = engine.session_workflow_refs.lock().await;
+            refs.insert(
+                failed_child_session_id.to_string(),
+                SessionWorkflowRef {
+                    run_id: run_id.clone(),
+                },
+            );
+            refs.insert(
+                interrupted_child_session_id.to_string(),
+                SessionWorkflowRef {
+                    run_id: run_id.clone(),
+                },
+            );
+        }
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                failed_child_session_id,
+                1,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "parallel child failure must release the Failed terminal execution"
+        );
+        let stored = engine
+            .run_store
+            .get_run(&run_id)
+            .await
+            .expect("RunStore must keep the terminal run metadata");
+        assert_eq!(stored.status, RunStatus::Failed);
+        assert_eq!(
+            stored.error_reason.as_deref(),
+            Some("Parallel child 'review-a' failed (exit_code: 1)")
+        );
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, WorkflowEvent::RunFailed { .. })),
+            "parallel child failure must append RunFailed; got {events:?}"
+        );
+        let refs = engine.session_workflow_refs.lock().await;
+        assert!(
+            refs.values()
+                .all(|session_ref| session_ref.run_id != run_id),
+            "terminal cleanup must remove all session refs for the failed parallel run"
         );
     }
 
@@ -6895,6 +7011,41 @@ mod dispatch_boundary_tests {
         }
     }
 
+    #[tokio::test]
+    async fn abort_target_lookup_returns_already_terminal_for_released_terminal_run_record() {
+        let engine = WorkflowRuntimeService::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+
+        for (terminal_status, error_reason) in [
+            (TerminalRunStatus::Completed, None),
+            (
+                TerminalRunStatus::Failed,
+                Some("failed after release".to_string()),
+            ),
+            (TerminalRunStatus::Aborted, None),
+        ] {
+            let run_id = uuid::Uuid::new_v4().to_string();
+            let exec = make_waiting_approval_execution(&run_id, "/wt/released-terminal");
+            insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+            engine
+                .run_store
+                .complete_run(&run_id, terminal_status, 2000.0, error_reason)
+                .await
+                .unwrap();
+            engine.executions.lock().await.remove(&run_id);
+
+            match engine.abort_target_lookup(&run_id).await {
+                AbortTargetLookup::AlreadyTerminal => {}
+                other => {
+                    panic!("expected AlreadyTerminal for released terminal run, got {other:?}")
+                }
+            }
+        }
+    }
+
     /// Spec [04] Rule: active run に対する `abort_target_lookup` は `Active` を返し、
     /// その後の state 遷移経路（mutation → required append → finalize）に乗る。
     #[tokio::test]
@@ -6915,6 +7066,115 @@ mod dispatch_boundary_tests {
             }
             other => panic!("expected Active for running run, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn release_terminal_execution_removes_terminal_entries_only() {
+        let engine = WorkflowRuntimeService::new_for_test();
+
+        for (label, terminal_state) in [
+            ("completed", WorkflowExecutionState::Completed),
+            (
+                "failed",
+                WorkflowExecutionState::Failed {
+                    reason: "boom".to_string(),
+                },
+            ),
+            ("aborted", WorkflowExecutionState::Aborted),
+        ] {
+            let run_id = uuid::Uuid::new_v4().to_string();
+            let mut exec = make_waiting_approval_execution(&run_id, &format!("/wt/{label}"));
+            exec.state = terminal_state;
+            engine.executions.lock().await.insert(run_id.clone(), exec);
+
+            engine.release_terminal_execution(&run_id).await;
+
+            assert!(
+                !engine.contains_execution_for_test(&run_id).await,
+                "{label} terminal execution must be removed"
+            );
+        }
+
+        let active_run_id = uuid::Uuid::new_v4().to_string();
+        let mut active = make_waiting_approval_execution(&active_run_id, "/wt/active-release");
+        active.state = WorkflowExecutionState::Running;
+        engine
+            .executions
+            .lock()
+            .await
+            .insert(active_run_id.clone(), active);
+
+        engine.release_terminal_execution(&active_run_id).await;
+
+        assert!(
+            engine.contains_execution_for_test(&active_run_id).await,
+            "active execution must not be released"
+        );
+        assert_eq!(engine.executions_len_for_test().await, 1);
+    }
+
+    #[tokio::test]
+    async fn get_state_by_run_id_returns_none_for_released_terminal_state() {
+        let engine = WorkflowRuntimeService::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().to_path_buf();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/reconstruct-terminal";
+        let exec = make_waiting_approval_execution(&run_id, worktree_path);
+        let workflow = exec.workflow.clone();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let log = WorkflowEventLog::new(&data_dir);
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: run_id.clone(),
+            workflow_name: workflow.name.clone(),
+            workflow_file_stem: "boundary-wf".to_string(),
+            worktree_path: worktree_path.to_string(),
+            workflow_definition: workflow.clone(),
+            timestamp: 1000.0,
+        })
+        .unwrap();
+        log.append(&WorkflowEvent::NodeStarted {
+            run_id: run_id.clone(),
+            workflow_name: workflow.name.clone(),
+            node_name: "review".to_string(),
+            execution_count: 1,
+            timestamp: 1001.0,
+        })
+        .unwrap();
+        log.append(&WorkflowEvent::NodeCompleted {
+            run_id: run_id.clone(),
+            workflow_name: workflow.name.clone(),
+            node_name: "review".to_string(),
+            result: Some("approve".to_string()),
+            session_id: Some("sess-1".to_string()),
+            token_usage: None,
+            structured_output: None,
+            run_index: Some(1),
+            timestamp: 1002.0,
+        })
+        .unwrap();
+        log.append(&WorkflowEvent::RunCompleted {
+            run_id: run_id.clone(),
+            workflow_name: workflow.name.clone(),
+            total_token_usage: TokenUsage::default(),
+            timestamp: 1003.0,
+        })
+        .unwrap();
+
+        engine
+            .run_store
+            .complete_run(&run_id, TerminalRunStatus::Completed, 1003.0, None)
+            .await
+            .unwrap();
+        engine.executions.lock().await.remove(&run_id);
+
+        assert!(
+            engine.get_state_by_run_id(&run_id).await.is_none(),
+            "run_id-only live API must not expose released terminal history"
+        );
     }
 
     /// Spec [04] Rule「権限の無い / 対象不在 / 既決の command は state 変化を起こさない」:
@@ -7015,6 +7275,7 @@ mod dispatch_boundary_tests {
         log.append(&WorkflowEvent::RunAborted {
             run_id: run_id.to_string(),
             workflow_name: "boundary-wf".to_string(),
+            aborted_step: None,
             timestamp: 4321.0,
         })
         .expect("RunAborted は write_log_required 経由で append される");
@@ -7274,52 +7535,150 @@ mod dispatch_boundary_tests {
     async fn dispatch_abort_run_accepts_mutates_state_and_appends_event() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
-        let tmp = TempDir::new().unwrap();
-        engine
-            .set_run_store_data_dir(tmp.path().to_path_buf())
-            .await;
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/dispatch-abort";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        let workflow = exec.workflow.clone();
         // spec issues-1023: session log 到達経路の維持を検証するため、
         // current_session_id を入れた状態で abort する。
         exec.current_session_id = Some("aborted-step-session".to_string());
         exec.state = WorkflowExecutionState::Running;
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        WorkflowEventLog::new(&data_dir)
+            .append(&WorkflowEvent::RunStarted {
+                run_id: run_id.clone(),
+                workflow_name: workflow.name.clone(),
+                workflow_file_stem: workflow.name.clone(),
+                worktree_path: worktree_path.to_string(),
+                workflow_definition: workflow,
+                timestamp: 1000.0,
+            })
+            .unwrap();
 
         engine
             .abort_workflow_run(app.handle(), &session_store, &handles, &run_id, None)
             .await
             .unwrap();
 
-        let execs = engine.executions.lock().await;
-        let aborted_exec = execs.get(&run_id).unwrap();
-        assert_eq!(aborted_exec.state, WorkflowExecutionState::Aborted);
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "terminal execution must be released after Aborted"
+        );
 
-        // spec issues-1023: 中断された current step が `state="aborted"` entry として
-        // step_history に積まれ、session_id が引き継がれていることを検証する。
-        // これにより history タブ経由でも session log に到達できる。
-        let aborted_entries: Vec<&StepHistoryEntry> = aborted_exec
+        let events = read_dispatch_events(&app, &run_id);
+        let aborted_event = events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::RunAborted { aborted_step, .. } => aborted_step.as_ref(),
+                _ => None,
+            })
+            .expect("RunAborted must persist the aborted step snapshot");
+        assert_eq!(
+            aborted_event.session_id.as_deref(),
+            Some("aborted-step-session"),
+            "RunAborted snapshot must keep the interrupted step session_id"
+        );
+
+        assert!(
+            engine.get_state_by_run_id(&run_id).await.is_none(),
+            "run_id-only live API must not expose released terminal history"
+        );
+        let reconstructed =
+            crate::adaptor::gateway::workflow::event_projection::reconstruct_state_from_events(
+                &run_id, &events,
+            )
+            .unwrap()
+            .expect("released aborted run history must reconstruct from Event Log projection");
+        assert_eq!(reconstructed.state, WorkflowExecutionState::Aborted);
+        let aborted_entries: Vec<&StepHistoryEntry> = reconstructed
             .step_history
             .iter()
-            .filter(|e| e.state == "aborted")
+            .filter(|entry| entry.state == "aborted")
             .collect();
         assert_eq!(
             aborted_entries.len(),
             1,
-            "current step が 1 件 aborted entry として記録される"
+            "released aborted run must reconstruct the aborted current step"
         );
         assert_eq!(
             aborted_entries[0].session_id.as_deref(),
             Some("aborted-step-session"),
-            "session_id が step_history に引き継がれ session log に到達可能"
+            "reconstructed state must preserve the session log reachability"
         );
-        drop(execs);
+    }
 
-        assert!(read_dispatch_events(&app, &run_id)
+    #[tokio::test]
+    async fn dispatch_abort_run_snapshots_current_run_index_for_retried_step() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/dispatch-abort-retry";
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        let workflow = exec.workflow.clone();
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_session_id = Some("session-review-2".to_string());
+        exec.step_execution_counts.insert("review".to_string(), 2);
+        exec.step_history.push(StepHistoryEntry {
+            step_name: "review".to_string(),
+            completed_at: 1001.0,
+            result: Some("retry".to_string()),
+            session_id: Some("session-review-1".to_string()),
+            token_usage: None,
+            structured_output: None,
+            run_index: 1,
+            child_outputs: None,
+            state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
+        });
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        WorkflowEventLog::new(&data_dir)
+            .append(&WorkflowEvent::RunStarted {
+                run_id: run_id.clone(),
+                workflow_name: workflow.name.clone(),
+                workflow_file_stem: workflow.name.clone(),
+                worktree_path: worktree_path.to_string(),
+                workflow_definition: workflow,
+                timestamp: 1000.0,
+            })
+            .unwrap();
+
+        engine
+            .abort_workflow_run(app.handle(), &session_store, &handles, &run_id, None)
+            .await
+            .unwrap();
+
+        let events = read_dispatch_events(&app, &run_id);
+        let aborted_step = events
             .iter()
-            .any(|event| matches!(event, WorkflowEvent::RunAborted { .. })));
+            .find_map(|event| match event {
+                WorkflowEvent::RunAborted { aborted_step, .. } => aborted_step.as_ref(),
+                _ => None,
+            })
+            .expect("retried current step must be persisted as aborted_step");
+        assert_eq!(aborted_step.step_name, "review");
+        assert_eq!(aborted_step.run_index, 2);
+        assert_eq!(aborted_step.session_id.as_deref(), Some("session-review-2"));
+
+        let reconstructed =
+            crate::adaptor::gateway::workflow::event_projection::reconstruct_state_from_events(
+                &run_id, &events,
+            )
+            .unwrap()
+            .expect("released aborted retry must reconstruct from Event Log projection");
+        let aborted_entry = reconstructed
+            .step_history
+            .iter()
+            .find(|entry| entry.step_name == "review" && entry.run_index == 2)
+            .expect("reconstructed history must contain the retried aborted step");
+        assert_eq!(
+            aborted_entry.session_id.as_deref(),
+            Some("session-review-2")
+        );
     }
 
     /// spec issues-1023: `make_aborted_parallel_history_entry` の単体検証。
@@ -7435,9 +7794,9 @@ mod dispatch_boundary_tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            engine.executions.lock().await.get(&run_id).unwrap().state,
-            WorkflowExecutionState::Aborted
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "terminal execution must be released after Aborted"
         );
         let events = read_dispatch_events(&app, &run_id);
         assert_eq!(events.len(), 1);
@@ -7558,6 +7917,106 @@ mod dispatch_boundary_tests {
         );
         drop(execs);
         assert!(read_dispatch_events(&app, &terminal_run_id).is_empty());
+
+        let released_terminal_run_id = uuid::Uuid::new_v4().to_string();
+        let released_terminal =
+            make_waiting_approval_execution(&released_terminal_run_id, "/wt/released-terminal");
+        insert_execution_and_active_run(&engine, released_terminal, TriggerSource::DesktopUi).await;
+        engine
+            .run_store
+            .complete_run(
+                &released_terminal_run_id,
+                TerminalRunStatus::Completed,
+                2000.0,
+                None,
+            )
+            .await
+            .unwrap();
+        engine
+            .executions
+            .lock()
+            .await
+            .remove(&released_terminal_run_id);
+
+        let released_terminal_result = engine
+            .abort_workflow_run(
+                app.handle(),
+                &session_store,
+                &handles,
+                &released_terminal_run_id,
+                None,
+            )
+            .await;
+        assert!(matches!(
+            released_terminal_result,
+            Err(WorkflowEngineError::InvalidState(_))
+        ));
+        assert!(read_dispatch_events(&app, &released_terminal_run_id).is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_abort_run_treats_execution_released_after_lookup_as_already_terminal() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir).await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let exec = make_waiting_approval_execution(&run_id, "/wt/released-after-lookup");
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let lookup_completed = Arc::new(tokio::sync::Notify::new());
+        let continue_precommit = Arc::new(tokio::sync::Notify::new());
+        engine
+            .pause_abort_after_lookup_for_test(lookup_completed.clone(), continue_precommit.clone())
+            .await;
+
+        let abort_engine = engine.clone();
+        let abort_session_store = session_store.clone();
+        let abort_handles = handles.clone();
+        let abort_run_id = run_id.clone();
+        let app_handle = app.handle().clone();
+        let abort_task = tokio::spawn(async move {
+            abort_engine
+                .abort_workflow_run(
+                    &app_handle,
+                    &abort_session_store,
+                    &abort_handles,
+                    &abort_run_id,
+                    None,
+                )
+                .await
+        });
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            lookup_completed.notified(),
+        )
+        .await
+        .expect("abort lookup must reach Active before the pre-commit relock");
+
+        engine
+            .run_store
+            .complete_run(&run_id, TerminalRunStatus::Completed, 2000.0, None)
+            .await
+            .unwrap();
+        engine.executions.lock().await.remove(&run_id);
+        continue_precommit.notify_one();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), abort_task)
+            .await
+            .expect("abort task must finish")
+            .expect("abort task must not panic");
+        assert!(matches!(
+            result,
+            Err(WorkflowEngineError::InvalidState(message))
+                if message.contains("already terminal")
+        ));
+        assert!(
+            read_dispatch_events(&app, &run_id).is_empty(),
+            "released-after-lookup race must not append dispatch events"
+        );
     }
 
     /// Spec [04] no-op 不変条件: approval UI 由来の
@@ -7724,11 +8183,10 @@ mod dispatch_boundary_tests {
             .await
             .unwrap();
 
-        let execs = engine.executions.lock().await;
-        let exec = execs.get(&run_id).unwrap();
-        assert_eq!(exec.state, WorkflowExecutionState::Completed);
-        assert_eq!(exec.step_history.len(), 1);
-        drop(execs);
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "terminal execution must be released after Completed"
+        );
         let events = read_dispatch_events(&app, &run_id);
         assert!(matches!(
             events.as_slice(),
@@ -7781,16 +8239,6 @@ mod dispatch_boundary_tests {
             .await
             .unwrap();
 
-        let execs = engine.executions.lock().await;
-        let exec = execs.get(&run_id).unwrap();
-        assert_eq!(exec.current_step_index, 1);
-        assert_eq!(
-            exec.step_history
-                .first()
-                .and_then(|entry| entry.result.as_deref()),
-            Some("reject")
-        );
-        drop(execs);
         let events = read_dispatch_events(&app, &run_id);
         assert!(matches!(
             &events[..3],
@@ -7802,13 +8250,17 @@ mod dispatch_boundary_tests {
                 },
                 WorkflowEvent::NodeCompleted {
                     node_name: completed,
+                    result,
                     ..
                 },
                 WorkflowEvent::NodeStarted {
                     node_name: started,
                     ..
                 },
-            ] if comment == "needs changes" && completed == "review" && started == "fix"
+            ] if comment == "needs changes"
+                && completed == "review"
+                && result.as_deref() == Some("reject")
+                && started == "fix"
         ));
     }
 
@@ -8157,6 +8609,7 @@ mod dispatch_boundary_tests {
         let aborted_event = WorkflowEvent::RunAborted {
             run_id: run_id.to_string(),
             workflow_name: "boundary-wf".to_string(),
+            aborted_step: None,
             timestamp: 4000.0,
         };
         log.append_batch(&[approval_event, aborted_event])
@@ -8907,16 +9360,15 @@ mod dispatch_boundary_tests {
             node_completed, 0,
             "handle_auto_complete must not advance a contract step without SubmitOutput"
         );
-        let state_after = engine
-            .executions
-            .lock()
-            .await
-            .get(&run_id)
-            .map(|e| e.state.clone())
-            .unwrap();
         assert!(
-            matches!(state_after, WorkflowExecutionState::Failed { .. }),
-            "seeded test execution has no active session, so missing SubmitOutput fails instead of advancing"
+            !engine.contains_execution_for_test(&run_id).await,
+            "seeded test execution has no active session, so missing SubmitOutput fails and releases the terminal execution"
+        );
+        assert!(
+            events_after
+                .iter()
+                .any(|event| matches!(event, WorkflowEvent::RunFailed { .. })),
+            "terminal failure must be recorded in the event log"
         );
     }
 

@@ -30,6 +30,7 @@ mod tests {
         let event = WorkflowEvent::RunAborted {
             run_id: run_id.to_string(),
             workflow_name: "wf".to_string(),
+            aborted_step: None,
             timestamp: 42.0,
         };
 
@@ -43,6 +44,7 @@ mod tests {
                 run_id: restored_run_id,
                 workflow_name,
                 timestamp,
+                ..
             } if restored_run_id == run_id
                 && workflow_name == "wf"
                 && (*timestamp - 42.0).abs() < f64::EPSILON

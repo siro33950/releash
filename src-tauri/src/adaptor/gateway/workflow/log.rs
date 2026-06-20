@@ -424,6 +424,7 @@ mod tests {
             WorkflowEvent::RunAborted {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                aborted_step: None,
                 timestamp: 1000.0,
             },
         ];
@@ -462,6 +463,7 @@ mod tests {
         log.append(&WorkflowEvent::RunAborted {
             run_id: run_id.to_string(),
             workflow_name: "wf".to_string(),
+            aborted_step: None,
             timestamp: 2.0,
         })
         .unwrap();
@@ -496,6 +498,7 @@ mod tests {
             WorkflowEvent::RunAborted {
                 run_id: "00000000-0000-0000-0000-000000000904".to_string(),
                 workflow_name: "wf".to_string(),
+                aborted_step: None,
                 timestamp: 2.0,
             },
         ];
@@ -708,6 +711,7 @@ mod tests {
             WorkflowEvent::RunAborted {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
+                aborted_step: None,
                 timestamp: 7.0,
             },
             WorkflowEvent::OutputCollected {
