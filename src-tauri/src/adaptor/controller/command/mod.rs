@@ -3,7 +3,6 @@ pub(crate) mod app_config;
 pub(crate) mod code;
 pub(crate) mod external_editor;
 pub(crate) mod hooks;
-pub(crate) mod mcp;
 pub(crate) mod notification;
 pub(crate) mod pty_session;
 pub(crate) mod repository;
@@ -134,7 +133,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::repository::repo_paths::get_repo_paths,
             crate::adaptor::controller::command::repository::repo_paths::add_repo_path,
             crate::adaptor::controller::command::repository::repo_paths::remove_repo_path,
-            // MCP Server
             // Review comments
             crate::review_comments::list_review_threads,
             crate::review_comments::get_review_thread,
@@ -205,7 +203,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
     app_config::register(&mut router);
     external_editor::register(&mut router);
     hooks::register(&mut router);
-    mcp::register(&mut router);
     notification::register(&mut router);
     pty_session::register(&mut router);
     workspace_state::register(&mut router);

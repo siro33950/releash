@@ -26,8 +26,6 @@ pub trait FileContentRepository: Send + Sync {
     ) -> Result<String, CodeError>;
     fn staged_content(&self, file_path: &str) -> Result<String, CodeError>;
     fn binary_staged_content(&self, file_path: &str) -> Result<String, CodeError>;
-    /// ワーキングコピー（作業ツリー）上のファイル内容をそのまま読み出す。
-    fn file_in_worktree(&self, file_path: &str) -> Result<String, CodeError>;
 }
 
 /// 差分の Approve（staging）に関わる index 書き込み操作。

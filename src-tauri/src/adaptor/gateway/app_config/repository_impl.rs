@@ -109,11 +109,7 @@ impl ConfigSecretRepository for AppConfig {
         self.get_config()
             .map(|config| {
                 let mut values = Vec::new();
-                for value in [
-                    config.server.token,
-                    config.server.mcp_token,
-                    config.server.notify.webhook_url,
-                ] {
+                for value in [config.server.token, config.server.notify.webhook_url] {
                     if value.len() >= 8 {
                         values.push(value);
                     }
@@ -249,10 +245,6 @@ pub fn load_or_create_config(path: &Path) -> Result<ReleashConfig, String> {
         config.server.token = generate_token();
         needs_write = true;
     }
-    if config.server.mcp_token.is_empty() {
-        config.server.mcp_token = generate_token();
-        needs_write = true;
-    }
     if needs_write {
         write_config(path, &config)?;
     }
@@ -342,8 +334,6 @@ mod tests {
         assert_eq!(config.server.bind, "127.0.0.1");
         assert_eq!(config.server.port, 9700);
         assert_eq!(config.server.token.len(), TOKEN_LENGTH);
-        assert_eq!(config.server.mcp_port, 19801);
-        assert_eq!(config.server.mcp_token.len(), TOKEN_LENGTH);
         assert!(!config.server.tls.enabled);
         assert!(config.telemetry_enabled);
         assert!(path.exists());
@@ -359,6 +349,31 @@ mod tests {
 bind = "0.0.0.0"
 port = 8080
 token = "existing_token_value_here_with_enough_length_!!"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+
+        assert_eq!(config.server.bind, "0.0.0.0");
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(
+            config.server.token,
+            "existing_token_value_here_with_enough_length_!!"
+        );
+    }
+
+    #[test]
+    fn loads_existing_config_with_legacy_mcp_fields() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+[server]
+bind = "0.0.0.0"
+port = 8080
+token = "existing_token_value_here_with_enough_length_!!"
+mcp_port = 19801
+mcp_token = "legacy_mcp_token_value"
 "#;
         fs::write(&path, content).unwrap();
 

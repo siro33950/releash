@@ -10,7 +10,6 @@ import {
 	Loader2,
 	Monitor,
 	Palette,
-	Plug,
 	Shield,
 	Trash2,
 	Workflow,
@@ -46,7 +45,6 @@ import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { useAutomation } from "@/hooks/useAutomation";
-import { useMcpConfig } from "@/hooks/useMcpConfig";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
 import { useWebhookConfig } from "@/hooks/useWebhookConfig";
 import { trackEvent } from "@/lib/telemetry";
@@ -66,7 +64,6 @@ import {
 } from "@/types/webhook";
 import { AutomationSection } from "./AutomationSection";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
-import { McpSettingsSection } from "./McpSettingsSection";
 import { NotionSettingsSection } from "./NotionSettingsSection";
 
 const AGENT_TYPE_KEYS = Object.keys(AGENT_CONFIGS) as AgentType[];
@@ -309,7 +306,6 @@ type SettingsSection =
 	| "repositories"
 	| "notion"
 	| "agent"
-	| "mcp"
 	| "background"
 	| "notifications"
 	| "automation"
@@ -325,7 +321,6 @@ const SETTINGS_SECTIONS: {
 	{ id: "repositories", label: "Repositories", icon: GitBranch },
 	{ id: "notion", label: "Notion", icon: BookOpen },
 	{ id: "agent", label: "Agent", icon: Bot },
-	{ id: "mcp", label: "MCP", icon: Plug },
 	{ id: "background", label: "Background", icon: Monitor },
 	{ id: "notifications", label: "Notifications", icon: Bell },
 	{ id: "automation", label: "Automation", icon: Workflow },
@@ -1451,7 +1446,6 @@ export function SettingsModal({
 	const background = useBackgroundConfig();
 	const repos = useRepoChanges();
 	const notion = useNotionSettings(repoPaths);
-	const mcp = useMcpConfig();
 	const externalEditor = useExternalEditorConfig(open);
 	const automation = useAutomation(open);
 	const workflow = useWorkflowSettings(open);
@@ -1466,7 +1460,6 @@ export function SettingsModal({
 		if (open) {
 			repos.reset();
 			notion.reset();
-			mcp.reload();
 		}
 	}
 
@@ -1533,7 +1526,6 @@ export function SettingsModal({
 	const { isDirty: backgroundIsDirty, save: backgroundSave } = background;
 	const { isDirty: reposIsDirty, save: reposSave } = repos;
 	const { isDirty: notionIsDirty, save: notionSave } = notion;
-	const { isDirty: mcpIsDirty, save: mcpSave } = mcp;
 	const { isDirty: editorIsDirty, save: editorSave } = externalEditor;
 	const { isDirty: workflowIsDirty, save: workflowSave } = workflow;
 	const { isDirty: shortcutsIsDirty, save: shortcutsSave } = shortcuts;
@@ -1553,9 +1545,6 @@ export function SettingsModal({
 			}
 			if (notionIsDirty) {
 				await notionSave();
-			}
-			if (mcpIsDirty) {
-				await mcpSave();
 			}
 			if (editorIsDirty) {
 				await editorSave();
@@ -1586,8 +1575,6 @@ export function SettingsModal({
 		reposSave,
 		notionIsDirty,
 		notionSave,
-		mcpIsDirty,
-		mcpSave,
 		editorIsDirty,
 		editorSave,
 		workflowIsDirty,
@@ -1602,7 +1589,6 @@ export function SettingsModal({
 		backgroundIsDirty ||
 		reposIsDirty ||
 		notionIsDirty ||
-		mcpIsDirty ||
 		editorIsDirty ||
 		workflowIsDirty ||
 		shortcutsIsDirty;
@@ -1657,8 +1643,6 @@ export function SettingsModal({
 						onCopyHooks={handleCopyHooks}
 					/>
 				);
-			case "mcp":
-				return <McpSettingsSection mcp={mcp} />;
 			case "background":
 				return <BackgroundSection background={background} />;
 			case "notifications":

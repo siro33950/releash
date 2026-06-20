@@ -50,32 +50,6 @@ impl AppConfigUsecase {
         Ok(token)
     }
 
-    pub fn update_mcp_config(&self, port: u16, token: String) -> Result<(), UsecaseError> {
-        let token = token.trim().to_string();
-        validate_port("mcp_port", port)?;
-        if token.is_empty() {
-            return Err(UsecaseError::InvalidInput(
-                "mcp_token must not be empty".to_string(),
-            ));
-        }
-        self.repository.update(Box::new(move |config| {
-            config.server.mcp_port = port;
-            config.server.mcp_token = token;
-            Ok(())
-        }))?;
-        Ok(())
-    }
-
-    pub fn regenerate_mcp_token(&self) -> Result<String, UsecaseError> {
-        let token = generate_token();
-        let next_token = token.clone();
-        self.repository.update(Box::new(move |config| {
-            config.server.mcp_token = next_token;
-            Ok(())
-        }))?;
-        Ok(token)
-    }
-
     pub fn update_app_settings(&self, app: AppSettings) -> Result<(), UsecaseError> {
         self.repository.update(Box::new(move |config| {
             config.app.close_to_tray = app.close_to_tray;
@@ -160,8 +134,6 @@ mod app_config_usecase_tests {
                 port: 9700,
                 hook_port: 19700,
                 token: "server-token".to_string(),
-                mcp_port: 19801,
-                mcp_token: "mcp-token".to_string(),
                 tls: TlsConfig {
                     enabled: false,
                     cert: String::new(),
@@ -206,33 +178,5 @@ mod app_config_usecase_tests {
 
         // Then
         assert_eq!(usecase.query().get_server_config().unwrap().port, 18080);
-    }
-
-    #[test]
-    fn test_mcp設定更新_空トークンはエラー() {
-        // Given
-        let repo = Arc::new(FakeConfigRepository::new());
-        let usecase = AppConfigUsecase::new(repo);
-
-        // When
-        let result = usecase.update_mcp_config(19801, " ".to_string());
-
-        // Then
-        assert!(matches!(result, Err(UsecaseError::InvalidInput(_))));
-    }
-
-    #[test]
-    fn test_mcpトークン再生成_旧値と異なる値を保存する() {
-        // Given
-        let repo = Arc::new(FakeConfigRepository::new());
-        let usecase = AppConfigUsecase::new(repo);
-        let old = usecase.query().get_mcp_config().unwrap().token;
-
-        // When
-        let new = usecase.regenerate_mcp_token().unwrap();
-
-        // Then
-        assert_ne!(new, old);
-        assert_eq!(usecase.query().get_mcp_config().unwrap().token, new);
     }
 }

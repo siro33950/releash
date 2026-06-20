@@ -46,7 +46,7 @@ src-tauri/src/
 │   ├── presenter/                      # レスポンス整形
 │   └── protocol/                       # WebSocketメッセージ等（リクエスト／レスポンス型）
 ├── infrastructure/                     # 外部リソースクライアント
-│   ├── external/                       # GitHub, Notion, Webhook(Slack/Discord), MCP
+│   ├── external/                       # GitHub, Notion, Webhook(Slack/Discord)
 │   ├── middleware/
 │   ├── persistence/                    # ファイルシステム, TOML, JSON
 │   └── git/                            # git2 クライアント
@@ -76,7 +76,7 @@ infrastructure → adaptor（controller / gateway / presenter）→ usecase → 
 
 - **同じ操作の実装は 1 つに集約する。** 同一の操作（例: dirty count 算出、worktree 列挙）が複数箇所に実装されていること自体が問題であり、設定差異・挙動差はその症状にすぎない。単一の関数・イテレータに集約し、結果の一致を構造的に保証する。
 
-## ドメイン一覧（15個）
+## ドメイン一覧（14個）
 
 | ドメイン | 含まれる責務 |
 |---|---|
@@ -93,7 +93,6 @@ infrastructure → adaptor（controller / gateway / presenter）→ usecase → 
 | `remote_access` | vpn_detect、qr_code、tls |
 | `git_host` | GitHub PR/Issue |
 | `notion` | Notion API |
-| `mcp` | MCP サーバ |
 | `external_editor` | 外部エディタ起動 |
 
 ## 各層の規約

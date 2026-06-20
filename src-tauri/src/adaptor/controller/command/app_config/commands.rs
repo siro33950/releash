@@ -3,13 +3,10 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::adaptor::gateway::app_config::{
-    app_to_domain, app_to_model, workflow_to_domain, workflow_to_model, AppSection, McpConfig,
-    WorkflowSection,
+    app_to_domain, app_to_model, workflow_to_domain, workflow_to_model, AppSection, WorkflowSection,
 };
-use crate::adaptor::gateway::mcp::McpServerGatewayImpl;
 use crate::domain::app_config::ConfigRepository;
 use crate::usecase::app_config::AppConfigUsecase;
-use crate::usecase::mcp::McpLifecycleUsecase;
 
 fn build_usecase(app_config: Arc<dyn ConfigRepository>) -> AppConfigUsecase {
     AppConfigUsecase::new(app_config)
@@ -17,11 +14,6 @@ fn build_usecase(app_config: Arc<dyn ConfigRepository>) -> AppConfigUsecase {
 
 fn map_join_error(error: tokio::task::JoinError) -> String {
     format!("task join error: {error}")
-}
-
-async fn restart_mcp_if_running(app: &tauri::AppHandle) -> Result<(), String> {
-    let lifecycle = McpLifecycleUsecase::new(Arc::new(McpServerGatewayImpl));
-    lifecycle.restart_if_running(app).await.map(|_| ())
 }
 
 #[tauri::command]
@@ -34,45 +26,6 @@ pub async fn update_telemetry_enabled(
         .await
         .map_err(map_join_error)?
         .map_err(String::from)
-}
-
-#[tauri::command]
-pub fn get_mcp_config(state: State<'_, Arc<dyn ConfigRepository>>) -> Result<McpConfig, String> {
-    let usecase = build_usecase(state.inner().clone());
-    let mcp = usecase.query().get_mcp_config().map_err(String::from)?;
-    Ok(McpConfig {
-        port: mcp.port,
-        token: mcp.token,
-    })
-}
-
-#[tauri::command]
-pub async fn update_mcp_config(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<dyn ConfigRepository>>,
-    port: u16,
-    token: String,
-) -> Result<(), String> {
-    let usecase = build_usecase(state.inner().clone());
-    tokio::task::spawn_blocking(move || usecase.update_mcp_config(port, token))
-        .await
-        .map_err(map_join_error)?
-        .map_err(String::from)?;
-    restart_mcp_if_running(&app).await
-}
-
-#[tauri::command]
-pub async fn regenerate_mcp_token(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<dyn ConfigRepository>>,
-) -> Result<String, String> {
-    let usecase = build_usecase(state.inner().clone());
-    let token = tokio::task::spawn_blocking(move || usecase.regenerate_mcp_token())
-        .await
-        .map_err(map_join_error)?
-        .map_err(String::from)?;
-    restart_mcp_if_running(&app).await?;
-    Ok(token)
 }
 
 #[tauri::command]

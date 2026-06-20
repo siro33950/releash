@@ -48,7 +48,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut config = ReleashConfig::default();
         config.server.token = "token-12345678".to_string();
-        config.server.mcp_token = "token-12345678".to_string();
         config.server.notify.webhook_url = "https://hooks.example/secret-abcdef".to_string();
         let app_config: Arc<dyn ConfigSecretRepository> =
             Arc::new(AppConfig::new(config, tmp.path().join("config.toml")));

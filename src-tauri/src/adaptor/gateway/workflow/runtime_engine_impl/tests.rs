@@ -1461,7 +1461,6 @@ fn mask_sensitive_text_redacts_policy_secrets() {
 fn configured_secret_values_include_notion_api_tokens() {
     let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
     cfg.server.token = "SERVER_TOKEN_123".to_string();
-    cfg.server.mcp_token = "MCP_TOKEN_123456".to_string();
     cfg.notion.insert(
         "/repo".to_string(),
         crate::notion::types::NotionRepoConfig {
@@ -1478,7 +1477,6 @@ fn configured_secret_values_include_notion_api_tokens() {
         ));
     let secrets = config_repository.configured_secret_values().unwrap();
     assert!(secrets.contains(&"SERVER_TOKEN_123".to_string()));
-    assert!(secrets.contains(&"MCP_TOKEN_123456".to_string()));
     assert!(secrets.contains(&"NOTION_TOKEN_123456".to_string()));
 
     let masked = workflow_secret_masker::mask_sensitive_text(

@@ -8,9 +8,6 @@ const COMMAND_NAMES: &[&str] = &[
     "update_app_settings",
     "get_crash_reporting_enabled",
     "update_crash_reporting",
-    "get_mcp_config",
-    "update_mcp_config",
-    "regenerate_mcp_token",
 ];
 
 pub(crate) fn register(router: &mut super::CommandRouter) {
@@ -27,8 +24,5 @@ pub(crate) fn invoke_handler(
         commands::update_app_settings,
         commands::get_crash_reporting_enabled,
         commands::update_crash_reporting,
-        commands::get_mcp_config,
-        commands::update_mcp_config,
-        commands::regenerate_mcp_token,
     ]
 }
