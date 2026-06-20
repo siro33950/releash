@@ -43,12 +43,6 @@ pub struct WorkflowSection {
     pub approval_auto_approve: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpConfig {
-    pub port: u16,
-    pub token: String,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClaudeAgentSection {
     /// registry の `fixed_models()` が優先されるため通常未使用（互換用に残す）。
@@ -144,18 +138,10 @@ pub struct ServerSection {
     pub hook_port: u16,
     #[serde(default)]
     pub token: String,
-    #[serde(default = "default_mcp_port")]
-    pub mcp_port: u16,
-    #[serde(default)]
-    pub mcp_token: String,
     #[serde(default)]
     pub tls: TlsSection,
     #[serde(default)]
     pub notify: NotifySection,
-}
-
-fn default_mcp_port() -> u16 {
-    19801
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -231,8 +217,6 @@ impl Default for ServerSection {
             port: default_port(),
             hook_port: default_hook_port(),
             token: String::new(),
-            mcp_port: default_mcp_port(),
-            mcp_token: String::new(),
             tls: TlsSection::default(),
             notify: NotifySection::default(),
         }
@@ -263,8 +247,6 @@ pub fn server_to_domain(server: &ServerSection) -> domain_vo::ServerConfig {
         port: server.port,
         hook_port: server.hook_port,
         token: server.token.clone(),
-        mcp_port: server.mcp_port,
-        mcp_token: server.mcp_token.clone(),
         tls: domain_vo::TlsConfig {
             enabled: server.tls.enabled,
             cert: server.tls.cert.clone(),
@@ -280,8 +262,6 @@ pub fn server_to_model(server: domain_vo::ServerConfig) -> ServerSection {
         port: server.port,
         hook_port: server.hook_port,
         token: server.token,
-        mcp_port: server.mcp_port,
-        mcp_token: server.mcp_token,
         tls: TlsSection {
             enabled: server.tls.enabled,
             cert: server.tls.cert,
@@ -420,8 +400,6 @@ mod config_models_tests {
                 port: 18080,
                 hook_port: 28080,
                 token: "server-token".to_string(),
-                mcp_port: 28081,
-                mcp_token: "mcp-token".to_string(),
                 tls: TlsSection {
                     enabled: true,
                     cert: "/tmp/cert.pem".to_string(),

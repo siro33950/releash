@@ -1,6 +1,6 @@
 //! repository ドメインの Command 側ユースケース（業務手順）と、読み取りの集約入口。
 //!
-//! controller / ws_server / watcher / workflow / mcp はこの Usecase だけを入口とする。
+//! controller / ws_server / watcher / workflow はこの Usecase だけを入口とする。
 //! 書き込み・複数集約のオーケストレーションに加え、Entity をそのまま返す読み取りも
 //! Repository へ委譲してここから提供する。表示・転送向けの read model（DTO）の生成だけは
 //! 読み取りクエリサービス（協力者）へ委譲する。

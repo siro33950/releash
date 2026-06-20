@@ -66,9 +66,6 @@ sentry = { version = "0.48", default-features = false, features = ["backtrace", 
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-aptabase = "1.0.0"
-rmcp = { version = "1.7", features = ["server", "transport-streamable-http-server", "schemars"] }
-axum = "0.8"
-tokio-util = "0.7"
 lsp-types = "0.97"
 bytes = "1"
 flate2 = "1"

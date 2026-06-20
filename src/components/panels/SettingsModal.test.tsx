@@ -41,12 +41,6 @@ describe("SettingsModal", () => {
 					return Promise.resolve('{"hooks":{}}');
 				case "get_hooks_status":
 					return Promise.resolve("not_configured");
-				case "get_mcp_config":
-					return Promise.resolve({ port: 19801, token: "test-token" });
-				case "get_configured_agents":
-					return Promise.resolve([]);
-				case "preview_agent_mcp_config":
-					return Promise.resolve("");
 				case "get_agent_shortcut_settings":
 					return Promise.resolve([
 						{
@@ -309,12 +303,6 @@ describe("SettingsModal", () => {
 						desktop_mode: "always",
 						inactive_timeout_minutes: 2,
 					});
-				case "get_mcp_config":
-					return Promise.resolve({ port: 19801, token: "test-token" });
-				case "get_configured_agents":
-					return Promise.resolve([]);
-				case "preview_agent_mcp_config":
-					return Promise.resolve("");
 				default:
 					return Promise.resolve(null);
 			}
@@ -359,12 +347,6 @@ describe("SettingsModal", () => {
 					return Promise.resolve('{"hooks":{}}');
 				case "get_hooks_status":
 					return Promise.resolve("not_configured");
-				case "get_mcp_config":
-					return Promise.resolve({ port: 19801, token: "test-token" });
-				case "get_configured_agents":
-					return Promise.resolve([]);
-				case "preview_agent_mcp_config":
-					return Promise.resolve("");
 				case "update_workflow_config":
 				case "update_notify_config":
 					return Promise.resolve(null);
@@ -471,12 +453,6 @@ describe("SettingsModal", () => {
 						desktop_mode: "always",
 						inactive_timeout_minutes: 2,
 					});
-				case "get_mcp_config":
-					return Promise.resolve({ port: 19801, token: "test-token" });
-				case "get_configured_agents":
-					return Promise.resolve([]);
-				case "preview_agent_mcp_config":
-					return Promise.resolve("");
 				case "update_external_editor":
 					return Promise.resolve(null);
 				default:
@@ -527,12 +503,6 @@ describe("SettingsModal", () => {
 						desktop_mode: "always",
 						inactive_timeout_minutes: 2,
 					});
-				case "get_mcp_config":
-					return Promise.resolve({ port: 19801, token: "test-token" });
-				case "get_configured_agents":
-					return Promise.resolve([]);
-				case "preview_agent_mcp_config":
-					return Promise.resolve("");
 				default:
 					return Promise.resolve(null);
 			}
@@ -753,12 +723,6 @@ describe("SettingsModal", () => {
 							desktop_mode: "always",
 							inactive_timeout_minutes: 2,
 						});
-					case "get_mcp_config":
-						return Promise.resolve({ port: 19801, token: "test-token" });
-					case "get_configured_agents":
-						return Promise.resolve([]);
-					case "preview_agent_mcp_config":
-						return Promise.resolve("");
 					default:
 						return Promise.resolve(null);
 				}

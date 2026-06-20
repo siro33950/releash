@@ -200,25 +200,6 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
                 )));
             }
         }
-        if let Some(mcp_handle) = app.try_state::<crate::adaptor::gateway::mcp::McpServerHandle>() {
-            if let Some(info) = mcp_handle.connection_info() {
-                extra_env.push(("RELEASH_MCP_URL".to_string(), info.url));
-                extra_env.push(("RELEASH_MCP_TOKEN".to_string(), info.token));
-            } else if let Some(app_config) =
-                app.try_state::<std::sync::Arc<dyn crate::domain::app_config::ConfigRepository>>()
-            {
-                if let Ok(config) = app_config.load() {
-                    let port = config.server.mcp_port;
-                    let token = config.server.mcp_token.clone();
-                    extra_env.push((
-                        "RELEASH_MCP_URL".to_string(),
-                        format!("http://127.0.0.1:{port}/mcp"),
-                    ));
-                    extra_env.push(("RELEASH_MCP_TOKEN".to_string(), token));
-                }
-            }
-        }
-
         let backend_session = self
             .backend
             .spawn(SpawnConfig {

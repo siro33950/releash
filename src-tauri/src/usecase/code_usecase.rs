@@ -88,10 +88,6 @@ impl CodeUsecase {
         self.query.get_binary_staged_content(file_path)
     }
 
-    pub fn get_file_in_worktree(&self, file_path: &str) -> Result<String, CodeUsecaseError> {
-        self.query.get_file_in_worktree(file_path)
-    }
-
     // ── branch diff ──
 
     pub fn get_branch_diff_summary(
@@ -282,9 +278,6 @@ mod code_usecase_tests {
             Ok("c".to_string())
         }
         fn binary_staged_content(&self, _f: &str) -> Result<String, CodeError> {
-            Ok("c".to_string())
-        }
-        fn file_in_worktree(&self, _f: &str) -> Result<String, CodeError> {
             Ok("c".to_string())
         }
     }

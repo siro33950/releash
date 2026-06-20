@@ -82,14 +82,14 @@ describe("parseStreamJson", () => {
 				content: [
 					{
 						type: "tool_use",
-						name: "mcp__releash__post_review_comment",
+						name: "mcp__notion__get_page",
 						input: { file: "src/app.ts", line: 42 },
 					},
 				],
 			},
 		};
 		expect(parseStreamJson(JSON.stringify(event))).toBe(
-			"[mcp__releash__post_review_comment] file: src/app.ts, line: 42",
+			"[mcp__notion__get_page] file: src/app.ts, line: 42",
 		);
 	});
 
@@ -237,12 +237,12 @@ describe("parseStreamJson", () => {
 			item: {
 				id: "mcp_1",
 				type: "mcp_tool_call",
-				name: "mcp__releash__post_review_comment",
+				name: "mcp__notion__get_page",
 				arguments: { file: "src/app.ts", line: 42 },
 			},
 		};
 		expect(parseStreamJson(JSON.stringify(event))).toBe(
-			"[mcp__releash__post_review_comment] file: src/app.ts, line: 42",
+			"[mcp__notion__get_page] file: src/app.ts, line: 42",
 		);
 	});
 

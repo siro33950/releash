@@ -79,7 +79,6 @@ pub fn run() {
         .manage(ws_server::WsServerHandle::default())
         .manage(Arc::new(git_host::PrCache::new()))
         .manage(Arc::new(git_host::IssueCache::new()))
-        .manage(adaptor::gateway::mcp::McpServerHandle::default())
         .manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
             parking_lot::RwLock::new(Vec::new()),
         ))
@@ -368,18 +367,6 @@ pub fn run() {
                         }
                     }
                 }
-            }
-
-            // Auto-start MCP server
-            {
-                let mcp_app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(e) =
-                        adaptor::gateway::mcp::auto_start_mcp_server(&mcp_app_handle).await
-                    {
-                        log::error!("MCP server auto-start failed: {e}");
-                    }
-                });
             }
 
             // Clean up orphan agent processes from previous crashes.

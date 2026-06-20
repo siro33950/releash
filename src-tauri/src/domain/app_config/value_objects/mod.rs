@@ -17,8 +17,6 @@ pub struct ServerConfig {
     pub port: u16,
     pub hook_port: u16,
     pub token: String,
-    pub mcp_port: u16,
-    pub mcp_token: String,
     pub tls: TlsConfig,
     pub notify: NotifyConfig,
 }
