@@ -117,6 +117,9 @@ pub struct AgentProcess {
     /// Retained after turn_complete so post-turn background task events
     /// can still be accumulated and emitted via `agent-streaming-updated`.
     pub last_message_id: Option<String>,
+    /// Message id whose store-backed parts cannot be trusted as a post-turn
+    /// base because the latest full-message persist is pending or failed.
+    post_turn_base_untrusted_message_id: Option<String>,
     /// Maps background task_id (agentId) -> tool_use_id.
     /// Populated from ToolResult content ("agentId: XXX"), used to fill
     /// missing tool_use_id in task_notification messages from the SDK.
@@ -194,6 +197,7 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         streaming_message_id: None,
         streaming_parts: Vec::new(),
         last_message_id: None,
+        post_turn_base_untrusted_message_id: None,
         task_id_map: HashMap::new(),
         pending_messages: VecDeque::new(),
         current_permission_mode: "edit".to_string(),
@@ -587,6 +591,7 @@ impl AgentProcess {
         self.pending_stream_bytes = 0;
         self.last_stream_emit_at = None;
         self.last_message_id = None;
+        self.post_turn_base_untrusted_message_id = None;
         self.task_id_map.clear();
     }
 
@@ -619,6 +624,38 @@ impl AgentProcess {
             .map_err(|e| format!("Failed to flush setMode: {e}"))?;
 
         Ok(())
+    }
+}
+
+fn release_completed_turn_streaming_buffer(proc: &mut AgentProcess) -> Vec<MessagePart> {
+    let released_parts = std::mem::take(&mut proc.streaming_parts);
+    proc.pending_stream_part_count = 0;
+    proc.pending_stream_bytes = 0;
+    proc.last_stream_emit_at = None;
+    released_parts
+}
+
+fn mark_post_turn_store_base_untrusted(proc: &mut AgentProcess, message_id: &str) {
+    proc.post_turn_base_untrusted_message_id = Some(message_id.to_string());
+}
+
+fn clear_post_turn_store_base_untrusted_after_persist_success(
+    proc: &mut AgentProcess,
+    message_id: &str,
+) {
+    if proc.post_turn_base_untrusted_message_id.as_deref() == Some(message_id) {
+        proc.post_turn_base_untrusted_message_id = None;
+    }
+}
+
+async fn clear_post_turn_store_base_untrusted_for_message(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    message_id: &str,
+) {
+    let mut map = handles.lock().await;
+    if let Some(proc) = map.get_mut(chat_session_id) {
+        clear_post_turn_store_base_untrusted_after_persist_success(proc, message_id);
     }
 }
 
@@ -872,27 +909,27 @@ fn persist_streaming_parts<R: tauri::Runtime>(
     message_id: &str,
     parts: &[MessagePart],
     completed_at: Option<f64>,
-) {
+) -> bool {
     let data_dir = match resolve_data_dir(app) {
         Ok(d) => d,
         Err(e) => {
             log::warn!(
                 "Failed to resolve data dir for streaming persist (session {chat_session_id}): {e}"
             );
-            return;
+            return false;
         }
     };
     let mut session = match session_store.get_session(&data_dir, chat_session_id) {
         Ok(Some(s)) => s,
         Ok(None) => {
             log::warn!("Session not found for streaming persist: {chat_session_id}");
-            return;
+            return false;
         }
         Err(e) => {
             log::warn!(
                 "Failed to get session for streaming persist (session {chat_session_id}): {e}"
             );
-            return;
+            return false;
         }
     };
     if let Some(msg) = session.messages.iter_mut().find(|m| m.id == message_id) {
@@ -909,8 +946,57 @@ fn persist_streaming_parts<R: tauri::Runtime>(
         session.updated_at = updated_at;
         if let Err(e) = session_store.save_session(&data_dir, &session) {
             log::warn!("Failed to persist streaming parts for session {chat_session_id}: {e}");
+            return false;
         }
+        return true;
     }
+    log::warn!(
+        "Message not found for streaming persist: session {chat_session_id}, message {message_id}"
+    );
+    false
+}
+
+fn load_post_turn_base_parts_from_store<R: tauri::Runtime>(
+    session_store: &SessionStore,
+    app: &tauri::AppHandle<R>,
+    chat_session_id: &str,
+    message_id: &str,
+) -> Option<Vec<MessagePart>> {
+    let data_dir = match resolve_data_dir(app) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!(
+                "Failed to resolve data dir for post-turn streaming reseed \
+                 (session {chat_session_id}, message {message_id}): {e}"
+            );
+            return None;
+        }
+    };
+    let session = match session_store.get_session(&data_dir, chat_session_id) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            log::warn!(
+                "Session not found for post-turn streaming reseed: \
+                 session {chat_session_id}, message {message_id}"
+            );
+            return None;
+        }
+        Err(e) => {
+            log::warn!(
+                "Failed to get session for post-turn streaming reseed \
+                 (session {chat_session_id}, message {message_id}): {e}"
+            );
+            return None;
+        }
+    };
+    let Some(message) = session.messages.iter().find(|m| m.id == message_id) else {
+        log::warn!(
+            "Message not found for post-turn streaming reseed: \
+             session {chat_session_id}, message {message_id}"
+        );
+        return None;
+    };
+    Some(message.parts.clone().unwrap_or_default())
 }
 
 fn emit_session_state_changed<R: tauri::Runtime>(
@@ -1233,11 +1319,12 @@ fn force_flush_pending_streaming<F>(
     chat_session_id: &str,
     message_id: &str,
     mut emit: F,
-) where
+) -> bool
+where
     F: FnMut(&[MessagePart]) -> (bool, bool),
 {
     let Some(snapshot) = prepare_streaming_flush(proc) else {
-        return;
+        return true;
     };
     let (tauri_ok, ws_ok) = emit(&snapshot.parts);
     apply_streaming_emit_result(
@@ -1247,22 +1334,7 @@ fn force_flush_pending_streaming<F>(
         &snapshot,
         tauri_ok,
         ws_ok,
-    );
-}
-
-/// Attempt to emit the cumulative `streaming_parts` payload. No-op when the
-/// pending buffer is empty (prevents idle-tick re-delivery and double-flush
-/// from forced-flush paths). On success, clears pending and updates
-/// `last_stream_emit_at`. On failure, retains both so the next flush retries.
-fn flush_streaming<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    proc: &mut AgentProcess,
-    chat_session_id: &str,
-    message_id: &str,
-) {
-    force_flush_pending_streaming(proc, chat_session_id, message_id, |parts| {
-        emit_streaming_parts(app, chat_session_id, message_id, parts.to_vec())
-    });
+    )
 }
 
 /// Force-flush pending streaming delta before a turn-phase transition
@@ -1288,7 +1360,7 @@ where
     let Some(mid) = proc.streaming_message_id.clone() else {
         return was_streaming;
     };
-    force_flush_pending_streaming(proc, chat_session_id, &mid, |parts| {
+    let _ = force_flush_pending_streaming(proc, chat_session_id, &mid, |parts| {
         emit_stream(&mid, parts)
     });
     was_streaming
@@ -1337,6 +1409,7 @@ struct TurnCompleteTransition {
     final_msg_id: Option<String>,
     final_parts: Vec<MessagePart>,
     turn_token_usage: Option<(u64, u64)>,
+    released_streaming_parts: Vec<MessagePart>,
 }
 
 /// Run the in-lock part of the `turn_complete` transition: force-flush
@@ -1372,11 +1445,22 @@ where
     if final_msg_id.is_some() {
         proc.last_message_id.clone_from(&final_msg_id);
     }
+    if was_streaming && !final_parts.is_empty() {
+        if let Some(ref mid) = final_msg_id {
+            mark_post_turn_store_base_untrusted(proc, mid);
+        }
+    }
+    let released_streaming_parts = if exit_code != 0 || proc.pending_stream_part_count == 0 {
+        release_completed_turn_streaming_buffer(proc)
+    } else {
+        Vec::new()
+    };
     TurnCompleteTransition {
         was_streaming,
         final_msg_id,
         final_parts,
         turn_token_usage,
+        released_streaming_parts,
     }
 }
 
@@ -1419,12 +1503,11 @@ where
 {
     let was_initializing = proc.state == BridgeState::Initializing;
     if proc.state == BridgeState::Streaming {
-        let prev_len = proc.streaming_parts.len();
-        accumulate_sdk_message(msg, &mut proc.streaming_parts, &mut proc.task_id_map);
-        let delta: Vec<MessagePart> = proc.streaming_parts[prev_len..].to_vec();
-        if !delta.is_empty() {
-            enqueue_pending_delta(proc, &delta);
-        }
+        // `accumulate_sdk_message` does not synthesize Error parts; add it here
+        // so the crash payload carries the error before the turn-complete flush.
+        let part = sdk_error_part_from_message(msg);
+        proc.streaming_parts.push(part.clone());
+        enqueue_pending_delta(proc, std::slice::from_ref(&part));
     }
     let turn_complete = run_turn_complete_transition_locked(proc, chat_session_id, 1, emit_stream);
     let context_restore_failed_on_init = !turn_complete.was_streaming
@@ -1513,15 +1596,468 @@ fn should_flush_per_delta(proc: &AgentProcess, delta: &[MessagePart], post_turn:
     force || streaming_interval_elapsed(proc)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum PostTurnBaseRequirement {
+    RequiresBase,
+    AccumulatedWithoutParts,
+    NotAccumulated,
+}
+
+/// Keep this classifier in lockstep with `accumulate_sdk_message`; the
+/// `post_turn_base_requirement_matches_accumulate_sdk_message` test covers the
+/// msg_type/subtype table and should fail when either side drifts.
+fn post_turn_base_requirement_for_empty_buffer(
+    msg: &serde_json::Value,
+    task_id_map: &HashMap<String, String>,
+) -> PostTurnBaseRequirement {
+    let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match msg_type {
+        "stream_event" => {
+            let Some(delta) = msg
+                .get("event")
+                .filter(|event| {
+                    event.get("type").and_then(|v| v.as_str()) == Some("content_block_delta")
+                })
+                .and_then(|event| event.get("delta"))
+            else {
+                return PostTurnBaseRequirement::NotAccumulated;
+            };
+            match delta.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                "text_delta" if delta.get("text").and_then(|v| v.as_str()).is_some() => {
+                    PostTurnBaseRequirement::RequiresBase
+                }
+                "thinking_delta" if delta.get("thinking").and_then(|v| v.as_str()).is_some() => {
+                    PostTurnBaseRequirement::RequiresBase
+                }
+                _ => PostTurnBaseRequirement::NotAccumulated,
+            }
+        }
+        "assistant" => {
+            let has_part_change = msg
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(|content| content.as_array())
+                .is_some_and(|content| {
+                    content.iter().any(|block| {
+                        if block.get("type").and_then(|v| v.as_str()) != Some("tool_use") {
+                            return false;
+                        }
+                        if block.get("name").and_then(|v| v.as_str()) == Some("TodoWrite") {
+                            let input = block
+                                .get("input")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Object(Default::default()));
+                            extract_todo_items(&input).is_some()
+                        } else {
+                            true
+                        }
+                    })
+                });
+            if has_part_change {
+                PostTurnBaseRequirement::RequiresBase
+            } else {
+                PostTurnBaseRequirement::AccumulatedWithoutParts
+            }
+        }
+        "user" => {
+            let has_tool_result = msg
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(|content| content.as_array())
+                .is_some_and(|content| {
+                    content.iter().any(|block| {
+                        block.get("type").and_then(|v| v.as_str()) == Some("tool_result")
+                    })
+                });
+            if has_tool_result {
+                PostTurnBaseRequirement::RequiresBase
+            } else {
+                PostTurnBaseRequirement::AccumulatedWithoutParts
+            }
+        }
+        "todo_list_snapshot" => {
+            if extract_todo_items(msg).is_some() {
+                PostTurnBaseRequirement::RequiresBase
+            } else {
+                PostTurnBaseRequirement::AccumulatedWithoutParts
+            }
+        }
+        "permission_denied" | "permission_request" => PostTurnBaseRequirement::RequiresBase,
+        "system" => {
+            let subtype = msg.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+            match subtype {
+                "task_started" | "task_notification" | "task_progress" => {
+                    PostTurnBaseRequirement::RequiresBase
+                }
+                "task_updated" => {
+                    let mut tool_use_id = msg
+                        .get("tool_use_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if tool_use_id.is_empty() {
+                        if let Some(task_id) = msg.get("task_id").and_then(|v| v.as_str()) {
+                            if let Some(mapped) = task_id_map.get(task_id) {
+                                tool_use_id = mapped.clone();
+                            }
+                        }
+                    }
+                    if tool_use_id.is_empty() {
+                        PostTurnBaseRequirement::AccumulatedWithoutParts
+                    } else {
+                        PostTurnBaseRequirement::RequiresBase
+                    }
+                }
+                "init" => PostTurnBaseRequirement::NotAccumulated,
+                "compact_boundary" => PostTurnBaseRequirement::RequiresBase,
+                "hook_started"
+                | "hook_progress"
+                | "hook_response"
+                | "files_persisted"
+                | "local_command_output"
+                | "codex_realtime" => PostTurnBaseRequirement::AccumulatedWithoutParts,
+                _ => {
+                    if msg.get("status").and_then(|v| v.as_str()) == Some("compacting") {
+                        PostTurnBaseRequirement::RequiresBase
+                    } else {
+                        PostTurnBaseRequirement::NotAccumulated
+                    }
+                }
+            }
+        }
+        // Empty-buffer post-turn errors keep the pre-existing observed behavior:
+        // they are forwarded to the dedicated error handler, not persisted as
+        // post-turn message parts from this generic accumulation path.
+        "error" => PostTurnBaseRequirement::NotAccumulated,
+        _ => PostTurnBaseRequirement::NotAccumulated,
+    }
+}
+
+#[derive(Debug, Default)]
+struct AccumulateStreamMessageEffect {
+    accumulated: bool,
+    emit_msg_id: Option<String>,
+    should_persist: bool,
+    persist_parts: Vec<MessagePart>,
+    post_turn_reseed_message_id: Option<String>,
+    start_streaming_timer: bool,
+    released_streaming_parts: Vec<MessagePart>,
+}
+
+fn accumulate_loaded_post_turn_base_without_streaming_state<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    msg: &serde_json::Value,
+    base_mid: String,
+    base_parts: Vec<MessagePart>,
+    emit_stream: &mut F,
+) -> AccumulateStreamMessageEffect
+where
+    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+{
+    let mut parts = base_parts;
+    let mut task_id_map = task_id_map_from_parts(&parts);
+    let prev_parts = parts.clone();
+    let (acc, updated_parts) = accumulate_sdk_message(msg, &mut parts, &mut task_id_map);
+
+    if !acc {
+        return AccumulateStreamMessageEffect::default();
+    }
+
+    let mut delta: Vec<MessagePart> = parts[prev_parts.len()..].to_vec();
+    if let Some(up) = updated_parts {
+        delta.extend(up);
+    }
+    if delta.is_empty() && parts == prev_parts {
+        return AccumulateStreamMessageEffect {
+            accumulated: true,
+            ..AccumulateStreamMessageEffect::default()
+        };
+    }
+
+    let persist_parts = consolidate_parts_from_slice(&parts);
+    let _ = emit_stream(&base_mid, &persist_parts);
+
+    log::warn!(
+        "Persisting stale post-turn streaming reseed into loaded base: \
+         session {chat_session_id}, loaded message {base_mid}, current message {:?}, state {:?}",
+        proc.last_message_id,
+        proc.state
+    );
+
+    AccumulateStreamMessageEffect {
+        accumulated: true,
+        emit_msg_id: Some(base_mid),
+        should_persist: true,
+        persist_parts,
+        ..AccumulateStreamMessageEffect::default()
+    }
+}
+
+fn accumulate_stream_or_post_turn_message_locked<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    msg: &serde_json::Value,
+    elapsed_persist_ms: u64,
+    mut emit_stream: F,
+    post_turn_base: Option<(String, Vec<MessagePart>)>,
+) -> AccumulateStreamMessageEffect
+where
+    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+{
+    let in_streaming = proc.state == BridgeState::Streaming && proc.streaming_message_id.is_some();
+    let post_turn = !in_streaming && proc.last_message_id.is_some();
+
+    if let Some((base_mid, _)) = post_turn_base.as_ref() {
+        if !post_turn || proc.last_message_id.as_deref() != Some(base_mid.as_str()) {
+            let (base_mid, base_parts) = post_turn_base.expect("checked post_turn_base");
+            return accumulate_loaded_post_turn_base_without_streaming_state(
+                proc,
+                chat_session_id,
+                msg,
+                base_mid,
+                base_parts,
+                &mut emit_stream,
+            );
+        }
+    }
+
+    if !in_streaming && !post_turn {
+        return AccumulateStreamMessageEffect::default();
+    }
+
+    let mid = if in_streaming {
+        proc.streaming_message_id.clone()
+    } else {
+        proc.last_message_id.clone()
+    };
+
+    if post_turn && proc.streaming_parts.is_empty() && post_turn_base.is_none() {
+        match post_turn_base_requirement_for_empty_buffer(msg, &proc.task_id_map) {
+            PostTurnBaseRequirement::RequiresBase => {}
+            PostTurnBaseRequirement::AccumulatedWithoutParts => {
+                return AccumulateStreamMessageEffect {
+                    accumulated: true,
+                    ..AccumulateStreamMessageEffect::default()
+                };
+            }
+            PostTurnBaseRequirement::NotAccumulated => {
+                return AccumulateStreamMessageEffect::default();
+            }
+        }
+    }
+
+    if post_turn && proc.streaming_parts.is_empty() {
+        let Some(ref mid) = mid else {
+            return AccumulateStreamMessageEffect::default();
+        };
+        if proc.post_turn_base_untrusted_message_id.as_deref() == Some(mid.as_str()) {
+            log::warn!(
+                "Skipping post-turn streaming update because persisted base is not trusted: \
+                 session {chat_session_id}, message {mid}"
+            );
+            return AccumulateStreamMessageEffect {
+                accumulated: true,
+                ..AccumulateStreamMessageEffect::default()
+            };
+        }
+    }
+
+    if post_turn && proc.streaming_parts.is_empty() {
+        let Some(ref mid) = mid else {
+            return AccumulateStreamMessageEffect::default();
+        };
+        match post_turn_base {
+            Some((base_mid, base_parts)) if base_mid == mid.as_str() => {
+                proc.streaming_parts = base_parts;
+            }
+            Some((base_mid, _)) => {
+                log::warn!(
+                    "Post-turn streaming reseed message mismatch: session {chat_session_id}, \
+                     current message {mid}, loaded message {base_mid}"
+                );
+                return AccumulateStreamMessageEffect {
+                    post_turn_reseed_message_id: Some(mid.clone()),
+                    ..AccumulateStreamMessageEffect::default()
+                };
+            }
+            None => {
+                return AccumulateStreamMessageEffect {
+                    post_turn_reseed_message_id: Some(mid.clone()),
+                    ..AccumulateStreamMessageEffect::default()
+                };
+            }
+        }
+    }
+
+    let prev_len = proc.streaming_parts.len();
+    let accumulation =
+        accumulate_sdk_message_with_liveness(msg, &mut proc.streaming_parts, &mut proc.task_id_map);
+    let acc = accumulation.handled;
+    let updated_parts = accumulation.updated_parts;
+    if !acc {
+        if post_turn {
+            let start_streaming_timer = proc.pending_stream_part_count > 0;
+            let released_streaming_parts = if !start_streaming_timer {
+                release_completed_turn_streaming_buffer(proc)
+            } else {
+                Vec::new()
+            };
+            return AccumulateStreamMessageEffect {
+                start_streaming_timer,
+                released_streaming_parts,
+                ..AccumulateStreamMessageEffect::default()
+            };
+        }
+        return AccumulateStreamMessageEffect::default();
+    }
+
+    // Refresh the turn-liveness clock so the watchdog (#1178) does not time out
+    // an actively streaming turn. Mirrors the pre-refactor inline accumulation.
+    if in_streaming && accumulation.liveness {
+        proc.touch_liveness();
+    }
+
+    let mut delta: Vec<MessagePart> = proc.streaming_parts[prev_len..].to_vec();
+    if let Some(up) = updated_parts {
+        delta.extend(up);
+    }
+
+    if delta.is_empty() {
+        if post_turn {
+            let start_streaming_timer = proc.pending_stream_part_count > 0;
+            let released_streaming_parts = if !start_streaming_timer {
+                release_completed_turn_streaming_buffer(proc)
+            } else {
+                Vec::new()
+            };
+            return AccumulateStreamMessageEffect {
+                accumulated: true,
+                start_streaming_timer,
+                released_streaming_parts,
+                ..AccumulateStreamMessageEffect::default()
+            };
+        }
+        return AccumulateStreamMessageEffect {
+            accumulated: true,
+            ..AccumulateStreamMessageEffect::default()
+        };
+    }
+
+    enqueue_pending_delta(proc, &delta);
+
+    if should_flush_per_delta(proc, &delta, post_turn) {
+        if let Some(ref mid) = mid {
+            let _ = force_flush_pending_streaming(proc, chat_session_id, mid, |parts| {
+                emit_stream(mid, parts)
+            });
+        }
+    }
+
+    let should_persist = post_turn || elapsed_persist_ms >= PERSIST_INTERVAL_MS;
+    let persist_parts = if should_persist {
+        consolidate_parts_from_slice(&proc.streaming_parts)
+    } else {
+        Vec::new()
+    };
+    if post_turn && should_persist {
+        if let Some(ref mid) = mid {
+            mark_post_turn_store_base_untrusted(proc, mid);
+        }
+    }
+
+    let start_streaming_timer = post_turn && proc.pending_stream_part_count > 0;
+    let released_streaming_parts = if post_turn && !start_streaming_timer {
+        release_completed_turn_streaming_buffer(proc)
+    } else {
+        Vec::new()
+    };
+
+    AccumulateStreamMessageEffect {
+        accumulated: true,
+        emit_msg_id: mid,
+        should_persist,
+        persist_parts,
+        post_turn_reseed_message_id: None,
+        start_streaming_timer,
+        released_streaming_parts,
+    }
+}
+
+async fn accumulate_stream_or_post_turn_message<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &Arc<SessionStore>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    msg: &serde_json::Value,
+    elapsed_persist_ms: u64,
+) -> AccumulateStreamMessageEffect {
+    let mut post_turn_base: Option<(String, Vec<MessagePart>)> = None;
+
+    for _ in 0..2 {
+        let effect = {
+            let mut map = handles.lock().await;
+            if let Some(proc) = map.get_mut(chat_session_id) {
+                let effect = accumulate_stream_or_post_turn_message_locked(
+                    proc,
+                    chat_session_id,
+                    msg,
+                    elapsed_persist_ms,
+                    |mid, parts| emit_streaming_parts(app, chat_session_id, mid, parts.to_vec()),
+                    post_turn_base.take(),
+                );
+                if effect.start_streaming_timer {
+                    spawn_streaming_timer(app, handles, chat_session_id, proc);
+                }
+                effect
+            } else {
+                AccumulateStreamMessageEffect::default()
+            }
+        };
+
+        let Some(message_id) = effect.post_turn_reseed_message_id.clone() else {
+            return effect;
+        };
+
+        let Some(base_parts) =
+            load_post_turn_base_parts_from_store(session_store, app, chat_session_id, &message_id)
+        else {
+            return AccumulateStreamMessageEffect {
+                accumulated: true,
+                ..AccumulateStreamMessageEffect::default()
+            };
+        };
+        post_turn_base = Some((message_id, base_parts));
+    }
+
+    log::warn!(
+        "Post-turn streaming reseed did not stabilize after retry: session {chat_session_id}"
+    );
+    AccumulateStreamMessageEffect {
+        accumulated: true,
+        ..AccumulateStreamMessageEffect::default()
+    }
+}
+
 /// One iteration of the auxiliary timer loop. Bound to a single process by
 /// the caller (generation_id / state checks happen above this helper). The
 /// emit closure mirrors `force_flush_pending_streaming` so tests can drive
 /// the same code path the production timer uses.
 ///
-/// Returns `true` when the timer should continue running this turn, and
-/// `false` when the loop should exit (turn is over and the buffer has been
+#[derive(Debug, Default)]
+struct StreamingTimerTickEffect {
+    keep_running: bool,
+    released_streaming_parts: Vec<MessagePart>,
+}
+
+/// `keep_running` is `true` when the timer should continue running this turn,
+/// and `false` when the loop should exit (turn is over and the buffer has been
 /// fully drained).
-fn run_streaming_timer_tick<F>(proc: &mut AgentProcess, chat_session_id: &str, mut emit: F) -> bool
+fn run_streaming_timer_tick<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    mut emit: F,
+) -> StreamingTimerTickEffect
 where
     F: FnMut(&str, &[MessagePart]) -> (bool, bool),
 {
@@ -1529,20 +2065,39 @@ where
     let streaming = proc.state == BridgeState::Streaming;
     if !pending && !streaming {
         // Turn ended and the buffer is empty — timer has nothing left to do.
-        return false;
+        return StreamingTimerTickEffect {
+            keep_running: false,
+            released_streaming_parts: release_completed_turn_streaming_buffer(proc),
+        };
     }
     if !pending || !streaming_interval_elapsed(proc) {
-        return true;
+        return StreamingTimerTickEffect {
+            keep_running: true,
+            ..StreamingTimerTickEffect::default()
+        };
     }
     let Some(mid) = proc
         .streaming_message_id
         .clone()
         .or_else(|| proc.last_message_id.clone())
     else {
-        return true;
+        return StreamingTimerTickEffect {
+            keep_running: true,
+            ..StreamingTimerTickEffect::default()
+        };
     };
-    force_flush_pending_streaming(proc, chat_session_id, &mid, |parts| emit(&mid, parts));
-    true
+    let flushed =
+        force_flush_pending_streaming(proc, chat_session_id, &mid, |parts| emit(&mid, parts));
+    if !streaming && flushed && proc.pending_stream_part_count == 0 {
+        return StreamingTimerTickEffect {
+            keep_running: false,
+            released_streaming_parts: release_completed_turn_streaming_buffer(proc),
+        };
+    }
+    StreamingTimerTickEffect {
+        keep_running: true,
+        ..StreamingTimerTickEffect::default()
+    }
 }
 
 /// Returns `true` when any delta part represents a tool invocation boundary.
@@ -2266,11 +2821,49 @@ fn extract_agent_id(content: &str) -> Option<&str> {
     None
 }
 
+fn task_id_map_from_parts(parts: &[MessagePart]) -> HashMap<String, String> {
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            MessagePart::ToolResult {
+                content,
+                tool_use_id: Some(tool_use_id),
+                ..
+            } => extract_agent_id(content)
+                .map(|agent_id| (agent_id.to_string(), tool_use_id.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Synthesize an `Error` message part from a bridge `error` SDK message.
+/// `accumulate_sdk_message` deliberately does not turn `error` messages into
+/// parts (it would resurrect/persist an empty post-turn buffer); error
+/// handlers add the Error part explicitly instead.
+fn sdk_error_part_from_message(msg: &serde_json::Value) -> MessagePart {
+    let error_text = msg
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown error");
+    let parent_tool_use_id = msg
+        .get("parent_tool_use_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    MessagePart::Error {
+        content: format!("Error: {}", error_text),
+        parent_tool_use_id,
+    }
+}
+
 /// Parse SDK message and accumulate into streaming_parts.
 /// Returns (accumulated, updated_parts):
 /// - accumulated: true if the message was handled and should NOT be forwarded as agent-sdk-message.
 /// - updated_parts: Some(parts) when an existing part was updated in-place (e.g. compaction/hook completion).
 ///   These must be emitted as delta since they are not captured by the `parts[prev_len..]` diff.
+///
+/// Keep this accumulator in lockstep with `post_turn_base_requirement_for_empty_buffer`;
+/// the classifier decides whether an empty post-turn buffer must be reseeded
+/// before this function can safely mutate parts.
 fn accumulate_sdk_message(
     msg: &serde_json::Value,
     parts: &mut Vec<MessagePart>,
@@ -2637,17 +3230,7 @@ fn accumulate_sdk_message(
                 }
             }
         }
-        "error" => {
-            let error_text = msg
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown error");
-            parts.push(MessagePart::Error {
-                content: format!("Error: {}", error_text),
-                parent_tool_use_id,
-            });
-            (false, None) // Still forward for handleBridgeError
-        }
+        "error" => (false, None), // Forward for handleBridgeError; error handlers add Error parts explicitly.
         _ => (false, None),
     }
 }
@@ -2895,6 +3478,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                 streaming_message_id: None,
                 streaming_parts: Vec::new(),
                 last_message_id: None,
+                post_turn_base_untrusted_message_id: None,
                 task_id_map: HashMap::new(),
                 pending_messages: VecDeque::new(),
                 current_permission_mode: initial_permission_mode.clone(),
@@ -3293,88 +3877,40 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         // coalescing buffer, and flush when warranted. We hold the
                         // lock across the flush so the emit observes consistent
                         // state with `streaming_parts`.
-                        let (accumulated, emit_msg_id, should_persist, persist_parts) = {
-                            let mut map = handles_stdout.lock().await;
-                            if let Some(proc) = map.get_mut(&csid_stdout) {
-                                let in_streaming = proc.state == BridgeState::Streaming
-                                    && proc.streaming_message_id.is_some();
-                                let post_turn = !in_streaming && proc.last_message_id.is_some();
-
-                                if !in_streaming && !post_turn {
-                                    (false, None, false, Vec::new())
-                                } else {
-                                    let prev_len = proc.streaming_parts.len();
-                                    let accumulation = accumulate_sdk_message_with_liveness(
-                                        &msg,
-                                        &mut proc.streaming_parts,
-                                        &mut proc.task_id_map,
-                                    );
-                                    if !accumulation.handled {
-                                        (false, None, false, Vec::new())
-                                    } else {
-                                        if in_streaming && accumulation.liveness {
-                                            proc.touch_liveness();
-                                        }
-                                        let mut delta: Vec<MessagePart> =
-                                            proc.streaming_parts[prev_len..].to_vec();
-                                        if let Some(up) = accumulation.updated_parts {
-                                            delta.extend(up);
-                                        }
-                                        let mid = if in_streaming {
-                                            proc.streaming_message_id.clone()
-                                        } else {
-                                            proc.last_message_id.clone()
-                                        };
-
-                                        enqueue_pending_delta(proc, &delta);
-
-                                        // Flush triggers: in-stream uses
-                                        // interval + threshold; post-turn events
-                                        // (background tasks) are flushed eagerly.
-                                        if should_flush_per_delta(proc, &delta, post_turn) {
-                                            if let Some(ref mid) = mid {
-                                                flush_streaming(
-                                                    &app_stdout,
-                                                    proc,
-                                                    &csid_stdout,
-                                                    mid,
-                                                );
-                                            }
-                                        }
-
-                                        let now = Instant::now();
-                                        let elapsed_persist =
-                                            now.duration_since(last_persist_time).as_millis()
-                                                as u64;
-                                        let should_persist =
-                                            post_turn || elapsed_persist >= PERSIST_INTERVAL_MS;
-                                        let persist_parts = if should_persist {
-                                            consolidate_parts_from_slice(&proc.streaming_parts)
-                                        } else {
-                                            Vec::new()
-                                        };
-                                        (true, mid, should_persist, persist_parts)
-                                    }
-                                }
-                            } else {
-                                (false, None, false, Vec::new())
-                            }
-                        };
+                        let elapsed_persist = last_persist_time.elapsed().as_millis() as u64;
+                        let mut effect = accumulate_stream_or_post_turn_message(
+                            &app_stdout,
+                            &session_store_clone,
+                            &handles_stdout,
+                            &csid_stdout,
+                            &msg,
+                            elapsed_persist,
+                        )
+                        .await;
 
                         // Periodic persist (1s interval) — consolidate outside lock
-                        if should_persist {
-                            if let Some(ref mid) = emit_msg_id {
+                        if effect.should_persist {
+                            if let Some(ref mid) = effect.emit_msg_id {
                                 last_persist_time = Instant::now();
-                                persist_streaming_parts(
+                                let persisted = persist_streaming_parts(
                                     &session_store_clone,
                                     &app_stdout,
                                     &csid_stdout,
                                     mid,
-                                    &persist_parts,
+                                    &effect.persist_parts,
                                     None,
                                 );
+                                if persisted {
+                                    clear_post_turn_store_base_untrusted_for_message(
+                                        &handles_stdout,
+                                        &csid_stdout,
+                                        mid,
+                                    )
+                                    .await;
+                                }
                             }
                         }
+                        drop(std::mem::take(&mut effect.released_streaming_parts));
 
                         // Handle permissionMode sync from SDK on Rust side
                         // Claude SDK は "default"/"acceptEdits"/"bypassPermissions"/"plan" を送る。
@@ -3435,7 +3971,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
 
                         // Forward non-accumulated messages (meta events) as agent-sdk-message.
                         // permission_request needs both delta emit AND forwarding for SET_PENDING_PERMISSION.
-                        if should_forward_sdk_message(accumulated, msg_type) {
+                        if should_forward_sdk_message(effect.accumulated, msg_type) {
                             let _ = app_stdout.emit("agent-sdk-message", &msg);
                         }
 
@@ -3607,7 +4143,7 @@ async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
 
     if let Some(ref mid) = effect.final_msg_id {
         if !effect.final_parts.is_empty() {
-            persist_streaming_parts(
+            let persisted = persist_streaming_parts(
                 session_store,
                 app,
                 chat_session_id,
@@ -3615,6 +4151,10 @@ async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
                 &effect.final_parts,
                 Some(now_timestamp()),
             );
+            if persisted {
+                clear_post_turn_store_base_untrusted_for_message(handles, chat_session_id, mid)
+                    .await;
+            }
         }
     }
 
@@ -4014,24 +4554,34 @@ fn spawn_streaming_timer<R: tauri::Runtime>(
         interval.tick().await;
         loop {
             interval.tick().await;
-            let mut map = handles_timer.lock().await;
-            let Some(proc) = map.get_mut(&csid_timer) else {
-                // Process removed — no flag to clear.
-                break;
-            };
-            match streaming_timer_decision(proc, captured_gen_id_timer) {
-                TimerDecision::BreakKeepFlag => break,
-                TimerDecision::BreakClearFlag => {
-                    proc.streaming_timer_active = false;
+            let tick_effect = {
+                let mut map = handles_timer.lock().await;
+                let Some(proc) = map.get_mut(&csid_timer) else {
+                    // Process removed — no flag to clear.
                     break;
+                };
+                match streaming_timer_decision(proc, captured_gen_id_timer) {
+                    TimerDecision::BreakKeepFlag => break,
+                    TimerDecision::BreakClearFlag => {
+                        proc.streaming_timer_active = false;
+                        break;
+                    }
+                    TimerDecision::Continue => {}
                 }
-                TimerDecision::Continue => {}
-            }
-            let keep_running = run_streaming_timer_tick(proc, &csid_timer, |mid, parts| {
-                emit_streaming_parts(&app_timer, &csid_timer, mid, parts.to_vec())
-            });
+                let tick_effect = run_streaming_timer_tick(proc, &csid_timer, |mid, parts| {
+                    emit_streaming_parts(&app_timer, &csid_timer, mid, parts.to_vec())
+                });
+                if !tick_effect.keep_running {
+                    proc.streaming_timer_active = false;
+                }
+                tick_effect
+            };
+            let StreamingTimerTickEffect {
+                keep_running,
+                released_streaming_parts,
+            } = tick_effect;
+            drop(released_streaming_parts);
             if !keep_running {
-                proc.streaming_timer_active = false;
                 break;
             }
         }
@@ -6130,6 +6680,7 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
                 streaming_message_id: None,
                 streaming_parts: Vec::new(),
                 last_message_id: None,
+                post_turn_base_untrusted_message_id: None,
                 task_id_map: HashMap::new(),
                 pending_messages: VecDeque::new(),
                 current_permission_mode: permission_mode,
@@ -6438,16 +6989,22 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             let Some(effect) = effect else {
                 return;
             };
-            let final_parts = effect.final_parts;
-            if effect.was_streaming {
+            let TurnCompleteTransition {
+                was_streaming,
+                final_msg_id,
+                final_parts,
+                turn_token_usage,
+                released_streaming_parts,
+            } = effect;
+            if was_streaming {
                 if exit_code == 0 {
                     if let Some(sid) = completed_session_id.as_deref() {
                         persist_agent_session_id(app, session_store, chat_session_id, sid);
                     }
                 }
-                if let Some(ref mid) = effect.final_msg_id {
+                if let Some(ref mid) = final_msg_id {
                     if !final_parts.is_empty() {
-                        persist_streaming_parts(
+                        let persisted = persist_streaming_parts(
                             session_store,
                             app,
                             chat_session_id,
@@ -6455,8 +7012,17 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                             &final_parts,
                             Some(now_timestamp()),
                         );
+                        if persisted {
+                            clear_post_turn_store_base_untrusted_for_message(
+                                handles,
+                                chat_session_id,
+                                mid,
+                            )
+                            .await;
+                        }
                     }
                 }
+                drop(released_streaming_parts);
                 emit_session_state_changed(app, chat_session_id, TurnPhase::Idle, Some(exit_code));
                 let override_state = if exit_code != 0 {
                     Some(crate::usecase::agent_session::session::SessionState::Error)
@@ -6494,7 +7060,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                     chat_session_id.to_string(),
                     exit_code,
                     final_parts,
-                    effect.turn_token_usage,
+                    turn_token_usage,
                     pending,
                 );
             } else if exit_code != 0 {
@@ -6601,74 +7167,39 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             }
         }
         _ => {
-            let (accumulated, emit_msg_id, should_persist, persist_parts) = {
-                let mut map = handles.lock().await;
-                if let Some(proc) = map.get_mut(chat_session_id) {
-                    let in_streaming =
-                        proc.state == BridgeState::Streaming && proc.streaming_message_id.is_some();
-                    let post_turn = !in_streaming && proc.last_message_id.is_some();
+            let elapsed_persist = state.last_persist_time.elapsed().as_millis() as u64;
+            let mut effect = accumulate_stream_or_post_turn_message(
+                app,
+                session_store,
+                handles,
+                chat_session_id,
+                &msg,
+                elapsed_persist,
+            )
+            .await;
 
-                    if !in_streaming && !post_turn {
-                        (false, None, false, Vec::new())
-                    } else {
-                        let prev_len = proc.streaming_parts.len();
-                        let accumulation = accumulate_sdk_message_with_liveness(
-                            &msg,
-                            &mut proc.streaming_parts,
-                            &mut proc.task_id_map,
-                        );
-                        if !accumulation.handled {
-                            (false, None, false, Vec::new())
-                        } else {
-                            if in_streaming && accumulation.liveness {
-                                proc.touch_liveness();
-                            }
-                            let mut delta: Vec<MessagePart> =
-                                proc.streaming_parts[prev_len..].to_vec();
-                            if let Some(up) = accumulation.updated_parts {
-                                delta.extend(up);
-                            }
-                            let mid = if in_streaming {
-                                proc.streaming_message_id.clone()
-                            } else {
-                                proc.last_message_id.clone()
-                            };
-                            enqueue_pending_delta(proc, &delta);
-                            if should_flush_per_delta(proc, &delta, post_turn) {
-                                if let Some(ref mid) = mid {
-                                    flush_streaming(app, proc, chat_session_id, mid);
-                                }
-                            }
-                            let elapsed_persist =
-                                state.last_persist_time.elapsed().as_millis() as u64;
-                            let should_persist =
-                                post_turn || elapsed_persist >= PERSIST_INTERVAL_MS;
-                            let persist_parts = if should_persist {
-                                consolidate_parts_from_slice(&proc.streaming_parts)
-                            } else {
-                                Vec::new()
-                            };
-                            (true, mid, should_persist, persist_parts)
-                        }
-                    }
-                } else {
-                    (false, None, false, Vec::new())
-                }
-            };
-
-            if should_persist {
-                if let Some(ref mid) = emit_msg_id {
+            if effect.should_persist {
+                if let Some(ref mid) = effect.emit_msg_id {
                     state.last_persist_time = Instant::now();
-                    persist_streaming_parts(
+                    let persisted = persist_streaming_parts(
                         session_store,
                         app,
                         chat_session_id,
                         mid,
-                        &persist_parts,
+                        &effect.persist_parts,
                         None,
                     );
+                    if persisted {
+                        clear_post_turn_store_base_untrusted_for_message(
+                            handles,
+                            chat_session_id,
+                            mid,
+                        )
+                        .await;
+                    }
                 }
             }
+            drop(std::mem::take(&mut effect.released_streaming_parts));
 
             let permission_did_transition = if msg_type == "permission_request" {
                 let mut map = handles.lock().await;
@@ -6688,7 +7219,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                 false
             };
 
-            if should_forward_sdk_message(accumulated, msg_type) {
+            if should_forward_sdk_message(effect.accumulated, msg_type) {
                 let _ = app.emit("agent-sdk-message", &msg);
             }
             if permission_did_transition {
@@ -9088,6 +9619,7 @@ mod tests {
         proc.pending_stream_bytes = 32;
         proc.last_stream_emit_at = Some(Instant::now());
         proc.last_message_id = Some("old".to_string());
+        proc.post_turn_base_untrusted_message_id = Some("old".to_string());
         proc.task_id_map
             .insert("task".to_string(), "tool".to_string());
 
@@ -9098,6 +9630,7 @@ mod tests {
         assert_eq!(proc.pending_stream_bytes, 0);
         assert!(proc.last_stream_emit_at.is_none());
         assert!(proc.last_message_id.is_none());
+        assert!(proc.post_turn_base_untrusted_message_id.is_none());
         assert!(proc.task_id_map.is_empty());
 
         // 新ターン直後は最初の emit が即時 flush される (= interval elapsed).
@@ -9445,12 +9978,16 @@ mod tests {
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
 
         let mut emitted = Vec::new();
-        let keep_running = run_streaming_timer_tick(&mut proc, "csid", |mid, parts| {
+        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |mid, parts| {
             emitted.push((mid.to_string(), parts.to_vec()));
             (true, true)
         });
 
-        assert!(keep_running, "still streaming → timer continues");
+        assert!(
+            tick_effect.keep_running,
+            "still streaming → timer continues"
+        );
+        assert!(tick_effect.released_streaming_parts.is_empty());
         assert_eq!(emitted.len(), 1, "timer must call emit exactly once");
         assert_eq!(emitted[0].0, "m1");
         assert_eq!(emitted[0].1.len(), 1);
@@ -9476,11 +10013,12 @@ mod tests {
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
 
         let mut emitted = false;
-        let keep_running = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| {
+        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| {
             emitted = true;
             (true, true)
         });
-        assert!(keep_running);
+        assert!(tick_effect.keep_running);
+        assert!(tick_effect.released_streaming_parts.is_empty());
         assert!(!emitted, "interval not elapsed → timer must not flush");
         assert_eq!(proc.pending_stream_part_count, 1);
     }
@@ -9494,12 +10032,13 @@ mod tests {
         assert_eq!(proc.pending_stream_part_count, 0);
 
         let mut emitted = false;
-        let keep_running = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| {
+        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| {
             emitted = true;
             (true, true)
         });
         // pending=0 & still Streaming → continue running but no flush this tick.
-        assert!(keep_running);
+        assert!(tick_effect.keep_running);
+        assert!(tick_effect.released_streaming_parts.is_empty());
         assert!(!emitted);
     }
 
@@ -9513,17 +10052,18 @@ mod tests {
             Some(Instant::now() - Duration::from_millis(STREAMING_EMIT_INTERVAL_MS + 5));
         assert_eq!(proc.pending_stream_part_count, 0);
 
-        let keep_running = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| (true, true));
+        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| (true, true));
         assert!(
-            !keep_running,
+            !tick_effect.keep_running,
             "turn ended (state != Streaming) and buffer empty → timer must exit"
         );
+        assert!(tick_effect.released_streaming_parts.is_empty());
     }
 
     #[tokio::test]
     async fn timer_drains_pending_even_after_turn_ended() {
-        // turn 終了直後でも pending が残っていれば drain してから終了する次の
-        // tick で keep_running=false を返す。
+        // turn 終了直後でも pending が残っていれば drain し、成功時は
+        // 完了済み streaming buffer を解放して timer を終了する。
         let mut proc = make_streaming_test_process();
         proc.state = BridgeState::Ready;
         proc.last_stream_emit_at =
@@ -9536,19 +10076,18 @@ mod tests {
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
 
         let mut emitted = 0usize;
-        let keep_running = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| {
+        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| {
             emitted += 1;
             (true, true)
         });
         assert!(
-            keep_running,
-            "pending still > 0 → timer continues (will exit next tick when drained)"
+            !tick_effect.keep_running,
+            "turn ended and pending drained → timer exits immediately"
         );
+        assert_eq!(tick_effect.released_streaming_parts, vec![part]);
         assert_eq!(emitted, 1, "tail content flushed before exit");
         assert_eq!(proc.pending_stream_part_count, 0);
-
-        let keep_running = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| (true, true));
-        assert!(!keep_running, "post-drain tick → timer exits");
+        assert!(proc.streaming_parts.is_empty());
     }
 
     #[tokio::test]
@@ -10123,6 +10662,902 @@ mod tests {
             }
         );
         assert_eq!(proc.state, BridgeState::Crashed);
+    }
+
+    #[tokio::test]
+    async fn turn_complete_releases_streaming_parts_after_final_snapshot() {
+        let mut proc = make_streaming_test_process();
+        proc.task_id_map
+            .insert("background-1".to_string(), "tool-1".to_string());
+        let raw_parts = vec![
+            MessagePart::Text {
+                content: "hello".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Text {
+                content: " world".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolUse {
+                tool: "Bash".to_string(),
+                input: serde_json::json!({ "cmd": "echo ok" }),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        proc.streaming_parts.extend(raw_parts.clone());
+        enqueue_pending_delta(&mut proc, &raw_parts);
+
+        let effect =
+            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+
+        assert!(effect.was_streaming);
+        assert_eq!(effect.final_msg_id.as_deref(), Some("m1"));
+        assert_eq!(effect.final_parts, consolidate_parts_from_slice(&raw_parts));
+        assert_eq!(effect.released_streaming_parts, raw_parts);
+        assert_eq!(proc.state, BridgeState::Ready);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        assert_eq!(proc.last_message_id.as_deref(), Some("m1"));
+        assert_eq!(
+            proc.post_turn_base_untrusted_message_id.as_deref(),
+            Some("m1")
+        );
+        clear_post_turn_store_base_untrusted_after_persist_success(&mut proc, "m1");
+        assert!(proc.post_turn_base_untrusted_message_id.is_none());
+        assert_eq!(
+            proc.task_id_map.get("background-1").map(String::as_str),
+            Some("tool-1")
+        );
+        assert!(proc.streaming_parts.is_empty());
+        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_bytes, 0);
+        assert!(proc.last_stream_emit_at.is_none());
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn post_turn_skips_stale_store_base_when_final_persist_failed() {
+        let mut proc = make_streaming_test_process();
+        let fresh_parts = vec![
+            MessagePart::Text {
+                content: "fresh base".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolUse {
+                tool: "Bash".to_string(),
+                input: serde_json::json!({ "cmd": "date" }),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        proc.streaming_parts.extend(fresh_parts.clone());
+        enqueue_pending_delta(&mut proc, &fresh_parts);
+
+        let complete_effect =
+            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+
+        assert_eq!(complete_effect.final_msg_id.as_deref(), Some("m1"));
+        assert_eq!(
+            proc.post_turn_base_untrusted_message_id.as_deref(),
+            Some("m1"),
+            "simulates the final persist failing and leaving the store base stale"
+        );
+        assert!(proc.streaming_parts.is_empty());
+
+        let stale_store_base = vec![
+            MessagePart::Text {
+                content: "stale base".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolUse {
+                tool: "Bash".to_string(),
+                input: serde_json::json!({ "cmd": "date" }),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        let msg = post_turn_tool_result_message("tool-1", "must-not-overwrite");
+        let mut emitted = false;
+
+        let post_turn_effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &msg,
+            0,
+            |_mid, _parts| {
+                emitted = true;
+                (true, true)
+            },
+            Some(("m1".to_string(), stale_store_base)),
+        );
+
+        assert!(post_turn_effect.accumulated);
+        assert!(post_turn_effect.emit_msg_id.is_none());
+        assert!(!post_turn_effect.should_persist);
+        assert!(post_turn_effect.persist_parts.is_empty());
+        assert!(!emitted);
+        assert!(proc.streaming_parts.is_empty());
+        assert_eq!(
+            proc.post_turn_base_untrusted_message_id.as_deref(),
+            Some("m1")
+        );
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn turn_complete_emit_failure_retains_retry_state_until_timer_drains() {
+        let mut proc = make_streaming_test_process();
+        let raw_parts = vec![MessagePart::Text {
+            content: "tail".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(raw_parts.clone());
+        enqueue_pending_delta(&mut proc, &raw_parts);
+
+        let effect =
+            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (false, true));
+
+        assert!(effect.was_streaming);
+        assert_eq!(effect.final_msg_id.as_deref(), Some("m1"));
+        assert_eq!(effect.final_parts, consolidate_parts_from_slice(&raw_parts));
+        assert!(effect.released_streaming_parts.is_empty());
+        assert_eq!(proc.state, BridgeState::Ready);
+        assert_eq!(proc.last_message_id.as_deref(), Some("m1"));
+        assert_eq!(proc.pending_stream_part_count, 1);
+        assert_eq!(proc.streaming_parts, raw_parts);
+        assert!(
+            proc.last_stream_emit_at.is_none(),
+            "failed emit must remain retryable"
+        );
+
+        let mut emitted: Vec<(String, Vec<MessagePart>)> = Vec::new();
+        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |mid, parts| {
+            emitted.push((mid.to_string(), parts.to_vec()));
+            (true, true)
+        });
+
+        assert!(!tick_effect.keep_running);
+        assert_eq!(tick_effect.released_streaming_parts, raw_parts.clone());
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].0, "m1");
+        assert_eq!(emitted[0].1, consolidate_parts_from_slice(&raw_parts));
+        assert!(proc.streaming_parts.is_empty());
+        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_bytes, 0);
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn turn_complete_nonzero_exit_code_emit_failure_releases_after_final_snapshot() {
+        let mut proc = make_streaming_test_process();
+        let raw_parts = vec![MessagePart::Text {
+            content: "tail-before-crash".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(raw_parts.clone());
+        enqueue_pending_delta(&mut proc, &raw_parts);
+        let mut emit_attempts = 0usize;
+
+        let effect = run_turn_complete_transition_locked(&mut proc, "csid", 1, |_mid, _parts| {
+            emit_attempts += 1;
+            (false, true)
+        });
+
+        assert!(effect.was_streaming);
+        assert_eq!(effect.final_msg_id.as_deref(), Some("m1"));
+        assert_eq!(effect.final_parts, consolidate_parts_from_slice(&raw_parts));
+        assert_eq!(effect.released_streaming_parts, raw_parts);
+        assert_eq!(emit_attempts, 1);
+        assert_eq!(proc.state, BridgeState::Crashed);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        assert_eq!(proc.last_message_id.as_deref(), Some("m1"));
+        assert!(proc.streaming_parts.is_empty());
+        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_bytes, 0);
+        let _ = proc.child.kill().await;
+    }
+
+    fn post_turn_tool_result_message(tool_use_id: &str, content: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": content,
+                        "is_error": false
+                    }
+                ]
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn post_turn_permission_mode_notification_skips_reseed_and_persist() {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Ready;
+        proc.turn_phase = TurnPhase::Idle;
+        proc.last_message_id = Some("m1".to_string());
+        let msg = serde_json::json!({
+            "type": "system",
+            "permissionMode": "acceptEdits"
+        });
+        let mut emitted = false;
+
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &msg,
+            0,
+            |_mid, _parts| {
+                emitted = true;
+                (true, true)
+            },
+            None,
+        );
+
+        assert!(!effect.accumulated);
+        assert!(effect.post_turn_reseed_message_id.is_none());
+        assert!(effect.emit_msg_id.is_none());
+        assert!(!effect.should_persist);
+        assert!(effect.persist_parts.is_empty());
+        assert!(!emitted);
+        assert!(proc.streaming_parts.is_empty());
+        assert_eq!(proc.pending_stream_part_count, 0);
+        assert!(should_forward_sdk_message(effect.accumulated, "system"));
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn post_turn_partless_system_notification_skips_reseed_emit_and_persist() {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Ready;
+        proc.turn_phase = TurnPhase::Idle;
+        proc.last_message_id = Some("m1".to_string());
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "hook_started",
+            "hook_name": "SessionEnd",
+            "hook_event": "StopSession",
+            "hook_id": "hook-001"
+        });
+        let mut emitted = false;
+
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &msg,
+            0,
+            |_mid, _parts| {
+                emitted = true;
+                (true, true)
+            },
+            None,
+        );
+
+        assert!(effect.accumulated);
+        assert!(effect.post_turn_reseed_message_id.is_none());
+        assert!(effect.emit_msg_id.is_none());
+        assert!(!effect.should_persist);
+        assert!(effect.persist_parts.is_empty());
+        assert!(!emitted);
+        assert!(proc.streaming_parts.is_empty());
+        assert_eq!(proc.pending_stream_part_count, 0);
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn post_turn_reseed_preserves_cumulative_payload_and_releases_again() {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Ready;
+        proc.turn_phase = TurnPhase::Idle;
+        proc.last_message_id = Some("m1".to_string());
+        let base_parts = vec![
+            MessagePart::Text {
+                content: "base".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolUse {
+                tool: "Bash".to_string(),
+                input: serde_json::json!({ "cmd": "date" }),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        let delta_part = MessagePart::ToolResult {
+            content: "done".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+        };
+        let expected_parts = consolidate_parts_from_slice(
+            &base_parts
+                .iter()
+                .cloned()
+                .chain(std::iter::once(delta_part))
+                .collect::<Vec<_>>(),
+        );
+        let msg = post_turn_tool_result_message("tool-1", "done");
+        let mut emitted: Vec<Vec<MessagePart>> = Vec::new();
+
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &msg,
+            0,
+            |_mid, parts| {
+                emitted.push(parts.to_vec());
+                (true, true)
+            },
+            Some(("m1".to_string(), base_parts.clone())),
+        );
+
+        assert!(effect.accumulated);
+        assert_eq!(effect.emit_msg_id.as_deref(), Some("m1"));
+        assert!(effect.should_persist);
+        assert_eq!(effect.persist_parts, expected_parts);
+        assert_eq!(effect.released_streaming_parts, expected_parts.clone());
+        assert_eq!(emitted, vec![expected_parts]);
+        assert!(proc.streaming_parts.is_empty());
+        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_bytes, 0);
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn post_turn_emit_failure_requests_timer_restart_when_idle() {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Ready;
+        proc.turn_phase = TurnPhase::Idle;
+        proc.last_message_id = Some("m1".to_string());
+        assert!(!proc.streaming_timer_active);
+        let base_parts = vec![
+            MessagePart::Text {
+                content: "base".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolUse {
+                tool: "Bash".to_string(),
+                input: serde_json::json!({ "cmd": "date" }),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        let delta_part = MessagePart::ToolResult {
+            content: "done".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+        };
+        let expected_parts = consolidate_parts_from_slice(
+            &base_parts
+                .iter()
+                .cloned()
+                .chain(std::iter::once(delta_part))
+                .collect::<Vec<_>>(),
+        );
+        let msg = post_turn_tool_result_message("tool-1", "done");
+        let mut emitted_attempts = 0;
+
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &msg,
+            0,
+            |_mid, parts| {
+                emitted_attempts += 1;
+                assert_eq!(parts, expected_parts.as_slice());
+                (false, true)
+            },
+            Some(("m1".to_string(), base_parts)),
+        );
+
+        assert!(effect.accumulated);
+        assert_eq!(effect.emit_msg_id.as_deref(), Some("m1"));
+        assert!(effect.should_persist);
+        assert_eq!(effect.persist_parts, expected_parts);
+        assert!(effect.start_streaming_timer);
+        assert!(effect.released_streaming_parts.is_empty());
+        assert_eq!(emitted_attempts, 1);
+        assert_eq!(proc.pending_stream_part_count, 1);
+        assert!(!proc.streaming_parts.is_empty());
+        assert!(
+            proc.last_stream_emit_at.is_none(),
+            "failed post-turn emit must remain retryable"
+        );
+
+        let mut retry_payloads: Vec<(String, Vec<MessagePart>)> = Vec::new();
+        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |mid, parts| {
+            retry_payloads.push((mid.to_string(), parts.to_vec()));
+            (true, true)
+        });
+
+        assert!(!tick_effect.keep_running);
+        assert_eq!(tick_effect.released_streaming_parts, expected_parts.clone());
+        assert_eq!(retry_payloads, vec![("m1".to_string(), expected_parts)]);
+        assert!(proc.streaming_parts.is_empty());
+        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_bytes, 0);
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn post_turn_reseed_retry_persists_old_message_when_new_turn_started_after_base_load() {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Ready;
+        proc.turn_phase = TurnPhase::Idle;
+        proc.last_message_id = Some("old-message".to_string());
+        let msg = post_turn_tool_result_message("tool-1", "late");
+        let mut emitted: Vec<(String, Vec<MessagePart>)> = Vec::new();
+
+        let first_effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &msg,
+            0,
+            |_mid, _parts| panic!("first pass must request a store reseed before emitting"),
+            None,
+        );
+
+        assert!(!first_effect.accumulated);
+        assert_eq!(
+            first_effect.post_turn_reseed_message_id.as_deref(),
+            Some("old-message")
+        );
+        assert!(emitted.is_empty());
+
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        proc.streaming_message_id = Some("new-message".to_string());
+        proc.reset_streaming_state_for_new_turn();
+        let new_turn_parts = vec![MessagePart::Text {
+            content: "new turn".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts = new_turn_parts.clone();
+        proc.task_id_map
+            .insert("new-task".to_string(), "new-tool".to_string());
+
+        let stale_base_parts = vec![
+            MessagePart::Text {
+                content: "old base".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolUse {
+                tool: "Bash".to_string(),
+                input: serde_json::json!({ "cmd": "date" }),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        let expected_parts = consolidate_parts_from_slice(
+            &stale_base_parts
+                .iter()
+                .cloned()
+                .chain(std::iter::once(MessagePart::ToolResult {
+                    content: "late".to_string(),
+                    is_error: false,
+                    tool_use_id: Some("tool-1".to_string()),
+                    parent_tool_use_id: None,
+                }))
+                .collect::<Vec<_>>(),
+        );
+        let second_effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &msg,
+            0,
+            |mid, parts| {
+                emitted.push((mid.to_string(), parts.to_vec()));
+                (true, true)
+            },
+            Some(("old-message".to_string(), stale_base_parts)),
+        );
+
+        assert!(second_effect.accumulated);
+        assert_eq!(second_effect.emit_msg_id.as_deref(), Some("old-message"));
+        assert!(second_effect.should_persist);
+        assert_eq!(second_effect.persist_parts, expected_parts);
+        assert!(!second_effect.start_streaming_timer);
+        assert_eq!(
+            emitted,
+            vec![(
+                "old-message".to_string(),
+                second_effect.persist_parts.clone()
+            )]
+        );
+        assert_eq!(proc.state, BridgeState::Streaming);
+        assert_eq!(proc.streaming_message_id.as_deref(), Some("new-message"));
+        assert!(proc.last_message_id.is_none());
+        assert_eq!(proc.streaming_parts, new_turn_parts);
+        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(
+            proc.task_id_map.get("new-task").map(String::as_str),
+            Some("new-tool")
+        );
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn post_turn_reseed_retry_applies_status_to_old_message_from_loaded_task_map() {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        proc.streaming_message_id = Some("new-message".to_string());
+        let new_turn_parts = vec![MessagePart::Text {
+            content: "new turn".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts = new_turn_parts.clone();
+        proc.task_id_map
+            .insert("new-task".to_string(), "new-tool".to_string());
+
+        let base_parts = vec![MessagePart::ToolResult {
+            content: "Async agent launched successfully.\nagentId: old-task (internal ID)"
+                .to_string(),
+            is_error: false,
+            tool_use_id: Some("old-tool".to_string()),
+            parent_tool_use_id: None,
+        }];
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "old-task",
+            "patch": {"status": "completed", "summary": "done"}
+        });
+
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &msg,
+            0,
+            |_mid, _parts| (true, true),
+            Some(("old-message".to_string(), base_parts.clone())),
+        );
+
+        assert!(effect.accumulated);
+        assert_eq!(effect.emit_msg_id.as_deref(), Some("old-message"));
+        assert!(effect.should_persist);
+        assert!(matches!(
+            effect.persist_parts.last(),
+            Some(MessagePart::TaskStatus {
+                task_tool_use_id,
+                status,
+                summary,
+                ..
+            }) if task_tool_use_id == "old-tool"
+                && status == "completed"
+                && summary.as_deref() == Some("done")
+        ));
+        assert_eq!(proc.streaming_message_id.as_deref(), Some("new-message"));
+        assert_eq!(proc.streaming_parts, new_turn_parts);
+        assert_eq!(
+            proc.task_id_map.get("new-task").map(String::as_str),
+            Some("new-tool")
+        );
+        assert!(!proc.task_id_map.contains_key("old-task"));
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn post_turn_reseed_retry_persist_payload_restores_old_message_without_duplication() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(SessionStore::default());
+        let mut session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CODEX_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let message_id = "old-message";
+        let base_parts = vec![
+            MessagePart::Text {
+                content: "old base".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolUse {
+                tool: "Bash".to_string(),
+                input: serde_json::json!({ "cmd": "date" }),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        let (content, thinking, activities) = parts_to_legacy(&base_parts);
+        session.messages.push(ChatMessage {
+            id: message_id.to_string(),
+            role: MessageRole::Agent,
+            content,
+            thinking,
+            activities,
+            parts: Some(base_parts.clone()),
+            timestamp: 10.0,
+            mentions: None,
+        });
+        store.save_session(temp.path(), &session).unwrap();
+
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        proc.streaming_message_id = Some("new-message".to_string());
+        let new_turn_parts = vec![MessagePart::Text {
+            content: "new turn".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts = new_turn_parts.clone();
+        let msg = post_turn_tool_result_message("tool-1", "late");
+        let mut emitted = Vec::new();
+
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &msg,
+            0,
+            |mid, parts| {
+                emitted.push((mid.to_string(), parts.to_vec()));
+                (true, true)
+            },
+            Some((message_id.to_string(), base_parts.clone())),
+        );
+
+        assert!(effect.should_persist);
+        let persisted = persist_streaming_parts(
+            &store,
+            &app.handle(),
+            &session.id,
+            message_id,
+            &effect.persist_parts,
+            None,
+        );
+        assert!(persisted);
+
+        let expected_parts = vec![
+            base_parts[0].clone(),
+            base_parts[1].clone(),
+            MessagePart::ToolResult {
+                content: "late".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+            },
+        ];
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        let loaded_message = loaded
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .expect("old agent message persisted");
+        assert_eq!(
+            loaded_message.parts.as_deref(),
+            Some(expected_parts.as_slice())
+        );
+        assert_eq!(proc.streaming_message_id.as_deref(), Some("new-message"));
+        assert_eq!(proc.streaming_parts, new_turn_parts);
+        assert_eq!(emitted, vec![(message_id.to_string(), expected_parts)]);
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn external_post_turn_events_reseed_from_store_without_duplication() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(SessionStore::default());
+        let mut session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CODEX_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let message_id = "agent-message-1";
+        let base_parts = vec![
+            MessagePart::Text {
+                content: "base".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolUse {
+                tool: "Bash".to_string(),
+                input: serde_json::json!({ "cmd": "date" }),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        let (content, thinking, activities) = parts_to_legacy(&base_parts);
+        session.messages.push(ChatMessage {
+            id: message_id.to_string(),
+            role: MessageRole::Agent,
+            content,
+            thinking,
+            activities,
+            parts: Some(base_parts.clone()),
+            timestamp: 10.0,
+            mentions: None,
+        });
+        store.save_session(temp.path(), &session).unwrap();
+
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.backend_id = CODEX_BACKEND_ID.to_string();
+        proc.state = BridgeState::Ready;
+        proc.turn_phase = TurnPhase::Idle;
+        proc.last_message_id = Some(message_id.to_string());
+        handles.lock().await.insert(session.id.clone(), proc);
+        let mut state = ExternalBridgeMessageState::default();
+
+        handle_external_bridge_message(
+            &app.handle(),
+            &store,
+            &handles,
+            &session.id,
+            post_turn_tool_result_message("tool-1", "first"),
+            &mut state,
+        )
+        .await;
+
+        {
+            let map = handles.lock().await;
+            let proc = map.get(&session.id).unwrap();
+            assert!(proc.streaming_parts.is_empty());
+        }
+        let first_expected = vec![
+            base_parts[0].clone(),
+            base_parts[1].clone(),
+            MessagePart::ToolResult {
+                content: "first".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+            },
+        ];
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        let loaded_message = loaded
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .expect("agent message persisted");
+        assert_eq!(
+            loaded_message.parts.as_deref(),
+            Some(first_expected.as_slice())
+        );
+
+        handle_external_bridge_message(
+            &app.handle(),
+            &store,
+            &handles,
+            &session.id,
+            post_turn_tool_result_message("tool-1", " second"),
+            &mut state,
+        )
+        .await;
+
+        let final_expected = vec![
+            base_parts[0].clone(),
+            base_parts[1].clone(),
+            MessagePart::ToolResult {
+                content: "first second".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+            },
+        ];
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        let loaded_message = loaded
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .expect("agent message persisted");
+        assert_eq!(
+            loaded_message.parts.as_deref(),
+            Some(final_expected.as_slice())
+        );
+        let mut proc = handles.lock().await.remove(&session.id).unwrap();
+        assert!(proc.streaming_parts.is_empty());
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn post_turn_reseed_failure_skips_accumulate_and_persist_payload() {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Ready;
+        proc.turn_phase = TurnPhase::Idle;
+        proc.last_message_id = Some("m1".to_string());
+        let msg = post_turn_tool_result_message("tool-1", "should-not-write");
+        let mut emitted = false;
+
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &msg,
+            0,
+            |_mid, _parts| {
+                emitted = true;
+                (true, true)
+            },
+            None,
+        );
+
+        assert!(!effect.accumulated);
+        assert_eq!(effect.post_turn_reseed_message_id.as_deref(), Some("m1"));
+        assert!(effect.emit_msg_id.is_none());
+        assert!(!effect.should_persist);
+        assert!(effect.persist_parts.is_empty());
+        assert!(!emitted);
+        assert!(proc.streaming_parts.is_empty());
+        assert_eq!(proc.pending_stream_part_count, 0);
+        let _ = proc.child.kill().await;
+    }
+
+    #[test]
+    fn consolidated_post_turn_base_matches_raw_retained_payload() {
+        let raw_base = vec![
+            MessagePart::Text {
+                content: "hel".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Text {
+                content: "lo".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolUse {
+                tool: "Bash".to_string(),
+                input: serde_json::json!({}),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Thinking {
+                content: "thin".to_string(),
+                parent_tool_use_id: Some("tool-1".to_string()),
+            },
+            MessagePart::Thinking {
+                content: "king".to_string(),
+                parent_tool_use_id: Some("tool-1".to_string()),
+            },
+        ];
+        let post_turn_delta = vec![
+            MessagePart::Text {
+                content: " done".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolResult {
+                content: "ok".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+            },
+        ];
+
+        let old_payload = consolidate_parts_from_slice(
+            &raw_base
+                .iter()
+                .cloned()
+                .chain(post_turn_delta.iter().cloned())
+                .collect::<Vec<_>>(),
+        );
+        let new_payload = consolidate_parts_from_slice(
+            &consolidate_parts_from_slice(&raw_base)
+                .into_iter()
+                .chain(post_turn_delta)
+                .collect::<Vec<_>>(),
+        );
+
+        assert_eq!(new_payload, old_payload);
     }
 
     /// Build a streaming-test process with one pending `Permission` part in
@@ -11482,6 +12917,7 @@ mod tests {
                 streaming_message_id: None,
                 streaming_parts: Vec::new(),
                 last_message_id: None,
+                post_turn_base_untrusted_message_id: None,
                 task_id_map: HashMap::new(),
                 pending_messages: VecDeque::new(),
                 current_permission_mode: "edit".to_string(),
@@ -12773,6 +14209,375 @@ mod tests {
     // --- accumulate_sdk_message tests ---
 
     #[test]
+    fn post_turn_base_requirement_matches_accumulate_sdk_message() {
+        struct Case {
+            name: &'static str,
+            msg: serde_json::Value,
+            initial_parts: Vec<MessagePart>,
+            task_id_map: HashMap<String, String>,
+            expected: PostTurnBaseRequirement,
+        }
+
+        let mut mapped_task_ids = HashMap::new();
+        mapped_task_ids.insert("task-1".to_string(), "tool-1".to_string());
+
+        let compaction_in_progress = vec![MessagePart::SystemNotification {
+            notification_type: SystemNotificationType::Compaction,
+            status: "in_progress".to_string(),
+            label: "Compacting conversation...".to_string(),
+            detail: None,
+            hook_id: None,
+        }];
+
+        let cases = vec![
+            Case {
+                name: "stream_event text_delta",
+                msg: serde_json::json!({
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": "hello"}
+                    }
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "stream_event thinking_delta",
+                msg: serde_json::json!({
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "thinking_delta", "thinking": "thinking"}
+                    }
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "stream_event unsupported delta",
+                msg: serde_json::json!({
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "input_json_delta", "partial_json": "{}"}
+                    }
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::NotAccumulated,
+            },
+            Case {
+                name: "assistant tool_use",
+                msg: serde_json::json!({
+                    "type": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "Read",
+                            "input": {"file_path": "/tmp/file"},
+                            "id": "tool-1"
+                        }]
+                    }
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "assistant TodoWrite snapshot",
+                msg: serde_json::json!({
+                    "type": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "TodoWrite",
+                            "input": {"todos": [{"content": "ship", "status": "pending"}]},
+                            "id": "tool-1"
+                        }]
+                    }
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "assistant TodoWrite without items",
+                msg: serde_json::json!({
+                    "type": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "TodoWrite",
+                            "input": {},
+                            "id": "tool-1"
+                        }]
+                    }
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::AccumulatedWithoutParts,
+            },
+            Case {
+                name: "assistant without tool_use",
+                msg: serde_json::json!({
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "ignored"}]}
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::AccumulatedWithoutParts,
+            },
+            Case {
+                name: "user tool_result",
+                msg: post_turn_tool_result_message("tool-1", "done"),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "user without tool_result",
+                msg: serde_json::json!({
+                    "type": "user",
+                    "message": {"content": [{"type": "text", "text": "ignored"}]}
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::AccumulatedWithoutParts,
+            },
+            Case {
+                name: "todo_list_snapshot with items",
+                msg: serde_json::json!({
+                    "type": "todo_list_snapshot",
+                    "items": [{"text": "ship", "completed": false}]
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "todo_list_snapshot without items",
+                msg: serde_json::json!({"type": "todo_list_snapshot"}),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::AccumulatedWithoutParts,
+            },
+            Case {
+                name: "permission_denied",
+                msg: serde_json::json!({
+                    "type": "permission_denied",
+                    "tool_name": "Edit",
+                    "tool_use_id": "tool-1",
+                    "request_id": "req-1"
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "permission_request",
+                msg: serde_json::json!({
+                    "type": "permission_request",
+                    "request_id": "req-1",
+                    "tool_name": "Edit"
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "system task_started",
+                msg: serde_json::json!({
+                    "type": "system",
+                    "subtype": "task_started",
+                    "tool_use_id": "tool-1",
+                    "description": "start"
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "system task_notification",
+                msg: serde_json::json!({
+                    "type": "system",
+                    "subtype": "task_notification",
+                    "tool_use_id": "tool-1",
+                    "status": "completed"
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "system task_progress",
+                msg: serde_json::json!({
+                    "type": "system",
+                    "subtype": "task_progress",
+                    "tool_use_id": "tool-1",
+                    "description": "progress"
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "system task_updated mapped",
+                msg: serde_json::json!({
+                    "type": "system",
+                    "subtype": "task_updated",
+                    "task_id": "task-1",
+                    "patch": {"status": "completed"}
+                }),
+                initial_parts: vec![],
+                task_id_map: mapped_task_ids.clone(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "system task_updated without mapping",
+                msg: serde_json::json!({
+                    "type": "system",
+                    "subtype": "task_updated",
+                    "task_id": "missing",
+                    "patch": {"status": "completed"}
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::AccumulatedWithoutParts,
+            },
+            Case {
+                name: "system init",
+                msg: serde_json::json!({
+                    "type": "system",
+                    "subtype": "init",
+                    "session_id": "session-1"
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::NotAccumulated,
+            },
+            Case {
+                name: "system compact_boundary new part",
+                msg: serde_json::json!({
+                    "type": "system",
+                    "subtype": "compact_boundary",
+                    "compact_metadata": {"trigger": "manual", "pre_summary_token_count": 10}
+                }),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "system compact_boundary update",
+                msg: serde_json::json!({
+                    "type": "system",
+                    "subtype": "compact_boundary",
+                    "compact_metadata": {"trigger": "auto", "pre_summary_token_count": 20}
+                }),
+                initial_parts: compaction_in_progress,
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "system hook_started",
+                msg: serde_json::json!({"type": "system", "subtype": "hook_started"}),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::AccumulatedWithoutParts,
+            },
+            Case {
+                name: "system hook_progress",
+                msg: serde_json::json!({"type": "system", "subtype": "hook_progress"}),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::AccumulatedWithoutParts,
+            },
+            Case {
+                name: "system hook_response",
+                msg: serde_json::json!({"type": "system", "subtype": "hook_response"}),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::AccumulatedWithoutParts,
+            },
+            Case {
+                name: "system files_persisted",
+                msg: serde_json::json!({"type": "system", "subtype": "files_persisted"}),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::AccumulatedWithoutParts,
+            },
+            Case {
+                name: "system local_command_output",
+                msg: serde_json::json!({"type": "system", "subtype": "local_command_output"}),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::AccumulatedWithoutParts,
+            },
+            Case {
+                name: "system codex_realtime",
+                msg: serde_json::json!({"type": "system", "subtype": "codex_realtime"}),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::AccumulatedWithoutParts,
+            },
+            Case {
+                name: "system status compacting",
+                msg: serde_json::json!({"type": "system", "status": "compacting"}),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::RequiresBase,
+            },
+            Case {
+                name: "system unknown",
+                msg: serde_json::json!({"type": "system", "subtype": "unknown"}),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::NotAccumulated,
+            },
+            Case {
+                name: "error",
+                msg: serde_json::json!({"type": "error", "message": "boom"}),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::NotAccumulated,
+            },
+            Case {
+                name: "unknown type",
+                msg: serde_json::json!({"type": "unknown"}),
+                initial_parts: vec![],
+                task_id_map: HashMap::new(),
+                expected: PostTurnBaseRequirement::NotAccumulated,
+            },
+        ];
+
+        for case in cases {
+            let requirement =
+                post_turn_base_requirement_for_empty_buffer(&case.msg, &case.task_id_map);
+            assert_eq!(requirement, case.expected, "classifier: {}", case.name);
+
+            let mut parts = case.initial_parts.clone();
+            let before_parts = parts.clone();
+            let mut task_id_map = case.task_id_map.clone();
+            let (accumulated, _updated_parts) =
+                accumulate_sdk_message(&case.msg, &mut parts, &mut task_id_map);
+            let parts_changed = parts != before_parts;
+            let expected_shape = match requirement {
+                PostTurnBaseRequirement::RequiresBase => (true, true),
+                PostTurnBaseRequirement::AccumulatedWithoutParts => (true, false),
+                PostTurnBaseRequirement::NotAccumulated => (false, false),
+            };
+            assert_eq!(
+                (accumulated, parts_changed),
+                expected_shape,
+                "accumulate shape: {}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
     fn test_accumulate_text_delta() {
         let msg = serde_json::json!({
             "type": "stream_event",
@@ -12994,11 +14799,13 @@ mod tests {
         let mut parts = vec![];
         let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(!handled);
-        assert_eq!(parts.len(), 1);
-        match &parts[0] {
-            MessagePart::Error { content, .. } => {
-                assert!(content.contains("Something went wrong"));
-            }
+        assert!(
+            parts.is_empty(),
+            "error is forwarded to dedicated handlers; empty-buffer post-turn must not persist it"
+        );
+        let error_part = sdk_error_part_from_message(&msg);
+        match error_part {
+            MessagePart::Error { content, .. } => assert!(content.contains("Something went wrong")),
             _ => panic!("expected Error"),
         }
     }
@@ -14065,6 +15872,7 @@ mod tests {
             streaming_message_id: None,
             streaming_parts: Vec::new(),
             last_message_id: None,
+            post_turn_base_untrusted_message_id: None,
             task_id_map: HashMap::new(),
             pending_messages: VecDeque::new(),
             current_permission_mode: "edit".to_string(),
@@ -14776,6 +16584,7 @@ mod tests {
                 streaming_message_id: None,
                 streaming_parts: Vec::new(),
                 last_message_id: None,
+                post_turn_base_untrusted_message_id: None,
                 task_id_map: HashMap::new(),
                 pending_messages: VecDeque::new(),
                 current_permission_mode: "ask".to_string(),
