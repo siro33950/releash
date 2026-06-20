@@ -41,13 +41,23 @@ pub(crate) fn normalize_path(path: &std::path::Path) -> PathBuf {
 }
 
 pub(crate) fn validate_relative_path(path: &str, repo_root: &str) -> Result<PathBuf, String> {
-    if std::path::Path::new(path).is_absolute() {
+    let rel = std::path::Path::new(path);
+    if rel.is_absolute() {
         return Err("絶対パスは拒否されます".to_string());
+    }
+    // `..` を字句段階で拒否する。`normalize_path` は `link/../` を字句的に潰すため、
+    // symlink を経由する `..` を残すと後続の canonicalize 検査が symlink を踏まず
+    // 迂回経路になる。入力段階で弾くことでこの経路を閉じる。
+    if rel
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("`..` を含むパスは拒否されます".to_string());
     }
     let root = std::path::Path::new(repo_root)
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let resolved = normalize_path(&root.join(path));
+    let resolved = normalize_path(&root.join(rel));
     if !resolved.starts_with(&root) {
         return Err("プロジェクトルート外のパスは拒否されます".to_string());
     }
@@ -181,6 +191,18 @@ mod tests {
             validate_relative_path("inner/secret_link/passwd", dir.path().to_str().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("シンボリックリンク"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_validate_relative_path_rejects_symlink_parentdir_bypass() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("inner")).unwrap();
+        std::os::unix::fs::symlink("/etc", dir.path().join("inner/secret_link")).unwrap();
+        let result =
+            validate_relative_path("inner/secret_link/../passwd", dir.path().to_str().unwrap());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains(".."));
     }
 
     #[test]
