@@ -14,6 +14,10 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex;
 
 use crate::app_data_dir::resolve_data_dir;
+use crate::infrastructure::agent_session::runtime::context_restore::{
+    context_restore_plan_for_session, context_restore_plan_for_session_before_turn,
+    ContextRestorePlan, RestoreContextPayload,
+};
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::{
     acquire_spawn_session_guard, clear_pending_turn_starting, clear_session_closing,
     is_pending_turn_starting, mark_pending_turn_starting, mark_session_closing,
@@ -26,14 +30,17 @@ use crate::infrastructure::agent_session::runtime::{
 #[cfg(test)]
 use crate::usecase::agent_session::session::create_session_internal;
 use crate::usecase::agent_session::session::{
-    add_message_internal, now_timestamp, ChatMessage, ChatSession, GetSessionResponse, MessagePart,
-    MessageRole, SessionStore, SessionSummary, SystemNotificationType, TokenUsage,
+    add_message_internal, now_timestamp, parts_to_legacy, ChatMessage, ChatSession,
+    ContextCarryState, GetSessionResponse, MessagePart, MessageRole, SessionStore, SessionSummary,
+    SystemNotificationType, TokenUsage,
 };
 
 pub(crate) use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
 
 pub const CLAUDE_BACKEND_ID: &str = "claude";
 pub const CODEX_BACKEND_ID: &str = "codex";
+pub(crate) const DEFER_AGENT_SESSION_ID_PERSIST_ON_READY: &str =
+    "defer_agent_session_id_persist_on_ready";
 
 use crate::usecase::agent_session::session::errors::session_target_rejected;
 
@@ -68,6 +75,8 @@ pub struct PendingMessage {
     pub worktree_path: String,
     pub mentions: Vec<crate::domain::code::MentionReference>,
     pub editor_context: Option<AgentEditorContext>,
+    pub existing_human_message_id: Option<String>,
+    pub existing_agent_message_id: Option<String>,
 }
 
 pub struct AgentProcess {
@@ -76,6 +85,7 @@ pub struct AgentProcess {
     pub state: BridgeState,
     pub turn_phase: TurnPhase,
     pub sdk_session_id: Option<String>,
+    pub context_carry_on_ready: Option<ContextCarryState>,
     #[cfg_attr(unix, allow(dead_code))]
     pub child: Child,
     pub generation_id: u64,
@@ -144,6 +154,7 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         state: BridgeState::Ready,
         turn_phase: TurnPhase::Idle,
         sdk_session_id: None,
+        context_carry_on_ready: None,
         child,
         generation_id: 0,
         #[cfg(unix)]
@@ -205,6 +216,13 @@ fn pending_message_to_queued_turn(
         permission_mode: pending.permission_mode.clone(),
         image_count: pending.images.len(),
     }
+}
+
+fn pending_existing_turn_ids(pending: &PendingMessage) -> Option<(&str, &str)> {
+    Some((
+        pending.existing_human_message_id.as_deref()?,
+        pending.existing_agent_message_id.as_deref()?,
+    ))
 }
 
 fn pending_queue_view(
@@ -2402,6 +2420,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
     plan_mode: bool,
     selected_model: Option<String>,
     system_prompt: Option<String>,
+    restore_context: Option<RestoreContextPayload>,
 ) -> Result<(), String> {
     let bridge_path = resolve_bridge_script(app, &backend_id)?;
     if !bridge_path.exists() {
@@ -2523,6 +2542,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
         &session_id,
         composed_system_prompt,
         &backend_id,
+        restore_context.as_ref(),
     )?;
     let runtime_config = backend_runtime_config(app, &backend_id);
     if let Some(init_obj) = init_cmd.as_object_mut() {
@@ -2542,6 +2562,16 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
 
     // Store process
     let gen_id = GENERATION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let context_carry_on_ready = if session_id.is_some() {
+        Some(ContextCarryState::Resumed)
+    } else if restore_context
+        .as_ref()
+        .is_some_and(|payload| !payload.prompt_prefix.trim().is_empty())
+    {
+        Some(ContextCarryState::Reinjected)
+    } else {
+        None
+    };
     {
         let mut map = handles.lock().await;
         map.insert(
@@ -2552,6 +2582,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                 state: BridgeState::Initializing,
                 turn_phase: TurnPhase::Idle,
                 sdk_session_id: session_id,
+                context_carry_on_ready,
                 child,
                 generation_id: gen_id,
                 #[cfg(unix)]
@@ -2595,6 +2626,8 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
             if let Ok(mut msg) = serde_json::from_str::<serde_json::Value>(&line) {
                 msg["chat_session_id"] = serde_json::Value::String(csid_stdout.clone());
 
+                let defer_agent_session_id_persist_on_ready =
+                    take_defer_agent_session_id_persist_on_ready(&mut msg);
                 let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
                 match msg_type {
@@ -2614,7 +2647,12 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         let _ = app_stdout.emit("agent-supported-commands-updated", &payload);
                     }
                     "session_ready" => {
-                        let became_ready = {
+                        let (
+                            became_ready,
+                            context_carry_on_ready,
+                            resume_mismatch,
+                            requeue_candidate,
+                        ) = {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 // Only transition to Ready if still Initializing (not already Streaming)
@@ -2622,14 +2660,108 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                 if was_initializing {
                                     proc.state = BridgeState::Ready;
                                 }
-                                if let Some(sid) = msg.get("session_id").and_then(|v| v.as_str()) {
+                                let ready_session_id =
+                                    msg.get("session_id").and_then(|v| v.as_str());
+                                let requested_resume_id = proc.sdk_session_id.clone();
+                                let context_carry_on_ready = proc.context_carry_on_ready.take();
+                                let resume_mismatch = session_ready_resume_mismatch(
+                                    context_carry_on_ready.as_ref(),
+                                    requested_resume_id.as_deref(),
+                                    ready_session_id,
+                                );
+                                let requeue_candidate = if resume_mismatch {
+                                    streaming_turn_requeue_candidate(proc)
+                                } else {
+                                    None
+                                };
+                                if let Some(sid) = ready_session_id {
                                     proc.sdk_session_id = Some(sid.to_string());
+                                    if !resume_mismatch && !defer_agent_session_id_persist_on_ready
+                                    {
+                                        persist_agent_session_id(
+                                            &app_stdout,
+                                            &session_store_clone,
+                                            &csid_stdout,
+                                            sid,
+                                        );
+                                    }
                                 }
-                                was_initializing
+                                (
+                                    was_initializing,
+                                    context_carry_on_ready,
+                                    resume_mismatch,
+                                    requeue_candidate,
+                                )
                             } else {
-                                false
+                                (false, None, false, None)
                             }
                         };
+                        if resume_mismatch {
+                            let requeued_streaming_turn = if let Some(candidate) = requeue_candidate
+                            {
+                                requeue_streaming_turn_for_resume_mismatch(
+                                    &app_stdout,
+                                    &handles_stdout,
+                                    &session_store_clone,
+                                    &csid_stdout,
+                                    candidate,
+                                )
+                                .await
+                            } else {
+                                false
+                            };
+                            persist_resume_mismatch_for_reinject(
+                                &app_stdout,
+                                &session_store_clone,
+                                &csid_stdout,
+                            );
+                            crash_agent_process_for_context_reinject(
+                                &app_stdout,
+                                &handles_stdout,
+                                &csid_stdout,
+                            )
+                            .await;
+                            if requeued_streaming_turn {
+                                emit_session_state_changed(
+                                    &app_stdout,
+                                    &csid_stdout,
+                                    TurnPhase::Idle,
+                                    None,
+                                );
+                                notify_status_transition(
+                                    &app_stdout,
+                                    &session_store_clone,
+                                    &csid_stdout,
+                                    TurnPhase::Idle,
+                                    None,
+                                );
+                                if let Some(pending) =
+                                    take_pending_message(&handles_stdout, &csid_stdout).await
+                                {
+                                    let app_p = app_stdout.clone();
+                                    let ss_p = Arc::clone(&session_store_clone);
+                                    let h_p = Arc::clone(&handles_stdout);
+                                    let csid_p = csid_stdout.clone();
+                                    let handle = tokio::runtime::Handle::current();
+                                    std::thread::spawn(move || {
+                                        handle.block_on(async move {
+                                            start_pending_message_turn(
+                                                &app_p, &h_p, &ss_p, &csid_p, pending,
+                                            )
+                                            .await;
+                                        });
+                                    });
+                                }
+                            }
+                            continue;
+                        } else if let Some(context_carry) = context_carry_on_ready {
+                            persist_context_carry_state(
+                                &app_stdout,
+                                &session_store_clone,
+                                &csid_stdout,
+                                context_carry,
+                            );
+                        }
                         let _ = app_stdout.emit("agent-sdk-message", &msg);
                         // Initializing 中（起動直後）に enqueue された pending を Ready 化
                         // 時に drain する。drain トリガーが turn_complete のみだと、ターンが
@@ -2698,6 +2830,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         let final_parts;
                         let final_msg_id;
                         let turn_token_usage;
+                        let context_restore_failed_on_init;
                         {
                             let _runtime_guard = acquire_session_runtime_lock(&csid_stdout).await;
                             let mut map = handles_stdout.lock().await;
@@ -2724,6 +2857,9 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                 turn_token_usage = effect.turn_token_usage;
                                 final_parts = effect.final_parts;
                                 final_msg_id = effect.final_msg_id;
+                                context_restore_failed_on_init = !was_streaming
+                                    && exit_code != 0
+                                    && proc.context_carry_on_ready.take().is_some();
 
                                 // User turn succeeded: persist agent_session_id to SessionStore
                                 if was_streaming && exit_code == 0 {
@@ -2745,6 +2881,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                 final_parts = Vec::new();
                                 final_msg_id = None;
                                 turn_token_usage = None;
+                                context_restore_failed_on_init = false;
                             }
                             // _runtime_guard はこのスコープを抜けて drop される
                         }
@@ -2767,18 +2904,13 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
 
                         // Resume failure (error during init) → clear stale agent_session_id
                         if !was_streaming && exit_code != 0 {
-                            if let Ok(data_dir) = resolve_data_dir(&app_stdout) {
-                                if let Ok(Some(mut session)) =
-                                    session_store_clone.get_session(&data_dir, &csid_stdout)
-                                {
-                                    if session.agent_session_id.is_some() {
-                                        session.agent_session_id = None;
-                                        session.updated_at = now_timestamp();
-                                        let _ =
-                                            session_store_clone.save_session(&data_dir, &session);
-                                    }
-                                }
-                            }
+                            persist_context_carry_failed_after_init_error(
+                                &app_stdout,
+                                &session_store_clone,
+                                &csid_stdout,
+                                true,
+                                context_restore_failed_on_init,
+                            );
                         }
 
                         // Emit state change only for user turns (was Streaming)
@@ -2857,18 +2989,20 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         let _ = app_stdout.emit("agent-sdk-message", &msg);
 
                         // Transition to Crashed for both Streaming and Initializing states
-                        let (was_streaming, was_initializing) = {
+                        let (was_streaming, was_initializing, context_restore_failed_on_init) = {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 let ws = proc.state == BridgeState::Streaming;
                                 let wi = proc.state == BridgeState::Initializing;
+                                let failed_context =
+                                    wi && proc.context_carry_on_ready.take().is_some();
                                 if ws || wi {
                                     proc.state = BridgeState::Crashed;
                                     proc.turn_phase = TurnPhase::Idle;
                                 }
-                                (ws, wi)
+                                (ws, wi, failed_context)
                             } else {
-                                (false, false)
+                                (false, false, false)
                             }
                         };
                         if was_streaming {
@@ -2895,19 +3029,26 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                 .get("clear_session_id")
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false)
+                            || msg
+                                .get("context_carry_failed")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false)
                         {
-                            if let Ok(data_dir) = resolve_data_dir(&app_stdout) {
-                                if let Ok(Some(mut session)) =
-                                    session_store_clone.get_session(&data_dir, &csid_stdout)
-                                {
-                                    if session.agent_session_id.is_some() {
-                                        session.agent_session_id = None;
-                                        session.updated_at = now_timestamp();
-                                        let _ =
-                                            session_store_clone.save_session(&data_dir, &session);
-                                    }
-                                }
-                            }
+                            persist_context_carry_failed_after_init_error(
+                                &app_stdout,
+                                &session_store_clone,
+                                &csid_stdout,
+                                was_initializing
+                                    || msg
+                                        .get("clear_session_id")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false),
+                                context_restore_failed_on_init
+                                    || msg
+                                        .get("context_carry_failed")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false),
+                            );
                         }
                     }
                     _ => {
@@ -3081,12 +3222,15 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
         // Streaming 中の終了だけでなく、Initializing (session_ready 前) の終了も
         // AgentStatusCenter に Error として伝搬させる。Initializing の場合は
         // turn_id=-1 を伴う Idle emit は行わない（streaming が無かったため）。
-        let effect = {
+        let (effect, context_carry_failed_after_init_error) = {
             let mut map = handles_stdout.lock().await;
             if let Some(proc) = map.get_mut(&csid_stdout) {
                 let streaming_message_id = proc.streaming_message_id.clone();
                 let generation_matches = proc.generation_id == captured_gen_id;
                 let backend_id = proc.backend_id.clone();
+                let context_carry_failed_after_init_error = generation_matches
+                    && proc.state == BridgeState::Initializing
+                    && proc.context_carry_on_ready.take().is_some();
                 let effect = apply_bridge_eof_crash(
                     generation_matches,
                     &mut proc.state,
@@ -3103,11 +3247,20 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                     enqueue_pending_delta(proc, &effect.error_delta);
                     flush_streaming(&app_stdout, proc, &csid_stdout, mid);
                 }
-                effect
+                (effect, context_carry_failed_after_init_error)
             } else {
-                BridgeEofCrashEffect::default()
+                (BridgeEofCrashEffect::default(), false)
             }
         };
+        if context_carry_failed_after_init_error {
+            persist_context_carry_failed_after_init_error(
+                &app_stdout,
+                &session_store_clone,
+                &csid_stdout,
+                true,
+                true,
+            );
+        }
         if let Some(message) = effect.sdk_error_message.as_deref() {
             let _ = app_stdout.emit(
                 "agent-sdk-message",
@@ -3508,6 +3661,15 @@ pub async fn get_session(
     .await
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PersistedSpawnInfo {
+    pub resume_sid: Option<String>,
+    pub selected_model: Option<String>,
+    pub backend_id: String,
+    pub permission_profile_id: Option<String>,
+    pub context_restore_plan: ContextRestorePlan,
+}
+
 /// Retrieve persisted session fields needed for spawning a Bridge process.
 ///
 /// モデル「未選択（None）」状態は廃止されたが、`ChatSession.selected_model` の永続化型は
@@ -3518,12 +3680,33 @@ fn get_persisted_spawn_info<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_store: &SessionStore,
     chat_session_id: &str,
-) -> Result<(Option<String>, Option<String>, String), String> {
+) -> Result<PersistedSpawnInfo, String> {
     let data_dir = resolve_data_dir(app)?;
     let persisted = session_store.get_session(&data_dir, chat_session_id)?;
     let registry =
         app.try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>();
     Ok(resolve_spawn_info(persisted, registry.as_deref()))
+}
+
+fn get_persisted_spawn_info_before_turn<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &SessionStore,
+    chat_session_id: &str,
+    streaming_agent_message_id: &str,
+) -> Result<PersistedSpawnInfo, String> {
+    let data_dir = resolve_data_dir(app)?;
+    let persisted = session_store.get_session(&data_dir, chat_session_id)?;
+    let context_restore_plan = context_restore_plan_for_session_before_turn(
+        persisted.as_ref(),
+        streaming_agent_message_id,
+    );
+    let registry =
+        app.try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>();
+    Ok(resolve_spawn_info_with_plan(
+        persisted,
+        registry.as_deref(),
+        context_restore_plan,
+    ))
 }
 
 /// 永続化セッションから spawn 情報を組み立てる純粋関数。
@@ -3533,25 +3716,407 @@ fn get_persisted_spawn_info<R: tauri::Runtime>(
 pub(crate) fn resolve_spawn_info(
     persisted: Option<ChatSession>,
     registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
-) -> (Option<String>, Option<String>, String) {
-    let (resume_sid, selected_model, backend_id) = persisted_spawn_info_from_session(persisted);
+) -> PersistedSpawnInfo {
+    let context_restore_plan = context_restore_plan_for_session(persisted.as_ref());
+    resolve_spawn_info_with_plan(persisted, registry, context_restore_plan)
+}
+
+fn resolve_spawn_info_with_plan(
+    persisted: Option<ChatSession>,
+    registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
+    context_restore_plan: ContextRestorePlan,
+) -> PersistedSpawnInfo {
+    let (resume_sid, selected_model, backend_id, permission_profile_id, context_restore_plan) =
+        persisted_spawn_info_from_session(persisted, context_restore_plan);
     let selected_model = resolve_selected_model(selected_model, &backend_id, registry);
-    (resume_sid, selected_model, backend_id)
+    PersistedSpawnInfo {
+        resume_sid,
+        selected_model,
+        backend_id,
+        permission_profile_id,
+        context_restore_plan,
+    }
 }
 
 fn persisted_spawn_info_from_session(
     session: Option<ChatSession>,
-) -> (Option<String>, Option<String>, String) {
+    context_restore_plan: ContextRestorePlan,
+) -> (
+    Option<String>,
+    Option<String>,
+    String,
+    Option<String>,
+    ContextRestorePlan,
+) {
     session
         .map(|s| {
             (
-                s.agent_session_id,
+                context_restore_plan
+                    .resume_session_id()
+                    .map(ToString::to_string),
                 s.selected_model,
                 s.backend_id
                     .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string()),
+                s.permission_profile_id,
+                context_restore_plan.clone(),
             )
         })
-        .unwrap_or((None, None, CLAUDE_BACKEND_ID.to_string()))
+        .unwrap_or((
+            None,
+            None,
+            CLAUDE_BACKEND_ID.to_string(),
+            None,
+            context_restore_plan,
+        ))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SessionContextCarryUpdate {
+    chat_session_id: String,
+    agent_session_id: Option<String>,
+    context_carry: Option<ContextCarryState>,
+    updated_at: f64,
+}
+
+impl SessionContextCarryUpdate {
+    fn from_session(session: &ChatSession) -> Self {
+        Self {
+            chat_session_id: session.id.clone(),
+            agent_session_id: session.agent_session_id.clone(),
+            context_carry: session.context_carry.clone(),
+            updated_at: session.updated_at,
+        }
+    }
+
+    fn to_protocol(&self) -> crate::protocol::AgentSessionContextCarryUpdated {
+        crate::protocol::AgentSessionContextCarryUpdated {
+            chat_session_id: self.chat_session_id.clone(),
+            agent_session_id: self.agent_session_id.clone(),
+            context_carry: self.context_carry.clone(),
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+fn emit_session_context_carry_update<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    update: SessionContextCarryUpdate,
+) {
+    use tauri::Emitter;
+
+    let payload = update.to_protocol();
+    let _ = app.emit("agent-session-context-carry-updated", &payload);
+}
+
+fn session_ready_resume_mismatch(
+    context_carry_on_ready: Option<&ContextCarryState>,
+    requested_resume_id: Option<&str>,
+    ready_session_id: Option<&str>,
+) -> bool {
+    if context_carry_on_ready != Some(&ContextCarryState::Resumed) {
+        return false;
+    }
+    let Some(requested_resume_id) = requested_resume_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    ready_session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        != Some(requested_resume_id)
+}
+
+#[derive(Debug, Clone)]
+struct StreamingTurnRequeueCandidate {
+    streaming_message_id: String,
+    permission_mode: String,
+}
+
+fn streaming_turn_requeue_candidate(proc: &AgentProcess) -> Option<StreamingTurnRequeueCandidate> {
+    if proc.state != BridgeState::Streaming {
+        return None;
+    }
+    Some(StreamingTurnRequeueCandidate {
+        streaming_message_id: proc.streaming_message_id.clone()?,
+        permission_mode: proc.current_permission_mode.clone(),
+    })
+}
+
+fn pending_content_from_human_message(message: &ChatMessage) -> String {
+    if !message.content.is_empty() {
+        return message.content.clone();
+    }
+    message.parts.as_deref().map_or_else(String::new, |parts| {
+        let (content, _, _) = parts_to_legacy(parts);
+        content
+    })
+}
+
+fn pending_images_from_human_message(message: &ChatMessage) -> Vec<ImageAttachment> {
+    message
+        .parts
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|part| match part {
+            MessagePart::Image { data, media_type } => Some(ImageAttachment {
+                data: data.clone(),
+                media_type: media_type.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn pending_mentions_from_human_message(
+    message: &ChatMessage,
+) -> Vec<crate::domain::code::MentionReference> {
+    message
+        .mentions
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(crate::adaptor::protocol::mention::MentionReferenceInput::into_domain)
+        .collect()
+}
+
+fn pending_message_from_streaming_turn(
+    session: &ChatSession,
+    candidate: &StreamingTurnRequeueCandidate,
+) -> Option<PendingMessage> {
+    let agent_index = session
+        .messages
+        .iter()
+        .position(|message| message.id == candidate.streaming_message_id)?;
+    if session.messages.get(agent_index)?.role != MessageRole::Agent {
+        return None;
+    }
+    let human_index = agent_index.checked_sub(1)?;
+    let human_message = session.messages.get(human_index)?;
+    if human_message.role != MessageRole::Human {
+        return None;
+    }
+    Some(PendingMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: pending_content_from_human_message(human_message),
+        created_at: human_message.timestamp,
+        permission_mode: candidate.permission_mode.clone(),
+        plan_mode: session.plan_mode,
+        images: pending_images_from_human_message(human_message),
+        worktree_path: session.worktree_path.clone(),
+        mentions: pending_mentions_from_human_message(human_message),
+        editor_context: None,
+        existing_human_message_id: Some(human_message.id.clone()),
+        existing_agent_message_id: Some(candidate.streaming_message_id.clone()),
+    })
+}
+
+async fn requeue_streaming_turn_for_resume_mismatch<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &SessionStore,
+    chat_session_id: &str,
+    candidate: StreamingTurnRequeueCandidate,
+) -> bool {
+    let data_dir = match resolve_data_dir(app) {
+        Ok(data_dir) => data_dir,
+        Err(e) => {
+            log::warn!("Failed to resolve data dir for resume mismatch requeue: {e}");
+            return false;
+        }
+    };
+    let session = match session_store.get_session(&data_dir, chat_session_id) {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            log::warn!("Session not found for resume mismatch requeue: {chat_session_id}");
+            return false;
+        }
+        Err(e) => {
+            log::warn!("Failed to load session for resume mismatch requeue: {e}");
+            return false;
+        }
+    };
+    let Some(pending) = pending_message_from_streaming_turn(&session, &candidate) else {
+        log::warn!("Streaming turn not found for resume mismatch requeue: {chat_session_id}");
+        return false;
+    };
+
+    let mut map = handles.lock().await;
+    let Some(proc) = map.get_mut(chat_session_id) else {
+        return false;
+    };
+    if proc.state != BridgeState::Streaming
+        || proc.streaming_message_id.as_deref() != Some(candidate.streaming_message_id.as_str())
+    {
+        return false;
+    }
+    proc.pending_messages.push_front(pending);
+    true
+}
+
+fn take_defer_agent_session_id_persist_on_ready(msg: &mut serde_json::Value) -> bool {
+    msg.as_object_mut()
+        .and_then(|object| object.remove(DEFER_AGENT_SESSION_ID_PERSIST_ON_READY))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn save_session_context_carry(
+    session_store: &SessionStore,
+    data_dir: &Path,
+    chat_session_id: &str,
+    context_carry: ContextCarryState,
+) -> Result<Option<SessionContextCarryUpdate>, String> {
+    let Some(mut session) = session_store.get_session(data_dir, chat_session_id)? else {
+        return Ok(None);
+    };
+    if session.context_carry == Some(context_carry.clone()) {
+        return Ok(None);
+    }
+    session.context_carry = Some(context_carry);
+    session.updated_at = now_timestamp();
+    session_store.save_session(data_dir, &session)?;
+    Ok(Some(SessionContextCarryUpdate::from_session(&session)))
+}
+
+fn save_resume_mismatch_for_reinject(
+    session_store: &SessionStore,
+    data_dir: &Path,
+    chat_session_id: &str,
+) -> Result<Option<SessionContextCarryUpdate>, String> {
+    let Some(mut session) = session_store.get_session(data_dir, chat_session_id)? else {
+        return Ok(None);
+    };
+    let mut changed = false;
+    if session.agent_session_id.is_some() {
+        session.agent_session_id = None;
+        changed = true;
+    }
+    if session.context_carry.is_some() {
+        session.context_carry = None;
+        changed = true;
+    }
+    if !changed {
+        return Ok(None);
+    }
+    session.updated_at = now_timestamp();
+    session_store.save_session(data_dir, &session)?;
+    Ok(Some(SessionContextCarryUpdate::from_session(&session)))
+}
+
+fn persist_resume_mismatch_for_reinject<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &SessionStore,
+    chat_session_id: &str,
+) {
+    match resolve_data_dir(app).and_then(|data_dir| {
+        save_resume_mismatch_for_reinject(session_store, &data_dir, chat_session_id)
+    }) {
+        Ok(Some(update)) => emit_session_context_carry_update(app, update),
+        Ok(None) => {}
+        Err(e) => {
+            log::warn!("Failed to prepare context reinjection for {chat_session_id}: {e}");
+        }
+    }
+}
+
+pub(crate) fn persist_context_carry_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &SessionStore,
+    chat_session_id: &str,
+    context_carry: ContextCarryState,
+) {
+    match resolve_data_dir(app).and_then(|data_dir| {
+        save_session_context_carry(session_store, &data_dir, chat_session_id, context_carry)
+    }) {
+        Ok(Some(update)) => emit_session_context_carry_update(app, update),
+        Ok(None) => {}
+        Err(e) => {
+            log::warn!("Failed to persist context carry state for {chat_session_id}: {e}");
+        }
+    }
+}
+
+fn persist_agent_session_id<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &SessionStore,
+    chat_session_id: &str,
+    agent_session_id: &str,
+) {
+    let agent_session_id = agent_session_id.trim();
+    if agent_session_id.is_empty() {
+        return;
+    }
+    let result = resolve_data_dir(app).and_then(|data_dir| {
+        let Some(mut session) = session_store.get_session(&data_dir, chat_session_id)? else {
+            return Ok(());
+        };
+        if session.agent_session_id.as_deref() == Some(agent_session_id) {
+            return Ok(());
+        }
+        session.agent_session_id = Some(agent_session_id.to_string());
+        session.updated_at = now_timestamp();
+        session_store.save_session(&data_dir, &session)
+    });
+    if let Err(e) = result {
+        log::warn!("Failed to persist agent session id for {chat_session_id}: {e}");
+    }
+}
+
+fn mark_context_carry_failed_after_init_error(
+    session: &mut ChatSession,
+    force_context_carry_failed: bool,
+) -> bool {
+    if force_context_carry_failed
+        || matches!(
+            session.context_carry,
+            Some(ContextCarryState::Resumed | ContextCarryState::Reinjected)
+        )
+    {
+        if session.context_carry == Some(ContextCarryState::Failed) {
+            return false;
+        }
+        session.context_carry = Some(ContextCarryState::Failed);
+        return true;
+    }
+    false
+}
+
+pub(crate) fn persist_context_carry_failed_after_init_error<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &SessionStore,
+    chat_session_id: &str,
+    clear_agent_session_id: bool,
+    force_context_carry_failed: bool,
+) {
+    let result = resolve_data_dir(app).and_then(|data_dir| {
+        let Some(mut session) = session_store.get_session(&data_dir, chat_session_id)? else {
+            return Ok(None);
+        };
+        let mut changed = false;
+        if clear_agent_session_id && session.agent_session_id.is_some() {
+            session.agent_session_id = None;
+            changed = true;
+        }
+        if mark_context_carry_failed_after_init_error(&mut session, force_context_carry_failed) {
+            changed = true;
+        }
+        if changed {
+            session.updated_at = now_timestamp();
+            session_store.save_session(&data_dir, &session)?;
+            return Ok(Some(SessionContextCarryUpdate::from_session(&session)));
+        }
+        Ok(None)
+    });
+    match result {
+        Ok(Some(update)) => emit_session_context_carry_update(app, update),
+        Ok(None) => {}
+        Err(e) => {
+            log::warn!("Failed to persist context carry failure for {chat_session_id}: {e}");
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3595,10 +4160,9 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
         map.remove(chat_session_id);
     }
 
-    let (resume_sid, selected_model, backend_id) =
-        get_persisted_spawn_info(app, session_store, chat_session_id)?;
+    let spawn_info = get_persisted_spawn_info(app, session_store, chat_session_id)?;
 
-    if backend_id == CODEX_BACKEND_ID {
+    if spawn_info.backend_id == CODEX_BACKEND_ID {
         let backend = codex_backend_from_app(app)?;
         backend
             .start_session(SessionConfig {
@@ -3606,7 +4170,7 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
                 cwd: cwd.to_string(),
                 permission_mode: Some(resolved_permission_mode),
                 plan_mode,
-                permission_profile_id: None,
+                permission_profile_id: spawn_info.permission_profile_id,
                 system_prompt,
             })
             .await?;
@@ -3618,13 +4182,14 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
         handles,
         session_store,
         chat_session_id,
-        backend_id,
-        resume_sid,
+        spawn_info.backend_id,
+        spawn_info.resume_sid,
         cwd,
         resolved_permission_mode,
         plan_mode,
-        selected_model,
+        spawn_info.selected_model,
         system_prompt,
+        spawn_info.context_restore_plan.restore_context().cloned(),
     )
     .await
 }
@@ -3644,8 +4209,8 @@ pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
-    let (_, _, backend_id) = get_persisted_spawn_info(app, session_store, chat_session_id)?;
-    if backend_id == CODEX_BACKEND_ID {
+    let spawn_info = get_persisted_spawn_info(app, session_store, chat_session_id)?;
+    if spawn_info.backend_id == CODEX_BACKEND_ID {
         return start_codex_backend_turn(
             app,
             chat_session_id,
@@ -3668,21 +4233,26 @@ pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
         images,
         || async {
             wait_until_session_close_finished(chat_session_id).await;
-            let (resume_sid, selected_model, backend_id) =
-                get_persisted_spawn_info(app, session_store, chat_session_id)?;
+            let spawn_info = get_persisted_spawn_info_before_turn(
+                app,
+                session_store,
+                chat_session_id,
+                streaming_message_id,
+            )?;
 
             spawn_bridge_process(
                 app,
                 handles,
                 session_store,
                 chat_session_id,
-                backend_id,
-                resume_sid,
+                spawn_info.backend_id,
+                spawn_info.resume_sid,
                 cwd,
                 permission_mode.to_string(),
                 plan_mode,
-                selected_model,
+                spawn_info.selected_model,
                 None,
+                spawn_info.context_restore_plan.restore_context().cloned(),
             )
             .await
         },
@@ -3715,8 +4285,8 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
-    let (_, _, backend_id) = get_persisted_spawn_info(app, session_store, chat_session_id)?;
-    if backend_id == CODEX_BACKEND_ID {
+    let spawn_info = get_persisted_spawn_info(app, session_store, chat_session_id)?;
+    if spawn_info.backend_id == CODEX_BACKEND_ID {
         return start_codex_backend_turn(
             app,
             chat_session_id,
@@ -3738,21 +4308,26 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
         streaming_message_id,
         images,
         || async {
-            let (resume_sid, selected_model, backend_id) =
-                get_persisted_spawn_info(app, session_store, chat_session_id)?;
+            let spawn_info = get_persisted_spawn_info_before_turn(
+                app,
+                session_store,
+                chat_session_id,
+                streaming_message_id,
+            )?;
 
             spawn_bridge_process(
                 app,
                 handles,
                 session_store,
                 chat_session_id,
-                backend_id,
-                resume_sid,
+                spawn_info.backend_id,
+                spawn_info.resume_sid,
                 cwd,
                 permission_mode.to_string(),
                 plan_mode,
-                selected_model,
+                spawn_info.selected_model,
                 None,
+                spawn_info.context_restore_plan.restore_context().cloned(),
             )
             .await
         },
@@ -3906,12 +4481,17 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<(), String>>,
 {
+    let mut removed_crashed_process: Option<AgentProcess> = None;
+    let mut preserved_pending_messages = VecDeque::new();
     let needs_spawn = {
         let mut map = handles.lock().await;
         match map.get(chat_session_id) {
             None => true,
             Some(proc) if proc.state == BridgeState::Crashed => {
-                map.remove(chat_session_id);
+                if let Some(mut proc) = map.remove(chat_session_id) {
+                    preserved_pending_messages.append(&mut proc.pending_messages);
+                    removed_crashed_process = Some(proc);
+                }
                 true
             }
             _ => false,
@@ -3928,7 +4508,12 @@ where
         match map.get(chat_session_id) {
             None => true,
             Some(proc) if proc.state == BridgeState::Crashed => {
-                map.remove(chat_session_id);
+                if let Some(mut proc) = map.remove(chat_session_id) {
+                    preserved_pending_messages.append(&mut proc.pending_messages);
+                    if removed_crashed_process.is_none() {
+                        removed_crashed_process = Some(proc);
+                    }
+                }
                 true
             }
             _ => false,
@@ -3936,11 +4521,67 @@ where
     };
     if needs_spawn_after_wait {
         if let Err(e) = spawn_runtime().await {
-            handles.lock().await.remove(chat_session_id);
+            let mut map = handles.lock().await;
+            if let Some(mut partial_proc) = map.remove(chat_session_id) {
+                preserved_pending_messages.append(&mut partial_proc.pending_messages);
+            }
+            if let Some(mut proc) = removed_crashed_process {
+                proc.pending_messages = preserved_pending_messages;
+                map.insert(chat_session_id.to_string(), proc);
+            }
             return Err(e);
         }
     }
+    prepend_pending_messages_to_runtime(handles, chat_session_id, preserved_pending_messages).await;
     Ok(())
+}
+
+async fn prepend_pending_messages_to_runtime(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    mut pending_messages: VecDeque<PendingMessage>,
+) {
+    if pending_messages.is_empty() {
+        return;
+    }
+    let mut map = handles.lock().await;
+    if let Some(proc) = map.get_mut(chat_session_id) {
+        let mut existing = std::mem::take(&mut proc.pending_messages);
+        pending_messages.append(&mut existing);
+        proc.pending_messages = pending_messages;
+    }
+}
+
+async fn crash_agent_process_for_context_reinject<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+) {
+    let mut map = handles.lock().await;
+    let Some(proc) = map.get_mut(chat_session_id) else {
+        return;
+    };
+    proc.state = BridgeState::Crashed;
+    proc.turn_phase = TurnPhase::Idle;
+    proc.sdk_session_id = None;
+    proc.context_carry_on_ready = None;
+    #[cfg(unix)]
+    {
+        if let Some(pg) = proc.pgid {
+            unsafe {
+                libc::killpg(pg as libc::pid_t, libc::SIGKILL);
+            }
+        } else if let Err(e) = proc.child.kill().await {
+            log::warn!("Failed to kill stale resume process {chat_session_id}: {e}");
+        }
+        if let Ok(data_dir) = resolve_data_dir(app) {
+            remove_pgid(&data_dir, chat_session_id);
+        }
+    }
+    #[cfg(not(unix))]
+    if let Err(e) = proc.child.kill().await {
+        log::warn!("Failed to kill stale resume process {chat_session_id}: {e}");
+    }
 }
 
 async fn interrupt_active_agent_turn(
@@ -3998,6 +4639,66 @@ fn pending_turn_start_failed_log_message() -> &'static str {
     "consume_pending_message_failed code=pending_turn_start_failed message=failed_to_start_pending_turn"
 }
 
+fn prepare_pending_turn_messages(
+    session_store: &Arc<SessionStore>,
+    data_dir: &Path,
+    chat_session_id: &str,
+    pending: &PendingMessage,
+) -> Result<(ChatMessage, ChatMessage, bool), String> {
+    if let Some((human_message_id, agent_message_id)) = pending_existing_turn_ids(pending) {
+        let session = session_store
+            .get_session(data_dir, chat_session_id)?
+            .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
+        let human_msg = session
+            .messages
+            .iter()
+            .find(|message| message.id == human_message_id && message.role == MessageRole::Human)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "Pending turn human message not found: {chat_session_id}/{human_message_id}"
+                )
+            })?;
+        let agent_msg = session
+            .messages
+            .iter()
+            .find(|message| message.id == agent_message_id && message.role == MessageRole::Agent)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "Pending turn agent message not found: {chat_session_id}/{agent_message_id}"
+                )
+            })?;
+        return Ok((human_msg, agent_msg, false));
+    }
+
+    let human_parts = pending_human_parts(pending);
+    let human_mentions = if pending.mentions.is_empty() {
+        None
+    } else {
+        Some(pending.mentions.clone())
+    };
+    let human_msg = add_message_internal(
+        session_store,
+        data_dir,
+        chat_session_id,
+        MessageRole::Human,
+        &pending.content,
+        human_parts,
+        human_mentions,
+    )?;
+    let agent_msg = add_message_internal(
+        session_store,
+        data_dir,
+        chat_session_id,
+        MessageRole::Agent,
+        "",
+        None,
+        None,
+    )?;
+    Ok((human_msg, agent_msg, true))
+}
+
 /// Consume a pending message queued during streaming and start the follow-up turn.
 ///
 /// Acquires `session_runtime_lock(chat_session_id)` internally via the standard
@@ -4020,48 +4721,18 @@ async fn start_pending_message_turn<R: tauri::Runtime>(
         }
     };
 
-    // 人間メッセージを drain 時に永続化する（enqueue 時は二重表示防止のため追加しない）。
-    let human_parts = pending_human_parts(&pending);
-    let human_mentions = if pending.mentions.is_empty() {
-        None
-    } else {
-        Some(pending.mentions.clone())
-    };
-    let human_msg = match add_message_internal(
-        session_store,
-        &data_dir,
-        chat_session_id,
-        MessageRole::Human,
-        &pending.content,
-        human_parts,
-        human_mentions,
-    ) {
-        Ok(msg) => msg,
-        Err(e) => {
-            log::error!("consume_pending_message: failed to add human message: {e}");
-            clear_pending_turn_starting(chat_session_id).await;
-            return;
-        }
-    };
-    let agent_msg = match add_message_internal(
-        session_store,
-        &data_dir,
-        chat_session_id,
-        MessageRole::Agent,
-        "",
-        None,
-        None,
-    ) {
-        Ok(msg) => msg,
-        Err(e) => {
-            log::error!("consume_pending_message: failed to add agent message: {e}");
-            clear_pending_turn_starting(chat_session_id).await;
-            return;
-        }
-    };
+    let (human_msg, agent_msg, emit_consumed_messages) =
+        match prepare_pending_turn_messages(session_store, &data_dir, chat_session_id, &pending) {
+            Ok(messages) => messages,
+            Err(e) => {
+                log::error!("consume_pending_message: failed to prepare pending messages: {e}");
+                clear_pending_turn_starting(chat_session_id).await;
+                return;
+            }
+        };
 
     // 3. Emit event so UI can update with the new human + agent messages
-    {
+    if emit_consumed_messages {
         use tauri::Emitter;
         let _ = app.emit(
             "agent-pending-message-consumed",
@@ -4775,6 +5446,7 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
     permission_mode: String,
     selected_model: Option<String>,
     sdk_session_id: Option<String>,
+    context_carry_on_ready: Option<ContextCarryState>,
 ) -> Result<u64, String> {
     crate::permission::PermissionMode::parse(&permission_mode).map_err(|e| e.to_string())?;
     #[cfg(unix)]
@@ -4796,6 +5468,7 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
                 state: BridgeState::Initializing,
                 turn_phase: TurnPhase::Idle,
                 sdk_session_id,
+                context_carry_on_ready,
                 child,
                 generation_id: gen_id,
                 #[cfg(unix)]
@@ -4891,49 +5564,19 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
             return Err(format!("failed to resolve data dir: {e}"));
         }
     };
-    // 人間メッセージを drain 時に永続化する（enqueue 時は二重表示防止のため追加しない）。
-    // Claude 経路 (start_pending_message_turn) と同じ扱い。
-    let human_parts = pending_human_parts(&pending);
-    let human_mentions = if pending.mentions.is_empty() {
-        None
-    } else {
-        Some(pending.mentions.clone())
-    };
-    let human_msg = match add_message_internal(
-        session_store,
-        &data_dir,
-        chat_session_id,
-        MessageRole::Human,
-        &pending.content,
-        human_parts,
-        human_mentions,
-    ) {
-        Ok(msg) => msg,
-        Err(e) => {
-            clear_pending_turn_starting(chat_session_id).await;
-            return Err(format!("failed to add pending human message: {e}"));
-        }
-    };
-    let agent_msg = match add_message_internal(
-        session_store,
-        &data_dir,
-        chat_session_id,
-        MessageRole::Agent,
-        "",
-        None,
-        None,
-    ) {
-        Ok(msg) => msg,
-        Err(e) => {
-            clear_pending_turn_starting(chat_session_id).await;
-            return Err(format!("failed to add pending agent message: {e}"));
-        }
-    };
+    let (human_msg, agent_msg, emit_consumed_messages) =
+        match prepare_pending_turn_messages(session_store, &data_dir, chat_session_id, &pending) {
+            Ok(messages) => messages,
+            Err(e) => {
+                clear_pending_turn_starting(chat_session_id).await;
+                return Err(format!("failed to prepare pending messages: {e}"));
+            }
+        };
     let permission_profile_id = session_store
         .get_session(&data_dir, chat_session_id)?
         .and_then(|session| session.permission_profile_id);
 
-    {
+    if emit_consumed_messages {
         use tauri::Emitter;
         let _ = app.emit(
             "agent-pending-message-consumed",
@@ -5055,18 +5698,43 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
     use tauri::Emitter;
 
     msg["chat_session_id"] = serde_json::Value::String(chat_session_id.to_string());
+    let defer_agent_session_id_persist_on_ready =
+        take_defer_agent_session_id_persist_on_ready(&mut msg);
     let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
     match msg_type {
         "session_ready" => {
-            let mut map = handles.lock().await;
-            if let Some(proc) = map.get_mut(chat_session_id) {
-                if proc.state == BridgeState::Initializing {
-                    proc.state = BridgeState::Ready;
+            let (context_carry_on_ready, resume_mismatch) = {
+                let mut map = handles.lock().await;
+                if let Some(proc) = map.get_mut(chat_session_id) {
+                    if proc.state == BridgeState::Initializing {
+                        proc.state = BridgeState::Ready;
+                    }
+                    let ready_session_id = msg.get("session_id").and_then(|v| v.as_str());
+                    let requested_resume_id = proc.sdk_session_id.clone();
+                    let context_carry_on_ready = proc.context_carry_on_ready.take();
+                    let resume_mismatch = session_ready_resume_mismatch(
+                        context_carry_on_ready.as_ref(),
+                        requested_resume_id.as_deref(),
+                        ready_session_id,
+                    );
+                    if let Some(sid) = ready_session_id {
+                        proc.sdk_session_id = Some(sid.to_string());
+                        if !resume_mismatch && !defer_agent_session_id_persist_on_ready {
+                            persist_agent_session_id(app, session_store, chat_session_id, sid);
+                        }
+                    }
+                    (context_carry_on_ready, resume_mismatch)
+                } else {
+                    (None, false)
                 }
-                if let Some(sid) = msg.get("session_id").and_then(|v| v.as_str()) {
-                    proc.sdk_session_id = Some(sid.to_string());
-                }
+            };
+            if resume_mismatch {
+                persist_resume_mismatch_for_reinject(app, session_store, chat_session_id);
+                crash_agent_process_for_context_reinject(app, handles, chat_session_id).await;
+                return;
+            } else if let Some(context_carry) = context_carry_on_ready {
+                persist_context_carry_state(app, session_store, chat_session_id, context_carry);
             }
             let _ = app.emit("agent-sdk-message", &msg);
         }
@@ -5083,19 +5751,29 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
         }
         "turn_complete" => {
             let exit_code = msg.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
-            let effect = {
+            let completed_session_id = msg
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            let (effect, context_restore_failed_on_init) = {
                 let _runtime_guard = acquire_session_runtime_lock(chat_session_id).await;
                 let mut map = handles.lock().await;
-                map.get_mut(chat_session_id).map(|proc| {
-                    run_turn_complete_transition_locked(
+                if let Some(proc) = map.get_mut(chat_session_id) {
+                    let effect = run_turn_complete_transition_locked(
                         proc,
                         chat_session_id,
                         exit_code,
                         |mid, parts| {
                             emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
                         },
-                    )
-                })
+                    );
+                    let context_restore_failed_on_init = !effect.was_streaming
+                        && exit_code != 0
+                        && proc.context_carry_on_ready.take().is_some();
+                    (Some(effect), context_restore_failed_on_init)
+                } else {
+                    (None, false)
+                }
             };
 
             let Some(effect) = effect else {
@@ -5103,6 +5781,11 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             };
             let final_parts = effect.final_parts;
             if effect.was_streaming {
+                if exit_code == 0 {
+                    if let Some(sid) = completed_session_id.as_deref() {
+                        persist_agent_session_id(app, session_store, chat_session_id, sid);
+                    }
+                }
                 if let Some(ref mid) = effect.final_msg_id {
                     if !final_parts.is_empty() {
                         persist_streaming_parts(
@@ -5155,12 +5838,24 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                     effect.turn_token_usage,
                     pending,
                 );
+            } else if exit_code != 0 {
+                persist_context_carry_failed_after_init_error(
+                    app,
+                    session_store,
+                    chat_session_id,
+                    true,
+                    context_restore_failed_on_init,
+                );
             }
         }
         "error" => {
-            {
+            let (_was_streaming, was_initializing, context_restore_failed_on_init) = {
                 let mut map = handles.lock().await;
                 if let Some(proc) = map.get_mut(chat_session_id) {
+                    let was_streaming = proc.state == BridgeState::Streaming;
+                    let was_initializing = proc.state == BridgeState::Initializing;
+                    let context_restore_failed =
+                        was_initializing && proc.context_carry_on_ready.take().is_some();
                     if proc.state == BridgeState::Streaming {
                         let prev_len = proc.streaming_parts.len();
                         accumulate_sdk_message(
@@ -5183,8 +5878,11 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                         proc.state = BridgeState::Crashed;
                         proc.turn_phase = TurnPhase::Idle;
                     }
+                    (was_streaming, was_initializing, context_restore_failed)
+                } else {
+                    (false, false, false)
                 }
-            }
+            };
             let _ = app.emit("agent-sdk-message", &msg);
             emit_session_state_changed(app, chat_session_id, TurnPhase::Idle, Some(1));
             notify_status_transition(
@@ -5194,6 +5892,32 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                 TurnPhase::Idle,
                 Some(crate::usecase::agent_session::session::SessionState::Error),
             );
+            if was_initializing
+                || msg
+                    .get("clear_session_id")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                || msg
+                    .get("context_carry_failed")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            {
+                persist_context_carry_failed_after_init_error(
+                    app,
+                    session_store,
+                    chat_session_id,
+                    was_initializing
+                        || msg
+                            .get("clear_session_id")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                    context_restore_failed_on_init
+                        || msg
+                            .get("context_carry_failed")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                );
+            }
         }
         _ => {
             let (accumulated, emit_msg_id, should_persist, persist_parts) = {
@@ -5446,22 +6170,24 @@ async fn prepare_send_agent_message_internal(
     };
 
     // 3. Check turn phase
-    let (current_phase, current_state) = {
+    let (current_phase, current_state, has_pending_messages) = {
         let map = handles.lock().await;
         map.get(&sid)
-            .map(|p| (p.turn_phase, p.state))
-            .unwrap_or((TurnPhase::Idle, BridgeState::Ready))
+            .map(|p| (p.turn_phase, p.state, !p.pending_messages.is_empty()))
+            .unwrap_or((TurnPhase::Idle, BridgeState::Ready, false))
     };
 
-    // turn_phase に加え、bridge 起動中 (Initializing) も busy として扱う。
-    // 起動中は turn_phase がまだ Idle のため、これを見ないと「起動中の送信」を
-    // 競合ターンとして即時起動してしまう。
-    let is_initializing = current_state == BridgeState::Initializing;
+    // Initializing だけでは active turn とみなさない。Claude bridge は最初の
+    // prompt が渡されるまで session_ready を出さないため、復帰直後の idle な
+    // Initializing process には初回発話を直接送る必要がある。
+    let initializing_active_turn =
+        current_state == BridgeState::Initializing && current_phase != TurnPhase::Idle;
     let active_turn_busy = current_phase == TurnPhase::Streaming
         || current_phase == TurnPhase::WaitingPermission
-        || is_initializing;
+        || initializing_active_turn;
     let pending_turn_starting = is_pending_turn_starting(&sid).await;
-    let turn_busy = active_turn_busy || pending_turn_starting;
+    let pending_queue_busy = has_pending_messages || pending_turn_starting;
+    let turn_busy = active_turn_busy || pending_queue_busy;
 
     let (human_message, agent_message, prepared_input, queued_turn) = if turn_busy {
         let can_steer_active_turn = if active_turn_busy && !pending_turn_starting {
@@ -5525,6 +6251,8 @@ async fn prepare_send_agent_message_internal(
                 worktree_path: session_worktree_path.clone(),
                 mentions: mentions.clone(),
                 editor_context: editor_context.clone(),
+                existing_human_message_id: None,
+                existing_agent_message_id: None,
             };
             let queued_turn = pending_message_to_queued_turn(&pending);
             let transient_human = ChatMessage {
@@ -5544,7 +6272,9 @@ async fn prepare_send_agent_message_internal(
                     .ok_or_else(|| format!("No active agent process for session {sid}"))?;
                 proc.pending_messages.push_back(pending);
             }
-            interrupt_active_agent_turn(handles, registry, &sid).await?;
+            if active_turn_busy && !pending_turn_starting {
+                interrupt_active_agent_turn(handles, registry, &sid).await?;
+            }
             (transient_human, None, None, Some(queued_turn))
         }
     } else {
@@ -6086,6 +6816,7 @@ fn build_init_cmd(
     session_id: &Option<String>,
     system_prompt: Option<String>,
     backend_id: &str,
+    restore_context: Option<&RestoreContextPayload>,
 ) -> Result<serde_json::Value, String> {
     let pm =
         crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
@@ -6101,6 +6832,12 @@ fn build_init_cmd(
     }
     if let Some(sp) = system_prompt {
         cmd["systemPrompt"] = serde_json::Value::String(sp);
+    }
+    if let Some(restore_context) = restore_context {
+        if !restore_context.prompt_prefix.trim().is_empty() {
+            cmd["restoreContext"] = serde_json::to_value(restore_context)
+                .map_err(|e| format!("Failed to serialize restore context: {e}"))?;
+        }
     }
     Ok(cmd)
 }
@@ -6419,6 +7156,7 @@ mod tests {
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: Some("sdk-resume-id".to_string()),
+            context_carry: Some(crate::usecase::agent_session::session::ContextCarryState::Resumed),
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -6430,12 +7168,582 @@ mod tests {
 
     #[test]
     fn persisted_spawn_info_uses_step_agent_session_id_for_resume() {
-        let (resume_id, selected_model, backend_id) =
-            persisted_spawn_info_from_session(Some(chat_session_for_spawn_info("step")));
+        let info = resolve_spawn_info(Some(chat_session_for_spawn_info("step")), None);
 
-        assert_eq!(resume_id.as_deref(), Some("sdk-resume-id"));
-        assert_eq!(selected_model.as_deref(), Some("sonnet"));
-        assert_eq!(backend_id, "mock");
+        assert_eq!(info.resume_sid.as_deref(), Some("sdk-resume-id"));
+        assert_eq!(info.selected_model.as_deref(), Some("sonnet"));
+        assert_eq!(info.backend_id, "mock");
+        assert!(matches!(
+            info.context_restore_plan,
+            ContextRestorePlan::Resume { .. }
+        ));
+    }
+
+    #[test]
+    fn persist_agent_session_id_updates_session_store_on_ready() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = SessionStore::default();
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+
+        persist_agent_session_id(&app.handle(), &store, &session.id, "sdk-ready");
+
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.agent_session_id.as_deref(), Some("sdk-ready"));
+    }
+
+    #[test]
+    fn save_session_context_carry_returns_update_payload_when_state_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SessionStore::default();
+        let mut session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        session.agent_session_id = Some("sdk-session".to_string());
+        store.save_session(temp.path(), &session).unwrap();
+
+        let update =
+            save_session_context_carry(&store, temp.path(), &session.id, ContextCarryState::Failed)
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(update.chat_session_id, session.id);
+        assert_eq!(update.agent_session_id.as_deref(), Some("sdk-session"));
+        assert_eq!(update.context_carry, Some(ContextCarryState::Failed));
+        assert!(update.updated_at >= session.updated_at);
+        assert!(save_session_context_carry(
+            &store,
+            temp.path(),
+            &session.id,
+            ContextCarryState::Failed
+        )
+        .unwrap()
+        .is_none());
+    }
+
+    #[test]
+    fn session_ready_resume_mismatch_requires_requested_id_to_match_ready_id() {
+        assert!(!session_ready_resume_mismatch(
+            Some(&ContextCarryState::Reinjected),
+            Some("resume-1"),
+            Some("new-1")
+        ));
+        assert!(!session_ready_resume_mismatch(
+            Some(&ContextCarryState::Resumed),
+            Some("resume-1"),
+            Some("resume-1")
+        ));
+        assert!(session_ready_resume_mismatch(
+            Some(&ContextCarryState::Resumed),
+            Some("resume-1"),
+            Some("new-1")
+        ));
+        assert!(session_ready_resume_mismatch(
+            Some(&ContextCarryState::Resumed),
+            Some("resume-1"),
+            None
+        ));
+    }
+
+    #[test]
+    fn defer_agent_session_id_persist_flag_is_internal() {
+        let mut msg = serde_json::json!({
+            "type": "session_ready",
+            "session_id": "sdk-session",
+        });
+        msg[DEFER_AGENT_SESSION_ID_PERSIST_ON_READY] = serde_json::Value::Bool(true);
+
+        assert!(take_defer_agent_session_id_persist_on_ready(&mut msg));
+        assert!(msg.get(DEFER_AGENT_SESSION_ID_PERSIST_ON_READY).is_none());
+
+        let mut msg_without_flag = serde_json::json!({ "type": "session_ready" });
+        assert!(!take_defer_agent_session_id_persist_on_ready(
+            &mut msg_without_flag
+        ));
+    }
+
+    #[tokio::test]
+    async fn external_session_ready_can_defer_agent_session_id_persistence() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CODEX_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.backend_id = CODEX_BACKEND_ID.to_string();
+        proc.state = BridgeState::Initializing;
+        handles.lock().await.insert(session.id.clone(), proc);
+        let mut state = ExternalBridgeMessageState::default();
+
+        let mut ready_message = serde_json::json!({
+            "type": "session_ready",
+            "session_id": "new-codex-thread",
+        });
+        ready_message[DEFER_AGENT_SESSION_ID_PERSIST_ON_READY] = serde_json::Value::Bool(true);
+
+        handle_external_bridge_message(
+            &app.handle(),
+            &store,
+            &handles,
+            &session.id,
+            ready_message,
+            &mut state,
+        )
+        .await;
+
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.agent_session_id, None);
+        let removed = handles.lock().await.remove(&session.id);
+        if let Some(mut proc) = removed {
+            assert_eq!(proc.sdk_session_id.as_deref(), Some("new-codex-thread"));
+            assert_eq!(proc.state, BridgeState::Ready);
+            let _ = proc.child.kill().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn external_turn_complete_persists_successful_session_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CODEX_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.backend_id = CODEX_BACKEND_ID.to_string();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        handles.lock().await.insert(session.id.clone(), proc);
+        let mut state = ExternalBridgeMessageState::default();
+
+        handle_external_bridge_message(
+            &app.handle(),
+            &store,
+            &handles,
+            &session.id,
+            serde_json::json!({
+                "type": "turn_complete",
+                "session_id": "new-codex-thread",
+                "exit_code": 0,
+            }),
+            &mut state,
+        )
+        .await;
+
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.agent_session_id.as_deref(), Some("new-codex-thread"));
+        let removed = handles.lock().await.remove(&session.id);
+        if let Some(mut proc) = removed {
+            assert_eq!(proc.state, BridgeState::Ready);
+            let _ = proc.child.kill().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn external_session_ready_mismatch_prepares_reinject_and_crashes_process() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(SessionStore::default());
+        let mut session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        session.agent_session_id = Some("stale-sdk-session".to_string());
+        session.context_carry = Some(ContextCarryState::Resumed);
+        store.save_session(temp.path(), &session).unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Initializing;
+        proc.sdk_session_id = Some("stale-sdk-session".to_string());
+        proc.context_carry_on_ready = Some(ContextCarryState::Resumed);
+        handles.lock().await.insert(session.id.clone(), proc);
+        let mut state = ExternalBridgeMessageState::default();
+
+        handle_external_bridge_message(
+            &app.handle(),
+            &store,
+            &handles,
+            &session.id,
+            serde_json::json!({
+                "type": "session_ready",
+                "session_id": "new-sdk-session"
+            }),
+            &mut state,
+        )
+        .await;
+
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.agent_session_id, None);
+        assert_eq!(loaded.context_carry, None);
+        let removed = handles.lock().await.remove(&session.id);
+        if let Some(mut proc) = removed {
+            assert_eq!(proc.sdk_session_id, None);
+            assert_eq!(proc.context_carry_on_ready, None);
+            assert_eq!(proc.state, BridgeState::Crashed);
+            let _ = proc.child.kill().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn session_ready_streaming_resume_mismatch_requeues_current_turn_for_reinject() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(SessionStore::default());
+        let mut session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        session.agent_session_id = Some("stale-sdk-session".to_string());
+        session.context_carry = Some(ContextCarryState::Resumed);
+        session.messages = vec![
+            ChatMessage {
+                id: "prior-human".to_string(),
+                role: MessageRole::Human,
+                content: "remember alpha".to_string(),
+                thinking: None,
+                activities: None,
+                parts: None,
+                timestamp: 1.0,
+                mentions: None,
+            },
+            ChatMessage {
+                id: "prior-agent".to_string(),
+                role: MessageRole::Agent,
+                content: "alpha is set".to_string(),
+                thinking: None,
+                activities: None,
+                parts: None,
+                timestamp: 2.0,
+                mentions: None,
+            },
+            ChatMessage {
+                id: "current-human".to_string(),
+                role: MessageRole::Human,
+                content: "what was it?".to_string(),
+                thinking: None,
+                activities: None,
+                parts: None,
+                timestamp: 3.0,
+                mentions: None,
+            },
+            ChatMessage {
+                id: "current-agent".to_string(),
+                role: MessageRole::Agent,
+                content: String::new(),
+                thinking: None,
+                activities: None,
+                parts: None,
+                timestamp: 4.0,
+                mentions: None,
+            },
+        ];
+        store.save_session(temp.path(), &session).unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        proc.sdk_session_id = Some("stale-sdk-session".to_string());
+        proc.context_carry_on_ready = Some(ContextCarryState::Resumed);
+        proc.streaming_message_id = Some("current-agent".to_string());
+        handles.lock().await.insert(session.id.clone(), proc);
+
+        let candidate = {
+            let mut map = handles.lock().await;
+            let proc = map.get_mut(&session.id).unwrap();
+            let context_carry_on_ready = proc.context_carry_on_ready.take();
+            assert!(session_ready_resume_mismatch(
+                context_carry_on_ready.as_ref(),
+                proc.sdk_session_id.as_deref(),
+                Some("new-sdk-session"),
+            ));
+            streaming_turn_requeue_candidate(proc).expect("streaming candidate")
+        };
+        assert!(
+            requeue_streaming_turn_for_resume_mismatch(
+                &app.handle(),
+                &handles,
+                &store,
+                &session.id,
+                candidate,
+            )
+            .await
+        );
+        persist_resume_mismatch_for_reinject(&app.handle(), &store, &session.id);
+        crash_agent_process_for_context_reinject(&app.handle(), &handles, &session.id).await;
+
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.agent_session_id, None);
+        assert_eq!(loaded.context_carry, None);
+        let ContextRestorePlan::Reinject { payload } =
+            context_restore_plan_for_session_before_turn(Some(&loaded), "current-agent")
+        else {
+            panic!("expected reinject plan before current turn");
+        };
+        assert!(payload.prompt_prefix.contains("remember alpha"));
+        assert!(!payload.prompt_prefix.contains("what was it?"));
+
+        let mut proc = handles.lock().await.remove(&session.id).unwrap();
+        assert_eq!(proc.state, BridgeState::Crashed);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        assert_eq!(proc.sdk_session_id, None);
+        assert_eq!(proc.pending_messages.len(), 1);
+        let pending = proc.pending_messages.pop_front().unwrap();
+        assert_eq!(pending.content, "what was it?");
+        assert_eq!(
+            pending.existing_human_message_id.as_deref(),
+            Some("current-human")
+        );
+        assert_eq!(
+            pending.existing_agent_message_id.as_deref(),
+            Some("current-agent")
+        );
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn initializing_resume_mismatch_has_no_streaming_requeue_candidate() {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Initializing;
+        proc.sdk_session_id = Some("stale-sdk-session".to_string());
+        proc.context_carry_on_ready = Some(ContextCarryState::Resumed);
+
+        assert!(session_ready_resume_mismatch(
+            proc.context_carry_on_ready.as_ref(),
+            proc.sdk_session_id.as_deref(),
+            Some("new-sdk-session"),
+        ));
+        assert!(streaming_turn_requeue_candidate(&proc).is_none());
+        let _ = proc.child.kill().await;
+    }
+
+    #[test]
+    fn persist_context_carry_failed_can_force_failed_before_success_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = SessionStore::default();
+        let mut session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        session.agent_session_id = Some("stale-sdk-session".to_string());
+        store.save_session(temp.path(), &session).unwrap();
+
+        persist_context_carry_failed_after_init_error(
+            &app.handle(),
+            &store,
+            &session.id,
+            true,
+            true,
+        );
+
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.agent_session_id, None);
+        assert_eq!(
+            loaded.context_carry,
+            Some(crate::usecase::agent_session::session::ContextCarryState::Failed)
+        );
+    }
+
+    #[tokio::test]
+    async fn bridge_eof_initializing_pending_context_carry_persists_failed() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(SessionStore::default());
+        let mut session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        session.agent_session_id = Some("stale-sdk-session".to_string());
+        session.context_carry = Some(ContextCarryState::Resumed);
+        store.save_session(temp.path(), &session).unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Initializing;
+        proc.generation_id = 42;
+        proc.sdk_session_id = Some("stale-sdk-session".to_string());
+        proc.context_carry_on_ready = Some(ContextCarryState::Resumed);
+        handles.lock().await.insert(session.id.clone(), proc);
+
+        let (effect, context_carry_failed_after_init_error) = {
+            let mut map = handles.lock().await;
+            let proc = map.get_mut(&session.id).unwrap();
+            let generation_matches = proc.generation_id == 42;
+            let backend_id = proc.backend_id.clone();
+            let context_carry_failed_after_init_error = generation_matches
+                && proc.state == BridgeState::Initializing
+                && proc.context_carry_on_ready.take().is_some();
+            let effect = apply_bridge_eof_crash(
+                generation_matches,
+                &mut proc.state,
+                &mut proc.turn_phase,
+                None,
+                &mut proc.streaming_parts,
+                &backend_id,
+            );
+            (effect, context_carry_failed_after_init_error)
+        };
+        assert!(effect.was_initializing);
+        assert!(context_carry_failed_after_init_error);
+        persist_context_carry_failed_after_init_error(
+            &app.handle(),
+            &store,
+            &session.id,
+            true,
+            true,
+        );
+
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.agent_session_id, None);
+        assert_eq!(loaded.context_carry, Some(ContextCarryState::Failed));
+        let mut proc = handles.lock().await.remove(&session.id).unwrap();
+        assert_eq!(proc.context_carry_on_ready, None);
+        assert_eq!(proc.state, BridgeState::Crashed);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn bridge_eof_initializing_without_pending_context_carry_does_not_persist_failed() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(SessionStore::default());
+        let mut session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        session.agent_session_id = Some("existing-sdk-session".to_string());
+        session.context_carry = None;
+        store.save_session(temp.path(), &session).unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Initializing;
+        proc.generation_id = 7;
+        proc.sdk_session_id = Some("existing-sdk-session".to_string());
+        proc.context_carry_on_ready = None;
+        handles.lock().await.insert(session.id.clone(), proc);
+
+        let context_carry_failed_after_init_error = {
+            let mut map = handles.lock().await;
+            let proc = map.get_mut(&session.id).unwrap();
+            let generation_matches = proc.generation_id == 7;
+            let backend_id = proc.backend_id.clone();
+            let context_carry_failed_after_init_error = generation_matches
+                && proc.state == BridgeState::Initializing
+                && proc.context_carry_on_ready.take().is_some();
+            let effect = apply_bridge_eof_crash(
+                generation_matches,
+                &mut proc.state,
+                &mut proc.turn_phase,
+                None,
+                &mut proc.streaming_parts,
+                &backend_id,
+            );
+            assert!(effect.was_initializing);
+            context_carry_failed_after_init_error
+        };
+        assert!(!context_carry_failed_after_init_error);
+        if context_carry_failed_after_init_error {
+            persist_context_carry_failed_after_init_error(
+                &app.handle(),
+                &store,
+                &session.id,
+                true,
+                true,
+            );
+        }
+
+        let loaded = store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            loaded.agent_session_id.as_deref(),
+            Some("existing-sdk-session")
+        );
+        assert_eq!(loaded.context_carry, None);
+        let mut proc = handles.lock().await.remove(&session.id).unwrap();
+        let _ = proc.child.kill().await;
     }
 
     #[tokio::test]
@@ -6500,6 +7808,50 @@ mod tests {
 
         assert_eq!(result.unwrap_err(), "spawn failed");
         assert!(!handles.lock().await.contains_key("step-session-spawn-fail"));
+    }
+
+    #[tokio::test]
+    async fn ensure_runtime_for_turn_preserves_pending_when_replacing_crashed_runtime() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "crashed-with-pending".to_string();
+        let mut crashed = make_test_agent_process();
+        let _ = crashed.child.kill().await;
+        crashed.state = BridgeState::Crashed;
+        crashed.pending_messages.push_back(PendingMessage {
+            id: "queued-before-crash".to_string(),
+            content: "continue after reinject".to_string(),
+            created_at: 1.0,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            images: Vec::new(),
+            worktree_path: "/repo".to_string(),
+            mentions: Vec::new(),
+            editor_context: None,
+            existing_human_message_id: None,
+            existing_agent_message_id: None,
+        });
+        handles.lock().await.insert(session_id.clone(), crashed);
+
+        ensure_runtime_for_turn(&handles, &session_id, {
+            let handles = Arc::clone(&handles);
+            let session_id = session_id.clone();
+            move || async move {
+                handles
+                    .lock()
+                    .await
+                    .insert(session_id, make_test_agent_process());
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+        let mut proc = handles.lock().await.remove("crashed-with-pending").unwrap();
+        assert_eq!(proc.pending_messages.len(), 1);
+        let pending = proc.pending_messages.pop_front().unwrap();
+        assert_eq!(pending.id, "queued-before-crash");
+        assert_eq!(pending.content, "continue after reinject");
+        let _ = proc.child.kill().await;
     }
 
     #[test]
@@ -8268,6 +9620,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initializing_idle_runtime_prepares_first_turn_instead_of_queueing() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: "mock".to_string(),
+            models: vec![],
+        }));
+        let registry = Arc::new(registry);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let worktree_path = "/repo".to_string();
+        let session = create_session_internal(
+            &session_store,
+            data_dir.path(),
+            &worktree_path,
+            Some("mock".to_string()),
+        )
+        .unwrap();
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Initializing;
+        proc.turn_phase = TurnPhase::Idle;
+        handles.lock().await.insert(session.id.clone(), proc);
+
+        let (response, prepared_input) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            Some(session.id.clone()),
+            worktree_path,
+            "first restored turn".to_string(),
+            crate::permission::PermissionMode::Edit,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(response.queued_turn.is_none());
+        assert!(response.agent_message.is_some());
+        assert!(response.pending_queue.is_empty());
+        let prepared_turn = expect_prepared_turn(prepared_input.expect("first turn should start"));
+        assert_eq!(prepared_turn.session_id, session.id);
+        assert_eq!(prepared_turn.prompt, "first restored turn");
+        let mut proc = handles.lock().await.remove(&session.id).unwrap();
+        assert!(proc.pending_messages.is_empty());
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
     async fn busy_send_uses_active_turn_steer_when_backend_is_ready() {
         let data_dir = tempfile::tempdir().unwrap();
         let session_store = Arc::new(SessionStore::default());
@@ -8865,6 +10272,7 @@ mod tests {
                 state: BridgeState::Ready,
                 turn_phase: TurnPhase::Idle,
                 sdk_session_id: None,
+                context_carry_on_ready: None,
                 child,
                 generation_id: 0,
                 #[cfg(unix)]
@@ -9014,6 +10422,7 @@ mod tests {
             first_message: String::new(),
             message_count: 0,
             agent_session_id: None,
+            context_carry: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -9035,6 +10444,7 @@ mod tests {
             first_message: "hello".to_string(),
             message_count: 1,
             agent_session_id: None,
+            context_carry: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -9066,6 +10476,7 @@ mod tests {
                 first_message: String::new(),
                 message_count: 0,
                 agent_session_id: None,
+                context_carry: None,
                 permission_mode: "edit".to_string(),
                 plan_mode: false,
                 permission_profile_id: None,
@@ -9105,6 +10516,7 @@ mod tests {
             first_message: "history".to_string(),
             message_count: 3,
             agent_session_id: Some("sdk-session".to_string()),
+            context_carry: Some(crate::usecase::agent_session::session::ContextCarryState::Resumed),
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -9146,6 +10558,8 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 mentions: Vec::new(),
                 editor_context: None,
+                existing_human_message_id: None,
+                existing_agent_message_id: None,
             });
         }
         assert!(is_agent_step_runtime_busy(&handles, "step").await);
@@ -9174,6 +10588,8 @@ mod tests {
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),
             editor_context: None,
+            existing_human_message_id: None,
+            existing_agent_message_id: None,
         });
         handles
             .lock()
@@ -9204,6 +10620,8 @@ mod tests {
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),
             editor_context: None,
+            existing_human_message_id: None,
+            existing_agent_message_id: None,
         });
         proc.pending_messages.push_back(PendingMessage {
             id: "queued-2".to_string(),
@@ -9215,6 +10633,8 @@ mod tests {
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),
             editor_context: None,
+            existing_human_message_id: None,
+            existing_agent_message_id: None,
         });
         handles.lock().await.insert("queued".to_string(), proc);
 
@@ -9246,6 +10666,8 @@ mod tests {
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),
             editor_context: None,
+            existing_human_message_id: None,
+            existing_agent_message_id: None,
         });
         proc.pending_messages.push_back(PendingMessage {
             id: "drop".to_string(),
@@ -9257,6 +10679,8 @@ mod tests {
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),
             editor_context: None,
+            existing_human_message_id: None,
+            existing_agent_message_id: None,
         });
         handles.lock().await.insert("queued".to_string(), proc);
 
@@ -9402,6 +10826,7 @@ mod tests {
             &Some("sess-abc".to_string()),
             None,
             CLAUDE_BACKEND_ID,
+            None,
         )
         .unwrap();
         assert_eq!(cmd["type"], "init");
@@ -9429,7 +10854,8 @@ mod tests {
 
     #[test]
     fn init_command_without_session_id() {
-        let cmd = build_init_cmd("/repo", "edit", false, &None, None, CLAUDE_BACKEND_ID).unwrap();
+        let cmd =
+            build_init_cmd("/repo", "edit", false, &None, None, CLAUDE_BACKEND_ID, None).unwrap();
         assert!(cmd["sessionId"].is_null());
     }
 
@@ -11022,7 +12448,8 @@ mod tests {
 
     #[test]
     fn build_init_cmd_without_system_prompt_for_claude() {
-        let cmd = build_init_cmd("/repo", "edit", false, &None, None, CLAUDE_BACKEND_ID).unwrap();
+        let cmd =
+            build_init_cmd("/repo", "edit", false, &None, None, CLAUDE_BACKEND_ID, None).unwrap();
         assert_eq!(cmd["type"], "init");
         assert_eq!(cmd["cwd"], "/repo");
         assert_eq!(cmd["permissionMode"], "acceptEdits");
@@ -11039,6 +12466,7 @@ mod tests {
             &Some("prev-session".to_string()),
             Some("You are a coder.".to_string()),
             CLAUDE_BACKEND_ID,
+            None,
         )
         .unwrap();
         assert_eq!(cmd["type"], "init");
@@ -11049,21 +12477,64 @@ mod tests {
     }
 
     #[test]
+    fn build_init_cmd_includes_restore_context_for_reinjection() {
+        let payload = RestoreContextPayload {
+            prompt_prefix: "restored prefix".to_string(),
+        };
+        let cmd = build_init_cmd(
+            "/repo",
+            "edit",
+            false,
+            &None,
+            None,
+            CLAUDE_BACKEND_ID,
+            Some(&payload),
+        )
+        .unwrap();
+
+        assert!(cmd["sessionId"].is_null());
+        assert_eq!(cmd["restoreContext"]["promptPrefix"], "restored prefix");
+        assert!(cmd["restoreContext"].get("messages").is_none());
+    }
+
+    #[test]
+    fn build_init_cmd_omits_empty_restore_context_prefix() {
+        let payload = RestoreContextPayload {
+            prompt_prefix: "  ".to_string(),
+        };
+        let cmd = build_init_cmd(
+            "/repo",
+            "edit",
+            false,
+            &None,
+            None,
+            CLAUDE_BACKEND_ID,
+            Some(&payload),
+        )
+        .unwrap();
+
+        assert!(cmd.get("restoreContext").is_none());
+    }
+
+    #[test]
     fn build_init_cmd_full_for_claude_emits_bypass_permissions() {
-        let cmd = build_init_cmd("/repo", "full", false, &None, None, CLAUDE_BACKEND_ID).unwrap();
+        let cmd =
+            build_init_cmd("/repo", "full", false, &None, None, CLAUDE_BACKEND_ID, None).unwrap();
         assert_eq!(cmd["permissionMode"], "bypassPermissions");
         assert!(cmd.get("systemPrompt").is_none());
     }
 
     #[test]
     fn build_init_cmd_ask_for_claude_emits_default() {
-        let cmd = build_init_cmd("/repo", "ask", false, &None, None, CLAUDE_BACKEND_ID).unwrap();
+        let cmd =
+            build_init_cmd("/repo", "ask", false, &None, None, CLAUDE_BACKEND_ID, None).unwrap();
         assert_eq!(cmd["permissionMode"], "default");
     }
 
     #[test]
     fn build_init_cmd_for_codex_emits_sandbox_and_approval() {
-        let cmd = build_init_cmd("/repo", "edit", false, &None, None, CODEX_BACKEND_ID).unwrap();
+        let cmd =
+            build_init_cmd("/repo", "edit", false, &None, None, CODEX_BACKEND_ID, None).unwrap();
         assert_eq!(cmd["type"], "init");
         assert_eq!(cmd["sandboxMode"], "workspace-write");
         assert_eq!(cmd["approvalPolicy"], "on-request");
@@ -11073,10 +12544,12 @@ mod tests {
 
     #[test]
     fn build_init_cmd_for_codex_ask_and_full() {
-        let ask = build_init_cmd("/repo", "ask", false, &None, None, CODEX_BACKEND_ID).unwrap();
+        let ask =
+            build_init_cmd("/repo", "ask", false, &None, None, CODEX_BACKEND_ID, None).unwrap();
         assert_eq!(ask["sandboxMode"], "read-only");
         assert_eq!(ask["approvalPolicy"], "on-request");
-        let full = build_init_cmd("/repo", "full", false, &None, None, CODEX_BACKEND_ID).unwrap();
+        let full =
+            build_init_cmd("/repo", "full", false, &None, None, CODEX_BACKEND_ID, None).unwrap();
         assert_eq!(full["sandboxMode"], "danger-full-access");
         assert_eq!(full["approvalPolicy"], "never");
     }
@@ -11090,13 +12563,16 @@ mod tests {
                 false,
                 &None,
                 None,
-                CLAUDE_BACKEND_ID
+                CLAUDE_BACKEND_ID,
+                None
             )
             .is_err(),
             "legacy claude flag must be rejected at the boundary"
         );
-        assert!(build_init_cmd("/repo", "plan", false, &None, None, CLAUDE_BACKEND_ID).is_err());
-        assert!(build_init_cmd("/repo", "", false, &None, None, CODEX_BACKEND_ID).is_err());
+        assert!(
+            build_init_cmd("/repo", "plan", false, &None, None, CLAUDE_BACKEND_ID, None).is_err()
+        );
+        assert!(build_init_cmd("/repo", "", false, &None, None, CODEX_BACKEND_ID, None).is_err());
     }
 
     /// spawn_bridge_process が spawn 前にパーミッションモードを検証することの担保。
@@ -11156,6 +12632,7 @@ mod tests {
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: None,
+            context_carry: None,
             permission_mode: permission.to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -11184,6 +12661,7 @@ mod tests {
             state: BridgeState::Ready,
             turn_phase: TurnPhase::Idle,
             sdk_session_id: None,
+            context_carry_on_ready: None,
             child,
             generation_id: 0,
             #[cfg(unix)]
@@ -11850,6 +13328,7 @@ mod tests {
                 state: BridgeState::Initializing,
                 turn_phase: TurnPhase::Idle,
                 sdk_session_id: None,
+                context_carry_on_ready: None,
                 child,
                 generation_id: 1,
                 pgid,
@@ -12536,6 +14015,7 @@ mod tests {
             created_at: 0.0,
             updated_at: 0.0,
             agent_session_id,
+            context_carry: None,
             permission_mode: "acceptEdits".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -12550,9 +14030,9 @@ mod tests {
         // registry 未指定（テスト等）では selected_model=None は None のまま。
         let session = make_chat_session_for_spawn(None, None, CODEX_BACKEND_ID);
         let info = resolve_spawn_info(Some(session), None);
-        assert_eq!(info.0, None); // resume_sid
-        assert_eq!(info.1, None); // selected_model
-        assert_eq!(info.2, CODEX_BACKEND_ID.to_string());
+        assert_eq!(info.resume_sid, None);
+        assert_eq!(info.selected_model, None);
+        assert_eq!(info.backend_id, CODEX_BACKEND_ID.to_string());
     }
 
     #[test]
@@ -12562,7 +14042,7 @@ mod tests {
         let session = make_chat_session_for_spawn(None, None, CODEX_BACKEND_ID);
         let info = resolve_spawn_info(Some(session), Some(&registry));
         assert_eq!(
-            info.1,
+            info.selected_model,
             Some(crate::domain::agent_session::CODEX_FIXED_MODELS[0].to_string())
         );
     }
@@ -12578,7 +14058,7 @@ mod tests {
         );
         let info = resolve_spawn_info(Some(session), Some(&registry));
         assert_eq!(
-            info.1,
+            info.selected_model,
             Some(crate::domain::agent_session::CODEX_FIXED_MODELS[1].to_string())
         );
     }
@@ -12590,10 +14070,10 @@ mod tests {
         let registry = make_fixed_model_registry();
         let info = resolve_spawn_info(None, Some(&registry));
         assert_eq!(
-            info.1,
+            info.selected_model,
             Some(crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string())
         );
-        assert_eq!(info.2, CLAUDE_BACKEND_ID.to_string());
+        assert_eq!(info.backend_id, CLAUDE_BACKEND_ID.to_string());
     }
 
     // --- get_session: active process が居ても config 由来を返す ---

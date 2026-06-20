@@ -2,6 +2,7 @@ pub mod bridge_common;
 pub mod claude;
 pub mod codex;
 pub mod codex_app_server;
+pub(crate) mod context_restore;
 mod permission_flags;
 pub mod runtime_coordinator;
 

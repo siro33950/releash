@@ -11,6 +11,7 @@ let messageResolve = null;
 let closed = false;
 let sessionReady = false;
 let currentModelId = null;
+let pendingRestoreContext = null;
 
 /**
  * AsyncGenerator that yields prompts to the SDK.
@@ -93,6 +94,16 @@ function toUserMessage(text, images) {
 
 let currentPermissionMode = "acceptEdits";
 
+function applyRestoreContext(text) {
+	const prefix = pendingRestoreContext?.promptPrefix;
+	pendingRestoreContext = null;
+	if (!prefix || typeof prefix !== "string" || prefix.trim().length === 0) {
+		return text;
+	}
+	if (!text) return prefix;
+	return `${prefix}\n\n${text}`;
+}
+
 function applyModelSafely(modelId) {
 	try {
 		currentQuery?.setModel(modelId ?? undefined);
@@ -113,7 +124,7 @@ function handleCommand(cmd) {
 			handleInit(cmd);
 			break;
 		case "message": {
-			const msg = toUserMessage(cmd.prompt, cmd.images);
+			const msg = toUserMessage(applyRestoreContext(cmd.prompt), cmd.images);
 			if (messageResolve) {
 				messageResolve(msg);
 			} else {
@@ -163,6 +174,11 @@ function handleCommand(cmd) {
 async function handleInit(cmd) {
 	const permissionMode = cmd.permissionMode || "acceptEdits";
 	currentPermissionMode = permissionMode;
+	const promptPrefix = cmd.restoreContext?.promptPrefix;
+	pendingRestoreContext =
+		typeof promptPrefix === "string" && promptPrefix.trim()
+			? { promptPrefix }
+			: null;
 
 	let stderrChunks = [];
 	const options = {

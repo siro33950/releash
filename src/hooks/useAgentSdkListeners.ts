@@ -1,7 +1,10 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Dispatch } from "react";
 import { useEffect } from "react";
-import type { AgentSupportedCommandsUpdated } from "@/types/protocol";
+import type {
+	AgentSessionContextCarryUpdated,
+	AgentSupportedCommandsUpdated,
+} from "@/types/protocol";
 import {
 	type MessagePart,
 	type ModelInfo,
@@ -334,6 +337,42 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 						mode: normalizePermissionMode(permission_mode),
 					});
 				}
+			},
+		).then((fn) => {
+			if (cancelled) {
+				fn();
+			} else {
+				unlisten = fn;
+			}
+		});
+
+		return () => {
+			cancelled = true;
+			unlisten?.();
+		};
+	}, [dispatch, viewableRegistry]);
+
+	// Listen to context-carry updates persisted by the Rust runtime.
+	useEffect(() => {
+		let unlisten: UnlistenFn | null = null;
+		let cancelled = false;
+
+		listen<AgentSessionContextCarryUpdated>(
+			"agent-session-context-carry-updated",
+			(event) => {
+				const { chat_session_id, agent_session_id, context_carry, updated_at } =
+					event.payload;
+				if (!isViewable(chat_session_id, viewableRegistry)) return;
+				dispatch({
+					type: "SET_CONTEXT_CARRY",
+					sessionId: chat_session_id,
+					agentSessionId: agent_session_id ?? null,
+					contextCarry: context_carry ?? null,
+					updatedAt:
+						typeof updated_at === "number" && Number.isFinite(updated_at)
+							? updated_at
+							: null,
+				});
 			},
 		).then((fn) => {
 			if (cancelled) {

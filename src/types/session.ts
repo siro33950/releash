@@ -119,6 +119,8 @@ export type SessionState =
 	| "closed"
 	| "archived";
 
+export type ContextCarryState = "resumed" | "reinjected" | "failed";
+
 export type TurnPhase = "idle" | "streaming" | "waiting_permission";
 
 export type MessagePart =
@@ -224,6 +226,7 @@ export interface ChatSession {
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
+	contextCarry?: ContextCarryState | null;
 	permissionMode: PermissionMode;
 	planMode?: PlanMode;
 	permissionProfileId?: string | null;
@@ -247,6 +250,7 @@ export interface SessionSummary {
 	firstMessage: string;
 	messageCount: number;
 	agentSessionId?: string | null;
+	contextCarry?: ContextCarryState | null;
 	permissionMode: PermissionMode;
 	planMode?: PlanMode;
 	permissionProfileId?: string | null;

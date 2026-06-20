@@ -2,6 +2,7 @@ import type {
 	BackendInfo,
 	ChatMessage,
 	ChatSession,
+	ContextCarryState,
 	MessagePart,
 	ModelInfo,
 	PermissionMode,
@@ -68,6 +69,13 @@ export type AgentChatAction =
 			type: "UPDATE_SESSION_STATE";
 			sessionId: string;
 			state: SessionState;
+	  }
+	| {
+			type: "SET_CONTEXT_CARRY";
+			sessionId: string;
+			contextCarry: ContextCarryState | null;
+			agentSessionId: string | null;
+			updatedAt: number | null;
 	  }
 	| { type: "SET_PERMISSION_MODE"; mode: PermissionMode }
 	| { type: "SET_PLAN_MODE"; enabled: PlanMode }
@@ -214,6 +222,19 @@ function updateSessionInStore(
 	};
 }
 
+function applyContextCarryToSummary(
+	summary: SessionSummary,
+	action: Extract<AgentChatAction, { type: "SET_CONTEXT_CARRY" }>,
+): SessionSummary {
+	if (summary.id !== action.sessionId) return summary;
+	return {
+		...summary,
+		agentSessionId: action.agentSessionId,
+		contextCarry: action.contextCarry,
+		updatedAt: action.updatedAt ?? summary.updatedAt,
+	};
+}
+
 export function reducer(
 	state: AgentChatState,
 	action: AgentChatAction,
@@ -281,6 +302,23 @@ export function reducer(
 				...s,
 				state: action.state,
 			}));
+		case "SET_CONTEXT_CARRY": {
+			const nextState = updateSessionInStore(state, action.sessionId, (s) => ({
+				...s,
+				agentSessionId: action.agentSessionId,
+				contextCarry: action.contextCarry,
+				updatedAt: action.updatedAt ?? s.updatedAt,
+			}));
+			return {
+				...nextState,
+				sessions: nextState.sessions.map((summary) =>
+					applyContextCarryToSummary(summary, action),
+				),
+				closedSessions: nextState.closedSessions.map((summary) =>
+					applyContextCarryToSummary(summary, action),
+				),
+			};
+		}
 		case "SET_PERMISSION_MODE":
 			return { ...state, permissionMode: action.mode };
 		case "SET_PLAN_MODE":

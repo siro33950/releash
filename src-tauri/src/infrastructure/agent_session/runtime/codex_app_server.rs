@@ -117,6 +117,7 @@ pub(crate) struct AppServerBridgeState {
     pub turn_id: Option<String>,
     pub latest_usage: Option<AppServerTokenUsage>,
     pending_approval_methods: HashMap<String, String>,
+    pending_request_error_handling: HashMap<String, AppServerRequestErrorHandling>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +126,23 @@ pub(crate) struct AppServerTokenUsage {
     pub output_tokens: u64,
     pub total_tokens: Option<u64>,
     pub context_window_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AppServerRequestErrorHandling {
+    pub clear_session_id: bool,
+    pub context_carry_failed: bool,
+}
+
+impl AppServerBridgeState {
+    pub(crate) fn track_request_error_handling(
+        &mut self,
+        id: u64,
+        handling: AppServerRequestErrorHandling,
+    ) {
+        self.pending_request_error_handling
+            .insert(id.to_string(), handling);
+    }
 }
 
 fn app_server_args() -> [&'static str; 3] {
@@ -657,6 +675,20 @@ fn error_message(message: &str) -> Value {
     })
 }
 
+fn context_restore_error_message(
+    message: &str,
+    clear_session_id: bool,
+    context_carry_failed: bool,
+) -> Value {
+    json!({
+        "type": "error",
+        "message": message,
+        "clear_session_id": clear_session_id,
+        "context_carry_failed": context_carry_failed,
+        "app_server_request_failed": true,
+    })
+}
+
 fn session_ready_message(thread_id: &str) -> Value {
     json!({
         "type": "session_ready",
@@ -1052,7 +1084,21 @@ pub(crate) fn app_server_message_to_bridge_messages(
                 _ => Vec::new(),
             }
         }
-        Some(AppServerMessageKind::Response { .. }) => {
+        Some(AppServerMessageKind::Response { id }) => {
+            if let Some(error) = message.get("error") {
+                let handling = state.pending_request_error_handling.remove(&id.to_string());
+                if let Some(handling) = handling {
+                    let message = get_string(error, &["message"])
+                        .unwrap_or("Codex app-server request failed");
+                    return vec![context_restore_error_message(
+                        message,
+                        handling.clear_session_id,
+                        handling.context_carry_failed,
+                    )];
+                }
+                return Vec::new();
+            }
+            state.pending_request_error_handling.remove(&id.to_string());
             let Some(thread_id) = get_string(message, &["result", "thread", "id"]) else {
                 return Vec::new();
             };
@@ -1913,6 +1959,67 @@ mod tests {
         );
         assert!(duplicate.is_empty());
         assert_eq!(state.thread_id.as_deref(), Some("thr_123"));
+    }
+
+    #[test]
+    fn app_server_tracked_resume_error_marks_context_failed_and_clears_session_id() {
+        let mut state = AppServerBridgeState::default();
+        state.track_request_error_handling(
+            2,
+            AppServerRequestErrorHandling {
+                clear_session_id: true,
+                context_carry_failed: true,
+            },
+        );
+
+        let messages = app_server_message_to_bridge_messages(
+            &json!({
+                "id": 2,
+                "error": {
+                    "code": -32000,
+                    "message": "thread not found"
+                }
+            }),
+            &mut state,
+        );
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["type"], "error");
+        assert_eq!(messages[0]["message"], "thread not found");
+        assert_eq!(messages[0]["clear_session_id"], true);
+        assert_eq!(messages[0]["context_carry_failed"], true);
+        assert_eq!(messages[0]["app_server_request_failed"], true);
+        assert_eq!(state.thread_id, None);
+    }
+
+    #[test]
+    fn app_server_tracked_start_error_can_report_without_context_failure() {
+        let mut state = AppServerBridgeState::default();
+        state.track_request_error_handling(
+            2,
+            AppServerRequestErrorHandling {
+                clear_session_id: false,
+                context_carry_failed: false,
+            },
+        );
+
+        let messages = app_server_message_to_bridge_messages(
+            &json!({
+                "id": 2,
+                "error": {
+                    "code": -32000,
+                    "message": "start failed"
+                }
+            }),
+            &mut state,
+        );
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["type"], "error");
+        assert_eq!(messages[0]["message"], "start failed");
+        assert_eq!(messages[0]["clear_session_id"], false);
+        assert_eq!(messages[0]["context_carry_failed"], false);
+        assert_eq!(messages[0]["app_server_request_failed"], true);
     }
 
     #[test]

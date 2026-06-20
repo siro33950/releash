@@ -287,6 +287,31 @@ describe("AgentChatPanel", () => {
 		expect(dragRegion).toBeInTheDocument();
 	});
 
+	it("shows a context restore warning for failed active sessions", () => {
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+				contextCarry: "failed",
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		expect(
+			screen.getByText(/Conversation context was not restored/),
+		).toBeInTheDocument();
+	});
+
 	it("opens the Rust-backed command palette with Cmd+K", async () => {
 		mockInvoke.mockImplementation((command: string) => {
 			if (command === "get_agent_shortcut_settings") {

@@ -1,5 +1,5 @@
 import type { WorkflowStatePayload } from "@/types/workflow";
-import type { MessagePart } from "./session";
+import type { ContextCarryState, MessagePart } from "./session";
 
 export interface PtyExitMsg {
 	pty_id: number;
@@ -52,6 +52,13 @@ export interface AgentSupportedCommandMsg {
 export interface AgentSupportedCommandsUpdated {
 	chat_session_id: string;
 	commands: AgentSupportedCommandMsg[];
+}
+
+export interface AgentSessionContextCarryUpdated {
+	chat_session_id: string;
+	agent_session_id?: string | null;
+	context_carry?: ContextCarryState | null;
+	updated_at: number;
 }
 
 export interface AgentStreamSync {
