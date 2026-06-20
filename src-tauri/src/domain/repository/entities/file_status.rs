@@ -1,7 +1,5 @@
-use serde::{Deserialize, Serialize};
-
 /// 作業ツリー上の 1 ファイルの index / worktree ステータス。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileStatus {
     pub path: String,
     pub index_status: String,
@@ -9,7 +7,7 @@ pub struct FileStatus {
 }
 
 /// ステージ済み / 未ステージの追加・削除行数の集計。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiffStat {
     pub path: String,
     pub index_additions: u32,

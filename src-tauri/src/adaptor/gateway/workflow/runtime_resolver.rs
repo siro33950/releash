@@ -5,7 +5,7 @@ use crate::adaptor::gateway::workflow::resolver::{
     WorkflowDefinitionResolverError,
 };
 use crate::adaptor::gateway::workflow::schema::Workflow;
-use crate::config::AppConfig;
+use crate::domain::app_config::ConfigRepository;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 
 pub(crate) struct DefaultWorkflowDefinitionResolver;
@@ -57,11 +57,11 @@ impl WorkflowDefinitionResolver for DefaultWorkflowDefinitionResolver {
 
 pub(crate) struct AppConfigManagedWorktreeResolver {
     usecase: Arc<RepositoryUsecase>,
-    config: Arc<AppConfig>,
+    config: Arc<dyn ConfigRepository>,
 }
 
 impl AppConfigManagedWorktreeResolver {
-    pub(crate) fn new(usecase: Arc<RepositoryUsecase>, config: Arc<AppConfig>) -> Self {
+    pub(crate) fn new(usecase: Arc<RepositoryUsecase>, config: Arc<dyn ConfigRepository>) -> Self {
         Self { usecase, config }
     }
 }

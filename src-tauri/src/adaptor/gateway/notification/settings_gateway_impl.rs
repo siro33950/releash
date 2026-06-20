@@ -1,63 +1,31 @@
 use std::sync::Arc;
 
-use crate::config::{AppConfig, DesktopNotifyMode as ConfigDesktopNotifyMode, NotifySection};
-use crate::domain::notification::{DesktopNotifyMode, NotifyConfig};
+use crate::domain::app_config::ConfigRepository;
+use crate::domain::notification::NotifyConfig;
 
 #[derive(Clone)]
 pub struct NotificationSettingsConfigGateway {
-    config: Arc<AppConfig>,
+    config: Arc<dyn ConfigRepository>,
 }
 
 impl NotificationSettingsConfigGateway {
-    pub fn new(config: Arc<AppConfig>) -> Self {
+    pub fn new(config: Arc<dyn ConfigRepository>) -> Self {
         Self { config }
     }
 
-    pub fn get_notify_config(&self) -> Result<NotifySection, String> {
-        Ok(self.config.get_config()?.server.notify)
+    pub fn get_notify_config(&self) -> Result<NotifyConfig, String> {
+        Ok(self.config.load().map_err(|e| e.to_string())?.server.notify)
     }
 
-    pub fn update_notify_config(&self, notify: NotifySection) -> Result<(), String> {
-        self.config.with_config_mut(|config| {
-            config.server.notify = notify;
-            Ok(())
-        })
+    pub fn update_notify_config(&self, notify: NotifyConfig) -> Result<(), String> {
+        let mut config = self.config.load().map_err(|e| e.to_string())?;
+        config.server.notify = notify;
+        self.config.save(config).map_err(|e| e.to_string())
     }
 
     pub fn update_webhook_url(&self, url: String) -> Result<(), String> {
-        self.config.with_config_mut(|config| {
-            config.server.notify.webhook_url = url;
-            Ok(())
-        })
-    }
-}
-
-pub fn config_notify_to_domain(notify: NotifySection) -> NotifyConfig {
-    NotifyConfig {
-        webhook_url: notify.webhook_url,
-        on_running: notify.on_running,
-        on_done: notify.on_done,
-        on_error: notify.on_error,
-        on_waiting: notify.on_waiting,
-        desktop_mode: match notify.desktop_mode {
-            ConfigDesktopNotifyMode::Always => DesktopNotifyMode::Always,
-            ConfigDesktopNotifyMode::WhenInactive => DesktopNotifyMode::WhenInactive,
-        },
-        inactive_timeout_minutes: notify.inactive_timeout_minutes,
-    }
-}
-
-pub fn domain_notify_to_config(notify: NotifyConfig) -> NotifySection {
-    NotifySection {
-        webhook_url: notify.webhook_url,
-        on_running: notify.on_running,
-        on_done: notify.on_done,
-        on_error: notify.on_error,
-        on_waiting: notify.on_waiting,
-        desktop_mode: match notify.desktop_mode {
-            DesktopNotifyMode::Always => ConfigDesktopNotifyMode::Always,
-            DesktopNotifyMode::WhenInactive => ConfigDesktopNotifyMode::WhenInactive,
-        },
-        inactive_timeout_minutes: notify.inactive_timeout_minutes,
+        let mut config = self.config.load().map_err(|e| e.to_string())?;
+        config.server.notify.webhook_url = url;
+        self.config.save(config).map_err(|e| e.to_string())
     }
 }

@@ -7939,10 +7939,13 @@ mod tests {
 
     #[test]
     fn available_models_for_backend_reads_from_config_via_registry() {
-        let mut cfg = crate::config::ReleashConfig::default();
+        let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
         cfg.agents.claude.models = vec!["mock-model".to_string()];
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+        let config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+            cfg,
+            tmp.path().to_path_buf(),
+        ));
 
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
@@ -8573,10 +8576,13 @@ mod tests {
         )
         .unwrap();
 
-        let mut cfg = crate::config::ReleashConfig::default();
+        let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
         cfg.agents.claude.models = vec!["mock-model".to_string()];
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+        let config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+            cfg,
+            tmp.path().to_path_buf(),
+        ));
 
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
@@ -8616,11 +8622,14 @@ mod tests {
         session.selected_model = Some("old-model".to_string());
         session_store.save_session(temp.path(), &session).unwrap();
 
-        let mut cfg = crate::config::ReleashConfig::default();
+        let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
         cfg.agents.claude.models = vec!["a-model".to_string()];
         cfg.agents.codex.models = vec!["b-model".to_string()];
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+        let config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+            cfg,
+            tmp.path().to_path_buf(),
+        ));
 
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
@@ -11844,10 +11853,13 @@ mod tests {
             )
             .unwrap();
 
-            let mut cfg = crate::config::ReleashConfig::default();
+            let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
             cfg.agents.codex.models = vec!["b-model".to_string()];
             let tmp = tempfile::NamedTempFile::new().unwrap();
-            let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+            let config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+                cfg,
+                tmp.path().to_path_buf(),
+            ));
 
             let mut registry = AgentBackendRegistry::new();
             registry.register(Arc::new(MockModelBackend {
@@ -11979,11 +11991,14 @@ mod tests {
         claude_models: &[&str],
         codex_models: &[&str],
     ) -> Arc<AgentBackendRegistry> {
-        let mut cfg = crate::config::ReleashConfig::default();
+        let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
         cfg.agents.claude.models = claude_models.iter().map(|s| s.to_string()).collect();
         cfg.agents.codex.models = codex_models.iter().map(|s| s.to_string()).collect();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+        let config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+            cfg,
+            tmp.path().to_path_buf(),
+        ));
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: CLAUDE_BACKEND_ID.to_string(),
@@ -12222,8 +12237,8 @@ mod tests {
 
     fn make_fixed_model_registry() -> Arc<AgentBackendRegistry> {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let config = Arc::new(crate::config::AppConfig::new(
-            crate::config::ReleashConfig::default(),
+        let config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+            crate::adaptor::gateway::app_config::ReleashConfig::default(),
             tmp.path().to_path_buf(),
         ));
         let mut registry = AgentBackendRegistry::new();

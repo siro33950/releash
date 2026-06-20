@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
+use crate::adaptor::gateway::app_config::read_config_if_exists;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 #[cfg(test)]
@@ -18,13 +19,12 @@ use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::pending_command::PendingCommandStore;
 use crate::adaptor::gateway::workflow::{
-    PendingWorkflowCommandFileRepository, RepoPathsManagedWorktreeGateway,
+    mapper, PendingWorkflowCommandFileRepository, RepoPathsManagedWorktreeGateway,
     WorkflowDefinitionFileRepository, WorkflowEventLogRepository, WorkflowFacetFileRepository,
     WorkflowRunFileRepository, WorkflowStateProjectionLogRepository,
 };
 use crate::adaptor::presenter::workflow::workflow_state_to_view;
 use crate::adaptor::protocol::workflow::WorkflowStateView;
-use crate::config::read_config_if_exists;
 use crate::domain::workflow::ApprovalInputError;
 use crate::domain::workflow::{
     approval_rules, contract, secret_masker, ContractValidationResult, FacetKind, FacetRepository,
@@ -456,8 +456,13 @@ fn ensure_existing_data_dir(path: &Path) -> Result<(), CliError> {
 fn cmd_list(workflows_dir: &Path, data_dir: &Path, json: bool) -> Result<(), CliError> {
     let summaries = list_workflows_file_direct(workflows_dir, data_dir)?;
     if json {
-        let text = serde_json::to_string_pretty(&summaries)
-            .map_err(|e| format!("serialize workflows: {e}"))?;
+        let wire: Vec<_> = summaries
+            .clone()
+            .into_iter()
+            .map(mapper::domain_workflow_summary_to_legacy)
+            .collect();
+        let text =
+            serde_json::to_string_pretty(&wire).map_err(|e| format!("serialize workflows: {e}"))?;
         println!("{text}");
     } else {
         if summaries.is_empty() {
@@ -505,8 +510,13 @@ fn cmd_runs(
     };
     let summaries = list_runs_file_direct(data_dir, filter)?;
     if json {
+        let wire: Vec<_> = summaries
+            .clone()
+            .into_iter()
+            .map(mapper::domain_run_summary_to_legacy)
+            .collect();
         let text =
-            serde_json::to_string_pretty(&summaries).map_err(|e| format!("serialize runs: {e}"))?;
+            serde_json::to_string_pretty(&wire).map_err(|e| format!("serialize runs: {e}"))?;
         println!("{text}");
     } else {
         if summaries.is_empty() {
@@ -2168,7 +2178,14 @@ models = ["opus"]
         }
         // 同じ projection に通したので JSON shape も一致する。
         let api_json = serde_json::to_value(&api_summaries).unwrap();
-        let cli_json = serde_json::to_value(&cli_summaries).unwrap();
+        let cli_json = serde_json::to_value(
+            cli_summaries
+                .clone()
+                .into_iter()
+                .map(mapper::domain_workflow_summary_to_legacy)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
         assert_eq!(api_json, cli_json);
     }
 
@@ -2252,9 +2269,9 @@ models = ["opus"]
         // CLI 用 data_dir に releash.toml を配置し、repo を configured repo として登録。
         let data_dir = tempfile::TempDir::new().unwrap();
         let config_path = data_dir.path().join("releash.toml");
-        let mut config = crate::config::ReleashConfig::default();
+        let mut config = crate::adaptor::gateway::app_config::ReleashConfig::default();
         config.app.last_repo_paths = vec![repo_dir.path().to_string_lossy().to_string()];
-        crate::config::write_config(&config_path, &config).unwrap();
+        crate::adaptor::gateway::app_config::write_config(&config_path, &config).unwrap();
 
         // 末尾スラッシュ / `.` を含む非 canonical 入力で呼び出しても、canonicalize した
         // 絶対パスが返り、その値は worktree_path.canonicalize() と一致する。
@@ -2324,7 +2341,14 @@ models = ["opus"]
 
         // 両者は同じ projection を通すので JSON shape も完全一致。
         let api_json = serde_json::to_value(&api_summaries).unwrap();
-        let cli_json = serde_json::to_value(&cli_summaries).unwrap();
+        let cli_json = serde_json::to_value(
+            cli_summaries
+                .clone()
+                .into_iter()
+                .map(mapper::domain_workflow_summary_to_legacy)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
         assert_eq!(
             api_json, cli_json,
             "list_workflows_inner と list_workflows_file_direct は同一観測結果を返さなければならない"

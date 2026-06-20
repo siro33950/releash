@@ -1,6 +1,4 @@
-use serde::Serialize;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorInfo {
     pub name: String,
     pub path: String,

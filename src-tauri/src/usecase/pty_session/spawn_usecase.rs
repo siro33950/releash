@@ -1,5 +1,5 @@
 use crate::domain::pty_session::{entities::PtySession, PtyKind};
-use crate::usecase::pty_session::dto::GetOrSpawnPtyResult;
+use crate::usecase::pty_session::dto::{pty_kind_to_wire, GetOrSpawnPtyResult};
 use crate::usecase::pty_session::error::UsecaseError;
 use crate::usecase::pty_session::ports::{PtyBackendSpawnRequest, PtySessionGateway};
 
@@ -58,7 +58,7 @@ pub fn get_or_spawn<G: PtySessionGateway>(
                 is_exited: found.snapshot.exited,
                 exit_code: found.snapshot.exit_code,
                 label: found.snapshot.label,
-                kind: found.snapshot.kind,
+                kind: pty_kind_to_wire(found.snapshot.kind).to_string(),
             });
         }
     }
@@ -82,6 +82,6 @@ pub fn get_or_spawn<G: PtySessionGateway>(
         is_exited: false,
         exit_code: None,
         label,
-        kind,
+        kind: pty_kind_to_wire(kind).to_string(),
     })
 }

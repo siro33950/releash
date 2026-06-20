@@ -67,7 +67,7 @@ impl AgentBackend for ClaudeBackend {
 
     fn runtime_config(
         &self,
-        _app_config: Option<&crate::config::AppConfig>,
+        _app_config: Option<&dyn crate::domain::app_config::AgentConfigRepository>,
     ) -> BackendRuntimeConfig {
         BackendRuntimeConfig {
             bridge_init_options: serde_json::Map::new(),

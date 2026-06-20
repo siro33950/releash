@@ -43,7 +43,6 @@ pub(crate) fn legacy_run_summary_to_domain(
     }
 }
 
-#[cfg(test)]
 pub(crate) fn domain_run_summary_to_legacy(
     run: domain::WorkflowRunSummary,
 ) -> legacy_run::WorkflowRunSummary {
@@ -117,11 +116,13 @@ fn legacy_trigger_source_to_domain(source: legacy_run::TriggerSource) -> domain:
 pub(crate) fn domain_workflow_to_legacy(
     definition: &domain::WorkflowDefinition,
 ) -> Result<crate::adaptor::gateway::workflow::schema::Workflow, domain::WorkflowError> {
-    let value = serde_json::to_value(definition)
-        .map_err(|e| domain::WorkflowError::external(format!("serialize workflow: {e}")))?;
-    let mut workflow =
-        serde_json::from_value::<crate::adaptor::gateway::workflow::schema::Workflow>(value)
-            .map_err(|e| domain::WorkflowError::external(format!("map workflow to legacy: {e}")))?;
+    let mut workflow = crate::adaptor::gateway::workflow::schema::Workflow {
+        name: definition.name.clone(),
+        description: definition.description.clone(),
+        builtin: definition.builtin,
+        variables: definition.variables.clone(),
+        nodes: definition.nodes.iter().map(domain_node_to_legacy).collect(),
+    };
     copy_domain_resolved_facets_to_legacy(definition, &mut workflow);
     Ok(workflow)
 }
@@ -129,12 +130,125 @@ pub(crate) fn domain_workflow_to_legacy(
 pub(crate) fn legacy_workflow_to_domain(
     workflow: crate::adaptor::gateway::workflow::schema::Workflow,
 ) -> Result<domain::WorkflowDefinition, domain::WorkflowError> {
-    let value = serde_json::to_value(&workflow)
-        .map_err(|e| domain::WorkflowError::external(format!("serialize legacy workflow: {e}")))?;
-    let mut definition = serde_json::from_value::<domain::WorkflowDefinition>(value)
-        .map_err(|e| domain::WorkflowError::external(format!("map workflow to domain: {e}")))?;
-    copy_legacy_resolved_facets_to_domain(&workflow, &mut definition);
-    Ok(definition)
+    Ok(crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(&workflow))
+}
+
+fn domain_node_to_legacy(
+    node: &domain::NodeDefinition,
+) -> crate::adaptor::gateway::workflow::schema::NodeDefinition {
+    crate::adaptor::gateway::workflow::schema::NodeDefinition {
+        name: node.name.clone(),
+        node_type: domain_node_type_to_legacy(node.node_type),
+        policy: node.policy.clone(),
+        knowledge: node.knowledge.clone(),
+        instruction: node.instruction.clone(),
+        output_contract: node.output_contract.clone(),
+        input_contracts: node.input_contracts.clone(),
+        pass_previous_response: node.pass_previous_response,
+        pass_output_from: node.pass_output_from.clone(),
+        inline_prompt: node.inline_prompt.clone(),
+        collect: node.collect.as_ref().map(domain_collect_to_legacy),
+        command: node.command.clone(),
+        parallel_children: node
+            .parallel_children
+            .as_ref()
+            .map(|children| children.iter().map(domain_child_node_to_legacy).collect()),
+        aggregate: node.aggregate.as_ref().map(domain_aggregate_to_legacy),
+        transition_rules: node
+            .transition_rules
+            .iter()
+            .map(domain_transition_rule_to_legacy)
+            .collect(),
+        cycle_guard: node.cycle_guard.as_ref().map(domain_cycle_guard_to_legacy),
+        resets_cycle_for: node.resets_cycle_for.clone(),
+        model: node.model.clone(),
+        permission: node.permission.clone(),
+        resolved_facets: domain_resolved_facets_to_legacy(&node.resolved_facets),
+    }
+}
+
+fn domain_child_node_to_legacy(
+    child: &domain::ChildNodeDefinition,
+) -> crate::adaptor::gateway::workflow::schema::ChildNodeDefinition {
+    crate::adaptor::gateway::workflow::schema::ChildNodeDefinition {
+        name: child.name.clone(),
+        node_type: domain_node_type_to_legacy(child.node_type),
+        policy: child.policy.clone(),
+        knowledge: child.knowledge.clone(),
+        instruction: child.instruction.clone(),
+        output_contract: child.output_contract.clone(),
+        input_contracts: child.input_contracts.clone(),
+        pass_previous_response: child.pass_previous_response,
+        pass_output_from: child.pass_output_from.clone(),
+        model: child.model.clone(),
+        permission: child.permission.clone(),
+        resolved_facets: domain_resolved_facets_to_legacy(&child.resolved_facets),
+    }
+}
+
+fn domain_node_type_to_legacy(
+    node_type: domain::NodeType,
+) -> crate::adaptor::gateway::workflow::schema::NodeType {
+    match node_type {
+        domain::NodeType::Agent => crate::adaptor::gateway::workflow::schema::NodeType::Agent,
+        domain::NodeType::Bash => crate::adaptor::gateway::workflow::schema::NodeType::Bash,
+        domain::NodeType::Approval => crate::adaptor::gateway::workflow::schema::NodeType::Approval,
+        domain::NodeType::Parallel => crate::adaptor::gateway::workflow::schema::NodeType::Parallel,
+    }
+}
+
+fn domain_collect_to_legacy(
+    collect: &domain::CollectConfig,
+) -> crate::adaptor::gateway::workflow::schema::CollectConfig {
+    crate::adaptor::gateway::workflow::schema::CollectConfig {
+        from: collect.from.clone(),
+        reduce: match collect.reduce {
+            domain::ReduceStrategy::Last => {
+                crate::adaptor::gateway::workflow::schema::ReduceStrategy::Last
+            }
+            domain::ReduceStrategy::Concat => {
+                crate::adaptor::gateway::workflow::schema::ReduceStrategy::Concat
+            }
+            domain::ReduceStrategy::Grouped => {
+                crate::adaptor::gateway::workflow::schema::ReduceStrategy::Grouped
+            }
+            domain::ReduceStrategy::AnyNeedsFix => {
+                crate::adaptor::gateway::workflow::schema::ReduceStrategy::AnyNeedsFix
+            }
+            domain::ReduceStrategy::AllPassed => {
+                crate::adaptor::gateway::workflow::schema::ReduceStrategy::AllPassed
+            }
+        },
+    }
+}
+
+fn domain_aggregate_to_legacy(
+    aggregate: &domain::ParallelAggregate,
+) -> crate::adaptor::gateway::workflow::schema::ParallelAggregate {
+    crate::adaptor::gateway::workflow::schema::ParallelAggregate {
+        all_match: aggregate.all_match.clone(),
+        any_match: aggregate.any_match.clone(),
+        then: aggregate.then.clone(),
+        r#else: aggregate.r#else.clone(),
+    }
+}
+
+fn domain_transition_rule_to_legacy(
+    rule: &domain::TransitionRule,
+) -> crate::adaptor::gateway::workflow::schema::TransitionRule {
+    crate::adaptor::gateway::workflow::schema::TransitionRule {
+        r#match: rule.r#match.clone(),
+        next: rule.next.clone(),
+    }
+}
+
+fn domain_cycle_guard_to_legacy(
+    guard: &domain::CycleGuard,
+) -> crate::adaptor::gateway::workflow::schema::CycleGuard {
+    crate::adaptor::gateway::workflow::schema::CycleGuard {
+        max_iterations: guard.max_iterations,
+        on_exhausted: guard.on_exhausted.clone(),
+    }
 }
 
 pub(crate) fn legacy_workflow_summary_to_domain(
@@ -148,7 +262,6 @@ pub(crate) fn legacy_workflow_summary_to_domain(
     }
 }
 
-#[cfg(test)]
 pub(crate) fn domain_workflow_summary_to_legacy(
     summary: domain::WorkflowSummary,
 ) -> crate::adaptor::gateway::workflow::schema::Summary {
@@ -180,7 +293,6 @@ pub(crate) fn legacy_facet_summary_to_domain(
     }
 }
 
-#[cfg(test)]
 pub(crate) fn domain_facet_summary_to_legacy(
     summary: domain::FacetSummary,
 ) -> crate::adaptor::gateway::workflow::schema::FacetSummary {
@@ -203,7 +315,7 @@ pub(crate) fn domain_event_draft_to_legacy(
                 workflow_name: String,
                 workflow_file_stem: String,
                 worktree_path: String,
-                workflow_definition: domain::WorkflowDefinition,
+                workflow_definition: crate::adaptor::gateway::workflow::schema::Workflow,
                 #[allow(dead_code)]
                 permission_mode: Option<String>,
             }
@@ -214,7 +326,7 @@ pub(crate) fn domain_event_draft_to_legacy(
                 workflow_name: payload.workflow_name,
                 workflow_file_stem: payload.workflow_file_stem,
                 worktree_path: payload.worktree_path,
-                workflow_definition: domain_workflow_to_legacy(&payload.workflow_definition)?,
+                workflow_definition: payload.workflow_definition,
                 timestamp: event.timestamp,
             })
         }
@@ -425,8 +537,16 @@ mod tests {
         let legacy = domain_run_summary_to_legacy(domain.clone());
 
         assert_eq!(
-            serde_json::to_value(domain).unwrap(),
-            serde_json::to_value(legacy).unwrap()
+            serde_json::to_value(legacy).unwrap(),
+            serde_json::json!({
+                "runId": "00000000-0000-4000-8000-000000000001",
+                "workflowName": "wf",
+                "status": "running",
+                "worktreePath": "/repo",
+                "triggerSource": "desktop_ui",
+                "startedAt": 1.0,
+                "updatedAt": 2.0
+            })
         );
     }
 
@@ -441,8 +561,13 @@ mod tests {
         let legacy = domain_workflow_summary_to_legacy(domain.clone());
 
         assert_eq!(
-            serde_json::to_value(domain).unwrap(),
-            serde_json::to_value(legacy).unwrap()
+            serde_json::to_value(legacy).unwrap(),
+            serde_json::json!({
+                "name": "wf",
+                "description": "desc",
+                "builtin": false,
+                "is_running": true
+            })
         );
     }
 
@@ -457,8 +582,13 @@ mod tests {
         let legacy = domain_facet_summary_to_legacy(domain.clone());
 
         assert_eq!(
-            serde_json::to_value(domain).unwrap(),
-            serde_json::to_value(legacy).unwrap()
+            serde_json::to_value(legacy).unwrap(),
+            serde_json::json!({
+                "key": "coding",
+                "kind": "policy",
+                "description": "desc",
+                "builtin": false
+            })
         );
     }
 
@@ -517,8 +647,23 @@ mod tests {
         let legacy = domain_workflow_to_legacy(&definition).unwrap();
 
         assert_eq!(
-            serde_json::to_value(definition).unwrap(),
-            serde_json::to_value(legacy).unwrap()
+            serde_json::to_value(legacy).unwrap(),
+            serde_json::json!({
+                "name": "wf",
+                "description": "desc",
+                "builtin": false,
+                "nodes": [{
+                    "name": "implement",
+                    "type": "agent",
+                    "instruction": "inst",
+                    "input_contracts": ["input"],
+                    "output_contract": "output",
+                    "rules": [{
+                        "match": "ok",
+                        "next": "done"
+                    }]
+                }]
+            })
         );
     }
 

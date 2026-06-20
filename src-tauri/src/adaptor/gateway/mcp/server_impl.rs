@@ -1,10 +1,6 @@
-pub mod auth;
-pub mod mcp_json;
-pub mod server;
-pub mod state;
-
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use axum::middleware;
 use axum::Router;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -12,8 +8,12 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 
-use self::server::ReleashMcpServer;
-use self::state::McpSharedState;
+use crate::adaptor::gateway::mcp::state::McpSharedState;
+use crate::domain::mcp::entities::McpServer;
+use crate::domain::mcp::error::McpError;
+use crate::domain::mcp::gateway::McpServerGateway;
+use crate::domain::mcp::value_objects::McpConnectionInfo;
+use crate::infrastructure::external::mcp::{auth_middleware, ReleashMcpServer};
 
 // ---------------------------------------------------------------------------
 // McpServerHandle — Tauri managed state
@@ -39,15 +39,12 @@ impl Default for McpServerHandle {
     }
 }
 
-#[derive(Clone, serde::Serialize)]
-pub struct McpConnectionInfo {
-    pub url: String,
-    pub token: String,
-}
-
 impl McpServerHandle {
     pub fn is_running(&self) -> bool {
-        *self.running.lock()
+        if *self.running.lock() {
+            return true;
+        }
+        McpServer::stopped().is_running()
     }
 
     pub fn connection_info(&self) -> Option<McpConnectionInfo> {
@@ -57,10 +54,7 @@ impl McpServerHandle {
         }
         let port = (*self.port.lock())?;
         let token = self.auth_token.lock().clone()?;
-        Some(McpConnectionInfo {
-            url: format!("http://127.0.0.1:{port}/mcp"),
-            token,
-        })
+        McpServer::running(port, token).connection_info()
     }
 }
 
@@ -94,7 +88,7 @@ async fn start_mcp_server_inner(
     handle: &McpServerHandle,
 ) -> Result<McpConnectionInfo, String> {
     // config.toml から固定ポート/トークンを取得
-    let config = state.app_config.get_config()?;
+    let config = state.app_config.load().map_err(|e| e.to_string())?;
     let mcp_port = config.server.mcp_port;
     let token = config.server.mcp_token.clone();
 
@@ -114,7 +108,7 @@ async fn start_mcp_server_inner(
         .nest_service("/mcp", service)
         .layer(middleware::from_fn_with_state(
             token_for_middleware,
-            auth::auth_middleware,
+            auth_middleware,
         ));
 
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{mcp_port}"))
@@ -223,7 +217,7 @@ fn build_mcp_state(app: &tauri::AppHandle) -> Result<McpSharedState, String> {
     let pty_session_runtime_gateway = app
         .state::<Arc<crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway>>(
         );
-    let app_config = app.state::<Arc<crate::config::AppConfig>>();
+    let app_config = app.state::<Arc<dyn crate::domain::app_config::ConfigRepository>>();
     let broadcaster = app.state::<Arc<crate::ws_bridge::WsBroadcaster>>();
     let shared_repo_paths =
         app.state::<crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths>();
@@ -253,41 +247,48 @@ pub async fn auto_start_mcp_server(app: &tauri::AppHandle) -> Result<McpConnecti
     start_mcp_server_core(state, &handle).await
 }
 
-// ---------------------------------------------------------------------------
-// Tauri commands
-// ---------------------------------------------------------------------------
+pub struct McpServerGatewayImpl;
 
-#[tauri::command]
-pub async fn start_mcp_server(app: tauri::AppHandle) -> Result<McpConnectionInfo, String> {
-    let handle = app.state::<McpServerHandle>();
-    let state = build_mcp_state(&app)?;
-    start_mcp_server_core(state, &handle).await
-}
+#[async_trait]
+impl McpServerGateway for McpServerGatewayImpl {
+    type Context = tauri::AppHandle;
 
-#[tauri::command]
-pub async fn stop_mcp_server(handle: tauri::State<'_, McpServerHandle>) -> Result<(), String> {
-    stop_mcp_server_core(&handle).await
-}
-
-#[derive(serde::Serialize)]
-pub struct McpServerStatus {
-    pub running: bool,
-    pub port: Option<u16>,
-}
-
-#[tauri::command]
-pub fn get_mcp_server_status(handle: tauri::State<'_, McpServerHandle>) -> McpServerStatus {
-    McpServerStatus {
-        running: handle.is_running(),
-        port: *handle.port.lock(),
+    async fn start(&self, context: &Self::Context) -> Result<McpConnectionInfo, McpError> {
+        let handle = context.state::<McpServerHandle>();
+        let state = build_mcp_state(context).map_err(McpError::Gateway)?;
+        start_mcp_server_core(state, &handle)
+            .await
+            .map_err(McpError::Gateway)
     }
-}
 
-#[tauri::command]
-pub fn get_mcp_connection_info(
-    handle: tauri::State<'_, McpServerHandle>,
-) -> Option<McpConnectionInfo> {
-    handle.connection_info()
+    async fn stop(&self, context: &Self::Context) -> Result<(), McpError> {
+        let handle = context.state::<McpServerHandle>();
+        stop_mcp_server_core(&handle)
+            .await
+            .map_err(McpError::Gateway)
+    }
+
+    async fn restart_if_running(
+        &self,
+        context: &Self::Context,
+    ) -> Result<McpConnectionInfo, McpError> {
+        restart_mcp_server_if_running(context)
+            .await
+            .map_err(McpError::Gateway)
+    }
+
+    fn is_running(&self, context: &Self::Context) -> Result<bool, McpError> {
+        let handle = context.state::<McpServerHandle>();
+        Ok(handle.is_running())
+    }
+
+    fn connection_info(
+        &self,
+        context: &Self::Context,
+    ) -> Result<Option<McpConnectionInfo>, McpError> {
+        let handle = context.state::<McpServerHandle>();
+        Ok(handle.connection_info())
+    }
 }
 
 #[cfg(test)]

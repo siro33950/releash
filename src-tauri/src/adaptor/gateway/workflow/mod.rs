@@ -25,7 +25,7 @@ pub(crate) mod facet;
 mod facet_repository;
 pub(crate) mod internal_node_command;
 pub(crate) mod log;
-mod mapper;
+pub(crate) mod mapper;
 pub(crate) mod orphan_recovery;
 #[cfg(test)]
 mod output_limit;

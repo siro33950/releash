@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::adaptor::controller::command::workflow::validate_run_id;
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::protocol::workflow::WorkflowStateView;
-use crate::domain::workflow::WorkflowRunSummary;
+use crate::usecase::workflow::dto::{run_summary_to_dto, WorkflowRunSummaryDto};
 use crate::usecase::workflow::{WorkflowEventView, WorkflowStepDetailView};
 
 /// [05] read-only API: 過去 / 進行中の workflow run 一覧を返す。
@@ -15,7 +15,7 @@ pub async fn list_workflow_runs(
     state: tauri::State<'_, AppState>,
     status: Option<String>,
     worktree_path: String,
-) -> Result<Vec<WorkflowRunSummary>, String> {
+) -> Result<Vec<WorkflowRunSummaryDto>, String> {
     let status = match status.as_deref() {
         None | Some("") => None,
         Some("active") => Some(crate::domain::workflow::RunStatusFilter::Active),
@@ -26,6 +26,7 @@ pub async fn list_workflow_runs(
     tokio::task::spawn_blocking(move || {
         query
             .list_runs_for_worktree(status, &worktree_path)
+            .map(|runs| runs.into_iter().map(run_summary_to_dto).collect())
             .map_err(|e| e.to_string())
     })
     .await
@@ -40,12 +41,13 @@ pub async fn list_workflow_runs(
 pub async fn get_workflow_run(
     state: tauri::State<'_, AppState>,
     run_id: String,
-) -> Result<Option<WorkflowRunSummary>, String> {
+) -> Result<Option<WorkflowRunSummaryDto>, String> {
     validate_run_id(&run_id)?;
     let query = state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
         query
             .authorize_run_summary(&run_id)
+            .map(|run| run.map(run_summary_to_dto))
             .map_err(|e| e.to_string())
     })
     .await

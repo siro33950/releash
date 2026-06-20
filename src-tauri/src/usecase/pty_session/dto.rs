@@ -7,7 +7,7 @@ pub struct PtySessionInfo {
     pub worktree_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    pub kind: PtyKind,
+    pub kind: String,
 }
 
 impl From<PtySessionSnapshot> for PtySessionInfo {
@@ -17,7 +17,7 @@ impl From<PtySessionSnapshot> for PtySessionInfo {
             session_key: snapshot.session_key,
             worktree_path: snapshot.worktree_path,
             label: snapshot.label,
-            kind: snapshot.kind,
+            kind: pty_kind_to_wire(snapshot.kind).to_string(),
         }
     }
 }
@@ -27,7 +27,7 @@ pub struct FoundPtySession {
     pub buffered_output: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub struct GetOrSpawnPtyResult {
     pub pty_id: u64,
     pub session_key: String,
@@ -37,5 +37,38 @@ pub struct GetOrSpawnPtyResult {
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    pub kind: PtyKind,
+    pub kind: String,
+}
+
+pub fn pty_kind_to_wire(kind: PtyKind) -> &'static str {
+    match kind {
+        PtyKind::Terminal => "terminal",
+        PtyKind::OneShot => "one_shot",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pty_kind_dto_serializes_as_snake_case_wire_value() {
+        let terminal = GetOrSpawnPtyResult {
+            pty_id: 1,
+            session_key: "key".to_string(),
+            buffered_output: String::new(),
+            is_new: true,
+            is_exited: false,
+            exit_code: None,
+            label: None,
+            kind: pty_kind_to_wire(PtyKind::Terminal).to_string(),
+        };
+        let one_shot = GetOrSpawnPtyResult {
+            kind: pty_kind_to_wire(PtyKind::OneShot).to_string(),
+            ..terminal.clone()
+        };
+
+        assert_eq!(serde_json::to_value(terminal).unwrap()["kind"], "terminal");
+        assert_eq!(serde_json::to_value(one_shot).unwrap()["kind"], "one_shot");
+    }
 }

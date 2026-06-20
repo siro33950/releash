@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::config::{AgentShortcutSection, AppConfig};
+use crate::domain::app_config::value_objects::AgentShortcutConfig;
+use crate::domain::app_config::ConfigRepository;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -209,7 +210,7 @@ pub(crate) fn normalize_shortcut(shortcut: &str) -> Result<String, String> {
 }
 
 fn shortcut_for(
-    shortcuts: &AgentShortcutSection,
+    shortcuts: &AgentShortcutConfig,
     definition: AgentShortcutDefinition,
 ) -> Result<String, String> {
     match shortcuts.overrides.get(definition.id) {
@@ -219,7 +220,7 @@ fn shortcut_for(
 }
 
 fn shortcut_settings_inner(
-    shortcuts: &AgentShortcutSection,
+    shortcuts: &AgentShortcutConfig,
 ) -> Result<Vec<AgentShortcutSetting>, String> {
     AGENT_SHORTCUTS
         .iter()
@@ -261,7 +262,7 @@ fn validate_shortcut_settings(settings: &[AgentShortcutSetting]) -> Result<(), S
 
 pub(crate) fn present_agent_command_palette_inner(
     request: &AgentCommandPaletteRequest,
-    shortcuts: &AgentShortcutSection,
+    shortcuts: &AgentShortcutConfig,
 ) -> Vec<AgentCommandPaletteItem> {
     let has_multiple_sessions = request.session_count > 1;
     let enabled_by_id = HashMap::from([
@@ -275,7 +276,7 @@ pub(crate) fn present_agent_command_palette_inner(
     ]);
 
     shortcut_settings_inner(shortcuts)
-        .unwrap_or_else(|_| shortcut_settings_inner(&AgentShortcutSection::default()).unwrap())
+        .unwrap_or_else(|_| shortcut_settings_inner(&AgentShortcutConfig::default()).unwrap())
         .into_iter()
         .filter(|setting| setting.id != "command_menu")
         .map(|setting| {
@@ -296,7 +297,7 @@ pub(crate) fn present_agent_command_palette_inner(
 
 pub(crate) fn is_agent_command_enabled_inner(
     request: &AgentCommandPaletteRequest,
-    shortcuts: &AgentShortcutSection,
+    shortcuts: &AgentShortcutConfig,
     command_id: &str,
 ) -> bool {
     if command_id == "command_menu" {
@@ -310,9 +311,9 @@ pub(crate) fn is_agent_command_enabled_inner(
 }
 
 fn update_shortcuts_inner(
-    current: &AgentShortcutSection,
+    current: &AgentShortcutConfig,
     updates: Vec<AgentShortcutUpdate>,
-) -> Result<AgentShortcutSection, String> {
+) -> Result<AgentShortcutConfig, String> {
     let known_ids = AGENT_SHORTCUTS
         .iter()
         .map(|definition| definition.id)
@@ -331,7 +332,7 @@ fn update_shortcuts_inner(
             overrides.insert(update.id, normalized);
         }
     }
-    let next = AgentShortcutSection { overrides };
+    let next = AgentShortcutConfig { overrides };
     let settings = shortcut_settings_inner(&next)?;
     validate_shortcut_settings(&settings)?;
     Ok(next)
@@ -340,10 +341,10 @@ fn update_shortcuts_inner(
 #[tauri::command]
 pub fn present_agent_command_palette(
     request: AgentCommandPaletteRequest,
-    state: tauri::State<'_, Arc<AppConfig>>,
+    state: tauri::State<'_, Arc<dyn ConfigRepository>>,
 ) -> Vec<AgentCommandPaletteItem> {
     let shortcuts = state
-        .get_config()
+        .load()
         .map(|config| config.app.agent_shortcuts)
         .unwrap_or_default();
     present_agent_command_palette_inner(&request, &shortcuts)
@@ -352,10 +353,10 @@ pub fn present_agent_command_palette(
 #[tauri::command]
 pub fn is_agent_command_enabled(
     request: AgentCommandEnabledRequest,
-    state: tauri::State<'_, Arc<AppConfig>>,
+    state: tauri::State<'_, Arc<dyn ConfigRepository>>,
 ) -> bool {
     let shortcuts = state
-        .get_config()
+        .load()
         .map(|config| config.app.agent_shortcuts)
         .unwrap_or_default();
     is_agent_command_enabled_inner(&request.request, &shortcuts, &request.command_id)
@@ -363,9 +364,9 @@ pub fn is_agent_command_enabled(
 
 #[tauri::command]
 pub fn get_agent_shortcut_settings(
-    state: tauri::State<'_, Arc<AppConfig>>,
+    state: tauri::State<'_, Arc<dyn ConfigRepository>>,
 ) -> Result<Vec<AgentShortcutSetting>, String> {
-    let shortcuts = state.get_config()?.app.agent_shortcuts;
+    let shortcuts = state.load().map_err(|e| e.to_string())?.app.agent_shortcuts;
     let settings = shortcut_settings_inner(&shortcuts)?;
     validate_shortcut_settings(&settings)?;
     Ok(settings)
@@ -373,19 +374,18 @@ pub fn get_agent_shortcut_settings(
 
 #[tauri::command]
 pub async fn update_agent_shortcut_settings(
-    state: tauri::State<'_, Arc<AppConfig>>,
+    state: tauri::State<'_, Arc<dyn ConfigRepository>>,
     shortcuts: Vec<AgentShortcutUpdate>,
 ) -> Result<Vec<AgentShortcutSetting>, String> {
     let app_config = state.inner().clone();
     tokio::task::spawn_blocking(move || {
-        app_config.with_config_mut(|config| {
-            let next = update_shortcuts_inner(&config.app.agent_shortcuts, shortcuts)?;
-            config.app.agent_shortcuts = next;
-            shortcut_settings_inner(&config.app.agent_shortcuts).and_then(|settings| {
-                validate_shortcut_settings(&settings)?;
-                Ok(settings)
-            })
-        })
+        let mut config = app_config.load().map_err(|e| e.to_string())?;
+        let next = update_shortcuts_inner(&config.app.agent_shortcuts, shortcuts)?;
+        config.app.agent_shortcuts = next;
+        let settings = shortcut_settings_inner(&config.app.agent_shortcuts)?;
+        validate_shortcut_settings(&settings)?;
+        app_config.save(config).map_err(|e| e.to_string())?;
+        Ok(settings)
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
@@ -393,14 +393,15 @@ pub async fn update_agent_shortcut_settings(
 
 #[tauri::command]
 pub async fn reset_agent_shortcut_settings(
-    state: tauri::State<'_, Arc<AppConfig>>,
+    state: tauri::State<'_, Arc<dyn ConfigRepository>>,
 ) -> Result<Vec<AgentShortcutSetting>, String> {
     let app_config = state.inner().clone();
     tokio::task::spawn_blocking(move || {
-        app_config.with_config_mut(|config| {
-            config.app.agent_shortcuts = AgentShortcutSection::default();
-            shortcut_settings_inner(&config.app.agent_shortcuts)
-        })
+        let mut config = app_config.load().map_err(|e| e.to_string())?;
+        config.app.agent_shortcuts = AgentShortcutConfig::default();
+        let settings = shortcut_settings_inner(&config.app.agent_shortcuts)?;
+        app_config.save(config).map_err(|e| e.to_string())?;
+        Ok(settings)
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
@@ -417,7 +418,7 @@ mod tests {
                 has_active_session: true,
                 session_count: 2,
             },
-            &AgentShortcutSection::default(),
+            &AgentShortcutConfig::default(),
         );
 
         assert!(result
@@ -442,7 +443,7 @@ mod tests {
 
     #[test]
     fn shortcut_settings_expose_native_command_menu_alternate_shortcut() {
-        let settings = shortcut_settings_inner(&AgentShortcutSection::default()).unwrap();
+        let settings = shortcut_settings_inner(&AgentShortcutConfig::default()).unwrap();
         assert!(settings.iter().any(|item| {
             item.id == "command_menu"
                 && item.shortcut == "Cmd K"
@@ -457,7 +458,7 @@ mod tests {
                 has_active_session: false,
                 session_count: 1,
             },
-            &AgentShortcutSection::default(),
+            &AgentShortcutConfig::default(),
         );
 
         assert!(result
@@ -479,7 +480,7 @@ mod tests {
 
     #[test]
     fn checks_single_command_enabled_state() {
-        let shortcuts = AgentShortcutSection::default();
+        let shortcuts = AgentShortcutConfig::default();
         let request = AgentCommandPaletteRequest {
             has_active_session: true,
             session_count: 1,
@@ -505,7 +506,7 @@ mod tests {
     #[test]
     fn normalizes_configured_shortcuts() {
         let next = update_shortcuts_inner(
-            &AgentShortcutSection::default(),
+            &AgentShortcutConfig::default(),
             vec![AgentShortcutUpdate {
                 id: "new_thread".to_string(),
                 shortcut: "ctrl+shift+n".to_string(),
@@ -522,7 +523,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_shortcuts() {
         let result = update_shortcuts_inner(
-            &AgentShortcutSection::default(),
+            &AgentShortcutConfig::default(),
             vec![AgentShortcutUpdate {
                 id: "new_thread".to_string(),
                 shortcut: "Cmd G".to_string(),

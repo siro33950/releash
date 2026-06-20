@@ -1,7 +1,4 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatus {
     Running,
     WaitingApproval,
@@ -16,16 +13,14 @@ impl RunStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalRunStatus {
     Completed,
     Failed,
     Aborted,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerSource {
     DesktopUi,
     Remote,
@@ -33,23 +28,20 @@ pub enum TriggerSource {
     Agent,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatusFilter {
     Active,
     Terminal,
     All,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunListFilter {
     pub status: Option<RunStatusFilter>,
     pub worktree_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowRunRecord {
     pub run_id: String,
     pub workflow_name: String,
@@ -64,23 +56,18 @@ pub struct WorkflowRunRecord {
     pub error_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowRunSummary {
     pub run_id: String,
     pub workflow_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
     pub status: RunStatus,
     pub worktree_path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_node_name: Option<String>,
     pub trigger_source: TriggerSource,
     pub started_at: f64,
     pub updated_at: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_reason: Option<String>,
 }
 

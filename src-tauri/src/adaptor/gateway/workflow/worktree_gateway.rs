@@ -1,14 +1,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::config::{AppConfig, ReleashConfig};
+use crate::domain::app_config::value_objects::AppSettings;
+use crate::domain::app_config::ConfigRepository;
 use crate::domain::workflow::{ManagedWorktreeGateway, WorkflowError};
 use crate::usecase::repository_usecase::RepositoryUsecase;
 
-fn configured_repo_paths(config: &ReleashConfig) -> Vec<String> {
-    let mut paths = config.app.last_repo_paths.clone();
-    if !config.app.last_root_path.is_empty() && !paths.contains(&config.app.last_root_path) {
-        paths.push(config.app.last_root_path.clone());
+fn configured_repo_paths(app: &AppSettings) -> Vec<String> {
+    let mut paths = app.last_repo_paths.clone();
+    if !app.last_root_path.is_empty() && !paths.contains(&app.last_root_path) {
+        paths.push(app.last_root_path.clone());
     }
     paths
 }
@@ -57,10 +58,10 @@ pub(crate) fn canonicalize_managed_worktree_path_inner(
 
 pub(crate) async fn canonicalize_managed_worktree_path(
     usecase: Arc<RepositoryUsecase>,
-    config: Arc<AppConfig>,
+    config: Arc<dyn ConfigRepository>,
     worktree_path: String,
 ) -> Result<String, String> {
-    let repo_paths = configured_repo_paths(&config.get_config()?);
+    let repo_paths = configured_repo_paths(&config.load().map_err(|e| e.to_string())?.app);
     tokio::task::spawn_blocking(move || {
         canonicalize_managed_worktree_path_inner(&usecase, repo_paths, worktree_path)
     })
@@ -71,23 +72,25 @@ pub(crate) async fn canonicalize_managed_worktree_path(
 #[derive(Clone)]
 pub(crate) struct RepositoryManagedWorktreeGateway {
     repository: Arc<RepositoryUsecase>,
-    config: Arc<AppConfig>,
+    config: Arc<dyn ConfigRepository>,
 }
 
 impl RepositoryManagedWorktreeGateway {
-    pub(crate) fn new(repository: Arc<RepositoryUsecase>, config: Arc<AppConfig>) -> Self {
+    pub(crate) fn new(
+        repository: Arc<RepositoryUsecase>,
+        config: Arc<dyn ConfigRepository>,
+    ) -> Self {
         Self { repository, config }
     }
 }
 
 impl ManagedWorktreeGateway for RepositoryManagedWorktreeGateway {
     fn resolve(&self, worktree_path: &str) -> Result<String, WorkflowError> {
-        let config = self.config.get_config().map_err(WorkflowError::external)?;
-        let mut repo_paths = config.app.last_repo_paths;
-        if !config.app.last_root_path.is_empty() && !repo_paths.contains(&config.app.last_root_path)
-        {
-            repo_paths.push(config.app.last_root_path);
-        }
+        let config = self
+            .config
+            .load()
+            .map_err(|e| WorkflowError::external(e.to_string()))?;
+        let repo_paths = configured_repo_paths(&config.app);
         canonicalize_managed_worktree_path_inner(
             &self.repository,
             repo_paths,

@@ -1,8 +1,6 @@
-use serde::{Deserialize, Serialize};
-
 use crate::domain::workflow::WorkflowError;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RunId(String);
 
 impl RunId {
@@ -32,7 +30,7 @@ impl std::fmt::Display for RunId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WorkflowName(String);
 
 impl WorkflowName {
@@ -64,7 +62,7 @@ impl std::fmt::Display for WorkflowName {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeName(String);
 
 impl NodeName {
@@ -87,7 +85,7 @@ impl std::fmt::Display for NodeName {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WorktreePath(String);
 
 impl WorktreePath {

@@ -1363,8 +1363,8 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_state(repo_paths: Vec<String>) -> WsServerState {
-        let config = crate::config::ReleashConfig::default();
-        let app_config = std::sync::Arc::new(crate::config::AppConfig::new(
+        let config = crate::adaptor::gateway::app_config::ReleashConfig::default();
+        let app_config = std::sync::Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
             config,
             std::path::PathBuf::from("/tmp/test-releash.toml"),
         ));
@@ -1482,11 +1482,14 @@ mod tests {
         claude_models: &[&str],
         codex_models: &[&str],
     ) -> Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry> {
-        let mut cfg = crate::config::ReleashConfig::default();
+        let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
         cfg.agents.claude.models = claude_models.iter().map(|s| s.to_string()).collect();
         cfg.agents.codex.models = codex_models.iter().map(|s| s.to_string()).collect();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+        let config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+            cfg,
+            tmp.path().to_path_buf(),
+        ));
         let mut registry =
             crate::infrastructure::agent_session::runtime::AgentBackendRegistry::new();
         registry.register(Arc::new(MockBackend {
@@ -2101,8 +2104,8 @@ mod tests {
             crate::infrastructure::agent_session::runtime::claude::ClaudeBackend::new(),
         ));
         registry.set_default(Some("claude".to_string()));
-        let config = crate::config::ReleashConfig::default();
-        let app_config = std::sync::Arc::new(crate::config::AppConfig::new(
+        let config = crate::adaptor::gateway::app_config::ReleashConfig::default();
+        let app_config = std::sync::Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
             config,
             std::path::PathBuf::from("/tmp/test-releash.toml"),
         ));

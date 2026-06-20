@@ -164,8 +164,8 @@ pub(crate) fn validate_approval_turn_phase(
 pub(crate) fn workflow_approval_auto_approve_enabled<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> bool {
-    app.try_state::<Arc<crate::config::AppConfig>>()
-        .and_then(|config| config.get_config().ok())
+    app.try_state::<Arc<dyn crate::domain::app_config::ConfigRepository>>()
+        .and_then(|config| config.load().ok())
         .is_some_and(|cfg| cfg.workflow.approval_auto_approve)
 }
 

@@ -297,8 +297,8 @@ fn step_output_to_view(output: workflow::StepOutput) -> workflow_wire::StepOutpu
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ChildOutputSnapshot, ParallelStepState, StepHistoryEntry, TokenUsage, WorkflowDefinition,
-        WorkflowExecutionState,
+        ChildOutputSnapshot, NodeDefinition, NodeType, ParallelStepState, StepHistoryEntry,
+        TokenUsage, WorkflowDefinition, WorkflowExecutionState,
     };
 
     fn state() -> WorkflowStateSnapshot {
@@ -379,5 +379,108 @@ mod tests {
         assert!(!view.runtime_states["done-session"].runtime_active);
         assert!(view.runtime_states["parallel-session"].runtime_active);
         assert!(view.runtime_states["parallel-session"].tab_open);
+    }
+
+    // ---- WorkflowState wire view serde ----
+
+    fn make_session_test_node(
+        name: &str,
+        node_type: NodeType,
+        instruction: &str,
+    ) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            node_type,
+            instruction: Some(instruction.to_string()),
+            ..NodeDefinition::default()
+        }
+    }
+
+    fn make_test_workflow_for_session() -> WorkflowDefinition {
+        WorkflowDefinition {
+            variables: Default::default(),
+            name: "review-cycle".to_string(),
+            description: "Test".to_string(),
+            builtin: false,
+            nodes: vec![
+                make_session_test_node("plan", NodeType::Agent, "plan"),
+                make_session_test_node("implement", NodeType::Agent, "implement"),
+                make_session_test_node("review", NodeType::Agent, "review"),
+                NodeDefinition {
+                    name: "report".to_string(),
+                    node_type: NodeType::Approval,
+                    instruction: Some("report".to_string()),
+                    ..NodeDefinition::default()
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn workflow_state_view_serde_roundtrip() {
+        let state = WorkflowStateSnapshot {
+            execution_id: "exec-1".to_string(),
+            workflow_name: "review-cycle".to_string(),
+            state: WorkflowExecutionState::Running,
+            current_step_index: 2,
+            current_step_name: "review".to_string(),
+            current_session_id: Some("sess-current".to_string()),
+            total_steps: 4,
+            step_history: vec![
+                StepHistoryEntry {
+                    step_name: "plan".to_string(),
+                    completed_at: 1000.0,
+                    result: None,
+                    session_id: None,
+                    token_usage: None,
+                    structured_output: None,
+                    run_index: 0,
+                    child_outputs: None,
+                    state: crate::domain::workflow::value_objects::default_step_entry_state(),
+                },
+                StepHistoryEntry {
+                    step_name: "implement".to_string(),
+                    completed_at: 1001.0,
+                    result: Some("done".to_string()),
+                    session_id: Some("sess-1".to_string()),
+                    token_usage: Some(TokenUsage {
+                        input_tokens: 100,
+                        output_tokens: 50,
+                    }),
+                    structured_output: None,
+                    run_index: 0,
+                    child_outputs: None,
+                    state: crate::domain::workflow::value_objects::default_step_entry_state(),
+                },
+            ],
+            step_execution_counts: HashMap::new(),
+            step_outputs: HashMap::new(),
+            workflow_definition: make_test_workflow_for_session(),
+            total_token_usage: TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+            },
+            step_states: HashMap::new(),
+            active_parallel_steps: vec![],
+            workflow_variables: HashMap::new(),
+            approval_operations: None,
+            started_at: 999.0,
+            updated_at: 1001.0,
+        };
+        let view = workflow_state_to_view(state);
+        let json = serde_json::to_string(&view).unwrap();
+        let back: workflow_wire::WorkflowStateFieldsView = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.execution_id, "exec-1");
+        assert_eq!(back.workflow_name, "review-cycle");
+        assert_eq!(
+            back.state,
+            workflow_wire::WorkflowExecutionStateView::Running
+        );
+        assert_eq!(back.current_step_index, 2);
+        assert_eq!(back.current_step_name, "review");
+        assert_eq!(back.total_steps, 4);
+        assert_eq!(back.step_history.len(), 2);
+        assert_eq!(back.step_history[0].step_name, "plan");
+        assert_eq!(back.step_history[1].result, Some("done".to_string()));
     }
 }

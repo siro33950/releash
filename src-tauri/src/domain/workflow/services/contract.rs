@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
 use serde_json::Value;
 
 use crate::domain::workflow::value_objects::{
@@ -120,8 +119,7 @@ pub fn strip_contract_validation_metadata(contract_definition: &str) -> String {
     output.trim().to_string()
 }
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(default)]
+#[derive(Debug, Default)]
 struct ContractValidationMetadata {
     result_field: Option<String>,
     result: Option<String>,
@@ -132,7 +130,7 @@ struct ContractValidationMetadata {
     relative_paths: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct ConditionalArrayRule {
     field: String,
     equals: Value,
@@ -191,10 +189,126 @@ fn extract_validation_metadata(
     let body = &after_opening[body_start..];
     let end = body.find("```").unwrap_or(body.len());
     let json = body[..end].trim();
-    Some(
-        serde_json::from_str(json)
-            .map_err(|err| format!("Invalid contract-validation metadata JSON: {err}")),
-    )
+    Some(parse_contract_validation_metadata(json))
+}
+
+fn parse_contract_validation_metadata(json: &str) -> Result<ContractValidationMetadata, String> {
+    let value: Value = serde_json::from_str(json)
+        .map_err(|err| format!("Invalid contract-validation metadata JSON: {err}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Invalid contract-validation metadata JSON: expected object".to_string())?;
+    Ok(ContractValidationMetadata {
+        result_field: optional_string_field(object, "result_field")?,
+        result: optional_string_field(object, "result")?,
+        required: string_array_field(object, "required")?,
+        enums: string_array_map_field(object, "enums")?,
+        non_empty_array_when: conditional_array_rules_field(object, "non_empty_array_when")?,
+        array_items_required: string_array_map_field(object, "array_items_required")?,
+        relative_paths: string_array_field(object, "relative_paths")?,
+    })
+}
+
+fn optional_string_field(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
+    match object.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(format!("metadata field \"{key}\" must be a string")),
+    }
+}
+
+fn string_array_field(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Vec<String>, String> {
+    match object.get(key) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| format!("metadata field \"{key}\" must contain strings"))
+            })
+            .collect(),
+        Some(_) => Err(format!("metadata field \"{key}\" must be an array")),
+    }
+}
+
+fn string_array_map_field(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<HashMap<String, Vec<String>>, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(HashMap::new());
+    };
+    let Some(map) = value.as_object() else {
+        return Err(format!("metadata field \"{key}\" must be an object"));
+    };
+    map.iter()
+        .map(|(field, value)| {
+            let values = value
+                .as_array()
+                .ok_or_else(|| format!("metadata field \"{key}.{field}\" must be an array"))?
+                .iter()
+                .map(|item| {
+                    item.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                        format!("metadata field \"{key}.{field}\" must contain strings")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((field.clone(), values))
+        })
+        .collect()
+}
+
+fn conditional_array_rules_field(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Vec<ConditionalArrayRule>, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(Vec::new());
+    };
+    let Some(rules) = value.as_array() else {
+        return Err(format!("metadata field \"{key}\" must be an array"));
+    };
+    rules
+        .iter()
+        .enumerate()
+        .map(|(idx, rule)| {
+            let Some(rule) = rule.as_object() else {
+                return Err(format!("metadata field \"{key}[{idx}]\" must be an object"));
+            };
+            let field = required_string(rule, key, idx, "field")?;
+            let array = required_string(rule, key, idx, "array")?;
+            let equals = rule
+                .get("equals")
+                .cloned()
+                .ok_or_else(|| format!("metadata field \"{key}[{idx}].equals\" is required"))?;
+            Ok(ConditionalArrayRule {
+                field,
+                equals,
+                array,
+            })
+        })
+        .collect()
+}
+
+fn required_string(
+    object: &serde_json::Map<String, Value>,
+    parent_key: &str,
+    idx: usize,
+    key: &str,
+) -> Result<String, String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("metadata field \"{parent_key}[{idx}].{key}\" must be a string"))
 }
 
 fn validate_metadata_rules(

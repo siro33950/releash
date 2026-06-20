@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::adaptor::gateway::external_editor::TauriEditorLauncherGateway;
 use crate::adaptor::gateway::workflow::{builtin, facet, storage};
-use crate::config::AppConfig;
+use crate::domain::app_config::ConfigRepository;
 use crate::domain::external_editor::EditorLauncherGateway as _;
 use crate::domain::workflow::WorkflowError;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
@@ -11,7 +11,7 @@ use crate::usecase::workflow::ports::ExternalEditorGateway;
 #[derive(Clone)]
 pub(crate) struct TauriWorkflowExternalEditorGateway<R: tauri::Runtime> {
     app: tauri::AppHandle<R>,
-    config: Arc<AppConfig>,
+    config: Arc<dyn ConfigRepository>,
     workflows_dir: PathBuf,
     facets_base_dir: PathBuf,
 }
@@ -31,7 +31,7 @@ impl ExternalEditorGateway for NoopWorkflowExternalEditorGateway {
 }
 
 impl<R: tauri::Runtime> TauriWorkflowExternalEditorGateway<R> {
-    pub(crate) fn new(app: tauri::AppHandle<R>, config: Arc<AppConfig>) -> Self {
+    pub(crate) fn new(app: tauri::AppHandle<R>, config: Arc<dyn ConfigRepository>) -> Self {
         Self {
             app,
             config,
@@ -46,8 +46,8 @@ impl<R: tauri::Runtime + 'static> ExternalEditorGateway for TauriWorkflowExterna
         let path = resolve_workflow_editor_path(&self.workflows_dir, name)?;
         let editor = self
             .config
-            .get_config()
-            .map_err(WorkflowError::external)?
+            .load()
+            .map_err(|e| WorkflowError::external(e.to_string()))?
             .app
             .external_editor;
         TauriEditorLauncherGateway::new(self.app.clone())
@@ -59,8 +59,8 @@ impl<R: tauri::Runtime + 'static> ExternalEditorGateway for TauriWorkflowExterna
         let path = resolve_facet_editor_path(&self.facets_base_dir, kind, key)?;
         let editor = self
             .config
-            .get_config()
-            .map_err(WorkflowError::external)?
+            .load()
+            .map_err(|e| WorkflowError::external(e.to_string()))?
             .app
             .external_editor;
         TauriEditorLauncherGateway::new(self.app.clone())

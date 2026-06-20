@@ -111,10 +111,10 @@ mod tests {
 
     use tokio::sync::Mutex;
 
+    use crate::adaptor::gateway::app_config::AppConfig;
     use crate::adaptor::protocol::pty::{
         PtyInput, PtyKillRequest, PtyOutputRequest, PtySpawnRequest,
     };
-    use crate::config::AppConfig;
     use crate::protocol::*;
     use crate::ws_bridge::WsBroadcaster;
     use crate::ws_server::WsServerState;
@@ -122,7 +122,7 @@ mod tests {
     use super::route_message;
 
     fn test_state() -> WsServerState {
-        let config = crate::config::ReleashConfig::default();
+        let config = crate::adaptor::gateway::app_config::ReleashConfig::default();
         let app_config = Arc::new(AppConfig::new(
             config,
             std::path::PathBuf::from("/tmp/test-releash.toml"),
@@ -363,9 +363,9 @@ mod tests {
     }
 
     fn test_state_with_registry() -> WsServerState {
-        let mut config = crate::config::ReleashConfig::default();
+        let mut config = crate::adaptor::gateway::app_config::ReleashConfig::default();
         config.agents.claude.models = vec!["opus-4".to_string(), "haiku".to_string()];
-        let app_config = Arc::new(crate::config::AppConfig::new(
+        let app_config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
             config,
             std::path::PathBuf::from("/tmp/test-releash.toml"),
         ));

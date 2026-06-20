@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
+use crate::domain::app_config::ConfigSecretRepository;
+
 pub(crate) fn collect_configured_secret_values<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Vec<String> {
     let mut values = Vec::new();
-    if let Some(config) = app.try_state::<Arc<crate::config::AppConfig>>() {
-        if let Ok(cfg) = config.get_config() {
-            values.extend(collect_configured_secret_values_from_config(&cfg));
-        }
+    if let Some(config) = app.try_state::<Arc<dyn ConfigSecretRepository>>() {
+        values.extend(config.configured_secret_values().unwrap_or_default());
     }
     values.extend(
         crate::domain::workflow::services::secret_masker::collect_secret_values_from_env_vars(
@@ -17,25 +17,4 @@ pub(crate) fn collect_configured_secret_values<R: tauri::Runtime>(
         ),
     );
     crate::domain::workflow::services::secret_masker::normalize_secret_values(values)
-}
-
-pub(crate) fn collect_configured_secret_values_from_config(
-    cfg: &crate::config::ReleashConfig,
-) -> Vec<String> {
-    let mut values = Vec::new();
-    for v in [
-        cfg.server.token.as_str(),
-        cfg.server.mcp_token.as_str(),
-        cfg.server.notify.webhook_url.as_str(),
-    ] {
-        if v.len() >= 8 {
-            values.push(v.to_string());
-        }
-    }
-    for notion in cfg.notion.values() {
-        if notion.api_token.len() >= 8 {
-            values.push(notion.api_token.clone());
-        }
-    }
-    values
 }

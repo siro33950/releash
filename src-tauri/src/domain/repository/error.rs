@@ -4,15 +4,23 @@
 /// 具体的な外部エラー型はメッセージ文字列として畳み込んで保持する。
 /// 外部エラー → `RepositoryError` への変換は gateway 層
 /// （`adaptor/gateway/shared/error_handling.rs`）で行う。
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum RepositoryError {
     /// 外部リソース由来のエラー（git2・I/O 等）。メッセージを保持する。
-    #[error("{0}")]
     External(String),
     /// ビジネスルール違反（既定ブランチ削除拒否・worktree 未発見等）。
-    #[error("{0}")]
     Rule(String),
 }
+
+impl std::fmt::Display for RepositoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::External(msg) | Self::Rule(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for RepositoryError {}
 
 impl RepositoryError {
     pub fn rule(message: impl Into<String>) -> Self {

@@ -1,74 +1,68 @@
 use std::fs;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use crate::domain::mcp::error::McpError;
+use crate::domain::mcp::gateway::{AgentConfigGateway, AgentConfigGenerateResult};
+use crate::domain::mcp::services::{mcp_url, ALL_AGENTS};
+use crate::domain::mcp::value_objects::{AgentKind, McpConfigParams};
 
-use crate::config::AppConfig;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentKind {
-    Claude,
-    Codex,
-    Gemini,
-    Cursor,
+pub struct AgentConfigGatewayImpl {
+    base_dir: Option<PathBuf>,
 }
 
-impl AgentKind {
-    fn from_str(s: &str) -> Result<Self, String> {
-        match s {
-            "claude" => Ok(Self::Claude),
-            "codex" => Ok(Self::Codex),
-            "gemini" => Ok(Self::Gemini),
-            "cursor" => Ok(Self::Cursor),
-            _ => Err(format!("Unknown agent type: {s}")),
+impl AgentConfigGatewayImpl {
+    pub fn new() -> Self {
+        Self { base_dir: None }
+    }
+
+    #[cfg(test)]
+    fn with_base_dir(base_dir: PathBuf) -> Self {
+        Self {
+            base_dir: Some(base_dir),
         }
     }
 
-    fn to_str(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Gemini => "gemini",
-            Self::Cursor => "cursor",
-        }
-    }
-
-    fn global_path(&self) -> &'static str {
-        match self {
-            Self::Claude => ".claude.json",
-            Self::Codex => ".codex/config.toml",
-            Self::Gemini => ".gemini/settings.json",
-            Self::Cursor => ".cursor/mcp.json",
-        }
+    fn base_dir(&self) -> Result<PathBuf, McpError> {
+        self.base_dir
+            .clone()
+            .or_else(dirs::home_dir)
+            .ok_or_else(|| McpError::Gateway("ホームディレクトリの取得に失敗".to_string()))
     }
 }
 
-pub struct McpConfigParams {
-    pub port: u16,
-    pub token: String,
+impl Default for AgentConfigGatewayImpl {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GenerateResult {
-    pub agent: String,
-    pub file_path: String,
-    pub content: String,
-}
+impl AgentConfigGateway for AgentConfigGatewayImpl {
+    fn configured_agents(&self) -> Result<Vec<String>, McpError> {
+        Ok(get_configured_agents_at(&self.base_dir()?))
+    }
 
-pub fn generate_config(
-    agent: AgentKind,
-    params: &McpConfigParams,
-) -> Result<GenerateResult, String> {
-    let home = dirs::home_dir().ok_or("ホームディレクトリの取得に失敗")?;
-    generate_config_at(agent, params, &home)
+    fn remove(&self, agent: AgentKind) -> Result<bool, McpError> {
+        remove_releash_entry_at(agent, &self.base_dir()?).map_err(McpError::Gateway)
+    }
+
+    fn generate(
+        &self,
+        agent: AgentKind,
+        params: &McpConfigParams,
+    ) -> Result<AgentConfigGenerateResult, McpError> {
+        generate_config_at(agent, params, &self.base_dir()?).map_err(McpError::Gateway)
+    }
+
+    fn preview(&self, agent: AgentKind, params: &McpConfigParams) -> Result<String, McpError> {
+        preview_config(agent, params).map_err(McpError::Gateway)
+    }
 }
 
 pub fn generate_config_at(
     agent: AgentKind,
     params: &McpConfigParams,
     base_dir: &Path,
-) -> Result<GenerateResult, String> {
+) -> Result<AgentConfigGenerateResult, String> {
     let rel = agent.global_path();
     let file_path = base_dir.join(rel);
 
@@ -79,15 +73,11 @@ pub fn generate_config_at(
         AgentKind::Cursor => generate_cursor_config(&file_path, params)?,
     };
 
-    Ok(GenerateResult {
-        agent: agent.to_str().to_string(),
+    Ok(AgentConfigGenerateResult {
+        agent: agent.as_str().to_string(),
         file_path: file_path.to_string_lossy().to_string(),
         content,
     })
-}
-
-fn url_for(port: u16) -> String {
-    format!("http://127.0.0.1:{port}/mcp")
 }
 
 // ── JSON helpers ──
@@ -131,7 +121,7 @@ fn generate_claude_config(path: &Path, params: &McpConfigParams) -> Result<Strin
 
     let entry = serde_json::json!({
         "type": "http",
-        "url": url_for(params.port),
+        "url": mcp_url(params.port),
         "headers": {
             "Authorization": format!("Bearer {}", params.token)
         }
@@ -166,7 +156,7 @@ fn generate_codex_config(path: &Path, params: &McpConfigParams) -> Result<String
         .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
 
     let mut entry = toml::map::Map::new();
-    entry.insert("url".to_string(), toml::Value::String(url_for(params.port)));
+    entry.insert("url".to_string(), toml::Value::String(mcp_url(params.port)));
     entry.insert(
         "bearer_token_env_var".to_string(),
         toml::Value::String("RELEASH_MCP_TOKEN".to_string()),
@@ -194,7 +184,7 @@ fn generate_gemini_config(path: &Path, params: &McpConfigParams) -> Result<Strin
         .or_insert_with(|| serde_json::json!({}));
 
     let entry = serde_json::json!({
-        "httpUrl": url_for(params.port),
+        "httpUrl": mcp_url(params.port),
         "headers": {
             "Authorization": format!("Bearer {}", params.token)
         }
@@ -223,7 +213,7 @@ fn generate_cursor_config(path: &Path, params: &McpConfigParams) -> Result<Strin
         .or_insert_with(|| serde_json::json!({}));
 
     let entry = serde_json::json!({
-        "url": url_for(params.port),
+        "url": mcp_url(params.port),
         "headers": {
             "Authorization": format!("Bearer {}", params.token)
         }
@@ -249,7 +239,7 @@ pub fn preview_config(agent: AgentKind, params: &McpConfigParams) -> Result<Stri
                 "mcpServers": {
                     "releash": {
                         "type": "http",
-                        "url": url_for(params.port),
+                        "url": mcp_url(params.port),
                         "headers": {
                             "Authorization": format!("Bearer {}", params.token)
                         }
@@ -261,7 +251,7 @@ pub fn preview_config(agent: AgentKind, params: &McpConfigParams) -> Result<Stri
         AgentKind::Codex => {
             let content = format!(
                 "[mcp_servers.releash]\nurl = \"{}\"\nbearer_token_env_var = \"RELEASH_MCP_TOKEN\"\n",
-                url_for(params.port)
+                mcp_url(params.port)
             );
             Ok(content)
         }
@@ -269,7 +259,7 @@ pub fn preview_config(agent: AgentKind, params: &McpConfigParams) -> Result<Stri
             let doc = serde_json::json!({
                 "mcpServers": {
                     "releash": {
-                        "httpUrl": url_for(params.port),
+                        "httpUrl": mcp_url(params.port),
                         "headers": {
                             "Authorization": format!("Bearer {}", params.token)
                         }
@@ -282,7 +272,7 @@ pub fn preview_config(agent: AgentKind, params: &McpConfigParams) -> Result<Stri
             let doc = serde_json::json!({
                 "mcpServers": {
                     "releash": {
-                        "url": url_for(params.port),
+                        "url": mcp_url(params.port),
                         "headers": {
                             "Authorization": format!("Bearer {}", params.token)
                         }
@@ -295,13 +285,6 @@ pub fn preview_config(agent: AgentKind, params: &McpConfigParams) -> Result<Stri
 }
 
 // ── Configured agents detection ──
-
-const ALL_AGENTS: [AgentKind; 4] = [
-    AgentKind::Claude,
-    AgentKind::Codex,
-    AgentKind::Gemini,
-    AgentKind::Cursor,
-];
 
 fn has_releash_entry(agent: AgentKind, base_dir: &Path) -> bool {
     let path = base_dir.join(agent.global_path());
@@ -379,227 +362,14 @@ fn get_configured_agents_at(base_dir: &Path) -> Vec<String> {
     ALL_AGENTS
         .iter()
         .filter(|a| has_releash_entry(**a, base_dir))
-        .map(|a| a.to_str().to_string())
+        .map(|a| a.as_str().to_string())
         .collect()
-}
-
-fn normalize_agent_types(agent_types: Vec<String>) -> Result<Vec<String>, String> {
-    let mut normalized = Vec::new();
-    for raw in agent_types {
-        let candidate = raw.trim().to_lowercase();
-        if candidate.is_empty() {
-            continue;
-        }
-        let agent = AgentKind::from_str(&candidate)?;
-        let value = agent.to_str().to_string();
-        if !normalized.contains(&value) {
-            normalized.push(value);
-        }
-    }
-    Ok(normalized)
-}
-
-fn validate_generation_credentials(
-    has_desired_agents: bool,
-    port: u16,
-    token: &str,
-) -> Result<(), String> {
-    if !has_desired_agents {
-        return Ok(());
-    }
-    if port == 0 {
-        return Err("mcp_port must be between 1 and 65535".to_string());
-    }
-    if token.trim().is_empty() {
-        return Err("mcp_token must not be empty".to_string());
-    }
-    Ok(())
-}
-
-async fn save_and_generate_mcp_configs_inner(
-    app: tauri::AppHandle,
-    app_config: Arc<AppConfig>,
-    port: u16,
-    token: String,
-    agent_types: Vec<String>,
-    removed_agents: Vec<String>,
-) -> Result<Vec<GenerateResult>, String> {
-    let token = token.trim().to_string();
-    let agent_types = normalize_agent_types(agent_types)?;
-    let removed_agents = normalize_agent_types(removed_agents)?;
-    validate_generation_credentials(!agent_types.is_empty(), port, &token)?;
-
-    // agent_types / removed_agents を先にパースしてバリデーション
-    let parsed_agents: Vec<AgentKind> = agent_types
-        .iter()
-        .map(|s| AgentKind::from_str(s))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let parsed_removed: Vec<AgentKind> = removed_agents
-        .iter()
-        .map(|s| AgentKind::from_str(s))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    // removed_agents の設定を削除
-    if !parsed_removed.is_empty() {
-        let home = dirs::home_dir().ok_or("ホームディレクトリの取得に失敗")?;
-        for agent in &parsed_removed {
-            remove_releash_entry_at(*agent, &home)?;
-        }
-    }
-
-    // config.toml 保存
-    let port_for_save = port;
-    let token_for_save = token.clone();
-    let app_config_for_write = app_config.clone();
-    tokio::task::spawn_blocking(move || {
-        app_config_for_write.with_config_mut(|config| {
-            config.server.mcp_port = port_for_save;
-            config.server.mcp_token = token_for_save;
-            Ok(())
-        })
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))??;
-
-    // MCPサーバー再起動（停止中なら起動）
-    crate::mcp::restart_mcp_server_if_running(&app).await?;
-
-    // 再起動後の実ポート/トークンで各エージェント設定を生成
-    if parsed_agents.is_empty() {
-        return Ok(vec![]);
-    }
-
-    let config = app_config.get_config()?;
-    let params = McpConfigParams {
-        port: config.server.mcp_port,
-        token: config.server.mcp_token.clone(),
-    };
-
-    tokio::task::spawn_blocking(move || {
-        parsed_agents
-            .iter()
-            .map(|agent| generate_config(*agent, &params))
-            .collect::<Result<Vec<_>, _>>()
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-}
-
-// ── Tauri commands ──
-
-#[tauri::command]
-pub fn get_configured_agents() -> Vec<String> {
-    let Some(home) = dirs::home_dir() else {
-        return vec![];
-    };
-    get_configured_agents_at(&home)
-}
-
-#[tauri::command]
-pub fn remove_agent_mcp_config(agent_type: String) -> Result<bool, String> {
-    let home = dirs::home_dir().ok_or("ホームディレクトリの取得に失敗")?;
-    let agent = AgentKind::from_str(&agent_type)?;
-    remove_releash_entry_at(agent, &home)
-}
-
-#[tauri::command]
-pub async fn save_and_generate_mcp_configs(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppConfig>>,
-    port: u16,
-    token: String,
-    agent_types: Vec<String>,
-    removed_agents: Vec<String>,
-) -> Result<Vec<GenerateResult>, String> {
-    save_and_generate_mcp_configs_inner(
-        app,
-        state.inner().clone(),
-        port,
-        token,
-        agent_types,
-        removed_agents,
-    )
-    .await
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentSelectionResult {
-    pub agent_types: Vec<String>,
-    pub removed_agents: Vec<String>,
-    pub generated: Vec<GenerateResult>,
-}
-
-#[tauri::command]
-pub async fn save_mcp_agent_selection(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppConfig>>,
-    agent_types: Vec<String>,
-) -> Result<AgentSelectionResult, String> {
-    let desired_agents = normalize_agent_types(agent_types)?;
-    let home = dirs::home_dir().ok_or("ホームディレクトリの取得に失敗")?;
-    let current_agents = get_configured_agents_at(&home);
-    let removed_agents: Vec<String> = current_agents
-        .into_iter()
-        .filter(|agent| !desired_agents.contains(agent))
-        .collect();
-    let config = state.get_config()?;
-    let generated = save_and_generate_mcp_configs_inner(
-        app,
-        state.inner().clone(),
-        config.server.mcp_port,
-        config.server.mcp_token.clone(),
-        desired_agents.clone(),
-        removed_agents.clone(),
-    )
-    .await?;
-    Ok(AgentSelectionResult {
-        agent_types: desired_agents,
-        removed_agents,
-        generated,
-    })
-}
-
-#[tauri::command]
-pub async fn generate_agent_mcp_config(
-    agent_type: String,
-    state: tauri::State<'_, Arc<AppConfig>>,
-    port: Option<u16>,
-    token: Option<String>,
-) -> Result<GenerateResult, String> {
-    let app_config = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let config = app_config.get_config()?;
-        let agent = AgentKind::from_str(&agent_type)?;
-        let params = McpConfigParams {
-            port: port.unwrap_or(config.server.mcp_port),
-            token: token.unwrap_or_else(|| config.server.mcp_token.clone()),
-        };
-        generate_config(agent, &params)
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-}
-
-#[tauri::command]
-pub fn preview_agent_mcp_config(
-    agent_type: String,
-    state: tauri::State<'_, Arc<AppConfig>>,
-    port: Option<u16>,
-    token: Option<String>,
-) -> Result<String, String> {
-    let config = state.get_config()?;
-    let agent = AgentKind::from_str(&agent_type)?;
-    let params = McpConfigParams {
-        port: port.unwrap_or(config.server.mcp_port),
-        token: token.unwrap_or_else(|| config.server.mcp_token.clone()),
-    };
-    preview_config(agent, &params)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::mcp::services::{normalize_agent_types, validate_generation_credentials};
     use tempfile::TempDir;
 
     fn test_params() -> McpConfigParams {
@@ -611,15 +381,15 @@ mod tests {
 
     #[test]
     fn agent_kind_from_str_valid() {
-        assert_eq!(AgentKind::from_str("claude").unwrap(), AgentKind::Claude);
-        assert_eq!(AgentKind::from_str("codex").unwrap(), AgentKind::Codex);
-        assert_eq!(AgentKind::from_str("gemini").unwrap(), AgentKind::Gemini);
-        assert_eq!(AgentKind::from_str("cursor").unwrap(), AgentKind::Cursor);
+        assert_eq!(AgentKind::parse("claude").unwrap(), AgentKind::Claude);
+        assert_eq!(AgentKind::parse("codex").unwrap(), AgentKind::Codex);
+        assert_eq!(AgentKind::parse("gemini").unwrap(), AgentKind::Gemini);
+        assert_eq!(AgentKind::parse("cursor").unwrap(), AgentKind::Cursor);
     }
 
     #[test]
     fn agent_kind_from_str_invalid() {
-        assert!(AgentKind::from_str("unknown").is_err());
+        assert!(AgentKind::parse("unknown").is_err());
     }
 
     #[test]
@@ -756,7 +526,7 @@ mod tests {
     #[test]
     fn to_str_roundtrips() {
         for kind in &ALL_AGENTS {
-            assert_eq!(AgentKind::from_str(kind.to_str()).unwrap(), *kind);
+            assert_eq!(AgentKind::parse(kind.as_str()).unwrap(), *kind);
         }
     }
 
@@ -881,5 +651,23 @@ mod tests {
 
         let removed = remove_releash_entry_at(AgentKind::Claude, tmp.path()).unwrap();
         assert!(!removed);
+    }
+
+    #[test]
+    fn test_agent_config_gateway_impl_設定生成と検出と削除ができる() {
+        // Given
+        let tmp = TempDir::new().unwrap();
+        let gateway = AgentConfigGatewayImpl::with_base_dir(tmp.path().to_path_buf());
+        let params = test_params();
+
+        // When
+        gateway.generate(AgentKind::Claude, &params).unwrap();
+        let configured = gateway.configured_agents().unwrap();
+        let removed = gateway.remove(AgentKind::Claude).unwrap();
+
+        // Then
+        assert_eq!(configured, vec!["claude"]);
+        assert!(removed);
+        assert!(gateway.configured_agents().unwrap().is_empty());
     }
 }
