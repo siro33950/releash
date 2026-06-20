@@ -347,8 +347,6 @@ pub fn run() {
 
             menu::setup_menu(app)?;
             tray::setup_tray(app)?;
-            tray::listen_server_status(app.handle());
-
             if let Some(window) = app.get_webview_window("main") {
                 native_drop::install(&window);
             }
@@ -369,25 +367,6 @@ pub fn run() {
                             let _ = window.minimize();
                         }
                     }
-                }
-            }
-
-            // Auto-start server if configured
-            let auto_start_config = config_repository
-                .load()
-                .ok()
-                .filter(|c| c.remote.auto_start);
-            if let Some(cfg) = auto_start_config {
-                let bind_ip = cfg.app.last_bind_ip.clone();
-                if !bind_ip.is_empty() {
-                    let handle = app.handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(e) =
-                            ws_server::commands::start_server_core(&handle, bind_ip).await
-                        {
-                            log::error!("Auto-start server failed: {e}");
-                        }
-                    });
                 }
             }
 

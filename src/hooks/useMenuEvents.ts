@@ -13,9 +13,6 @@ export type MenuEventId =
 	| "git-create-branch"
 	| "new-terminal"
 	| "back-to-kanban"
-	| "remote-start-server"
-	| "remote-stop-server"
-	| "remote-show-qr"
 	| "settings";
 
 export type MenuHandlers = Partial<Record<MenuEventId, () => void>>;

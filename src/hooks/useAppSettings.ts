@@ -18,7 +18,6 @@ interface AppSectionResponse {
 	close_to_tray: boolean;
 	start_minimized: boolean;
 	last_root_path: string;
-	last_bind_ip: string;
 }
 
 export function useBackgroundConfig() {

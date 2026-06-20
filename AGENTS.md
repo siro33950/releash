@@ -1,7 +1,7 @@
 # Releash
 
 Tauri + React + Monaco Editor のデスクトップGitエディタ。
-モバイル/タブレットからWebSocket経由でリモートアクセスする機能を持つ。
+WebSocketサーバーとremote_accessバックエンドは残存しているが、モバイル向けフロントremoteクライアントと専用ビルド経路は削除済み。
 
 ## アーキテクチャ
 
@@ -15,12 +15,11 @@ Tauri + React + Monaco Editor のデスクトップGitエディタ。
 - **バックエンド**: Rust (Tauri 2) + git2 + tokio
 - **ビルド**: Vite + Biome (lint/format)
 
-### リモートアクセス（モバイル対応）
-- `src/remote/` に独立したReactアプリ（`RemoteApp`）
-- デスクトップ側がWebSocketサーバー（`ws_server/`）を起動
-- モバイルブラウザからQRコード + HMACトークンで接続
-- `vite.config.remote.ts` で別途ビルド → `src-tauri/generated/remote/` に配置（生成物のためコミットしない）
-- WebSocket経由でGit操作・ターミナル・diff閲覧・コメント・ソース管理が可能
+### リモートアクセス（バックエンドのみ残存）
+- モバイル向けフロントremoteクライアントとremote専用ビルド経路は削除済み
+- デスクトップ側のWebSocketサーバー（`ws_server/`）と`ws_bridge.rs`は残存
+- `src-tauri/src/domain/remote_access/` と `src-tauri/src/usecase/remote_access/` にremote_accessバックエンドロジックが残存
+- WebSocketメッセージ型・認証・セッション管理は `protocol/` と `ws_server/` が担当
 
 ### 通信レイヤー
 - `src-tauri/src/protocol/` — WebSocketメッセージの型定義（auth, git, pty, comment, agent等）
@@ -39,12 +38,11 @@ src/                        # フロントエンド
 ├── lib/                    # ユーティリティ（computeHunks, generatePatch 等）
 ├── contexts/               # EditorContext
 ├── screens/                # WorktreeView, WorkspaceManagerScreen
-├── remote/                 # モバイル用リモートアプリ（独立エントリーポイント）
-│   ├── components/         # RemoteDashboard, RemoteTerminalPanel 等
-│   └── hooks/              # useWebSocket, useRemoteGitActions 等
 └── types/                  # 型定義
 
 src-tauri/src/              # バックエンド
+├── domain/remote_access/   # リモートアクセス用ドメインロジック
+├── usecase/remote_access/  # リモートアクセス用ユースケース
 ├── git/                    # Git操作（branch, commit, status, diff, stage, worktree, log）
 ├── ws_server/              # WebSocketサーバー（handlers, session, auth, routing）
 ├── protocol/               # 通信プロトコル型定義
@@ -64,7 +62,7 @@ CIと同じコマンドを使うこと（`.github/workflows/ci.yml` 参照）。
 ```bash
 pnpm lint          # Biome check（失敗時は pnpm lint:fix で修正）
 pnpm test          # Vitest
-pnpm build         # TSC + Vite build（メイン + リモート）
+pnpm build         # TSC + Vite build + bridge生成
 ```
 
 ### Rust（src-tauri/ ディレクトリで実行）

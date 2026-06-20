@@ -58,6 +58,7 @@ impl WsBroadcaster {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_pty_output_buffer(&self, pty_id: u64) -> String {
         let buffers = self
             .pty_output_buffers
@@ -77,6 +78,7 @@ impl WsBroadcaster {
     /// when no sender is registered (no WS client to satisfy — not a failure),
     /// and `false` only when the sender is registered but `send` failed
     /// (i.e. the receiver was dropped).
+    #[allow(dead_code)]
     pub fn send_without_buffer(&self, msg: WsMessage) -> bool {
         let guard = self.sender.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {

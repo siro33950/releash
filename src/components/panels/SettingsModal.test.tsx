@@ -33,11 +33,6 @@ describe("SettingsModal", () => {
 						desktop_mode: "always",
 						inactive_timeout_minutes: 2,
 					});
-				case "get_remote_config":
-					return Promise.resolve({
-						auto_start: false,
-						auto_start_on_lan: false,
-					});
 				case "get_workflow_config":
 					return Promise.resolve({
 						approval_auto_approve: false,
@@ -62,7 +57,6 @@ describe("SettingsModal", () => {
 							defaultShortcut: "Cmd K",
 						},
 					]);
-				case "update_remote_config":
 				case "update_workflow_config":
 				case "update_notify_config":
 				case "update_agent_shortcut_settings":
@@ -262,65 +256,6 @@ describe("SettingsModal", () => {
 		expect(input).toHaveAttribute("type", "url");
 	});
 
-	it("should display Remote in nav", () => {
-		render(<SettingsModal {...defaultProps} />);
-		expect(screen.getByText("Remote")).toBeInTheDocument();
-	});
-
-	it("should enable Save when remote auto-start is toggled, and disable after Save", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
-		const onSave = vi.fn();
-
-		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			switch (cmd) {
-				case "get_remote_config":
-					return Promise.resolve({
-						auto_start: false,
-						auto_start_on_lan: false,
-					});
-				case "get_notify_config":
-					return Promise.resolve({
-						webhook_url: "",
-						on_running: false,
-						on_done: true,
-						on_error: true,
-						on_waiting: true,
-						desktop_mode: "always",
-						inactive_timeout_minutes: 2,
-					});
-				case "get_mcp_config":
-					return Promise.resolve({ port: 19801, token: "test-token" });
-				case "get_configured_agents":
-					return Promise.resolve([]);
-				case "preview_agent_mcp_config":
-					return Promise.resolve("");
-				case "update_remote_config":
-					return Promise.resolve(null);
-				default:
-					return Promise.resolve(null);
-			}
-		});
-
-		render(<SettingsModal {...defaultProps} onSave={onSave} />);
-		fireEvent.click(screen.getByText("Remote"));
-
-		const checkbox = await screen.findByRole("checkbox", {
-			name: "Auto-start remote server",
-		});
-		expect(checkbox).toHaveAttribute("aria-checked", "false");
-
-		const saveBtn = screen.getByRole("button", { name: "Save" });
-		expect(saveBtn).toBeDisabled();
-
-		fireEvent.click(checkbox);
-		expect(saveBtn).toBeEnabled();
-
-		fireEvent.click(saveBtn);
-		await vi.waitFor(() => {
-			expect(saveBtn).toBeDisabled();
-		});
-	});
-
 	it("should show Appearance section by default", () => {
 		render(<SettingsModal {...defaultProps} />);
 		expect(screen.getByText("Theme")).toBeInTheDocument();
@@ -374,11 +309,6 @@ describe("SettingsModal", () => {
 						desktop_mode: "always",
 						inactive_timeout_minutes: 2,
 					});
-				case "get_remote_config":
-					return Promise.resolve({
-						auto_start: false,
-						auto_start_on_lan: false,
-					});
 				case "get_mcp_config":
 					return Promise.resolve({ port: 19801, token: "test-token" });
 				case "get_configured_agents":
@@ -421,11 +351,6 @@ describe("SettingsModal", () => {
 						desktop_mode: "always",
 						inactive_timeout_minutes: 2,
 					});
-				case "get_remote_config":
-					return Promise.resolve({
-						auto_start: false,
-						auto_start_on_lan: false,
-					});
 				case "get_workflow_config":
 					return Promise.resolve({
 						approval_auto_approve: true,
@@ -441,7 +366,6 @@ describe("SettingsModal", () => {
 				case "preview_agent_mcp_config":
 					return Promise.resolve("");
 				case "update_workflow_config":
-				case "update_remote_config":
 				case "update_notify_config":
 					return Promise.resolve(null);
 				default:
@@ -547,11 +471,6 @@ describe("SettingsModal", () => {
 						desktop_mode: "always",
 						inactive_timeout_minutes: 2,
 					});
-				case "get_remote_config":
-					return Promise.resolve({
-						auto_start: false,
-						auto_start_on_lan: false,
-					});
 				case "get_mcp_config":
 					return Promise.resolve({ port: 19801, token: "test-token" });
 				case "get_configured_agents":
@@ -607,11 +526,6 @@ describe("SettingsModal", () => {
 						on_waiting: true,
 						desktop_mode: "always",
 						inactive_timeout_minutes: 2,
-					});
-				case "get_remote_config":
-					return Promise.resolve({
-						auto_start: false,
-						auto_start_on_lan: false,
 					});
 				case "get_mcp_config":
 					return Promise.resolve({ port: 19801, token: "test-token" });
@@ -838,11 +752,6 @@ describe("SettingsModal", () => {
 							on_waiting: true,
 							desktop_mode: "always",
 							inactive_timeout_minutes: 2,
-						});
-					case "get_remote_config":
-						return Promise.resolve({
-							auto_start: false,
-							auto_start_on_lan: false,
 						});
 					case "get_mcp_config":
 						return Promise.resolve({ port: 19801, token: "test-token" });

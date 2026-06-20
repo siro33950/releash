@@ -40,11 +40,3 @@ impl From<BranchCardDto> for BranchCardMsg {
 pub struct BranchListSync {
     pub branches: Vec<BranchCardMsg>,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BranchInfoRequest {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BranchInfoResponse {
-    pub branch: String,
-}

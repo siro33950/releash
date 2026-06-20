@@ -95,7 +95,6 @@ const baseIpcHandler: Record<string, unknown> = {
 		close_to_tray: false,
 		start_minimized: false,
 		last_root_path: "/test/repo",
-		last_bind_ip: "0.0.0.0",
 	},
 	update_app_settings: null,
 	"plugin:autostart|is_enabled": false,
@@ -159,10 +158,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	save_and_generate_mcp_configs: [],
 	remove_agent_mcp_config: true,
 
-	// Remote config
-	get_remote_config: { auto_start: false, auto_start_on_lan: false },
-	update_remote_config: null,
-
 	// External editor
 	get_external_editor: "",
 	detect_editors: [],
@@ -172,12 +167,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	get_repo_paths: ["/test/repo"],
 	add_repo_path: null,
 	remove_repo_path: null,
-
-	// Remote server
-	get_server_config: { port: 19700, token: "mock-token" },
-	get_server_info: { running: false, bound_ip: null, connection_mode: null },
-	get_network_info: [],
-	stop_server: null,
 
 	// Editor
 	get_file_at_ref: "",

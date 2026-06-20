@@ -2,20 +2,15 @@ mod agent;
 mod auth;
 mod branch;
 mod error;
-mod review;
 mod worktree;
 
 pub use agent::*;
 pub use auth::*;
 pub use branch::*;
 pub use error::*;
-pub use review::*;
 pub use worktree::*;
 
-use crate::adaptor::protocol::pty::{
-    PtyExitMsg, PtyInput, PtyKillRequest, PtyKillResponse, PtyOutputMsg, PtyOutputRequest,
-    PtyReady, PtyResize, PtySpawnRequest, PtySpawnResponse,
-};
+use crate::adaptor::protocol::pty::{PtyExitMsg, PtyOutputMsg};
 use crate::adaptor::protocol::workflow::WorkflowStateSync;
 use serde::{Deserialize, Serialize};
 
@@ -31,139 +26,25 @@ pub enum WsMessage {
     #[serde(rename = "auth_result")]
     AuthResult(AuthResult),
 
-    // ターミナル
+    // ターミナル push
     #[serde(rename = "pty_output")]
     PtyOutput(PtyOutputMsg),
     #[serde(rename = "pty_exit")]
     PtyExit(PtyExitMsg),
-    #[serde(rename = "pty_input")]
-    PtyInput(PtyInput),
-    #[serde(rename = "pty_resize")]
-    PtyResize(PtyResize),
-    #[serde(rename = "pty_ready")]
-    PtyReady(PtyReady),
-    #[serde(rename = "pty_output_request")]
-    PtyOutputRequest(PtyOutputRequest),
 
-    // ブランチ情報
-    #[serde(rename = "branch_info_request")]
-    BranchInfoRequest(BranchInfoRequest),
-    #[serde(rename = "branch_info_response")]
-    BranchInfoResponse(BranchInfoResponse),
-
-    // PTYスポーン
-    #[serde(rename = "pty_spawn_request")]
-    PtySpawnRequest(PtySpawnRequest),
-    #[serde(rename = "pty_spawn_response")]
-    PtySpawnResponse(PtySpawnResponse),
-
-    // PTY Kill
-    #[serde(rename = "pty_kill_request")]
-    PtyKillRequest(PtyKillRequest),
-    #[serde(rename = "pty_kill_response")]
-    PtyKillResponse(PtyKillResponse),
-
-    // Worktree
-    #[serde(rename = "worktree_list_request")]
-    WorktreeListRequest(WorktreeListRequest),
-    #[serde(rename = "worktree_list_response")]
-    WorktreeListResponse(WorktreeListResponse),
-    #[serde(rename = "worktree_select_request")]
-    WorktreeSelectRequest(WorktreeSelectRequest),
-    #[serde(rename = "worktree_select_response")]
-    WorktreeSelectResponse(WorktreeSelectResponse),
+    // Worktree / branch push
     #[serde(rename = "worktree_pr_status_sync")]
     WorktreePrStatusSync(WorktreePrStatusSync),
-
-    // ブランチリスト同期
     #[serde(rename = "branch_list_sync")]
     BranchListSync(BranchListSync),
 
-    // エージェント状態
+    // Agent / workflow push
     #[serde(rename = "agent_state_sync")]
     AgentStateSync(AgentStateSync),
-
-    // ワークフロー状態
     #[serde(rename = "workflow_state_sync")]
     WorkflowStateSync(Box<WorkflowStateSync>),
-
-    // バックエンド一覧
-    #[serde(rename = "backend_list_request")]
-    BackendListRequest(BackendListRequest),
-    #[serde(rename = "backend_list_response")]
-    BackendListResponse(BackendListResponse),
-
-    // エージェントセッション
-    #[serde(rename = "agent_session_start_request")]
-    AgentSessionStartRequest(AgentSessionStartRequest),
-    #[serde(rename = "agent_session_start_response")]
-    AgentSessionStartResponse(AgentSessionStartResponse),
-    #[serde(rename = "agent_sessions_request")]
-    AgentSessionsRequest(AgentSessionsRequest),
-    #[serde(rename = "agent_sessions_response")]
-    AgentSessionsResponse(AgentSessionsResponse),
-    #[serde(rename = "agent_session_get_request")]
-    AgentSessionGetRequest(AgentSessionGetRequest),
-    #[serde(rename = "agent_session_get_response")]
-    AgentSessionGetResponse(AgentSessionGetResponse),
-    #[serde(rename = "agent_message_request")]
-    AgentMessageRequest(AgentMessageRequest),
-    #[serde(rename = "agent_message_response")]
-    AgentMessageResponse(AgentMessageResponse),
-    #[serde(rename = "agent_interrupt_request")]
-    AgentInterruptRequest(AgentInterruptRequest),
-    #[serde(rename = "agent_interrupt_response")]
-    AgentInterruptResponse(AgentInterruptResponse),
-    #[serde(rename = "agent_queue_cancel_request")]
-    AgentQueueCancelRequest(AgentQueueCancelRequest),
-    #[serde(rename = "agent_queue_cancel_response")]
-    AgentQueueCancelResponse(AgentQueueCancelResponse),
-    #[serde(rename = "agent_slash_commands_request")]
-    AgentSlashCommandsRequest(AgentSlashCommandsRequest),
-    #[serde(rename = "agent_slash_commands_response")]
-    AgentSlashCommandsResponse(AgentSlashCommandsResponse),
-    #[serde(rename = "agent_mention_files_request")]
-    AgentMentionFilesRequest(AgentMentionFilesRequest),
-    #[serde(rename = "agent_mention_files_response")]
-    AgentMentionFilesResponse(AgentMentionFilesResponse),
-    #[serde(rename = "agent_image_prepare_request")]
-    AgentImagePrepareRequest(AgentImagePrepareRequest),
-    #[serde(rename = "agent_image_prepare_response")]
-    AgentImagePrepareResponse(AgentImagePrepareResponse),
-    #[serde(rename = "agent_permission_response_request")]
-    AgentPermissionResponseRequest(AgentPermissionResponseRequest),
-    #[serde(rename = "agent_permission_response_response")]
-    AgentPermissionResponseResponse(AgentPermissionResponseResponse),
-    #[serde(rename = "agent_model_set_request")]
-    AgentModelSetRequest(AgentModelSetRequest),
-    #[serde(rename = "agent_model_set_response")]
-    AgentModelSetResponse(AgentModelSetResponse),
-    #[serde(rename = "agent_permission_mode_set_request")]
-    AgentPermissionModeSetRequest(AgentPermissionModeSetRequest),
-    #[serde(rename = "agent_permission_mode_set_response")]
-    AgentPermissionModeSetResponse(AgentPermissionModeSetResponse),
     #[serde(rename = "agent_stream_sync")]
     AgentStreamSync(AgentStreamSync),
-
-    // Review comments
-    #[serde(rename = "review_list_request")]
-    ReviewListRequest(ReviewListRequest),
-    #[serde(rename = "review_list_response")]
-    ReviewListResponse(ReviewListResponse),
-    #[serde(rename = "review_get_request")]
-    ReviewGetRequest(ReviewGetRequest),
-    #[serde(rename = "review_thread_response")]
-    ReviewThreadResponse(ReviewThreadResponse),
-    #[serde(rename = "review_create_request")]
-    ReviewCreateRequest(ReviewCreateRequest),
-    #[serde(rename = "review_append_comment_request")]
-    ReviewAppendCommentRequest(ReviewAppendCommentRequest),
-    #[serde(rename = "review_resolve_request")]
-    ReviewResolveRequest(ReviewResolveRequest),
-    #[serde(rename = "review_history_request")]
-    ReviewHistoryRequest(ReviewHistoryRequest),
-    #[serde(rename = "review_history_response")]
-    ReviewHistoryResponse(ReviewHistoryResponse),
 
     // 制御
     #[serde(rename = "error")]
@@ -181,10 +62,7 @@ pub fn deserialize_message(json: &str) -> Result<WsMessage, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::protocol::pty::{
-        PtyExitMsg, PtyInput, PtyKillRequest, PtyKillResponse, PtyOutputMsg, PtyOutputRequest,
-        PtyReady, PtyResize, PtySpawnRequest, PtySpawnResponse,
-    };
+    use crate::adaptor::protocol::pty::{PtyExitMsg, PtyOutputMsg};
 
     #[test]
     fn serialize_auth_challenge() {
@@ -221,40 +99,6 @@ mod tests {
         });
         let json = serialize_message(&msg).unwrap();
         assert!(!json.contains("\"message\""));
-    }
-
-    #[test]
-    fn roundtrip_pty_output() {
-        let msg = WsMessage::PtyOutput(PtyOutputMsg {
-            pty_id: 42,
-            data: "hello\x1b[31mworld".to_string(),
-        });
-        let json = serialize_message(&msg).unwrap();
-        let deserialized = deserialize_message(&json).unwrap();
-        match deserialized {
-            WsMessage::PtyOutput(p) => {
-                assert_eq!(p.pty_id, 42);
-                assert!(p.data.contains("hello"));
-            }
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
-    fn roundtrip_pty_exit_with_null_exit_code() {
-        let msg = WsMessage::PtyExit(PtyExitMsg {
-            pty_id: 1,
-            exit_code: None,
-        });
-        let json = serialize_message(&msg).unwrap();
-        let deserialized = deserialize_message(&json).unwrap();
-        match deserialized {
-            WsMessage::PtyExit(p) => {
-                assert_eq!(p.pty_id, 1);
-                assert!(p.exit_code.is_none());
-            }
-            _ => panic!("unexpected variant"),
-        }
     }
 
     #[test]
@@ -301,63 +145,12 @@ mod tests {
                 pty_id: 1,
                 exit_code: Some(0),
             }),
-            WsMessage::PtyInput(PtyInput {
-                pty_id: 1,
-                data: "i".to_string(),
-            }),
-            WsMessage::PtyResize(PtyResize {
-                pty_id: 1,
-                rows: 24,
-                cols: 80,
-            }),
-            WsMessage::PtyReady(PtyReady {
-                pty_id: 1,
-                cols: 80,
-                rows: 24,
-                label: None,
-                worktree_path: None,
-            }),
-            WsMessage::PtyOutputRequest(PtyOutputRequest { pty_id: 1 }),
-            WsMessage::BranchInfoRequest(BranchInfoRequest {}),
-            WsMessage::BranchInfoResponse(BranchInfoResponse {
-                branch: "main".to_string(),
-            }),
-            WsMessage::PtySpawnRequest(PtySpawnRequest {
-                cols: 80,
-                rows: 24,
-                label: None,
-            }),
-            WsMessage::PtySpawnResponse(PtySpawnResponse {
-                success: true,
-                pty_id: Some(1),
-                error: None,
-            }),
-            WsMessage::PtyKillRequest(PtyKillRequest { pty_id: 1 }),
-            WsMessage::PtyKillResponse(PtyKillResponse {
-                success: true,
-                pty_id: 1,
-                error: None,
-            }),
-            WsMessage::WorktreeListRequest(WorktreeListRequest {}),
-            WsMessage::WorktreeListResponse(WorktreeListResponse {
-                worktrees: vec![WorktreeEntryMsg {
-                    name: "main".to_string(),
+            WsMessage::WorktreePrStatusSync(WorktreePrStatusSync {
+                entries: vec![WorktreePrEntry {
                     path: "/repo".to_string(),
-                    branch: "main".to_string(),
-                    is_main: true,
-                    is_locked: false,
-                    dirty_count: 0,
-                    base_branch: None,
-                    repo_path: Some("/repo".to_string()),
+                    pr_number: 12,
+                    pr_url: "https://example.test/pr/12".to_string(),
                 }],
-            }),
-            WsMessage::WorktreeSelectRequest(WorktreeSelectRequest {
-                path: "/repo".to_string(),
-            }),
-            WsMessage::WorktreeSelectResponse(WorktreeSelectResponse {
-                success: true,
-                path: "/repo".to_string(),
-                error: None,
             }),
             WsMessage::BranchListSync(BranchListSync {
                 branches: vec![BranchCardMsg {
@@ -379,14 +172,6 @@ mod tests {
                 timestamp: 1234567890.0,
                 session_id: Some("sess-1".to_string()),
                 pty_id: None,
-            }),
-            WsMessage::AgentStateSync(AgentStateSync {
-                worktree_path: "/repo".to_string(),
-                state: AgentState::Waiting,
-                exit_code: None,
-                timestamp: 1234567890.0,
-                session_id: None,
-                pty_id: Some("42".to_string()),
             }),
             WsMessage::WorkflowStateSync(Box::new(WorkflowStateSync {
                 worktree_path: "/repo".to_string(),
@@ -422,149 +207,6 @@ mod tests {
                     std::collections::HashMap::new(),
                 ),
             })),
-            WsMessage::BackendListRequest(BackendListRequest {}),
-            WsMessage::BackendListResponse(BackendListResponse {
-                backends: vec![BackendInfoMsg {
-                    id: "claude".to_string(),
-                    name: "Claude".to_string(),
-                    available: true,
-                    available_models: vec![],
-                }],
-                default_id: Some("claude".to_string()),
-            }),
-            WsMessage::AgentSessionStartRequest(AgentSessionStartRequest {
-                worktree_path: "/repo".to_string(),
-                backend_id: Some("claude".to_string()),
-                model_id: None,
-                permission_mode: Some("edit".to_string()),
-            }),
-            WsMessage::AgentSessionStartResponse(AgentSessionStartResponse {
-                success: true,
-                session_id: Some("sess-1".to_string()),
-                backend_id: Some("claude".to_string()),
-                error: None,
-            }),
-            WsMessage::AgentSessionsRequest(AgentSessionsRequest {
-                worktree_path: "/repo".to_string(),
-            }),
-            WsMessage::AgentSessionsResponse(AgentSessionsResponse {
-                success: true,
-                worktree_path: "/repo".to_string(),
-                sessions: Vec::new(),
-                active_session: None,
-                error: None,
-            }),
-            WsMessage::AgentSessionGetRequest(AgentSessionGetRequest {
-                session_id: "sess-1".to_string(),
-            }),
-            WsMessage::AgentSessionGetResponse(AgentSessionGetResponse {
-                success: true,
-                session_id: "sess-1".to_string(),
-                session: None,
-                error: None,
-            }),
-            WsMessage::AgentMessageRequest(AgentMessageRequest {
-                session_id: Some("sess-1".to_string()),
-                worktree_path: "/repo".to_string(),
-                content: "hello".to_string(),
-                permission_mode: Some("edit".to_string()),
-                backend_id: Some("claude".to_string()),
-                model_id: None,
-                images: Vec::new(),
-                mentions: Vec::new(),
-                editor_context: None,
-            }),
-            WsMessage::AgentMessageResponse(AgentMessageResponse {
-                success: true,
-                session_id: Some("sess-1".to_string()),
-                human_message_id: Some("h-1".to_string()),
-                agent_message_id: Some("a-1".to_string()),
-                queued_turn_id: None,
-                pending_queue: Vec::new(),
-                pending_queue_count: 0,
-                sessions: Vec::new(),
-                backend_id: Some("claude".to_string()),
-                error: None,
-            }),
-            WsMessage::AgentInterruptRequest(AgentInterruptRequest {
-                session_id: "sess-1".to_string(),
-            }),
-            WsMessage::AgentInterruptResponse(AgentInterruptResponse {
-                success: true,
-                session_id: "sess-1".to_string(),
-                error: None,
-            }),
-            WsMessage::AgentQueueCancelRequest(AgentQueueCancelRequest {
-                session_id: "sess-1".to_string(),
-                queued_turn_id: Some("queued-1".to_string()),
-            }),
-            WsMessage::AgentQueueCancelResponse(AgentQueueCancelResponse {
-                success: true,
-                session_id: "sess-1".to_string(),
-                canceled_count: 1,
-                pending_queue: Vec::new(),
-                pending_queue_count: 0,
-                error: None,
-            }),
-            WsMessage::AgentSlashCommandsRequest(AgentSlashCommandsRequest {
-                worktree_path: "/repo/wt".to_string(),
-            }),
-            WsMessage::AgentSlashCommandsResponse(AgentSlashCommandsResponse {
-                success: true,
-                worktree_path: "/repo/wt".to_string(),
-                commands: vec![AgentSlashCommandEntry {
-                    name: "review".to_string(),
-                    description: "Review changes".to_string(),
-                    argument_hint: Some("<target>".to_string()),
-                }],
-                error: None,
-            }),
-            WsMessage::AgentMentionFilesRequest(AgentMentionFilesRequest {
-                request_id: "mention-1".to_string(),
-                worktree_path: "/repo/wt".to_string(),
-                query: "src".to_string(),
-            }),
-            WsMessage::AgentMentionFilesResponse(AgentMentionFilesResponse {
-                success: true,
-                request_id: "mention-1".to_string(),
-                worktree_path: "/repo/wt".to_string(),
-                query: "src".to_string(),
-                files: vec!["src/main.rs".to_string()],
-                error: None,
-            }),
-            WsMessage::AgentImagePrepareRequest(AgentImagePrepareRequest {
-                request_id: "image-1".to_string(),
-                data: vec![0x89, b'P', b'N', b'G'],
-            }),
-            WsMessage::AgentImagePrepareResponse(AgentImagePrepareResponse {
-                success: true,
-                request_id: "image-1".to_string(),
-                attachment: None,
-                error: None,
-            }),
-            WsMessage::AgentPermissionResponseRequest(AgentPermissionResponseRequest {
-                session_id: "sess-1".to_string(),
-                request_id: "perm-1".to_string(),
-                behavior: "allow".to_string(),
-                message: None,
-                updated_input: Some(serde_json::json!({"answers":{"Q":"A"}})),
-            }),
-            WsMessage::AgentPermissionResponseResponse(AgentPermissionResponseResponse {
-                success: true,
-                session_id: "sess-1".to_string(),
-                request_id: "perm-1".to_string(),
-                error: None,
-            }),
-            WsMessage::AgentModelSetRequest(AgentModelSetRequest {
-                session_id: "sess-1".to_string(),
-                model_id: "gpt-5.4".to_string(),
-            }),
-            WsMessage::AgentModelSetResponse(AgentModelSetResponse {
-                success: true,
-                session_id: "sess-1".to_string(),
-                model_id: Some("gpt-5.4".to_string()),
-                error: None,
-            }),
             WsMessage::AgentStreamSync(AgentStreamSync {
                 session_id: "sess-1".to_string(),
                 message_id: "a-1".to_string(),
@@ -582,138 +224,5 @@ mod tests {
             let json2 = serialize_message(&back).unwrap();
             assert_eq!(json, json2, "roundtrip failed for: {json}");
         }
-    }
-
-    #[test]
-    fn roundtrip_pty_spawn_request_with_label() {
-        let msg = WsMessage::PtySpawnRequest(PtySpawnRequest {
-            cols: 120,
-            rows: 40,
-            label: Some("dev-server".to_string()),
-        });
-        let json = serialize_message(&msg).unwrap();
-        assert!(json.contains("\"label\":\"dev-server\""));
-        let back = deserialize_message(&json).unwrap();
-        match back {
-            WsMessage::PtySpawnRequest(r) => {
-                assert_eq!(r.label.unwrap(), "dev-server");
-            }
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
-    fn roundtrip_pty_ready_with_label_and_worktree() {
-        let msg = WsMessage::PtyReady(PtyReady {
-            pty_id: 5,
-            cols: 80,
-            rows: 24,
-            label: Some("build".to_string()),
-            worktree_path: Some("/repo/wt".to_string()),
-        });
-        let json = serialize_message(&msg).unwrap();
-        assert!(json.contains("\"label\":\"build\""));
-        assert!(json.contains("\"worktree_path\":\"/repo/wt\""));
-        let back = deserialize_message(&json).unwrap();
-        match back {
-            WsMessage::PtyReady(r) => {
-                assert_eq!(r.label.unwrap(), "build");
-                assert_eq!(r.worktree_path.unwrap(), "/repo/wt");
-            }
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
-    fn backward_compat_pty_spawn_request_without_label() {
-        let json = r#"{"type":"pty_spawn_request","payload":{"cols":80,"rows":24}}"#;
-        let msg = deserialize_message(json).unwrap();
-        match msg {
-            WsMessage::PtySpawnRequest(r) => {
-                assert_eq!(r.cols, 80);
-                assert_eq!(r.rows, 24);
-                assert!(r.label.is_none());
-            }
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
-    fn backward_compat_pty_ready_without_label() {
-        let json = r#"{"type":"pty_ready","payload":{"pty_id":1,"cols":80,"rows":24}}"#;
-        let msg = deserialize_message(json).unwrap();
-        match msg {
-            WsMessage::PtyReady(r) => {
-                assert_eq!(r.pty_id, 1);
-                assert!(r.label.is_none());
-                assert!(r.worktree_path.is_none());
-            }
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
-    fn roundtrip_pty_kill_request() {
-        let msg = WsMessage::PtyKillRequest(PtyKillRequest { pty_id: 42 });
-        let json = serialize_message(&msg).unwrap();
-        let back = deserialize_message(&json).unwrap();
-        match back {
-            WsMessage::PtyKillRequest(r) => assert_eq!(r.pty_id, 42),
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
-    fn roundtrip_pty_kill_response() {
-        let msg = WsMessage::PtyKillResponse(PtyKillResponse {
-            success: true,
-            pty_id: 42,
-            error: None,
-        });
-        let json = serialize_message(&msg).unwrap();
-        assert!(!json.contains("\"error\""));
-        let back = deserialize_message(&json).unwrap();
-        match back {
-            WsMessage::PtyKillResponse(r) => {
-                assert!(r.success);
-                assert_eq!(r.pty_id, 42);
-                assert!(r.error.is_none());
-            }
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
-    fn review_history_json_uses_dto_shape_and_camel_case_fields() {
-        let msg = WsMessage::ReviewHistoryResponse(ReviewHistoryResponse {
-            success: true,
-            worktree_name: Some("wt".to_string()),
-            events: vec![ReviewHistoryEntry::ThreadCreated {
-                id: "event-1".to_string(),
-                thread_id: "thread-1".to_string(),
-                comment_id: "comment-1".to_string(),
-                actor: crate::review_comments::ReviewActorDto::human(),
-                target: ReviewTarget {
-                    file_path: Some("src/main.rs".to_string()),
-                    line_number: Some(12),
-                    end_line: None,
-                },
-                content: "Check this".to_string(),
-                at: 1.0,
-            }],
-            error: None,
-        });
-
-        let json = serialize_message(&msg).unwrap();
-
-        assert!(json.contains("\"kind\":\"thread_created\""));
-        assert!(json.contains("\"worktreeName\":\"wt\""));
-        assert!(json.contains("\"id\":\"event-1\""));
-        assert!(json.contains("\"threadId\":\"thread-1\""));
-        assert!(json.contains("\"commentId\":\"comment-1\""));
-        assert!(json.contains("\"filePath\":\"src/main.rs\""));
-        assert!(json.contains("\"lineNumber\":12"));
-        assert!(!json.contains("\"thread_id\""));
-        assert!(!json.contains("\"sessionId\""));
     }
 }

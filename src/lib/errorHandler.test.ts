@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	formatGitError,
-	formatRemoteServerError,
-	formatUserFriendlyError,
-} from "./errorHandler";
+import { formatGitError, formatUserFriendlyError } from "./errorHandler";
 
 describe("errorHandler", () => {
 	it("formats TypeError with null reading", () => {
@@ -66,13 +62,6 @@ describe("errorHandler", () => {
 		const error = new Error("x".repeat(200));
 		expect(formatUserFriendlyError(error)).toBe(
 			"An error occurred. Please check the console for details.",
-		);
-	});
-
-	it("formats remote server errors via formatRemoteServerError", () => {
-		const error = new TypeError("Cannot read properties of null");
-		expect(formatRemoteServerError(error)).toBe(
-			"Failed to manage remote server. Please try again.",
 		);
 	});
 });

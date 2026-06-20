@@ -7,7 +7,6 @@ pub struct AppConfigDocument {
     pub telemetry_enabled: bool,
     pub server: ServerConfig,
     pub telemetry: TelemetryConfig,
-    pub remote: RemoteConfig,
     pub app: AppSettings,
     pub workflow: WorkflowConfig,
 }
@@ -37,19 +36,12 @@ pub struct TelemetryConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoteConfig {
-    pub auto_start: bool,
-    pub auto_start_on_lan: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSettings {
     pub close_to_tray: bool,
     pub auto_launch: bool,
     pub start_minimized: bool,
     pub last_root_path: String,
     pub last_repo_paths: Vec<String>,
-    pub last_bind_ip: String,
     pub external_editor: String,
     pub agent_shortcuts: AgentShortcutConfig,
 }

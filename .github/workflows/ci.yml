@@ -149,7 +149,6 @@ jobs:
               - 'src/components/workspace/**'
               - 'src/components/panels/IssuePanel*'
               - 'src/components/panels/NotionPanel*'
-              - 'src/components/panels/RemotePanel*'
 
       - name: Determine which screenshot tests to run
         id: check
@@ -392,7 +391,7 @@ jobs:
           cache: pnpm
       - name: Build frontend assets for Tauri
         working-directory: .
-        run: pnpm install --frozen-lockfile && pnpm build:remote && pnpm build:bridge
+        run: pnpm install --frozen-lockfile && pnpm build:bridge
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy, llvm-tools-preview

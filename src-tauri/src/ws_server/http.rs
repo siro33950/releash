@@ -29,28 +29,6 @@ pub(super) fn apply_security_headers(
     }
 }
 
-pub(super) fn content_type_for(path: &str) -> &'static str {
-    if path.ends_with(".html") {
-        "text/html; charset=utf-8"
-    } else if path.ends_with(".js") {
-        "application/javascript; charset=utf-8"
-    } else if path.ends_with(".css") {
-        "text/css; charset=utf-8"
-    } else if path.ends_with(".json") {
-        "application/json"
-    } else if path.ends_with(".svg") {
-        "image/svg+xml"
-    } else if path.ends_with(".png") {
-        "image/png"
-    } else if path.ends_with(".ico") {
-        "image/x-icon"
-    } else if path.ends_with(".woff2") {
-        "font/woff2"
-    } else {
-        "application/octet-stream"
-    }
-}
-
 pub(super) async fn start_ws_server(
     cfg: &AppConfigDocument,
     server_state: Arc<WsServerState>,
@@ -157,7 +135,6 @@ async fn handle_http(
     peer_addr: SocketAddr,
     state: Arc<WsServerState>,
 ) -> Response<Full<Bytes>> {
-    let path = req.uri().path().to_string();
     let tls = state.tls_enabled;
     if is_ws_upgrade(&req) {
         match handle_ws_upgrade(req, peer_addr, state) {
@@ -165,7 +142,7 @@ async fn handle_http(
             Err(e) => error_response(StatusCode::BAD_REQUEST, &e, tls),
         }
     } else {
-        serve_remote(&path, &state)
+        error_response(StatusCode::NOT_FOUND, "Not Found", tls)
     }
 }
 
@@ -212,59 +189,6 @@ fn handle_ws_upgrade(
         .map_err(|e| e.to_string())
 }
 
-fn serve_remote(path: &str, state: &WsServerState) -> Response<Full<Bytes>> {
-    let remote_dir = match &state.remote_dir {
-        Some(d) => d,
-        None => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                "Remote UI is not available",
-                state.tls_enabled,
-            )
-        }
-    };
-
-    let file_path = match path {
-        "/" | "" => "remote.html",
-        p => p.trim_start_matches('/'),
-    };
-
-    let tls = state.tls_enabled;
-    let full_path = remote_dir.join(file_path);
-    if let (Ok(canonical), Ok(remote_canonical)) =
-        (full_path.canonicalize(), remote_dir.canonicalize())
-    {
-        if !canonical.starts_with(&remote_canonical) {
-            return error_response(StatusCode::FORBIDDEN, "Access denied", tls);
-        }
-        match std::fs::read(&canonical) {
-            Ok(content) => {
-                let ct = content_type_for(canonical.to_str().unwrap_or(""));
-                apply_security_headers(Response::builder(), tls)
-                    .status(StatusCode::OK)
-                    .header("Content-Type", ct)
-                    .header("Cache-Control", "no-cache")
-                    .body(Full::new(Bytes::from(content)))
-                    .unwrap()
-            }
-            Err(_) => serve_remote_fallback(remote_dir, tls),
-        }
-    } else {
-        serve_remote_fallback(remote_dir, tls)
-    }
-}
-
-fn serve_remote_fallback(remote_dir: &std::path::Path, tls_enabled: bool) -> Response<Full<Bytes>> {
-    match std::fs::read(remote_dir.join("remote.html")) {
-        Ok(content) => apply_security_headers(Response::builder(), tls_enabled)
-            .status(StatusCode::OK)
-            .header("Content-Type", "text/html; charset=utf-8")
-            .body(Full::new(Bytes::from(content)))
-            .unwrap(),
-        Err(_) => error_response(StatusCode::NOT_FOUND, "Not Found", tls_enabled),
-    }
-}
-
 pub(super) fn error_response(
     status: StatusCode,
     msg: &str,
@@ -278,26 +202,6 @@ pub(super) fn error_response(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_content_type_html() {
-        assert_eq!(content_type_for("index.html"), "text/html; charset=utf-8");
-    }
-
-    #[test]
-    fn test_content_type_js() {
-        assert_eq!(
-            content_type_for("app.js"),
-            "application/javascript; charset=utf-8"
-        );
-    }
-
-    #[test]
-    fn test_content_type_unknown() {
-        assert_eq!(content_type_for("data.bin"), "application/octet-stream");
-    }
-
     #[test]
     fn test_security_block_any_without_tls() {
         let bind = "0.0.0.0";

@@ -6,7 +6,6 @@ pub(crate) mod hooks;
 pub(crate) mod mcp;
 pub(crate) mod notification;
 pub(crate) mod pty_session;
-pub(crate) mod remote_access;
 pub(crate) mod repository;
 pub(crate) mod workflow;
 pub(crate) mod workspace_state;
@@ -131,12 +130,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::agent_session::status::get_workspace_status,
             crate::adaptor::controller::command::agent_session::status::list_workspace_statuses,
             crate::adaptor::controller::command::agent_session::status::list_session_statuses,
-            // WebSocket サーバー
-            crate::ws_server::commands::start_server,
-            crate::ws_server::commands::stop_server,
-            crate::ws_server::commands::get_server_status,
-            crate::ws_server::commands::get_server_info,
-            crate::ws_server::commands::update_terminal_startup_command,
             // Repo paths（repository ドメイン）
             crate::adaptor::controller::command::repository::repo_paths::get_repo_paths,
             crate::adaptor::controller::command::repository::repo_paths::add_repo_path,
@@ -215,7 +208,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
     mcp::register(&mut router);
     notification::register(&mut router);
     pty_session::register(&mut router);
-    remote_access::register(&mut router);
     workspace_state::register(&mut router);
     workflow::register(&mut router);
     builder.invoke_handler(move |invoke: tauri::ipc::Invoke<tauri::Wry>| router.handle(invoke))

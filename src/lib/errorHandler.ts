@@ -53,14 +53,6 @@ export function formatUserFriendlyError(
 		: errorMessage;
 }
 
-// Specialized handlers for common contexts
-export function formatRemoteServerError(error: unknown): string {
-	return formatUserFriendlyError(error, {
-		operation: "manage remote server",
-		componentName: "RemotePanel",
-	});
-}
-
 export function formatGitError(error: unknown): string {
 	return formatUserFriendlyError(error, {
 		operation: "execute git command",

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::domain::app_config::repository::ConfigRepository;
 use crate::domain::app_config::services::generate_token;
-use crate::domain::app_config::value_objects::{AppSettings, RemoteConfig, WorkflowConfig};
+use crate::domain::app_config::value_objects::{AppSettings, WorkflowConfig};
 use crate::usecase::app_config::error::UsecaseError;
 use crate::usecase::app_config::query_service::AppConfigQueryService;
 
@@ -29,6 +29,7 @@ impl AppConfigUsecase {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn update_server_port(&self, port: u16) -> Result<(), UsecaseError> {
         validate_port("server_port", port)?;
         self.repository.update(Box::new(move |config| {
@@ -38,6 +39,7 @@ impl AppConfigUsecase {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn regenerate_token(&self) -> Result<String, UsecaseError> {
         let token = generate_token();
         let next_token = token.clone();
@@ -80,30 +82,6 @@ impl AppConfigUsecase {
             config.app.auto_launch = app.auto_launch;
             config.app.start_minimized = app.start_minimized;
             config.app.agent_shortcuts = app.agent_shortcuts;
-            Ok(())
-        }))?;
-        Ok(())
-    }
-
-    pub fn update_last_server_context(
-        &self,
-        last_root_path: String,
-        last_bind_ip: String,
-    ) -> Result<(), UsecaseError> {
-        self.repository.update(Box::new(move |config| {
-            if !last_root_path.is_empty() && config.app.last_repo_paths.is_empty() {
-                config.app.last_repo_paths = vec![last_root_path.clone()];
-            }
-            config.app.last_root_path = last_root_path;
-            config.app.last_bind_ip = last_bind_ip;
-            Ok(())
-        }))?;
-        Ok(())
-    }
-
-    pub fn update_remote_config(&self, remote: RemoteConfig) -> Result<(), UsecaseError> {
-        self.repository.update(Box::new(move |config| {
-            config.remote = remote;
             Ok(())
         }))?;
         Ok(())
@@ -202,17 +180,12 @@ mod app_config_usecase_tests {
             telemetry: TelemetryConfig {
                 crash_reporting: true,
             },
-            remote: RemoteConfig {
-                auto_start: false,
-                auto_start_on_lan: false,
-            },
             app: AppSettings {
                 close_to_tray: true,
                 auto_launch: false,
                 start_minimized: false,
                 last_root_path: String::new(),
                 last_repo_paths: vec![],
-                last_bind_ip: String::new(),
                 external_editor: String::new(),
                 agent_shortcuts: AgentShortcutConfig::default(),
             },

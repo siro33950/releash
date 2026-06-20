@@ -31,6 +31,7 @@ pub(crate) trait PtySessionGateway {
 
     fn write(&self, pty_id: u64, data: &str) -> Result<(), UsecaseError>;
     fn resize(&self, pty_id: u64, rows: u16, cols: u16) -> Result<(), UsecaseError>;
+    #[allow(dead_code)]
     fn get_pty_size(&self, pty_id: u64) -> Result<(u16, u16), UsecaseError>;
     fn kill_runtime(&self, pty_id: u64) -> Result<(), UsecaseError>;
     fn remove_if_exited(&self, pty_id: u64);

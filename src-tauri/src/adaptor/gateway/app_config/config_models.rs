@@ -21,8 +21,6 @@ pub struct ReleashConfig {
     #[serde(default)]
     pub notion: HashMap<String, NotionRepoConfig>,
     #[serde(default)]
-    pub remote: RemoteSection,
-    #[serde(default)]
     pub app: AppSection,
     #[serde(default)]
     pub agents: AgentsSection,
@@ -66,14 +64,6 @@ pub struct CodexAgentSection {
     pub models: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RemoteSection {
-    #[serde(default)]
-    pub auto_start: bool,
-    #[serde(default)]
-    pub auto_start_on_lan: bool,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppSection {
     #[serde(default = "default_true")]
@@ -86,8 +76,6 @@ pub struct AppSection {
     pub last_root_path: String,
     #[serde(default)]
     pub last_repo_paths: Vec<String>,
-    #[serde(default)]
-    pub last_bind_ip: String,
     #[serde(default)]
     pub external_editor: String,
     #[serde(default)]
@@ -102,7 +90,6 @@ impl Default for AppSection {
             start_minimized: false,
             last_root_path: String::new(),
             last_repo_paths: Vec::new(),
-            last_bind_ip: String::new(),
             external_editor: String::new(),
             agent_shortcuts: AgentShortcutSection::default(),
         }
@@ -140,7 +127,6 @@ impl Default for ReleashConfig {
             server: ServerSection::default(),
             telemetry: TelemetrySection::default(),
             notion: HashMap::new(),
-            remote: RemoteSection::default(),
             app: AppSection::default(),
             agents: AgentsSection::default(),
             workflow: WorkflowSection::default(),
@@ -258,7 +244,6 @@ pub fn config_to_domain(config: &ReleashConfig) -> domain_vo::AppConfigDocument 
         telemetry_enabled: config.telemetry_enabled,
         server: server_to_domain(&config.server),
         telemetry: telemetry_to_domain(&config.telemetry),
-        remote: remote_to_domain(&config.remote),
         app: app_to_domain(&config.app),
         workflow: workflow_to_domain(&config.workflow),
     }
@@ -268,7 +253,6 @@ pub fn apply_domain_to_config(config: &mut ReleashConfig, domain: domain_vo::App
     config.telemetry_enabled = domain.telemetry_enabled;
     config.server = server_to_model(domain.server);
     config.telemetry = telemetry_to_model(domain.telemetry);
-    config.remote = remote_to_model(domain.remote);
     config.app = app_to_model(domain.app);
     config.workflow = workflow_to_model(domain.workflow);
 }
@@ -349,20 +333,6 @@ pub fn telemetry_to_model(telemetry: domain_vo::TelemetryConfig) -> TelemetrySec
     }
 }
 
-pub fn remote_to_domain(remote: &RemoteSection) -> domain_vo::RemoteConfig {
-    domain_vo::RemoteConfig {
-        auto_start: remote.auto_start,
-        auto_start_on_lan: remote.auto_start_on_lan,
-    }
-}
-
-pub fn remote_to_model(remote: domain_vo::RemoteConfig) -> RemoteSection {
-    RemoteSection {
-        auto_start: remote.auto_start,
-        auto_start_on_lan: remote.auto_start_on_lan,
-    }
-}
-
 pub fn app_to_domain(app: &AppSection) -> domain_vo::AppSettings {
     domain_vo::AppSettings {
         close_to_tray: app.close_to_tray,
@@ -370,7 +340,6 @@ pub fn app_to_domain(app: &AppSection) -> domain_vo::AppSettings {
         start_minimized: app.start_minimized,
         last_root_path: app.last_root_path.clone(),
         last_repo_paths: app.last_repo_paths.clone(),
-        last_bind_ip: app.last_bind_ip.clone(),
         external_editor: app.external_editor.clone(),
         agent_shortcuts: domain_vo::AgentShortcutConfig {
             overrides: app.agent_shortcuts.overrides.clone(),
@@ -385,7 +354,6 @@ pub fn app_to_model(app: domain_vo::AppSettings) -> AppSection {
         start_minimized: app.start_minimized,
         last_root_path: app.last_root_path,
         last_repo_paths: app.last_repo_paths,
-        last_bind_ip: app.last_bind_ip,
         external_editor: app.external_editor,
         agent_shortcuts: AgentShortcutSection {
             overrides: app.agent_shortcuts.overrides,
@@ -421,7 +389,6 @@ mod config_models_tests {
         assert_eq!(roundtripped.telemetry_enabled, config.telemetry_enabled);
         assert_eq!(roundtripped.server, config.server);
         assert_eq!(roundtripped.telemetry, config.telemetry);
-        assert_eq!(roundtripped.remote, config.remote);
         assert_eq!(roundtripped.app, config.app);
         assert_eq!(roundtripped.workflow, config.workflow);
         assert_eq!(roundtripped.notion.len(), config.notion.len());
@@ -472,17 +439,12 @@ mod config_models_tests {
             telemetry: TelemetrySection {
                 crash_reporting: false,
             },
-            remote: RemoteSection {
-                auto_start: true,
-                auto_start_on_lan: true,
-            },
             app: AppSection {
                 close_to_tray: false,
                 auto_launch: true,
                 start_minimized: true,
                 last_root_path: "/repo".to_string(),
                 last_repo_paths: vec!["/repo".to_string(), "/repo2".to_string()],
-                last_bind_ip: "192.168.1.10".to_string(),
                 external_editor: "cursor".to_string(),
                 agent_shortcuts: AgentShortcutSection {
                     overrides: std::collections::HashMap::from([(

@@ -3,9 +3,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
 use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
-use crate::adaptor::protocol::pty::PtyResize;
 use crate::domain::pty_session::services::parse_pty_kind;
-use crate::protocol::WsMessage;
 use crate::usecase::pty_session::dto::{GetOrSpawnPtyResult, PtySessionInfo};
 use crate::ws_bridge::WsBroadcaster;
 
@@ -48,18 +46,13 @@ pub fn write_pty(
 
 #[tauri::command]
 pub fn resize_pty(
-    app: AppHandle,
     state: State<'_, Arc<PtySessionRuntimeGateway>>,
     pty_id: u64,
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
     crate::usecase::pty_session::io_usecase::resize(state.inner().as_ref(), pty_id, rows, cols)
-        .map_err(|e| e.to_string())?;
-    if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
-        ws.try_send(WsMessage::PtyResize(PtyResize { pty_id, rows, cols }));
-    }
-    Ok(())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::protocol::*;
@@ -165,62 +164,6 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     let stream_sync_notify = state.broadcaster.stream_sync_notify();
     let broadcaster_for_forward = state.broadcaster.clone();
 
-    // --- 初期データ送信: worktreeリストのみ（PTYはworktree選択後に送信） ---
-    // worktree 一覧（repository ローカル情報のみ）を先に送り、PR ステータスは
-    // broadcaster 経由で後追い配信する（一覧表示 / PR 表示の 2 段階化）。
-    if !state.get_repo_paths().is_empty() {
-        let worktrees =
-            crate::adaptor::controller::handler::repository::worktree::build_all_worktrees(
-                state.get_repo_paths(),
-                std::sync::Arc::clone(state.repository_usecase()),
-            )
-            .await;
-        let worktree_msg = WsMessage::WorktreeListResponse(WorktreeListResponse { worktrees });
-        write
-            .send(Message::text(
-                serialize_message(&worktree_msg).map_err(|e| e.to_string())?,
-            ))
-            .await
-            .map_err(|e| format!("Failed to send worktree list: {e}"))?;
-        crate::adaptor::controller::handler::repository::worktree::push_worktree_pr_status(
-            state.get_repo_paths(),
-            std::sync::Arc::clone(state.pr_cache()),
-            std::sync::Arc::clone(state.repository_usecase()),
-            std::sync::Arc::clone(state.broadcaster()),
-        );
-    }
-
-    // --- 初期データ送信: 全 SessionStatus を AgentStateSync 互換形式で送信 ---
-    if let Some(app) = &state.app_handle {
-        use tauri::Manager;
-        if let Some(center) =
-            app.try_state::<Arc<crate::usecase::agent_session::status::AgentStatusCenter>>()
-        {
-            let agent_msgs: Vec<String> = center
-                .list_sessions()
-                .into_iter()
-                .filter_map(|status| {
-                    let sync = AgentStateSync {
-                        worktree_path: status.worktree_path,
-                        state: status.agent_state.into(),
-                        exit_code: None,
-                        timestamp: status.last_activity_at,
-                        session_id: Some(status.chat_session_id),
-                        pty_id: status.pty_id,
-                    };
-                    let msg = WsMessage::AgentStateSync(sync);
-                    serialize_message(&msg).ok()
-                })
-                .collect();
-            for json in agent_msgs {
-                let _ = write.send(Message::text(json)).await;
-            }
-        }
-    }
-
-    // --- セッション単位のworktree選択状態 ---
-    let selected_worktree: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-
     // PTY出力 + AgentStreamSync を WebSocket にフォワードするタスク。
     // 通常の `WsMessage` は `rx` から受け取って即送信する。一方で
     // `AgentStreamSync` は `WsBroadcaster::latest_stream_sync` slot に
@@ -278,14 +221,14 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                     Ok(m) => m,
                     Err(_) => {
                         let err = WsMessage::Error(ErrorMsg {
-                            code: "PARSE_ERROR".to_string(),
-                            message: "Invalid message format".to_string(),
+                            code: "INVALID_MESSAGE".to_string(),
+                            message: "Unexpected message from client".to_string(),
                         });
                         state.broadcaster.try_send(err);
                         continue;
                     }
                 };
-                if let Some(response) = route_message(&ws_msg, state, &selected_worktree).await {
+                if let Some(response) = route_message(&ws_msg).await {
                     state.broadcaster.try_send(response);
                 }
             }
