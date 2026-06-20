@@ -148,9 +148,68 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		expect(eventNames).toContain("agent-pending-message-consumed");
 		expect(eventNames).toContain("agent-permission-mode-changed");
 		expect(eventNames).toContain("agent-models-updated");
+		expect(eventNames).toContain("agent-session-context-carry-updated");
 		expect(eventNames).not.toContain("agent-backend-models-updated");
 		expect(eventNames).not.toContain("agent-streaming-started");
 		expect(eventNames).not.toContain("agent-query-completed");
+	});
+});
+
+describe("agent-session-context-carry-updated event", () => {
+	it("dispatches SET_CONTEXT_CARRY for a viewable session", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		setViewable(refs, "session-1");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-session-context-carry-updated");
+		expect(cb).toBeDefined();
+
+		await cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				agent_session_id: null,
+				context_carry: "failed",
+				updated_at: 1234,
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_CONTEXT_CARRY",
+			sessionId: "session-1",
+			agentSessionId: null,
+			contextCarry: "failed",
+			updatedAt: 1234,
+		});
+	});
+
+	it("skips SET_CONTEXT_CARRY for hidden sessions", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		clearViewable(refs);
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-session-context-carry-updated");
+		expect(cb).toBeDefined();
+
+		await cb?.({
+			payload: {
+				chat_session_id: "hidden-session",
+				agent_session_id: null,
+				context_carry: "failed",
+				updated_at: 1234,
+			},
+		});
+
+		expect(refs.dispatch).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "SET_CONTEXT_CARRY" }),
+		);
 	});
 });
 

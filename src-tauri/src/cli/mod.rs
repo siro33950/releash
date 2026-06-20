@@ -1473,6 +1473,7 @@ models = ["opus"]
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: None,
+            context_carry: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,

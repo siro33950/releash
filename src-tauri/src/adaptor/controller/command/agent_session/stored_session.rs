@@ -295,12 +295,26 @@ pub fn update_session_agent_info(
     agent_session_id: Option<String>,
 ) -> Result<(), String> {
     let data_dir = resolve_data_dir(&app)?;
+    update_session_agent_info_in_store(
+        state.inner().as_ref(),
+        &data_dir,
+        &session_id,
+        agent_session_id,
+    )
+}
+
+fn update_session_agent_info_in_store(
+    state: &SessionStore,
+    data_dir: &std::path::Path,
+    session_id: &str,
+    agent_session_id: Option<String>,
+) -> Result<(), String> {
     let mut session = state
-        .get_session(&data_dir, &session_id)?
+        .get_session(data_dir, session_id)?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
     session.agent_session_id = agent_session_id;
     session.updated_at = crate::usecase::agent_session::session::now_timestamp();
-    state.save_session(&data_dir, &session)?;
+    state.save_session(data_dir, &session)?;
     Ok(())
 }
 
@@ -466,6 +480,7 @@ mod tests {
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
+            context_carry: Some(crate::usecase::agent_session::session::ContextCarryState::Resumed),
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -577,6 +592,37 @@ mod tests {
         session.backend_id = Some(CODEX_BACKEND_ID.to_string());
         session.agent_session_id = Some("   ".to_string());
         assert_eq!(saved_codex_thread_id(&session), None);
+    }
+
+    #[test]
+    fn update_session_agent_info_does_not_infer_context_carry_from_manual_id() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session_store = SessionStore::default();
+        let session = crate::usecase::agent_session::session::create_session_internal(
+            &session_store,
+            tmp.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+
+        update_session_agent_info_in_store(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            Some("manual-sdk-session".to_string()),
+        )
+        .unwrap();
+
+        let loaded = session_store
+            .get_session(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            loaded.agent_session_id.as_deref(),
+            Some("manual-sdk-session")
+        );
+        assert_eq!(loaded.context_carry, None);
     }
 
     #[test]

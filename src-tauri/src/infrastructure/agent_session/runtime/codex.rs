@@ -9,10 +9,11 @@ use crate::app_data_dir::resolve_data_dir;
 use crate::domain::agent_session::CODEX_FIXED_MODELS;
 use crate::infrastructure::agent_session::runtime::bridge_common::{
     close_external_agent_process, finish_external_pending_message_turn_start,
-    handle_external_bridge_message, prepare_external_pending_message_turn,
+    handle_external_bridge_message, persist_context_carry_failed_after_init_error,
+    persist_context_carry_state, prepare_external_pending_message_turn,
     register_external_agent_process, session_specific_env_overrides,
     start_external_agent_turn_state, write_bridge_command, AgentProcessMap,
-    ExternalBridgeMessageState, CODEX_BACKEND_ID,
+    ExternalBridgeMessageState, CODEX_BACKEND_ID, DEFER_AGENT_SESSION_ID_PERSIST_ON_READY,
 };
 use crate::infrastructure::agent_session::runtime::codex_app_server::{
     app_server_message_to_bridge_messages, build_app_server_permission_response_for_bridge_request,
@@ -21,14 +22,18 @@ use crate::infrastructure::agent_session::runtime::codex_app_server::{
     build_thread_start_request, build_turn_interrupt_request,
     build_turn_start_request_with_permission, build_turn_steer_request, decode_jsonrpc_line,
     message_kind, spawn_app_server_process_parts, AppServerBridgeState, AppServerMessageKind,
-    NOTIFY_TURN_COMPLETED,
+    AppServerRequestErrorHandling, NOTIFY_TURN_COMPLETED, NOTIFY_TURN_STARTED,
+};
+use crate::infrastructure::agent_session::runtime::context_restore::{
+    context_restore_plan_for_session, context_restore_plan_for_session_before_turn,
+    ContextRestorePlan, RestoreContextPayload,
 };
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::wait_until_session_close_finished;
 use crate::infrastructure::agent_session::runtime::{
     AgentBackend, AgentEditorContext, AgentMessage, ImageAttachment, PermissionResponse,
     SessionConfig, SessionHandle,
 };
-use crate::usecase::agent_session::session::SessionStore;
+use crate::usecase::agent_session::session::{ContextCarryState, SessionStore};
 
 /// Codex app-server バックエンド。
 /// Codex の実行・approval・streaming は `codex app-server` の JSON-RPC に委譲する。
@@ -131,14 +136,23 @@ trait CodexBackendRuntime: Send + Sync {
 struct AppServerSessionState {
     bridge_state: AppServerBridgeState,
     external_message_state: ExternalBridgeMessageState,
+    restore_context: Option<RestoreContextPayload>,
+    context_carry_on_ready: Option<ContextCarryState>,
+    context_carry_on_turn_started: Option<ContextCarryState>,
     next_id: u64,
 }
 
 impl AppServerSessionState {
-    fn new() -> Self {
+    fn new(
+        restore_context: Option<RestoreContextPayload>,
+        context_carry_on_ready: Option<ContextCarryState>,
+    ) -> Self {
         Self {
             bridge_state: AppServerBridgeState::default(),
             external_message_state: ExternalBridgeMessageState::default(),
+            restore_context,
+            context_carry_on_ready,
+            context_carry_on_turn_started: None,
             next_id: 1,
         }
     }
@@ -147,6 +161,103 @@ impl AppServerSessionState {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    fn pending_context_restore_state(&self) -> Option<ContextCarryState> {
+        self.context_carry_on_ready
+            .clone()
+            .or_else(|| self.context_carry_on_turn_started.clone())
+            .or_else(|| {
+                self.restore_context
+                    .as_ref()
+                    .filter(|payload| !payload.prompt_prefix.trim().is_empty())
+                    .map(|_| ContextCarryState::Reinjected)
+            })
+    }
+}
+
+fn prompt_with_restore_context(
+    prompt: &str,
+    restore_context: Option<RestoreContextPayload>,
+) -> String {
+    match restore_context {
+        Some(payload) if !payload.prompt_prefix.trim().is_empty() => {
+            format!("{}\n\n{prompt}", payload.prompt_prefix)
+        }
+        _ => prompt.to_string(),
+    }
+}
+
+fn prompt_with_pending_restore_context(
+    prompt: &str,
+    state: &mut AppServerSessionState,
+) -> (String, bool) {
+    let restore_context = state.restore_context.take();
+    let had_restore_context = restore_context
+        .as_ref()
+        .is_some_and(|payload| !payload.prompt_prefix.trim().is_empty());
+    (
+        prompt_with_restore_context(prompt, restore_context),
+        had_restore_context,
+    )
+}
+
+fn defer_agent_session_id_persist_for_session_ready_messages(
+    messages: &mut [serde_json::Value],
+    should_defer: bool,
+) {
+    if !should_defer {
+        return;
+    }
+    for message in messages {
+        if message.get("type").and_then(|value| value.as_str()) == Some("session_ready") {
+            message[DEFER_AGENT_SESSION_ID_PERSIST_ON_READY] = serde_json::Value::Bool(true);
+        }
+    }
+}
+
+fn persist_context_restore_plan_failure<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    plan: &ContextRestorePlan,
+) {
+    if plan.carry_state().is_some() {
+        persist_context_carry_failed_after_init_error(
+            app,
+            session_store,
+            chat_session_id,
+            plan.resume_session_id().is_some(),
+            true,
+        );
+    }
+}
+
+async fn pending_context_restore_failure_flags(
+    state: &Arc<Mutex<AppServerSessionState>>,
+) -> (bool, bool) {
+    let guard = state.lock().await;
+    (
+        guard.context_carry_on_ready == Some(ContextCarryState::Resumed),
+        guard.pending_context_restore_state().is_some(),
+    )
+}
+
+fn persist_pending_context_restore_failure<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    clear_agent_session_id: bool,
+    should_fail_context_carry: bool,
+) {
+    if should_fail_context_carry {
+        persist_context_carry_failed_after_init_error(
+            app,
+            session_store,
+            chat_session_id,
+            clear_agent_session_id,
+            true,
+        );
     }
 }
 
@@ -194,6 +305,7 @@ impl AppServerCodexRuntime {
     async fn ensure_session(
         &self,
         config: &SessionConfig,
+        current_turn_agent_message_id: Option<&str>,
     ) -> Result<Arc<Mutex<AppServerSessionState>>, String> {
         let mut sessions = self.sessions.lock().await;
         if let Some(state) = sessions.get(&config.chat_session_id).cloned() {
@@ -224,11 +336,26 @@ impl AppServerCodexRuntime {
             child_envs.push((key.to_string(), value));
         }
         let parts = spawn_app_server_process_parts(&self.cli_path, Some(&config.cwd), &child_envs)?;
-        let state = Arc::new(Mutex::new(AppServerSessionState::new()));
         let data_dir = resolve_data_dir(&self.app)?;
         let stored_session = self
             .session_store
             .get_session(&data_dir, &config.chat_session_id)?;
+        let context_restore_plan = match current_turn_agent_message_id {
+            Some(agent_message_id) => context_restore_plan_for_session_before_turn(
+                stored_session.as_ref(),
+                agent_message_id,
+            ),
+            None => context_restore_plan_for_session(stored_session.as_ref()),
+        };
+        let restore_context = context_restore_plan.restore_context().cloned();
+        let context_carry_on_ready = match &context_restore_plan {
+            ContextRestorePlan::Resume { .. } => Some(ContextCarryState::Resumed),
+            ContextRestorePlan::NoContext | ContextRestorePlan::Reinject { .. } => None,
+        };
+        let state = Arc::new(Mutex::new(AppServerSessionState::new(
+            restore_context,
+            context_carry_on_ready,
+        )));
         let selected_model = stored_session.as_ref().and_then(|session| {
             session
                 .selected_model
@@ -237,14 +364,9 @@ impl AppServerCodexRuntime {
                 .filter(|value| !value.is_empty())
                 .map(ToString::to_string)
         });
-        let saved_thread_id = stored_session.as_ref().and_then(|session| {
-            session
-                .agent_session_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToString::to_string)
-        });
+        let saved_thread_id = context_restore_plan
+            .resume_session_id()
+            .map(ToString::to_string);
         let permission_mode = config
             .permission_mode
             .as_deref()
@@ -280,6 +402,7 @@ impl AppServerCodexRuntime {
             permission_mode.clone(),
             selected_model.clone(),
             None,
+            None,
         )
         .await?;
 
@@ -297,6 +420,12 @@ impl AppServerCodexRuntime {
             )
             .await
         {
+            persist_context_restore_plan_failure(
+                &self.app,
+                &self.session_store,
+                &config.chat_session_id,
+                &context_restore_plan,
+            );
             let _ = close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
                 .await;
             return Err(err);
@@ -305,6 +434,12 @@ impl AppServerCodexRuntime {
             .send_jsonrpc(&config.chat_session_id, build_initialized_notification())
             .await
         {
+            persist_context_restore_plan_failure(
+                &self.app,
+                &self.session_store,
+                &config.chat_session_id,
+                &context_restore_plan,
+            );
             let _ = close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
                 .await;
             return Err(err);
@@ -334,16 +469,38 @@ impl AppServerCodexRuntime {
         } {
             Ok(request) => request,
             Err(err) => {
+                persist_context_restore_plan_failure(
+                    &self.app,
+                    &self.session_store,
+                    &config.chat_session_id,
+                    &context_restore_plan,
+                );
                 let _ =
                     close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
                         .await;
                 return Err(err);
             }
         };
+        {
+            let mut guard = state.lock().await;
+            guard.bridge_state.track_request_error_handling(
+                request_id,
+                AppServerRequestErrorHandling {
+                    clear_session_id: context_restore_plan.resume_session_id().is_some(),
+                    context_carry_failed: context_restore_plan.carry_state().is_some(),
+                },
+            );
+        }
         if let Err(err) = self
             .send_jsonrpc(&config.chat_session_id, thread_request)
             .await
         {
+            persist_context_restore_plan_failure(
+                &self.app,
+                &self.session_store,
+                &config.chat_session_id,
+                &context_restore_plan,
+            );
             let _ = close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
                 .await;
             return Err(err);
@@ -381,9 +538,23 @@ impl AppServerCodexRuntime {
                     Some(AppServerMessageKind::Notification { ref method })
                         if method == NOTIFY_TURN_COMPLETED
                 );
+                let is_turn_started = matches!(
+                    message_kind(&message),
+                    Some(AppServerMessageKind::Notification { ref method })
+                        if method == NOTIFY_TURN_STARTED
+                );
                 let bridge_messages = {
                     let mut guard = state.lock().await;
-                    app_server_message_to_bridge_messages(&message, &mut guard.bridge_state)
+                    let mut bridge_messages =
+                        app_server_message_to_bridge_messages(&message, &mut guard.bridge_state);
+                    defer_agent_session_id_persist_for_session_ready_messages(
+                        &mut bridge_messages,
+                        guard
+                            .restore_context
+                            .as_ref()
+                            .is_some_and(|payload| !payload.prompt_prefix.trim().is_empty()),
+                    );
+                    bridge_messages
                 };
                 // session_ready（Initializing→Ready）でも、起動直後に enqueue された
                 // pending を drain する。drain が turn/completed のみだとターン未開始で
@@ -391,6 +562,40 @@ impl AppServerCodexRuntime {
                 let is_session_ready = bridge_messages
                     .iter()
                     .any(|m| m.get("type").and_then(|v| v.as_str()) == Some("session_ready"));
+                let should_close_failed_request = bridge_messages.iter().any(|m| {
+                    m.get("type").and_then(|v| v.as_str()) == Some("error")
+                        && m.get("app_server_request_failed")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                });
+                if is_session_ready {
+                    let context_carry_on_ready = {
+                        let mut guard = state.lock().await;
+                        guard.context_carry_on_ready.take()
+                    };
+                    if let Some(context_carry) = context_carry_on_ready {
+                        persist_context_carry_state(
+                            &app,
+                            &session_store,
+                            &chat_session_id,
+                            context_carry,
+                        );
+                    }
+                }
+                if is_turn_started {
+                    let context_carry_on_turn_started = {
+                        let mut guard = state.lock().await;
+                        guard.context_carry_on_turn_started.take()
+                    };
+                    if let Some(context_carry) = context_carry_on_turn_started {
+                        persist_context_carry_state(
+                            &app,
+                            &session_store,
+                            &chat_session_id,
+                            context_carry,
+                        );
+                    }
+                }
                 for bridge_message in bridge_messages {
                     let mut guard = state.lock().await;
                     handle_external_bridge_message(
@@ -402,6 +607,11 @@ impl AppServerCodexRuntime {
                         &mut guard.external_message_state,
                     )
                     .await;
+                }
+                if should_close_failed_request {
+                    sessions.lock().await.remove(&chat_session_id);
+                    let _ = close_external_agent_process(&app, &handles, &chat_session_id).await;
+                    continue;
                 }
                 if is_turn_completed || is_session_ready {
                     if let Err(e) = start_next_app_server_pending_turn(
@@ -436,7 +646,21 @@ impl AppServerCodexRuntime {
     }
 
     async fn send_turn(&self, turn: AppServerTurnStart<'_>) -> Result<(), String> {
-        let thread_id = Self::wait_for_thread_id(turn.state).await?;
+        let thread_id = match Self::wait_for_thread_id(turn.state).await {
+            Ok(thread_id) => thread_id,
+            Err(err) => {
+                let (clear_agent_session_id, should_fail_context_carry) =
+                    pending_context_restore_failure_flags(turn.state).await;
+                persist_pending_context_restore_failure(
+                    &self.app,
+                    &self.session_store,
+                    turn.chat_session_id,
+                    clear_agent_session_id,
+                    should_fail_context_carry,
+                );
+                return Err(err);
+            }
+        };
         start_external_agent_turn_state(
             &self.app,
             &self.session_store,
@@ -447,22 +671,58 @@ impl AppServerCodexRuntime {
         )
         .await?;
         let id = Self::next_request_id(turn.state).await;
-        self.send_jsonrpc(
-            turn.chat_session_id,
-            build_turn_start_request_with_permission(
+        let (prompt, had_restore_context) = {
+            let mut guard = turn.state.lock().await;
+            prompt_with_pending_restore_context(turn.prompt, &mut guard)
+        };
+        let request = match build_turn_start_request_with_permission(
+            id,
+            &thread_id,
+            turn.cwd,
+            &prompt,
+            turn.images,
+            Some(turn.streaming_message_id),
+            turn.editor_context,
+            Some(turn.permission_mode),
+            turn.plan_mode,
+            turn.permission_profile_id,
+        ) {
+            Ok(request) => request,
+            Err(err) => {
+                persist_pending_context_restore_failure(
+                    &self.app,
+                    &self.session_store,
+                    turn.chat_session_id,
+                    false,
+                    had_restore_context,
+                );
+                return Err(err);
+            }
+        };
+        if had_restore_context {
+            let mut guard = turn.state.lock().await;
+            guard.context_carry_on_turn_started = Some(ContextCarryState::Reinjected);
+            guard.bridge_state.track_request_error_handling(
                 id,
-                &thread_id,
-                turn.cwd,
-                turn.prompt,
-                turn.images,
-                Some(turn.streaming_message_id),
-                turn.editor_context,
-                Some(turn.permission_mode),
-                turn.plan_mode,
-                turn.permission_profile_id,
-            )?,
-        )
-        .await
+                AppServerRequestErrorHandling {
+                    clear_session_id: false,
+                    context_carry_failed: true,
+                },
+            );
+        }
+        let result = self.send_jsonrpc(turn.chat_session_id, request).await;
+        if result.is_err() && had_restore_context {
+            let mut guard = turn.state.lock().await;
+            guard.context_carry_on_turn_started = None;
+            persist_pending_context_restore_failure(
+                &self.app,
+                &self.session_store,
+                turn.chat_session_id,
+                false,
+                true,
+            );
+        }
+        result
     }
 }
 
@@ -480,7 +740,21 @@ async fn start_next_app_server_pending_turn(
     };
 
     let result = async {
-        let thread_id = AppServerCodexRuntime::wait_for_thread_id(&state).await?;
+        let thread_id = match AppServerCodexRuntime::wait_for_thread_id(&state).await {
+            Ok(thread_id) => thread_id,
+            Err(err) => {
+                let (clear_agent_session_id, should_fail_context_carry) =
+                    pending_context_restore_failure_flags(&state).await;
+                persist_pending_context_restore_failure(
+                    app,
+                    session_store,
+                    chat_session_id,
+                    clear_agent_session_id,
+                    should_fail_context_carry,
+                );
+                return Err(err);
+            }
+        };
         start_external_agent_turn_state(
             app,
             session_store,
@@ -491,23 +765,58 @@ async fn start_next_app_server_pending_turn(
         )
         .await?;
         let id = AppServerCodexRuntime::next_request_id(&state).await;
-        write_bridge_command(
-            handles,
-            chat_session_id,
-            build_turn_start_request_with_permission(
+        let (prompt, had_restore_context) = {
+            let mut guard = state.lock().await;
+            prompt_with_pending_restore_context(&pending.prompt, &mut guard)
+        };
+        let request = match build_turn_start_request_with_permission(
+            id,
+            &thread_id,
+            &pending.worktree_path,
+            &prompt,
+            &pending.images,
+            Some(&pending.agent_message_id),
+            pending.editor_context.as_ref(),
+            Some(&pending.permission_mode),
+            pending.plan_mode,
+            pending.permission_profile_id.as_deref(),
+        ) {
+            Ok(request) => request,
+            Err(err) => {
+                persist_pending_context_restore_failure(
+                    app,
+                    session_store,
+                    chat_session_id,
+                    false,
+                    had_restore_context,
+                );
+                return Err(err);
+            }
+        };
+        if had_restore_context {
+            let mut guard = state.lock().await;
+            guard.context_carry_on_turn_started = Some(ContextCarryState::Reinjected);
+            guard.bridge_state.track_request_error_handling(
                 id,
-                &thread_id,
-                &pending.worktree_path,
-                &pending.prompt,
-                &pending.images,
-                Some(&pending.agent_message_id),
-                pending.editor_context.as_ref(),
-                Some(&pending.permission_mode),
-                pending.plan_mode,
-                pending.permission_profile_id.as_deref(),
-            )?,
-        )
-        .await
+                AppServerRequestErrorHandling {
+                    clear_session_id: false,
+                    context_carry_failed: true,
+                },
+            );
+        }
+        let result = write_bridge_command(handles, chat_session_id, request).await;
+        if result.is_err() && had_restore_context {
+            let mut guard = state.lock().await;
+            guard.context_carry_on_turn_started = None;
+            persist_pending_context_restore_failure(
+                app,
+                session_store,
+                chat_session_id,
+                false,
+                true,
+            );
+        }
+        result
     }
     .await;
 
@@ -518,7 +827,7 @@ async fn start_next_app_server_pending_turn(
 #[async_trait]
 impl CodexBackendRuntime for AppServerCodexRuntime {
     async fn start_session(&self, config: SessionConfig) -> Result<SessionHandle, String> {
-        self.ensure_session(&config).await?;
+        self.ensure_session(&config, None).await?;
         Ok(SessionHandle {
             chat_session_id: config.chat_session_id,
             backend_id: CODEX_BACKEND_ID.to_string(),
@@ -544,7 +853,9 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
             permission_profile_id: message.permission_profile_id.clone(),
             system_prompt: None,
         };
-        let state = self.ensure_session(&config).await?;
+        let state = self
+            .ensure_session(&config, Some(message.streaming_message_id.as_str()))
+            .await?;
         self.send_turn(AppServerTurnStart {
             chat_session_id: &session.chat_session_id,
             state: &state,
@@ -895,6 +1206,90 @@ mod tests {
         let backend = CodexBackend::new();
         let expected: Vec<String> = CODEX_FIXED_MODELS.iter().map(|s| s.to_string()).collect();
         assert_eq!(backend.fixed_models(), Some(expected));
+    }
+
+    #[test]
+    fn prompt_with_restore_context_prefixes_first_turn() {
+        let prompt = prompt_with_restore_context(
+            "What did we decide?",
+            Some(RestoreContextPayload {
+                prompt_prefix: "restored history".to_string(),
+            }),
+        );
+
+        assert_eq!(prompt, "restored history\n\nWhat did we decide?");
+    }
+
+    #[test]
+    fn prompt_with_restore_context_keeps_prompt_without_prefix() {
+        assert_eq!(
+            prompt_with_restore_context("hello", None),
+            "hello".to_string()
+        );
+    }
+
+    #[test]
+    fn pending_restore_context_is_consumed_once_for_any_turn_path() {
+        let mut state = AppServerSessionState::new(
+            Some(RestoreContextPayload {
+                prompt_prefix: "restored history".to_string(),
+            }),
+            None,
+        );
+
+        let (first_prompt, first_had_context) =
+            prompt_with_pending_restore_context("What did we decide?", &mut state);
+        let (second_prompt, second_had_context) =
+            prompt_with_pending_restore_context("Next turn", &mut state);
+
+        assert!(first_had_context);
+        assert_eq!(first_prompt, "restored history\n\nWhat did we decide?");
+        assert!(!second_had_context);
+        assert_eq!(second_prompt, "Next turn");
+    }
+
+    #[test]
+    fn pending_restore_context_ignores_empty_prefix_for_has_restore() {
+        let mut state = AppServerSessionState::new(
+            Some(RestoreContextPayload {
+                prompt_prefix: "  ".to_string(),
+            }),
+            None,
+        );
+
+        let (prompt, had_context) = prompt_with_pending_restore_context("hello", &mut state);
+
+        assert_eq!(prompt, "hello");
+        assert!(!had_context);
+        assert_eq!(state.pending_context_restore_state(), None);
+    }
+
+    #[test]
+    fn session_ready_defer_flag_is_added_only_when_restore_context_is_pending() {
+        let mut messages = vec![
+            serde_json::json!({ "type": "session_ready", "session_id": "thr_123" }),
+            serde_json::json!({ "type": "result" }),
+        ];
+
+        defer_agent_session_id_persist_for_session_ready_messages(&mut messages, true);
+
+        assert_eq!(
+            messages[0][DEFER_AGENT_SESSION_ID_PERSIST_ON_READY],
+            serde_json::Value::Bool(true)
+        );
+        assert!(messages[1]
+            .get(DEFER_AGENT_SESSION_ID_PERSIST_ON_READY)
+            .is_none());
+
+        let mut messages = vec![serde_json::json!({
+            "type": "session_ready",
+            "session_id": "thr_456",
+        })];
+        defer_agent_session_id_persist_for_session_ready_messages(&mut messages, false);
+
+        assert!(messages[0]
+            .get(DEFER_AGENT_SESSION_ID_PERSIST_ON_READY)
+            .is_none());
     }
 
     #[tokio::test]

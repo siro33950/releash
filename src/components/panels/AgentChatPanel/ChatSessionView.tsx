@@ -1,6 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { invoke } from "@tauri-apps/api/core";
 import {
+	AlertTriangle,
 	Brain,
 	Check,
 	ChevronDown,
@@ -1500,6 +1501,20 @@ export function ChatSessionView({
 					<div className="px-2 pb-2">
 						<div className="bg-destructive/10 text-destructive rounded-lg px-3 py-2 text-sm">
 							{error}
+						</div>
+					</div>
+				)}
+				{session.contextCarry === "failed" && (
+					<div className="px-2 pb-2">
+						<div
+							className="flex items-start gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300"
+							role="status"
+						>
+							<AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+							<span>
+								Conversation context was not restored. New replies will continue
+								without prior agent memory.
+							</span>
 						</div>
 					</div>
 				)}

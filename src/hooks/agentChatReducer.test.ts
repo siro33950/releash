@@ -415,6 +415,48 @@ describe("agentChatReducer", () => {
 		});
 	});
 
+	describe("SET_CONTEXT_CARRY", () => {
+		it("updates the loaded session and summaries", () => {
+			const session = makeSession({
+				id: "s1",
+				agentSessionId: "stale-sdk-session",
+				contextCarry: "resumed",
+			});
+			const summary = {
+				id: "s1",
+				worktreePath: "/repo",
+				state: "idle" as const,
+				createdAt: 1000,
+				updatedAt: 1000,
+				firstMessage: "hello",
+				messageCount: 1,
+				agentSessionId: "stale-sdk-session",
+				contextCarry: "resumed" as const,
+				permissionMode: "edit" as const,
+			};
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessions: [summary],
+				sessionsById: { s1: session },
+			};
+
+			const next = reducer(state, {
+				type: "SET_CONTEXT_CARRY",
+				sessionId: "s1",
+				agentSessionId: null,
+				contextCarry: "failed",
+				updatedAt: 2000,
+			});
+
+			expect(next.sessionsById.s1.agentSessionId).toBeNull();
+			expect(next.sessionsById.s1.contextCarry).toBe("failed");
+			expect(next.sessionsById.s1.updatedAt).toBe(2000);
+			expect(next.sessions[0].agentSessionId).toBeNull();
+			expect(next.sessions[0].contextCarry).toBe("failed");
+			expect(next.sessions[0].updatedAt).toBe(2000);
+		});
+	});
+
 	describe("SET_PERMISSION_MODE", () => {
 		it("updates permissionMode to ask", () => {
 			const next = reducer(INITIAL_STATE, {

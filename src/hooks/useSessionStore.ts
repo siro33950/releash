@@ -4,6 +4,7 @@ import {
 	type BackendInfo,
 	type ChatMessage,
 	type ChatSession,
+	type ContextCarryState,
 	type ImageAttachment,
 	type LegacyChatMessage,
 	type MentionReference,
@@ -27,6 +28,7 @@ interface LegacyChatSession {
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
+	contextCarry?: ContextCarryState | null;
 	permissionMode: string;
 	planMode?: boolean;
 	permissionProfileId?: string | null;
@@ -93,6 +95,7 @@ function convertLegacySession(session: LegacyChatSession): ChatSession {
 		messages: session.messages.map(convertLegacyMessage),
 		permissionMode: normalizePermissionMode(session.permissionMode),
 		...(session.planMode !== undefined ? { planMode: session.planMode } : {}),
+		contextCarry: session.contextCarry ?? null,
 		permissionProfileId: session.permissionProfileId ?? null,
 		backendId: session.backendId ?? null,
 	};
@@ -123,6 +126,7 @@ interface RawGetSessionResponse {
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
+	contextCarry?: ContextCarryState | null;
 	permissionMode: string;
 	planMode?: boolean;
 	permissionProfileId?: string | null;
@@ -148,6 +152,7 @@ function convertRawGetSessionResponse(
 			createdAt: raw.createdAt,
 			updatedAt: raw.updatedAt,
 			agentSessionId: raw.agentSessionId,
+			contextCarry: raw.contextCarry,
 			permissionMode: raw.permissionMode,
 			planMode: raw.planMode,
 			permissionProfileId: raw.permissionProfileId,

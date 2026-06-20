@@ -527,6 +527,7 @@ mod tests {
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
+            context_carry: Some(crate::usecase::agent_session::session::ContextCarryState::Resumed),
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -725,6 +726,8 @@ mod tests {
                     worktree_path: "/repo".to_string(),
                     mentions: Vec::new(),
                     editor_context: None,
+                    existing_human_message_id: None,
+                    existing_agent_message_id: None,
                 },
             );
         }
@@ -1166,6 +1169,8 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 mentions: Vec::new(),
                 editor_context: None,
+                existing_human_message_id: None,
+                existing_agent_message_id: None,
             },
         );
         handles.lock().await.insert(session_id.clone(), proc);

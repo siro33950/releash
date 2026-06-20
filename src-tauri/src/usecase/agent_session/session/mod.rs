@@ -146,6 +146,14 @@ pub enum SessionState {
     Archived,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextCarryState {
+    Resumed,
+    Reinjected,
+    Failed,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ActivityEntry {
@@ -230,6 +238,8 @@ pub struct ChatSession {
     pub updated_at: f64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub context_carry: Option<ContextCarryState>,
     /// 抽象モード文字列（"ask" / "edit" / "full"）。
     /// serde の default を意図的に付けない: 保存済みセッションで欠落していた場合は
     /// デシリアライズエラーで起動を拒否する（破壊的変更、Spec issues-947 参照）。
@@ -301,6 +311,8 @@ pub struct SessionSummary {
     pub message_count: usize,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub context_carry: Option<ContextCarryState>,
     pub permission_mode: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plan_mode: bool,
@@ -345,6 +357,7 @@ impl ChatSession {
             first_message,
             message_count: self.messages.len(),
             agent_session_id: self.agent_session_id.clone(),
+            context_carry: self.context_carry.clone(),
             permission_mode: self.permission_mode.clone(),
             plan_mode: self.plan_mode,
             permission_profile_id: self.permission_profile_id.clone(),
@@ -529,6 +542,7 @@ fn build_new_session(
         created_at: now,
         updated_at: now,
         agent_session_id: None,
+        context_carry: None,
         permission_mode: permission_mode.as_str().to_string(),
         plan_mode,
         selected_model,
@@ -864,6 +878,7 @@ mod tests {
                 created_at: 1000.0,
                 updated_at: 1000.0,
                 agent_session_id: None,
+                context_carry: None,
                 permission_mode: legacy.to_string(),
                 plan_mode: false,
                 permission_profile_id: None,
@@ -898,6 +913,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
+            context_carry: Some(ContextCarryState::Reinjected),
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -908,6 +924,7 @@ mod tests {
         let summary = session.to_summary();
         assert_eq!(summary.id, "s1");
         assert_eq!(summary.first_message, "Hello agent");
+        assert_eq!(summary.context_carry, Some(ContextCarryState::Reinjected));
         // Verify selected_model not in summary (summary doesn't expose model)
         assert_eq!(summary.message_count, 1);
     }
@@ -932,6 +949,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
+            context_carry: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -965,6 +983,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
+            context_carry: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -989,6 +1008,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
+            context_carry: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -1016,6 +1036,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: Some("agent-session".to_string()),
+            context_carry: Some(ContextCarryState::Resumed),
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -1155,6 +1176,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1001.0,
             agent_session_id: None,
+            context_carry: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -1175,6 +1197,7 @@ mod tests {
         let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0,"permissionMode":"edit"}"#;
         let session: ChatSession = serde_json::from_str(json).unwrap();
         assert_eq!(session.selected_model, None);
+        assert_eq!(session.context_carry, None);
     }
 
     #[test]
@@ -1187,6 +1210,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1001.0,
             agent_session_id: None,
+            context_carry: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -1833,6 +1857,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1001.0,
             agent_session_id: None,
+            context_carry: Some(ContextCarryState::Resumed),
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -1865,6 +1890,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
+            context_carry: Some(ContextCarryState::Resumed),
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
@@ -1874,6 +1900,7 @@ mod tests {
         };
         let summary = session.to_summary();
         assert_eq!(summary.backend_id, Some("claude".to_string()));
+        assert_eq!(summary.context_carry, Some(ContextCarryState::Resumed));
     }
 
     // --- resolve_session_backend テスト ---
@@ -1890,6 +1917,7 @@ mod tests {
                 created_at: 1000.0,
                 updated_at: 1000.0,
                 agent_session_id: None,
+                context_carry: None,
                 permission_mode: "edit".to_string(),
                 plan_mode: false,
                 permission_profile_id: None,
