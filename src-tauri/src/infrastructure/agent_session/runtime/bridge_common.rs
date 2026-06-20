@@ -483,7 +483,7 @@ impl AgentProcess {
         self.task_id_map.clear();
     }
 
-    /// Write setMode + setModel commands to the Bridge stdin before a turn starts.
+    /// Write setMode commands to the Bridge stdin before a turn starts.
     async fn sync_pre_turn_settings(&mut self, permission_mode: &str) -> Result<(), String> {
         let mode_data = build_set_mode_command_for_backend(permission_mode, &self.backend_id)?;
         self.stdin
@@ -494,20 +494,6 @@ impl AgentProcess {
             .flush()
             .await
             .map_err(|e| format!("Failed to flush setMode: {e}"))?;
-
-        // モデルは spawn 時に lazy 解決され常に非 null だが、フィールド型は互換のため
-        // Option のまま。万一 None の場合は setModel を送らず Bridge 既定に委ねる。
-        if let Some(model) = self.selected_model.as_deref() {
-            let model_data = build_set_model_command(model);
-            self.stdin
-                .write_all(model_data.as_bytes())
-                .await
-                .map_err(|e| format!("Failed to write setModel: {e}"))?;
-            self.stdin
-                .flush()
-                .await
-                .map_err(|e| format!("Failed to flush setModel: {e}"))?;
-        }
 
         Ok(())
     }
@@ -2540,9 +2526,12 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
         &initial_permission_mode,
         plan_mode,
         &session_id,
-        composed_system_prompt,
         &backend_id,
-        restore_context.as_ref(),
+        BridgeInitOptions {
+            system_prompt: composed_system_prompt,
+            selected_model: selected_model.as_deref(),
+            restore_context: restore_context.as_ref(),
+        },
     )?;
     let runtime_config = backend_runtime_config(app, &backend_id);
     if let Some(init_obj) = init_cmd.as_object_mut() {
@@ -6808,15 +6797,21 @@ pub async fn scan_agent_skills(
 
 // --- Image attachment support ---
 
+#[derive(Default)]
+struct BridgeInitOptions<'a> {
+    system_prompt: Option<String>,
+    selected_model: Option<&'a str>,
+    restore_context: Option<&'a RestoreContextPayload>,
+}
+
 /// 抽象モード文字列 + backend_id を受け取り、バックエンド固有の init コマンドを構築する。
 fn build_init_cmd(
     cwd: &str,
     permission_mode: &str,
     plan_mode: bool,
     session_id: &Option<String>,
-    system_prompt: Option<String>,
     backend_id: &str,
-    restore_context: Option<&RestoreContextPayload>,
+    options: BridgeInitOptions<'_>,
 ) -> Result<serde_json::Value, String> {
     let pm =
         crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
@@ -6830,10 +6825,13 @@ fn build_init_cmd(
             obj.insert(k, v);
         }
     }
-    if let Some(sp) = system_prompt {
+    if let Some(sp) = options.system_prompt {
         cmd["systemPrompt"] = serde_json::Value::String(sp);
     }
-    if let Some(restore_context) = restore_context {
+    if let Some(model) = options.selected_model {
+        cmd["model"] = serde_json::Value::String(model.to_string());
+    }
+    if let Some(restore_context) = options.restore_context {
         if !restore_context.prompt_prefix.trim().is_empty() {
             cmd["restoreContext"] = serde_json::to_value(restore_context)
                 .map_err(|e| format!("Failed to serialize restore context: {e}"))?;
@@ -10824,9 +10822,8 @@ mod tests {
             "edit",
             false,
             &Some("sess-abc".to_string()),
-            None,
             CLAUDE_BACKEND_ID,
-            None,
+            BridgeInitOptions::default(),
         )
         .unwrap();
         assert_eq!(cmd["type"], "init");
@@ -10854,8 +10851,15 @@ mod tests {
 
     #[test]
     fn init_command_without_session_id() {
-        let cmd =
-            build_init_cmd("/repo", "edit", false, &None, None, CLAUDE_BACKEND_ID, None).unwrap();
+        let cmd = build_init_cmd(
+            "/repo",
+            "edit",
+            false,
+            &None,
+            CLAUDE_BACKEND_ID,
+            BridgeInitOptions::default(),
+        )
+        .unwrap();
         assert!(cmd["sessionId"].is_null());
     }
 
@@ -12448,13 +12452,53 @@ mod tests {
 
     #[test]
     fn build_init_cmd_without_system_prompt_for_claude() {
-        let cmd =
-            build_init_cmd("/repo", "edit", false, &None, None, CLAUDE_BACKEND_ID, None).unwrap();
+        let cmd = build_init_cmd(
+            "/repo",
+            "edit",
+            false,
+            &None,
+            CLAUDE_BACKEND_ID,
+            BridgeInitOptions::default(),
+        )
+        .unwrap();
         assert_eq!(cmd["type"], "init");
         assert_eq!(cmd["cwd"], "/repo");
         assert_eq!(cmd["permissionMode"], "acceptEdits");
         assert!(cmd["sessionId"].is_null());
         assert!(cmd.get("systemPrompt").is_none());
+    }
+
+    #[test]
+    fn build_init_cmd_includes_model_when_selected() {
+        let cmd = build_init_cmd(
+            "/repo",
+            "edit",
+            false,
+            &None,
+            CLAUDE_BACKEND_ID,
+            BridgeInitOptions {
+                selected_model: Some("claude-sonnet-4-5"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(cmd["model"], "claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn build_init_cmd_omits_model_when_unset() {
+        let cmd = build_init_cmd(
+            "/repo",
+            "edit",
+            false,
+            &None,
+            CLAUDE_BACKEND_ID,
+            BridgeInitOptions::default(),
+        )
+        .unwrap();
+
+        assert!(cmd.get("model").is_none());
     }
 
     #[test]
@@ -12464,9 +12508,11 @@ mod tests {
             "edit",
             false,
             &Some("prev-session".to_string()),
-            Some("You are a coder.".to_string()),
             CLAUDE_BACKEND_ID,
-            None,
+            BridgeInitOptions {
+                system_prompt: Some("You are a coder.".to_string()),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(cmd["type"], "init");
@@ -12486,9 +12532,11 @@ mod tests {
             "edit",
             false,
             &None,
-            None,
             CLAUDE_BACKEND_ID,
-            Some(&payload),
+            BridgeInitOptions {
+                restore_context: Some(&payload),
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -12507,9 +12555,11 @@ mod tests {
             "edit",
             false,
             &None,
-            None,
             CLAUDE_BACKEND_ID,
-            Some(&payload),
+            BridgeInitOptions {
+                restore_context: Some(&payload),
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -12518,23 +12568,44 @@ mod tests {
 
     #[test]
     fn build_init_cmd_full_for_claude_emits_bypass_permissions() {
-        let cmd =
-            build_init_cmd("/repo", "full", false, &None, None, CLAUDE_BACKEND_ID, None).unwrap();
+        let cmd = build_init_cmd(
+            "/repo",
+            "full",
+            false,
+            &None,
+            CLAUDE_BACKEND_ID,
+            BridgeInitOptions::default(),
+        )
+        .unwrap();
         assert_eq!(cmd["permissionMode"], "bypassPermissions");
         assert!(cmd.get("systemPrompt").is_none());
     }
 
     #[test]
     fn build_init_cmd_ask_for_claude_emits_default() {
-        let cmd =
-            build_init_cmd("/repo", "ask", false, &None, None, CLAUDE_BACKEND_ID, None).unwrap();
+        let cmd = build_init_cmd(
+            "/repo",
+            "ask",
+            false,
+            &None,
+            CLAUDE_BACKEND_ID,
+            BridgeInitOptions::default(),
+        )
+        .unwrap();
         assert_eq!(cmd["permissionMode"], "default");
     }
 
     #[test]
     fn build_init_cmd_for_codex_emits_sandbox_and_approval() {
-        let cmd =
-            build_init_cmd("/repo", "edit", false, &None, None, CODEX_BACKEND_ID, None).unwrap();
+        let cmd = build_init_cmd(
+            "/repo",
+            "edit",
+            false,
+            &None,
+            CODEX_BACKEND_ID,
+            BridgeInitOptions::default(),
+        )
+        .unwrap();
         assert_eq!(cmd["type"], "init");
         assert_eq!(cmd["sandboxMode"], "workspace-write");
         assert_eq!(cmd["approvalPolicy"], "on-request");
@@ -12544,12 +12615,26 @@ mod tests {
 
     #[test]
     fn build_init_cmd_for_codex_ask_and_full() {
-        let ask =
-            build_init_cmd("/repo", "ask", false, &None, None, CODEX_BACKEND_ID, None).unwrap();
+        let ask = build_init_cmd(
+            "/repo",
+            "ask",
+            false,
+            &None,
+            CODEX_BACKEND_ID,
+            BridgeInitOptions::default(),
+        )
+        .unwrap();
         assert_eq!(ask["sandboxMode"], "read-only");
         assert_eq!(ask["approvalPolicy"], "on-request");
-        let full =
-            build_init_cmd("/repo", "full", false, &None, None, CODEX_BACKEND_ID, None).unwrap();
+        let full = build_init_cmd(
+            "/repo",
+            "full",
+            false,
+            &None,
+            CODEX_BACKEND_ID,
+            BridgeInitOptions::default(),
+        )
+        .unwrap();
         assert_eq!(full["sandboxMode"], "danger-full-access");
         assert_eq!(full["approvalPolicy"], "never");
     }
@@ -12562,17 +12647,30 @@ mod tests {
                 "acceptEdits",
                 false,
                 &None,
-                None,
                 CLAUDE_BACKEND_ID,
-                None
+                BridgeInitOptions::default()
             )
             .is_err(),
             "legacy claude flag must be rejected at the boundary"
         );
-        assert!(
-            build_init_cmd("/repo", "plan", false, &None, None, CLAUDE_BACKEND_ID, None).is_err()
-        );
-        assert!(build_init_cmd("/repo", "", false, &None, None, CODEX_BACKEND_ID, None).is_err());
+        assert!(build_init_cmd(
+            "/repo",
+            "plan",
+            false,
+            &None,
+            CLAUDE_BACKEND_ID,
+            BridgeInitOptions::default()
+        )
+        .is_err());
+        assert!(build_init_cmd(
+            "/repo",
+            "",
+            false,
+            &None,
+            CODEX_BACKEND_ID,
+            BridgeInitOptions::default()
+        )
+        .is_err());
     }
 
     /// spawn_bridge_process が spawn 前にパーミッションモードを検証することの担保。
@@ -12682,6 +12780,46 @@ mod tests {
             streaming_timer_active: false,
         };
         (proc, stdout)
+    }
+
+    #[tokio::test]
+    async fn sync_pre_turn_settings_does_not_send_set_model() {
+        use tokio::io::AsyncReadExt;
+
+        let (mut proc, mut stdout) = make_test_agent_process_with_stdout();
+        proc.backend_id = CLAUDE_BACKEND_ID.to_string();
+        proc.selected_model = Some("claude-opus".to_string());
+
+        proc.sync_pre_turn_settings("edit")
+            .await
+            .expect("pre-turn settings must sync");
+
+        let AgentProcess {
+            stdin, mut child, ..
+        } = proc;
+        drop(stdin);
+
+        let mut output = String::new();
+        tokio::time::timeout(Duration::from_secs(5), stdout.read_to_string(&mut output))
+            .await
+            .expect("stdout read must complete")
+            .expect("stdout must be readable");
+        let _ = child.wait().await;
+
+        let commands = output
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json command"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0]["type"], "setMode");
+        assert_eq!(commands[0]["permissionMode"], "acceptEdits");
+        assert!(
+            commands
+                .iter()
+                .all(|cmd| cmd.get("type").and_then(|value| value.as_str()) != Some("setModel")),
+            "pre-turn sync must not send setModel: {commands:?}"
+        );
     }
 
     #[tokio::test]
