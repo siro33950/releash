@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::context_restore::{
     context_restore_plan_for_session, context_restore_plan_for_session_before_turn,
-    ContextRestorePlan, RestoreContextPayload,
+    context_restore_plan_from_meta, ContextRestorePlan, RestoreContextPayload,
 };
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::{
     acquire_spawn_session_guard, clear_pending_turn_starting, clear_session_closing,
@@ -31,8 +31,8 @@ use crate::infrastructure::agent_session::runtime::{
 use crate::usecase::agent_session::session::create_session_internal;
 use crate::usecase::agent_session::session::{
     add_message_internal, now_timestamp, parts_to_legacy, ChatMessage, ChatSession,
-    ContextCarryState, GetSessionResponse, MessagePart, MessageRole, SessionStore, SessionSummary,
-    SystemNotificationType, TokenUsage,
+    ContextCarryState, GetSessionResponse, MessagePart, MessageRole, PageCursor, SessionMeta,
+    SessionPage, SessionStore, SessionSummary, SystemNotificationType, TokenUsage,
 };
 
 pub(crate) use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
@@ -77,8 +77,8 @@ impl TurnOrigin {
     }
 }
 
-fn turn_origin_for_session(session: &ChatSession) -> TurnOrigin {
-    if session.workflow_step_session {
+fn turn_origin_for_session(workflow_step_session: bool) -> TurnOrigin {
+    if workflow_step_session {
         TurnOrigin::Headless
     } else {
         TurnOrigin::Desktop
@@ -919,41 +919,19 @@ fn persist_streaming_parts<R: tauri::Runtime>(
             return false;
         }
     };
-    let mut session = match session_store.get_session(&data_dir, chat_session_id) {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            log::warn!("Session not found for streaming persist: {chat_session_id}");
-            return false;
-        }
+    match session_store.persist_message_parts(
+        &data_dir,
+        chat_session_id,
+        message_id,
+        parts,
+        completed_at,
+    ) {
+        Ok(()) => true,
         Err(e) => {
-            log::warn!(
-                "Failed to get session for streaming persist (session {chat_session_id}): {e}"
-            );
-            return false;
-        }
-    };
-    if let Some(msg) = session.messages.iter_mut().find(|m| m.id == message_id) {
-        let (content, thinking, activities) =
-            crate::usecase::agent_session::session::parts_to_legacy(parts);
-        msg.content = content;
-        msg.thinking = thinking;
-        msg.activities = activities;
-        msg.parts = Some(parts.to_vec());
-        let updated_at = completed_at.unwrap_or_else(now_timestamp);
-        if let Some(completed_at) = completed_at {
-            msg.timestamp = completed_at;
-        }
-        session.updated_at = updated_at;
-        if let Err(e) = session_store.save_session(&data_dir, &session) {
             log::warn!("Failed to persist streaming parts for session {chat_session_id}: {e}");
-            return false;
+            false
         }
-        return true;
     }
-    log::warn!(
-        "Message not found for streaming persist: session {chat_session_id}, message {message_id}"
-    );
-    false
 }
 
 fn load_post_turn_base_parts_from_store<R: tauri::Runtime>(
@@ -972,7 +950,7 @@ fn load_post_turn_base_parts_from_store<R: tauri::Runtime>(
             return None;
         }
     };
-    let session = match session_store.get_session(&data_dir, chat_session_id) {
+    let session = match session_store.load_full_session_for_restore(&data_dir, chat_session_id) {
         Ok(Some(s)) => s,
         Ok(None) => {
             log::warn!(
@@ -1124,6 +1102,13 @@ fn to_agent_stream_part_msg(part: MessagePart) -> crate::protocol::AgentStreamPa
         MessagePart::Image { data, media_type } => {
             crate::protocol::AgentStreamPartMsg::Image { data, media_type }
         }
+        MessagePart::ImageRef { attachment } => crate::protocol::AgentStreamPartMsg::ImageRef {
+            attachment: crate::protocol::AgentStreamAttachmentRefMsg {
+                id: attachment.id,
+                media_type: attachment.media_type,
+                byte_size: attachment.byte_size,
+            },
+        },
     }
 }
 
@@ -1212,6 +1197,9 @@ fn part_byte_size(part: &MessagePart) -> usize {
                 + hook_id.as_ref().map(|s| s.len()).unwrap_or(0)
         }
         MessagePart::Image { data, media_type } => data.len() + media_type.len(),
+        MessagePart::ImageRef { attachment } => {
+            attachment.id.len() + attachment.media_type.len() + std::mem::size_of::<u64>()
+        }
     }
 }
 
@@ -2243,7 +2231,7 @@ fn take_runtime_requiring_spawn_locked(
 }
 
 /// 状態遷移時に AgentStatusCenter へ通知する統一エントリ。
-/// session_store から ChatSession を引いて worktree_path / SessionState を取得する。
+/// session_store から metadata だけを引いて worktree_path / SessionState を取得する。
 /// `session_state_override` を渡すと、ストア値より優先される（Bridge crash 時など）。
 pub(crate) fn notify_status_transition<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -2260,12 +2248,12 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
         Ok(d) => d,
         Err(_) => return,
     };
-    let session = match session_store.get_session(&data_dir, chat_session_id) {
-        Ok(Some(s)) => s,
+    let meta = match session_store.get_session_meta(&data_dir, chat_session_id) {
+        Ok(Some(meta)) => meta,
         _ => return,
     };
-    let worktree_path = session.worktree_path.clone();
-    let session_state = session_state_override.unwrap_or_else(|| session.state.clone());
+    let worktree_path = meta.worktree_path.clone();
+    let session_state = session_state_override.unwrap_or_else(|| meta.state.clone());
 
     let status_turn_phase = to_status_turn_phase(turn_phase);
     let agent_state =
@@ -2343,24 +2331,24 @@ async fn handle_sdk_permission_mode_notification<R: tauri::Runtime>(
             return;
         }
     };
-    let saved_session = match session_store.get_session(&data_dir, chat_session_id) {
-        Ok(session) => session,
+    let saved_meta = match session_store.get_session_meta(&data_dir, chat_session_id) {
+        Ok(meta) => meta,
         Err(e) => {
             log::error!(
-                "Failed to read saved session for SDK permissionMode notification \
+                "Failed to read saved session metadata for SDK permissionMode notification \
                  (chat_session_id={chat_session_id}): {e}"
             );
             return;
         }
     };
-    let Some(session) = saved_session else {
+    let Some(meta) = saved_meta else {
         log::error!(
             "Saved session not found for SDK permissionMode notification \
              (chat_session_id={chat_session_id})"
         );
         return;
     };
-    let canonical_mode = match crate::permission::PermissionMode::parse(&session.permission_mode) {
+    let canonical_mode = match crate::permission::PermissionMode::parse(&meta.permission_mode) {
         Ok(mode) => mode,
         Err(e) => {
             log::error!(
@@ -3689,16 +3677,13 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                 proc.sdk_session_id = None;
                             }
                         }
-                        if let Ok(data_dir) = resolve_data_dir(&app_stdout) {
-                            if let Ok(Some(mut session)) =
-                                session_store_clone.get_session(&data_dir, &csid_stdout)
-                            {
-                                if session.agent_session_id.is_some() {
-                                    session.agent_session_id = None;
-                                    session.updated_at = now_timestamp();
-                                    let _ = session_store_clone.save_session(&data_dir, &session);
-                                }
-                            }
+                        let result = resolve_data_dir(&app_stdout).and_then(|data_dir| {
+                            session_store_clone
+                                .update_agent_session_id_if_changed(&data_dir, &csid_stdout, None)
+                                .map(|_| ())
+                        });
+                        if let Err(e) = result {
+                            log::warn!("Failed to clear agent session id for {csid_stdout}: {e}");
                         }
                         let _ = app_stdout.emit("agent-sdk-message", &msg);
                     }
@@ -3749,16 +3734,12 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                 // User turn succeeded: persist agent_session_id to SessionStore
                                 if effect.was_streaming && exit_code == 0 {
                                     if let Some(sid) = &proc.sdk_session_id {
-                                        if let Ok(data_dir) = resolve_data_dir(&app_stdout) {
-                                            if let Ok(Some(mut session)) = session_store_clone
-                                                .get_session(&data_dir, &csid_stdout)
-                                            {
-                                                session.agent_session_id = Some(sid.to_string());
-                                                session.updated_at = now_timestamp();
-                                                let _ = session_store_clone
-                                                    .save_session(&data_dir, &session);
-                                            }
-                                        }
+                                        persist_agent_session_id(
+                                            &app_stdout,
+                                            &session_store_clone,
+                                            &csid_stdout,
+                                            sid,
+                                        );
                                     }
                                 }
                                 (effect, context_restore_failed_on_init)
@@ -4588,11 +4569,11 @@ fn spawn_streaming_timer<R: tauri::Runtime>(
     });
 }
 
-pub(crate) async fn get_session_internal(
+pub(crate) async fn get_session_internal<R: tauri::Runtime>(
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<R>,
     session_id: &str,
 ) -> Result<Option<GetSessionResponse>, String> {
     let data_dir = resolve_data_dir(app)?;
@@ -4607,7 +4588,7 @@ async fn get_session_internal_with_data_dir(
     data_dir: &Path,
     session_id: &str,
 ) -> Result<Option<GetSessionResponse>, String> {
-    let session = session_store.get_session(data_dir, session_id)?;
+    let session = session_store.get_session_shell(data_dir, session_id)?;
     match session {
         None => Ok(None),
         Some(mut session) => {
@@ -4694,8 +4675,56 @@ async fn get_session_internal_with_data_dir(
     }
 }
 
-fn can_change_session_backend(session: &ChatSession) -> bool {
-    session.messages.is_empty() && session.agent_session_id.is_none()
+pub(crate) async fn get_session_page_internal_with_data_dir(
+    session_store: &Arc<SessionStore>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    data_dir: &Path,
+    session_id: &str,
+    cursor: Option<PageCursor>,
+    limit: usize,
+) -> Result<Option<SessionPage>, String> {
+    let mut page = match session_store.get_session_page(data_dir, session_id, cursor, limit)? {
+        Some(page) => page,
+        None => return Ok(None),
+    };
+    let (streaming_overlay, latest_token_usage) = {
+        let map = handles.lock().await;
+        if let Some(proc) = map.get(session_id) {
+            let streaming_overlay = if proc.state == BridgeState::Streaming {
+                proc.streaming_message_id
+                    .as_ref()
+                    .filter(|_| !proc.streaming_parts.is_empty())
+                    .map(|message_id| {
+                        (
+                            message_id.clone(),
+                            consolidate_parts_from_slice(&proc.streaming_parts),
+                        )
+                    })
+            } else {
+                None
+            };
+            (streaming_overlay, proc.latest_token_usage)
+        } else {
+            (None, None)
+        }
+    };
+    page.latest_token_usage = latest_token_usage;
+    if let Some((message_id, parts)) = streaming_overlay {
+        if let Some(message) = page
+            .messages
+            .iter_mut()
+            .find(|message| message.id == message_id)
+        {
+            message.parts = Some(parts);
+        }
+    }
+    Ok(Some(page))
+}
+
+fn can_change_session_backend_from_meta(
+    session: &crate::usecase::agent_session::session::SessionMeta,
+) -> bool {
+    session.message_count == 0 && session.agent_session_id.is_none()
 }
 
 /// spec issues-1023: 初期 active 候補は workflow step として起動された session を
@@ -4705,11 +4734,6 @@ fn pick_initial_active_session_candidate(sessions: &[SessionSummary]) -> Option<
     sessions.iter().find(|s| !s.workflow_step_session)
 }
 
-fn should_start_agent_process_for_summary(session: &SessionSummary) -> bool {
-    !session.workflow_step_session
-        && (session.message_count > 0 || session.agent_session_id.is_some())
-}
-
 fn ensure_session_backend_selected(
     session_store: &SessionStore,
     registry: &crate::infrastructure::agent_session::runtime::AgentBackendRegistry,
@@ -4717,9 +4741,17 @@ fn ensure_session_backend_selected(
     mut session: ChatSession,
 ) -> Result<ChatSession, String> {
     if session.backend_id.is_none() {
-        session.backend_id = Some(registry.resolve_default_id()?);
+        let backend_id = registry.resolve_default_id()?;
+        let selected_model = registry.default_model_for(&backend_id).ok();
+        session.backend_id = Some(backend_id.clone());
+        session.selected_model = selected_model.clone();
         session.updated_at = now_timestamp();
-        session_store.save_session(data_dir, &session)?;
+        session_store.update_backend_selection(
+            data_dir,
+            &session.id,
+            backend_id,
+            selected_model,
+        )?;
     }
     Ok(session)
 }
@@ -4768,20 +4800,22 @@ async fn set_session_backend_internal(
     backend_id: String,
 ) -> Result<GetSessionResponse, String> {
     let resolved_backend_id = registry.resolve_backend_id(Some(backend_id))?;
-    let mut session = session_store
-        .get_session(data_dir, chat_session_id)?
+    let meta = session_store
+        .get_session_meta(data_dir, chat_session_id)?
         .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
 
-    if !can_change_session_backend(&session) {
+    if !can_change_session_backend_from_meta(&meta) {
         return Err(format!(
             "Cannot change backend after the first message has been sent: {chat_session_id}"
         ));
     }
 
-    session.selected_model = Some(registry.default_model_for(&resolved_backend_id)?);
-    session.backend_id = Some(resolved_backend_id);
-    session.updated_at = now_timestamp();
-    session_store.save_session(data_dir, &session)?;
+    session_store.update_backend_selection(
+        data_dir,
+        chat_session_id,
+        resolved_backend_id.clone(),
+        Some(registry.default_model_for(&resolved_backend_id)?),
+    )?;
     remove_stale_unstarted_agent_process(handles, data_dir, chat_session_id).await;
 
     get_session_internal_with_data_dir(
@@ -4859,10 +4893,17 @@ fn get_persisted_spawn_info<R: tauri::Runtime>(
     chat_session_id: &str,
 ) -> Result<PersistedSpawnInfo, String> {
     let data_dir = resolve_data_dir(app)?;
-    let persisted = session_store.get_session(&data_dir, chat_session_id)?;
     let registry =
         app.try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>();
-    Ok(resolve_spawn_info(persisted, registry.as_deref()))
+    let meta = session_store.get_session_meta(&data_dir, chat_session_id)?;
+    resolve_spawn_info_from_meta_or_full(
+        session_store,
+        &data_dir,
+        chat_session_id,
+        meta,
+        registry.as_deref(),
+        None,
+    )
 }
 
 fn get_persisted_spawn_info_before_turn<R: tauri::Runtime>(
@@ -4872,16 +4913,67 @@ fn get_persisted_spawn_info_before_turn<R: tauri::Runtime>(
     streaming_agent_message_id: &str,
 ) -> Result<PersistedSpawnInfo, String> {
     let data_dir = resolve_data_dir(app)?;
-    let persisted = session_store.get_session(&data_dir, chat_session_id)?;
-    let context_restore_plan = context_restore_plan_for_session_before_turn(
-        persisted.as_ref(),
-        streaming_agent_message_id,
-    );
     let registry =
         app.try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>();
+    let meta = session_store.get_session_meta(&data_dir, chat_session_id)?;
+    resolve_spawn_info_from_meta_or_full(
+        session_store,
+        &data_dir,
+        chat_session_id,
+        meta,
+        registry.as_deref(),
+        Some(streaming_agent_message_id),
+    )
+}
+
+fn resolve_spawn_info_from_meta(
+    meta: SessionMeta,
+    registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
+    context_restore_plan: ContextRestorePlan,
+) -> PersistedSpawnInfo {
+    let backend_id = meta
+        .backend_id
+        .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string());
+    let selected_model = resolve_selected_model(meta.selected_model, &backend_id, registry);
+    PersistedSpawnInfo {
+        resume_sid: context_restore_plan
+            .resume_session_id()
+            .map(ToString::to_string),
+        selected_model,
+        backend_id,
+        permission_profile_id: meta.permission_profile_id,
+        context_restore_plan,
+    }
+}
+
+fn resolve_spawn_info_from_meta_or_full(
+    session_store: &SessionStore,
+    data_dir: &Path,
+    chat_session_id: &str,
+    meta: Option<SessionMeta>,
+    registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
+    before_turn_message_id: Option<&str>,
+) -> Result<PersistedSpawnInfo, String> {
+    let Some(meta) = meta else {
+        return Ok(resolve_spawn_info_with_plan(
+            None,
+            registry,
+            ContextRestorePlan::NoContext,
+        ));
+    };
+    if let Some(plan) = context_restore_plan_from_meta(&meta) {
+        return Ok(resolve_spawn_info_from_meta(meta, registry, plan));
+    }
+    let persisted = session_store.load_full_session_for_restore(data_dir, chat_session_id)?;
+    let context_restore_plan = match before_turn_message_id {
+        Some(message_id) => {
+            context_restore_plan_for_session_before_turn(persisted.as_ref(), message_id)
+        }
+        None => context_restore_plan_for_session(persisted.as_ref()),
+    };
     Ok(resolve_spawn_info_with_plan(
         persisted,
-        registry.as_deref(),
+        registry,
         context_restore_plan,
     ))
 }
@@ -4890,6 +4982,7 @@ fn get_persisted_spawn_info_before_turn<R: tauri::Runtime>(
 ///
 /// `selected_model == None` は registry の既定モデルへ解決する（モデル未選択状態は廃止）。
 /// registry 未指定（テスト等）では `None` のままとする。
+#[cfg(test)]
 pub(crate) fn resolve_spawn_info(
     persisted: Option<ChatSession>,
     registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
@@ -4956,12 +5049,12 @@ struct SessionContextCarryUpdate {
 }
 
 impl SessionContextCarryUpdate {
-    fn from_session(session: &ChatSession) -> Self {
+    fn from_meta(meta: &crate::usecase::agent_session::session::SessionMeta) -> Self {
         Self {
-            chat_session_id: session.id.clone(),
-            agent_session_id: session.agent_session_id.clone(),
-            context_carry: session.context_carry.clone(),
-            updated_at: session.updated_at,
+            chat_session_id: meta.id.clone(),
+            agent_session_id: meta.agent_session_id.clone(),
+            context_carry: meta.context_carry.clone(),
+            updated_at: meta.updated_at,
         }
     }
 
@@ -5042,6 +5135,7 @@ fn pending_images_from_human_message(message: &ChatMessage) -> Vec<ImageAttachme
                 data: data.clone(),
                 media_type: media_type.clone(),
             }),
+            MessagePart::ImageRef { .. } => None,
             _ => None,
         })
         .collect()
@@ -5055,7 +5149,7 @@ fn pending_mentions_from_human_message(
         .clone()
         .unwrap_or_default()
         .into_iter()
-        .map(crate::adaptor::protocol::mention::MentionReferenceInput::into_domain)
+        .map(crate::usecase::agent_session::session::MessageMention::into_domain)
         .collect()
 }
 
@@ -5104,7 +5198,7 @@ async fn requeue_streaming_turn_for_resume_mismatch<R: tauri::Runtime>(
             return false;
         }
     };
-    let session = match session_store.get_session(&data_dir, chat_session_id) {
+    let session = match session_store.load_full_session_for_restore(&data_dir, chat_session_id) {
         Ok(Some(session)) => session,
         Ok(None) => {
             log::warn!("Session not found for resume mismatch requeue: {chat_session_id}");
@@ -5146,16 +5240,9 @@ fn save_session_context_carry(
     chat_session_id: &str,
     context_carry: ContextCarryState,
 ) -> Result<Option<SessionContextCarryUpdate>, String> {
-    let Some(mut session) = session_store.get_session(data_dir, chat_session_id)? else {
-        return Ok(None);
-    };
-    if session.context_carry == Some(context_carry.clone()) {
-        return Ok(None);
-    }
-    session.context_carry = Some(context_carry);
-    session.updated_at = now_timestamp();
-    session_store.save_session(data_dir, &session)?;
-    Ok(Some(SessionContextCarryUpdate::from_session(&session)))
+    session_store
+        .update_context_carry_if_changed(data_dir, chat_session_id, Some(context_carry))
+        .map(|updated| updated.as_ref().map(SessionContextCarryUpdate::from_meta))
 }
 
 fn save_resume_mismatch_for_reinject(
@@ -5163,24 +5250,9 @@ fn save_resume_mismatch_for_reinject(
     data_dir: &Path,
     chat_session_id: &str,
 ) -> Result<Option<SessionContextCarryUpdate>, String> {
-    let Some(mut session) = session_store.get_session(data_dir, chat_session_id)? else {
-        return Ok(None);
-    };
-    let mut changed = false;
-    if session.agent_session_id.is_some() {
-        session.agent_session_id = None;
-        changed = true;
-    }
-    if session.context_carry.is_some() {
-        session.context_carry = None;
-        changed = true;
-    }
-    if !changed {
-        return Ok(None);
-    }
-    session.updated_at = now_timestamp();
-    session_store.save_session(data_dir, &session)?;
-    Ok(Some(SessionContextCarryUpdate::from_session(&session)))
+    session_store
+        .update_resume_metadata_if_changed(data_dir, chat_session_id, None, None)
+        .map(|updated| updated.as_ref().map(SessionContextCarryUpdate::from_meta))
 }
 
 fn persist_resume_mismatch_for_reinject<R: tauri::Runtime>(
@@ -5227,36 +5299,30 @@ fn persist_agent_session_id<R: tauri::Runtime>(
         return;
     }
     let result = resolve_data_dir(app).and_then(|data_dir| {
-        let Some(mut session) = session_store.get_session(&data_dir, chat_session_id)? else {
-            return Ok(());
-        };
-        if session.agent_session_id.as_deref() == Some(agent_session_id) {
-            return Ok(());
-        }
-        session.agent_session_id = Some(agent_session_id.to_string());
-        session.updated_at = now_timestamp();
-        session_store.save_session(&data_dir, &session)
+        session_store
+            .update_agent_session_id_if_changed(
+                &data_dir,
+                chat_session_id,
+                Some(agent_session_id.to_string()),
+            )
+            .map(|_| ())
     });
     if let Err(e) = result {
         log::warn!("Failed to persist agent session id for {chat_session_id}: {e}");
     }
 }
 
-fn mark_context_carry_failed_after_init_error(
-    session: &mut ChatSession,
+fn should_mark_context_carry_failed_after_init_error(
+    context_carry: Option<&ContextCarryState>,
     force_context_carry_failed: bool,
 ) -> bool {
     if force_context_carry_failed
         || matches!(
-            session.context_carry,
+            context_carry,
             Some(ContextCarryState::Resumed | ContextCarryState::Reinjected)
         )
     {
-        if session.context_carry == Some(ContextCarryState::Failed) {
-            return false;
-        }
-        session.context_carry = Some(ContextCarryState::Failed);
-        return true;
+        return context_carry != Some(&ContextCarryState::Failed);
     }
     false
 }
@@ -5269,23 +5335,30 @@ pub(crate) fn persist_context_carry_failed_after_init_error<R: tauri::Runtime>(
     force_context_carry_failed: bool,
 ) {
     let result = resolve_data_dir(app).and_then(|data_dir| {
-        let Some(mut session) = session_store.get_session(&data_dir, chat_session_id)? else {
+        let Some(meta) = session_store.get_session_meta(&data_dir, chat_session_id)? else {
             return Ok(None);
         };
-        let mut changed = false;
-        if clear_agent_session_id && session.agent_session_id.is_some() {
-            session.agent_session_id = None;
-            changed = true;
-        }
-        if mark_context_carry_failed_after_init_error(&mut session, force_context_carry_failed) {
-            changed = true;
-        }
-        if changed {
-            session.updated_at = now_timestamp();
-            session_store.save_session(&data_dir, &session)?;
-            return Ok(Some(SessionContextCarryUpdate::from_session(&session)));
-        }
-        Ok(None)
+        let next_agent_session_id = if clear_agent_session_id {
+            None
+        } else {
+            meta.agent_session_id.clone()
+        };
+        let next_context_carry = if should_mark_context_carry_failed_after_init_error(
+            meta.context_carry.as_ref(),
+            force_context_carry_failed,
+        ) {
+            Some(ContextCarryState::Failed)
+        } else {
+            meta.context_carry.clone()
+        };
+        session_store
+            .update_resume_metadata_if_changed(
+                &data_dir,
+                chat_session_id,
+                next_agent_session_id,
+                next_context_carry,
+            )
+            .map(|updated| updated.as_ref().map(SessionContextCarryUpdate::from_meta))
     });
     match result {
         Ok(Some(update)) => emit_session_context_carry_update(app, update),
@@ -5316,10 +5389,10 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
             .map_err(|e| e.to_string())?,
         None => {
             let data_dir = resolve_data_dir(app)?;
-            let session = session_store
-                .get_session(&data_dir, chat_session_id)?
+            let meta = session_store
+                .get_session_meta(&data_dir, chat_session_id)?
                 .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
-            crate::permission::PermissionMode::parse(&session.permission_mode)
+            crate::permission::PermissionMode::parse(&meta.permission_mode)
                 .map(|m| m.as_str().to_string())
                 .map_err(|e| e.to_string())?
         }
@@ -5379,10 +5452,10 @@ fn turn_origin_for_chat_session<R: tauri::Runtime>(
     chat_session_id: &str,
 ) -> Result<TurnOrigin, String> {
     let data_dir = resolve_data_dir(app)?;
-    let session = session_store
-        .get_session(&data_dir, chat_session_id)?
+    let meta = session_store
+        .get_session_meta(&data_dir, chat_session_id)?
         .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
-    Ok(turn_origin_for_session(&session))
+    Ok(turn_origin_for_session(meta.workflow_step_session))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5851,7 +5924,7 @@ fn prepare_pending_turn_messages(
 ) -> Result<(ChatMessage, ChatMessage, bool), String> {
     if let Some((human_message_id, agent_message_id)) = pending_existing_turn_ids(pending) {
         let session = session_store
-            .get_session(data_dir, chat_session_id)?
+            .load_full_session_for_restore(data_dir, chat_session_id)?
             .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
         let human_msg = session
             .messages
@@ -6325,10 +6398,10 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
     chat_session_id: &str,
     model_id: String,
 ) -> Result<(), String> {
-    let mut session = session_store
-        .get_session(data_dir, chat_session_id)?
+    let meta = session_store
+        .get_session_meta(data_dir, chat_session_id)?
         .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
-    let backend_id = session
+    let backend_id = meta
         .backend_id
         .clone()
         .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string());
@@ -6343,12 +6416,11 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
     let model = target_model_id.as_str();
     crate::domain::agent_session::ModelId::parse(model)?;
     if target_backend_id != backend_id {
-        if !can_change_session_backend(&session) {
+        if !can_change_session_backend_from_meta(&meta) {
             return Err(format!(
                 "Cannot change backend after the first message has been sent: {chat_session_id}"
             ));
         }
-        session.backend_id = Some(target_backend_id.clone());
         remove_stale_unstarted_agent_process(handles, data_dir, chat_session_id).await;
     }
     if let Some(reg) = registry {
@@ -6399,10 +6471,13 @@ pub(crate) async fn set_agent_model_internal_with_data_dir(
     sync_active_process_available_models(handles, chat_session_id, &models_from_config).await;
     set_active_process_model(handles, chat_session_id, target_model_id.clone()).await?;
 
-    // 2. Persist to ChatSession
-    session.selected_model = Some(target_model_id);
-    session.updated_at = now_timestamp();
-    session_store.save_session(data_dir, &session)?;
+    // 2. Persist metadata without loading message body.
+    session_store.update_backend_selection(
+        data_dir,
+        chat_session_id,
+        target_backend_id.clone(),
+        Some(target_model_id.clone()),
+    )?;
 
     // 3. Always emit event to keep frontend in sync.
     //    供給元は常に config.toml（registry 経由）に統一する。
@@ -6652,13 +6727,30 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
     sdk_session_id: Option<String>,
     context_carry_on_ready: Option<ContextCarryState>,
 ) -> Result<u64, String> {
-    crate::permission::PermissionMode::parse(&permission_mode).map_err(|e| e.to_string())?;
+    if let Err(err) = crate::permission::PermissionMode::parse(&permission_mode) {
+        cleanup_unregistered_agent_process(
+            child,
+            #[cfg(unix)]
+            pgid,
+        )
+        .await;
+        return Err(err.to_string());
+    }
     #[cfg(unix)]
     if let Some(pg) = pgid {
-        let data_dir = resolve_data_dir(app).map_err(|e| {
-            format!("Failed to resolve data dir for session {chat_session_id}: {e}")
-        })?;
-        save_pgid(&data_dir, chat_session_id, pg)?;
+        let data_dir = match resolve_data_dir(app)
+            .map_err(|e| format!("Failed to resolve data dir for session {chat_session_id}: {e}"))
+        {
+            Ok(data_dir) => data_dir,
+            Err(err) => {
+                cleanup_unregistered_agent_process(child, pgid).await;
+                return Err(err);
+            }
+        };
+        if let Err(err) = save_pgid(&data_dir, chat_session_id, pg) {
+            cleanup_unregistered_agent_process(child, pgid).await;
+            return Err(err);
+        }
     }
 
     let gen_id = GENERATION_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -6702,6 +6794,16 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
     }
     notify_status_transition(app, session_store, chat_session_id, TurnPhase::Idle, None);
     Ok(gen_id)
+}
+
+async fn cleanup_unregistered_agent_process(mut child: Child, #[cfg(unix)] pgid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pg) = pgid {
+        sweep_process_group(pg).await;
+    }
+    if let Err(e) = child.kill().await {
+        log::warn!("Failed to kill unregistered agent process: {e}");
+    }
 }
 
 #[allow(dead_code)]
@@ -6783,8 +6885,8 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
             }
         };
     let permission_profile_id = session_store
-        .get_session(&data_dir, chat_session_id)?
-        .and_then(|session| session.permission_profile_id);
+        .get_session_meta(&data_dir, chat_session_id)?
+        .and_then(|meta| meta.permission_profile_id);
 
     if emit_consumed_messages {
         use tauri::Emitter;
@@ -7314,7 +7416,7 @@ async fn prepare_send_agent_message_internal(
     // 1. Create or get session
     let session = if let Some(ref sid) = chat_session_id {
         let mut session = session_store
-            .get_session(data_dir, sid)?
+            .get_session_shell(data_dir, sid)?
             .ok_or_else(|| format!("Session not found: {sid}"))?;
         if !session.workflow_step_session && session.worktree_path != worktree_path {
             return Err(session_target_rejected());
@@ -7544,9 +7646,10 @@ async fn prepare_send_agent_message_internal(
         )
     };
 
-    // 5. Get updated session and list
+    // 5. Get updated session shell and list. Message bodies are returned through
+    // human_message / agent_message and page APIs, not the session envelope.
     let updated_session = session_store
-        .get_session(data_dir, &sid)?
+        .get_session_shell(data_dir, &sid)?
         .ok_or_else(|| format!("Session not found: {sid}"))?;
     let sessions = session_store.list_sessions(data_dir, &session_worktree_path)?;
     let pending_queue = {
@@ -7738,8 +7841,8 @@ pub async fn init_agent_sessions(
     .await
 }
 
-pub(crate) async fn init_agent_sessions_internal(
-    app: &tauri::AppHandle,
+pub(crate) async fn init_agent_sessions_internal<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     session_store: &Arc<SessionStore>,
     registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -7764,22 +7867,6 @@ pub(crate) async fn init_agent_sessions_internal(
             plan_mode: false,
         })
     } else {
-        // Start agent processes only for sessions that have already sent a turn or have
-        // a resumable SDK session. Empty NewSession entries must remain selectable.
-        // Sequential execution is required because the bridge process path makes the
-        // Future !Send and incompatible with tokio::spawn.
-        for s in &sessions {
-            if !should_start_agent_process_for_summary(s) {
-                continue;
-            }
-            if let Err(e) =
-                start_existing_session_for_summary(app, handles, session_store, registry, s, None)
-                    .await
-            {
-                log::error!("Failed to start agent session {}: {e}", s.id);
-            }
-        }
-
         // spec issues-1023: workflow step として起動された chat session は free chat
         // tab bar 上に同格に並ばないため、初期 active session 候補からも除外する。
         // 候補が無い場合は active_session を None で返し、UI は空状態を描く。
@@ -7811,48 +7898,6 @@ pub(crate) async fn init_agent_sessions_internal(
             plan_mode,
         })
     }
-}
-
-async fn start_existing_session_for_summary(
-    app: &tauri::AppHandle,
-    handles: &Arc<Mutex<AgentProcessMap>>,
-    session_store: &Arc<SessionStore>,
-    registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
-    session: &SessionSummary,
-    system_prompt: Option<String>,
-) -> Result<(), String> {
-    let backend_id = match session.backend_id.as_deref() {
-        Some(id) => id.to_string(),
-        None => registry.resolve_default_id()?,
-    };
-    if backend_id == CODEX_BACKEND_ID {
-        let backend = registry
-            .get(&backend_id)
-            .ok_or_else(|| format!("Agent backend not found: {backend_id}"))?;
-        backend
-            .start_session(SessionConfig {
-                chat_session_id: session.id.clone(),
-                cwd: session.worktree_path.clone(),
-                permission_mode: Some(session.permission_mode.clone()),
-                plan_mode: session.plan_mode,
-                permission_profile_id: session.permission_profile_id.clone(),
-                system_prompt,
-            })
-            .await?;
-        return Ok(());
-    }
-
-    start_agent_session_internal(
-        app,
-        handles,
-        session_store,
-        &session.id,
-        &session.worktree_path,
-        Some(session.permission_mode.clone()),
-        session.plan_mode,
-        system_prompt,
-    )
-    .await
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
@@ -8438,7 +8483,7 @@ mod tests {
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let store = SessionStore::default();
+        let store = crate::test_support::build_session_store();
         let session = create_session_internal(
             &store,
             temp.path(),
@@ -8450,7 +8495,7 @@ mod tests {
         persist_agent_session_id(&app.handle(), &store, &session.id, "sdk-ready");
 
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(loaded.agent_session_id.as_deref(), Some("sdk-ready"));
@@ -8459,7 +8504,7 @@ mod tests {
     #[test]
     fn save_session_context_carry_returns_update_payload_when_state_changes() {
         let temp = tempfile::tempdir().unwrap();
-        let store = SessionStore::default();
+        let store = crate::test_support::build_session_store();
         let mut session = create_session_internal(
             &store,
             temp.path(),
@@ -8468,7 +8513,9 @@ mod tests {
         )
         .unwrap();
         session.agent_session_id = Some("sdk-session".to_string());
-        store.save_session(temp.path(), &session).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
 
         let update =
             save_session_context_carry(&store, temp.path(), &session.id, ContextCarryState::Failed)
@@ -8487,6 +8534,48 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    #[test]
+    fn context_carry_persistence_does_not_read_message_chunks() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = crate::test_support::build_session_store();
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Human,
+            "hello",
+            None,
+            None,
+        )
+        .unwrap();
+        let chunk = temp
+            .path()
+            .join("sessions")
+            .join(&session.id)
+            .join("messages")
+            .join("1.json");
+        std::fs::write(chunk, "{not valid json").unwrap();
+
+        let update =
+            save_session_context_carry(&store, temp.path(), &session.id, ContextCarryState::Failed)
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(update.context_carry, Some(ContextCarryState::Failed));
+        let meta = store
+            .get_session_meta(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.context_carry, Some(ContextCarryState::Failed));
     }
 
     #[test]
@@ -8537,7 +8626,7 @@ mod tests {
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &store,
             temp.path(),
@@ -8569,7 +8658,7 @@ mod tests {
         .await;
 
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(loaded.agent_session_id, None);
@@ -8588,7 +8677,7 @@ mod tests {
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &store,
             temp.path(),
@@ -8619,7 +8708,7 @@ mod tests {
         .await;
 
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(loaded.agent_session_id.as_deref(), Some("new-codex-thread"));
@@ -8637,7 +8726,7 @@ mod tests {
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &store,
             temp.path(),
@@ -8647,7 +8736,9 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("stale-sdk-session".to_string());
         session.context_carry = Some(ContextCarryState::Resumed);
-        store.save_session(temp.path(), &session).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let mut proc = make_test_agent_process();
         proc.state = BridgeState::Initializing;
@@ -8670,7 +8761,7 @@ mod tests {
         .await;
 
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(loaded.agent_session_id, None);
@@ -8691,7 +8782,7 @@ mod tests {
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &store,
             temp.path(),
@@ -8743,7 +8834,9 @@ mod tests {
                 mentions: None,
             },
         ];
-        store.save_session(temp.path(), &session).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let mut proc = make_test_agent_process();
         proc.state = BridgeState::Streaming;
@@ -8778,7 +8871,7 @@ mod tests {
         crash_agent_process_for_context_reinject(&app.handle(), &handles, &session.id).await;
 
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(loaded.agent_session_id, None);
@@ -8832,7 +8925,7 @@ mod tests {
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let store = SessionStore::default();
+        let store = crate::test_support::build_session_store();
         let mut session = create_session_internal(
             &store,
             temp.path(),
@@ -8841,7 +8934,9 @@ mod tests {
         )
         .unwrap();
         session.agent_session_id = Some("stale-sdk-session".to_string());
-        store.save_session(temp.path(), &session).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
 
         persist_context_carry_failed_after_init_error(
             &app.handle(),
@@ -8852,7 +8947,7 @@ mod tests {
         );
 
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(loaded.agent_session_id, None);
@@ -8869,7 +8964,7 @@ mod tests {
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &store,
             temp.path(),
@@ -8879,7 +8974,9 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("stale-sdk-session".to_string());
         session.context_carry = Some(ContextCarryState::Resumed);
-        store.save_session(temp.path(), &session).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let mut proc = make_test_agent_process();
         proc.state = BridgeState::Initializing;
@@ -8914,7 +9011,7 @@ mod tests {
         );
 
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(loaded.agent_session_id, None);
@@ -8933,7 +9030,7 @@ mod tests {
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &store,
             temp.path(),
@@ -8943,7 +9040,9 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("existing-sdk-session".to_string());
         session.context_carry = None;
-        store.save_session(temp.path(), &session).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let mut proc = make_test_agent_process();
         proc.state = BridgeState::Initializing;
@@ -8977,7 +9076,7 @@ mod tests {
         }
 
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -10370,14 +10469,20 @@ mod tests {
     #[test]
     fn turn_origin_is_derived_from_session_workflow_step_flag() {
         let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut session =
             create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
 
-        assert_eq!(turn_origin_for_session(&session), TurnOrigin::Desktop);
+        assert_eq!(
+            turn_origin_for_session(session.workflow_step_session),
+            TurnOrigin::Desktop
+        );
 
         session.workflow_step_session = true;
-        assert_eq!(turn_origin_for_session(&session), TurnOrigin::Headless);
+        assert_eq!(
+            turn_origin_for_session(session.workflow_step_session),
+            TurnOrigin::Headless
+        );
     }
 
     #[tokio::test]
@@ -11255,7 +11360,7 @@ mod tests {
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &store,
             temp.path(),
@@ -11287,7 +11392,9 @@ mod tests {
             timestamp: 10.0,
             mentions: None,
         });
-        store.save_session(temp.path(), &session).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
 
         let mut proc = make_test_agent_process();
         proc.state = BridgeState::Streaming;
@@ -11335,7 +11442,7 @@ mod tests {
             },
         ];
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         let loaded_message = loaded
@@ -11360,7 +11467,7 @@ mod tests {
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &store,
             temp.path(),
@@ -11392,7 +11499,9 @@ mod tests {
             timestamp: 10.0,
             mentions: None,
         });
-        store.save_session(temp.path(), &session).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
 
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let mut proc = make_test_agent_process();
@@ -11429,7 +11538,7 @@ mod tests {
             },
         ];
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         let loaded_message = loaded
@@ -11463,7 +11572,7 @@ mod tests {
             },
         ];
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         let loaded_message = loaded
@@ -11698,7 +11807,7 @@ mod tests {
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &store,
             temp.path(),
@@ -11719,7 +11828,9 @@ mod tests {
             timestamp: 10.0,
             mentions: None,
         });
-        store.save_session(temp.path(), &session).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
 
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let mut proc = make_streaming_test_process();
@@ -11772,7 +11883,7 @@ mod tests {
         .await;
 
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         let loaded_message = loaded
@@ -11803,7 +11914,7 @@ mod tests {
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &store,
             temp.path(),
@@ -12161,7 +12272,7 @@ mod tests {
     #[tokio::test]
     async fn prepared_send_accepts_already_validated_workflow_step_session() {
         let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock".to_string(),
@@ -12179,7 +12290,7 @@ mod tests {
         .unwrap();
         step_session.workflow_step_session = true;
         session_store
-            .save_session(data_dir.path(), &step_session)
+            .save_full_session_for_migration_or_restore(data_dir.path(), &step_session)
             .unwrap();
         let parent_session = create_session_internal(
             &session_store,
@@ -12190,7 +12301,7 @@ mod tests {
         .unwrap();
 
         session_store
-            .save_session(data_dir.path(), &parent_session)
+            .save_full_session_for_migration_or_restore(data_dir.path(), &parent_session)
             .unwrap();
 
         let result = prepare_send_agent_message_internal(
@@ -12217,7 +12328,7 @@ mod tests {
         let prepared_turn = expect_prepared_turn(prepared_turn);
         assert_eq!(prepared_turn.worktree_path, "/repo");
         let saved = session_store
-            .get_session(data_dir.path(), &step_session.id)
+            .load_full_session_for_restore(data_dir.path(), &step_session.id)
             .unwrap()
             .unwrap();
         assert!(
@@ -12263,7 +12374,7 @@ mod tests {
     #[tokio::test]
     async fn prepared_send_to_regular_session_does_not_change_workflow_step_runtime() {
         let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock".to_string(),
@@ -12289,7 +12400,7 @@ mod tests {
         .unwrap();
         step_session.workflow_step_session = true;
         session_store
-            .save_session(data_dir.path(), &step_session)
+            .save_full_session_for_migration_or_restore(data_dir.path(), &step_session)
             .unwrap();
         handles
             .lock()
@@ -12346,7 +12457,7 @@ mod tests {
         // モデル未選択状態は廃止されたため、新規セッションは backend の既定モデル解決を
         // 必要とする。fixed_models を持つ実 backend registry を使う。
         let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let registry = make_fixed_model_registry();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let worktree_path = "/repo".to_string();
@@ -12376,16 +12487,109 @@ mod tests {
         assert_eq!(prepared_turn.permission_mode, "ask");
         assert_eq!(response.session.permission_mode, "ask");
         let saved = session_store
-            .get_session(data_dir.path(), &response.session.id)
+            .load_full_session_for_restore(data_dir.path(), &response.session.id)
             .unwrap()
             .unwrap();
         assert_eq!(saved.permission_mode, "ask");
     }
 
     #[tokio::test]
+    async fn prepare_send_existing_session_uses_meta_and_append_without_hydrating_body() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: "mock".to_string(),
+            models: vec![],
+        }));
+        let registry = Arc::new(registry);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session = ChatSession {
+            id: session_id.clone(),
+            worktree_path: "/repo".to_string(),
+            messages: vec![ChatMessage {
+                id: "old-message".to_string(),
+                role: MessageRole::Human,
+                content: "old body".to_string(),
+                thinking: None,
+                activities: None,
+                parts: None,
+                timestamp: 1000.0,
+                mentions: None,
+            }],
+            state: crate::usecase::agent_session::session::SessionState::Active,
+            created_at: 1000.0,
+            updated_at: 1000.0,
+            agent_session_id: None,
+            context_carry: None,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            selected_model: None,
+            permission_profile_id: None,
+            backend_id: Some("mock".to_string()),
+            workflow_step_session: false,
+        };
+        session_store
+            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
+            .unwrap();
+        std::fs::write(
+            data_dir
+                .path()
+                .join("sessions")
+                .join(&session_id)
+                .join("messages")
+                .join("1.json"),
+            "{",
+        )
+        .unwrap();
+
+        let (response, prepared_turn) = prepare_send_agent_message_internal(
+            &crate::adaptor::controller::wiring::build_code_usecase(),
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            Some(session_id.clone()),
+            "/repo".to_string(),
+            "new prompt".to_string(),
+            crate::permission::PermissionMode::Ask,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(prepared_turn.is_some());
+        assert!(response.session.messages.is_empty());
+        assert_eq!(response.session.permission_mode, "ask");
+        assert!(response.session.plan_mode);
+        assert_eq!(response.human_message.content, "new prompt");
+        assert!(response.agent_message.is_some());
+        let page = session_store
+            .get_session_page(data_dir.path(), &session_id, None, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            page.messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                response.human_message.id.as_str(),
+                response.agent_message.as_ref().unwrap().id.as_str(),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn prepared_turn_carries_codex_backend_for_runtime_dispatch() {
         let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let registry = make_fixed_model_registry();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
 
@@ -12418,7 +12622,7 @@ mod tests {
     #[tokio::test]
     async fn initializing_idle_runtime_prepares_first_turn_instead_of_queueing() {
         let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock".to_string(),
@@ -12473,7 +12677,7 @@ mod tests {
     #[tokio::test]
     async fn busy_send_uses_active_turn_steer_when_backend_is_ready() {
         let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockSteeringBackend {
             backend_id: "steer".to_string(),
@@ -12533,7 +12737,7 @@ mod tests {
     #[tokio::test]
     async fn workflow_step_send_with_stopped_runtime_prepares_single_resume_turn() {
         let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock".to_string(),
@@ -12552,7 +12756,7 @@ mod tests {
         step_session.workflow_step_session = true;
         step_session.agent_session_id = Some("sdk-session".to_string());
         session_store
-            .save_session(data_dir.path(), &step_session)
+            .save_full_session_for_migration_or_restore(data_dir.path(), &step_session)
             .unwrap();
 
         let (_response, prepared_turn) = prepare_send_agent_message_internal(
@@ -12808,7 +13012,7 @@ mod tests {
     #[tokio::test]
     async fn get_session_returns_registry_models_without_process() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -12852,7 +13056,7 @@ mod tests {
     #[tokio::test]
     async fn set_session_backend_updates_unstarted_session_and_models() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &session_store,
             temp.path(),
@@ -12861,7 +13065,9 @@ mod tests {
         )
         .unwrap();
         session.selected_model = Some("old-model".to_string());
-        session_store.save_session(temp.path(), &session).unwrap();
+        session_store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
 
         let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
         cfg.agents.claude.models = vec!["a-model".to_string()];
@@ -12912,7 +13118,7 @@ mod tests {
     #[tokio::test]
     async fn set_session_backend_rejects_session_with_messages() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -12958,7 +13164,7 @@ mod tests {
     #[tokio::test]
     async fn set_session_backend_rejects_session_with_agent_session_id() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &session_store,
             temp.path(),
@@ -12967,7 +13173,9 @@ mod tests {
         )
         .unwrap();
         session.agent_session_id = Some("sdk-session".to_string());
-        session_store.save_session(temp.path(), &session).unwrap();
+        session_store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock-a".to_string(),
@@ -12996,7 +13204,7 @@ mod tests {
     #[tokio::test]
     async fn set_session_backend_rejects_invalid_backend_id() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -13031,7 +13239,7 @@ mod tests {
         let worktree_path = worktree.path().to_string_lossy().to_string();
         let engine = Arc::new(TestRuntimeKernel::new_for_test());
         let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             data_dir.path(),
@@ -13147,7 +13355,7 @@ mod tests {
         }
         {
             let mut saved = session_store
-                .get_session(data_dir.path(), &session.id)
+                .load_full_session_for_restore(data_dir.path(), &session.id)
                 .unwrap()
                 .unwrap();
             let latest_policy =
@@ -13162,7 +13370,9 @@ mod tests {
                 content: latest_policy,
                 parent_tool_use_id: None,
             }]);
-            session_store.save_session(data_dir.path(), &saved).unwrap();
+            session_store
+                .save_full_session_for_migration_or_restore(data_dir.path(), &saved)
+                .unwrap();
         }
 
         assert_eq!(response.human_message.role, MessageRole::Human);
@@ -13177,7 +13387,7 @@ mod tests {
         assert_eq!(after_send.state, WorkflowExecutionState::WaitingApproval);
 
         let saved = session_store
-            .get_session(data_dir.path(), &session.id)
+            .load_full_session_for_restore(data_dir.path(), &session.id)
             .unwrap()
             .unwrap();
         let latest_agent = saved
@@ -13203,7 +13413,7 @@ mod tests {
     #[test]
     fn ensure_session_backend_selected_saves_default_for_missing_backend_id() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let session = create_session_internal(&session_store, temp.path(), "/repo", None).unwrap();
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
@@ -13217,57 +13427,10 @@ mod tests {
 
         assert_eq!(updated.backend_id, Some("mock-default".to_string()));
         let persisted = session_store
-            .get_session(temp.path(), &updated.id)
+            .load_full_session_for_restore(temp.path(), &updated.id)
             .unwrap()
             .unwrap();
         assert_eq!(persisted.backend_id, Some("mock-default".to_string()));
-    }
-
-    #[test]
-    fn should_start_agent_process_for_summary_skips_unstarted_session() {
-        let session = SessionSummary {
-            id: "empty".to_string(),
-            worktree_path: "/repo".to_string(),
-            state: crate::usecase::agent_session::session::SessionState::Active,
-            created_at: 1.0,
-            updated_at: 1.0,
-            first_message: String::new(),
-            message_count: 0,
-            agent_session_id: None,
-            context_carry: None,
-            permission_mode: "edit".to_string(),
-            plan_mode: false,
-            permission_profile_id: None,
-            backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-        };
-
-        assert!(!should_start_agent_process_for_summary(&session));
-    }
-
-    #[test]
-    fn should_start_agent_process_for_summary_starts_sent_or_resumable_session() {
-        let mut session = SessionSummary {
-            id: "sent".to_string(),
-            worktree_path: "/repo".to_string(),
-            state: crate::usecase::agent_session::session::SessionState::Active,
-            created_at: 1.0,
-            updated_at: 1.0,
-            first_message: "hello".to_string(),
-            message_count: 1,
-            agent_session_id: None,
-            context_carry: None,
-            permission_mode: "edit".to_string(),
-            plan_mode: false,
-            permission_profile_id: None,
-            backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-        };
-        assert!(should_start_agent_process_for_summary(&session));
-
-        session.message_count = 0;
-        session.agent_session_id = Some("sdk-session".to_string());
-        assert!(should_start_agent_process_for_summary(&session));
     }
 
     /// spec issues-1023: workflow step として起動された chat session は free chat
@@ -13317,26 +13480,62 @@ mod tests {
         assert!(pick_initial_active_session_candidate(&[]).is_none());
     }
 
-    #[test]
-    fn should_start_agent_process_for_summary_skips_workflow_step_session() {
-        let session = SessionSummary {
-            id: "step".to_string(),
-            worktree_path: "/repo".to_string(),
-            state: crate::usecase::agent_session::session::SessionState::Idle,
-            created_at: 1.0,
-            updated_at: 1.0,
-            first_message: "history".to_string(),
-            message_count: 3,
-            agent_session_id: Some("sdk-session".to_string()),
-            context_carry: Some(crate::usecase::agent_session::session::ContextCarryState::Resumed),
-            permission_mode: "edit".to_string(),
-            plan_mode: false,
-            permission_profile_id: None,
-            backend_id: Some("claude".to_string()),
-            workflow_step_session: true,
-        };
+    #[tokio::test]
+    async fn init_agent_sessions_does_not_hydrate_message_body_or_start_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        add_message_internal(
+            &session_store,
+            temp.path(),
+            &session.id,
+            MessageRole::Human,
+            "hello",
+            None,
+            None,
+        )
+        .unwrap();
+        let chunk = temp
+            .path()
+            .join("sessions")
+            .join(&session.id)
+            .join("messages")
+            .join("1.json");
+        std::fs::write(chunk, "{not valid json").unwrap();
 
-        assert!(!should_start_agent_process_for_summary(&session));
+        let registry = make_fixed_model_registry();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let open_tabs =
+            Arc::new(crate::usecase::agent_session::session::OpenTabRegistry::default());
+
+        let response = init_agent_sessions_internal(
+            &app.handle(),
+            &session_store,
+            &registry,
+            &handles,
+            &open_tabs,
+            "/repo".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.sessions.len(), 1);
+        let active = response
+            .active_session
+            .expect("active shell should be returned");
+        assert_eq!(active.session.id, session.id);
+        assert!(active.session.messages.is_empty());
+        assert!(handles.lock().await.is_empty());
     }
 
     #[tokio::test]
@@ -16111,11 +16310,11 @@ mod tests {
         // bridge stdin の不変は、stdout を pipe で開いた `cat` を bridge process に見立てて
         // 「invalid を拒否した後で stdin を閉じ、stdout の echo が空である」ことで観測する。
         let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session_id = uuid::Uuid::new_v4().to_string();
         let session = chat_session_for_permission_test(&session_id, "edit");
         session_store
-            .save_session(data_dir.path(), &session)
+            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
             .unwrap();
 
         let (proc, mut stdout) = make_test_agent_process_with_stdout();
@@ -16147,7 +16346,7 @@ mod tests {
 
             // 保存値が変わらない。
             let saved = session_store
-                .get_session(data_dir.path(), &session_id)
+                .load_full_session_for_restore(data_dir.path(), &session_id)
                 .unwrap()
                 .unwrap();
             assert_eq!(
@@ -16186,11 +16385,11 @@ mod tests {
     #[tokio::test]
     async fn set_agent_permission_mode_internal_persists_valid_abstract_mode() {
         let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session_id = uuid::Uuid::new_v4().to_string();
         let session = chat_session_for_permission_test(&session_id, "edit");
         session_store
-            .save_session(data_dir.path(), &session)
+            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
             .unwrap();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
 
@@ -16205,7 +16404,7 @@ mod tests {
         .expect("valid abstract mode must be accepted");
 
         let saved = session_store
-            .get_session(data_dir.path(), &session_id)
+            .load_full_session_for_restore(data_dir.path(), &session_id)
             .unwrap()
             .unwrap();
         assert_eq!(saved.permission_mode, "ask");
@@ -16216,7 +16415,7 @@ mod tests {
         // Spec issues-947: 既存セッションに対する送信時にも、検証済み permission_mode が
         // 異なれば ChatSession.permission_mode に書き戻される（保存層が単一の正典）。
         let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock".to_string(),
@@ -16228,7 +16427,7 @@ mod tests {
         let session_id = uuid::Uuid::new_v4().to_string();
         let session = chat_session_for_permission_test(&session_id, "edit");
         session_store
-            .save_session(data_dir.path(), &session)
+            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
             .unwrap();
 
         let (response, _prepared_turn) = prepare_send_agent_message_internal(
@@ -16254,7 +16453,7 @@ mod tests {
         assert_eq!(response.session.permission_mode, "ask");
         assert!(response.session.plan_mode);
         let saved = session_store
-            .get_session(data_dir.path(), &session_id)
+            .load_full_session_for_restore(data_dir.path(), &session_id)
             .unwrap()
             .unwrap();
         assert_eq!(saved.permission_mode, "ask");
@@ -16829,7 +17028,7 @@ mod tests {
         #[tokio::test]
         async fn set_session_backend_removes_stale_unstarted_process() {
             let temp = tempfile::tempdir().unwrap();
-            let session_store = Arc::new(SessionStore::default());
+            let session_store = Arc::new(crate::test_support::build_session_store());
             let session = create_session_internal(
                 &session_store,
                 temp.path(),
@@ -17000,7 +17199,7 @@ mod tests {
     #[tokio::test]
     async fn set_agent_model_accepts_registered_model() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17024,7 +17223,57 @@ mod tests {
         .unwrap();
 
         let updated = session_store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.selected_model, Some("claude-4".to_string()));
+    }
+
+    #[tokio::test]
+    async fn set_agent_model_does_not_read_message_chunks() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        add_message_internal(
+            &session_store,
+            temp.path(),
+            &session.id,
+            MessageRole::Human,
+            "hello",
+            None,
+            None,
+        )
+        .unwrap();
+        let chunk = temp
+            .path()
+            .join("sessions")
+            .join(&session.id)
+            .join("messages")
+            .join("1.json");
+        std::fs::write(chunk, "{not valid json").unwrap();
+        let registry = make_test_registry_with_models(&["claude-4"], &[]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            "claude-4".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let updated = session_store
+            .get_session_meta(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(updated.selected_model, Some("claude-4".to_string()));
@@ -17033,7 +17282,7 @@ mod tests {
     #[tokio::test]
     async fn set_agent_model_preserves_surrounding_whitespace() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17058,7 +17307,7 @@ mod tests {
         .unwrap();
 
         let updated = session_store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(updated.selected_model, Some(model.to_string()));
@@ -17067,7 +17316,7 @@ mod tests {
     #[tokio::test]
     async fn set_agent_model_rejects_unregistered_model() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17076,7 +17325,9 @@ mod tests {
         )
         .unwrap();
         session.selected_model = Some("existing".to_string());
-        session_store.save_session(temp.path(), &session).unwrap();
+        session_store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
 
         let registry = make_test_registry_with_models(&["claude-4"], &[]);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -17095,7 +17346,7 @@ mod tests {
 
         // 拒否時は selected_model を維持
         let after = session_store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(after.selected_model, Some("existing".to_string()));
@@ -17104,7 +17355,7 @@ mod tests {
     #[tokio::test]
     async fn set_agent_model_allows_other_backend_model_before_first_message() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17128,7 +17379,7 @@ mod tests {
         .unwrap();
 
         let after = session_store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(after.backend_id.as_deref(), Some(CODEX_BACKEND_ID));
@@ -17136,9 +17387,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_session_page_applies_runtime_streaming_overlay() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let agent_message = add_message_internal(
+            &session_store,
+            temp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            Some(vec![MessagePart::Text {
+                content: "persisted".to_string(),
+                parent_tool_use_id: None,
+            }]),
+            None,
+        )
+        .unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        {
+            let mut proc = make_test_agent_process();
+            proc.state = BridgeState::Streaming;
+            proc.turn_phase = TurnPhase::Streaming;
+            proc.streaming_message_id = Some(agent_message.id.clone());
+            proc.streaming_parts = vec![MessagePart::Text {
+                content: "streaming".to_string(),
+                parent_tool_use_id: None,
+            }];
+            handles.lock().await.insert(session.id.clone(), proc);
+        }
+
+        let page = get_session_page_internal_with_data_dir(
+            &session_store,
+            &handles,
+            temp.path(),
+            &session.id,
+            None,
+            10,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            page.messages[0].parts,
+            Some(vec![MessagePart::Text {
+                content: "streaming".to_string(),
+                parent_tool_use_id: None,
+            }])
+        );
+        let mut map = handles.lock().await;
+        force_kill_all_sessions(&mut map).await;
+    }
+
+    #[tokio::test]
     async fn set_agent_model_rejects_backend_change_after_first_message() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17173,7 +17484,7 @@ mod tests {
         assert!(err.contains("Cannot change backend"));
 
         let after = session_store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(after.backend_id.as_deref(), Some(CLAUDE_BACKEND_ID));
@@ -17184,7 +17495,7 @@ mod tests {
     async fn set_agent_model_rejects_empty_model() {
         // モデルは必須。空文字は形式不正として登録判定の前に拒否する。
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17193,7 +17504,9 @@ mod tests {
         )
         .unwrap();
         session.selected_model = Some("claude-4".to_string());
-        session_store.save_session(temp.path(), &session).unwrap();
+        session_store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
 
         let registry = make_test_registry_with_models(&["claude-4"], &[]);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -17212,7 +17525,7 @@ mod tests {
 
         // 拒否時は既存の selected_model を維持
         let after = session_store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(after.selected_model, Some("claude-4".to_string()));
@@ -17240,7 +17553,7 @@ mod tests {
     #[tokio::test]
     async fn set_agent_model_accepts_claude_fixed_model() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17265,7 +17578,7 @@ mod tests {
         .unwrap();
 
         let updated = session_store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(updated.selected_model, Some(model));
@@ -17274,7 +17587,7 @@ mod tests {
     #[tokio::test]
     async fn set_agent_model_rejects_model_outside_claude_fixed_list() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17298,7 +17611,7 @@ mod tests {
         assert!(err.is_err());
 
         let after = session_store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(after.selected_model, None);
@@ -17307,7 +17620,7 @@ mod tests {
     #[tokio::test]
     async fn set_agent_model_accepts_codex_fixed_model() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17332,7 +17645,7 @@ mod tests {
         .unwrap();
 
         let updated = session_store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(updated.selected_model, Some(model));
@@ -17341,7 +17654,7 @@ mod tests {
     #[tokio::test]
     async fn set_agent_model_rejects_model_outside_codex_fixed_list() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17365,7 +17678,7 @@ mod tests {
         assert!(err.is_err());
 
         let after = session_store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(after.selected_model, None);
@@ -17505,7 +17818,7 @@ mod tests {
     #[tokio::test]
     async fn get_session_returns_config_derived_available_models_even_with_active_process() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17563,11 +17876,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_session_page_returns_latest_token_usage_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        add_message_internal(
+            &session_store,
+            temp.path(),
+            &session.id,
+            MessageRole::Human,
+            "hello",
+            None,
+            None,
+        )
+        .unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        {
+            let mut proc = make_test_agent_process();
+            proc.latest_token_usage = Some(TokenUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: Some(15),
+                context_window_tokens: Some(200_000),
+            });
+            handles.lock().await.insert(session.id.clone(), proc);
+        }
+
+        let page = get_session_page_internal_with_data_dir(
+            &session_store,
+            &handles,
+            temp.path(),
+            &session.id,
+            None,
+            10,
+        )
+        .await
+        .unwrap()
+        .expect("page should exist");
+
+        assert_eq!(
+            page.latest_token_usage,
+            Some(TokenUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: Some(15),
+                context_window_tokens: Some(200_000),
+            })
+        );
+        assert_eq!(page.message_metadata[0].message_id, page.messages[0].id);
+
+        let mut map = handles.lock().await;
+        force_kill_all_sessions(&mut map).await;
+    }
+
+    #[tokio::test]
     async fn get_session_resolves_none_selected_model_to_default() {
         // spec: モデル未選択状態は廃止。selected_model=None の既存セッションを get_session
         // すると、応答の selected_model は backend の既定モデル（固定リスト先頭）へ解決される。
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17577,7 +17950,9 @@ mod tests {
         .unwrap();
         // 旧フォーマット（未選択）を模して None を永続化する。
         session.selected_model = None;
-        session_store.save_session(temp.path(), &session).unwrap();
+        session_store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
 
         let registry = make_fixed_model_registry();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -17607,7 +17982,7 @@ mod tests {
         // 契約: 応答の selected_model は常に非 null。registry が在りつつ既定モデルへ解決
         // できない場合（fixed_models 無し + config 空）、フィールド脱落を防ぐため Err を返す。
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let mut session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17616,7 +17991,9 @@ mod tests {
         )
         .unwrap();
         session.selected_model = None;
-        session_store.save_session(temp.path(), &session).unwrap();
+        session_store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
 
         // claude/codex とも fixed_models を持たない mock backend + 空 config → 既定モデル無し。
         let registry = make_test_registry_with_models(&[], &[]);
@@ -17676,7 +18053,7 @@ mod tests {
         // config 由来の最新値で同期される（spec: モデル選択候補は config 単一 owner、
         // process キャッシュは emit 整合用にのみ維持）。
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),
@@ -17723,7 +18100,7 @@ mod tests {
     #[tokio::test]
     async fn set_agent_model_rejects_invalid_format_before_registry_check() {
         let temp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let session = create_session_internal(
             &session_store,
             temp.path(),

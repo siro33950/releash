@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::{now_timestamp, ChatSession, RestoreSessionResponse, SessionState, SessionStore};
+use super::{ChatSession, RestoreSessionResponse, SessionState, SessionStore};
 
 pub struct SessionLifecycleController<'a> {
     pub session_store: &'a Arc<SessionStore>,
@@ -15,11 +15,10 @@ impl<'a> SessionLifecycleController<'a> {
 
     pub fn restore_session_state(
         &self,
-        mut session: ChatSession,
+        session: ChatSession,
     ) -> Result<RestoreSessionResponse, String> {
-        session.state = SessionState::Idle;
-        session.updated_at = now_timestamp();
-        self.session_store.save_session(self.data_dir, &session)?;
+        self.session_store
+            .set_session_state(self.data_dir, &session.id, SessionState::Idle)?;
         Ok(RestoreSessionResponse {
             restored_workflow_step: false,
         })
@@ -33,7 +32,7 @@ mod tests {
     #[test]
     fn close_session_state_marks_session_closed() {
         let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let session = super::super::create_session_internal(
             &store,
             temp.path(),
@@ -49,7 +48,7 @@ mod tests {
         controller.close_session_state(&session.id).unwrap();
 
         let loaded = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
         assert_eq!(loaded.state, SessionState::Closed);
@@ -58,7 +57,7 @@ mod tests {
     #[test]
     fn restore_session_state_does_not_mark_context_carry_before_runtime_start() {
         let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let session = super::super::create_session_internal(
             &store,
             temp.path(),
@@ -77,7 +76,7 @@ mod tests {
         )
         .unwrap();
         let session = store
-            .get_session(temp.path(), &session.id)
+            .load_full_session_for_restore(temp.path(), &session.id)
             .unwrap()
             .unwrap();
 
@@ -89,16 +88,18 @@ mod tests {
         controller.restore_session_state(session).unwrap();
 
         let loaded = store
-            .get_session(temp.path(), &session_id)
+            .load_full_session_for_restore(temp.path(), &session_id)
             .unwrap()
             .unwrap();
         assert_eq!(loaded.context_carry, None);
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.messages[0].content, "remember alpha");
     }
 
     #[test]
     fn restore_session_state_preserves_existing_context_carry() {
         let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let mut session = super::super::create_session_internal(
             &store,
             temp.path(),
@@ -108,7 +109,9 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("sdk-session".to_string());
         session.context_carry = Some(super::super::ContextCarryState::Resumed);
-        store.save_session(temp.path(), &session).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
 
         let controller = SessionLifecycleController {
             session_store: &store,
@@ -118,7 +121,7 @@ mod tests {
         controller.restore_session_state(session).unwrap();
 
         let loaded = store
-            .get_session(temp.path(), &session_id)
+            .load_full_session_for_restore(temp.path(), &session_id)
             .unwrap()
             .unwrap();
         assert_eq!(

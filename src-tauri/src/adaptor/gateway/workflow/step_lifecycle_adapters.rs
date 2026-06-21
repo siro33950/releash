@@ -6,9 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
-use crate::usecase::agent_session::session::{
-    now_timestamp, OpenTabRegistry, SessionState, SessionStore,
-};
+use crate::usecase::agent_session::session::{OpenTabRegistry, SessionState, SessionStore};
 use crate::usecase::workflow::step_lifecycle::{
     release_step_runtime_on_done_with_gateways, ResolvedWorkflowStepSession, WorkflowStepLifecycle,
     WorkflowStepLifecycleError, WorkflowStepRuntimeGateway, WorkflowStepSessionGateway,
@@ -20,8 +18,8 @@ pub(crate) fn resolve_step_session_with_data_dir(
     session_id: &str,
 ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
     let Some(session) = session_store
-        .get_session(data_dir, session_id)
-        .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("get_session: {e}")))?
+        .get_session_meta(data_dir, session_id)
+        .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("get_session_meta: {e}")))?
     else {
         return Ok(None);
     };
@@ -103,18 +101,16 @@ pub(crate) fn open_step_session_tab_state(
     open_tabs: &OpenTabRegistry,
     session_id: &str,
 ) -> Result<(), WorkflowStepLifecycleError> {
-    let mut session = session_store
-        .get_session(data_dir, session_id)
-        .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("get_session: {e}")))?
+    let session = session_store
+        .get_session_meta(data_dir, session_id)
+        .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("get_session_meta: {e}")))?
         .ok_or_else(|| WorkflowStepLifecycleError::SessionNotFound(session_id.to_string()))?;
     if open_tabs.contains(session_id) && session.state == SessionState::Idle {
         return Ok(());
     }
-    session.state = SessionState::Idle;
-    session.updated_at = now_timestamp();
     session_store
-        .save_session(data_dir, &session)
-        .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("save_session: {e}")))?;
+        .set_session_state(data_dir, session_id, SessionState::Idle)
+        .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("set_session_state: {e}")))?;
     open_tabs.add(session_id);
     Ok(())
 }
@@ -156,8 +152,10 @@ pub(crate) fn try_close_step_session_tab_state(
         .unwrap_or(true);
     if !should_close_tab {
         if let Some(session) = session_store
-            .get_session(data_dir, session_id)
-            .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("get_session: {e}")))?
+            .get_session_meta(data_dir, session_id)
+            .map_err(|e| {
+                WorkflowStepLifecycleError::SessionStore(format!("get_session_meta: {e}"))
+            })?
         {
             if session.state != SessionState::Closed {
                 set_step_session_tab_closed(session_store, data_dir, session_id)?;
@@ -542,12 +540,15 @@ mod tests {
     #[test]
     fn step_done_tab_cleanup_removes_tab_closes_session_and_preserves_history() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&session_id),
+            )
             .unwrap();
         open_tabs.add(&session_id);
 
@@ -555,7 +556,7 @@ mod tests {
 
         assert!(!open_tabs.contains(&session_id));
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("session remains as history");
         assert_eq!(session.state, SessionState::Closed);
@@ -566,12 +567,15 @@ mod tests {
     #[test]
     fn step_done_tab_cleanup_is_idempotent_for_already_closed_tab() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&session_id),
+            )
             .unwrap();
         session_store
             .set_session_state(tmp.path(), &session_id, SessionState::Closed)
@@ -581,7 +585,7 @@ mod tests {
 
         assert!(!open_tabs.contains(&session_id));
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("session remains as history");
         assert_eq!(session.state, SessionState::Closed);
@@ -592,12 +596,15 @@ mod tests {
     #[test]
     fn close_step_tab_retries_closed_state_when_registry_entry_is_missing() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&session_id),
+            )
             .unwrap();
 
         let changed = try_close_step_session_tab_state(
@@ -611,7 +618,7 @@ mod tests {
         assert!(!changed);
         assert!(!open_tabs.contains(&session_id));
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("session remains as history");
         assert_eq!(session.state, SessionState::Closed);
@@ -620,7 +627,7 @@ mod tests {
     #[test]
     fn hydrate_open_workflow_step_tabs_only_opens_non_closed_workflow_sessions() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let worktree_path = "/repo";
 
@@ -634,11 +641,15 @@ mod tests {
         let mut regular = workflow_step_session_for_test(&regular_id);
         regular.workflow_step_session = false;
 
-        session_store.save_session(tmp.path(), &open_step).unwrap();
         session_store
-            .save_session(tmp.path(), &closed_step)
+            .save_full_session_for_migration_or_restore(tmp.path(), &open_step)
             .unwrap();
-        session_store.save_session(tmp.path(), &regular).unwrap();
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &closed_step)
+            .unwrap();
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &regular)
+            .unwrap();
 
         hydrate_open_workflow_step_tabs(&session_store, tmp.path(), worktree_path, &open_tabs)
             .unwrap();
@@ -651,21 +662,23 @@ mod tests {
     #[tokio::test]
     async fn opening_step_tab_does_not_start_runtime_and_preserves_history() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
         let mut session = workflow_step_session_for_test(&session_id);
         session.state = SessionState::Closed;
 
-        session_store.save_session(tmp.path(), &session).unwrap();
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
 
         open_step_session_tab_state(&session_store, tmp.path(), &open_tabs, &session_id).unwrap();
 
         assert!(open_tabs.contains(&session_id));
         assert!(handles.lock().await.is_empty());
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("session remains as history");
         assert_eq!(session.state, SessionState::Idle);
@@ -677,7 +690,7 @@ mod tests {
         assert_eq!(open_tabs.snapshot().len(), 1);
         assert!(handles.lock().await.is_empty());
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("session remains as history");
         assert_eq!(session.updated_at, updated_at);
@@ -737,12 +750,15 @@ mod tests {
     #[tokio::test]
     async fn tab_close_idle_runtime_releases_runtime_and_closes_tab_state() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&session_id),
+            )
             .unwrap();
         open_tabs.add(&session_id);
         handles.lock().await.insert(
@@ -775,7 +791,7 @@ mod tests {
         assert!(!handles.lock().await.contains_key(&session_id));
         assert!(!open_tabs.contains(&session_id));
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("history remains");
         assert_eq!(session.state, SessionState::Closed);
@@ -786,12 +802,15 @@ mod tests {
     #[tokio::test]
     async fn tab_close_busy_runtime_keeps_runtime_and_closes_only_tab_state() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&session_id),
+            )
             .unwrap();
         open_tabs.add(&session_id);
         let mut proc = crate::infrastructure::agent_session::runtime::make_test_agent_process();
@@ -823,7 +842,7 @@ mod tests {
         assert!(handles.lock().await.contains_key(&session_id));
         assert!(!open_tabs.contains(&session_id));
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("history remains");
         assert_eq!(session.state, SessionState::Closed);
@@ -833,12 +852,15 @@ mod tests {
     #[tokio::test]
     async fn duplicate_tab_close_releases_remaining_idle_runtime_after_tab_already_closed() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&session_id),
+            )
             .unwrap();
         handles.lock().await.insert(
             session_id.clone(),
@@ -873,13 +895,15 @@ mod tests {
     #[tokio::test]
     async fn duplicate_tab_close_without_runtime_is_noop_and_keeps_session_closed() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
         let mut session = workflow_step_session_for_test(&session_id);
         session.state = SessionState::Closed;
-        session_store.save_session(tmp.path(), &session).unwrap();
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
         let close_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         close_resolved_step_tab_state(
@@ -903,7 +927,7 @@ mod tests {
         assert!(!handles.lock().await.contains_key(&session_id));
         assert!(!open_tabs.contains(&session_id));
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("history remains");
         assert_eq!(session.state, SessionState::Closed);
@@ -913,12 +937,15 @@ mod tests {
     #[tokio::test]
     async fn tab_close_runtime_failure_still_closes_tab_state() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&session_id),
+            )
             .unwrap();
         open_tabs.add(&session_id);
         handles.lock().await.insert(
@@ -960,7 +987,7 @@ mod tests {
         assert!(!view.runtime_states[&session_id].runtime_active);
         assert!(!view.runtime_states[&session_id].tab_open);
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("history remains");
         assert_eq!(session.state, SessionState::Closed);
@@ -969,7 +996,7 @@ mod tests {
     #[tokio::test]
     async fn tab_state_update_failure_does_not_roll_back_runtime_release() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -1063,13 +1090,16 @@ mod tests {
     #[tokio::test]
     async fn release_on_step_done_releases_runtime_and_open_tab_but_preserves_history() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&session_id),
+            )
             .unwrap();
         open_tabs.add(&session_id);
         handles.lock().await.insert(
@@ -1095,7 +1125,7 @@ mod tests {
         assert!(!view.runtime_states[&session_id].runtime_active);
         assert!(!view.runtime_states[&session_id].tab_open);
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("step history session remains");
         assert_eq!(session.state, SessionState::Closed);
@@ -1106,14 +1136,16 @@ mod tests {
     #[tokio::test]
     async fn release_on_step_done_releases_runtime_when_tab_already_closed() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
         let mut session = workflow_step_session_for_test(&session_id);
         session.state = SessionState::Closed;
 
-        session_store.save_session(tmp.path(), &session).unwrap();
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
         handles.lock().await.insert(
             session_id.clone(),
             crate::infrastructure::agent_session::runtime::make_test_agent_process(),
@@ -1137,7 +1169,7 @@ mod tests {
         assert!(!view.runtime_states[&session_id].runtime_active);
         assert!(!view.runtime_states[&session_id].tab_open);
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("step history session remains");
         assert_eq!(session.state, SessionState::Closed);
@@ -1148,13 +1180,16 @@ mod tests {
     #[tokio::test]
     async fn release_on_step_done_releases_busy_runtime_and_closes_tab_state() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&session_id),
+            )
             .unwrap();
         open_tabs.add(&session_id);
         let mut proc = crate::infrastructure::agent_session::runtime::make_test_agent_process();
@@ -1187,7 +1222,7 @@ mod tests {
         assert!(!handles.lock().await.contains_key(&session_id));
         assert!(!open_tabs.contains(&session_id));
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("step history session remains");
         assert_eq!(session.state, SessionState::Closed);
@@ -1196,13 +1231,16 @@ mod tests {
     #[tokio::test]
     async fn release_and_tab_close_converge_to_closed_runtime_and_tab() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&session_id),
+            )
             .unwrap();
         open_tabs.add(&session_id);
         handles.lock().await.insert(
@@ -1235,14 +1273,16 @@ mod tests {
     #[tokio::test]
     async fn reopening_step_tab_with_active_runtime_keeps_runtime_active() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
 
         let mut session = workflow_step_session_for_test(&session_id);
         session.state = SessionState::Closed;
-        session_store.save_session(tmp.path(), &session).unwrap();
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
         handles.lock().await.insert(
             session_id.clone(),
             crate::infrastructure::agent_session::runtime::make_test_agent_process(),
@@ -1253,7 +1293,7 @@ mod tests {
         assert!(open_tabs.contains(&session_id));
         assert!(handles.lock().await.contains_key(&session_id));
         let session = session_store
-            .get_session(tmp.path(), &session_id)
+            .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("session remains as history");
         assert_eq!(session.state, SessionState::Idle);
@@ -1263,14 +1303,17 @@ mod tests {
     #[tokio::test]
     async fn non_workflow_session_tab_operations_do_not_affect_workflow_step_state() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
 
         // Workflow step session: tab open + runtime active
         let step_id = uuid::Uuid::new_v4().to_string();
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&step_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&step_id),
+            )
             .unwrap();
         open_tabs.add(&step_id);
         handles.lock().await.insert(
@@ -1283,7 +1326,7 @@ mod tests {
         let mut non_workflow = workflow_step_session_for_test(&non_workflow_id);
         non_workflow.workflow_step_session = false;
         session_store
-            .save_session(tmp.path(), &non_workflow)
+            .save_full_session_for_migration_or_restore(tmp.path(), &non_workflow)
             .unwrap();
 
         // Resolver returns None for non-workflow session → tab operations would not proceed
@@ -1304,13 +1347,16 @@ mod tests {
 
         let tmp = tempfile::TempDir::new().unwrap();
         let data_dir: std::path::PathBuf = tmp.path().to_path_buf();
-        let session_store = Arc::new(SessionStore::default());
+        let session_store = Arc::new(crate::test_support::build_session_store());
         let open_tabs = Arc::new(OpenTabRegistry::default());
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_session(&data_dir, &workflow_step_session_for_test(&session_id))
+            .save_full_session_for_migration_or_restore(
+                &data_dir,
+                &workflow_step_session_for_test(&session_id),
+            )
             .unwrap();
         open_tabs.add(&session_id);
         handles.lock().await.insert(
@@ -1402,14 +1448,17 @@ mod tests {
     #[tokio::test]
     async fn tab_open_state_update_failure_preserves_runtime_state() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
 
         // Setup: another step session with an active runtime that must remain untouched
         let other_id = uuid::Uuid::new_v4().to_string();
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&other_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&other_id),
+            )
             .unwrap();
         handles.lock().await.insert(
             other_id.clone(),
@@ -1435,11 +1484,14 @@ mod tests {
     #[tokio::test]
     async fn resolver_accepts_workflow_step_session_flag_without_workflow_state_reference() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = SessionStore::default();
+        let session_store = crate::test_support::build_session_store();
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_session(tmp.path(), &workflow_step_session_for_test(&session_id))
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &workflow_step_session_for_test(&session_id),
+            )
             .unwrap();
 
         let resolved = resolve_step_session_with_data_dir(&session_store, tmp.path(), &session_id)

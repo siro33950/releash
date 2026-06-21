@@ -1,13 +1,23 @@
 pub(crate) mod errors;
 pub(crate) mod lifecycle_controller;
 mod open_tabs;
+mod prompt_suggestion;
 mod store;
+mod stored_lifecycle;
 
 use serde::{Deserialize, Serialize};
 
 pub use crate::usecase::agent_session::status::TurnPhase;
 pub use open_tabs::OpenTabRegistry;
-pub use store::SessionStore;
+pub(crate) use prompt_suggestion::{
+    AgentPromptGitStatusGateway, AgentPromptSuggestion, AgentPromptSuggestionUsecase,
+    GitSuggestionContext,
+};
+pub use store::{SessionReaderPort, SessionStore};
+pub(crate) use stored_lifecycle::{
+    AgentSessionRuntimeCloser, CodexThreadForkRequest, CodexThreadLifecycleGateway,
+    StoredSessionLifecycleUsecase,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,6 +135,9 @@ pub enum MessagePart {
         #[serde(rename = "mediaType")]
         media_type: String,
     },
+    ImageRef {
+        attachment: AttachmentRef,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +165,34 @@ pub enum ContextCarryState {
     Resumed,
     Reinjected,
     Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageMention {
+    pub file_path: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub start_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub end_line: Option<u32>,
+}
+
+impl MessageMention {
+    pub fn from_domain(mention: crate::domain::code::MentionReference) -> Self {
+        Self {
+            file_path: mention.file_path,
+            start_line: mention.start_line,
+            end_line: mention.end_line,
+        }
+    }
+
+    pub fn into_domain(self) -> crate::domain::code::MentionReference {
+        crate::domain::code::MentionReference {
+            file_path: self.file_path,
+            start_line: self.start_line,
+            end_line: self.end_line,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -220,11 +261,10 @@ pub struct ChatMessage {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub parts: Option<Vec<MessagePart>>,
     pub timestamp: f64,
-    /// 永続化／フロント転送向けの表現。domain VO は serde 非依存（純粋データ）のため、
-    /// 転送境界に置く本フィールドは adaptor の入出力型を保持する。serialize 表現
-    /// （camelCase・行範囲省略）は移行前と等価。
+    /// usecase 内の保存・転送用値型。serialize 表現（camelCase・行範囲省略）は
+    /// controller protocol 境界の入力型と等価に保つ。
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
+    pub mentions: Option<Vec<MessageMention>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,6 +294,140 @@ pub struct ChatSession {
     pub backend_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow_step_session: bool,
+}
+
+pub const SESSION_BODY_FORMAT_VERSION: u32 = 1;
+pub const DEFAULT_SESSION_PAGE_LIMIT: usize = 50;
+pub const MAX_SESSION_PAGE_LIMIT: usize = 200;
+
+/// meta.json。message body を含まない session 単位の保存正典。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMeta {
+    pub id: String,
+    pub worktree_path: String,
+    pub state: SessionState,
+    pub created_at: f64,
+    pub updated_at: f64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub agent_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub context_carry: Option<ContextCarryState>,
+    pub permission_mode: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan_mode: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub selected_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub permission_profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub backend_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub workflow_step_session: bool,
+    pub first_message_preview: String,
+    pub message_count: usize,
+    pub body_format_version: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentRef {
+    pub id: String,
+    pub media_type: String,
+    pub byte_size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageIndexEntry {
+    pub id: String,
+    pub seq: u64,
+    pub role: MessageRole,
+    pub timestamp: f64,
+    pub content_hash: String,
+    #[serde(default)]
+    pub attachment_refs: Vec<AttachmentRef>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub token_meta: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageCursor(pub u64);
+
+impl serde::Serialize for PageCursor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PageCursor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct CursorVisitor;
+
+        impl serde::de::Visitor<'_> for CursorVisitor {
+            type Value = PageCursor;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a page cursor string or integer")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                value
+                    .parse::<u64>()
+                    .map(PageCursor)
+                    .map_err(|_| E::custom("invalid page cursor"))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(PageCursor(value))
+            }
+        }
+
+        deserializer.deserialize_any(CursorVisitor)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessagePageMetadata {
+    pub message_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub token_meta: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub run_meta: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPage {
+    pub messages: Vec<ChatMessage>,
+    #[serde(default)]
+    pub message_metadata: Vec<MessagePageMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub next_cursor: Option<PageCursor>,
+    pub has_more: bool,
+    pub total_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub latest_token_usage: Option<TokenUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAttachment {
+    pub data: String,
+    pub media_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -324,37 +498,102 @@ pub struct SessionSummary {
     pub workflow_step_session: bool,
 }
 
-impl ChatSession {
-    pub fn to_summary(&self) -> SessionSummary {
-        let first_message = self
-            .messages
-            .first()
-            .map(|m| {
-                let content = if m.content.is_empty() {
-                    if m.parts.as_ref().is_some_and(|parts| {
-                        parts.iter().any(|p| matches!(p, MessagePart::Image { .. }))
-                    }) {
-                        "[Image]".to_string()
-                    } else {
-                        m.content.clone()
-                    }
+pub(crate) fn first_message_preview(messages: &[ChatMessage]) -> String {
+    let first_message = messages
+        .first()
+        .map(|m| {
+            let content = if m.content.is_empty() {
+                if m.parts.as_ref().is_some_and(|parts| {
+                    parts.iter().any(|p| {
+                        matches!(p, MessagePart::Image { .. } | MessagePart::ImageRef { .. })
+                    })
+                }) {
+                    "[Image]".to_string()
                 } else {
                     m.content.clone()
-                };
-                match content.char_indices().nth(100) {
-                    Some((byte_pos, _)) => format!("{}…", &content[..byte_pos]),
-                    None => content,
                 }
-            })
-            .unwrap_or_default();
+            } else {
+                m.content.clone()
+            };
+            match content.char_indices().nth(100) {
+                Some((byte_pos, _)) => format!("{}…", &content[..byte_pos]),
+                None => content,
+            }
+        })
+        .unwrap_or_default();
+    first_message
+}
 
+impl SessionMeta {
+    pub fn from_session(session: &ChatSession) -> Self {
+        Self {
+            id: session.id.clone(),
+            worktree_path: session.worktree_path.clone(),
+            state: session.state.clone(),
+            created_at: session.created_at,
+            updated_at: session.updated_at,
+            agent_session_id: session.agent_session_id.clone(),
+            context_carry: session.context_carry.clone(),
+            permission_mode: session.permission_mode.clone(),
+            plan_mode: session.plan_mode,
+            selected_model: session.selected_model.clone(),
+            permission_profile_id: session.permission_profile_id.clone(),
+            backend_id: session.backend_id.clone(),
+            workflow_step_session: session.workflow_step_session,
+            first_message_preview: first_message_preview(&session.messages),
+            message_count: session.messages.len(),
+            body_format_version: SESSION_BODY_FORMAT_VERSION,
+        }
+    }
+
+    pub fn to_session(&self, messages: Vec<ChatMessage>) -> ChatSession {
+        ChatSession {
+            id: self.id.clone(),
+            worktree_path: self.worktree_path.clone(),
+            messages,
+            state: self.state.clone(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            agent_session_id: self.agent_session_id.clone(),
+            context_carry: self.context_carry.clone(),
+            permission_mode: self.permission_mode.clone(),
+            plan_mode: self.plan_mode,
+            selected_model: self.selected_model.clone(),
+            permission_profile_id: self.permission_profile_id.clone(),
+            backend_id: self.backend_id.clone(),
+            workflow_step_session: self.workflow_step_session,
+        }
+    }
+
+    pub fn to_summary(&self) -> SessionSummary {
         SessionSummary {
             id: self.id.clone(),
             worktree_path: self.worktree_path.clone(),
             state: self.state.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
-            first_message,
+            first_message: self.first_message_preview.clone(),
+            message_count: self.message_count,
+            agent_session_id: self.agent_session_id.clone(),
+            context_carry: self.context_carry.clone(),
+            permission_mode: self.permission_mode.clone(),
+            plan_mode: self.plan_mode,
+            permission_profile_id: self.permission_profile_id.clone(),
+            backend_id: self.backend_id.clone(),
+            workflow_step_session: self.workflow_step_session,
+        }
+    }
+}
+
+impl ChatSession {
+    pub fn to_summary(&self) -> SessionSummary {
+        SessionSummary {
+            id: self.id.clone(),
+            worktree_path: self.worktree_path.clone(),
+            state: self.state.clone(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            first_message: first_message_preview(&self.messages),
             message_count: self.messages.len(),
             agent_session_id: self.agent_session_id.clone(),
             context_carry: self.context_carry.clone(),
@@ -438,7 +677,7 @@ pub fn parts_to_legacy(
             MessagePart::TaskStatus { .. } => {}
             MessagePart::TodoListSnapshot { .. } => {}
             MessagePart::SystemNotification { .. } => {}
-            MessagePart::Image { .. } => {}
+            MessagePart::Image { .. } | MessagePart::ImageRef { .. } => {}
         }
     }
     let thinking = if thinking.is_empty() {
@@ -521,7 +760,7 @@ pub fn create_session_internal_with_attributes(
         attributes.plan_mode,
         attributes.workflow_step_session,
     );
-    session_store.save_session(data_dir, &session)?;
+    session_store.save_full_session_for_migration_or_restore(data_dir, &session)?;
     Ok(session)
 }
 
@@ -627,7 +866,7 @@ pub fn create_session_with_model_and_plan_mode(
         plan_mode,
         false,
     );
-    session_store.save_session(data_dir, &session)?;
+    session_store.save_full_session_for_migration_or_restore(data_dir, &session)?;
     Ok(session)
 }
 
@@ -641,15 +880,10 @@ pub fn add_message_internal(
     parts: Option<Vec<MessagePart>>,
     mentions: Option<Vec<crate::domain::code::MentionReference>>,
 ) -> Result<ChatMessage, String> {
-    let mut session = session_store
-        .get_session(data_dir, session_id)?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
     let now = now_timestamp();
-    // 永続化境界（ChatMessage の serde JSON）では adaptor の Input 型へ詰め替える。
-    // serialize 表現（camelCase・行範囲省略）は移行前と等価。
     let mentions_for_persist = mentions.map(|v| {
         v.into_iter()
-            .map(crate::adaptor::protocol::mention::MentionReferenceInput::from_domain)
+            .map(MessageMention::from_domain)
             .collect::<Vec<_>>()
     });
     let message = ChatMessage {
@@ -662,9 +896,7 @@ pub fn add_message_internal(
         timestamp: now,
         mentions: mentions_for_persist,
     };
-    session.messages.push(message.clone());
-    session.updated_at = now;
-    session_store.save_session(data_dir, &session)?;
+    session_store.append_message(data_dir, session_id, &message)?;
     Ok(message)
 }
 
@@ -696,15 +928,13 @@ pub(crate) fn update_session_state_in_data_dir(
     session_id: &str,
     new_state: SessionState,
 ) -> Result<(), String> {
-    let mut session = state
-        .get_session(data_dir, session_id)?
+    let meta = state
+        .get_session_meta(data_dir, session_id)?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
-    if session.workflow_step_session && session.state == SessionState::Closed {
+    if meta.workflow_step_session && meta.state == SessionState::Closed {
         return Ok(());
     }
-    session.state = new_state;
-    session.updated_at = now_timestamp();
-    state.save_session(data_dir, &session)?;
+    state.set_session_state(data_dir, session_id, new_state)?;
     Ok(())
 }
 
@@ -803,11 +1033,8 @@ mod tests {
 
     #[test]
     fn chat_message_mentions_persist_serializeは移行前のcamelcase等価() {
-        // domain VO `MentionReference` から serde を剥がしたため、永続化境界（ChatMessage）
-        // の `mentions` は adaptor の `MentionReferenceInput` を保持する。serialize 表現
-        // （camelCase / 行範囲省略）が移行前と等価であることを担保する。
-        use crate::adaptor::protocol::mention::MentionReferenceInput;
-
+        // usecase の保存モデルが adaptor/protocol へ逆依存せず、serialize 表現だけを
+        // controller 境界と等価に保つことを担保する。
         let msg = ChatMessage {
             id: "m1".to_string(),
             role: MessageRole::Human,
@@ -817,12 +1044,12 @@ mod tests {
             parts: None,
             timestamp: 1.0,
             mentions: Some(vec![
-                MentionReferenceInput {
+                MessageMention {
                     file_path: "src/a.rs".to_string(),
                     start_line: None,
                     end_line: None,
                 },
-                MentionReferenceInput {
+                MessageMention {
                     file_path: "src/b.rs".to_string(),
                     start_line: Some(3),
                     end_line: Some(5),
@@ -1024,7 +1251,7 @@ mod tests {
     #[test]
     fn generic_state_update_ignores_closed_workflow_step_session_but_updates_regular_session() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = SessionStore::default();
+        let store = crate::test_support::build_session_store();
 
         let workflow_step_id = uuid::Uuid::new_v4().to_string();
         let regular_id = uuid::Uuid::new_v4().to_string();
@@ -1048,8 +1275,12 @@ mod tests {
         regular.id = regular_id.clone();
         regular.workflow_step_session = false;
 
-        store.save_session(tmp.path(), &workflow_step).unwrap();
-        store.save_session(tmp.path(), &regular).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(tmp.path(), &workflow_step)
+            .unwrap();
+        store
+            .save_full_session_for_migration_or_restore(tmp.path(), &regular)
+            .unwrap();
 
         update_session_state_in_data_dir(&store, tmp.path(), &workflow_step.id, SessionState::Idle)
             .unwrap();
@@ -1057,12 +1288,138 @@ mod tests {
             .unwrap();
 
         workflow_step = store
-            .get_session(tmp.path(), &workflow_step_id)
+            .load_full_session_for_restore(tmp.path(), &workflow_step_id)
             .unwrap()
             .unwrap();
-        let regular = store.get_session(tmp.path(), &regular_id).unwrap().unwrap();
+        let regular = store
+            .load_full_session_for_restore(tmp.path(), &regular_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(workflow_step.state, SessionState::Closed);
         assert_eq!(regular.state, SessionState::Idle);
+    }
+
+    #[test]
+    fn update_session_state_does_not_read_message_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::test_support::build_session_store();
+        let session = ChatSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: vec![ChatMessage {
+                id: "m1".to_string(),
+                role: MessageRole::Human,
+                content: "hello".to_string(),
+                thinking: None,
+                activities: None,
+                parts: None,
+                timestamp: 1000.0,
+                mentions: None,
+            }],
+            state: SessionState::Active,
+            created_at: 1000.0,
+            updated_at: 1000.0,
+            agent_session_id: None,
+            context_carry: None,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            permission_profile_id: None,
+            selected_model: None,
+            backend_id: None,
+            workflow_step_session: false,
+        };
+        store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+        std::fs::write(
+            tmp.path()
+                .join("sessions")
+                .join(&session.id)
+                .join("messages")
+                .join("1.json"),
+            "{",
+        )
+        .unwrap();
+
+        update_session_state_in_data_dir(&store, tmp.path(), &session.id, SessionState::Idle)
+            .unwrap();
+
+        let meta = store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.state, SessionState::Idle);
+    }
+
+    #[test]
+    fn meta_update_after_shell_load_preserves_all_message_chunks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::test_support::build_session_store();
+        let mut session = ChatSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: vec![
+                ChatMessage {
+                    id: "m1".to_string(),
+                    role: MessageRole::Human,
+                    content: "first".to_string(),
+                    thinking: None,
+                    activities: None,
+                    parts: None,
+                    timestamp: 1000.0,
+                    mentions: None,
+                },
+                ChatMessage {
+                    id: "m2".to_string(),
+                    role: MessageRole::Agent,
+                    content: "second".to_string(),
+                    thinking: None,
+                    activities: None,
+                    parts: None,
+                    timestamp: 1001.0,
+                    mentions: None,
+                },
+            ],
+            state: SessionState::Active,
+            created_at: 1000.0,
+            updated_at: 1001.0,
+            agent_session_id: None,
+            context_carry: None,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            permission_profile_id: None,
+            selected_model: None,
+            backend_id: None,
+            workflow_step_session: false,
+        };
+        store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+
+        let shell = store
+            .get_session_shell(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert!(shell.messages.is_empty());
+
+        store
+            .set_session_state(tmp.path(), &session.id, SessionState::Idle)
+            .unwrap();
+
+        session.state = SessionState::Idle;
+        let loaded = store
+            .load_full_session_for_restore(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            loaded
+                .messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert_eq!(loaded.state, session.state);
     }
 
     #[test]
@@ -1570,6 +1927,25 @@ mod tests {
     }
 
     #[test]
+    fn message_part_image_ref_serde_roundtrip() {
+        let part = MessagePart::ImageRef {
+            attachment: AttachmentRef {
+                id: "abc123".to_string(),
+                media_type: "image/png".to_string(),
+                byte_size: 42,
+            },
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "image_ref");
+        assert_eq!(v["attachment"]["id"], "abc123");
+        assert_eq!(v["attachment"]["mediaType"], "image/png");
+        assert_eq!(v["attachment"]["byteSize"], 42);
+        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, part);
+    }
+
+    #[test]
     fn chat_message_with_image_parts_roundtrip() {
         let msg = ChatMessage {
             id: "m1".to_string(),
@@ -1645,7 +2021,7 @@ mod tests {
 
     #[test]
     fn create_session_internal_with_backend_id() {
-        let store = SessionStore::default();
+        let store = crate::test_support::build_session_store();
         let dir = tempfile::tempdir().unwrap();
         let session =
             create_session_internal(&store, dir.path(), "/repo", Some("claude".to_string()))
@@ -1657,7 +2033,7 @@ mod tests {
 
     #[test]
     fn create_session_internal_without_backend_id() {
-        let store = SessionStore::default();
+        let store = crate::test_support::build_session_store();
         let dir = tempfile::tempdir().unwrap();
         let session = create_session_internal(&store, dir.path(), "/repo", None).unwrap();
         assert_eq!(session.backend_id, None);
@@ -1674,7 +2050,7 @@ mod tests {
             crate::permission::PermissionMode::Edit,
             crate::permission::PermissionMode::Full,
         ] {
-            let store = SessionStore::default();
+            let store = crate::test_support::build_session_store();
             let dir = tempfile::tempdir().unwrap();
             let created = create_session_internal_with_permission(
                 &store,
@@ -1686,7 +2062,10 @@ mod tests {
             .unwrap();
             assert_eq!(created.permission_mode, mode.as_str());
 
-            let loaded = store.get_session(dir.path(), &created.id).unwrap().unwrap();
+            let loaded = store
+                .load_full_session_for_restore(dir.path(), &created.id)
+                .unwrap()
+                .unwrap();
             assert_eq!(loaded.permission_mode, mode.as_str());
         }
     }
@@ -1703,7 +2082,7 @@ mod tests {
     #[test]
     fn create_session_command_inner_persists_valid_permission_modes() {
         for mode in ["ask", "edit", "full"] {
-            let store = SessionStore::default();
+            let store = crate::test_support::build_session_store();
             let dir = tempfile::tempdir().unwrap();
             let registry = test_backend_registry();
 
@@ -1718,7 +2097,10 @@ mod tests {
             .unwrap();
 
             assert_eq!(created.permission_mode, mode);
-            let loaded = store.get_session(dir.path(), &created.id).unwrap().unwrap();
+            let loaded = store
+                .load_full_session_for_restore(dir.path(), &created.id)
+                .unwrap()
+                .unwrap();
             assert_eq!(loaded.permission_mode, mode);
         }
     }
@@ -1733,7 +2115,7 @@ mod tests {
             "unknown",
             "",
         ] {
-            let store = SessionStore::default();
+            let store = crate::test_support::build_session_store();
             let dir = tempfile::tempdir().unwrap();
             let registry = test_backend_registry();
 
@@ -1771,7 +2153,7 @@ mod tests {
     fn create_session_with_initial_model_persists_default_for_claude() {
         // spec: モデル未選択状態は廃止。新規セッションは常に backend の既定モデル
         // （固定リスト先頭）を selected_model に持ち、永続化される。
-        let store = SessionStore::default();
+        let store = crate::test_support::build_session_store();
         let dir = tempfile::tempdir().unwrap();
         let registry = fixed_model_registry();
 
@@ -1790,14 +2172,17 @@ mod tests {
         assert_eq!(session.selected_model, Some(default_model.clone()));
 
         // 永続化されている (on-disk から再ロードしても保持される)
-        let reloaded = store.get_session(dir.path(), &session.id).unwrap().unwrap();
+        let reloaded = store
+            .load_full_session_for_restore(dir.path(), &session.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(reloaded.selected_model, Some(default_model));
     }
 
     #[test]
     fn create_session_with_initial_model_persists_default_for_codex() {
         // spec: codex バックエンドも固定リスト先頭が既定モデルになる。
-        let store = SessionStore::default();
+        let store = crate::test_support::build_session_store();
         let dir = tempfile::tempdir().unwrap();
         let registry = fixed_model_registry();
 
@@ -1818,7 +2203,7 @@ mod tests {
 
     #[test]
     fn create_session_with_model_and_plan_mode_preserves_explicit_selected_model() {
-        let store = SessionStore::default();
+        let store = crate::test_support::build_session_store();
         let dir = tempfile::tempdir().unwrap();
         let registry = fixed_model_registry();
         // 本番呼び出し元（controller / ws / bridge）は entry id を resolve 済みの

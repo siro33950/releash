@@ -171,22 +171,22 @@ fn chat_session_with_message_for_test(
 #[test]
 fn workflow_step_summary_uses_persisted_session_flag() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = crate::usecase::agent_session::session::SessionStore::default();
+    let store = crate::test_support::build_session_store();
 
     store
-        .save_session(
+        .save_full_session_for_migration_or_restore(
             tmp.path(),
             &chat_session_for_test(TEST_PARENT_SESSION_ID, "/repo", None, false),
         )
         .unwrap();
     store
-        .save_session(
+        .save_full_session_for_migration_or_restore(
             tmp.path(),
             &chat_session_for_test(TEST_STEP_SESSION_ID, "/repo", None, true),
         )
         .unwrap();
     store
-        .save_session(
+        .save_full_session_for_migration_or_restore(
             tmp.path(),
             &chat_session_for_test(TEST_REGULAR_SESSION_ID, "/repo", None, false),
         )
@@ -207,12 +207,12 @@ fn workflow_step_summary_uses_persisted_session_flag() {
 #[test]
 fn step_session_tab_cleanup_closes_session_and_preserves_history() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = crate::usecase::agent_session::session::SessionStore::default();
+    let store = crate::test_support::build_session_store();
     let open_tabs = Arc::new(crate::usecase::agent_session::session::OpenTabRegistry::default());
     let session_id = uuid::Uuid::new_v4().to_string();
 
     store
-        .save_session(
+        .save_full_session_for_migration_or_restore(
             tmp.path(),
             &chat_session_with_message_for_test(&session_id, "/repo"),
         )
@@ -228,7 +228,7 @@ fn step_session_tab_cleanup_closes_session_and_preserves_history() {
 
     assert!(!open_tabs.contains(&session_id));
     let session = store
-        .get_session(tmp.path(), &session_id)
+        .load_full_session_for_restore(tmp.path(), &session_id)
         .unwrap()
         .expect("session remains");
     assert_eq!(
@@ -4479,7 +4479,7 @@ fn resolve_step_settings_parallel_children_different_configs() {
 #[test]
 fn step_session_persists_permission_workflow_flag_and_model_on_initial_save() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = crate::usecase::agent_session::session::SessionStore::default();
+    let store = crate::test_support::build_session_store();
 
     let settings = resolve_step_settings(
         Some("opus-4".to_string()),
@@ -4513,9 +4513,9 @@ fn step_session_persists_permission_workflow_flag_and_model_on_initial_save() {
     assert_eq!(session.backend_id.as_deref(), Some("claude"));
 
     // 別インスタンスから読み直しても同じ値で復元される（永続化が確定値で書かれている）。
-    let store2 = crate::usecase::agent_session::session::SessionStore::default();
+    let store2 = crate::test_support::build_session_store();
     let loaded = store2
-        .get_session(tmp.path(), &session.id)
+        .load_full_session_for_restore(tmp.path(), &session.id)
         .unwrap()
         .unwrap();
     assert_eq!(loaded.permission_mode, "edit");
@@ -4529,7 +4529,7 @@ fn step_session_persists_permission_workflow_flag_and_model_on_initial_save() {
 #[test]
 fn step_session_inherits_parent_permission_and_backend_on_initial_save() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = crate::usecase::agent_session::session::SessionStore::default();
+    let store = crate::test_support::build_session_store();
 
     let settings = resolve_step_settings(
         None,
@@ -6036,7 +6036,7 @@ mod dispatch_boundary_tests {
         Arc<Mutex<AgentProcessMap>>,
     ) {
         (
-            Arc::new(crate::usecase::agent_session::session::SessionStore::default()),
+            Arc::new(crate::test_support::build_session_store()),
             Arc::new(Mutex::new(AgentProcessMap::new())),
         )
     }

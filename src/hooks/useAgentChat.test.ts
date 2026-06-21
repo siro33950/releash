@@ -21,6 +21,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("./useSessionStore", () => ({
 	listSessions: vi.fn().mockResolvedValue([]),
 	getSession: vi.fn().mockResolvedValue(null),
+	getSessionPage: vi.fn().mockResolvedValue(null),
 	createSession: vi.fn().mockResolvedValue({
 		id: "s1",
 		worktreePath: "/repo",
@@ -155,6 +156,10 @@ describe("useAgentChat", () => {
 	beforeEach(async () => {
 		mockInvoke.mockClear();
 		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.getSession).mockResolvedValue(null);
+		vi.mocked(sessionStore.getSession).mockClear();
+		vi.mocked(sessionStore.getSessionPage).mockResolvedValue(null);
+		vi.mocked(sessionStore.getSessionPage).mockClear();
 		vi.mocked(sessionStore.sendAgentMessage).mockClear();
 		vi.mocked(sessionStore.sendWorkflowApprovalChatMessage).mockClear();
 		vi.mocked(sessionStore.initAgentSessions).mockClear();
@@ -164,6 +169,60 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.restoreSession).mockClear();
 		vi.mocked(sessionStore.setSessionBackend).mockClear();
 	});
+
+	const chatMessage = (id: string, content: string, timestamp: number) => ({
+		id,
+		role: "human",
+		parts: [{ type: "text", content }],
+		timestamp,
+	});
+
+	const chatSession = (
+		id: string,
+		messages: ReturnType<typeof chatMessage>[],
+	) => ({
+		id,
+		worktreePath: "/repo",
+		messages,
+		state: "idle",
+		createdAt: 1000,
+		updatedAt: 1000,
+		permissionMode: "edit",
+	});
+
+	const sessionResponse = (
+		session: ReturnType<typeof chatSession>,
+		initialPage: {
+			nextCursor: string | null;
+			hasMore: boolean;
+			totalCount: number;
+		},
+	) =>
+		({
+			session,
+			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [],
+			initialPage,
+		}) as never;
+
+	const pageResponse = (
+		messages: ReturnType<typeof chatMessage>[],
+		nextCursor: string | null,
+		hasMore: boolean,
+	) =>
+		({
+			messages,
+			messageMetadata: messages.map((message) => ({
+				messageId: message.id,
+				tokenMeta: null,
+				runMeta: null,
+			})),
+			nextCursor,
+			hasMore,
+			totalCount: messages.length,
+			latestTokenUsage: null,
+		}) as never;
 
 	it("should define the hook", async () => {
 		const mod = await import("./useAgentChat");
@@ -576,6 +635,21 @@ describe("useAgentChat", () => {
 		);
 	});
 
+	it("sendMessage appends returned messages when response session is a shell", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await result.current.sendMessage(null, "hello");
+		});
+
+		expect(
+			result.current.activeSession?.messages.map((message) => message.id),
+		).toEqual(["msg-1", "msg-2"]);
+	});
+
 	it("sendMessage can create a new session without activating it", async () => {
 		const { renderHook, act, waitFor } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
@@ -758,6 +832,209 @@ describe("useAgentChat", () => {
 
 		expect(sessionStore.getSession).toHaveBeenCalledWith("s2");
 		expect(result.current.activeSession).toEqual(mockSession);
+	});
+
+	it("loadOlderMessages prepends cursor pages without duplicates and advances cursor", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const session = chatSession("s1", [chatMessage("m3", "latest", 1003)]);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+			sessionResponse(session, {
+				nextCursor: "3",
+				hasMore: true,
+				totalCount: 4,
+			}),
+		);
+		vi.mocked(sessionStore.getSessionPage).mockImplementation(
+			async (_sessionId, cursor) => {
+				if (cursor === "3") {
+					return pageResponse(
+						[
+							chatMessage("m1", "oldest loaded", 1001),
+							chatMessage("m2", "older loaded", 1002),
+							chatMessage("m3", "duplicate latest", 1003),
+						],
+						"1",
+						true,
+					);
+				}
+				if (cursor === "1") {
+					return pageResponse(
+						[
+							chatMessage("m0", "very old", 1000),
+							chatMessage("m1", "duplicate old", 1001),
+						],
+						null,
+						false,
+					);
+				}
+				throw new Error(`unexpected cursor ${cursor}`);
+			},
+		);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+
+		await act(async () => {
+			await result.current.loadOlderMessages("s1");
+		});
+		await act(async () => {
+			await result.current.loadOlderMessages("s1");
+		});
+
+		expect(sessionStore.getSessionPage).toHaveBeenNthCalledWith(1, "s1", "3");
+		expect(sessionStore.getSessionPage).toHaveBeenNthCalledWith(2, "s1", "1");
+		expect(
+			result.current.activeSession?.messages.map((message) => message.id),
+		).toEqual(["m0", "m1", "m2", "m3"]);
+	});
+
+	it("loadOlderMessages is no-op when there is no older cursor", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+			sessionResponse(chatSession("s1", [chatMessage("m1", "latest", 1001)]), {
+				nextCursor: "1",
+				hasMore: false,
+				totalCount: 1,
+			}),
+		);
+		const { result, unmount } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+		await act(async () => {
+			await result.current.loadOlderMessages("s1");
+		});
+		expect(sessionStore.getSessionPage).not.toHaveBeenCalled();
+		unmount();
+
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+			sessionResponse(chatSession("s2", [chatMessage("m2", "latest", 1002)]), {
+				nextCursor: null,
+				hasMore: true,
+				totalCount: 1,
+			}),
+		);
+		const { result: result2 } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await result2.current.selectSession("s2");
+		});
+		await act(async () => {
+			await result2.current.loadOlderMessages("s2");
+		});
+		expect(sessionStore.getSessionPage).not.toHaveBeenCalled();
+	});
+
+	it("loadOlderMessages suppresses re-entry while a page is loading", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+			sessionResponse(chatSession("s1", [chatMessage("m2", "latest", 1002)]), {
+				nextCursor: "2",
+				hasMore: true,
+				totalCount: 2,
+			}),
+		);
+		let resolvePage: (
+			value: Awaited<ReturnType<typeof sessionStore.getSessionPage>>,
+		) => void = () => {};
+		vi.mocked(sessionStore.getSessionPage).mockReturnValue(
+			new Promise((resolve) => {
+				resolvePage = resolve;
+			}),
+		);
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+
+		await act(async () => {
+			const first = result.current.loadOlderMessages("s1");
+			const second = result.current.loadOlderMessages("s1");
+			await second;
+			resolvePage(
+				pageResponse([chatMessage("m1", "older", 1001)], null, false),
+			);
+			await first;
+		});
+
+		expect(sessionStore.getSessionPage).toHaveBeenCalledTimes(1);
+		expect(
+			result.current.activeSession?.messages.map((message) => message.id),
+		).toEqual(["m1", "m2"]);
+	});
+
+	it("loadOlderMessages stops after null page and releases loading", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+			sessionResponse(chatSession("s1", [chatMessage("m1", "latest", 1001)]), {
+				nextCursor: "1",
+				hasMore: true,
+				totalCount: 1,
+			}),
+		);
+		vi.mocked(sessionStore.getSessionPage).mockResolvedValueOnce(null);
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+
+		await act(async () => {
+			await result.current.loadOlderMessages("s1");
+		});
+		await act(async () => {
+			await result.current.loadOlderMessages("s1");
+		});
+
+		expect(sessionStore.getSessionPage).toHaveBeenCalledTimes(1);
+		expect(
+			result.current.activeSession?.messages.map((message) => message.id),
+		).toEqual(["m1"]);
+	});
+
+	it("loadOlderMessages sets error on reject and can fetch again", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+			sessionResponse(chatSession("s1", [chatMessage("m2", "latest", 1002)]), {
+				nextCursor: "2",
+				hasMore: true,
+				totalCount: 2,
+			}),
+		);
+		vi.mocked(sessionStore.getSessionPage)
+			.mockRejectedValueOnce(new Error("network down"))
+			.mockResolvedValueOnce(
+				pageResponse([chatMessage("m1", "older", 1001)], null, false),
+			);
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+
+		await act(async () => {
+			await result.current.loadOlderMessages("s1");
+		});
+		expect(result.current.error).toContain("過去メッセージの読み込みに失敗");
+
+		await act(async () => {
+			await result.current.loadOlderMessages("s1");
+		});
+
+		expect(sessionStore.getSessionPage).toHaveBeenCalledTimes(2);
+		expect(
+			result.current.activeSession?.messages.map((message) => message.id),
+		).toEqual(["m1", "m2"]);
 	});
 
 	it("selectSession restores model selection from backend response", async () => {

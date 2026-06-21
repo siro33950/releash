@@ -64,6 +64,7 @@ export function BoundSessionChat({
 	const {
 		getSessionById,
 		loadSession,
+		loadOlderMessages,
 		registerViewableSession,
 		getSessionTurnPhase,
 		getSessionInterrupting,
@@ -227,6 +228,7 @@ export function BoundSessionChat({
 			onCancelQueuedTurn={(queuedTurnId) =>
 				cancelQueuedTurn(session.id, queuedTurnId)
 			}
+			onLoadOlderMessages={() => loadOlderMessages(session.id)}
 			onPermissionModeChange={handlePermissionModeChange}
 			onPlanModeChange={handlePlanModeChange}
 			onModelChange={handleModelChange}

@@ -26,8 +26,8 @@ import type {
 	AgentEditorSelection,
 	ChatMessage,
 	ChatSession,
+	DisplayImagePart,
 	ImageAttachment,
-	ImagePart,
 	MentionReference,
 	MessagePart,
 	ModelInfo,
@@ -127,6 +127,30 @@ function taskListRevision(messages: ChatMessage[]): string {
 			return `${message.id}:${message.role}:${partRevision}`;
 		})
 		.join("|");
+}
+
+function isPrependOnly(previousIds: string[], nextIds: string[]): boolean {
+	if (previousIds.length === 0 || nextIds.length <= previousIds.length) {
+		return false;
+	}
+	const offset = nextIds.length - previousIds.length;
+	return previousIds.every((id, index) => nextIds[index + offset] === id);
+}
+
+function isTailAppend(previousIds: string[], nextIds: string[]): boolean {
+	if (nextIds.length <= previousIds.length) return false;
+	if (previousIds.length === 0) return true;
+	return previousIds.every((id, index) => nextIds[index] === id);
+}
+
+export function shouldTailFollowMessageChange(
+	previousIds: string[],
+	nextIds: string[],
+	isNearBottom: boolean,
+): boolean {
+	if (isPrependOnly(previousIds, nextIds)) return false;
+	if (isTailAppend(previousIds, nextIds)) return true;
+	return isNearBottom;
 }
 
 interface AgentPromptSuggestion {
@@ -503,6 +527,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 					case "todo_list_snapshot":
 						return null;
 					case "image":
+					case "image_ref":
 						return null;
 				}
 			})}
@@ -557,6 +582,7 @@ export interface ChatSessionViewProps {
 	) => Promise<void>;
 	onInterrupt: () => void;
 	onCancelQueuedTurn: (queuedTurnId?: string | null) => Promise<void>;
+	onLoadOlderMessages?: () => Promise<void>;
 	onPermissionModeChange: (mode: PermissionMode) => void;
 	onPlanModeChange: (enabled: PlanMode) => void;
 	onModelChange: (modelId: string) => void;
@@ -611,6 +637,7 @@ export function ChatSessionView({
 	onSend,
 	onInterrupt,
 	onCancelQueuedTurn,
+	onLoadOlderMessages,
 	onPermissionModeChange,
 	onPlanModeChange,
 	onModelChange,
@@ -668,7 +695,10 @@ export function ChatSessionView({
 	const searchInputRef = useRef<HTMLInputElement>(null);
 	const messageRefs = useRef(new Map<string, HTMLDivElement>());
 	const scrollRef = useRef<HTMLDivElement>(null);
-	const lastMessageCount = useRef(0);
+	const lastMessageSnapshotRef = useRef<{
+		sessionId: string;
+		messageIds: string[];
+	}>({ sessionId: "", messageIds: [] });
 	const isNearBottomRef = useRef(true);
 	const lastTaskListRevisionRef = useRef<string | null>(null);
 	const currentTaskListRevision = useMemo(
@@ -725,7 +755,10 @@ export function ChatSessionView({
 		if (!el) return;
 		isNearBottomRef.current =
 			el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-	}, []);
+		if (el.scrollTop < 80) {
+			void onLoadOlderMessages?.();
+		}
+	}, [onLoadOlderMessages]);
 
 	// Derive streaming content tracking values
 	const agentMessages = session.messages.filter((m) => m.role === "agent");
@@ -810,18 +843,29 @@ export function ChatSessionView({
 	// Auto-scroll: keep tail-following behavior while only mounted rows are in the DOM.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: lastAgentContent/lastAgentPartsLen/shimmerLineCount intentionally trigger tail follow during streaming growth.
 	useEffect(() => {
-		const count = session.messages.length;
-		if (count > lastMessageCount.current) {
-			messageVirtualizer.scrollToIndex(Math.max(virtualRowCount - 1, 0), {
-				align: "end",
-			});
-		} else if (isNearBottomRef.current) {
+		const nextMessageIds = session.messages.map((message) => message.id);
+		const previousSnapshot = lastMessageSnapshotRef.current;
+		const previousMessageIds =
+			previousSnapshot.sessionId === session.id
+				? previousSnapshot.messageIds
+				: [];
+		if (
+			shouldTailFollowMessageChange(
+				previousMessageIds,
+				nextMessageIds,
+				isNearBottomRef.current,
+			)
+		) {
 			messageVirtualizer.scrollToIndex(Math.max(virtualRowCount - 1, 0), {
 				align: "end",
 			});
 		}
-		lastMessageCount.current = count;
+		lastMessageSnapshotRef.current = {
+			sessionId: session.id,
+			messageIds: nextMessageIds,
+		};
 	}, [
+		session.id,
 		session.messages.length,
 		lastAgentContent,
 		lastAgentPartsLen,
@@ -1215,7 +1259,8 @@ export function ChatSessionView({
 						if (msg.role !== "agent") {
 							const textContent = getTextContent(msg.parts);
 							const imageParts = msg.parts.filter(
-								(p): p is ImagePart => p.type === "image",
+								(p): p is DisplayImagePart =>
+									p.type === "image" || p.type === "image_ref",
 							);
 							const isActiveSearchMessage =
 								activeSearchMatch?.messageId === msg.id;
@@ -1246,6 +1291,7 @@ export function ChatSessionView({
 										images={imageParts.length > 0 ? imageParts : undefined}
 										mentions={msg.mentions}
 										timestamp={msg.timestamp}
+										sessionId={session.id}
 									/>
 								</div>
 							);

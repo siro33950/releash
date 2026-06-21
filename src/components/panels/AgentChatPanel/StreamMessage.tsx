@@ -1,11 +1,17 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check, Copy } from "lucide-react";
 import type { AnchorHTMLAttributes } from "react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
-import type { ImagePart, MentionReference, MessageRole } from "@/types/session";
+import type {
+	DisplayImagePart,
+	ImageAttachment,
+	MentionReference,
+	MessageRole,
+} from "@/types/session";
 
 const LARGE_AGENT_MESSAGE_CHARS = 12_000;
 const LARGE_AGENT_MESSAGE_LINES = 240;
@@ -24,10 +30,11 @@ interface DisplayPart {
 interface StreamMessageProps {
 	content: string;
 	role: MessageRole;
-	images?: ImagePart[];
+	images?: DisplayImagePart[];
 	mentions?: MentionReference[];
 	rawMode?: boolean;
 	timestamp?: number;
+	sessionId?: string;
 }
 
 function ExternalLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
@@ -149,17 +156,97 @@ export function MessageCopyButton({
 	);
 }
 
+function imagePartKey(image: DisplayImagePart, index: number): string {
+	if (image.type === "image") {
+		return `${index}-inline-${image.mediaType}-${image.data.slice(0, 20)}`;
+	}
+	return `${index}-ref-${image.attachment.id}`;
+}
+
+function AttachedImage({
+	image,
+	sessionId,
+}: {
+	image: DisplayImagePart;
+	sessionId?: string;
+}) {
+	const [attachment, setAttachment] = useState<ImageAttachment | null>(
+		image.type === "image"
+			? { data: image.data, mediaType: image.mediaType }
+			: null,
+	);
+	const [failed, setFailed] = useState(false);
+
+	useEffect(() => {
+		if (image.type === "image") {
+			setAttachment({ data: image.data, mediaType: image.mediaType });
+			setFailed(false);
+			return;
+		}
+		if (!sessionId) {
+			setAttachment(null);
+			setFailed(true);
+			return;
+		}
+
+		let cancelled = false;
+		setAttachment(null);
+		setFailed(false);
+		invoke<ImageAttachment | null>("get_session_attachment", {
+			sessionId,
+			attachmentId: image.attachment.id,
+		})
+			.then((result) => {
+				if (cancelled) return;
+				if (result) {
+					setAttachment(result);
+				} else {
+					setFailed(true);
+				}
+			})
+			.catch(() => {
+				if (!cancelled) setFailed(true);
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, [image, sessionId]);
+
+	if (attachment) {
+		return (
+			<img
+				src={`data:${attachment.mediaType};base64,${attachment.data}`}
+				alt="Attached"
+				className="max-h-48 max-w-full rounded-md"
+			/>
+		);
+	}
+
+	return (
+		<div
+			role="img"
+			aria-label={failed ? "Image unavailable" : "Loading image"}
+			className={`h-24 w-32 rounded-md border border-border bg-muted/60 ${
+				failed ? "opacity-60" : "animate-pulse"
+			}`}
+		/>
+	);
+}
+
 export function UserMessage({
 	content,
 	images,
 	mentions,
 	timestamp,
+	sessionId,
 	copyLabel = "Copy message",
 }: {
 	content: string;
-	images?: ImagePart[];
+	images?: DisplayImagePart[];
 	mentions?: MentionReference[];
 	timestamp?: number;
+	sessionId?: string;
 	copyLabel?: string;
 }) {
 	const [isExpanded, setIsExpanded] = useState(false);
@@ -177,12 +264,10 @@ export function UserMessage({
 	const imageElements =
 		images && images.length > 0
 			? images.map((img, index) => (
-					<img
-						// biome-ignore lint/suspicious/noArrayIndexKey: images are positional data, order is fixed
-						key={`${index}-${img.mediaType}-${img.data.slice(0, 20)}`}
-						src={`data:${img.mediaType};base64,${img.data}`}
-						alt="Attached"
-						className="max-h-48 max-w-full rounded-md"
+					<AttachedImage
+						key={imagePartKey(img, index)}
+						image={img}
+						sessionId={sessionId}
 					/>
 				))
 			: null;
@@ -391,6 +476,7 @@ function StreamMessageImpl({
 	mentions,
 	rawMode = false,
 	timestamp,
+	sessionId,
 }: StreamMessageProps) {
 	const isHuman = role === "human";
 
@@ -416,6 +502,7 @@ function StreamMessageImpl({
 						images={images}
 						mentions={mentions}
 						timestamp={timestamp}
+						sessionId={sessionId}
 						copyLabel="Copy human message"
 					/>
 				</div>
@@ -426,13 +513,32 @@ function StreamMessageImpl({
 	);
 }
 
-function shallowEqualImages(a?: ImagePart[], b?: ImagePart[]): boolean {
+function shallowEqualImages(
+	a?: DisplayImagePart[],
+	b?: DisplayImagePart[],
+): boolean {
 	if (a === b) return true;
 	if (!a || !b) return false;
 	if (a.length !== b.length) return false;
 	for (let i = 0; i < a.length; i++) {
-		if (a[i].data !== b[i].data || a[i].mediaType !== b[i].mediaType)
-			return false;
+		const left = a[i];
+		const right = b[i];
+		if (left.type !== right.type) return false;
+		if (left.type === "image" && right.type === "image") {
+			if (left.data !== right.data || left.mediaType !== right.mediaType)
+				return false;
+			continue;
+		}
+		if (left.type === "image_ref" && right.type === "image_ref") {
+			if (
+				left.attachment.id !== right.attachment.id ||
+				left.attachment.mediaType !== right.attachment.mediaType ||
+				left.attachment.byteSize !== right.attachment.byteSize
+			)
+				return false;
+			continue;
+		}
+		return false;
 	}
 	return true;
 }
@@ -466,6 +572,7 @@ export const StreamMessage = memo(StreamMessageImpl, (prev, next) => {
 		prev.role === next.role &&
 		prev.rawMode === next.rawMode &&
 		prev.timestamp === next.timestamp &&
+		prev.sessionId === next.sessionId &&
 		shallowEqualImages(prev.images, next.images) &&
 		shallowEqualMentions(prev.mentions, next.mentions)
 	);

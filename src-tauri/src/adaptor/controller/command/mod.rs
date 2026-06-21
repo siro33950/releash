@@ -185,6 +185,8 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             // Session
             crate::adaptor::controller::command::agent_session::stored_session::list_sessions,
             crate::adaptor::controller::command::agent_session::session::get_session,
+            crate::adaptor::controller::command::agent_session::session::get_session_page,
+            crate::adaptor::controller::command::agent_session::session::get_session_attachment,
             crate::adaptor::controller::command::agent_session::stored_session::create_session,
             crate::adaptor::controller::command::agent_session::stored_session::close_session,
             crate::adaptor::controller::command::agent_session::stored_session::restore_session,

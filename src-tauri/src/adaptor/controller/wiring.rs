@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::adaptor::gateway::agent_session::{FileSessionStorage, GitAgentPromptSuggestionGateway};
 use crate::adaptor::gateway::code::branch_base::BranchBaseResolverGateway;
 use crate::adaptor::gateway::code::branch_diff::BranchDiffGateway;
 use crate::adaptor::gateway::code::diff_compute::DiffComputerGateway;
@@ -39,7 +40,13 @@ use crate::adaptor::gateway::workflow::{
 use crate::domain::app_config::{ConfigRepository, ConfigSecretRepository};
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
-use crate::usecase::agent_session::session::{OpenTabRegistry, SessionStore};
+use crate::infrastructure::agent_session::thread_lifecycle_gateway::{
+    CodexThreadLifecycleAppServerGateway, TauriAgentSessionRuntimeCloser,
+};
+use crate::usecase::agent_session::session::{
+    AgentPromptSuggestionUsecase, OpenTabRegistry, SessionReaderPort, SessionStore,
+    StoredSessionLifecycleUsecase,
+};
 use crate::usecase::code_query_service::CodeQueryService;
 use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::repository_query_service::RepositoryQueryService;
@@ -80,6 +87,28 @@ pub(crate) fn build_code_usecase() -> CodeUsecase {
         Arc::new(BranchBaseResolverGateway::new(Arc::new(GitConfigGateway))),
     );
     CodeUsecase::new(Arc::new(StagingGateway), query)
+}
+
+pub(crate) fn build_session_store() -> SessionStore {
+    SessionStore::new(Arc::new(FileSessionStorage::default()))
+}
+
+pub(crate) fn build_agent_prompt_suggestion_usecase(
+    session_reader: Arc<SessionReaderPort>,
+) -> AgentPromptSuggestionUsecase {
+    AgentPromptSuggestionUsecase::new(session_reader, Arc::new(GitAgentPromptSuggestionGateway))
+}
+
+pub(crate) fn build_stored_session_lifecycle_usecase(
+    app: tauri::AppHandle,
+    session_store: Arc<SessionStore>,
+    handles: Arc<Mutex<AgentProcessMap>>,
+) -> StoredSessionLifecycleUsecase {
+    StoredSessionLifecycleUsecase::new(
+        session_store,
+        Arc::new(CodexThreadLifecycleAppServerGateway::new(app.clone())),
+        Arc::new(TauriAgentSessionRuntimeCloser::new(app, handles)),
+    )
 }
 
 /// workflow usecase を既定の file gateway 実装で構築する。

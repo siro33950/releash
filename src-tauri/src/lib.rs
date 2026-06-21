@@ -18,6 +18,8 @@ mod permission;
 mod protocol;
 mod review_comments;
 mod sentry_integration;
+#[cfg(test)]
+mod test_support;
 mod tray;
 mod usecase;
 mod watcher;
@@ -50,6 +52,13 @@ pub fn run() {
     let _ = fix_path_env::fix();
 
     let ws_broadcaster = Arc::new(ws_bridge::WsBroadcaster::default());
+    let session_storage = Arc::new(adaptor::gateway::agent_session::FileSessionStorage::default());
+    let session_store = Arc::new(usecase::agent_session::session::SessionStore::new(
+        session_storage.clone(),
+    ));
+    let prompt_suggestion_usecase = Arc::new(
+        adaptor::controller::wiring::build_agent_prompt_suggestion_usecase(session_storage),
+    );
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -62,9 +71,8 @@ pub fn run() {
             Some(vec!["--hidden"]),
         ))
         .manage(Arc::new(review_comments::ReviewCommentStore::default()))
-        .manage(Arc::new(
-            usecase::agent_session::session::SessionStore::default(),
-        ))
+        .manage(session_store)
+        .manage(prompt_suggestion_usecase)
         .manage(Arc::new(
             adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default(),
         ))
@@ -100,6 +108,26 @@ pub fn run() {
 
             app.handle()
                 .plugin(tauri_plugin_aptabase::Builder::new("A-US-6336372584").build())?;
+
+            {
+                let session_store_state = app
+                    .state::<Arc<usecase::agent_session::session::SessionStore>>()
+                    .inner()
+                    .clone();
+                let handles_state =
+                    app.state::<Arc<
+                        tokio::sync::Mutex<infrastructure::agent_session::runtime::AgentProcessMap>,
+                    >>()
+                    .inner()
+                    .clone();
+                app.manage(Arc::new(
+                    adaptor::controller::wiring::build_stored_session_lifecycle_usecase(
+                        app.handle().clone(),
+                        session_store_state,
+                        handles_state,
+                    ),
+                ));
+            }
 
             let app_config = Arc::new(AppConfig::new(config, config_path));
             let config_repository: Arc<dyn ConfigRepository> = app_config.clone();

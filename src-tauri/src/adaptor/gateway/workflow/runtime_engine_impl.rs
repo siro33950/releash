@@ -2510,7 +2510,7 @@ impl WorkflowRuntimeService {
         let data_dir = crate::app_data_dir::resolve_data_dir(app)
             .map_err(WorkflowEngineError::SessionStore)?;
         let Some(session) = session_store
-            .get_session(&data_dir, session_id)
+            .get_session_meta(&data_dir, session_id)
             .map_err(WorkflowEngineError::SessionStore)?
         else {
             return self

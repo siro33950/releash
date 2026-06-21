@@ -68,6 +68,14 @@ pub struct AgentTodoListItemMsg {
     pub completed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStreamAttachmentRefMsg {
+    pub id: String,
+    pub media_type: String,
+    pub byte_size: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentStreamPartMsg {
@@ -161,6 +169,9 @@ pub enum AgentStreamPartMsg {
         #[serde(rename = "mediaType")]
         media_type: String,
     },
+    ImageRef {
+        attachment: AgentStreamAttachmentRefMsg,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,5 +239,25 @@ mod tests {
         };
         let json = serde_json::to_string(&sync).unwrap();
         assert!(json.contains("\"pty_id\":\"7\""));
+    }
+
+    #[test]
+    fn image_ref_uses_protocol_attachment_ref_shape() {
+        let part = AgentStreamPartMsg::ImageRef {
+            attachment: AgentStreamAttachmentRefMsg {
+                id: "att-1".to_string(),
+                media_type: "image/png".to_string(),
+                byte_size: 42,
+            },
+        };
+
+        let json = serde_json::to_string(&part).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"type":"image_ref","attachment":{"id":"att-1","mediaType":"image/png","byteSize":42}}"#
+        );
+        let roundtrip: AgentStreamPartMsg = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtrip, part);
     }
 }
