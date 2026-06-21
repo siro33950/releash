@@ -313,6 +313,33 @@ describe("useAgentChat", () => {
 		);
 	});
 
+	it("sendMessage refreshes workspace tree after summaries change", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+
+		try {
+			const { result } = renderHook(() => useAgentChat("/repo"));
+
+			await act(async () => {
+				await result.current.sendMessage(
+					result.current.activeSession?.id ?? null,
+					"hello",
+				);
+			});
+
+			const refreshEvent = dispatchSpy.mock.calls
+				.map(([event]) => event)
+				.find(
+					(event): event is CustomEvent<{ worktreePath: string }> =>
+						event.type === "workspace-tree-refresh",
+				);
+			expect(refreshEvent?.detail).toEqual({ worktreePath: "/repo" });
+		} finally {
+			dispatchSpy.mockRestore();
+		}
+	});
+
 	it("sendMessage passes selected backend when Rust creates the session", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");

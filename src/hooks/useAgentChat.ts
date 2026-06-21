@@ -56,6 +56,15 @@ export type { ActivityStatus } from "./deriveActivityStatus";
 
 const DEFAULT_SESSION_TITLE = "NewSession";
 
+function dispatchWorkspaceTreeRefresh(worktreePath: string): void {
+	if (typeof window === "undefined") return;
+	window.dispatchEvent(
+		new CustomEvent("workspace-tree-refresh", {
+			detail: { worktreePath },
+		}),
+	);
+}
+
 type RefreshSessionsOptions = { reconcileActiveSession?: boolean };
 export type SendMessageOptions = {
 	activateNewSession?: boolean;
@@ -508,6 +517,7 @@ export function useAgentChat(
 					});
 				}
 				dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
+				dispatchWorkspaceTreeRefresh(response.session.worktreePath);
 			} catch (e) {
 				dispatch({
 					type: "SET_ERROR",
