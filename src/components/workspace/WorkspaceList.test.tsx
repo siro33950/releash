@@ -301,8 +301,8 @@ describe("WorkspaceList", () => {
 
 		expect(await screen.findByText("SessionHistory")).toBeInTheDocument();
 		expect(screen.getByText("WorkflowHistory")).toBeInTheDocument();
-		expect(screen.getByText("PRリンク")).toBeInTheDocument();
-		expect(screen.getByText("削除")).toBeInTheDocument();
+		expect(screen.getByText("PR Link")).toBeInTheDocument();
+		expect(screen.getByText("Delete")).toBeInTheDocument();
 	});
 
 	it("closes a Session from the hover action without selecting the row", async () => {

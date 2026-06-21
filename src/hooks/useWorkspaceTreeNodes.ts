@@ -150,7 +150,7 @@ export function useWorkspaceTreeNodes(
 		);
 
 		const setup = async () => {
-			unlistenStatus = await listen<SessionStatus>(
+			const nextUnlistenStatus = await listen<SessionStatus>(
 				"session-status-changed",
 				(event) => {
 					if (!mounted) return;
@@ -164,7 +164,13 @@ export function useWorkspaceTreeNodes(
 					}
 				},
 			);
-			unlistenWorkflow = await listen<WorkflowStatePayload>(
+			if (!mounted) {
+				nextUnlistenStatus();
+				return;
+			}
+			unlistenStatus = nextUnlistenStatus;
+
+			const nextUnlistenWorkflow = await listen<WorkflowStatePayload>(
 				"workflow-state-changed",
 				(event) => {
 					if (!mounted) return;
@@ -180,6 +186,11 @@ export function useWorkspaceTreeNodes(
 					}
 				},
 			);
+			if (!mounted) {
+				nextUnlistenWorkflow();
+				return;
+			}
+			unlistenWorkflow = nextUnlistenWorkflow;
 		};
 
 		void setup().catch(() => {});

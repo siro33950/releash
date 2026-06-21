@@ -125,6 +125,92 @@ describe("useWorkspaceTreeNodes", () => {
 		});
 	});
 
+	it("unsubscribes listeners when cleanup runs after setup completes", async () => {
+		const unlistenStatus = vi.fn();
+		const unlistenWorkflow = vi.fn();
+		mockListen.mockImplementation(
+			(event: string, fn: (event: { payload: unknown }) => void) => {
+				listeners[event] = [...(listeners[event] ?? []), fn];
+				if (event === "session-status-changed") {
+					return Promise.resolve(unlistenStatus);
+				}
+				if (event === "workflow-state-changed") {
+					return Promise.resolve(unlistenWorkflow);
+				}
+				return Promise.resolve(vi.fn());
+			},
+		);
+
+		const { unmount } = renderHook(() => useWorkspaceTreeNodes("/repo"));
+
+		await waitFor(() => {
+			expect(mockListen).toHaveBeenCalledTimes(2);
+		});
+
+		unmount();
+
+		expect(unlistenStatus).toHaveBeenCalledTimes(1);
+		expect(unlistenWorkflow).toHaveBeenCalledTimes(1);
+	});
+
+	it("unsubscribes the status listener if cleanup runs before setup completes", async () => {
+		const pendingStatus = deferred<() => void>();
+		const unlistenStatus = vi.fn();
+		mockListen.mockImplementationOnce(() => pendingStatus.promise);
+
+		const { unmount } = renderHook(() => useWorkspaceTreeNodes("/repo"));
+
+		await waitFor(() => {
+			expect(mockListen).toHaveBeenCalledTimes(1);
+		});
+
+		unmount();
+
+		await act(async () => {
+			pendingStatus.resolve(unlistenStatus);
+			await pendingStatus.promise;
+		});
+
+		expect(unlistenStatus).toHaveBeenCalledTimes(1);
+		expect(mockListen).toHaveBeenCalledTimes(1);
+	});
+
+	it("unsubscribes the workflow listener if cleanup runs before it resolves", async () => {
+		const pendingWorkflow = deferred<() => void>();
+		const unlistenStatus = vi.fn();
+		const unlistenWorkflow = vi.fn();
+		mockListen.mockImplementation(
+			(event: string, fn: (event: { payload: unknown }) => void) => {
+				listeners[event] = [...(listeners[event] ?? []), fn];
+				if (event === "session-status-changed") {
+					return Promise.resolve(unlistenStatus);
+				}
+				if (event === "workflow-state-changed") {
+					return pendingWorkflow.promise;
+				}
+				return Promise.resolve(vi.fn());
+			},
+		);
+
+		const { unmount } = renderHook(() => useWorkspaceTreeNodes("/repo"));
+
+		await waitFor(() => {
+			expect(mockListen).toHaveBeenCalledTimes(2);
+		});
+
+		unmount();
+
+		expect(unlistenStatus).toHaveBeenCalledTimes(1);
+		expect(unlistenWorkflow).not.toHaveBeenCalled();
+
+		await act(async () => {
+			pendingWorkflow.resolve(unlistenWorkflow);
+			await pendingWorkflow.promise;
+		});
+
+		expect(unlistenWorkflow).toHaveBeenCalledTimes(1);
+	});
+
 	it("keeps existing nodes visible during background refresh", async () => {
 		const initial = [makeSessionNode("session-1")];
 		const next = [makeSessionNode("session-1"), makeSessionNode("session-2")];

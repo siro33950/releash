@@ -645,7 +645,7 @@ function WorktreeTreeItem({
 									}}
 								>
 									<ExternalLink className="size-3.5" />
-									PRリンク
+									PR Link
 								</DropdownMenuItem>
 								<DropdownMenuItem
 									variant="destructive"
@@ -657,7 +657,7 @@ function WorktreeTreeItem({
 									}}
 								>
 									<Trash2 className="size-3.5" />
-									削除
+									Delete
 								</DropdownMenuItem>
 							</DropdownMenuContent>
 						</DropdownMenu>
@@ -1025,7 +1025,7 @@ export function WorkspaceList({
 				))}
 				{repoPaths.length === 0 && (
 					<div className="px-2 py-8 text-center text-xs text-muted-foreground">
-						リポジトリなし
+						No Repository
 					</div>
 				)}
 			</div>
