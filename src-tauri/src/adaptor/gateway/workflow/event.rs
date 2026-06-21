@@ -93,6 +93,17 @@ pub enum WorkflowEvent {
         execution_count: u32,
         timestamp: f64,
     },
+    /// 逐次 step の AgentSession が起動された（session_id を観測経路に露出する）。
+    /// `ParallelChildStarted` 相当の単発版で、event projection から
+    /// `current_session_id` を populate するために用いる。
+    StepSessionStarted {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        execution_count: u32,
+        session_id: String,
+        timestamp: f64,
+    },
     /// node が完了した（approval 経由の completion も含む）。
     NodeCompleted {
         run_id: String,
@@ -392,6 +403,7 @@ impl WorkflowEvent {
         match self {
             Self::RunStarted { run_id, .. }
             | Self::NodeStarted { run_id, .. }
+            | Self::StepSessionStarted { run_id, .. }
             | Self::NodeCompleted { run_id, .. }
             | Self::NodeFailed { run_id, .. }
             | Self::ApprovalRequested { run_id, .. }

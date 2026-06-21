@@ -686,6 +686,7 @@ mod tests {
             .map(|event| match event {
                 WorkflowEvent::RunStarted { .. } => "RunStarted",
                 WorkflowEvent::NodeStarted { .. } => "NodeStarted",
+                WorkflowEvent::StepSessionStarted { .. } => "StepSessionStarted",
                 WorkflowEvent::NodeCompleted { .. } => "NodeCompleted",
                 WorkflowEvent::NodeFailed { .. } => "NodeFailed",
                 WorkflowEvent::ApprovalRequested { .. } => "ApprovalRequested",

@@ -1413,6 +1413,7 @@ fn event_kind_display_name(kind: &str) -> &str {
     match kind {
         "run_started" => "RunStarted",
         "node_started" => "NodeStarted",
+        "step_session_started" => "StepSessionStarted",
         "node_completed" => "NodeCompleted",
         "node_failed" => "NodeFailed",
         "approval_requested" => "ApprovalRequested",
