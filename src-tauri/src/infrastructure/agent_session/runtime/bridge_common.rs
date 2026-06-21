@@ -29,10 +29,14 @@ use crate::infrastructure::agent_session::runtime::{
 };
 #[cfg(test)]
 use crate::usecase::agent_session::session::create_session_internal;
+#[cfg(test)]
+use crate::usecase::agent_session::session::image_attachment::detect_image_mime;
+use crate::usecase::agent_session::session::validate_image_bytes;
 use crate::usecase::agent_session::session::{
     add_message_internal, now_timestamp, parts_to_legacy, ChatMessage, ChatSession,
-    ContextCarryState, GetSessionResponse, MessagePart, MessageRole, PageCursor, SessionMeta,
-    SessionPage, SessionStore, SessionSummary, SystemNotificationType, TokenUsage,
+    ContextCarryState, GetSessionResponse, InitialSessionPage, MessagePart, MessageRole,
+    PageCursor, SessionMeta, SessionPage, SessionStore, SessionSummary, SystemNotificationType,
+    TokenUsage, INITIAL_SESSION_PAGE_LIMIT,
 };
 
 pub(crate) use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
@@ -4588,10 +4592,19 @@ async fn get_session_internal_with_data_dir(
     data_dir: &Path,
     session_id: &str,
 ) -> Result<Option<GetSessionResponse>, String> {
-    let session = session_store.get_session_shell(data_dir, session_id)?;
+    let session = session_store.get_session_with_latest_page(
+        data_dir,
+        session_id,
+        INITIAL_SESSION_PAGE_LIMIT,
+    )?;
     match session {
         None => Ok(None),
-        Some(mut session) => {
+        Some((mut session, page)) => {
+            let initial_page = Some(InitialSessionPage {
+                next_cursor: page.next_cursor,
+                has_more: page.has_more,
+                total_count: page.total_count,
+            });
             let (turn_phase, streaming_parts, streaming_mid, pending_queue, latest_token_usage) = {
                 let map = handles.lock().await;
                 if let Some(proc) = map.get(session_id) {
@@ -4669,6 +4682,7 @@ async fn get_session_internal_with_data_dir(
                 available_models: available_models.into_iter().map(Into::into).collect(),
                 pending_queue_count: pending_queue.len(),
                 pending_queue,
+                initial_page,
                 latest_token_usage,
             }))
         }
@@ -8143,23 +8157,10 @@ fn build_message_cmd(prompt: &str, images: &[ImageAttachment]) -> serde_json::Va
     }
 }
 
-/// Maximum image size in bytes (5 MiB).
-/// Anthropic Messages API limits base64-encoded images to ~5 MB.
-const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
-
 /// Validate and encode an image from raw bytes.
 /// Returns base64-encoded data and detected MIME type, or an error for unsupported formats.
 fn validate_and_encode_image(bytes: &[u8]) -> Result<ImageAttachment, String> {
-    if bytes.len() > MAX_IMAGE_BYTES {
-        return Err(format!(
-            "Image too large: {} bytes (max {} bytes)",
-            bytes.len(),
-            MAX_IMAGE_BYTES
-        ));
-    }
-
-    let media_type =
-        detect_image_mime(bytes).ok_or_else(|| "Unsupported image format".to_string())?;
+    let media_type = validate_image_bytes(bytes)?;
 
     use base64::Engine;
     let data = base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -8168,39 +8169,6 @@ fn validate_and_encode_image(bytes: &[u8]) -> Result<ImageAttachment, String> {
         data,
         media_type: media_type.to_string(),
     })
-}
-
-/// Detect MIME type from magic bytes.
-fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.len() < 4 {
-        return None;
-    }
-    // JPEG: FF D8 FF
-    if bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
-        return Some("image/jpeg");
-    }
-    // PNG: 89 50 4E 47
-    if bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47 {
-        return Some("image/png");
-    }
-    // GIF: 47 49 46 38
-    if bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38 {
-        return Some("image/gif");
-    }
-    // WebP: RIFF....WEBP
-    if bytes.len() >= 12
-        && bytes[0] == 0x52
-        && bytes[1] == 0x49
-        && bytes[2] == 0x46
-        && bytes[3] == 0x46
-        && bytes[8] == 0x57
-        && bytes[9] == 0x45
-        && bytes[10] == 0x42
-        && bytes[11] == 0x50
-    {
-        return Some("image/webp");
-    }
-    None
 }
 
 /// Tauri command: Validate image bytes and return base64-encoded image attachment.
@@ -13481,7 +13449,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn init_agent_sessions_does_not_hydrate_message_body_or_start_processes() {
+    async fn init_agent_sessions_returns_active_latest_page_without_starting_processes() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
@@ -13505,13 +13473,6 @@ mod tests {
             None,
         )
         .unwrap();
-        let chunk = temp
-            .path()
-            .join("sessions")
-            .join(&session.id)
-            .join("messages")
-            .join("1.json");
-        std::fs::write(chunk, "{not valid json").unwrap();
 
         let registry = make_fixed_model_registry();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -13534,7 +13495,16 @@ mod tests {
             .active_session
             .expect("active shell should be returned");
         assert_eq!(active.session.id, session.id);
-        assert!(active.session.messages.is_empty());
+        assert_eq!(active.session.messages.len(), 1);
+        assert_eq!(active.session.messages[0].content, "hello");
+        assert_eq!(
+            active.initial_page,
+            Some(InitialSessionPage {
+                next_cursor: None,
+                has_more: false,
+                total_count: 1,
+            })
+        );
         assert!(handles.lock().await.is_empty());
     }
 
@@ -17384,6 +17354,154 @@ mod tests {
             .unwrap();
         assert_eq!(after.backend_id.as_deref(), Some(CODEX_BACKEND_ID));
         assert_eq!(after.selected_model.as_deref(), Some("gpt-5"));
+    }
+
+    #[tokio::test]
+    async fn get_session_applies_runtime_streaming_overlay_to_latest_page() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let agent_message = add_message_internal(
+            &session_store,
+            temp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            Some(vec![MessagePart::Text {
+                content: "persisted".to_string(),
+                parent_tool_use_id: None,
+            }]),
+            None,
+        )
+        .unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        {
+            let mut proc = make_test_agent_process();
+            proc.state = BridgeState::Streaming;
+            proc.turn_phase = TurnPhase::Streaming;
+            proc.streaming_message_id = Some(agent_message.id.clone());
+            proc.streaming_parts = vec![MessagePart::Text {
+                content: "streaming".to_string(),
+                parent_tool_use_id: None,
+            }];
+            handles.lock().await.insert(session.id.clone(), proc);
+        }
+
+        let response = get_session_internal_with_data_dir(
+            &session_store,
+            &handles,
+            Some(&make_fixed_model_registry()),
+            temp.path(),
+            &session.id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            response.session.messages[0].parts,
+            Some(vec![MessagePart::Text {
+                content: "streaming".to_string(),
+                parent_tool_use_id: None,
+            }])
+        );
+        assert_eq!(
+            response.initial_page,
+            Some(InitialSessionPage {
+                next_cursor: None,
+                has_more: false,
+                total_count: 1,
+            })
+        );
+        let mut map = handles.lock().await;
+        force_kill_all_sessions(&mut map).await;
+    }
+
+    #[tokio::test]
+    async fn get_session_reads_only_latest_page_for_large_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage =
+            Arc::new(crate::adaptor::gateway::agent_session::FileSessionStorage::default());
+        let session_store = Arc::new(SessionStore::new(storage.clone()));
+        let total_messages = INITIAL_SESSION_PAGE_LIMIT + 25;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session = ChatSession {
+            id: session_id.clone(),
+            worktree_path: "/repo".to_string(),
+            messages: (0..total_messages)
+                .map(|index| ChatMessage {
+                    id: format!("m{index}"),
+                    role: MessageRole::Human,
+                    content: format!("message {index}"),
+                    thinking: None,
+                    activities: None,
+                    parts: None,
+                    timestamp: 1000.0 + index as f64,
+                    mentions: None,
+                })
+                .collect(),
+            state: crate::usecase::agent_session::session::SessionState::Idle,
+            created_at: 1000.0,
+            updated_at: 2000.0,
+            agent_session_id: None,
+            context_carry: None,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            permission_profile_id: None,
+            selected_model: Some("selected-model".to_string()),
+            backend_id: Some(CLAUDE_BACKEND_ID.to_string()),
+            workflow_step_session: false,
+        };
+        session_store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
+        storage.reset_message_read_count();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        let response = get_session_internal_with_data_dir(
+            &session_store,
+            &handles,
+            None,
+            temp.path(),
+            &session_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(response.session.id, session_id);
+        assert_eq!(
+            response.session.selected_model,
+            Some(crate::domain::agent_session::model_entry_id(
+                CLAUDE_BACKEND_ID,
+                "selected-model",
+            ))
+        );
+        assert_eq!(
+            response.turn_phase,
+            crate::usecase::agent_session::status::TurnPhase::Idle
+        );
+        assert_eq!(response.session.messages.len(), INITIAL_SESSION_PAGE_LIMIT);
+        assert_eq!(response.session.messages[0].id, "m25");
+        assert_eq!(
+            response.session.messages[INITIAL_SESSION_PAGE_LIMIT - 1].id,
+            format!("m{}", total_messages - 1)
+        );
+        assert_eq!(
+            response.initial_page,
+            Some(InitialSessionPage {
+                next_cursor: Some(PageCursor(26)),
+                has_more: true,
+                total_count: total_messages,
+            })
+        );
+        assert_eq!(storage.message_read_count(), INITIAL_SESSION_PAGE_LIMIT);
     }
 
     #[tokio::test]

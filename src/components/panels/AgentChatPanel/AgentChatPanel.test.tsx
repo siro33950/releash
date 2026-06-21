@@ -700,7 +700,7 @@ describe("AgentChatPanel", () => {
 
 	it("finds and navigates matches in the current thread", async () => {
 		mockInvoke.mockImplementation((command: string) => {
-			if (command === "search_agent_thread_messages") {
+			if (command === "search_agent_session_messages") {
 				return Promise.resolve([
 					{ messageId: "m1", matchIndex: 0 },
 					{ messageId: "m2", matchIndex: 0 },
@@ -745,11 +745,9 @@ describe("AgentChatPanel", () => {
 		fireEvent.change(input, { target: { value: "agent" } });
 
 		await waitFor(() => expect(screen.getByText("1/3")).toBeInTheDocument());
-		expect(mockInvoke).toHaveBeenCalledWith("search_agent_thread_messages", {
-			request: {
-				messages: expect.any(Array),
-				query: "agent",
-			},
+		expect(mockInvoke).toHaveBeenCalledWith("search_agent_session_messages", {
+			sessionId: "s1",
+			query: "agent",
 		});
 		fireEvent.click(screen.getByLabelText("Next search match"));
 		expect(screen.getByText("2/3")).toBeInTheDocument();

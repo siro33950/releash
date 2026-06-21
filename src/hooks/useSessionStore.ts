@@ -169,6 +169,11 @@ interface RawGetSessionResponse {
 	latestTokenUsage?: TokenUsage | null;
 	workflowStepSession?: boolean;
 	turnPhase: TurnPhase;
+	initialPage?: {
+		nextCursor?: string | null;
+		hasMore: boolean;
+		totalCount: number;
+	};
 }
 
 function convertRawGetSessionResponse(
@@ -196,6 +201,13 @@ function convertRawGetSessionResponse(
 		pendingQueue: raw.pendingQueue ?? [],
 		pendingQueueCount: raw.pendingQueueCount ?? 0,
 		latestTokenUsage: raw.latestTokenUsage ?? null,
+		initialPage: raw.initialPage
+			? {
+					nextCursor: raw.initialPage.nextCursor ?? null,
+					hasMore: raw.initialPage.hasMore,
+					totalCount: raw.initialPage.totalCount,
+				}
+			: undefined,
 	};
 }
 
@@ -223,31 +235,6 @@ export async function getSessionPage(
 	return raw ? convertRawSessionPage(raw) : null;
 }
 
-async function hydrateInitialSessionPage(
-	response: GetSessionResponse,
-): Promise<GetSessionResponse> {
-	if (response.session.messages.length > 0) return response;
-	const page = await getSessionPage(
-		response.session.id,
-		null,
-		INITIAL_SESSION_PAGE_LIMIT,
-	);
-	if (!page) return response;
-	return {
-		...response,
-		session: {
-			...response.session,
-			messages: page.messages,
-		},
-		initialPage: {
-			nextCursor: page.nextCursor,
-			hasMore: page.hasMore,
-			totalCount: page.totalCount,
-		},
-		latestTokenUsage: page.latestTokenUsage ?? response.latestTokenUsage,
-	};
-}
-
 export async function getSession(
 	sessionId: string,
 ): Promise<GetSessionResponse | null> {
@@ -255,7 +242,7 @@ export async function getSession(
 		sessionId,
 	});
 	if (!raw) return null;
-	return hydrateInitialSessionPage(convertRawGetSessionResponse(raw));
+	return convertRawGetSessionResponse(raw);
 }
 
 export async function createSession(
@@ -476,9 +463,7 @@ export async function initAgentSessions(
 		worktreePath,
 	});
 	const activeSession = raw.activeSession
-		? await hydrateInitialSessionPage(
-				convertRawGetSessionResponse(raw.activeSession),
-			)
+		? convertRawGetSessionResponse(raw.activeSession)
 		: null;
 	return {
 		sessions: raw.sessions,

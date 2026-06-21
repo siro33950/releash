@@ -275,6 +275,30 @@ impl SessionStore {
             .map(|meta| meta.to_session(Vec::new())))
     }
 
+    pub fn get_session_with_latest_page(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Option<(ChatSession, SessionPage)>, String> {
+        let Some(meta) = self.storage.get_session_meta(app_data_dir, session_id)? else {
+            return Ok(None);
+        };
+        let page = self
+            .storage
+            .get_session_page(app_data_dir, session_id, None, limit)?
+            .unwrap_or(SessionPage {
+                messages: Vec::new(),
+                message_metadata: Vec::new(),
+                next_cursor: None,
+                has_more: false,
+                total_count: meta.message_count,
+                latest_token_usage: None,
+            });
+        let session = meta.to_session(page.messages.clone());
+        Ok(Some((session, page)))
+    }
+
     pub fn get_session_meta(
         &self,
         app_data_dir: &Path,

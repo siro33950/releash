@@ -127,45 +127,38 @@ describe("session paging", () => {
 		vi.mocked(invoke).mockReset();
 	});
 
-	it("getSession hydrates initial messages via get_session_page", async () => {
-		vi.mocked(invoke)
-			.mockResolvedValueOnce({
-				id: "s1",
-				worktreePath: "/repo",
-				messages: [],
-				state: "active",
-				createdAt: 1000,
-				updatedAt: 1000,
-				permissionMode: "edit",
-				selectedModel: "claude:sonnet",
-				turnPhase: "idle",
-				availableModels: [],
-			})
-			.mockResolvedValueOnce({
-				messages: [
-					{
-						id: "m1",
-						role: "human",
-						content: "hello",
-						timestamp: 1001,
-					},
-				],
-				messageMetadata: [{ messageId: "m1", tokenMeta: { input: 1 } }],
+	it("getSession uses messages and initial page metadata returned by get_session", async () => {
+		vi.mocked(invoke).mockResolvedValueOnce({
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [
+				{
+					id: "m1",
+					role: "human",
+					content: "hello",
+					timestamp: 1001,
+				},
+			],
+			state: "active",
+			createdAt: 1000,
+			updatedAt: 1000,
+			permissionMode: "edit",
+			selectedModel: "claude:sonnet",
+			turnPhase: "idle",
+			availableModels: [],
+			initialPage: {
 				nextCursor: "1",
 				hasMore: true,
 				totalCount: 10,
-				latestTokenUsage: { inputTokens: 1, outputTokens: 2 },
-			});
+			},
+			latestTokenUsage: { inputTokens: 1, outputTokens: 2 },
+		});
 
 		const response = await getSession("s1");
 
-		expect(invoke).toHaveBeenNthCalledWith(1, "get_session", {
+		expect(invoke).toHaveBeenCalledTimes(1);
+		expect(invoke).toHaveBeenCalledWith("get_session", {
 			sessionId: "s1",
-		});
-		expect(invoke).toHaveBeenNthCalledWith(2, "get_session_page", {
-			sessionId: "s1",
-			cursor: null,
-			limit: 50,
 		});
 		expect(response?.session.messages).toEqual([
 			{
@@ -176,15 +169,31 @@ describe("session paging", () => {
 				mentions: undefined,
 			},
 		]);
+		expect(response?.initialPage).toEqual({
+			nextCursor: "1",
+			hasMore: true,
+			totalCount: 10,
+		});
+		expect(response?.latestTokenUsage).toEqual({
+			inputTokens: 1,
+			outputTokens: 2,
+		});
 	});
 
 	it("getSessionPage forwards cursor and limit", async () => {
 		vi.mocked(invoke).mockResolvedValueOnce({
-			messages: [],
-			messageMetadata: [],
+			messages: [
+				{
+					id: "m2",
+					role: "human",
+					content: "older",
+					timestamp: 1000,
+				},
+			],
+			messageMetadata: [{ messageId: "m2", tokenMeta: { input: 1 } }],
 			nextCursor: null,
 			hasMore: false,
-			totalCount: 0,
+			totalCount: 1,
 			latestTokenUsage: null,
 		});
 
@@ -196,11 +205,19 @@ describe("session paging", () => {
 			limit: 25,
 		});
 		expect(page).toEqual({
-			messages: [],
-			messageMetadata: [],
+			messages: [
+				{
+					id: "m2",
+					role: "human",
+					parts: [{ type: "text", content: "older" }],
+					timestamp: 1000,
+					mentions: undefined,
+				},
+			],
+			messageMetadata: [{ messageId: "m2", tokenMeta: { input: 1 } }],
 			nextCursor: null,
 			hasMore: false,
-			totalCount: 0,
+			totalCount: 1,
 			latestTokenUsage: null,
 		});
 	});

@@ -1010,11 +1010,9 @@ export function ChatSessionView({
 			return;
 		}
 		let cancelled = false;
-		void invoke<ThreadSearchMatch[]>("search_agent_thread_messages", {
-			request: {
-				messages: session.messages,
-				query,
-			},
+		void invoke<ThreadSearchMatch[]>("search_agent_session_messages", {
+			sessionId: session.id,
+			query,
 		})
 			.then((matches) => {
 				if (cancelled) return;
@@ -1030,7 +1028,7 @@ export function ChatSessionView({
 		return () => {
 			cancelled = true;
 		};
-	}, [isSearchOpen, searchQuery, session.messages]);
+	}, [isSearchOpen, searchQuery, session.id]);
 
 	useEffect(() => {
 		if (!threadSearchState.open) return;
@@ -1230,6 +1228,7 @@ export function ChatSessionView({
 			<div
 				ref={scrollRef}
 				onScroll={handleScroll}
+				data-testid="chat-session-scroll"
 				className="flex-1 min-h-0 overflow-auto select-text"
 			>
 				<div

@@ -45,13 +45,6 @@ pub struct AgentTaskListReport {
     pub items: Vec<AgentTaskListItem>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentThreadSearchRequest {
-    pub messages: Vec<ChatMessage>,
-    pub query: String,
-}
-
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentThreadSearchMatch {
@@ -395,6 +388,18 @@ fn search_thread_messages(messages: &[ChatMessage], query: &str) -> Vec<AgentThr
         .collect()
 }
 
+fn search_session_messages(
+    session_store: &SessionStore,
+    data_dir: &std::path::Path,
+    session_id: &str,
+    query: &str,
+) -> Result<Vec<AgentThreadSearchMatch>, String> {
+    let session = session_store
+        .load_full_session_for_restore(data_dir, session_id)?
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    Ok(search_thread_messages(&session.messages, query))
+}
+
 fn search_sessions(
     sessions: Vec<ChatSession>,
     query: &str,
@@ -581,10 +586,14 @@ pub async fn search_agent_sessions(
 }
 
 #[tauri::command]
-pub async fn search_agent_thread_messages(
-    request: AgentThreadSearchRequest,
+pub async fn search_agent_session_messages(
+    app: tauri::AppHandle,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    session_id: String,
+    query: String,
 ) -> Result<Vec<AgentThreadSearchMatch>, String> {
-    Ok(search_thread_messages(&request.messages, &request.query))
+    let data_dir = resolve_data_dir(&app)?;
+    search_session_messages(session_store.inner(), &data_dir, &session_id, &query)
 }
 
 #[tauri::command]
@@ -1013,6 +1022,69 @@ mod tests {
             results,
             vec![AgentThreadSearchMatch {
                 message_id: "m1".to_string(),
+                match_index: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn search_session_messages_uses_full_session_beyond_latest_page() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = crate::test_support::build_session_store();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let messages = (0..(DEFAULT_SESSION_PAGE_LIMIT + 2))
+            .map(|index| {
+                let content = if index == 0 {
+                    "needle only in unloaded history".to_string()
+                } else {
+                    format!("ordinary message {index}")
+                };
+                human_prompt(&format!("m{index}"), &content, index as f64)
+            })
+            .collect::<Vec<_>>();
+        let session = crate::usecase::agent_session::session::ChatSession {
+            id: session_id.clone(),
+            worktree_path: "/repo".to_string(),
+            messages,
+            state: crate::usecase::agent_session::session::SessionState::Idle,
+            created_at: 1.0,
+            updated_at: 2.0,
+            agent_session_id: None,
+            context_carry: None,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            permission_profile_id: None,
+            selected_model: None,
+            backend_id: Some(
+                crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
+            ),
+            workflow_step_session: false,
+        };
+        store
+            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
+            .unwrap();
+
+        let latest_page = store
+            .get_session_page(
+                data_dir.path(),
+                &session_id,
+                None,
+                DEFAULT_SESSION_PAGE_LIMIT,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!latest_page
+            .messages
+            .iter()
+            .any(|message| message.id == "m0"));
+
+        let results = search_session_messages(&store, data_dir.path(), &session_id, "needle")
+            .expect("search should load full session");
+
+        assert_eq!(
+            results,
+            vec![AgentThreadSearchMatch {
+                message_id: "m0".to_string(),
                 match_index: 0,
             }]
         );

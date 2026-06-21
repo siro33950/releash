@@ -1,4 +1,5 @@
 pub(crate) mod errors;
+pub(crate) mod image_attachment;
 pub(crate) mod lifecycle_controller;
 mod open_tabs;
 mod prompt_suggestion;
@@ -8,6 +9,9 @@ mod stored_lifecycle;
 use serde::{Deserialize, Serialize};
 
 pub use crate::usecase::agent_session::status::TurnPhase;
+pub(crate) use image_attachment::{
+    reject_oversized_base64_image, validate_image_bytes, validate_image_bytes_for_media_type,
+};
 pub use open_tabs::OpenTabRegistry;
 pub(crate) use prompt_suggestion::{
     AgentPromptGitStatusGateway, AgentPromptSuggestion, AgentPromptSuggestionUsecase,
@@ -297,7 +301,8 @@ pub struct ChatSession {
 }
 
 pub const SESSION_BODY_FORMAT_VERSION: u32 = 1;
-pub const DEFAULT_SESSION_PAGE_LIMIT: usize = 50;
+pub const INITIAL_SESSION_PAGE_LIMIT: usize = 50;
+pub const DEFAULT_SESSION_PAGE_LIMIT: usize = INITIAL_SESSION_PAGE_LIMIT;
 pub const MAX_SESSION_PAGE_LIMIT: usize = 200;
 
 /// meta.json。message body を含まない session 単位の保存正典。
@@ -430,6 +435,15 @@ pub struct SessionAttachment {
     pub media_type: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InitialSessionPage {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub next_cursor: Option<PageCursor>,
+    pub has_more: bool,
+    pub total_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetSessionResponse {
@@ -439,6 +453,8 @@ pub struct GetSessionResponse {
     pub available_models: Vec<ModelInfo>,
     pub pending_queue: Vec<QueuedAgentTurn>,
     pub pending_queue_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub initial_page: Option<InitialSessionPage>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub latest_token_usage: Option<TokenUsage>,
 }

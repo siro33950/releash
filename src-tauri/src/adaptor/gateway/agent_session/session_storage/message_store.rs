@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::BufReader;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::layout::{
     attachments_dir_in_dir, content_hash, index_file_in_dir, legacy_meta_file, message_file_in_dir,
@@ -37,21 +37,6 @@ impl FileSessionStorage {
         app_data_dir: &Path,
         session: &ChatSession,
     ) -> Result<(), String> {
-        // 保存層を AgentChat permission_mode の正典とする。
-        // cache / ファイルへの書き込み前に検証・正規化し、legacy 入力を新規保存値へ漏らさない。
-        let permission_mode = crate::permission::PermissionMode::parse(&session.permission_mode)
-            .map_err(|e| e.to_string())?;
-        let normalized_session;
-        let session = if session.permission_mode == permission_mode.as_str() {
-            session
-        } else {
-            normalized_session = {
-                let mut session = session.clone();
-                session.permission_mode = permission_mode.as_str().to_string();
-                session
-            };
-            &normalized_session
-        };
         self.persist_and_update_cache(app_data_dir, session)?;
         Ok(())
     }
@@ -101,8 +86,16 @@ impl FileSessionStorage {
         let (mut page, needs_repair) =
             self.read_page_from_index(&dir, session_id, &index, cursor.clone(), limit)?;
         if needs_repair {
-            index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
-            (page, _) = self.read_page_from_index(&dir, session_id, &index, cursor, limit)?;
+            let _lock = self.file_lock.lock();
+            index = self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
+            let (reread_page, reread_needs_repair) =
+                self.read_page_from_index(&dir, session_id, &index, cursor.clone(), limit)?;
+            if reread_needs_repair {
+                index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
+                (page, _) = self.read_page_from_index(&dir, session_id, &index, cursor, limit)?;
+            } else {
+                page = reread_page;
+            }
         }
         Ok(Some(page))
     }
@@ -123,7 +116,7 @@ impl FileSessionStorage {
         self.ensure_session_layout(app_data_dir, session_id)?;
         let _lock = self.file_lock.lock();
         let dir = session_dir(app_data_dir, session_id)?;
-        let mut index = self.read_consistent_index_from_dir(&dir, session_id)?;
+        let mut index = self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
         let seq = index
             .iter()
             .map(|entry| entry.seq)
@@ -181,7 +174,7 @@ impl FileSessionStorage {
         self.ensure_session_layout(app_data_dir, session_id)?;
         let _lock = self.file_lock.lock();
         let dir = session_dir(app_data_dir, session_id)?;
-        let mut index = self.read_consistent_index_from_dir(&dir, session_id)?;
+        let mut index = self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
         let Some(entry) = index.iter_mut().find(|entry| entry.id == message_id) else {
             return Err(format!("Message not found: {session_id}/{message_id}"));
         };
@@ -266,13 +259,13 @@ impl FileSessionStorage {
     }
 
     #[cfg(test)]
-    pub(super) fn reset_message_read_count(&self) {
+    pub(crate) fn reset_message_read_count(&self) {
         self.message_read_count
             .store(0, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[cfg(test)]
-    pub(super) fn message_read_count(&self) -> usize {
+    pub(crate) fn message_read_count(&self) -> usize {
         self.message_read_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -295,6 +288,29 @@ impl FileSessionStorage {
         dir: &Path,
         session_id: &str,
     ) -> Result<Vec<MessageIndexEntry>, String> {
+        if let Some(index) = self.try_read_consistent_index_from_dir(dir, session_id)? {
+            return Ok(index);
+        }
+        let _lock = self.file_lock.lock();
+        self.read_consistent_index_from_dir_with_lock_held(dir, session_id)
+    }
+
+    fn read_consistent_index_from_dir_with_lock_held(
+        &self,
+        dir: &Path,
+        session_id: &str,
+    ) -> Result<Vec<MessageIndexEntry>, String> {
+        if let Some(index) = self.try_read_consistent_index_from_dir(dir, session_id)? {
+            return Ok(index);
+        }
+        self.repair_index_and_meta_from_messages(dir, session_id)
+    }
+
+    fn try_read_consistent_index_from_dir(
+        &self,
+        dir: &Path,
+        session_id: &str,
+    ) -> Result<Option<Vec<MessageIndexEntry>>, String> {
         let path = index_file_in_dir(dir);
         let mut index: Vec<MessageIndexEntry> = match std::fs::File::open(&path) {
             Ok(file) => match serde_json::from_reader(BufReader::new(file)) {
@@ -303,20 +319,20 @@ impl FileSessionStorage {
                     log::warn!(
                         "Rebuilding unreadable session index for session {session_id}: {err}"
                     );
-                    return self.repair_index_and_meta_from_messages(dir, session_id);
+                    return Ok(None);
                 }
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return self.repair_index_and_meta_from_messages(dir, session_id);
+                return Ok(None);
             }
             Err(e) => return Err(format!("Failed to read session index: {e}")),
         };
         index.sort_by_key(|entry| entry.seq);
         if !self.index_matches_message_chunk_sequences(dir, &index)? {
             log::warn!("Rebuilding stale session index for session {session_id}");
-            return self.repair_index_and_meta_from_messages(dir, session_id);
+            return Ok(None);
         }
-        Ok(index)
+        Ok(Some(index))
     }
 
     fn index_matches_message_chunk_sequences(
@@ -331,27 +347,10 @@ impl FileSessionStorage {
             return Ok(false);
         }
 
-        let mut chunk_seqs = Vec::new();
-        let messages_dir = messages_dir_in_dir(dir);
-        if messages_dir.exists() {
-            for entry in std::fs::read_dir(&messages_dir)
-                .map_err(|e| format!("Failed to read messages dir: {e}"))?
-            {
-                let entry = entry.map_err(|e| format!("Failed to read messages dir entry: {e}"))?;
-                let path = entry.path();
-                if path.extension().is_none_or(|ext| ext != "json") {
-                    continue;
-                }
-                let Some(seq) = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .and_then(|s| s.parse::<u64>().ok())
-                else {
-                    continue;
-                };
-                chunk_seqs.push(seq);
-            }
-        }
+        let mut chunk_seqs = message_chunk_entries(dir)?
+            .into_iter()
+            .map(|(seq, _)| seq)
+            .collect::<Vec<_>>();
         chunk_seqs.sort_unstable();
         Ok(stored_seqs == chunk_seqs)
     }
@@ -470,26 +469,8 @@ impl FileSessionStorage {
         &self,
         dir: &Path,
     ) -> Result<Vec<MessageIndexEntry>, String> {
-        let messages_dir = messages_dir_in_dir(dir);
-        if !messages_dir.exists() {
-            return Ok(Vec::new());
-        }
         let mut index = Vec::new();
-        for entry in std::fs::read_dir(&messages_dir)
-            .map_err(|e| format!("Failed to read messages dir: {e}"))?
-        {
-            let entry = entry.map_err(|e| format!("Failed to read messages dir entry: {e}"))?;
-            let path = entry.path();
-            if path.extension().is_none_or(|ext| ext != "json") {
-                continue;
-            }
-            let Some(seq) = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.parse::<u64>().ok())
-            else {
-                continue;
-            };
+        for (seq, path) in message_chunk_entries(dir)? {
             let message = match self.read_message_file(&path) {
                 Ok(message) => message,
                 Err(err) => {
@@ -531,7 +512,11 @@ impl FileSessionStorage {
         let mut index = self.read_consistent_index_from_dir(&dir, session_id)?;
         if !self.index_matches_message_chunks_full(&dir, &index)? {
             log::warn!("Rebuilding stale session index for session {session_id}");
-            index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
+            let _lock = self.file_lock.lock();
+            index = self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
+            if !self.index_matches_message_chunks_full(&dir, &index)? {
+                index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
+            }
         }
         let mut messages = Vec::with_capacity(index.len());
         for entry in index {
@@ -625,25 +610,7 @@ impl FileSessionStorage {
         dir: &Path,
         used_seq: &std::collections::HashSet<u64>,
     ) -> Result<(), String> {
-        let messages_dir = messages_dir_in_dir(dir);
-        if !messages_dir.exists() {
-            return Ok(());
-        }
-        for entry in std::fs::read_dir(&messages_dir)
-            .map_err(|e| format!("Failed to read messages dir: {e}"))?
-        {
-            let entry = entry.map_err(|e| format!("Failed to read messages dir entry: {e}"))?;
-            let path = entry.path();
-            if path.extension().is_none_or(|ext| ext != "json") {
-                continue;
-            }
-            let Some(seq) = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.parse::<u64>().ok())
-            else {
-                continue;
-            };
+        for (seq, path) in message_chunk_entries(dir)? {
             if !used_seq.contains(&seq) {
                 std::fs::remove_file(&path)
                     .map_err(|e| format!("Failed to remove stale message chunk: {e}"))?;
@@ -651,4 +618,30 @@ impl FileSessionStorage {
         }
         Ok(())
     }
+}
+
+pub(super) fn message_chunk_entries(dir: &Path) -> Result<Vec<(u64, PathBuf)>, String> {
+    let messages_dir = messages_dir_in_dir(dir);
+    if !messages_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut entries = Vec::new();
+    for entry in
+        std::fs::read_dir(&messages_dir).map_err(|e| format!("Failed to read messages dir: {e}"))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read messages dir entry: {e}"))?;
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let Some(seq) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        entries.push((seq, path));
+    }
+    Ok(entries)
 }

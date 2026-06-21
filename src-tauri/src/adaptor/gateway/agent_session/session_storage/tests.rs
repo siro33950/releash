@@ -1,14 +1,16 @@
 use super::layout::{
-    attachment_file_in_dir, content_hash, index_file_in_dir, legacy_meta_file, message_file_in_dir,
-    meta_file_in_dir, session_dir, session_file, sessions_dir, write_json_pretty_atomic,
+    attachment_file_in_dir, attachments_dir_in_dir, content_hash, index_file_in_dir,
+    legacy_meta_file, message_file_in_dir, meta_file_in_dir, session_dir, session_file,
+    sessions_dir, write_json_pretty_atomic,
 };
 use super::*;
+use crate::usecase::agent_session::session::image_attachment::MAX_IMAGE_BYTES;
 use crate::usecase::agent_session::session::{
     AttachmentRef, ChatMessage, ContextCarryState, MessagePart, MessageRole, SessionState,
     SESSION_BODY_FORMAT_VERSION,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
 const UUID1: &str = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
@@ -58,6 +60,20 @@ fn message(id: &str, content: &str, timestamp: f64) -> ChatMessage {
         timestamp,
         mentions: None,
     }
+}
+
+fn png_bytes(payload: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![0x89, 0x50, 0x4E, 0x47];
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+fn attachment_blob_count(dir: &std::path::Path) -> usize {
+    let attachments_dir = attachments_dir_in_dir(dir);
+    if !attachments_dir.exists() {
+        return 0;
+    }
+    std::fs::read_dir(attachments_dir).unwrap().count()
 }
 
 #[test]
@@ -157,8 +173,9 @@ fn save_session_externalizes_image_attachments() {
     let store = FileSessionStorage::default();
     let mut session = make_session(UUID1, "/repo");
     session.messages[0].content.clear();
+    let image_bytes = png_bytes(b"image-bytes");
     session.messages[0].parts = Some(vec![MessagePart::Image {
-        data: BASE64_STANDARD.encode(b"image-bytes"),
+        data: BASE64_STANDARD.encode(&image_bytes),
         media_type: "image/png".to_string(),
     }]);
 
@@ -195,15 +212,76 @@ fn save_session_externalizes_image_attachments() {
     assert!(matches!(
         &loaded.messages[0].parts.as_ref().unwrap()[0],
         MessagePart::Image { data, media_type }
-            if data == &BASE64_STANDARD.encode(b"image-bytes") && media_type == "image/png"
+            if data == &BASE64_STANDARD.encode(&image_bytes) && media_type == "image/png"
     ));
 
     let attachment_data = store
         .get_session_attachment(tmp.path(), UUID1, &attachment.id)
         .unwrap()
         .unwrap();
-    assert_eq!(attachment_data.data, BASE64_STANDARD.encode(b"image-bytes"));
+    assert_eq!(attachment_data.data, BASE64_STANDARD.encode(&image_bytes));
     assert_eq!(attachment_data.media_type, "image/png");
+}
+
+#[test]
+fn save_session_rejects_oversized_image_attachment_before_blob_write() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.messages[0].content.clear();
+    let oversized = vec![0; MAX_IMAGE_BYTES + 4];
+    session.messages[0].parts = Some(vec![MessagePart::Image {
+        data: BASE64_STANDARD.encode(oversized),
+        media_type: "image/png".to_string(),
+    }]);
+
+    let err = store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap_err();
+
+    assert!(err.contains("Image too large"), "got: {err}");
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    assert_eq!(attachment_blob_count(&dir), 0);
+}
+
+#[test]
+fn save_session_rejects_image_attachment_media_type_mismatch_before_blob_write() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.messages[0].content.clear();
+    session.messages[0].parts = Some(vec![MessagePart::Image {
+        data: BASE64_STANDARD.encode(png_bytes(b"declared-as-text")),
+        media_type: "text/plain".to_string(),
+    }]);
+
+    let err = store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap_err();
+
+    assert!(err.contains("media type mismatch"), "got: {err}");
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    assert_eq!(attachment_blob_count(&dir), 0);
+}
+
+#[test]
+fn save_session_rejects_non_image_attachment_bytes_before_blob_write() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.messages[0].content.clear();
+    session.messages[0].parts = Some(vec![MessagePart::Image {
+        data: BASE64_STANDARD.encode(b"not-an-image"),
+        media_type: "image/png".to_string(),
+    }]);
+
+    let err = store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap_err();
+
+    assert!(err.contains("Unsupported image format"), "got: {err}");
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    assert_eq!(attachment_blob_count(&dir), 0);
 }
 
 #[test]
@@ -315,8 +393,9 @@ fn stale_index_hash_and_attachment_refs_are_repaired_from_message_chunks() {
         .read_message_file(&message_file_in_dir(&dir, 1))
         .unwrap();
     updated_message.content.clear();
+    let updated_image_bytes = png_bytes(b"updated-image-bytes");
     updated_message.parts = Some(vec![MessagePart::Image {
-        data: BASE64_STANDARD.encode(b"updated-image-bytes"),
+        data: BASE64_STANDARD.encode(&updated_image_bytes),
         media_type: "image/png".to_string(),
     }]);
     let (stored_message, attachment_refs) = store
@@ -356,7 +435,7 @@ fn stale_index_hash_and_attachment_refs_are_repaired_from_message_chunks() {
         .unwrap();
     assert_eq!(
         attachment_data.data,
-        BASE64_STANDARD.encode(b"updated-image-bytes")
+        BASE64_STANDARD.encode(&updated_image_bytes)
     );
 }
 
@@ -404,6 +483,7 @@ fn get_session_page_returns_latest_page_and_previous_cursor() {
         vec!["m3", "m4"]
     );
     assert!(latest.has_more);
+    assert!(latest.next_cursor.is_some());
     assert_eq!(latest.total_count, 5);
 
     let previous = store
@@ -418,6 +498,23 @@ fn get_session_page_returns_latest_page_and_previous_cursor() {
             .collect::<Vec<_>>(),
         vec!["m1", "m2"]
     );
+    assert!(previous.has_more);
+    assert!(previous.next_cursor.is_some());
+
+    let first = store
+        .get_session_page(tmp.path(), UUID1, previous.next_cursor.clone(), 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        first
+            .messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["m0"]
+    );
+    assert!(!first.has_more);
+    assert_eq!(first.next_cursor, None);
 
     let repeated = store
         .get_session_page(tmp.path(), UUID1, latest.next_cursor, 2)
@@ -702,6 +799,83 @@ fn get_session_page_repairs_orphan_message_chunks_missing_from_index() {
         .unwrap();
     assert_eq!(summaries[0].message_count, 2);
     assert_eq!(summaries[0].first_message, "Hello");
+}
+
+#[test]
+fn concurrent_append_and_page_repair_preserve_index_and_meta() {
+    let tmp = TempDir::new().unwrap();
+    let app_data_dir = tmp.path().to_path_buf();
+    let store = Arc::new(FileSessionStorage::default());
+    let mut session = make_session(UUID1, "/repo");
+    session.messages = (0..3)
+        .map(|i| {
+            message(
+                &format!("m{i}"),
+                &format!("message {i}"),
+                1000.0 + f64::from(i),
+            )
+        })
+        .collect();
+    store
+        .save_full_session_for_migration_or_restore(&app_data_dir, &session)
+        .unwrap();
+    let dir = session_dir(&app_data_dir, UUID1).unwrap();
+    let mut stale_index = store.read_index_from_dir(&dir).unwrap();
+    stale_index.pop();
+    write_json_pretty_atomic(&index_file_in_dir(&dir), &stale_index, "session index").unwrap();
+
+    let barrier = Arc::new(Barrier::new(3));
+    let page_store = Arc::clone(&store);
+    let page_dir = app_data_dir.clone();
+    let page_barrier = Arc::clone(&barrier);
+    let page_thread = std::thread::spawn(move || {
+        page_barrier.wait();
+        page_store
+            .get_session_page(&page_dir, UUID1, None, 2)
+            .unwrap()
+            .unwrap();
+    });
+
+    let append_store = Arc::clone(&store);
+    let append_dir = app_data_dir.clone();
+    let append_barrier = Arc::clone(&barrier);
+    let append_thread = std::thread::spawn(move || {
+        append_barrier.wait();
+        append_store
+            .append_message(&append_dir, UUID1, &message("m3", "message 3", 1003.0))
+            .unwrap();
+    });
+
+    barrier.wait();
+    page_thread.join().unwrap();
+    append_thread.join().unwrap();
+
+    let index = store.read_index_from_dir(&dir).unwrap();
+    assert_eq!(
+        index
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["m0", "m1", "m2", "m3"]
+    );
+    let meta = store
+        .get_session_meta(&app_data_dir, UUID1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.message_count, 4);
+    assert_eq!(meta.updated_at, 1003.0);
+    let loaded = store
+        .load_full_session_for_restore(&app_data_dir, UUID1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        loaded
+            .messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["m0", "m1", "m2", "m3"]
+    );
 }
 
 #[test]
@@ -1219,10 +1393,10 @@ fn session_file_rejects_path_traversal() {
 
 #[test]
 fn save_session_rejects_invalid_permission_mode() {
-    // Spec issues-947: save_session は cache/ファイル書き込み前に PermissionMode::parse を通す。
+    // Production 保存経路の SessionStore が PermissionMode::parse を通す。
     // 旧語彙・未知語彙・空文字は許可一覧付きエラーで拒否し、cache に残らない。
     let tmp = TempDir::new().unwrap();
-    let store = FileSessionStorage::default();
+    let store = make_session_store();
     let valid = make_session(UUID1, "/repo");
     store
         .save_full_session_for_migration_or_restore(tmp.path(), &valid)

@@ -7,6 +7,9 @@ use super::layout::{
 };
 use super::FileSessionStorage;
 use crate::usecase::agent_session::session::{
+    reject_oversized_base64_image, validate_image_bytes_for_media_type,
+};
+use crate::usecase::agent_session::session::{
     AttachmentRef, ChatMessage, MessagePart, SessionAttachment,
 };
 
@@ -73,9 +76,11 @@ impl FileSessionStorage {
         for part in parts {
             match part {
                 MessagePart::Image { data, media_type } => {
+                    reject_oversized_base64_image(data)?;
                     let bytes = BASE64_STANDARD
                         .decode(data)
                         .map_err(|e| format!("Failed to decode image attachment: {e}"))?;
+                    validate_image_bytes_for_media_type(&bytes, media_type)?;
                     let attachment = AttachmentRef {
                         id: attachment_id(media_type, &bytes),
                         media_type: media_type.clone(),
