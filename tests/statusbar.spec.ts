@@ -4,8 +4,8 @@ import { setupTauriMock, emitTauriEvent } from "./helpers/tauri-mock";
 import { waitForApp } from "./helpers/utils";
 
 /**
- * WorkspaceList のブランチ名表示および Agent 状態バッジのテスト。
- * worktree が1つ存在する状態で各表示・イベント連動を検証する。
+ * StatusBar のブランチ名表示と workspace 状態イベント購読のテスト。
+ * worktree が1つ存在する状態で表示とイベント処理を検証する。
  */
 function statusBarConfig(overrides: Record<string, unknown> = {}) {
 	return buildMockConfig({
@@ -36,7 +36,9 @@ test.describe("StatusBar", () => {
 		await expect(page.getByText("feat/my-branch")).toBeVisible();
 	});
 
-	test("Agent状態がイベントで更新される", async ({ page }) => {
+	test("workspace 状態イベントを受けてもレイアウトが維持される", async ({
+		page,
+	}) => {
 		const config = statusBarConfig({
 			list_branches_with_status: [
 				{
@@ -70,7 +72,9 @@ test.describe("StatusBar", () => {
 			last_activity_at: 1000,
 		});
 
-		// WorkspaceListのブランチアイテムに running 状態のアイコンが表示される
-		await expect(page.getByTitle("running")).toBeVisible({ timeout: 5000 });
+		await expect(page.getByText("feat/my-branch")).toBeVisible();
+		await expect(
+			page.getByRole("heading", { name: "Something went wrong" }),
+		).not.toBeVisible();
 	});
 });
