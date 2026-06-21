@@ -2331,6 +2331,8 @@ impl StepSessionDeps for RecordingStepSessionDeps {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
+    async fn write_step_session_started_event(&self, _event: WorkflowEvent) {}
+
     async fn broadcast_state(&self, _worktree_path: &str, _snapshot: WorkflowState) {
         self.broadcast_state_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);

@@ -532,6 +532,7 @@ pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
     match event {
         WorkflowEvent::RunStarted { timestamp, .. }
         | WorkflowEvent::NodeStarted { timestamp, .. }
+        | WorkflowEvent::StepSessionStarted { timestamp, .. }
         | WorkflowEvent::NodeCompleted { timestamp, .. }
         | WorkflowEvent::NodeFailed { timestamp, .. }
         | WorkflowEvent::ApprovalRequested { timestamp, .. }
@@ -555,6 +556,7 @@ pub(crate) fn set_workflow_event_timestamp(event: &mut WorkflowEvent, commit_tim
     match event {
         WorkflowEvent::RunStarted { timestamp, .. }
         | WorkflowEvent::NodeStarted { timestamp, .. }
+        | WorkflowEvent::StepSessionStarted { timestamp, .. }
         | WorkflowEvent::NodeCompleted { timestamp, .. }
         | WorkflowEvent::NodeFailed { timestamp, .. }
         | WorkflowEvent::ApprovalRequested { timestamp, .. }

@@ -211,6 +211,15 @@ pub enum WorkflowEventView {
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
     },
+    StepSessionStarted {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        execution_count: u32,
+        session_id: String,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
     NodeCompleted {
         run_id: String,
         workflow_name: String,
@@ -405,6 +414,21 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 workflow_name,
                 node_name,
                 execution_count,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::StepSessionStarted {
+                run_id,
+                workflow_name,
+                node_name,
+                execution_count,
+                session_id,
+                timestamp,
+            } => WorkflowEventView::StepSessionStarted {
+                run_id,
+                workflow_name,
+                node_name,
+                execution_count,
+                session_id,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
             WorkflowEvent::NodeCompleted {
@@ -984,6 +1008,7 @@ pub(crate) fn reconstruct_state_from_events(
     let mut current_step_index = 0usize;
     let mut workflow_name = String::new();
     let mut active_parallel_steps: Vec<ParallelStepState> = Vec::new();
+    let mut current_session_id: Option<String> = None;
 
     for event in events {
         match event {
@@ -1009,6 +1034,9 @@ pub(crate) fn reconstruct_state_from_events(
                     .position(|s| s.name == *node_name)
                     .unwrap_or(0);
                 step_execution_counts.insert(node_name.clone(), *execution_count);
+                // 新しい node が始まった時点では session 起動前。
+                // `StepSessionStarted` が後続で観測されるまで current_session_id は None。
+                current_session_id = None;
                 // [04] approval を経て次 node が開始した場合に exec_state を
                 // Running へ復元する。ApprovalRequested で WaitingApproval に
                 // 切り替わったまま NodeStarted が来ると、復元 state が承認待ち
@@ -1016,6 +1044,14 @@ pub(crate) fn reconstruct_state_from_events(
                 if matches!(exec_state, WorkflowExecutionState::WaitingApproval) {
                     exec_state = WorkflowExecutionState::Running;
                 }
+                updated_at = *timestamp;
+            }
+            WorkflowEvent::StepSessionStarted {
+                session_id,
+                timestamp,
+                ..
+            } => {
+                current_session_id = Some(session_id.clone());
                 updated_at = *timestamp;
             }
             WorkflowEvent::NodeCompleted {
@@ -1059,6 +1095,7 @@ pub(crate) fn reconstruct_state_from_events(
                 if let Some(ref usage) = token_usage {
                     total_token_usage.add(usage);
                 }
+                current_session_id = None;
                 updated_at = *timestamp;
             }
             WorkflowEvent::NodeFailed {
@@ -1072,6 +1109,7 @@ pub(crate) fn reconstruct_state_from_events(
                 exec_state = WorkflowExecutionState::Failed {
                     reason: reason.clone(),
                 };
+                current_session_id = None;
                 updated_at = *timestamp;
             }
             WorkflowEvent::ApprovalRequested {
@@ -1108,6 +1146,7 @@ pub(crate) fn reconstruct_state_from_events(
                 // 終端へ到達した経路（NodeFailed → RunFailed 等）でも UI が stale な
                 // 並列子を表示しないよう projection 側でも同じ不変条件を担保する。
                 active_parallel_steps.clear();
+                current_session_id = None;
                 updated_at = *timestamp;
             }
             WorkflowEvent::RunFailed {
@@ -1117,6 +1156,7 @@ pub(crate) fn reconstruct_state_from_events(
                     reason: reason.clone(),
                 };
                 active_parallel_steps.clear();
+                current_session_id = None;
                 updated_at = *timestamp;
             }
             WorkflowEvent::RunAborted {
@@ -1215,6 +1255,7 @@ pub(crate) fn reconstruct_state_from_events(
                 }
 
                 active_parallel_steps.clear();
+                current_session_id = None;
                 updated_at = *timestamp;
             }
             WorkflowEvent::OutputCollected { timestamp, .. } => {
@@ -1232,6 +1273,8 @@ pub(crate) fn reconstruct_state_from_events(
                     .iter()
                     .position(|s| s.name == *parent_node_name)
                     .unwrap_or(current_step_index);
+                // parallel parent には逐次 session が無い。
+                current_session_id = None;
                 if matches!(exec_state, WorkflowExecutionState::WaitingApproval) {
                     exec_state = WorkflowExecutionState::Running;
                 }
@@ -1415,7 +1458,7 @@ pub(crate) fn reconstruct_state_from_events(
         state: exec_state,
         current_step_index,
         current_step_name,
-        current_session_id: None,
+        current_session_id,
         total_steps: workflow.nodes.len(),
         step_history,
         step_execution_counts,

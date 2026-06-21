@@ -3184,6 +3184,25 @@ impl WorkflowRuntimeService {
             }
         };
 
+        // event log に session_id を露出することで、projection 経由の
+        // workspace_tree 等の read-model から逐次 step session を観測できる。
+        if let Some(ref snapshot) = snapshot {
+            let exec_count = snapshot
+                .step_execution_counts
+                .get(&snapshot.current_step_name)
+                .copied()
+                .unwrap_or(1);
+            deps.write_step_session_started_event(WorkflowEvent::StepSessionStarted {
+                run_id: snapshot.execution_id.clone(),
+                workflow_name: snapshot.workflow_name.clone(),
+                node_name: snapshot.current_step_name.clone(),
+                execution_count: exec_count,
+                session_id: step_session_id.clone(),
+                timestamp: snapshot.updated_at,
+            })
+            .await;
+        }
+
         if let Some(snapshot) = snapshot {
             deps.broadcast_state(worktree_path, snapshot).await;
         }
