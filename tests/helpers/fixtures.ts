@@ -209,6 +209,9 @@ const baseIpcHandler: Record<string, unknown> = {
 
 	// Worktree作成
 	create_worktree: null,
+	remove_worktree: null,
+	delete_branch: null,
+	kill_lsp_by_worktree: null,
 
 	// Agent chat sessions
 	list_sessions: [],
@@ -243,6 +246,7 @@ const baseIpcHandler: Record<string, unknown> = {
 	// Workflow
 	get_workflow_state: null,
 	list_workflows: [],
+	list_workflow_runs: [],
 	start_workflow: null,
 	abort_workflow: null,
 	approve_workflow_step: null,
@@ -252,6 +256,12 @@ const baseIpcHandler: Record<string, unknown> = {
 	list_workflow_executions: [],
 	get_workflow_execution_log: [],
 	get_workflow_execution_state: null,
+
+	// Workspace tree
+	list_workspace_worktree_nodes: [],
+	list_workspace_workflow_history: [],
+	archive_workspace_workflow_run: null,
+	restore_workspace_workflow_run: null,
 };
 
 // -------------------------------------------------------

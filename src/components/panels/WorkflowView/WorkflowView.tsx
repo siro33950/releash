@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -22,10 +23,12 @@ import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
 import type { AgentState } from "@/types/protocol";
 import type { PermissionMode } from "@/types/session";
 import type { WorkflowState } from "@/types/workflow";
+import type { CenterSelectionRequest } from "@/types/workspace-tree";
 import { WorkflowStepDetail } from "./WorkflowStepDetail";
 
 interface WorkflowViewProps {
 	worktreePath: string;
+	selectionRequest?: CenterSelectionRequest | null;
 	permissionMode?: PermissionMode;
 }
 
@@ -44,9 +47,51 @@ interface WorkflowViewProps {
  */
 export function WorkflowView({
 	worktreePath,
+	selectionRequest,
 	permissionMode = "ask",
 }: WorkflowViewProps) {
-	const { workflowState } = useWorkflowState(worktreePath);
+	const { workflowState: activeWorkflowState } = useWorkflowState(worktreePath);
+	const selectedRunId =
+		selectionRequest?.kind === "workflowRun" &&
+		selectionRequest.worktreePath === worktreePath
+			? selectionRequest.runId
+			: null;
+	const [requestedWorkflowState, setRequestedWorkflowState] =
+		useState<WorkflowState | null>(null);
+
+	useEffect(() => {
+		if (!selectedRunId) {
+			setRequestedWorkflowState(null);
+			return;
+		}
+		if (activeWorkflowState?.executionId === selectedRunId) {
+			setRequestedWorkflowState(null);
+			return;
+		}
+		let cancelled = false;
+		void invoke<WorkflowState | null>("get_workflow_run_state", {
+			worktreePath,
+			runId: selectedRunId,
+		})
+			.then((state) => {
+				if (!cancelled) {
+					setRequestedWorkflowState(state ?? null);
+				}
+			})
+			.catch(() => {
+				if (!cancelled) {
+					setRequestedWorkflowState(null);
+				}
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [activeWorkflowState?.executionId, selectedRunId, worktreePath]);
+
+	const workflowState =
+		selectedRunId && activeWorkflowState?.executionId !== selectedRunId
+			? requestedWorkflowState
+			: activeWorkflowState;
 
 	// Step タブの状態アイコン用: AgentChatPanel と同じく Rust 中央管理から取得した
 	// SessionStatus を sessionId -> AgentState の Map に整形する。
@@ -104,6 +149,25 @@ export function WorkflowView({
 			void openWorkflowStepTab(next.sessionId).catch(() => {});
 		}
 	}, []);
+
+	const handledSelectionRequestIdRef = useRef<number | null>(null);
+	useEffect(() => {
+		if (selectionRequest?.kind !== "workflowRun") return;
+		if (selectionRequest.worktreePath !== worktreePath) return;
+		if (handledSelectionRequestIdRef.current === selectionRequest.requestId) {
+			return;
+		}
+		if (!workflowState) return;
+		const sessionId = selectionRequest.focus?.sessionId;
+		if (!sessionId) {
+			handledSelectionRequestIdRef.current = selectionRequest.requestId;
+			return;
+		}
+		const selection = resolveStepSelection(workflowState, sessionId);
+		if (!selection) return;
+		handledSelectionRequestIdRef.current = selectionRequest.requestId;
+		handleSelectStepSession(selection);
+	}, [handleSelectStepSession, selectionRequest, workflowState, worktreePath]);
 
 	const handleSelectTab = useCallback((key: string) => {
 		setActiveTabKey(key);
@@ -298,6 +362,7 @@ export function WorkflowView({
 							onSessionClick={handleSelectStepSession}
 							onCloseSession={handleCloseSessionFromTimeline}
 							openStepSessionIds={openStepSessionIds}
+							showHeader={false}
 							selectedStep={
 								activeTab
 									? {

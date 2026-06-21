@@ -37,7 +37,9 @@ impl RepositoryQueryService {
         &self,
         repo_path: &str,
     ) -> Result<Vec<BranchCardDto>, UsecaseError> {
-        Ok(self.branch_card_query.list_branch_cards(repo_path)?)
+        let mut cards = self.branch_card_query.list_branch_cards(repo_path)?;
+        cards.sort_by_key(|card| !card.is_main_worktree);
+        Ok(cards)
     }
 }
 
@@ -73,5 +75,58 @@ mod repository_query_service_tests {
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].name, "main");
         assert!(cards[0].is_main_worktree);
+    }
+
+    struct FakeUnsortedBranchCards;
+
+    impl BranchCardQuery for FakeUnsortedBranchCards {
+        fn list_branch_cards(
+            &self,
+            _repo_path: &str,
+        ) -> Result<Vec<BranchCardDto>, RepositoryError> {
+            Ok(vec![
+                BranchCardDto {
+                    name: "feature-a".to_string(),
+                    is_main_worktree: false,
+                    worktree_path: Some("/repo-worktrees/feature-a".to_string()),
+                    dirty_count: 0,
+                    is_merged: false,
+                    ahead: 0,
+                    behind: 0,
+                    has_upstream: false,
+                    base_ahead: 0,
+                },
+                BranchCardDto {
+                    name: "main".to_string(),
+                    is_main_worktree: true,
+                    worktree_path: Some("/repo".to_string()),
+                    dirty_count: 0,
+                    is_merged: false,
+                    ahead: 0,
+                    behind: 0,
+                    has_upstream: false,
+                    base_ahead: 0,
+                },
+                BranchCardDto {
+                    name: "feature-b".to_string(),
+                    is_main_worktree: false,
+                    worktree_path: Some("/repo-worktrees/feature-b".to_string()),
+                    dirty_count: 0,
+                    is_merged: false,
+                    ahead: 0,
+                    behind: 0,
+                    has_upstream: false,
+                    base_ahead: 0,
+                },
+            ])
+        }
+    }
+
+    #[test]
+    fn test_main_worktreeを先頭に正規化する() {
+        let service = RepositoryQueryService::new(Arc::new(FakeUnsortedBranchCards));
+        let cards = service.list_branches_with_status("/repo").unwrap();
+        let names: Vec<&str> = cards.iter().map(|card| card.name.as_str()).collect();
+        assert_eq!(names, vec!["main", "feature-a", "feature-b"]);
     }
 }

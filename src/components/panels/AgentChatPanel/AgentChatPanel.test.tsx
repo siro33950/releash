@@ -4,7 +4,6 @@ import {
 	render,
 	screen,
 	waitFor,
-	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -274,7 +273,7 @@ describe("AgentChatPanel", () => {
 		expect(screen.getByTestId("agent-chat-panel")).toBeDefined();
 	});
 
-	it("has data-tauri-drag-region attribute for window dragging", () => {
+	it("does not own a draggable tab/header region", () => {
 		mockUseAgentChat();
 		const { container } = render(
 			<AgentChatPanel
@@ -284,7 +283,7 @@ describe("AgentChatPanel", () => {
 		);
 
 		const dragRegion = container.querySelector("[data-tauri-drag-region]");
-		expect(dragRegion).toBeInTheDocument();
+		expect(dragRegion).toBeNull();
 	});
 
 	it("shows a context restore warning for failed active sessions", () => {
@@ -1269,165 +1268,75 @@ describe("AgentChatPanel", () => {
 	});
 });
 
-describe("AgentChatPanel session tabs", () => {
-	it("renders a tab for each session with firstMessage as label", () => {
-		mockUseAgentChat({
-			sessions: [
-				{
-					id: "s1",
-					firstMessage: "Hello",
-					messageCount: 3,
-					worktreePath: "/repo",
-					state: "idle",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-				{
-					id: "s2",
-					firstMessage: "Fix bug",
-					messageCount: 5,
-					worktreePath: "/repo",
-					state: "idle",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-			],
-		});
+describe("AgentChatPanel selection requests", () => {
+	it("does not render the removed session tab bar or local session actions", () => {
+		mockUseAgentChat();
 		render(
 			<AgentChatPanel
 				worktreePath="/repo"
 				registerDropZone={mockRegisterDropZone}
 			/>,
 		);
-		expect(screen.getByText("Hello")).toBeDefined();
-		expect(screen.getByText("Fix bug")).toBeDefined();
+		expect(screen.queryByTestId("session-tab-list")).toBeNull();
+		expect(screen.queryByLabelText("New session")).toBeNull();
+		expect(screen.queryByLabelText("Session history")).toBeNull();
 	});
 
-	it("shows 'New session' for sessions without firstMessage", () => {
-		mockUseAgentChat({
-			sessions: [
-				{
-					id: "s1",
-					firstMessage: "",
-					messageCount: 0,
-					worktreePath: "/repo",
-					state: "idle",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-			],
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-		expect(screen.getByText("New session")).toBeDefined();
-	});
-
-	it("does not show X button when only one session", () => {
-		mockUseAgentChat({
-			sessions: [
-				{
-					id: "s1",
-					firstMessage: "Hello",
-					messageCount: 3,
-					worktreePath: "/repo",
-					state: "idle",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-			],
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-		expect(screen.queryByLabelText("Close Hello")).toBeNull();
-	});
-
-	it("shows X button when multiple sessions", () => {
-		mockUseAgentChat({
-			sessions: [
-				{
-					id: "s1",
-					firstMessage: "Hello",
-					messageCount: 3,
-					worktreePath: "/repo",
-					state: "idle",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-				{
-					id: "s2",
-					firstMessage: "Fix bug",
-					messageCount: 5,
-					worktreePath: "/repo",
-					state: "idle",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-			],
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-		expect(screen.getByLabelText("Close Hello")).toBeDefined();
-		expect(screen.getByLabelText("Close Fix bug")).toBeDefined();
-	});
-
-	it("calls closeSession when X button is clicked", () => {
-		const closeSession = vi.fn();
-		mockUseAgentChat({
-			sessions: [
-				{
-					id: "s1",
-					firstMessage: "Hello",
-					messageCount: 3,
-					worktreePath: "/repo",
-					state: "idle",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-				{
-					id: "s2",
-					firstMessage: "Fix bug",
-					messageCount: 5,
-					worktreePath: "/repo",
-					state: "idle",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-			],
-			closeSession,
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-		fireEvent.click(screen.getByLabelText("Close Hello"));
-		expect(closeSession).toHaveBeenCalledWith("s1");
-	});
-
-	it("calls createNewSession when + button is clicked", () => {
+	it("calls createNewSession when newAgentSession selection is requested", () => {
 		const createNewSession = vi.fn();
 		mockUseAgentChat({ createNewSession });
 		render(
 			<AgentChatPanel
 				worktreePath="/repo"
+				selectionRequest={{
+					kind: "newAgentSession",
+					worktreePath: "/repo",
+					requestId: 1,
+				}}
 				registerDropZone={mockRegisterDropZone}
 			/>,
 		);
-		fireEvent.click(screen.getByLabelText("New session"));
 		expect(createNewSession).toHaveBeenCalled();
+	});
+
+	it("reports created session id for newAgentSession selection", async () => {
+		const createNewSession = vi.fn().mockResolvedValue("new-s");
+		const onNewSessionCreated = vi.fn();
+		mockUseAgentChat({ createNewSession });
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				selectionRequest={{
+					kind: "newAgentSession",
+					worktreePath: "/repo",
+					requestId: 1,
+				}}
+				registerDropZone={mockRegisterDropZone}
+				onNewSessionCreated={onNewSessionCreated}
+			/>,
+		);
+
+		await waitFor(() => {
+			expect(onNewSessionCreated).toHaveBeenCalledWith("new-s");
+		});
+	});
+
+	it("calls selectSession when agentSession selection is requested", () => {
+		const selectSession = vi.fn();
+		mockUseAgentChat({ selectSession });
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				selectionRequest={{
+					kind: "agentSession",
+					worktreePath: "/repo",
+					sessionId: "s2",
+					requestId: 1,
+				}}
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+		expect(selectSession).toHaveBeenCalledWith("s2");
 	});
 
 	it("enables model selector in the input for an empty active session", () => {
@@ -1570,174 +1479,9 @@ describe("AgentChatPanel session tabs", () => {
 			screen.getByText("GPT-5.4").closest("[role='menuitem']"),
 		).toHaveAttribute("data-disabled");
 	});
-
-	it("calls selectSession when tab is clicked", () => {
-		const selectSession = vi.fn();
-		mockUseAgentChat({
-			sessions: [
-				{
-					id: "s1",
-					firstMessage: "Hello",
-					messageCount: 3,
-					worktreePath: "/repo",
-					state: "idle",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-				{
-					id: "s2",
-					firstMessage: "Fix bug",
-					messageCount: 5,
-					worktreePath: "/repo",
-					state: "idle",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-			],
-			selectSession,
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-		// Radix Tabs.Trigger は onMouseDown で value を確定する仕様。
-		// fireEvent.click では Radix の Trigger ハンドラが発火しないため mouseDown を使う。
-		fireEvent.mouseDown(screen.getByText("Fix bug"));
-		expect(selectSession).toHaveBeenCalledWith("s2");
-	});
 });
 
-describe("AgentChatPanel agent state reflection", () => {
-	it("shows AgentStateIcon on tab when session is running", () => {
-		mockUseAgentChat({
-			sessions: [
-				{
-					id: "s1",
-					firstMessage: "Hello",
-					messageCount: 3,
-					worktreePath: "/repo",
-					state: "active",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-			],
-			sessionAgentStates: new Map([["s1", "running"]]),
-			isStreaming: true,
-			activeSession: {
-				id: "s1",
-				worktreePath: "/repo",
-				messages: [
-					{
-						id: "m1",
-						role: "human",
-						parts: [{ type: "text", content: "hello" }],
-						timestamp: 1000,
-					},
-					{
-						id: "m2",
-						role: "agent",
-						parts: [{ type: "text", content: "working..." }],
-						timestamp: 1001,
-					},
-				],
-				state: "active",
-				createdAt: 1000,
-				updatedAt: 1000,
-			},
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-
-		const tab = screen.getByText("Hello").closest("[role='tab']");
-		expect(tab?.querySelector("[title='running']")).not.toBeNull();
-	});
-
-	it("shows AgentStateIcon with waiting state on tab", () => {
-		mockUseAgentChat({
-			sessions: [
-				{
-					id: "s1",
-					firstMessage: "Hello",
-					messageCount: 3,
-					worktreePath: "/repo",
-					state: "active",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-			],
-			sessionAgentStates: new Map([["s1", "waiting"]]),
-			isStreaming: true,
-			pendingPermission: {
-				request_id: "req-001",
-				tool_name: "Edit",
-				input: {},
-				tool_use_id: "toolu_001",
-			},
-			activeSession: {
-				id: "s1",
-				worktreePath: "/repo",
-				messages: [
-					{
-						id: "m1",
-						role: "human",
-						parts: [{ type: "text", content: "hello" }],
-						timestamp: 1000,
-					},
-					{
-						id: "m2",
-						role: "agent",
-						parts: [{ type: "text", content: "editing..." }],
-						timestamp: 1001,
-					},
-				],
-				state: "active",
-				createdAt: 1000,
-				updatedAt: 1000,
-			},
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-
-		const tab = screen.getByText("Hello").closest("[role='tab']");
-		expect(tab?.querySelector("[title='waiting']")).not.toBeNull();
-	});
-
-	it("shows AgentStateIcon with done state on tab when session is idle", () => {
-		mockUseAgentChat({
-			sessions: [
-				{
-					id: "s1",
-					firstMessage: "Hello",
-					messageCount: 3,
-					worktreePath: "/repo",
-					state: "idle",
-					createdAt: 1000,
-					updatedAt: 1000,
-				},
-			],
-			sessionAgentStates: new Map([["s1", "done"]]),
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-
-		const tab = screen.getByText("Hello").closest("[role='tab']");
-		expect(tab?.querySelector("[title='done']")).not.toBeNull();
-	});
-
+describe("AgentChatPanel active session controls", () => {
 	it("reflects permissionMode ask in ModeSelector trigger label", () => {
 		mockUseAgentChat({
 			permissionMode: "ask",
@@ -2689,163 +2433,6 @@ describe("SystemNotificationItem rendering", () => {
 	});
 });
 
-describe("AgentChatPanel session history", () => {
-	it("renders history button", () => {
-		mockUseAgentChat();
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-		expect(screen.getByLabelText("Session history")).toBeDefined();
-	});
-
-	it("shows 'No closed sessions' when closedSessions is empty", () => {
-		mockUseAgentChat();
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-		fireEvent.click(screen.getByLabelText("Session history"));
-		expect(screen.getByText("No closed sessions")).toBeDefined();
-	});
-
-	it("shows closed sessions in popover and calls restoreSession on click", () => {
-		const restoreSession = vi.fn();
-		mockUseAgentChat({
-			closedSessions: [
-				{
-					id: "closed-1",
-					firstMessage: "Old conversation",
-					messageCount: 5,
-					worktreePath: "/repo",
-					state: "closed",
-					createdAt: 500,
-					updatedAt: 500,
-				},
-			],
-			restoreSession,
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-		fireEvent.click(screen.getByLabelText("Session history"));
-		expect(screen.getByText("Old conversation")).toBeDefined();
-		fireEvent.click(screen.getByText("Old conversation"));
-		expect(restoreSession).toHaveBeenCalledWith("closed-1");
-	});
-
-	it("archives a closed session from the history popover", () => {
-		const archiveSession = vi.fn();
-		const restoreSession = vi.fn();
-		mockUseAgentChat({
-			closedSessions: [
-				{
-					id: "closed-1",
-					firstMessage: "Old conversation",
-					messageCount: 5,
-					worktreePath: "/repo",
-					state: "closed",
-					createdAt: 500,
-					updatedAt: 500,
-				},
-			],
-			archiveSession,
-			restoreSession,
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-
-		fireEvent.click(screen.getByLabelText("Session history"));
-		fireEvent.click(screen.getByLabelText("Archive Old conversation"));
-
-		expect(archiveSession).toHaveBeenCalledWith("closed-1");
-		expect(restoreSession).not.toHaveBeenCalled();
-	});
-
-	it("searches across sessions from history popover and restores a result", async () => {
-		const restoreSession = vi.fn();
-		mockInvoke.mockImplementation((command, args) => {
-			if (command === "search_agent_sessions") {
-				expect(args).toEqual({
-					worktreePath: "/repo",
-					query: "parser",
-					includeWorkflow: false,
-					limit: 20,
-				});
-				return Promise.resolve([
-					{
-						session: {
-							id: "s2",
-							worktreePath: "/repo",
-							state: "closed",
-							createdAt: 1000,
-							updatedAt: 1002,
-							firstMessage: "Fix parser bug",
-							messageCount: 4,
-							permissionMode: "edit",
-						},
-						matchedMessageId: "m2",
-						matchedRole: "agent",
-						snippet: "The parser bug is fixed",
-					},
-				]);
-			}
-			return Promise.resolve([]);
-		});
-		mockUseAgentChat({ restoreSession });
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-
-		fireEvent.click(screen.getByLabelText("Session history"));
-		fireEvent.change(screen.getByLabelText("Search sessions"), {
-			target: { value: "parser" },
-		});
-
-		expect(await screen.findByText("Fix parser bug")).toBeInTheDocument();
-		expect(screen.getByText("The parser bug is fixed")).toBeInTheDocument();
-
-		fireEvent.click(screen.getByText("Fix parser bug"));
-		expect(restoreSession).toHaveBeenCalledWith("s2");
-	});
-
-	it("focuses session search when opened from Cmd+G", async () => {
-		mockUseAgentChat();
-		render(
-			<AgentChatPanel
-				worktreePath="/repo"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-		await waitFor(() =>
-			expect(mockInvoke).toHaveBeenCalledWith(
-				"get_agent_shortcut_settings",
-				undefined,
-			),
-		);
-
-		const search = await waitFor(async () => {
-			fireEvent.keyDown(window, { key: "g", metaKey: true });
-			return await screen.findByLabelText("Search sessions");
-		});
-		await waitFor(() => expect(search).toHaveFocus());
-	});
-});
-
 describe("AgentChatPanel image drag and drop", () => {
 	const emptyActiveSession = {
 		id: "s1",
@@ -2962,11 +2549,11 @@ describe("AgentChatPanel workflow panel visibility", () => {
 	// AgentChatPanel 自身は context から渡された session 一覧を表示するだけなので、
 	// この特定の挙動は本 panel テストの対象外。Provider 側でカバーする。
 
-	// spec issues-1023: AgentChatPanel は WorkflowPanel をホストしない
-	// （右パネル側 Workflow モードに切り出された）。本パネルでの責務は free chat
-	// session の tab bar 表示と、workflow step session を tab bar から除外することのみ。
+	// spec issues-1023: AgentChatPanel は WorkflowPanel をホストしない。
+	// spec issues-1220: Session 列は Workspace tree に移ったため、AgentChatPanel は
+	// active free chat session の本文だけを表示する。
 
-	it("excludes workflow step sessions from the chat tab bar", () => {
+	it("does not render a session tab bar and does not show workflow step sessions as chat body", () => {
 		useWorkflowStateMock.mockReturnValue({ workflowState: null });
 		mockUseAgentChat({
 			sessions: [
@@ -3006,8 +2593,8 @@ describe("AgentChatPanel workflow panel visibility", () => {
 				registerDropZone={mockRegisterDropZone}
 			/>,
 		);
-		const tabList = screen.getByTestId("session-tab-list");
-		expect(within(tabList).getByText("Free chat")).toBeInTheDocument();
-		expect(within(tabList).queryByText("Workflow step")).toBeNull();
+		expect(screen.queryByTestId("session-tab-list")).toBeNull();
+		expect(screen.queryByText("Workflow step")).toBeNull();
+		expect(screen.getByTestId("message-input")).toBeInTheDocument();
 	});
 });

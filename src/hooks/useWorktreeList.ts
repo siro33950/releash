@@ -7,15 +7,6 @@ import type { WorkspaceStatus } from "@/types/session";
 
 const POLL_INTERVAL = 120_000;
 
-export type WorktreeStatus = "backlog" | "in_progress" | "review" | "done";
-
-export function computeStatus(branch: WorktreeBranch): WorktreeStatus {
-	if (branch.is_merged) return "done";
-	if (branch.has_pr) return "review";
-	if (branch.base_ahead > 0 || branch.dirty_count > 0) return "in_progress";
-	return "backlog";
-}
-
 export function useWorktreeList(repoPath: string) {
 	const [branches, setBranches] = useState<WorktreeBranch[]>([]);
 	const [loading, setLoading] = useState(true);

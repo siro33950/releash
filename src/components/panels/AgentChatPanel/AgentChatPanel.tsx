@@ -1,8 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Archive, History, Search, X } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AgentStateIcon } from "@/components/ui/agent-state-icon";
 import {
 	CommandDialog,
 	CommandEmpty,
@@ -12,20 +10,11 @@ import {
 	CommandList,
 	CommandShortcut,
 } from "@/components/ui/command";
-import {
-	Popover,
-	PopoverContent,
-	PopoverTrigger,
-} from "@/components/ui/popover";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChatContext } from "@/contexts/AgentChatContext";
 import { useDisplayedActiveSession } from "@/hooks/useDisplayedActiveSession";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
-import type {
-	AgentEditorSelection,
-	MentionReference,
-	SessionSearchResult,
-} from "@/types/session";
+import type { AgentEditorSelection, MentionReference } from "@/types/session";
+import type { CenterSelectionRequest } from "@/types/workspace-tree";
 import { BoundSessionChat } from "./BoundSessionChat";
 
 interface AgentCommandPaletteItem {
@@ -91,6 +80,7 @@ function commandShortcutLabel(item: AgentCommandPaletteItem): string {
 
 interface AgentChatPanelProps {
 	worktreePath: string;
+	selectionRequest?: CenterSelectionRequest | null;
 	activeEditorPath?: string | null;
 	openEditorPaths?: string[];
 	activeEditorSelection?: AgentEditorSelection | null;
@@ -103,35 +93,26 @@ interface AgentChatPanelProps {
 		((content: string, mentions?: MentionReference[]) => Promise<void>) | null
 	>;
 	onOpenDiffFile?: (filePath: string) => void;
+	onNewSessionCreated?: (sessionId: string) => void;
 }
 
 /**
- * spec issues-1023: 自由対話 chat の panel。タブバーは AgentChatPanel 固有の
- * drag&drop 並べ替え・history popover・新規作成ボタンを持つ。chat 本文と
- * MessageInput は {@link BoundSessionChat} に委譲され、WorkflowView と
- * 同一実装を共有する（issue #1023 「タブ含めて同じ UI で session フィルタだけが違う」設計）。
+ * 自由対話 chat の本文 panel。#1220 以降、Session 一覧・切替・close・history は
+ * Workspace tree の責務であり、ここでは選択済み 1 session だけを表示する。
  */
 export function AgentChatPanel({
 	worktreePath,
+	selectionRequest,
 	activeEditorPath,
 	openEditorPaths,
 	activeEditorSelection,
 	registerDropZone,
 	sendMessageRef,
 	onOpenDiffFile,
+	onNewSessionCreated,
 }: AgentChatPanelProps) {
-	const {
-		orderedSessions,
-		closedSessions,
-		sessionAgentStates,
-		selectSession,
-		closeSession,
-		archiveSession,
-		restoreSession,
-		createNewSession,
-		reorderSessions,
-		refreshClosedSessions,
-	} = useAgentChatContext();
+	const { orderedSessions, selectSession, createNewSession } =
+		useAgentChatContext();
 
 	// spec issues-1023: workflow step として起動された chat session は
 	// 自由対話 chat tab と同格に tab bar 上に並べない。観測経路は Workflow panel の
@@ -140,26 +121,12 @@ export function AgentChatPanel({
 		() => orderedSessions.filter((s) => !s.workflowStepSession),
 		[orderedSessions],
 	);
-	const displayedClosedSessions = useMemo(
-		() => closedSessions.filter((s) => !s.workflowStepSession),
-		[closedSessions],
-	);
-
 	// spec issues-1023 / issues-1022: 万一 activeSession が workflow step session の状態でも
 	// AgentChatPanel 本文では表示しない（Workflow panel 側 transcript の二重表示防止）。
 	// Diff Thread handoff (issues-1022) と同じ判定規則を共通 hook 経由で参照する。
 	const displayedActiveSession = useDisplayedActiveSession();
 	const activeSessionId = displayedActiveSession?.id ?? null;
 
-	const [historyOpen, setHistoryOpen] = useState(false);
-	const [historySearchQuery, setHistorySearchQuery] = useState("");
-	const [historySearchResults, setHistorySearchResults] = useState<
-		SessionSearchResult[]
-	>([]);
-	const [historySearchError, setHistorySearchError] = useState<string | null>(
-		null,
-	);
-	const [isHistorySearchLoading, setIsHistorySearchLoading] = useState(false);
 	const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 	const [commandPaletteItems, setCommandPaletteItems] = useState<
 		AgentCommandPaletteItem[]
@@ -167,34 +134,38 @@ export function AgentChatPanel({
 	const [agentShortcuts, setAgentShortcuts] = useState<AgentShortcutSetting[]>(
 		[],
 	);
-	const historySearchInputRef = useRef<HTMLInputElement>(null);
-	const draggedSessionIdRef = useRef<string | null>(null);
-	const isDraggingRef = useRef(false);
+	const handledSelectionRequestIdRef = useRef<number | null>(null);
+	const createSessionAndRefreshTree = useCallback(async () => {
+		const sessionId = await createNewSession();
+		if (sessionId) {
+			onNewSessionCreated?.(sessionId);
+		}
+		window.dispatchEvent(
+			new CustomEvent("workspace-tree-refresh", {
+				detail: { worktreePath },
+			}),
+		);
+	}, [createNewSession, onNewSessionCreated, worktreePath]);
 
-	const handleHistoryOpen = useCallback(
-		(open: boolean) => {
-			setHistoryOpen(open);
-			if (open) {
-				refreshClosedSessions();
-			}
-		},
-		[refreshClosedSessions],
-	);
+	useEffect(() => {
+		if (!selectionRequest) return;
+		if (selectionRequest.worktreePath !== worktreePath) return;
+		if (handledSelectionRequestIdRef.current === selectionRequest.requestId) {
+			return;
+		}
+		handledSelectionRequestIdRef.current = selectionRequest.requestId;
 
-	const handleRestore = useCallback(
-		(sessionId: string) => {
-			restoreSession(sessionId);
-			setHistoryOpen(false);
-		},
-		[restoreSession],
-	);
-
-	const handleArchive = useCallback(
-		(sessionId: string) => {
-			archiveSession(sessionId);
-		},
-		[archiveSession],
-	);
+		if (selectionRequest.kind === "agentSession") {
+			void selectSession(selectionRequest.sessionId);
+		} else if (selectionRequest.kind === "newAgentSession") {
+			void createSessionAndRefreshTree();
+		}
+	}, [
+		createSessionAndRefreshTree,
+		selectSession,
+		selectionRequest,
+		worktreePath,
+	]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -234,112 +205,6 @@ export function AgentChatPanel({
 		};
 	}, [activeSessionId, commandPaletteOpen, displayedSessions.length]);
 
-	useEffect(() => {
-		if (!historyOpen) return;
-		const focusId = window.requestAnimationFrame(() => {
-			historySearchInputRef.current?.focus();
-		});
-		return () => window.cancelAnimationFrame(focusId);
-	}, [historyOpen]);
-
-	useEffect(() => {
-		if (!historyOpen) return;
-		const query = historySearchQuery.trim();
-		if (!query) {
-			setHistorySearchResults([]);
-			setHistorySearchError(null);
-			setIsHistorySearchLoading(false);
-			return;
-		}
-		let cancelled = false;
-		setIsHistorySearchLoading(true);
-		const timer = window.setTimeout(() => {
-			invoke<SessionSearchResult[]>("search_agent_sessions", {
-				worktreePath,
-				query,
-				includeWorkflow: false,
-				limit: 20,
-			})
-				.then((results) => {
-					if (cancelled) return;
-					setHistorySearchResults(results);
-					setHistorySearchError(null);
-				})
-				.catch((e) => {
-					if (cancelled) return;
-					setHistorySearchResults([]);
-					setHistorySearchError(String(e));
-				})
-				.finally(() => {
-					if (!cancelled) {
-						setIsHistorySearchLoading(false);
-					}
-				});
-		}, 150);
-		return () => {
-			cancelled = true;
-			window.clearTimeout(timer);
-		};
-	}, [historyOpen, historySearchQuery, worktreePath]);
-
-	const handleDragStart = useCallback(
-		(e: React.DragEvent, sessionId: string) => {
-			draggedSessionIdRef.current = sessionId;
-			isDraggingRef.current = true;
-			e.dataTransfer.effectAllowed = "move";
-			e.dataTransfer.setData("text/plain", sessionId);
-		},
-		[],
-	);
-
-	const handleDragOver = useCallback((e: React.DragEvent) => {
-		e.preventDefault();
-		e.dataTransfer.dropEffect = "move";
-	}, []);
-
-	const handleDrop = useCallback(
-		(e: React.DragEvent, targetId: string) => {
-			e.preventDefault();
-			const draggedId = draggedSessionIdRef.current;
-			if (!draggedId || draggedId === targetId) return;
-
-			// 並べ替えは tab bar 上に存在する free chat session 列に対してのみ意味がある。
-			// workflow step session は tab bar に並ばないため、その index を参照しない。
-			const currentOrder = displayedSessions.map((s) => s.id);
-			const fromIndex = currentOrder.indexOf(draggedId);
-			const toIndex = currentOrder.indexOf(targetId);
-			if (fromIndex === -1 || toIndex === -1) return;
-
-			const newOrder = [...currentOrder];
-			newOrder.splice(fromIndex, 1);
-			newOrder.splice(toIndex, 0, draggedId);
-
-			// orderedSessions 全体の order に対しては、tab bar に並ばない session を
-			// 既存位置に保ったまま、free chat session 部分だけを並べ替える。
-			// hidden を末尾に集約すると interleaved な配置（workflow step session が
-			// free chat session の間に挟まる順序）が崩れるため、元の位置を保持する。
-			let freeIndex = 0;
-			const nextOrder = orderedSessions.map((s) =>
-				currentOrder.includes(s.id) ? newOrder[freeIndex++] : s.id,
-			);
-			reorderSessions(nextOrder);
-		},
-		[displayedSessions, orderedSessions, reorderSessions],
-	);
-
-	const handleDragEnd = useCallback(() => {
-		draggedSessionIdRef.current = null;
-		isDraggingRef.current = false;
-	}, []);
-
-	const handleTabClick = useCallback(
-		(sessionId: string) => {
-			if (isDraggingRef.current) return;
-			selectSession(sessionId);
-		},
-		[selectSession],
-	);
-
 	const selectAdjacentSession = useCallback(
 		(direction: -1 | 1) => {
 			if (!activeSessionId || displayedSessions.length < 2) return;
@@ -363,10 +228,10 @@ export function AgentChatPanel({
 					setCommandPaletteOpen(true);
 					return;
 				case "new_thread":
-					createNewSession();
+					void createSessionAndRefreshTree();
 					return;
 				case "search_threads":
-					handleHistoryOpen(true);
+					window.dispatchEvent(new Event("agent-open-thread-history"));
 					return;
 				case "find_in_thread":
 					window.dispatchEvent(new Event("agent-open-thread-find"));
@@ -385,7 +250,7 @@ export function AgentChatPanel({
 					return;
 			}
 		},
-		[createNewSession, handleHistoryOpen, selectAdjacentSession],
+		[createSessionAndRefreshTree, selectAdjacentSession],
 	);
 
 	const runCommandPaletteItem = useCallback(
@@ -434,224 +299,49 @@ export function AgentChatPanel({
 
 	return (
 		<div data-testid="agent-chat-panel" className="flex flex-col h-full">
-			<Tabs
-				value={activeSessionId ?? ""}
-				onValueChange={handleTabClick}
-				className="flex flex-col h-full gap-0"
-			>
-				<div
-					data-tauri-drag-region
-					className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background border-b"
-				>
-					<TabsList
-						data-testid="session-tab-list"
-						className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
-					>
-						{displayedSessions.map((session) => (
-							<TabsTrigger key={session.id} value={session.id} asChild>
-								{/* biome-ignore lint/a11y/noStaticElementInteractions: TabsTrigger asChild が role を付与 */}
-								<div
-									className="gap-2"
-									draggable={displayedSessions.length > 1}
-									onDragStart={(e) => handleDragStart(e, session.id)}
-									onDragOver={handleDragOver}
-									onDrop={(e) => handleDrop(e, session.id)}
-									onDragEnd={handleDragEnd}
-								>
-									<AgentStateIcon state={sessionAgentStates.get(session.id)} />
-									<span className="truncate max-w-[120px]">
-										{session.firstMessage || "New session"}
-									</span>
-									{displayedSessions.length > 1 && (
-										<button
-											type="button"
-											onPointerDown={(e) => e.stopPropagation()}
-											onMouseDown={(e) => e.stopPropagation()}
-											onClick={(e) => {
-												e.stopPropagation();
-												closeSession(session.id);
-											}}
-											className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
-											aria-label={`Close ${session.firstMessage || "New session"}`}
-										>
-											<X className="size-3.5" />
-										</button>
-									)}
-								</div>
-							</TabsTrigger>
-						))}
-					</TabsList>
-					<div data-tauri-drag-region className="flex-1" />
-					<button
-						type="button"
-						onClick={() => createNewSession()}
-						aria-label="New session"
-						className="px-2 h-full text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
-					>
-						+
-					</button>
-					<Popover open={historyOpen} onOpenChange={handleHistoryOpen}>
-						<PopoverTrigger asChild>
-							<button
-								type="button"
-								aria-label="Session history"
-								className="p-1 rounded hover:bg-muted-foreground/20 transition-colors shrink-0 ml-auto"
-							>
-								<History className="size-3.5" />
-							</button>
-						</PopoverTrigger>
-						<PopoverContent align="end" className="w-80 p-0">
-							<div className="border-b p-2">
-								<div className="flex items-center gap-1 rounded border px-2 py-1">
-									<Search className="size-3.5 shrink-0 text-muted-foreground" />
-									<input
-										ref={historySearchInputRef}
-										type="search"
-										value={historySearchQuery}
-										onChange={(event) =>
-											setHistorySearchQuery(event.target.value)
-										}
-										placeholder="Search sessions"
-										aria-label="Search sessions"
-										className="min-w-0 flex-1 bg-transparent text-sm outline-none"
-									/>
-									{historySearchQuery && (
-										<button
-											type="button"
-											aria-label="Clear session search"
-											className="inline-flex size-5 shrink-0 items-center justify-center rounded hover:bg-muted"
-											onClick={() => setHistorySearchQuery("")}
-										>
-											<X className="size-3" />
-										</button>
-									)}
-								</div>
-							</div>
-							{historySearchQuery.trim() ? (
-								<div className="max-h-72 overflow-y-auto">
-									{isHistorySearchLoading ? (
-										<p className="px-3 py-4 text-center text-sm text-muted-foreground">
-											Searching...
-										</p>
-									) : historySearchError ? (
-										<p className="px-3 py-4 text-center text-sm text-destructive">
-											{historySearchError}
-										</p>
-									) : historySearchResults.length > 0 ? (
-										<ul>
-											{historySearchResults.map((result) => (
-												<li key={result.session.id}>
-													<div className="flex items-start gap-1 px-2 py-1 hover:bg-muted">
-														<button
-															type="button"
-															className="min-w-0 flex-1 px-1 py-1 text-left"
-															onClick={() => handleRestore(result.session.id)}
-														>
-															<div className="truncate text-sm">
-																{result.session.firstMessage || "New session"}
-															</div>
-															<div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
-																{result.snippet}
-															</div>
-														</button>
-														<button
-															type="button"
-															className="inline-flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground"
-															aria-label={`Archive ${result.session.firstMessage || "New session"}`}
-															title="Archive session"
-															onClick={() => handleArchive(result.session.id)}
-														>
-															<Archive className="size-3.5" />
-														</button>
-													</div>
-												</li>
-											))}
-										</ul>
-									) : (
-										<p className="px-3 py-4 text-center text-sm text-muted-foreground">
-											No matching sessions
-										</p>
-									)}
-								</div>
-							) : displayedClosedSessions.length > 0 ? (
-								<ul className="max-h-60 overflow-y-auto">
-									{displayedClosedSessions.map((session) => (
-										<li key={session.id}>
-											<div className="flex items-center gap-1 px-2 py-1 hover:bg-muted">
-												<button
-													type="button"
-													className="min-w-0 flex-1 truncate px-1 py-1 text-left text-sm"
-													onClick={() => handleRestore(session.id)}
-												>
-													{session.firstMessage || "New session"}
-												</button>
-												<button
-													type="button"
-													className="inline-flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground"
-													aria-label={`Archive ${session.firstMessage || "New session"}`}
-													title="Archive session"
-													onClick={() => handleArchive(session.id)}
-												>
-													<Archive className="size-3.5" />
-												</button>
-											</div>
-										</li>
-									))}
-								</ul>
-							) : (
-								<p className="px-3 py-4 text-sm text-muted-foreground text-center">
-									No closed sessions
-								</p>
-							)}
-						</PopoverContent>
-					</Popover>
+			{activeSessionId ? (
+				<BoundSessionChat
+					sessionId={activeSessionId}
+					worktreePath={worktreePath}
+					activeEditorPath={activeEditorPath}
+					openEditorPaths={openEditorPaths}
+					activeEditorSelection={activeEditorSelection}
+					registerDropZone={registerDropZone}
+					dropZoneName="agent"
+					sendMessageRef={sendMessageRef}
+					onOpenDiffFile={onOpenDiffFile}
+					skipInitialLoad
+				/>
+			) : (
+				<div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+					No chat selected
 				</div>
-				{activeSessionId ? (
-					<BoundSessionChat
-						sessionId={activeSessionId}
-						worktreePath={worktreePath}
-						activeEditorPath={activeEditorPath}
-						openEditorPaths={openEditorPaths}
-						activeEditorSelection={activeEditorSelection}
-						registerDropZone={registerDropZone}
-						dropZoneName="agent"
-						sendMessageRef={sendMessageRef}
-						onOpenDiffFile={onOpenDiffFile}
-						skipInitialLoad
-					/>
-				) : (
-					<div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
-						No chat selected
-					</div>
-				)}
-				<CommandDialog
-					open={commandPaletteOpen}
-					onOpenChange={setCommandPaletteOpen}
-					title="Agent Commands"
-					description="Search agent commands"
-					className="max-w-lg"
-				>
-					<CommandInput placeholder="Search commands" />
-					<CommandList data-testid="agent-command-palette">
-						<CommandEmpty>No commands found</CommandEmpty>
-						<CommandGroup heading="Agent">
-							{commandPaletteItems.map((item) => (
-								<CommandItem
-									key={item.id}
-									value={item.label}
-									disabled={!item.enabled}
-									onSelect={() => runCommandPaletteItem(item)}
-								>
-									<span>{item.label}</span>
-									<CommandShortcut>
-										{commandShortcutLabel(item)}
-									</CommandShortcut>
-								</CommandItem>
-							))}
-						</CommandGroup>
-					</CommandList>
-				</CommandDialog>
-			</Tabs>
+			)}
+			<CommandDialog
+				open={commandPaletteOpen}
+				onOpenChange={setCommandPaletteOpen}
+				title="Agent Commands"
+				description="Search agent commands"
+				className="max-w-lg"
+			>
+				<CommandInput placeholder="Search commands" />
+				<CommandList data-testid="agent-command-palette">
+					<CommandEmpty>No commands found</CommandEmpty>
+					<CommandGroup heading="Agent">
+						{commandPaletteItems.map((item) => (
+							<CommandItem
+								key={item.id}
+								value={item.label}
+								disabled={!item.enabled}
+								onSelect={() => runCommandPaletteItem(item)}
+							>
+								<span>{item.label}</span>
+								<CommandShortcut>{commandShortcutLabel(item)}</CommandShortcut>
+							</CommandItem>
+						))}
+					</CommandGroup>
+				</CommandList>
+			</CommandDialog>
 		</div>
 	);
 }

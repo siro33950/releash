@@ -38,6 +38,7 @@ interface WorkflowPanelProps {
 	 * Workflow 観測 mode（右パネル）からは kicker を表示しない。
 	 */
 	showNewWorkflowButton?: boolean;
+	showHeader?: boolean;
 }
 
 export function WorkflowPanel({
@@ -49,6 +50,7 @@ export function WorkflowPanel({
 	openStepSessionIds,
 	selectedStep,
 	showNewWorkflowButton = true,
+	showHeader = true,
 }: WorkflowPanelProps) {
 	const [executionIds, setExecutionIds] = useState<string[]>([]);
 	const [openPastIds, setOpenPastIds] = useState<string[]>([]);
@@ -68,12 +70,14 @@ export function WorkflowPanel({
 	}, [worktreePath]);
 
 	useEffect(() => {
+		if (!showHeader) return;
 		fetchExecutionIds();
-	}, [fetchExecutionIds]);
+	}, [fetchExecutionIds, showHeader]);
 
 	// Refresh on workflow completion
 	const stateType = workflowState?.state.type;
 	useEffect(() => {
+		if (!showHeader) return;
 		if (
 			stateType === "completed" ||
 			stateType === "failed" ||
@@ -81,7 +85,7 @@ export function WorkflowPanel({
 		) {
 			fetchExecutionIds();
 		}
-	}, [stateType, fetchExecutionIds]);
+	}, [stateType, fetchExecutionIds, showHeader]);
 
 	// Switch to current tab when a new workflow starts
 	const executionId = workflowState?.executionId;
@@ -142,6 +146,26 @@ export function WorkflowPanel({
 		setActiveTab(id);
 		setHistoryOpen(false);
 	}, []);
+
+	if (!showHeader) {
+		if (!workflowState) {
+			return (
+				<div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+					No workflow running
+				</div>
+			);
+		}
+		return (
+			<WorkflowActivePanel
+				workflowState={workflowState}
+				worktreePath={worktreePath}
+				onSessionClick={onSessionClick}
+				onCloseSession={onCloseSession}
+				openStepSessionIds={openStepSessionIds}
+				selectedStep={selectedStep}
+			/>
+		);
+	}
 
 	return (
 		<Tabs

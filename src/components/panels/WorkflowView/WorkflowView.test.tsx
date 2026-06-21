@@ -392,13 +392,13 @@ describe("WorkflowView", () => {
 		expect(screen.getByText("ready for approval")).toBeInTheDocument();
 	});
 
-	it("renders NewWorkflowButton kicker so the user can start a workflow", () => {
+	it("does not render WorkflowPanel header actions inside WorkflowView", () => {
 		useWorkflowStateMock.mockReturnValue({
 			workflowState: workflowStateFixture(),
 		});
 		render(<WorkflowView worktreePath="/repo" />);
-		// 起動経路を残すため kicker を表示する。
-		expect(screen.queryByLabelText("New workflow")).not.toBeNull();
+		expect(screen.queryByLabelText("New workflow")).toBeNull();
+		expect(screen.queryByLabelText("Execution history")).toBeNull();
 	});
 
 	describe("tab bar", () => {

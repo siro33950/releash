@@ -15,4 +15,5 @@ pub struct AppState {
     pub repo_paths_usecase: Arc<RepoPathsUsecase>,
     pub code_usecase: Arc<CodeUsecase>,
     pub workflow_usecase: Arc<WorkflowUsecase>,
+    pub workflow_archive_index_lock: Arc<tokio::sync::Mutex<()>>,
 }

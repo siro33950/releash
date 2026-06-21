@@ -2395,6 +2395,7 @@ mod tests {
                     app.handle().clone(),
                 ),
             ),
+            workflow_archive_index_lock: Arc::new(tokio::sync::Mutex::new(())),
         });
         (app, engine, data_dir)
     }

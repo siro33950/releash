@@ -2,114 +2,862 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+	Archive,
 	ChevronDown,
 	ChevronRight,
-	Filter,
+	ExternalLink,
+	GitBranch,
+	GitPullRequest,
 	Home,
-	LayoutList,
 	Loader2,
+	MessageSquare,
+	MoreHorizontal,
 	Plus,
 	RefreshCw,
 	Settings,
 	Trash2,
+	Workflow,
+	X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { AgentStateIcon } from "@/components/ui/agent-state-icon";
 import { Button } from "@/components/ui/button";
 import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
+import {
 	DropdownMenu,
 	DropdownMenuContent,
-	DropdownMenuLabel,
+	DropdownMenuItem,
+	DropdownMenuSeparator,
+	DropdownMenuSub,
+	DropdownMenuSubContent,
+	DropdownMenuSubTrigger,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Textarea } from "@/components/ui/textarea";
 import {
-	Select,
-	SelectContent,
-	SelectGroup,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@/components/ui/select";
-import {
-	computeStatus,
-	useWorktreeList,
-	type WorktreeStatus,
-} from "@/hooks/useWorktreeList";
+	archiveSession,
+	closeSession as closeSessionApi,
+	restoreSession,
+} from "@/hooks/useSessionStore";
+import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
+import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
+import { useWorktreeList } from "@/hooks/useWorktreeList";
+import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
 import { trackEvent } from "@/lib/telemetry";
 import type { WorktreeBranch } from "@/types/git";
+import type {
+	CenterSelection,
+	WorkspaceSessionHistoryItem,
+	WorkspaceSessionNode,
+	WorkspaceWorkflowHistoryItem,
+	WorkspaceWorkflowNode,
+} from "@/types/workspace-tree";
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
-
-type GroupMode = "repository" | "status";
-
-interface WorktreeData {
-	branches: WorktreeBranch[];
-	loading: boolean;
-	refresh: (options?: { silent?: boolean }) => Promise<void>;
-}
-
-const noopRefresh = async (_options?: { silent?: boolean }) => {};
 
 interface WorkspaceListProps {
 	repoPaths: string[];
 	selectedRootPath: string | null;
+	centerSelection?: CenterSelection | null;
 	onSelectWorktree: (
 		rootPath: string,
 		branchName?: string,
 		repoName?: string,
+		centerSelection?: CenterSelection,
 	) => void;
 	onAddRepo: () => void;
 	onShowSettings: () => void;
 }
 
-const STATUS_ORDER: WorktreeStatus[] = [
-	"backlog",
-	"in_progress",
-	"review",
-	"done",
-];
-const STATUS_LABELS: Record<WorktreeStatus, string> = {
-	backlog: "Backlog",
-	in_progress: "In Progress",
-	review: "Review",
-	done: "Done",
-};
+const WORKTREE_NAME_INDENT_PX = 26;
+const WORKFLOW_NAME_OFFSET_PX = 22;
+const DEFAULT_SESSION_TITLE = "NewSession";
 
-function RepoWorktreeSectionView({
+function repoNameFromPath(path: string): string {
+	return path.split("/").filter(Boolean).pop() ?? path;
+}
+
+function sessionLabel(session: WorkspaceSessionHistoryItem): string {
+	return session.firstMessage.trim() || DEFAULT_SESSION_TITLE;
+}
+
+function isDirectSessionSelected(
+	centerSelection: CenterSelection | null,
+	node: WorkspaceSessionNode,
+): boolean {
+	return (
+		centerSelection?.kind === "agentSession" &&
+		centerSelection.sessionId === node.id
+	);
+}
+
+function isWorkflowSelected(
+	centerSelection: CenterSelection | null,
+	node: WorkspaceWorkflowNode,
+): boolean {
+	return (
+		centerSelection?.kind === "workflowRun" &&
+		centerSelection.runId === node.runId &&
+		!centerSelection.focus?.sessionId
+	);
+}
+
+function isWorkflowSessionSelected(
+	centerSelection: CenterSelection | null,
+	workflow: WorkspaceWorkflowNode,
+	node: WorkspaceSessionNode,
+): boolean {
+	return (
+		centerSelection?.kind === "workflowRun" &&
+		centerSelection.runId === workflow.runId &&
+		centerSelection.focus?.sessionId === node.id
+	);
+}
+
+function WorktreeIndicators({ branch }: { branch: WorktreeBranch }) {
+	const hasChanges = branch.dirty_count > 0;
+	const hasPr = branch.has_pr === true;
+	if (!hasChanges && !hasPr) return null;
+
+	return (
+		<div className="relative h-5 w-full text-muted-foreground">
+			{hasChanges && (
+				<span
+					className={`absolute top-0 inline-flex h-5 w-5 items-center justify-center rounded text-[10px] leading-none tabular-nums ${
+						hasPr ? "right-6" : "right-0"
+					}`}
+					title={`${branch.dirty_count} changed files`}
+				>
+					{branch.dirty_count}
+				</span>
+			)}
+			{hasPr && (
+				<span
+					className="absolute top-0 right-0 inline-flex h-5 w-5 items-center justify-center"
+					role="img"
+					title={
+						branch.pr_number != null
+							? `Pull request #${branch.pr_number}`
+							: "Pull request"
+					}
+					aria-label={
+						branch.pr_number != null
+							? `Pull request #${branch.pr_number}`
+							: "Pull request"
+					}
+				>
+					<GitPullRequest className="size-3 shrink-0" aria-hidden="true" />
+				</span>
+			)}
+		</div>
+	);
+}
+
+function WorktreeSessionRow({
+	node,
+	indentPx,
+	agentState,
+	selected,
+	showClose,
+	onSelect,
+	onClose,
+}: {
+	node: WorkspaceSessionNode;
+	indentPx: number;
+	agentState?: WorkspaceSessionNode["agentState"];
+	selected?: boolean;
+	showClose: boolean;
+	onSelect: () => void;
+	onClose?: () => void;
+}) {
+	return (
+		<div
+			className={`group flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-sm transition-colors ${
+				selected
+					? "bg-foreground/10 text-foreground"
+					: "text-foreground/90 hover:bg-foreground/5"
+			}`}
+			style={{ paddingLeft: indentPx }}
+		>
+			<button
+				type="button"
+				className="flex min-w-0 flex-1 items-center gap-2 text-left"
+				onClick={onSelect}
+				aria-current={selected ? "page" : undefined}
+			>
+				<AgentStateIcon state={agentState} />
+				<span className="min-w-0 flex-1 truncate">{node.title}</span>
+			</button>
+			{showClose && (
+				<Button
+					size="icon-xs"
+					variant="ghost"
+					className="hidden size-5 shrink-0 text-muted-foreground group-hover:flex group-focus-within:flex"
+					onClick={(event) => {
+						event.stopPropagation();
+						onClose?.();
+					}}
+					aria-label={`Close ${node.title}`}
+					title="Close"
+				>
+					<X className="size-3" />
+				</Button>
+			)}
+		</div>
+	);
+}
+
+function WorktreeWorkflowRow({
+	node,
+	indentPx,
+	selected,
+	centerSelection,
+	sessionAgentStates,
+	onSelectSession,
+	onArchive,
+}: {
+	node: WorkspaceWorkflowNode;
+	indentPx: number;
+	selected?: boolean;
+	centerSelection: CenterSelection | null;
+	sessionAgentStates: Map<string, WorkspaceSessionNode["agentState"]>;
+	onSelectSession: (
+		workflow: WorkspaceWorkflowNode,
+		node: WorkspaceSessionNode,
+	) => void;
+	onArchive: (node: WorkspaceWorkflowNode) => void;
+}) {
+	const [expanded, setExpanded] = useState(true);
+	return (
+		<div>
+			<div
+				className={`group flex h-8 w-full items-center gap-2 rounded-md pr-2 text-sm transition-colors ${
+					selected
+						? "bg-foreground/10 text-foreground"
+						: "text-foreground/90 hover:bg-foreground/5"
+				}`}
+				style={{ paddingLeft: indentPx }}
+			>
+				<button
+					type="button"
+					className="flex min-w-0 flex-1 items-center gap-2 text-left"
+					onClick={() => setExpanded((prev) => !prev)}
+					aria-current={selected ? "page" : undefined}
+				>
+					<Workflow className="size-3.5 shrink-0 text-muted-foreground/80" />
+					<span className="min-w-0 truncate">{node.title}</span>
+					{expanded ? (
+						<ChevronDown className="hidden size-3.5 shrink-0 text-muted-foreground group-hover:block" />
+					) : (
+						<ChevronRight className="hidden size-3.5 shrink-0 text-muted-foreground group-hover:block" />
+					)}
+				</button>
+				<Button
+					size="icon-xs"
+					variant="ghost"
+					className="hidden size-5 shrink-0 text-muted-foreground group-hover:flex group-focus-within:flex"
+					onClick={(event) => {
+						event.stopPropagation();
+						onArchive(node);
+					}}
+					aria-label={`Archive ${node.title}`}
+					title="Archive"
+				>
+					<X className="size-3" />
+				</Button>
+			</div>
+			{expanded &&
+				node.children.map((child) => (
+					<WorktreeSessionRow
+						key={child.id}
+						node={child}
+						indentPx={indentPx + WORKFLOW_NAME_OFFSET_PX}
+						agentState={sessionAgentStates.get(child.id) ?? child.agentState}
+						selected={isWorkflowSessionSelected(centerSelection, node, child)}
+						showClose={false}
+						onSelect={() => onSelectSession(node, child)}
+					/>
+				))}
+		</div>
+	);
+}
+
+function WorktreeTreeItem({
+	branch,
+	repoName,
+	selectedRootPath,
+	centerSelection,
+	onSelectWorktree,
+	onDelete,
+}: {
+	branch: WorktreeBranch;
+	repoName: string;
+	selectedRootPath: string | null;
+	centerSelection: CenterSelection | null;
+	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
+	onDelete: (branch: WorktreeBranch) => void;
+}) {
+	const [expanded, setExpanded] = useState(true);
+	const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
+	const [createMenuOpen, setCreateMenuOpen] = useState(false);
+	const [selectedWorkflowName, setSelectedWorkflowName] = useState<
+		string | null
+	>(null);
+	const [workflowTaskInput, setWorkflowTaskInput] = useState("");
+	const [workflowStartError, setWorkflowStartError] = useState<string | null>(
+		null,
+	);
+	const [workflowStarting, setWorkflowStarting] = useState(false);
+	const scopedCenterSelection =
+		centerSelection?.worktreePath === branch.worktree_path
+			? centerSelection
+			: null;
+	const isSelected =
+		branch.worktree_path === selectedRootPath && scopedCenterSelection == null;
+	const actionControlsVisible = worktreeMenuOpen || createMenuOpen;
+	const hasWorktree = branch.worktree_path != null;
+	const canDelete = !branch.is_main_worktree;
+	const {
+		nodes,
+		closedSessions,
+		workflowHistory,
+		loading: treeLoading,
+		error: treeError,
+		refresh: refreshTree,
+	} = useWorkspaceTreeNodes(branch.worktree_path);
+	const {
+		workflows,
+		loading: workflowsLoading,
+		error: workflowsError,
+	} = useWorkflowConfig(createMenuOpen);
+	const sessionStatuses = useWorktreeSessionStatuses(branch.worktree_path);
+	const sessionAgentStates = useMemo(() => {
+		const map = new Map<string, WorkspaceSessionNode["agentState"]>();
+		for (const [sessionId, status] of sessionStatuses) {
+			map.set(sessionId, status.agent_state);
+		}
+		return map;
+	}, [sessionStatuses]);
+
+	const selectCenter = useCallback(
+		(centerSelection: CenterSelection) => {
+			if (!branch.worktree_path) return;
+			onSelectWorktree(
+				branch.worktree_path,
+				branch.name,
+				repoName,
+				centerSelection,
+			);
+		},
+		[branch.name, branch.worktree_path, onSelectWorktree, repoName],
+	);
+
+	const handleSelectSession = useCallback(
+		(node: WorkspaceSessionNode) => {
+			if (!branch.worktree_path) return;
+			selectCenter({
+				kind: "agentSession",
+				worktreePath: branch.worktree_path,
+				sessionId: node.id,
+			});
+		},
+		[branch.worktree_path, selectCenter],
+	);
+
+	const handleSelectWorkflowSession = useCallback(
+		(workflow: WorkspaceWorkflowNode, node: WorkspaceSessionNode) => {
+			if (!branch.worktree_path) return;
+			selectCenter({
+				kind: "workflowRun",
+				worktreePath: branch.worktree_path,
+				runId: workflow.runId,
+				focus: {
+					sessionId: node.id,
+					stepName: node.stepName ?? node.title,
+					runIndex: node.runIndex ?? undefined,
+				},
+			});
+		},
+		[branch.worktree_path, selectCenter],
+	);
+
+	const handleRestoreWorkflow = useCallback(
+		async (workflow: WorkspaceWorkflowHistoryItem) => {
+			if (!branch.worktree_path) return;
+			await invoke("restore_workspace_workflow_run", {
+				worktreePath: branch.worktree_path,
+				runId: workflow.runId,
+			});
+			await refreshTree();
+			selectCenter({
+				kind: "workflowRun",
+				worktreePath: branch.worktree_path,
+				runId: workflow.runId,
+			});
+		},
+		[branch.worktree_path, refreshTree, selectCenter],
+	);
+
+	const handleArchiveWorkflow = useCallback(
+		async (workflow: WorkspaceWorkflowNode) => {
+			if (!branch.worktree_path) return;
+			await invoke("archive_workspace_workflow_run", {
+				worktreePath: branch.worktree_path,
+				runId: workflow.runId,
+			});
+			await refreshTree();
+		},
+		[branch.worktree_path, refreshTree],
+	);
+
+	const handleNewSession = useCallback(() => {
+		if (!branch.worktree_path) return;
+		selectCenter({
+			kind: "newAgentSession",
+			worktreePath: branch.worktree_path,
+		});
+	}, [branch.worktree_path, selectCenter]);
+
+	const handleSelectWorkflowForStart = useCallback((workflowName: string) => {
+		setCreateMenuOpen(false);
+		setSelectedWorkflowName(workflowName);
+		setWorkflowTaskInput("");
+		setWorkflowStartError(null);
+	}, []);
+
+	const handleStartWorkflow = useCallback(async () => {
+		if (!branch.worktree_path || !selectedWorkflowName || workflowStarting) {
+			return;
+		}
+		setWorkflowStarting(true);
+		setWorkflowStartError(null);
+		try {
+			const runId = await invoke<string>("start_workflow", {
+				workflowName: selectedWorkflowName,
+				worktreePath: branch.worktree_path,
+				task: workflowTaskInput.trim() || null,
+				permissionMode: "ask",
+			});
+			setSelectedWorkflowName(null);
+			setWorkflowTaskInput("");
+			await refreshTree();
+			selectCenter({
+				kind: "workflowRun",
+				worktreePath: branch.worktree_path,
+				runId,
+			});
+		} catch (e) {
+			setWorkflowStartError(String(e));
+		} finally {
+			setWorkflowStarting(false);
+		}
+	}, [
+		branch.worktree_path,
+		refreshTree,
+		selectCenter,
+		selectedWorkflowName,
+		workflowStarting,
+		workflowTaskInput,
+	]);
+
+	const handleWorkflowDialogOpenChange = useCallback((open: boolean) => {
+		if (open) return;
+		setSelectedWorkflowName(null);
+		setWorkflowTaskInput("");
+		setWorkflowStartError(null);
+	}, []);
+
+	const handleCloseSession = useCallback(
+		async (sessionId: string) => {
+			await closeSessionApi(sessionId);
+			await refreshTree();
+		},
+		[refreshTree],
+	);
+
+	const handleRestoreSession = useCallback(
+		async (session: WorkspaceSessionHistoryItem) => {
+			if (!branch.worktree_path) return;
+			await restoreSession(session.id);
+			await refreshTree();
+			selectCenter({
+				kind: "agentSession",
+				worktreePath: branch.worktree_path,
+				sessionId: session.id,
+			});
+		},
+		[branch.worktree_path, refreshTree, selectCenter],
+	);
+
+	const handleArchiveSession = useCallback(
+		async (sessionId: string) => {
+			await archiveSession(sessionId);
+			await refreshTree();
+		},
+		[refreshTree],
+	);
+
+	return (
+		<div>
+			<div
+				className={`group flex h-8 w-full items-center gap-1 rounded-md px-2 text-sm transition-colors ${
+					isSelected
+						? "bg-foreground/10 text-foreground"
+						: hasWorktree
+							? "text-foreground hover:bg-foreground/5"
+							: "text-muted-foreground hover:bg-foreground/5"
+				}`}
+			>
+				<button
+					type="button"
+					data-testid={`worktree-item-${branch.name}`}
+					className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+					onClick={() => setExpanded((prev) => !prev)}
+				>
+					{branch.is_main_worktree ? (
+						<Home
+							className="size-3 shrink-0 text-muted-foreground"
+							aria-label="Main repository"
+						/>
+					) : (
+						<GitBranch
+							className="size-3 shrink-0 text-muted-foreground"
+							aria-label="Worktree"
+						/>
+					)}
+					<span className="min-w-0 truncate">{branch.name}</span>
+					{expanded ? (
+						<ChevronDown className="hidden size-3.5 shrink-0 text-muted-foreground group-hover:block" />
+					) : (
+						<ChevronRight className="hidden size-3.5 shrink-0 text-muted-foreground group-hover:block" />
+					)}
+				</button>
+				<div className="relative h-5 w-11 shrink-0">
+					<div
+						className={`absolute inset-0 items-center justify-end ${
+							actionControlsVisible
+								? "hidden"
+								: "flex group-hover:hidden group-focus-within:hidden"
+						}`}
+					>
+						<WorktreeIndicators branch={branch} />
+					</div>
+					<div
+						className={`absolute inset-0 transition-opacity ${
+							actionControlsVisible
+								? "visible opacity-100"
+								: "invisible opacity-0 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+						}`}
+					>
+						<DropdownMenu
+							open={worktreeMenuOpen}
+							onOpenChange={(open) => {
+								setWorktreeMenuOpen(open);
+								if (open) void refreshTree();
+							}}
+						>
+							<DropdownMenuTrigger asChild>
+								<Button
+									size="icon-xs"
+									variant="ghost"
+									className="absolute top-0 right-6 size-5 shrink-0 text-muted-foreground"
+									onClick={(event) => event.stopPropagation()}
+									aria-label={`Open menu for ${branch.name}`}
+									title="Menu"
+								>
+									<MoreHorizontal className="size-3" />
+								</Button>
+							</DropdownMenuTrigger>
+							<DropdownMenuContent align="end">
+								<DropdownMenuSub>
+									<DropdownMenuSubTrigger>
+										<MessageSquare className="size-3.5" />
+										SessionHistory
+									</DropdownMenuSubTrigger>
+									<DropdownMenuSubContent>
+										{closedSessions.length === 0 ? (
+											<DropdownMenuItem disabled>
+												No closed sessions
+											</DropdownMenuItem>
+										) : (
+											closedSessions.map((session) => (
+												<DropdownMenuItem
+													key={session.id}
+													onSelect={() => handleRestoreSession(session)}
+												>
+													<span className="max-w-52 truncate">
+														{sessionLabel(session)}
+													</span>
+													<Button
+														size="icon-xs"
+														variant="ghost"
+														className="ml-2 size-5"
+														onClick={(event) => {
+															event.preventDefault();
+															event.stopPropagation();
+															void handleArchiveSession(session.id);
+														}}
+														aria-label={`Archive ${sessionLabel(session)}`}
+														title="Archive"
+													>
+														<Archive className="size-3" />
+													</Button>
+												</DropdownMenuItem>
+											))
+										)}
+									</DropdownMenuSubContent>
+								</DropdownMenuSub>
+								<DropdownMenuSub>
+									<DropdownMenuSubTrigger>
+										<Workflow className="size-3.5" />
+										WorkflowHistory
+									</DropdownMenuSubTrigger>
+									<DropdownMenuSubContent>
+										{workflowHistory.length === 0 ? (
+											<DropdownMenuItem disabled>No workflows</DropdownMenuItem>
+										) : (
+											workflowHistory.map((node) => (
+												<DropdownMenuItem
+													key={node.runId}
+													onSelect={() => void handleRestoreWorkflow(node)}
+												>
+													<span className="max-w-52 truncate">
+														{node.title}
+													</span>
+												</DropdownMenuItem>
+											))
+										)}
+									</DropdownMenuSubContent>
+								</DropdownMenuSub>
+								<DropdownMenuItem
+									disabled={!branch.pr_url}
+									onSelect={() => {
+										if (branch.pr_url) {
+											openUrl(branch.pr_url);
+										}
+									}}
+								>
+									<ExternalLink className="size-3.5" />
+									PR Link
+								</DropdownMenuItem>
+								<DropdownMenuItem
+									variant="destructive"
+									disabled={!canDelete}
+									onSelect={() => {
+										if (canDelete) {
+											onDelete(branch);
+										}
+									}}
+								>
+									<Trash2 className="size-3.5" />
+									Delete
+								</DropdownMenuItem>
+							</DropdownMenuContent>
+						</DropdownMenu>
+						<DropdownMenu
+							open={createMenuOpen}
+							onOpenChange={(open) => {
+								setCreateMenuOpen(open);
+								if (open) void refreshTree();
+							}}
+						>
+							<DropdownMenuTrigger asChild>
+								<Button
+									size="icon-xs"
+									variant="ghost"
+									className="absolute top-0 right-0 size-5 shrink-0 text-muted-foreground"
+									disabled={!hasWorktree}
+									onClick={(event) => event.stopPropagation()}
+									aria-label={`Create in ${branch.name}`}
+									title="Create"
+								>
+									<Plus className="size-3" />
+								</Button>
+							</DropdownMenuTrigger>
+							<DropdownMenuContent align="end" className="w-56">
+								<DropdownMenuItem onSelect={handleNewSession}>
+									<MessageSquare className="size-3.5" />
+									NewSession
+								</DropdownMenuItem>
+								<DropdownMenuSeparator />
+								<DropdownMenuSub>
+									<DropdownMenuSubTrigger>
+										<Workflow className="size-3.5" />
+										NewWorkflow
+									</DropdownMenuSubTrigger>
+									<DropdownMenuSubContent className="w-64">
+										{workflowsLoading ? (
+											<DropdownMenuItem disabled>
+												<Loader2 className="size-3.5 animate-spin" />
+												Loading workflows
+											</DropdownMenuItem>
+										) : workflowsError ? (
+											<DropdownMenuItem disabled>
+												<span className="truncate text-destructive">
+													{workflowsError}
+												</span>
+											</DropdownMenuItem>
+										) : workflows.length === 0 ? (
+											<DropdownMenuItem disabled>
+												No workflows configured
+											</DropdownMenuItem>
+										) : (
+											workflows.map((workflow) => (
+												<DropdownMenuItem
+													key={workflow.name}
+													onSelect={() =>
+														handleSelectWorkflowForStart(workflow.name)
+													}
+												>
+													<div className="min-w-0">
+														<div className="truncate">{workflow.name}</div>
+														{workflow.description && (
+															<div className="truncate text-xs text-muted-foreground">
+																{workflow.description}
+															</div>
+														)}
+													</div>
+												</DropdownMenuItem>
+											))
+										)}
+									</DropdownMenuSubContent>
+								</DropdownMenuSub>
+							</DropdownMenuContent>
+						</DropdownMenu>
+					</div>
+				</div>
+			</div>
+			{expanded && hasWorktree && (
+				<div className="mt-0.5">
+					{treeLoading ? (
+						<div
+							className="flex h-8 items-center text-muted-foreground"
+							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
+						>
+							<Loader2 className="size-3.5 animate-spin" />
+						</div>
+					) : treeError && nodes.length === 0 ? (
+						<div
+							className="truncate py-1 text-xs text-destructive"
+							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
+						>
+							{treeError}
+						</div>
+					) : (
+						nodes.map((node) =>
+							node.kind === "workflow" ? (
+								<WorktreeWorkflowRow
+									key={node.runId}
+									node={node}
+									indentPx={WORKTREE_NAME_INDENT_PX}
+									selected={isWorkflowSelected(scopedCenterSelection, node)}
+									centerSelection={scopedCenterSelection}
+									sessionAgentStates={sessionAgentStates}
+									onSelectSession={handleSelectWorkflowSession}
+									onArchive={(workflow) => void handleArchiveWorkflow(workflow)}
+								/>
+							) : (
+								<WorktreeSessionRow
+									key={node.id}
+									node={node}
+									indentPx={WORKTREE_NAME_INDENT_PX}
+									agentState={
+										sessionAgentStates.get(node.id) ?? node.agentState
+									}
+									selected={isDirectSessionSelected(
+										scopedCenterSelection,
+										node,
+									)}
+									showClose
+									onSelect={() => handleSelectSession(node)}
+									onClose={() => void handleCloseSession(node.id)}
+								/>
+							),
+						)
+					)}
+				</div>
+			)}
+			<Dialog
+				open={selectedWorkflowName != null}
+				onOpenChange={handleWorkflowDialogOpenChange}
+			>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>NewWorkflow</DialogTitle>
+						<DialogDescription>{selectedWorkflowName}</DialogDescription>
+					</DialogHeader>
+					<form
+						className="space-y-4"
+						onSubmit={(event) => {
+							event.preventDefault();
+							void handleStartWorkflow();
+						}}
+					>
+						<Textarea
+							value={workflowTaskInput}
+							onChange={(event) => setWorkflowTaskInput(event.target.value)}
+							placeholder="Task description (optional)"
+							aria-label="Workflow task"
+							disabled={workflowStarting}
+						/>
+						{workflowStartError && (
+							<div
+								role="alert"
+								className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+							>
+								{workflowStartError}
+							</div>
+						)}
+						<DialogFooter>
+							<Button
+								type="button"
+								variant="outline"
+								onClick={() => handleWorkflowDialogOpenChange(false)}
+								disabled={workflowStarting}
+							>
+								Cancel
+							</Button>
+							<Button type="submit" disabled={workflowStarting}>
+								{workflowStarting ? "Starting..." : "Start"}
+							</Button>
+						</DialogFooter>
+					</form>
+				</DialogContent>
+			</Dialog>
+		</div>
+	);
+}
+
+function RepoTreeSectionView({
 	repoPath,
 	branches,
 	loading,
 	refresh,
 	selectedRootPath,
+	centerSelection,
 	onSelectWorktree,
-	groupMode,
-	filterStatus,
-	statusFilter,
 }: {
 	repoPath: string;
 	branches: WorktreeBranch[];
 	loading: boolean;
 	refresh: (options?: { silent?: boolean }) => Promise<void>;
 	selectedRootPath: string | null;
-	onSelectWorktree: (
-		rootPath: string,
-		branchName?: string,
-		repoName?: string,
-	) => void;
-	groupMode: GroupMode;
-	filterStatus?: WorktreeStatus;
-	statusFilter?: string;
+	centerSelection: CenterSelection | null;
+	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
 }) {
 	const [collapsed, setCollapsed] = useState(false);
+	const [refreshing, setRefreshing] = useState(false);
 	const [deletingBranch, setDeletingBranch] = useState<WorktreeBranch | null>(
 		null,
 	);
-	const [refreshing, setRefreshing] = useState(false);
-
-	const repoName = useMemo(
-		() => repoPath.split("/").filter(Boolean).pop() ?? "",
-		[repoPath],
-	);
+	const repoName = useMemo(() => repoNameFromPath(repoPath), [repoPath]);
 
 	const handleRefresh = useCallback(async () => {
 		setRefreshing(true);
@@ -151,181 +899,26 @@ function RepoWorktreeSectionView({
 		[repoPath, refresh],
 	);
 
-	const handleOpenBranch = useCallback(
-		(branch: WorktreeBranch) => {
-			if (branch.worktree_path) {
-				onSelectWorktree(branch.worktree_path, branch.name, repoName);
-			}
-		},
-		[repoName, onSelectWorktree],
-	);
-
-	const filteredBranches = useMemo(() => {
-		const filtered =
-			!statusFilter || statusFilter === "all"
-				? branches
-				: branches.filter((b) => computeStatus(b) === statusFilter);
-		return [...filtered].sort(
-			(a, b) =>
-				STATUS_ORDER.indexOf(computeStatus(a)) -
-				STATUS_ORDER.indexOf(computeStatus(b)),
-		);
-	}, [branches, statusFilter]);
-
-	const groupedByStatus = useMemo(() => {
-		const groups: Record<WorktreeStatus, WorktreeBranch[]> = {
-			backlog: [],
-			in_progress: [],
-			review: [],
-			done: [],
-		};
-		for (const b of filteredBranches) {
-			groups[computeStatus(b)].push(b);
-		}
-		return groups;
-	}, [filteredBranches]);
-
-	const renderItem = (branch: WorktreeBranch) => {
-		const isSelected = branch.worktree_path === selectedRootPath;
-		const hasWorktree = branch.worktree_path != null;
-		const canDelete = !branch.is_main_worktree;
-		const status = computeStatus(branch);
-
-		// 2行目テキスト部分を組み立て
-		const infoParts: string[] = [];
-		if (groupMode === "status") {
-			infoParts.push(repoName);
-		} else {
-			infoParts.push(STATUS_LABELS[status]);
-		}
-		if (branch.is_merged) infoParts.push("merged");
-		if (hasWorktree && branch.dirty_count > 0)
-			infoParts.push(`${branch.dirty_count} changed`);
-
-		return (
-			// biome-ignore lint/a11y/useSemanticElements: <button> cannot nest <button> (PR link, delete btn)
-			<div
-				key={branch.name}
-				role="button"
-				tabIndex={0}
-				data-testid={`worktree-item-${branch.name}`}
-				onClick={() => handleOpenBranch(branch)}
-				onKeyDown={(e) => {
-					if (e.target !== e.currentTarget) return;
-					if (e.key === "Enter" || e.key === " ") {
-						e.preventDefault();
-						handleOpenBranch(branch);
-					}
-				}}
-				className={`group relative flex items-start gap-1.5 w-full px-1.5 py-1.5 text-left rounded cursor-pointer transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring ${
-					isSelected
-						? "bg-foreground/10 text-foreground"
-						: hasWorktree
-							? "text-foreground hover:bg-foreground/5"
-							: "text-muted-foreground hover:bg-foreground/5"
-				}`}
-			>
-				<div className="flex flex-col gap-1 min-w-0 flex-1">
-					{/* Row 1: icon + name + diff stats */}
-					<div className="flex items-center gap-1.5 min-w-0">
-						<AgentStateIcon state={branch.agent_state} />
-						<span className="text-xs font-medium truncate flex-1">
-							{branch.name}
-						</span>
-						{branch.is_main_worktree && (
-							<Home
-								className="shrink-0 size-3 text-muted-foreground"
-								aria-label="Main repository"
-							/>
-						)}
-						{branch.ahead > 0 && (
-							<span className="shrink-0 text-[11px] font-mono text-success/70">
-								+{branch.ahead}
-							</span>
-						)}
-						{branch.behind > 0 && (
-							<span className="shrink-0 text-[11px] font-mono text-destructive/70">
-								-{branch.behind}
-							</span>
-						)}
-					</div>
-					{/* Row 2: secondary info */}
-					<div className="flex items-center gap-1.5 pl-[20px] min-w-0 text-[11px] text-muted-foreground">
-						{infoParts.length > 0 && (
-							<span className="truncate">{infoParts.join(" · ")}</span>
-						)}
-						{branch.has_pr && branch.pr_url && branch.pr_number != null && (
-							<button
-								type="button"
-								className="shrink-0 ml-auto text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-								onClick={(e) => {
-									e.stopPropagation();
-									openUrl(branch.pr_url as string);
-								}}
-							>
-								#{branch.pr_number}
-							</button>
-						)}
-					</div>
-				</div>
-				{canDelete && (
-					<Button
-						size="icon-xs"
-						variant="ghost"
-						className="absolute top-0.5 right-0.5 hidden group-hover:flex group-focus-within:flex size-4"
-						onClick={(e) => {
-							e.stopPropagation();
-							setDeletingBranch(branch);
-						}}
-						aria-label={`Delete ${branch.name}`}
-					>
-						<Trash2 className="size-2.5 text-muted-foreground" />
-					</Button>
-				)}
-			</div>
-		);
-	};
-
-	if (groupMode === "status" && filterStatus) {
-		const items = groupedByStatus[filterStatus];
-		return (
-			<>
-				{loading && (
-					<div className="flex items-center justify-center py-4">
-						<Loader2 className="size-4 text-muted-foreground animate-spin" />
-					</div>
-				)}
-				{!loading && items.length > 0 && <div>{items.map(renderItem)}</div>}
-				<DeleteWorktreeDialog
-					open={!!deletingBranch}
-					branch={deletingBranch}
-					onConfirm={handleDeleteConfirm}
-					onCancel={() => setDeletingBranch(null)}
-				/>
-			</>
-		);
-	}
-
 	return (
-		<div>
-			<div className="flex items-center gap-1.5 w-full px-2 py-1 text-xs font-semibold text-muted-foreground">
+		<div className="space-y-0.5">
+			<div className="flex h-7 items-center gap-1 px-2 text-xs font-medium text-muted-foreground">
 				<button
 					type="button"
+					className="flex min-w-0 flex-1 items-center gap-1.5 rounded text-left transition-colors hover:text-foreground"
 					onClick={() => setCollapsed((prev) => !prev)}
-					className="flex items-center gap-1.5 flex-1 min-w-0 hover:text-foreground transition-colors"
 				>
 					{collapsed ? (
-						<ChevronRight className="size-3.5" />
+						<ChevronRight className="size-3.5 shrink-0" />
 					) : (
-						<ChevronDown className="size-3.5" />
+						<ChevronDown className="size-3.5 shrink-0" />
 					)}
-					<span className="truncate">{repoName}</span>
-					<span className="ml-auto text-[10px]">{filteredBranches.length}</span>
+					<span className="min-w-0 flex-1 truncate">{repoName}</span>
+					<span className="shrink-0 text-[11px]">{branches.length}</span>
 				</button>
 				<Button
 					size="icon-xs"
 					variant="ghost"
-					className="size-5 ml-0.5"
+					className="size-5"
 					onClick={handleRefresh}
 					disabled={refreshing}
 					aria-label={`Refresh ${repoName}`}
@@ -335,13 +928,24 @@ function RepoWorktreeSectionView({
 				</Button>
 			</div>
 			{!collapsed && (
-				<div className="pl-2">
-					{loading && (
+				<div className="space-y-1">
+					{loading ? (
 						<div className="flex items-center justify-center py-4">
-							<Loader2 className="size-4 text-muted-foreground animate-spin" />
+							<Loader2 className="size-4 animate-spin text-muted-foreground" />
 						</div>
+					) : (
+						branches.map((branch) => (
+							<WorktreeTreeItem
+								key={branch.name}
+								branch={branch}
+								repoName={repoName}
+								selectedRootPath={selectedRootPath}
+								centerSelection={centerSelection}
+								onSelectWorktree={onSelectWorktree}
+								onDelete={setDeletingBranch}
+							/>
+						))
 					)}
-					{!loading && filteredBranches.map(renderItem)}
 				</div>
 			)}
 			<DeleteWorktreeDialog
@@ -354,176 +958,48 @@ function RepoWorktreeSectionView({
 	);
 }
 
-function RepoWorktreeSection({
+function RepoTreeSection({
 	repoPath,
 	selectedRootPath,
+	centerSelection,
 	onSelectWorktree,
-	groupMode,
-	filterStatus,
-	statusFilter,
 }: {
 	repoPath: string;
 	selectedRootPath: string | null;
-	onSelectWorktree: (
-		rootPath: string,
-		branchName?: string,
-		repoName?: string,
-	) => void;
-	groupMode: GroupMode;
-	filterStatus?: WorktreeStatus;
-	statusFilter?: string;
+	centerSelection: CenterSelection | null;
+	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
 }) {
 	const { branches, loading, refresh } = useWorktreeList(repoPath);
 	return (
-		<RepoWorktreeSectionView
+		<RepoTreeSectionView
 			repoPath={repoPath}
 			branches={branches}
 			loading={loading}
 			refresh={refresh}
 			selectedRootPath={selectedRootPath}
+			centerSelection={centerSelection}
 			onSelectWorktree={onSelectWorktree}
-			groupMode={groupMode}
-			filterStatus={filterStatus}
-			statusFilter={statusFilter}
 		/>
 	);
-}
-
-function RepoWorktreeFetcher({
-	repoPath,
-	onData,
-}: {
-	repoPath: string;
-	onData: (repoPath: string, data: WorktreeData) => void;
-}) {
-	const { branches, loading, refresh } = useWorktreeList(repoPath);
-	const onDataRef = useRef(onData);
-	onDataRef.current = onData;
-
-	useEffect(() => {
-		onDataRef.current(repoPath, { branches, loading, refresh });
-	}, [repoPath, branches, loading, refresh]);
-
-	return null;
 }
 
 export function WorkspaceList({
 	repoPaths,
 	selectedRootPath,
+	centerSelection,
 	onSelectWorktree,
 	onAddRepo,
 	onShowSettings,
 }: WorkspaceListProps) {
-	const [groupMode, setGroupMode] = useState<GroupMode>("repository");
 	const [showCreate, setShowCreate] = useState(false);
-	const [statusFilter, setStatusFilter] = useState("all");
-	const [repoFilter, setRepoFilter] = useState("all");
-
-	const filteredRepoPaths = useMemo(
-		() =>
-			repoFilter === "all"
-				? repoPaths
-				: repoPaths.filter((p) => p === repoFilter),
-		[repoPaths, repoFilter],
-	);
-
-	const repoNames = useMemo(
-		() =>
-			repoPaths.map((p) => ({
-				path: p,
-				name: p.split("/").filter(Boolean).pop() ?? "",
-			})),
-		[repoPaths],
-	);
 
 	return (
-		<div className="flex flex-col h-full">
-			{/* Header */}
-			<div className="flex items-center justify-between h-9 px-2 shrink-0">
+		<div className="flex h-full flex-col">
+			<div className="flex h-9 shrink-0 items-center justify-between px-2">
 				<span className="text-xs font-semibold tracking-wide text-muted-foreground">
 					Workspaces
 				</span>
 				<div className="flex items-center gap-0.5">
-					<DropdownMenu>
-						<DropdownMenuTrigger asChild>
-							<Button
-								size="icon-xs"
-								variant="ghost"
-								className="size-5"
-								aria-label="Group"
-								title="Group by"
-							>
-								<LayoutList className="size-3" />
-							</Button>
-						</DropdownMenuTrigger>
-						<DropdownMenuContent align="end" className="p-2">
-							<DropdownMenuLabel className="p-0 pb-1 text-xs font-normal text-muted-foreground">
-								Group by
-							</DropdownMenuLabel>
-							<Select
-								value={groupMode}
-								onValueChange={(v) => setGroupMode(v as GroupMode)}
-							>
-								<SelectTrigger className="h-6">
-									<SelectValue />
-								</SelectTrigger>
-								<SelectContent>
-									<SelectGroup>
-										<SelectItem value="repository">Repo</SelectItem>
-										<SelectItem value="status">Status</SelectItem>
-									</SelectGroup>
-								</SelectContent>
-							</Select>
-						</DropdownMenuContent>
-					</DropdownMenu>
-					<DropdownMenu>
-						<DropdownMenuTrigger asChild>
-							<Button
-								size="icon-xs"
-								variant="ghost"
-								className="size-5"
-								aria-label="Filter"
-								title="Filter"
-							>
-								<Filter className="size-3" />
-							</Button>
-						</DropdownMenuTrigger>
-						<DropdownMenuContent align="end" className="p-2">
-							<DropdownMenuLabel className="p-0 pb-1 text-xs font-normal text-muted-foreground">
-								Filter
-							</DropdownMenuLabel>
-							<Select
-								value={groupMode === "repository" ? statusFilter : repoFilter}
-								onValueChange={(v) => {
-									if (groupMode === "repository") {
-										setStatusFilter(v);
-									} else {
-										setRepoFilter(v);
-									}
-								}}
-							>
-								<SelectTrigger className="h-6">
-									<SelectValue />
-								</SelectTrigger>
-								<SelectContent>
-									<SelectGroup>
-										<SelectItem value="all">All</SelectItem>
-										{groupMode === "repository"
-											? STATUS_ORDER.map((s) => (
-													<SelectItem key={s} value={s}>
-														{STATUS_LABELS[s]}
-													</SelectItem>
-												))
-											: repoNames.map((r) => (
-													<SelectItem key={r.path} value={r.path}>
-														{r.name}
-													</SelectItem>
-												))}
-									</SelectGroup>
-								</SelectContent>
-							</Select>
-						</DropdownMenuContent>
-					</DropdownMenu>
 					<Button
 						size="icon-xs"
 						variant="ghost"
@@ -537,58 +1013,44 @@ export function WorkspaceList({
 				</div>
 			</div>
 
-			{/* Worktree List */}
-			<div className="flex-1 overflow-y-auto px-0.5 py-0.5 space-y-0.5">
-				{groupMode === "status" ? (
-					<StatusGroupedView
-						repoPaths={filteredRepoPaths}
+			<div className="flex-1 space-y-2 overflow-y-auto px-2 py-1">
+				{repoPaths.map((repoPath) => (
+					<RepoTreeSection
+						key={repoPath}
+						repoPath={repoPath}
 						selectedRootPath={selectedRootPath}
+						centerSelection={centerSelection ?? null}
 						onSelectWorktree={onSelectWorktree}
 					/>
-				) : (
-					repoPaths.map((repoPath) => (
-						<RepoWorktreeSection
-							key={repoPath}
-							repoPath={repoPath}
-							selectedRootPath={selectedRootPath}
-							onSelectWorktree={onSelectWorktree}
-							groupMode="repository"
-							statusFilter={statusFilter}
-						/>
-					))
-				)}
+				))}
 				{repoPaths.length === 0 && (
-					<div className="text-xs text-muted-foreground text-center py-8">
-						No repositories
+					<div className="px-2 py-8 text-center text-xs text-muted-foreground">
+						No Repository
 					</div>
 				)}
 			</div>
 
-			{/* Bottom buttons */}
-			<div className="flex items-center justify-between h-[36px] px-2 border-t border-border shrink-0">
+			<div className="flex h-9 shrink-0 items-center justify-between border-t border-border px-2">
 				<Button
 					size="sm"
 					variant="ghost"
 					className="h-7 px-2 text-xs"
 					onClick={onAddRepo}
 				>
-					<Plus className="size-3.5 mr-1" />
+					<Plus className="mr-1 size-3.5" />
 					Add Repository
 				</Button>
-				<div className="flex items-center gap-0.5">
-					<Button
-						size="icon"
-						variant="ghost"
-						className="size-7"
-						onClick={onShowSettings}
-						title="Settings"
-					>
-						<Settings className="size-3.5" />
-					</Button>
-				</div>
+				<Button
+					size="icon"
+					variant="ghost"
+					className="size-7"
+					onClick={onShowSettings}
+					title="Settings"
+				>
+					<Settings className="size-3.5" />
+				</Button>
 			</div>
 
-			{/* Create Worktree Modal */}
 			{showCreate && repoPaths.length > 0 && (
 				<CreateWorktreeModal
 					open={showCreate}
@@ -602,110 +1064,5 @@ export function WorkspaceList({
 				/>
 			)}
 		</div>
-	);
-}
-
-function StatusGroupSection({
-	status,
-	repoPaths,
-	worktreeDataMap,
-	selectedRootPath,
-	onSelectWorktree,
-}: {
-	status: WorktreeStatus;
-	repoPaths: string[];
-	worktreeDataMap: Map<string, WorktreeData>;
-	selectedRootPath: string | null;
-	onSelectWorktree: (
-		rootPath: string,
-		branchName?: string,
-		repoName?: string,
-	) => void;
-}) {
-	const [collapsed, setCollapsed] = useState(false);
-
-	return (
-		<div>
-			<button
-				type="button"
-				onClick={() => setCollapsed((prev) => !prev)}
-				className="flex items-center gap-1.5 w-full px-2 py-1 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
-			>
-				{collapsed ? (
-					<ChevronRight className="size-3.5" />
-				) : (
-					<ChevronDown className="size-3.5" />
-				)}
-				<span>{STATUS_LABELS[status]}</span>
-			</button>
-			{!collapsed && (
-				<div className="pl-2">
-					{repoPaths.map((repoPath) => {
-						const data = worktreeDataMap.get(repoPath);
-						return (
-							<RepoWorktreeSectionView
-								key={repoPath}
-								repoPath={repoPath}
-								branches={data?.branches ?? []}
-								loading={data?.loading ?? true}
-								refresh={data?.refresh ?? noopRefresh}
-								selectedRootPath={selectedRootPath}
-								onSelectWorktree={onSelectWorktree}
-								groupMode="status"
-								filterStatus={status}
-							/>
-						);
-					})}
-				</div>
-			)}
-		</div>
-	);
-}
-
-function StatusGroupedView({
-	repoPaths,
-	selectedRootPath,
-	onSelectWorktree,
-}: {
-	repoPaths: string[];
-	selectedRootPath: string | null;
-	onSelectWorktree: (
-		rootPath: string,
-		branchName?: string,
-		repoName?: string,
-	) => void;
-}) {
-	const [worktreeDataMap, setWorktreeDataMap] = useState<
-		Map<string, WorktreeData>
-	>(() => new Map());
-
-	const handleData = useCallback((repoPath: string, data: WorktreeData) => {
-		setWorktreeDataMap((prev) => {
-			const next = new Map(prev);
-			next.set(repoPath, data);
-			return next;
-		});
-	}, []);
-
-	return (
-		<>
-			{repoPaths.map((repoPath) => (
-				<RepoWorktreeFetcher
-					key={repoPath}
-					repoPath={repoPath}
-					onData={handleData}
-				/>
-			))}
-			{STATUS_ORDER.map((status) => (
-				<StatusGroupSection
-					key={status}
-					status={status}
-					repoPaths={repoPaths}
-					worktreeDataMap={worktreeDataMap}
-					selectedRootPath={selectedRootPath}
-					onSelectWorktree={onSelectWorktree}
-				/>
-			))}
-		</>
 	);
 }

@@ -8,7 +8,7 @@ import { setupTauriMock } from "./helpers/tauri-mock";
 import { waitForApp } from "./helpers/utils";
 
 test.describe("Workspace Manager", () => {
-	test("リポジトリが存在しない場合 No repositories が表示される", async ({
+	test("リポジトリが存在しない場合 No Repository が表示される", async ({
 		page,
 	}) => {
 		const config = buildMockConfig({
@@ -20,7 +20,7 @@ test.describe("Workspace Manager", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		await expect(page.getByText("No repositories")).toBeVisible();
+		await expect(page.getByText("No Repository")).toBeVisible();
 		await expect(
 			page.getByRole("button", { name: "Add Repository" }),
 		).toBeVisible();
@@ -42,22 +42,33 @@ test.describe("Workspace Manager", () => {
 		).toBeVisible();
 	});
 
-	test("worktree 付きブランチをクリックすると WorktreeView が開く", async ({
+	test("worktree 付きブランチをクリックするとツリーが折りたたまれる", async ({
 		page,
 	}) => {
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches,
+			list_branches_with_status: kanbanBranches.filter(
+				(branch) => branch.name === "feat/wip",
+			),
+			list_workspace_worktree_nodes: [
+				{
+					kind: "session",
+					id: "session-1",
+					worktreePath: "/test/repo-worktrees/feat-wip",
+					title: "Direct session",
+					state: "active",
+					updatedAt: 1000,
+					workflowStepSession: false,
+					agentState: null,
+				},
+			],
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// feat/wip（worktree_path あり）をクリック
+		await expect(page.getByText("Direct session")).toBeVisible();
 		await page.getByTestId("worktree-item-feat/wip").click();
 
-		// WorktreeView 固有の右下パネルが表示される
-		await expect(page.getByTestId("right-bottom-content")).toBeVisible({
-			timeout: 5000,
-		});
+		await expect(page.getByText("Direct session")).not.toBeVisible();
 	});
 });
 
