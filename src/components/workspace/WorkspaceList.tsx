@@ -515,11 +515,33 @@ function WorktreeTreeItem({
 							: "text-muted-foreground hover:bg-foreground/5"
 				}`}
 			>
+				<Button
+					type="button"
+					size="icon-xs"
+					variant="ghost"
+					className="size-5 shrink-0 text-muted-foreground"
+					disabled={!hasWorktree}
+					onClick={() => setExpanded((prev) => !prev)}
+					aria-label={`${expanded ? "Collapse" : "Expand"} ${branch.name}`}
+					title={`${expanded ? "Collapse" : "Expand"} ${branch.name}`}
+				>
+					{expanded ? (
+						<ChevronDown className="size-3.5 shrink-0" />
+					) : (
+						<ChevronRight className="size-3.5 shrink-0" />
+					)}
+				</Button>
 				<button
 					type="button"
 					data-testid={`worktree-item-${branch.name}`}
 					className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-					onClick={() => setExpanded((prev) => !prev)}
+					disabled={!hasWorktree}
+					onClick={() => {
+						if (!branch.worktree_path) return;
+						onSelectWorktree(branch.worktree_path, branch.name, repoName);
+					}}
+					aria-current={isSelected ? "page" : undefined}
+					aria-label={`Open worktree ${branch.name}`}
 				>
 					{branch.is_main_worktree ? (
 						<Home
@@ -532,12 +554,8 @@ function WorktreeTreeItem({
 							aria-label="Worktree"
 						/>
 					)}
+					{branch.agent_state && <AgentStateIcon state={branch.agent_state} />}
 					<span className="min-w-0 truncate">{branch.name}</span>
-					{expanded ? (
-						<ChevronDown className="hidden size-3.5 shrink-0 text-muted-foreground group-hover:block" />
-					) : (
-						<ChevronRight className="hidden size-3.5 shrink-0 text-muted-foreground group-hover:block" />
-					)}
 				</button>
 				<div className="relative h-5 w-11 shrink-0">
 					<div
@@ -1025,7 +1043,7 @@ export function WorkspaceList({
 				))}
 				{repoPaths.length === 0 && (
 					<div className="px-2 py-8 text-center text-xs text-muted-foreground">
-						No Repository
+						No repositories
 					</div>
 				)}
 			</div>
