@@ -719,7 +719,9 @@ export function ChatSessionView({
 	}>({ sessionId: "", messageIds: [] });
 	const lastEvictionCheckMessageLengthRef = useRef(session.messages.length);
 	const isNearBottomRef = useRef(true);
-	const pendingTopLoadEvictionRef = useRef(false);
+	const pendingTopLoadEvictionRef = useRef<{
+		firstMessageId: string | null;
+	} | null>(null);
 	const lastTaskListRevisionRef = useRef<string | null>(null);
 	const currentTaskListRevision = useMemo(
 		() => taskListRevision(session.messages),
@@ -887,6 +889,8 @@ export function ChatSessionView({
 		],
 	);
 
+	const firstMessageId = session.messages[0]?.id ?? null;
+
 	// Track scroll position via onScroll handler.
 	const handleScroll = useCallback(() => {
 		const el = scrollRef.current;
@@ -894,25 +898,31 @@ export function ChatSessionView({
 		isNearBottomRef.current =
 			el.scrollHeight - el.scrollTop - el.clientHeight < 100;
 		if (el.scrollTop < LOAD_OLDER_SCROLL_TOP_PX) {
-			pendingTopLoadEvictionRef.current = true;
+			pendingTopLoadEvictionRef.current = { firstMessageId };
 			void onLoadOlderMessages?.();
 			return;
 		}
+		pendingTopLoadEvictionRef.current = null;
 		requestMessageEviction();
-	}, [onLoadOlderMessages, requestMessageEviction]);
+	}, [firstMessageId, onLoadOlderMessages, requestMessageEviction]);
 
 	useEffect(() => {
 		const previousLength = lastEvictionCheckMessageLengthRef.current;
 		lastEvictionCheckMessageLengthRef.current = session.messages.length;
 		if (session.messages.length <= previousLength) return;
-		if (pendingTopLoadEvictionRef.current) {
-			pendingTopLoadEvictionRef.current = false;
-			requestMessageEviction(true);
-			return;
+		const pendingTopLoadEviction = pendingTopLoadEvictionRef.current;
+		if (pendingTopLoadEviction) {
+			const didPrependOlderMessages =
+				firstMessageId !== pendingTopLoadEviction.firstMessageId;
+			if (didPrependOlderMessages) {
+				pendingTopLoadEvictionRef.current = null;
+				requestMessageEviction(true);
+				return;
+			}
 		}
 		if (!isNearBottomRef.current) return;
 		requestMessageEviction();
-	}, [requestMessageEviction, session.messages.length]);
+	}, [firstMessageId, requestMessageEviction, session.messages.length]);
 
 	useLayoutEffect(() => {
 		const compensation = pendingScrollCompensationRef.current;

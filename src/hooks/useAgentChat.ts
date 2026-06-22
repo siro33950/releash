@@ -404,17 +404,17 @@ export function useAgentChat(
 					session?.messages.some(
 						(message) => message.id === action.message.id,
 					) ?? false;
-				if (pageState && !alreadyLoaded && pageState.loadedPages.length > 0) {
+				if (pageState && !alreadyLoaded) {
 					const latestPage = pageState.loadedPages[0];
-					if (latestPage) {
-						pageStateRef.current[action.sessionId] = {
-							...pageState,
-							loadedPages: [
-								{ ...latestPage, count: latestPage.count + 1 },
-								...pageState.loadedPages.slice(1),
-							],
-						};
-					}
+					pageStateRef.current[action.sessionId] = {
+						...pageState,
+						loadedPages: latestPage
+							? [
+									{ ...latestPage, count: latestPage.count + 1 },
+									...pageState.loadedPages.slice(1),
+								]
+							: [{ requestCursor: null, count: 1 }],
+					};
 				}
 			}
 			dispatch(action);
@@ -674,9 +674,16 @@ export function useAgentChat(
 			pageState.loading = true;
 			try {
 				const page = await getSessionPage(sessionId, requestCursor);
+				const currentPageState = pageStateRef.current[sessionId];
+				if (
+					!currentPageState?.loading ||
+					currentPageState.nextCursor !== requestCursor
+				) {
+					return;
+				}
 				if (!page) {
 					pageStateRef.current[sessionId] = {
-						...pageState,
+						...currentPageState,
 						nextCursor: null,
 						hasMore: false,
 						loading: false,
@@ -703,10 +710,10 @@ export function useAgentChat(
 					loadedPages:
 						newMessageCount > 0
 							? [
-									...pageState.loadedPages,
+									...currentPageState.loadedPages,
 									{ requestCursor, count: newMessageCount },
 								]
-							: pageState.loadedPages,
+							: currentPageState.loadedPages,
 				};
 			} catch (e) {
 				pageState.loading = false;
