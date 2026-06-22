@@ -2,6 +2,7 @@ import { AlertTriangle, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { BoundSessionChat } from "@/components/panels/AgentChatPanel";
+import { AgentStateIcon } from "@/components/ui/agent-state-icon";
 import { Button } from "@/components/ui/button";
 import {
 	Popover,
@@ -15,6 +16,8 @@ import {
 	useWorkspaceWorkflowStepDetail,
 	type WorkspaceWorkflowStepAction,
 } from "@/hooks/useWorkspaceWorkflowStepDetail";
+import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
+import type { AgentState } from "@/types/protocol";
 import type {
 	CenterSelection,
 	CenterSelectionRequest,
@@ -33,6 +36,7 @@ interface WorkflowGridPane {
 	label: string;
 	sessionId?: string;
 	worktreePath: string;
+	agentState?: AgentState | null;
 }
 
 const WORKFLOW_GRID_MIN_TILE_WIDTH = 320;
@@ -78,6 +82,7 @@ export function WorkflowView({
 					step={stepDetail}
 					loading={step.loading}
 					error={step.error}
+					worktreePath={worktreePath}
 				/>
 			</div>
 		</div>
@@ -88,11 +93,16 @@ function WorkspaceWorkflowStepGrid({
 	step,
 	loading,
 	error,
+	worktreePath,
 }: {
 	step: WorkspaceWorkflowStepDetail | null;
 	loading: boolean;
 	error: string | null;
+	worktreePath: string;
 }) {
+	// Pane ヘッダーの status アイコンは Rust 中央管理の SessionStatus.agent_state を
+	// そのまま消費する（フロントでの導出は禁止）。
+	const sessionStatuses = useWorktreeSessionStatuses(worktreePath);
 	const [activePaneKey, setActivePaneKey] = useState<string | null>(
 		() => step?.sessions[0]?.id ?? null,
 	);
@@ -123,8 +133,9 @@ function WorkspaceWorkflowStepGrid({
 			label: session.title,
 			sessionId: session.id,
 			worktreePath: session.worktreePath,
+			agentState: sessionStatuses.get(session.id)?.agent_state ?? null,
 		}));
-	}, [step]);
+	}, [step, sessionStatuses]);
 
 	if (!step) {
 		return (
@@ -403,6 +414,12 @@ function WorkflowStepPane({
 				selected ? "border-primary/60" : "border-border hover:bg-muted/30"
 			}`}
 		>
+			<div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1">
+				<AgentStateIcon state={pane.agentState} />
+				<span className="min-w-0 truncate text-xs font-medium">
+					{pane.label}
+				</span>
+			</div>
 			<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
 				{pane.sessionId ? (
 					<BoundSessionChat

@@ -6,6 +6,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionStatus } from "@/types/session";
 import type {
 	CenterSelection,
 	WorkspaceWorkflowStepDetail,
@@ -20,6 +21,30 @@ vi.mock("@/hooks/useWorkspaceWorkflowStepDetail", () => ({
 	submitWorkspaceWorkflowStepAction: (input: unknown) =>
 		submitWorkspaceWorkflowStepActionMock(input),
 }));
+
+const worktreeSessionStatusesMock =
+	vi.fn<(worktreePath: string | null) => Map<string, SessionStatus>>();
+
+vi.mock("@/hooks/useWorktreeSessionStatuses", () => ({
+	useWorktreeSessionStatuses: (worktreePath: string | null) =>
+		worktreeSessionStatusesMock(worktreePath),
+}));
+
+function sessionStatus(
+	agentState: SessionStatus["agent_state"],
+): SessionStatus {
+	return {
+		chat_session_id: "",
+		worktree_id: "/repo",
+		worktree_path: "/repo",
+		pty_id: null,
+		agent_state: agentState,
+		turn_phase: "idle",
+		session_state: "active",
+		pending_permission: false,
+		last_activity_at: 0,
+	};
+}
 
 vi.mock("@/components/panels/AgentChatPanel", () => ({
 	BoundSessionChat: ({
@@ -162,6 +187,13 @@ describe("WorkflowView", () => {
 		useWorkspaceWorkflowStepDetailMock.mockReturnValue(stepDetailState());
 		submitWorkspaceWorkflowStepActionMock.mockReset();
 		submitWorkspaceWorkflowStepActionMock.mockResolvedValue(stepDetail());
+		worktreeSessionStatusesMock.mockReset();
+		worktreeSessionStatusesMock.mockReturnValue(
+			new Map([
+				["session-a", sessionStatus("running")],
+				["session-b", sessionStatus("waiting")],
+			]),
+		);
 		resizeObserverMocks = [];
 		vi.stubGlobal("ResizeObserver", ResizeObserverMock);
 	});
@@ -195,8 +227,11 @@ describe("WorkflowView", () => {
 		expect(
 			screen.getByTestId("bound-session-chat-session-b"),
 		).toBeInTheDocument();
-		expect(screen.queryByText("Pane A")).toBeNull();
-		expect(screen.queryByText("Pane B")).toBeNull();
+		// 各 Pane ヘッダーに Session 名と agent ステータスを表示する。
+		expect(screen.getByText("Pane A")).toBeInTheDocument();
+		expect(screen.getByText("Pane B")).toBeInTheDocument();
+		expect(screen.getByTitle("running")).toBeInTheDocument();
+		expect(screen.getByTitle("waiting")).toBeInTheDocument();
 		expect(screen.queryByTestId("workflow-step-tab-list")).toBeNull();
 		expect(screen.queryByTestId("workflow-step-detail")).toBeNull();
 		expect(screen.queryByText("Event log")).toBeNull();
