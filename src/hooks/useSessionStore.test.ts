@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LegacyChatMessage } from "@/types/session";
-import { getSession, getSessionPage, legacyToParts } from "./useSessionStore";
+import {
+	getSession,
+	getSessionPage,
+	legacyToParts,
+	planAgentChatEviction,
+} from "./useSessionStore";
 
 function makeLegacyMsg(
 	overrides?: Partial<LegacyChatMessage>,
@@ -220,5 +225,48 @@ describe("session paging", () => {
 			totalCount: 1,
 			latestTokenUsage: null,
 		});
+	});
+
+	it("planAgentChatEviction forwards request and returns the plan unchanged", async () => {
+		const request = {
+			active: {
+				sessionId: "s1",
+				messageCount: 250,
+				oldestVisibleIndex: 50,
+				loadedPages: [
+					{ requestCursor: null, count: 50 },
+					{ requestCursor: "201", count: 50 },
+				],
+				turnPhase: "idle" as const,
+			},
+			sessions: [
+				{
+					sessionId: "s2",
+					messageCount: 50,
+					evictionRank: 1,
+					protected: false,
+					loading: false,
+				},
+			],
+		};
+		const plan = {
+			active: {
+				sessionId: "s1",
+				direction: "older" as const,
+				count: 50,
+				nextCursor: "201",
+				hasMore: true,
+				loadedPages: [{ requestCursor: null, count: 50 }],
+			},
+			evictSessionIds: ["s2"],
+		};
+		vi.mocked(invoke).mockResolvedValueOnce(plan);
+
+		const response = await planAgentChatEviction(request);
+
+		expect(invoke).toHaveBeenCalledWith("plan_agent_chat_eviction", {
+			request,
+		});
+		expect(response).toBe(plan);
 	});
 });

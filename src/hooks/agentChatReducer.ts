@@ -59,6 +59,8 @@ export type AgentChatAction =
 	| { type: "SET_ACTIVE_SESSION_ID"; sessionId: string | null }
 	| { type: "ADD_MESSAGE"; sessionId: string; message: ChatMessage }
 	| { type: "PREPEND_MESSAGES"; sessionId: string; messages: ChatMessage[] }
+	| { type: "EVICT_SESSION_BODY"; sessionId: string }
+	| { type: "EVICT_OLDER_MESSAGES"; sessionId: string; count: number }
 	| {
 			type: "SET_TURN_PHASE";
 			sessionId: string;
@@ -178,6 +180,12 @@ function prependMessages(
 	return { ...session, messages: [...newMessages, ...session.messages] };
 }
 
+function evictOlderMessages(session: ChatSession, count: number): ChatSession {
+	if (count <= 0) return session;
+	if (session.messages.length === 0) return session;
+	return { ...session, messages: session.messages.slice(count) };
+}
+
 function getActiveSession(state: AgentChatState): ChatSession | null {
 	if (!state.activeSessionId) return null;
 	return state.sessionsById[state.activeSessionId] ?? null;
@@ -292,6 +300,14 @@ export function reducer(
 		case "PREPEND_MESSAGES":
 			return updateSessionInStore(state, action.sessionId, (s) =>
 				prependMessages(s, action.messages),
+			);
+		case "EVICT_SESSION_BODY":
+			return updateSessionInStore(state, action.sessionId, (s) =>
+				s.messages.length === 0 ? s : { ...s, messages: [] },
+			);
+		case "EVICT_OLDER_MESSAGES":
+			return updateSessionInStore(state, action.sessionId, (s) =>
+				evictOlderMessages(s, action.count),
 			);
 		case "SET_TURN_PHASE": {
 			// idle に戻ったら interrupting 楽観フラグをクリアする。

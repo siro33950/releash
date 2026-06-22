@@ -148,6 +148,42 @@ export interface GetSessionPageResponse {
 	latestTokenUsage: TokenUsage | null;
 }
 
+export interface LoadedMessagePage {
+	requestCursor: string | null;
+	count: number;
+}
+
+export interface AgentChatEvictionPlanRequest {
+	active?: {
+		sessionId: string;
+		messageCount: number;
+		oldestVisibleIndex: number;
+		loadedPages: LoadedMessagePage[];
+		turnPhase: TurnPhase;
+	} | null;
+	sessions?: Array<{
+		sessionId: string;
+		messageCount: number;
+		evictionRank: number;
+		protected: boolean;
+		loading: boolean;
+	}>;
+}
+
+export interface ActiveMessageEvictionPlan {
+	sessionId: string;
+	direction: "older";
+	count: number;
+	nextCursor: string | null;
+	hasMore: boolean;
+	loadedPages: LoadedMessagePage[];
+}
+
+export interface AgentChatEvictionPlan {
+	active?: ActiveMessageEvictionPlan | null;
+	evictSessionIds: string[];
+}
+
 interface RawGetSessionResponse {
 	// Flattened from Rust GetSessionResponse (#[serde(flatten)])
 	id: string;
@@ -233,6 +269,12 @@ export async function getSessionPage(
 		limit,
 	});
 	return raw ? convertRawSessionPage(raw) : null;
+}
+
+export async function planAgentChatEviction(
+	request: AgentChatEvictionPlanRequest,
+): Promise<AgentChatEvictionPlan> {
+	return invoke<AgentChatEvictionPlan>("plan_agent_chat_eviction", { request });
 }
 
 export async function getSession(

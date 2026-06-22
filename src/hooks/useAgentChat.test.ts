@@ -22,6 +22,10 @@ vi.mock("./useSessionStore", () => ({
 	listSessions: vi.fn().mockResolvedValue([]),
 	getSession: vi.fn().mockResolvedValue(null),
 	getSessionPage: vi.fn().mockResolvedValue(null),
+	planAgentChatEviction: vi.fn().mockResolvedValue({
+		active: null,
+		evictSessionIds: [],
+	}),
 	createSession: vi.fn().mockResolvedValue({
 		id: "s1",
 		worktreePath: "/repo",
@@ -160,6 +164,11 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.getSession).mockClear();
 		vi.mocked(sessionStore.getSessionPage).mockResolvedValue(null);
 		vi.mocked(sessionStore.getSessionPage).mockClear();
+		vi.mocked(sessionStore.planAgentChatEviction).mockResolvedValue({
+			active: null,
+			evictSessionIds: [],
+		});
+		vi.mocked(sessionStore.planAgentChatEviction).mockClear();
 		vi.mocked(sessionStore.sendAgentMessage).mockClear();
 		vi.mocked(sessionStore.sendWorkflowApprovalChatMessage).mockClear();
 		vi.mocked(sessionStore.initAgentSessions).mockClear();
@@ -223,6 +232,12 @@ describe("useAgentChat", () => {
 			totalCount: messages.length,
 			latestTokenUsage: null,
 		}) as never;
+
+	const messageRange = (start: number, end: number) =>
+		Array.from({ length: end - start + 1 }, (_, index) => {
+			const value = start + index;
+			return chatMessage(`m${value}`, `message ${value}`, 1000 + value);
+		});
 
 	it("should define the hook", async () => {
 		const mod = await import("./useAgentChat");
@@ -1035,6 +1050,694 @@ describe("useAgentChat", () => {
 		expect(
 			result.current.activeSession?.messages.map((message) => message.id),
 		).toEqual(["m1", "m2"]);
+	});
+
+	it("evictOlderMessages drops the oldest loaded page and rewinds the cursor for rehydration", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+			sessionResponse(chatSession("s1", messageRange(201, 250)), {
+				nextCursor: "201",
+				hasMore: true,
+				totalCount: 250,
+			}),
+		);
+		vi.mocked(sessionStore.getSessionPage).mockImplementation(
+			async (_sessionId, cursor) => {
+				if (cursor === "201")
+					return pageResponse(messageRange(151, 200), "151", true);
+				if (cursor === "151")
+					return pageResponse(messageRange(101, 150), "101", true);
+				if (cursor === "101")
+					return pageResponse(messageRange(51, 100), "51", true);
+				if (cursor === "51")
+					return pageResponse(messageRange(1, 50), null, false);
+				throw new Error(`unexpected cursor ${cursor}`);
+			},
+		);
+		vi.mocked(sessionStore.planAgentChatEviction).mockImplementation(
+			async (request) =>
+				request.active
+					? {
+							active: {
+								sessionId: "s1",
+								direction: "older",
+								count: 50,
+								nextCursor: "51",
+								hasMore: true,
+								loadedPages: [
+									{ requestCursor: null, count: 50 },
+									{ requestCursor: "201", count: 50 },
+									{ requestCursor: "151", count: 50 },
+									{ requestCursor: "101", count: 50 },
+								],
+							},
+							evictSessionIds: [],
+						}
+					: { active: null, evictSessionIds: [] },
+		);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+		for (let i = 0; i < 4; i++) {
+			await act(async () => {
+				await result.current.loadOlderMessages("s1");
+			});
+		}
+		expect(result.current.activeSession?.messages).toHaveLength(250);
+
+		await act(async () => {
+			await result.current.evictOlderMessages("s1", {
+				oldestVisibleIndex: 50,
+			});
+		});
+
+		expect(sessionStore.planAgentChatEviction).toHaveBeenCalledWith({
+			active: expect.objectContaining({
+				sessionId: "s1",
+				messageCount: 250,
+				oldestVisibleIndex: 50,
+			}),
+		});
+		expect(result.current.activeSession?.messages).toHaveLength(200);
+		expect(result.current.activeSession?.messages[0]?.id).toBe("m51");
+
+		await act(async () => {
+			await result.current.loadOlderMessages("s1");
+		});
+
+		expect(sessionStore.getSessionPage).toHaveBeenLastCalledWith("s1", "51");
+		expect(result.current.activeSession?.messages).toHaveLength(250);
+		expect(result.current.activeSession?.messages[0]?.id).toBe("m1");
+		const restoredMessages = result.current.activeSession?.messages ?? [];
+		expect(restoredMessages[restoredMessages.length - 1]?.id).toBe("m250");
+	});
+
+	it("evictOlderMessages serializes eviction planning per session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+			sessionResponse(chatSession("s1", messageRange(201, 250)), {
+				nextCursor: "201",
+				hasMore: true,
+				totalCount: 250,
+			}),
+		);
+		vi.mocked(sessionStore.getSessionPage).mockImplementation(
+			async (_sessionId, cursor) => {
+				if (cursor === "201")
+					return pageResponse(messageRange(151, 200), "151", true);
+				if (cursor === "151")
+					return pageResponse(messageRange(101, 150), "101", true);
+				if (cursor === "101")
+					return pageResponse(messageRange(51, 100), "51", true);
+				if (cursor === "51")
+					return pageResponse(messageRange(1, 50), null, false);
+				throw new Error(`unexpected cursor ${cursor}`);
+			},
+		);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+		for (let i = 0; i < 4; i++) {
+			await act(async () => {
+				await result.current.loadOlderMessages("s1");
+			});
+		}
+		expect(result.current.activeSession?.messages).toHaveLength(250);
+
+		let resolvePlan: (value: never) => void = () => {};
+		vi.mocked(sessionStore.planAgentChatEviction).mockImplementation(
+			(request) =>
+				request.active
+					? (new Promise((resolve) => {
+							resolvePlan = resolve;
+						}) as never)
+					: Promise.resolve({ active: null, evictSessionIds: [] }),
+		);
+		vi.mocked(sessionStore.planAgentChatEviction).mockClear();
+
+		let firstEviction = Promise.resolve();
+		await act(async () => {
+			firstEviction = result.current.evictOlderMessages("s1", {
+				oldestVisibleIndex: 50,
+			});
+			await result.current.evictOlderMessages("s1", {
+				oldestVisibleIndex: 50,
+			});
+		});
+
+		expect(sessionStore.planAgentChatEviction).toHaveBeenCalledTimes(1);
+
+		await act(async () => {
+			resolvePlan({
+				active: {
+					sessionId: "s1",
+					direction: "older",
+					count: 50,
+					nextCursor: "51",
+					hasMore: true,
+					loadedPages: [
+						{ requestCursor: null, count: 50 },
+						{ requestCursor: "201", count: 50 },
+						{ requestCursor: "151", count: 50 },
+						{ requestCursor: "101", count: 50 },
+					],
+				},
+				evictSessionIds: [],
+			} as never);
+			await firstEviction;
+		});
+
+		expect(result.current.activeSession?.messages).toHaveLength(200);
+		expect(result.current.activeSession?.messages[0]?.id).toBe("m51");
+	});
+
+	it("evictOlderMessages discards a stale plan after page state changes", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+			sessionResponse(chatSession("s1", messageRange(201, 250)), {
+				nextCursor: "201",
+				hasMore: true,
+				totalCount: 250,
+			}),
+		);
+		vi.mocked(sessionStore.getSessionPage).mockImplementation(
+			async (_sessionId, cursor) => {
+				if (cursor === "201")
+					return pageResponse(messageRange(151, 200), "151", true);
+				if (cursor === "151")
+					return pageResponse(messageRange(101, 150), "101", true);
+				if (cursor === "101")
+					return pageResponse(messageRange(51, 100), "51", true);
+				if (cursor === "51")
+					return pageResponse(messageRange(1, 50), null, false);
+				throw new Error(`unexpected cursor ${cursor}`);
+			},
+		);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+		for (let i = 0; i < 4; i++) {
+			await act(async () => {
+				await result.current.loadOlderMessages("s1");
+			});
+		}
+		expect(result.current.activeSession?.messages).toHaveLength(250);
+
+		let resolvePlan: (value: never) => void = () => {};
+		vi.mocked(sessionStore.planAgentChatEviction).mockImplementation(
+			(request) =>
+				request.active
+					? (new Promise((resolve) => {
+							resolvePlan = resolve;
+						}) as never)
+					: Promise.resolve({ active: null, evictSessionIds: [] }),
+		);
+		vi.mocked(sessionStore.planAgentChatEviction).mockClear();
+
+		let eviction = Promise.resolve();
+		await act(async () => {
+			eviction = result.current.evictOlderMessages("s1", {
+				oldestVisibleIndex: 50,
+			});
+		});
+
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+			sessionResponse(chatSession("s1", messageRange(201, 250)), {
+				nextCursor: "201",
+				hasMore: true,
+				totalCount: 250,
+			}),
+		);
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+
+		await act(async () => {
+			resolvePlan({
+				active: {
+					sessionId: "s1",
+					direction: "older",
+					count: 50,
+					nextCursor: "51",
+					hasMore: true,
+					loadedPages: [
+						{ requestCursor: null, count: 50 },
+						{ requestCursor: "201", count: 50 },
+						{ requestCursor: "151", count: 50 },
+						{ requestCursor: "101", count: 50 },
+					],
+				},
+				evictSessionIds: [],
+			} as never);
+			await eviction;
+		});
+
+		expect(result.current.activeSession?.messages).toHaveLength(50);
+		expect(result.current.activeSession?.messages[0]?.id).toBe("m201");
+	});
+
+	it("evictOlderMessages leaves messages unchanged when Rust returns no active plan", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: chatSession("s1", messageRange(201, 250)),
+			turnPhase: "streaming",
+			selectedModel: null,
+			availableModels: [],
+			initialPage: {
+				nextCursor: "201",
+				hasMore: true,
+				totalCount: 250,
+			},
+		} as never);
+		vi.mocked(sessionStore.getSessionPage).mockImplementation(
+			async (_sessionId, cursor) => {
+				if (cursor === "201")
+					return pageResponse(messageRange(151, 200), "151", true);
+				if (cursor === "151")
+					return pageResponse(messageRange(101, 150), "101", true);
+				if (cursor === "101")
+					return pageResponse(messageRange(51, 100), "51", true);
+				if (cursor === "51")
+					return pageResponse(messageRange(1, 50), null, false);
+				throw new Error(`unexpected cursor ${cursor}`);
+			},
+		);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+		for (let i = 0; i < 4; i++) {
+			await act(async () => {
+				await result.current.loadOlderMessages("s1");
+			});
+		}
+
+		await act(async () => {
+			await result.current.evictOlderMessages("s1", {
+				oldestVisibleIndex: 50,
+			});
+		});
+
+		expect(sessionStore.planAgentChatEviction).toHaveBeenCalledWith({
+			active: expect.objectContaining({
+				sessionId: "s1",
+				turnPhase: "streaming",
+			}),
+		});
+		expect(result.current.activeSession?.messages).toHaveLength(250);
+	});
+
+	it("does not surface eviction planning failures and retries on the next trigger", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+				sessionResponse(chatSession("s1", messageRange(201, 250)), {
+					nextCursor: "201",
+					hasMore: true,
+					totalCount: 250,
+				}),
+			);
+			vi.mocked(sessionStore.getSessionPage).mockImplementation(
+				async (_sessionId, cursor) => {
+					if (cursor === "201")
+						return pageResponse(messageRange(151, 200), "151", true);
+					if (cursor === "151")
+						return pageResponse(messageRange(101, 150), "101", true);
+					if (cursor === "101")
+						return pageResponse(messageRange(51, 100), "51", true);
+					if (cursor === "51")
+						return pageResponse(messageRange(1, 50), null, false);
+					throw new Error(`unexpected cursor ${cursor}`);
+				},
+			);
+			const { result } = renderHook(() => useAgentChat("/repo"));
+			await act(async () => {
+				await result.current.selectSession("s1");
+			});
+			for (let i = 0; i < 4; i++) {
+				await act(async () => {
+					await result.current.loadOlderMessages("s1");
+				});
+			}
+			vi.mocked(sessionStore.planAgentChatEviction).mockClear();
+			vi.mocked(sessionStore.planAgentChatEviction)
+				.mockRejectedValueOnce(new Error("planner unavailable"))
+				.mockResolvedValueOnce({ active: null, evictSessionIds: [] });
+
+			await act(async () => {
+				await result.current.evictOlderMessages("s1", {
+					oldestVisibleIndex: 50,
+				});
+			});
+
+			expect(result.current.error).toBeNull();
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining("メッセージ退避計画の取得に失敗"),
+			);
+
+			await act(async () => {
+				await result.current.evictOlderMessages("s1", {
+					oldestVisibleIndex: 50,
+				});
+			});
+
+			expect(sessionStore.planAgentChatEviction).toHaveBeenCalledTimes(2);
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
+	it("keeps loaded page accounting aligned after new and duplicate SDK messages so eviction can proceed", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+			sessionResponse(chatSession("s1", messageRange(1, 201)), {
+				nextCursor: null,
+				hasMore: false,
+				totalCount: 201,
+			}),
+		);
+		vi.mocked(sessionStore.planAgentChatEviction).mockImplementation(
+			async (request) => {
+				const messageCount = request.active?.messageCount ?? 0;
+				return request.active
+					? {
+							active: {
+								sessionId: "s1",
+								direction: "older",
+								count: 50,
+								nextCursor: "51",
+								hasMore: true,
+								loadedPages: [
+									{ requestCursor: null, count: messageCount - 50 },
+								],
+							},
+							evictSessionIds: [],
+						}
+					: { active: null, evictSessionIds: [] };
+			},
+		);
+		const dateSpy = vi.spyOn(Date, "now").mockReturnValue(12345);
+		try {
+			const { result } = renderHook(() => useAgentChat("/repo"));
+			await act(async () => {
+				await result.current.selectSession("s1");
+			});
+			await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
+			const emitSystemMessage = () =>
+				listenCallbacks.get("agent-sdk-message")?.({
+					payload: {
+						type: "system",
+						chat_session_id: "s1",
+						message: "background notice",
+					},
+				});
+
+			await act(async () => {
+				emitSystemMessage();
+			});
+			await waitFor(() =>
+				expect(result.current.activeSession?.messages).toHaveLength(202),
+			);
+			await act(async () => {
+				emitSystemMessage();
+			});
+			await waitFor(() =>
+				expect(result.current.activeSession?.messages).toHaveLength(202),
+			);
+			vi.mocked(sessionStore.planAgentChatEviction).mockClear();
+
+			await act(async () => {
+				await result.current.evictOlderMessages("s1", {
+					oldestVisibleIndex: 50,
+				});
+			});
+
+			expect(sessionStore.planAgentChatEviction).toHaveBeenCalledWith({
+				active: expect.objectContaining({
+					sessionId: "s1",
+					messageCount: 202,
+					loadedPages: [{ requestCursor: null, count: 202 }],
+				}),
+			});
+			expect(result.current.activeSession?.messages).toHaveLength(152);
+		} finally {
+			dateSpy.mockRestore();
+		}
+	});
+
+	it("does not replan inactive eviction when only an existing hydrated session message count changes", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: sessionResponse(
+				chatSession("s1", [chatMessage("m1", "existing", 1001)]),
+				{
+					nextCursor: null,
+					hasMore: false,
+					totalCount: 1,
+				},
+			),
+		} as never);
+		const dateSpy = vi.spyOn(Date, "now").mockReturnValue(23456);
+		try {
+			const { result } = renderHook(() => useAgentChat("/repo"));
+			await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
+			vi.mocked(sessionStore.planAgentChatEviction).mockClear();
+
+			await act(async () => {
+				listenCallbacks.get("agent-sdk-message")?.({
+					payload: {
+						type: "system",
+						chat_session_id: "s1",
+						message: "new visible message",
+					},
+				});
+			});
+			await waitFor(() =>
+				expect(result.current.activeSession?.messages).toHaveLength(2),
+			);
+			await act(async () => {
+				await Promise.resolve();
+			});
+
+			expect(sessionStore.planAgentChatEviction).not.toHaveBeenCalled();
+		} finally {
+			dateSpy.mockRestore();
+		}
+	});
+
+	it("replans inactive eviction when a session transitions from empty to hydrated", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const dateSpy = vi.spyOn(Date, "now").mockReturnValue(34567);
+		try {
+			const { result } = renderHook(() => useAgentChat("/repo"));
+			await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
+			vi.mocked(sessionStore.planAgentChatEviction).mockClear();
+
+			await act(async () => {
+				listenCallbacks.get("agent-sdk-message")?.({
+					payload: {
+						type: "system",
+						chat_session_id: "s1",
+						message: "first visible message",
+					},
+				});
+			});
+
+			await waitFor(() => {
+				expect(sessionStore.planAgentChatEviction).toHaveBeenCalledWith({
+					sessions: expect.arrayContaining([
+						expect.objectContaining({
+							sessionId: "s1",
+							messageCount: 1,
+						}),
+					]),
+				});
+			});
+		} finally {
+			dateSpy.mockRestore();
+		}
+	});
+
+	it("evicts inactive session bodies above the hydrate cap and rehydrates on selection", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: null,
+		} as never);
+		vi.mocked(sessionStore.getSession).mockImplementation(async (sessionId) =>
+			sessionResponse(chatSession(String(sessionId), messageRange(1, 50)), {
+				nextCursor: null,
+				hasMore: false,
+				totalCount: 50,
+			}),
+		);
+		vi.mocked(sessionStore.planAgentChatEviction).mockImplementation(
+			async (request) => {
+				const sessions = request.sessions ?? [];
+				const hydrated = sessions.filter((session) => session.messageCount > 0);
+				const candidates = hydrated
+					.filter((session) => !session.protected && !session.loading)
+					.sort(
+						(left, right) =>
+							left.evictionRank - right.evictionRank ||
+							left.sessionId.localeCompare(right.sessionId),
+					);
+				return {
+					active: null,
+					evictSessionIds:
+						hydrated.length > 3 && candidates[0]
+							? [candidates[0].sessionId]
+							: [],
+				};
+			},
+		);
+
+		const sessionIds = ["s1", "s2", "s3", "s4"];
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		for (const sessionId of sessionIds) {
+			await act(async () => {
+				await result.current.selectSession(sessionId);
+			});
+		}
+
+		await waitFor(() => {
+			const hydratedCount = sessionIds.filter(
+				(sessionId) =>
+					(result.current.getSessionById(sessionId)?.messages.length ?? 0) > 0,
+			).length;
+			expect(hydratedCount).toBeLessThanOrEqual(3);
+		});
+		const inactiveRequests = vi
+			.mocked(sessionStore.planAgentChatEviction)
+			.mock.calls.map(([request]) => request)
+			.filter((request) => request.sessions);
+		const requestWithAllSessions = [...inactiveRequests]
+			.reverse()
+			.find((request) =>
+				sessionIds.every((sessionId) =>
+					request.sessions?.some((session) => session.sessionId === sessionId),
+				),
+			);
+		expect(requestWithAllSessions).toBeDefined();
+		const ranks = Object.fromEntries(
+			(requestWithAllSessions?.sessions ?? []).map((session) => [
+				session.sessionId,
+				session.evictionRank,
+			]),
+		) as Record<string, number>;
+		expect(ranks.s1).toBeLessThan(ranks.s2);
+		expect(ranks.s2).toBeLessThan(ranks.s3);
+		expect(ranks.s3).toBeLessThan(ranks.s4);
+		expect(result.current.getSessionById("s1")?.messages).toEqual([]);
+
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+
+		expect(result.current.activeSession?.id).toBe("s1");
+		expect(result.current.activeSession?.messages).toHaveLength(50);
+	});
+
+	it("does not apply a stale inactive eviction plan to a session that becomes active", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: null,
+		} as never);
+		vi.mocked(sessionStore.getSession).mockImplementation(async (sessionId) =>
+			sessionResponse(chatSession(String(sessionId), messageRange(1, 50)), {
+				nextCursor: null,
+				hasMore: false,
+				totalCount: 50,
+			}),
+		);
+		vi.mocked(sessionStore.planAgentChatEviction).mockResolvedValue({
+			active: null,
+			evictSessionIds: [],
+		});
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		for (const sessionId of ["s1", "s2", "s3", "s4"]) {
+			await act(async () => {
+				await result.current.selectSession(sessionId);
+			});
+		}
+
+		let resolvePlan: (value: never) => void = () => {};
+		let pendingIssued = false;
+		vi.mocked(sessionStore.planAgentChatEviction).mockImplementation(
+			(request) => {
+				if (!pendingIssued && request.sessions && request.sessions.length > 0) {
+					pendingIssued = true;
+					return new Promise((resolve) => {
+						resolvePlan = resolve;
+					}) as never;
+				}
+				return Promise.resolve({ active: null, evictSessionIds: [] });
+			},
+		);
+		vi.mocked(sessionStore.planAgentChatEviction).mockClear();
+
+		let cleanup: () => void = () => {};
+		await act(async () => {
+			cleanup = result.current.registerViewableSession("transient-session");
+		});
+		await act(async () => {
+			cleanup();
+		});
+		expect(sessionStore.planAgentChatEviction).toHaveBeenCalledTimes(1);
+
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+
+		await act(async () => {
+			resolvePlan({
+				active: null,
+				evictSessionIds: ["s1"],
+			} as never);
+			await Promise.resolve();
+		});
+
+		expect(result.current.activeSession?.id).toBe("s1");
+		expect(result.current.activeSession?.messages).toHaveLength(50);
+		expect(result.current.getSessionById("s1")?.messages).toHaveLength(50);
 	});
 
 	it("selectSession restores model selection from backend response", async () => {

@@ -545,6 +545,13 @@ pub async fn get_session_page(
 }
 
 #[tauri::command]
+pub fn plan_agent_chat_eviction(
+    request: crate::usecase::agent_session::session::AgentChatEvictionPlanRequest,
+) -> Result<crate::usecase::agent_session::session::AgentChatEvictionPlan, String> {
+    Ok(crate::usecase::agent_session::session::plan_agent_chat_eviction(request))
+}
+
+#[tauri::command]
 pub async fn get_session_attachment(
     state: tauri::State<'_, Arc<SessionStore>>,
     app: tauri::AppHandle,
