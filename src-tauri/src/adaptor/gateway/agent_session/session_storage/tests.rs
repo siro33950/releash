@@ -1157,6 +1157,7 @@ fn list_sessions_uses_legacy_flat_sidecar_when_available() {
         permission_profile_id: None,
         backend_id: Some("claude".to_string()),
         workflow_step_session: false,
+        workflow_step_context: None,
         first_message_preview: "Hello legacy".to_string(),
         message_count: 1,
         body_format_version: SESSION_BODY_FORMAT_VERSION,

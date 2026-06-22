@@ -10,7 +10,8 @@ use super::layout::{
 };
 use super::FileSessionStorage;
 use crate::usecase::agent_session::session::{
-    ChatSession, ContextCarryState, SessionMeta, SessionState, SESSION_BODY_FORMAT_VERSION,
+    ChatSession, ContextCarryState, SessionMeta, SessionState, WorkflowStepContextDto,
+    SESSION_BODY_FORMAT_VERSION,
 };
 
 #[derive(Default)]
@@ -28,6 +29,7 @@ struct FlatSessionMetaFile {
     permission_profile_id: Option<String>,
     backend_id: Option<String>,
     workflow_step_session: bool,
+    workflow_step_context: Option<WorkflowStepContextDto>,
     first_message_preview: String,
     message_count: usize,
 }
@@ -70,6 +72,7 @@ impl<'de> Visitor<'de> for FlatSessionMetaVisitor {
                 "permissionProfileId" => meta.permission_profile_id = map.next_value()?,
                 "backendId" => meta.backend_id = map.next_value()?,
                 "workflowStepSession" => meta.workflow_step_session = map.next_value()?,
+                "workflowStepContext" => meta.workflow_step_context = map.next_value()?,
                 "messages" => {
                     let summary = map.next_value::<FlatMessagesSummary>()?;
                     meta.first_message_preview = summary.first_message_preview;
@@ -293,6 +296,7 @@ impl FlatSessionMetaFile {
                 permission_profile_id: self.permission_profile_id,
                 backend_id: self.backend_id,
                 workflow_step_session: self.workflow_step_session,
+                workflow_step_context: self.workflow_step_context,
                 first_message_preview: self.first_message_preview,
                 message_count: self.message_count,
                 body_format_version: SESSION_BODY_FORMAT_VERSION,

@@ -334,6 +334,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				if (isViewable(chat_session_id, viewableRegistry)) {
 					dispatch({
 						type: "SET_PERMISSION_MODE",
+						sessionId: chat_session_id,
 						mode: normalizePermissionMode(permission_mode),
 					});
 				}

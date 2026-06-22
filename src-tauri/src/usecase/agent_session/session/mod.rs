@@ -380,6 +380,10 @@ pub struct SessionMeta {
     pub backend_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow_step_session: bool,
+    /// workflow step session の context（step 名等）。message body と異なり軽量な
+    /// メタ情報なので、Workflow View のヘッダー表示のため meta に保持する。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub workflow_step_context: Option<WorkflowStepContextDto>,
     pub first_message_preview: String,
     pub message_count: usize,
     pub body_format_version: u32,
@@ -602,10 +606,10 @@ pub(crate) fn first_message_preview(messages: &[ChatMessage]) -> String {
 
 impl SessionMeta {
     /// 軽量 meta 経路での workflow step session 判定。
-    /// `workflow_step_session` フラグは context を持つ場合も必ず立つ正典なので、
-    /// メモリ最適化された meta はこのフラグだけで判定できる。
+    /// `workflow_step_session` フラグは context を持つ場合も必ず立つ正典だが、
+    /// context の有無も合わせて見て ChatSession 側の判定と一致させる。
     pub fn is_workflow_step_session(&self) -> bool {
-        self.workflow_step_session
+        self.workflow_step_session || self.workflow_step_context.is_some()
     }
 
     pub fn from_session(session: &ChatSession) -> Self {
@@ -623,6 +627,7 @@ impl SessionMeta {
             permission_profile_id: session.permission_profile_id.clone(),
             backend_id: session.backend_id.clone(),
             workflow_step_session: session.workflow_step_session,
+            workflow_step_context: session.workflow_step_context.clone(),
             first_message_preview: first_message_preview(&session.messages),
             message_count: session.messages.len(),
             body_format_version: SESSION_BODY_FORMAT_VERSION,
@@ -645,9 +650,7 @@ impl SessionMeta {
             permission_profile_id: self.permission_profile_id.clone(),
             backend_id: self.backend_id.clone(),
             workflow_step_session: self.workflow_step_session,
-            // 軽量 meta は workflow_step_context を保持しない（メモリ最適化）。
-            // 判定は workflow_step_session フラグが担う。
-            workflow_step_context: None,
+            workflow_step_context: self.workflow_step_context.clone(),
         }
     }
 
@@ -667,7 +670,7 @@ impl SessionMeta {
             permission_profile_id: self.permission_profile_id.clone(),
             backend_id: self.backend_id.clone(),
             workflow_step_session: self.workflow_step_session,
-            workflow_step_context: None,
+            workflow_step_context: self.workflow_step_context.clone(),
         }
     }
 }
@@ -2541,5 +2544,82 @@ mod tests {
             assert!(result.is_ok());
             assert_eq!(session.backend_id, Some("claude".to_string()));
         }
+    }
+}
+
+/// workflow step session の context が meta 経路（meta.json 永続化を含む）を通じて
+/// SessionSummary / ChatSession まで保持されることを保証する回帰テスト。
+/// context が meta で None に落ちると Workflow View の step ヘッダー（`step.title` =
+/// step 名）が消えるため、その退行を防ぐ。
+#[cfg(test)]
+mod workflow_step_context_meta_tests {
+    use super::*;
+
+    fn step_context_dto() -> WorkflowStepContextDto {
+        WorkflowStepContextDto {
+            run_id: "run-1".to_string(),
+            workflow_name: "wf".to_string(),
+            step_name: "step-a".to_string(),
+            run_index: 0,
+            parent_step_name: None,
+            parent_run_index: None,
+            order: 0,
+        }
+    }
+
+    fn session_with_context(context: Option<WorkflowStepContextDto>) -> ChatSession {
+        ChatSession {
+            id: "s1".to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: Vec::new(),
+            state: SessionState::Active,
+            created_at: 1.0,
+            updated_at: 1.0,
+            agent_session_id: None,
+            context_carry: None,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            selected_model: None,
+            permission_profile_id: None,
+            backend_id: Some("claude".to_string()),
+            workflow_step_session: context.is_some(),
+            workflow_step_context: context,
+        }
+    }
+
+    #[test]
+    fn meta_round_trip_preserves_workflow_step_context() {
+        let meta = SessionMeta::from_session(&session_with_context(Some(step_context_dto())));
+
+        // from_session で context が meta に乗る。
+        assert_eq!(
+            meta.workflow_step_context
+                .as_ref()
+                .map(|c| c.step_name.as_str()),
+            Some("step-a")
+        );
+
+        // to_summary / to_session の両経路で context が届く（ヘッダー表示の正典経路）。
+        assert_eq!(
+            meta.to_summary().workflow_step_context,
+            Some(step_context_dto())
+        );
+        assert_eq!(
+            meta.to_session(Vec::new()).workflow_step_context,
+            Some(step_context_dto())
+        );
+
+        // meta.json の serde round-trip でも context を保持する。
+        let json = serde_json::to_string(&meta).unwrap();
+        let restored: SessionMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.workflow_step_context, Some(step_context_dto()));
+        assert!(restored.is_workflow_step_session());
+    }
+
+    #[test]
+    fn meta_without_context_stays_none() {
+        let meta = SessionMeta::from_session(&session_with_context(None));
+        assert!(meta.workflow_step_context.is_none());
+        assert_eq!(meta.to_summary().workflow_step_context, None);
     }
 }

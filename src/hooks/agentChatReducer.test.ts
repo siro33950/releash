@@ -44,6 +44,8 @@ describe("agentChatReducer", () => {
 			error: null,
 			permissionMode: "edit" as const,
 			planMode: false,
+			sessionPermissionModes: {},
+			sessionPlanModes: {},
 			pendingPermissions: {},
 			pendingQueues: {},
 			latestTokenUsage: {},
@@ -78,6 +80,17 @@ describe("agentChatReducer", () => {
 			enabled: false,
 		});
 		expect(disabled.planMode).toBe(false);
+	});
+
+	it("stores plan mode per session without changing the active composer", () => {
+		const next = reducer(INITIAL_STATE, {
+			type: "SET_PLAN_MODE",
+			sessionId: "s2",
+			enabled: true,
+		});
+
+		expect(next.planMode).toBe(false);
+		expect(next.sessionPlanModes.s2).toBe(true);
 	});
 
 	describe("SET_SESSIONS", () => {
@@ -664,6 +677,17 @@ describe("agentChatReducer", () => {
 				mode: "full",
 			});
 			expect(next.permissionMode).toBe("full");
+		});
+
+		it("stores a non-active session permissionMode without changing active display mode", () => {
+			const next = reducer(INITIAL_STATE, {
+				type: "SET_PERMISSION_MODE",
+				sessionId: "s2",
+				mode: "ask",
+			});
+
+			expect(next.permissionMode).toBe("edit");
+			expect(next.sessionPermissionModes.s2).toBe("ask");
 		});
 	});
 

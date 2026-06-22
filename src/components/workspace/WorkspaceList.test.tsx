@@ -359,7 +359,23 @@ describe("WorkspaceList", () => {
 			});
 		});
 		expect(mocks.refreshTree).toHaveBeenCalled();
+		expect(screen.queryByRole("alert")).toBeNull();
 		expect(onSelectWorktree).not.toHaveBeenCalled();
+	});
+
+	it("shows an error when stopping a Workflow fails", async () => {
+		const user = userEvent.setup();
+		renderWorkspaceList();
+		mocks.invoke.mockRejectedValueOnce("abort denied");
+
+		await user.click(screen.getByLabelText("Open menu for release"));
+		const stop = await screen.findByText("Stop");
+		await user.click(stop);
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Stop workflow failed: abort denied",
+		);
+		expect(mocks.refreshTree).not.toHaveBeenCalled();
 	});
 
 	it("keeps Stop enabled for a waiting approval Workflow", async () => {
@@ -413,7 +429,21 @@ describe("WorkspaceList", () => {
 			);
 		});
 		expect(mocks.refreshTree).toHaveBeenCalled();
+		expect(screen.queryByRole("alert")).toBeNull();
 		expect(onSelectWorktree).not.toHaveBeenCalled();
+	});
+
+	it("shows an error when archiving a Workflow fails", async () => {
+		const user = userEvent.setup();
+		renderWorkspaceList();
+		mocks.invoke.mockRejectedValueOnce("archive denied");
+
+		await user.click(screen.getByLabelText("Archive release"));
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Archive workflow failed: archive denied",
+		);
+		expect(mocks.refreshTree).not.toHaveBeenCalled();
 	});
 
 	it("opens the Worktree menu with history, PR link, and delete actions", async () => {

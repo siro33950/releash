@@ -1312,6 +1312,7 @@ mod tests {
             permission_profile_id: None,
             backend_id: Some(CODEX_BACKEND_ID.to_string()),
             workflow_step_session: false,
+            workflow_step_context: None,
             first_message_preview: "Hello".to_string(),
             message_count: 100,
             body_format_version: SESSION_BODY_FORMAT_VERSION,

@@ -221,8 +221,8 @@ function WorktreeWorkflowRow({
 		workflow: WorkspaceWorkflowNode,
 		step: WorkspaceWorkflowStepNode,
 	) => void;
-	onStop: (node: WorkspaceWorkflowNode) => void;
-	onArchive: (node: WorkspaceWorkflowNode) => void;
+	onStop: (node: WorkspaceWorkflowNode) => void | Promise<void>;
+	onArchive: (node: WorkspaceWorkflowNode) => void | Promise<void>;
 }) {
 	const [expanded, setExpanded] = useState(true);
 	const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
@@ -373,6 +373,9 @@ function WorktreeTreeItem({
 	const [workflowStartError, setWorkflowStartError] = useState<string | null>(
 		null,
 	);
+	const [workflowActionError, setWorkflowActionError] = useState<string | null>(
+		null,
+	);
 	const [workflowStarting, setWorkflowStarting] = useState(false);
 	const scopedCenterSelection =
 		centerSelection?.worktreePath === branch.worktree_path
@@ -459,19 +462,29 @@ function WorktreeTreeItem({
 	const handleArchiveWorkflow = useCallback(
 		async (workflow: WorkspaceWorkflowNode) => {
 			if (!branch.worktree_path) return;
-			await invoke("archive_workspace_workflow_run", {
-				worktreePath: branch.worktree_path,
-				runId: workflow.runId,
-			});
-			await refreshTree();
+			setWorkflowActionError(null);
+			try {
+				await invoke("archive_workspace_workflow_run", {
+					worktreePath: branch.worktree_path,
+					runId: workflow.runId,
+				});
+				await refreshTree();
+			} catch (e) {
+				setWorkflowActionError(`Archive workflow failed: ${String(e)}`);
+			}
 		},
 		[branch.worktree_path, refreshTree],
 	);
 
 	const handleStopWorkflow = useCallback(
 		async (workflow: WorkspaceWorkflowNode) => {
-			await invoke("abort_workflow", { runId: workflow.runId });
-			await refreshTree();
+			setWorkflowActionError(null);
+			try {
+				await invoke("abort_workflow", { runId: workflow.runId });
+				await refreshTree();
+			} catch (e) {
+				setWorkflowActionError(`Stop workflow failed: ${String(e)}`);
+			}
 		},
 		[refreshTree],
 	);
@@ -812,8 +825,8 @@ function WorktreeTreeItem({
 									indentPx={WORKTREE_NAME_INDENT_PX}
 									centerSelection={scopedCenterSelection}
 									onSelectStep={handleSelectWorkflowStep}
-									onStop={(workflow) => void handleStopWorkflow(workflow)}
-									onArchive={(workflow) => void handleArchiveWorkflow(workflow)}
+									onStop={handleStopWorkflow}
+									onArchive={handleArchiveWorkflow}
 								/>
 							) : (
 								<WorktreeSessionRow
@@ -833,6 +846,15 @@ function WorktreeTreeItem({
 								/>
 							),
 						)
+					)}
+					{workflowActionError && (
+						<div
+							role="alert"
+							className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+							style={{ marginLeft: WORKTREE_NAME_INDENT_PX }}
+						>
+							{workflowActionError}
+						</div>
 					)}
 				</div>
 			)}

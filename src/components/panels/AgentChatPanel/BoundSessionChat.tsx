@@ -75,8 +75,6 @@ export function BoundSessionChat({
 		availableModels,
 		availableModelsByBackend,
 		error,
-		permissionMode: contextPermissionMode,
-		planMode,
 		sendMessage,
 		interrupt,
 		cancelQueuedTurn = async () => {},
@@ -84,6 +82,8 @@ export function BoundSessionChat({
 		setPlanMode,
 		setModel,
 		respondPermission,
+		getSessionPermissionMode,
+		getSessionPlanMode,
 	} = useAgentChatContext();
 
 	// SDK listener gating: 本 view が表示している session を viewable に登録する。
@@ -201,6 +201,8 @@ export function BoundSessionChat({
 		(defaultSelectedModel ? getModelInfoId(defaultSelectedModel) : "");
 	const pendingQueue = getSessionPendingQueue(session.id);
 	const runtimeSlashCommands = getSessionRuntimeSlashCommands(session.id);
+	const permissionMode = getSessionPermissionMode(session.id);
+	const planMode = getSessionPlanMode(session.id);
 	const canChangeBackend =
 		session.messages.length === 0 && !session.agentSessionId && !isStreaming;
 
@@ -212,7 +214,7 @@ export function BoundSessionChat({
 			isInterrupting={isInterrupting}
 			activityStatus={activityStatus}
 			error={error}
-			permissionMode={contextPermissionMode}
+			permissionMode={permissionMode}
 			planMode={planMode}
 			availableModels={availableModels}
 			selectedModel={selectedModel}

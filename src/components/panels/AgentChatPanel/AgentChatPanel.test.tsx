@@ -203,6 +203,12 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 	const explicitTurnPhase = overrides.getSessionTurnPhase as
 		| ((id: string) => string)
 		| undefined;
+	const explicitPermissionMode = overrides.getSessionPermissionMode as
+		| ((id: string) => string)
+		| undefined;
+	const explicitPlanMode = overrides.getSessionPlanMode as
+		| ((id: string) => boolean)
+		| undefined;
 	const getSessionTurnPhase = explicitTurnPhase
 		? vi.fn(explicitTurnPhase)
 		: vi.fn((id: string) =>
@@ -252,6 +258,12 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		),
 		registerViewableSession: vi.fn().mockReturnValue(() => {}),
 		getSessionTurnPhase,
+		getSessionPermissionMode: explicitPermissionMode
+			? vi.fn(explicitPermissionMode)
+			: vi.fn(() => overrides.permissionMode ?? "edit"),
+		getSessionPlanMode: explicitPlanMode
+			? vi.fn(explicitPlanMode)
+			: vi.fn(() => overrides.planMode ?? false),
 		getSessionSelectedModel: vi.fn().mockReturnValue(null),
 		getSessionPendingQueue: vi.fn().mockReturnValue([]),
 		getSessionLatestTokenUsage: vi.fn().mockReturnValue(null),

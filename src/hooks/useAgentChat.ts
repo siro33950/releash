@@ -173,6 +173,8 @@ export interface UseAgentChatResult {
 	/** per-session lookup（既存）。*/
 	getSessionTurnPhase: (sessionId: string) => TurnPhase;
 	getSessionInterrupting: (sessionId: string) => boolean;
+	getSessionPermissionMode: (sessionId: string) => PermissionMode;
+	getSessionPlanMode: (sessionId: string) => PlanMode;
 	getSessionSelectedModel: (sessionId: string) => string | null;
 	getSessionPendingQueue: (sessionId: string) => QueuedAgentTurn[];
 	getSessionLatestTokenUsage: (sessionId: string) => TokenUsage | null;
@@ -272,12 +274,14 @@ function dispatchSessionMeta(
 	if (response.session.permissionMode) {
 		dispatch({
 			type: "SET_PERMISSION_MODE",
+			sessionId,
 			mode: response.session.permissionMode,
 		});
 	}
 	if (response.session.planMode !== undefined) {
 		dispatch({
 			type: "SET_PLAN_MODE",
+			sessionId,
 			enabled: response.session.planMode,
 		});
 	}
@@ -330,6 +334,10 @@ export function useAgentChat(
 	permissionModeRef.current = state.permissionMode;
 	const planModeRef = useRef(state.planMode);
 	planModeRef.current = state.planMode;
+	const sessionPermissionModesRef = useRef(state.sessionPermissionModes);
+	sessionPermissionModesRef.current = state.sessionPermissionModes;
+	const sessionPlanModesRef = useRef(state.sessionPlanModes);
+	sessionPlanModesRef.current = state.sessionPlanModes;
 	const turnPhasesRef = useRef(state.turnPhases);
 	turnPhasesRef.current = state.turnPhases;
 	const interruptingRef = useRef(state.interrupting);
@@ -740,6 +748,30 @@ export function useAgentChat(
 		});
 	}, []);
 
+	const resolvePermissionModeForSessionRef = useCallback(
+		(sessionId: string | null): PermissionMode => {
+			if (!sessionId) return permissionModeRef.current;
+			return (
+				sessionPermissionModesRef.current[sessionId] ??
+				sessionsByIdRef.current[sessionId]?.permissionMode ??
+				permissionModeRef.current
+			);
+		},
+		[],
+	);
+
+	const resolvePlanModeForSessionRef = useCallback(
+		(sessionId: string | null): PlanMode => {
+			if (!sessionId) return planModeRef.current;
+			return (
+				sessionPlanModesRef.current[sessionId] ??
+				sessionsByIdRef.current[sessionId]?.planMode ??
+				planModeRef.current
+			);
+		},
+		[],
+	);
+
 	const sendMessage = useCallback(
 		async (
 			sessionId: string | null,
@@ -753,8 +785,8 @@ export function useAgentChat(
 
 			try {
 				const wPath = worktreePathRef.current;
-				const pm = permissionModeRef.current;
-				const plan = planModeRef.current;
+				const pm = resolvePermissionModeForSessionRef(sessionId);
+				const plan = resolvePlanModeForSessionRef(sessionId);
 				const backendId = sessionId ? null : selectedBackendIdRef.current;
 				const modelId =
 					sessionId || !activeSessionIdRef.current
@@ -863,7 +895,12 @@ export function useAgentChat(
 				});
 			}
 		},
-		[dispatchWithMessageWindowTracking, touchSessionAccess],
+		[
+			dispatchWithMessageWindowTracking,
+			resolvePermissionModeForSessionRef,
+			resolvePlanModeForSessionRef,
+			touchSessionAccess,
+		],
 	);
 
 	const cancelQueuedTurn = useCallback(
@@ -1054,6 +1091,7 @@ export function useAgentChat(
 				});
 				dispatch({
 					type: "SET_PERMISSION_MODE",
+					sessionId: activeSession.id,
 					mode: activeSession.permissionMode,
 				});
 				if (response) {
@@ -1122,6 +1160,7 @@ export function useAgentChat(
 			});
 			dispatch({
 				type: "SET_PERMISSION_MODE",
+				sessionId: activeSession.id,
 				mode: activeSession.permissionMode,
 			});
 			if (response) {
@@ -1144,16 +1183,13 @@ export function useAgentChat(
 
 	const setPermissionMode = useCallback(
 		(sessionId: string | null, mode: PermissionMode) => {
-			// state.permissionMode は store 全体に 1 つしか存在しないグローバル値。
-			// 非表示 (non-viewable) の session からの呼び出しで UI 表示用の
-			// permissionMode が上書きされるのを防ぐため、SDK event listener 側で
-			// SET_PERMISSION_MODE を viewableRegistry でガードしているのと同様に、
-			// UI 起点でも viewable な session の操作のみ dispatch する。
-			// sessionId が null の場合は session 非依存の global default 設定として扱う。
+			// sessionId が null の場合は session 非依存の default 設定として扱う。
+			// session 指定時は表示中 pane の mode map だけを更新し、active session
+			// 以外の pane 操作で単一 session 表示用の mode を上書きしない。
 			const isViewable =
 				sessionId === null || viewableIdsRef.current.has(sessionId);
 			if (isViewable) {
-				dispatch({ type: "SET_PERMISSION_MODE", mode });
+				dispatch({ type: "SET_PERMISSION_MODE", sessionId, mode });
 			}
 			// Persist to Rust and sync to Bridge
 			if (sessionId) {
@@ -1173,7 +1209,7 @@ export function useAgentChat(
 			const isViewable =
 				sessionId === null || viewableIdsRef.current.has(sessionId);
 			if (isViewable) {
-				dispatch({ type: "SET_PLAN_MODE", enabled });
+				dispatch({ type: "SET_PLAN_MODE", sessionId, enabled });
 			}
 			if (sessionId) {
 				invoke("set_agent_plan_mode", {
@@ -1423,6 +1459,7 @@ export function useAgentChat(
 	const pendingQueuesState = state.pendingQueues;
 	const latestTokenUsageState = state.latestTokenUsage;
 	const runtimeSlashCommandsState = state.runtimeSlashCommands;
+	const sessionsByIdState = state.sessionsById;
 	const getSessionTurnPhase = useCallback(
 		(sessionId: string): TurnPhase => turnPhasesState[sessionId] ?? "idle",
 		[turnPhasesState],
@@ -1431,6 +1468,24 @@ export function useAgentChat(
 	const getSessionInterrupting = useCallback(
 		(sessionId: string): boolean => interruptingState[sessionId] ?? false,
 		[interruptingState],
+	);
+	const sessionPermissionModesState = state.sessionPermissionModes;
+	const permissionModeState = state.permissionMode;
+	const getSessionPermissionMode = useCallback(
+		(sessionId: string): PermissionMode =>
+			sessionPermissionModesState[sessionId] ??
+			sessionsByIdState[sessionId]?.permissionMode ??
+			permissionModeState,
+		[permissionModeState, sessionPermissionModesState, sessionsByIdState],
+	);
+	const sessionPlanModesState = state.sessionPlanModes;
+	const planModeState = state.planMode;
+	const getSessionPlanMode = useCallback(
+		(sessionId: string): PlanMode =>
+			sessionPlanModesState[sessionId] ??
+			sessionsByIdState[sessionId]?.planMode ??
+			planModeState,
+		[planModeState, sessionPlanModesState, sessionsByIdState],
 	);
 	const getSessionSelectedModel = useCallback(
 		(sessionId: string): string | null => sessionModelsState[sessionId] ?? null,
@@ -1452,7 +1507,6 @@ export function useAgentChat(
 		[runtimeSlashCommandsState],
 	);
 
-	const sessionsByIdState = state.sessionsById;
 	const getSessionById = useCallback(
 		(sessionId: string | null | undefined): ChatSession | null => {
 			if (!sessionId) return null;
@@ -1517,6 +1571,8 @@ export function useAgentChat(
 		evictOlderMessages,
 		getSessionTurnPhase,
 		getSessionInterrupting,
+		getSessionPermissionMode,
+		getSessionPlanMode,
 		getSessionSelectedModel,
 		getSessionPendingQueue,
 		getSessionLatestTokenUsage,
