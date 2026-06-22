@@ -67,9 +67,9 @@ impl StoredSessionLifecycleUsecase {
         data_dir: &Path,
         session_id: &str,
     ) -> Result<(), String> {
+        self.runtime_closer.close_agent_session(session_id).await?;
         self.session_store
             .archive_open_session(data_dir, session_id)?;
-        self.runtime_closer.close_agent_session(session_id).await?;
         self.sync_archive(data_dir, session_id, "open-thread archive")
             .await;
         Ok(())
@@ -94,7 +94,7 @@ impl StoredSessionLifecycleUsecase {
             cwd: source_session.worktree_path.clone(),
             model: source_session.selected_model.clone(),
             permission_mode: source_session.permission_mode.clone(),
-            plan_mode: false,
+            plan_mode: source_session.plan_mode,
             permission_profile_id: source_session.permission_profile_id.clone(),
         };
         match self.thread_lifecycle.fork_thread(request).await {

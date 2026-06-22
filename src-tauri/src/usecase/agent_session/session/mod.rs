@@ -519,14 +519,21 @@ pub(crate) fn first_message_preview(messages: &[ChatMessage]) -> String {
         .first()
         .map(|m| {
             let content = if m.content.is_empty() {
-                if m.parts.as_ref().is_some_and(|parts| {
-                    parts.iter().any(|p| {
+                if let Some(parts) = m.parts.as_ref() {
+                    if parts.iter().any(|p| {
                         matches!(p, MessagePart::Image { .. } | MessagePart::ImageRef { .. })
-                    })
-                }) {
-                    "[Image]".to_string()
+                    }) {
+                        "[Image]".to_string()
+                    } else {
+                        let (legacy_content, legacy_thinking, _) = parts_to_legacy(parts);
+                        if !legacy_content.is_empty() {
+                            legacy_content
+                        } else {
+                            legacy_thinking.unwrap_or_default()
+                        }
+                    }
                 } else {
-                    m.content.clone()
+                    String::new()
                 }
             } else {
                 m.content.clone()

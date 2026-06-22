@@ -273,12 +273,11 @@ impl FlatSessionMetaFile {
         if id != expected_id {
             return Err(invalid_session_error_message_with_id(expected_id));
         }
-        let permission_mode = self
+        let raw_permission_mode = self
             .permission_mode
-            .map(|value| validate_permission_mode(&value))
-            .transpose()
-            .map_err(|_| invalid_session_error_message_with_id(expected_id))?
-            .unwrap_or_else(|| crate::permission::PermissionMode::Edit.as_str().to_string());
+            .ok_or_else(|| invalid_session_error_message_with_id(expected_id))?;
+        let permission_mode = validate_permission_mode(&raw_permission_mode)
+            .map_err(|_| invalid_session_error_message_with_id(expected_id))?;
         validate_meta(
             SessionMeta {
                 id,

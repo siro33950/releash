@@ -126,8 +126,13 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         FileSessionStorage::remove_session(self, app_data_dir, session_id);
     }
 
-    fn write_session_meta(&self, app_data_dir: &Path, meta: &Self::Meta) -> Result<(), String> {
-        FileSessionStorage::write_session_meta(self, app_data_dir, meta)
+    fn update_session_meta(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        update: &mut dyn FnMut(&mut Self::Meta) -> Result<(), String>,
+    ) -> Result<Self::Meta, String> {
+        FileSessionStorage::update_session_meta(self, app_data_dir, session_id, update)
     }
 
     fn save_full_session_for_migration_or_restore(

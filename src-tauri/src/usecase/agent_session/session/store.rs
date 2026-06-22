@@ -414,10 +414,19 @@ impl SessionStore {
         session_id: &str,
         update: impl FnOnce(&mut SessionMeta) -> Result<(), String>,
     ) -> Result<Option<(String, SessionState)>, String> {
-        let mut meta = self.require_meta(app_data_dir, session_id)?;
-        let previous_state = meta.state.clone();
-        update(&mut meta)?;
-        self.storage.write_session_meta(app_data_dir, &meta)?;
+        let mut update = Some(update);
+        let mut previous_state: Option<SessionState> = None;
+        let meta = self
+            .storage
+            .update_session_meta(app_data_dir, session_id, &mut |meta| {
+                previous_state = Some(meta.state.clone());
+                let f = update
+                    .take()
+                    .expect("update closure must be invoked exactly once");
+                f(meta)
+            })?;
+        let previous_state =
+            previous_state.expect("update_session_meta must invoke closure before returning Ok");
         if previous_state != meta.state {
             Ok(Some((meta.worktree_path.clone(), meta.state.clone())))
         } else {
@@ -431,12 +440,25 @@ impl SessionStore {
         session_id: &str,
         update: impl FnOnce(&mut SessionMeta) -> Result<bool, String>,
     ) -> Result<Option<SessionMeta>, String> {
-        let mut meta = self.require_meta(app_data_dir, session_id)?;
-        if !update(&mut meta)? {
-            return Ok(None);
+        let mut update = Some(update);
+        let mut changed = false;
+        let meta = self
+            .storage
+            .update_session_meta(app_data_dir, session_id, &mut |meta| {
+                let f = update
+                    .take()
+                    .expect("update closure must be invoked exactly once");
+                changed = f(meta)?;
+                if !changed {
+                    return Err("__update_meta_if_changed::no_change__".to_string());
+                }
+                Ok(())
+            });
+        match meta {
+            Ok(meta) => Ok(Some(meta)),
+            Err(err) if err == "__update_meta_if_changed::no_change__" && !changed => Ok(None),
+            Err(err) => Err(err),
         }
-        self.storage.write_session_meta(app_data_dir, &meta)?;
-        Ok(Some(meta))
     }
 
     pub fn set_session_state(

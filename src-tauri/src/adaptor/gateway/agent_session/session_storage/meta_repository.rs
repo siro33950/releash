@@ -44,25 +44,32 @@ impl FileSessionStorage {
         Ok(self.cache.read().get(session_id).cloned())
     }
 
-    pub fn write_session_meta(
+    /// `file_lock` を保持したまま meta を read-modify-write する原子更新 API。
+    /// SessionStore 側で読み込んだ meta を後から書き戻すと、間に走った
+    /// `append_message` 等の更新が上書きされてしまうため、ストレージ層で
+    /// ロック内 RMW を完結させる。
+    pub fn update_session_meta(
         &self,
         app_data_dir: &Path,
-        meta: &SessionMeta,
-    ) -> Result<(), String> {
+        session_id: &str,
+        update: &mut dyn FnMut(&mut SessionMeta) -> Result<(), String>,
+    ) -> Result<SessionMeta, String> {
         self.ensure_loaded(app_data_dir)?;
-        if let Some(err) = self.invalid_sessions.read().get(&meta.id) {
+        if let Some(err) = self.invalid_sessions.read().get(session_id) {
             return Err(err.clone());
         }
-        if !self.cache.read().contains_key(&meta.id) {
-            return Err(format!("Session not found: {}", meta.id));
+        if !self.cache.read().contains_key(session_id) {
+            return Err(format!("Session not found: {session_id}"));
         }
-        self.ensure_session_layout(app_data_dir, &meta.id)?;
+        self.ensure_session_layout(app_data_dir, session_id)?;
         let _lock = self.file_lock.lock();
-        let dir = session_dir(app_data_dir, &meta.id)?;
-        let meta = validate_meta(meta.clone(), &meta.id)?;
+        let dir = session_dir(app_data_dir, session_id)?;
+        let mut meta = self.read_meta_from_dir(&dir, session_id)?;
+        update(&mut meta)?;
+        let meta = validate_meta(meta, session_id)?;
         write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
-        self.cache.write().insert(meta.id.clone(), meta);
-        Ok(())
+        self.cache.write().insert(meta.id.clone(), meta.clone());
+        Ok(meta)
     }
 
     pub(super) fn ensure_loaded(&self, app_data_dir: &Path) -> Result<(), String> {

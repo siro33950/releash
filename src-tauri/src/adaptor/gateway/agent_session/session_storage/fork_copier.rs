@@ -68,7 +68,16 @@ impl FileSessionStorage {
         {
             let entry = entry.map_err(|e| format!("Failed to read fork source entry: {e}"))?;
             let src_path = entry.path();
-            if !src_path.is_file() {
+            let file_type = std::fs::symlink_metadata(&src_path)
+                .map_err(|e| format!("Failed to inspect fork source entry: {e}"))?
+                .file_type();
+            if file_type.is_symlink() {
+                return Err(format!(
+                    "Refusing to fork symlinked session file: {}",
+                    entry.file_name().to_string_lossy()
+                ));
+            }
+            if !file_type.is_file() {
                 continue;
             }
             let dst_path = dst.join(entry.file_name());

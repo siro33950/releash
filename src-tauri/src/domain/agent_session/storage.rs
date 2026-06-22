@@ -64,7 +64,16 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
 
     fn remove_session(&self, app_data_dir: &Path, session_id: &str);
 
-    fn write_session_meta(&self, app_data_dir: &Path, meta: &Self::Meta) -> Result<(), String>;
+    /// 原子的に session meta を read-modify-write する。
+    /// ストレージ実装内で file lock を取得した状態で disk から meta を読み、
+    /// クロージャを適用した結果を同じ lock 内で書き戻す。
+    /// SessionStore 層からの並行 RMW で lost update が発生しないことを保証する。
+    fn update_session_meta(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        update: &mut dyn FnMut(&mut Self::Meta) -> Result<(), String>,
+    ) -> Result<Self::Meta, String>;
 
     fn save_full_session_for_migration_or_restore(
         &self,
