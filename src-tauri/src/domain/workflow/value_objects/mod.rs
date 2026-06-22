@@ -7,6 +7,7 @@ mod outcome_commit_mode;
 mod run;
 mod state;
 mod step_output;
+mod workflow_step_context;
 
 pub use approval_decision::ApprovalDecision;
 pub use contract::{ContractType, ContractValidationResult, ContractViolation};
@@ -28,3 +29,4 @@ pub use step_output::{
     TokenUsage, STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED,
     STEP_STATE_INTERRUPTED, STEP_STATE_PENDING, STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
 };
+pub use workflow_step_context::WorkflowStepContext;

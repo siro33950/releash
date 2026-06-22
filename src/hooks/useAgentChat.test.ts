@@ -68,7 +68,6 @@ vi.mock("./useSessionStore", () => ({
 		permissionMode: "edit",
 	}),
 	restoreSession: vi.fn().mockResolvedValue({ restoredWorkflowStep: false }),
-	openWorkflowStepTab: vi.fn().mockResolvedValue(undefined),
 	listClosedSessions: vi.fn().mockResolvedValue([]),
 	listAgentBackends: vi.fn().mockResolvedValue({
 		backends: [],

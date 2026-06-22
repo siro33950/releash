@@ -1,7 +1,7 @@
 /**
  * spec issues-1220 Rule「中央表示は CenterSelection から導出される」
  *
- * MainLayout 近傍の統合テスト。Workspace tree から workflowRun selection request が
+ * MainLayout 近傍の統合テスト。Workspace tree から workflowStep selection request が
  * 渡ると、中央エリアの AgentChatPanel と入れ替わりに WorkflowView が表示されることを
  * 担保する。
  */
@@ -20,7 +20,19 @@ const agentChatPanelProps = vi.hoisted(() => ({
 
 vi.mock("react-resizable-panels", () => ({
 	Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-	Panel: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+	Panel: ({
+		children,
+		id,
+		minSize,
+	}: {
+		children: React.ReactNode;
+		id?: string;
+		minSize?: number | string;
+	}) => (
+		<div data-testid={id ? `panel-${id}` : undefined} data-min-size={minSize}>
+			{children}
+		</div>
+	),
 	Separator: () => <div />,
 }));
 
@@ -112,9 +124,23 @@ vi.mock("@/screens/WorktreeViewDialogs", () => ({
 vi.mock("@/components/layout/BranchSelector", () => ({
 	BranchSelector: () => <div data-testid="branch-selector-mock" />,
 }));
+vi.mock("@/components/layout/RightPanelHeader", () => ({
+	RightPanelHeader: ({ leftSlot }: { leftSlot?: React.ReactNode }) => (
+		<div data-testid="right-panel-header-mock">{leftSlot}</div>
+	),
+}));
 vi.mock("@/components/layout/ViewToolbar", () => ({
-	ViewToolbar: ({ rightSlot }: { rightSlot?: React.ReactNode }) => (
-		<div data-testid="view-toolbar-mock">{rightSlot}</div>
+	ViewToolbar: ({
+		centerSlot,
+		rightSlot,
+	}: {
+		centerSlot?: React.ReactNode;
+		rightSlot?: React.ReactNode;
+	}) => (
+		<div data-testid="view-toolbar-mock">
+			{centerSlot}
+			{rightSlot}
+		</div>
 	),
 }));
 
@@ -139,7 +165,28 @@ describe("MainLayout center selection", () => {
 		expect(screen.queryByTestId("workflow-view-mock")).toBeNull();
 	});
 
-	it("mounts WorkflowView with selectedRootPath when workflowRun selection is requested", async () => {
+	it("places BranchSelector in the right panel header and not the center toolbar", () => {
+		render(
+			<TooltipProvider>
+				<MainLayout
+					selectedRootPath="/managed/wt"
+					settings={defaultSettings}
+					onSettingsSave={vi.fn()}
+					leftNav={<div />}
+				/>
+			</TooltipProvider>,
+		);
+
+		const branchSelector = screen.getByTestId("branch-selector-mock");
+		expect(screen.getByTestId("right-panel-header-mock")).toContainElement(
+			branchSelector,
+		);
+		for (const toolbar of screen.getAllByTestId("view-toolbar-mock")) {
+			expect(toolbar).not.toContainElement(branchSelector);
+		}
+	});
+
+	it("mounts WorkflowView with selectedRootPath when workflowStep selection is requested", async () => {
 		render(
 			<TooltipProvider>
 				<MainLayout
@@ -148,9 +195,11 @@ describe("MainLayout center selection", () => {
 					onSettingsSave={vi.fn()}
 					leftNav={<div />}
 					centerSelectionRequest={{
-						kind: "workflowRun",
+						kind: "workflowStep",
 						worktreePath: "/managed/wt",
 						runId: "run-1",
+						stepId: "run-1:review:1",
+						stepName: "review",
 						requestId: 1,
 					}}
 				/>
@@ -160,6 +209,10 @@ describe("MainLayout center selection", () => {
 		const panel = await screen.findByTestId("workflow-view-mock");
 		expect(panel).toBeInTheDocument();
 		expect(panel).toHaveAttribute("data-worktree-path", "/managed/wt");
+		expect(screen.getByTestId("panel-center")).toHaveAttribute(
+			"data-min-size",
+			"336",
+		);
 		// AgentChat は中央から消え、Review は右パネルで残る
 		expect(screen.queryByTestId("agent-chat-panel-mock")).toBeNull();
 		await waitFor(() => {

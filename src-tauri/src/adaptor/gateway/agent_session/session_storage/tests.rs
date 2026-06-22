@@ -46,6 +46,7 @@ fn make_session(id: &str, worktree: &str) -> ChatSession {
         selected_model: None,
         backend_id: None,
         workflow_step_session: false,
+        workflow_step_context: None,
     }
 }
 

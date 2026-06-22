@@ -13,14 +13,11 @@ export type CenterSelection =
 			worktreePath: string;
 	  }
 	| {
-			kind: "workflowRun";
+			kind: "workflowStep";
 			worktreePath: string;
 			runId: string;
-			focus?: {
-				sessionId?: string;
-				stepName?: string;
-				runIndex?: number;
-			};
+			stepId: string;
+			stepName: string;
 	  };
 
 export type CenterSelectionRequest = CenterSelection & {
@@ -42,14 +39,41 @@ export interface WorkspaceSessionNode {
 	agentState?: AgentState | null;
 }
 
+export type WorkspaceStepStatus =
+	| "queued"
+	| "running"
+	| "waiting_approval"
+	| "completed"
+	| "failed"
+	| "aborted";
+
+export type WorkspaceStepType = "agent" | "bash" | "approval" | "parallel";
+
+export interface WorkspaceWorkflowStepNode {
+	kind: "step";
+	id: string;
+	runId: string;
+	worktreePath: string;
+	title: string;
+	status: WorkspaceStepStatus;
+	stepType: WorkspaceStepType;
+	canReject?: boolean;
+	updatedAt: number;
+	runIndex?: number | null;
+	sessions: WorkspaceSessionNode[];
+}
+
+export type WorkspaceWorkflowStepDetail = WorkspaceWorkflowStepNode;
+
 export interface WorkspaceWorkflowNode {
 	kind: "workflow";
 	runId: string;
 	worktreePath: string;
+	workflowName: string;
 	title: string;
 	status: WorkflowRunSummary["status"];
 	updatedAt: number;
-	children: WorkspaceSessionNode[];
+	steps: WorkspaceWorkflowStepNode[];
 }
 
 export interface WorkspaceWorkflowHistoryItem {
@@ -60,7 +84,6 @@ export interface WorkspaceWorkflowHistoryItem {
 	updatedAt: number;
 	archivedAt: number;
 	archiveReason: "auto_no_sessions" | "manual" | string;
-	children: WorkspaceSessionNode[];
 }
 
 export type WorkspaceTreeNode = WorkspaceSessionNode | WorkspaceWorkflowNode;

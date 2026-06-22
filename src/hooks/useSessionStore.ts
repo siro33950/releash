@@ -339,12 +339,6 @@ export async function restoreSession(
 	return invoke<RestoreSessionResponse>("restore_session", { sessionId });
 }
 
-export async function openWorkflowStepTab(
-	chatSessionId: string,
-): Promise<void> {
-	return invoke("open_workflow_step_tab", { chatSessionId });
-}
-
 export async function listClosedSessions(
 	worktreePath: string,
 ): Promise<SessionSummary[]> {

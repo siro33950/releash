@@ -5,6 +5,7 @@
 //! and pending command files). Controller wiring moves to these ports in #1037.
 
 pub(crate) mod approval_runtime;
+mod archive_repository;
 pub(crate) mod builtin;
 mod config_path_gateway;
 mod definition_repository;
@@ -63,8 +64,10 @@ pub(crate) mod storage;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod turn_completion;
+mod workspace_session;
 mod worktree_gateway;
 
+pub(crate) use archive_repository::WorkflowRunArchiveFileRepository;
 pub(crate) use config_path_gateway::WorkflowConfigPathFileGateway;
 pub(crate) use definition_repository::WorkflowDefinitionFileRepository;
 pub(crate) use diagnostics_gateway::WorkflowDiagnosticsFileGateway;
@@ -102,6 +105,7 @@ pub(crate) use step_lifecycle_adapters::{
     release_step_runtime_on_done, resolve_step_session_with_data_dir, TauriWorkflowStepLifecycle,
     TauriWorkflowStepLifecycleGateway,
 };
+pub(crate) use workspace_session::StoredWorkspaceSessionGateway;
 #[cfg(test)]
 pub(crate) use worktree_gateway::PassthroughManagedWorktreeGateway;
 pub(crate) use worktree_gateway::RepoPathsManagedWorktreeGateway;

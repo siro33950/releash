@@ -27,6 +27,9 @@ use crate::domain::workflow::services::parallel as workflow_parallel;
 pub(crate) struct ParallelStartContext {
     pub(crate) parallel_steps: Vec<ChildNodeDefinition>,
     pub(crate) parent_step_name: String,
+    pub(crate) parent_run_index: u32,
+    pub(crate) order: u32,
+    pub(crate) child_run_indices: Vec<u32>,
     pub(crate) aggregate: Option<ParallelAggregate>,
     pub(crate) execution_id: String,
     pub(crate) workflow_name: String,
@@ -64,6 +67,7 @@ pub(crate) struct ParallelChildSessionSetup {
     pub(crate) user_message: String,
     pub(crate) output_contract: Option<String>,
     pub(crate) permission_mode: String,
+    pub(crate) run_index: u32,
 }
 
 pub(crate) fn child_step_names(
@@ -72,6 +76,21 @@ pub(crate) fn child_step_names(
     parallel_steps
         .iter()
         .map(|step| step.name.clone())
+        .collect()
+}
+
+fn next_child_run_indices(
+    counts: &HashMap<String, u32>,
+    parallel_steps: &[ChildNodeDefinition],
+) -> Vec<u32> {
+    let mut counts = counts.clone();
+    parallel_steps
+        .iter()
+        .map(|step| {
+            let count = counts.entry(step.name.clone()).or_insert(0);
+            *count += 1;
+            *count
+        })
         .collect()
 }
 
@@ -94,9 +113,18 @@ pub(crate) fn prepare_parallel_start_context(
             step.name
         ))
     })?;
+    let parent_run_index = exec
+        .step_execution_counts
+        .get(&step.name)
+        .copied()
+        .unwrap_or(1);
+    let child_run_indices = next_child_run_indices(&exec.step_execution_counts, &parallel_steps);
     Ok(ParallelStartContext {
-        parallel_steps,
         parent_step_name: step.name.clone(),
+        parent_run_index,
+        order: exec.step_history.len() as u32,
+        child_run_indices,
+        parallel_steps,
         aggregate: step.aggregate.clone(),
         execution_id: exec.id.clone(),
         workflow_name: exec.workflow.name.clone(),
@@ -119,22 +147,15 @@ pub(crate) fn apply_parallel_run_state(
     aggregate: Option<ParallelAggregate>,
     child_setups: &[ParallelChildSessionSetup],
 ) -> (Vec<u32>, WorkflowState) {
-    let indices: Vec<u32> = child_setups
-        .iter()
-        .map(|setup| {
-            let count = exec
-                .step_execution_counts
-                .entry(setup.step_name.clone())
-                .or_insert(0);
-            *count += 1;
-            *count
-        })
-        .collect();
+    let indices: Vec<u32> = child_setups.iter().map(|setup| setup.run_index).collect();
+    for setup in child_setups {
+        exec.step_execution_counts
+            .insert(setup.step_name.clone(), setup.run_index);
+    }
 
     let children: Vec<ParallelChildRun> = child_setups
         .iter()
-        .zip(indices.iter())
-        .map(|(setup, &run_index)| ParallelChildRun {
+        .map(|setup| ParallelChildRun {
             step_name: setup.step_name.clone(),
             session_id: setup.session_id.clone(),
             state: ParallelChildState::Running,
@@ -142,7 +163,7 @@ pub(crate) fn apply_parallel_run_state(
             structured_output: None,
             output_contract: setup.output_contract.clone(),
             token_usage: TokenUsage::default(),
-            run_index,
+            run_index: setup.run_index,
         })
         .collect();
 

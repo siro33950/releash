@@ -418,7 +418,7 @@ fn search_sessions(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     for session in sorted {
-        if !include_workflow && session.workflow_step_session {
+        if !include_workflow && session.is_workflow_step_session() {
             continue;
         }
         if session.state == SessionState::Archived {
@@ -449,7 +449,7 @@ fn reject_explicit_start_for_workflow_step_session(
     session: &crate::usecase::agent_session::session::ChatSession,
     cwd: &str,
 ) -> Result<(), String> {
-    if session.worktree_path != cwd || session.workflow_step_session {
+    if session.worktree_path != cwd || session.is_workflow_step_session() {
         return Err(session_target_rejected());
     }
     Ok(())
@@ -468,7 +468,7 @@ fn validate_invoke_permission_mode(
 fn should_skip_close_agent_session(
     session: Option<&crate::usecase::agent_session::session::ChatSession>,
 ) -> bool {
-    session.is_some_and(|session| session.workflow_step_session)
+    session.is_some_and(|session| session.is_workflow_step_session())
 }
 
 #[tauri::command]
@@ -795,6 +795,7 @@ mod tests {
                 crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
             ),
             workflow_step_session,
+            workflow_step_context: None,
         }
     }
 
@@ -963,6 +964,7 @@ mod tests {
                 crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
             ),
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         let mut workflow = regular.clone();
         workflow.id = uuid::Uuid::new_v4().to_string();
@@ -1066,6 +1068,7 @@ mod tests {
                 crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
             ),
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         store
             .save_full_session_for_migration_or_restore(data_dir.path(), &session)
@@ -1125,6 +1128,7 @@ mod tests {
                 crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
             ),
             workflow_step_session: false,
+            workflow_step_context: None,
         };
 
         let results = search_sessions(vec![archived], "parser", false, 10);
@@ -1155,6 +1159,7 @@ mod tests {
                 crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
             ),
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         store
             .save_full_session_for_migration_or_restore(data_dir.path(), &session)

@@ -15,6 +15,7 @@ import {
 	Plus,
 	RefreshCw,
 	Settings,
+	Square,
 	Trash2,
 	Workflow,
 	X,
@@ -58,9 +59,11 @@ import type {
 	WorkspaceSessionNode,
 	WorkspaceWorkflowHistoryItem,
 	WorkspaceWorkflowNode,
+	WorkspaceWorkflowStepNode,
 } from "@/types/workspace-tree";
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
+import { WorkflowStepStatusIcon } from "./WorkflowStepStatusIcon";
 
 interface WorkspaceListProps {
 	repoPaths: string[];
@@ -98,26 +101,15 @@ function isDirectSessionSelected(
 	);
 }
 
-function isWorkflowSelected(
-	centerSelection: CenterSelection | null,
-	node: WorkspaceWorkflowNode,
-): boolean {
-	return (
-		centerSelection?.kind === "workflowRun" &&
-		centerSelection.runId === node.runId &&
-		!centerSelection.focus?.sessionId
-	);
-}
-
-function isWorkflowSessionSelected(
+function isWorkflowStepSelected(
 	centerSelection: CenterSelection | null,
 	workflow: WorkspaceWorkflowNode,
-	node: WorkspaceSessionNode,
+	step: WorkspaceWorkflowStepNode,
 ): boolean {
 	return (
-		centerSelection?.kind === "workflowRun" &&
+		centerSelection?.kind === "workflowStep" &&
 		centerSelection.runId === workflow.runId &&
-		centerSelection.focus?.sessionId === node.id
+		centerSelection.stepId === step.id
 	);
 }
 
@@ -217,75 +209,142 @@ function WorktreeSessionRow({
 function WorktreeWorkflowRow({
 	node,
 	indentPx,
-	selected,
 	centerSelection,
-	sessionAgentStates,
-	onSelectSession,
+	onSelectStep,
+	onStop,
 	onArchive,
 }: {
 	node: WorkspaceWorkflowNode;
 	indentPx: number;
-	selected?: boolean;
 	centerSelection: CenterSelection | null;
-	sessionAgentStates: Map<string, WorkspaceSessionNode["agentState"]>;
-	onSelectSession: (
+	onSelectStep: (
 		workflow: WorkspaceWorkflowNode,
-		node: WorkspaceSessionNode,
+		step: WorkspaceWorkflowStepNode,
 	) => void;
+	onStop: (node: WorkspaceWorkflowNode) => void;
 	onArchive: (node: WorkspaceWorkflowNode) => void;
 }) {
 	const [expanded, setExpanded] = useState(true);
+	const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
+	const steps = node.steps;
+	const canStop =
+		node.status === "running" || node.status === "waiting_approval";
+	const actionControlsVisible = workflowMenuOpen;
+	const workflowLabel = node.workflowName.trim() || node.title;
 	return (
 		<div>
 			<div
-				className={`group flex h-8 w-full items-center gap-2 rounded-md pr-2 text-sm transition-colors ${
-					selected
-						? "bg-foreground/10 text-foreground"
-						: "text-foreground/90 hover:bg-foreground/5"
-				}`}
+				className="group flex h-8 w-full items-center gap-2 rounded-md pr-2 text-sm text-foreground/90 transition-colors hover:bg-foreground/5"
 				style={{ paddingLeft: indentPx }}
 			>
 				<button
 					type="button"
 					className="flex min-w-0 flex-1 items-center gap-2 text-left"
 					onClick={() => setExpanded((prev) => !prev)}
-					aria-current={selected ? "page" : undefined}
 				>
 					<Workflow className="size-3.5 shrink-0 text-muted-foreground/80" />
-					<span className="min-w-0 truncate">{node.title}</span>
+					<span className="min-w-0 truncate">{workflowLabel}</span>
 					{expanded ? (
-						<ChevronDown className="hidden size-3.5 shrink-0 text-muted-foreground group-hover:block" />
+						<ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
 					) : (
-						<ChevronRight className="hidden size-3.5 shrink-0 text-muted-foreground group-hover:block" />
+						<ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
 					)}
 				</button>
-				<Button
-					size="icon-xs"
-					variant="ghost"
-					className="hidden size-5 shrink-0 text-muted-foreground group-hover:flex group-focus-within:flex"
-					onClick={(event) => {
-						event.stopPropagation();
-						onArchive(node);
-					}}
-					aria-label={`Archive ${node.title}`}
-					title="Archive"
+				<div
+					className={`relative h-5 w-11 shrink-0 transition-opacity ${
+						actionControlsVisible
+							? "visible opacity-100"
+							: "invisible opacity-0 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+					}`}
 				>
-					<X className="size-3" />
-				</Button>
+					<DropdownMenu
+						open={workflowMenuOpen}
+						onOpenChange={setWorkflowMenuOpen}
+					>
+						<DropdownMenuTrigger asChild>
+							<Button
+								size="icon-xs"
+								variant="ghost"
+								className="absolute top-0 right-6 size-5 shrink-0 text-muted-foreground"
+								onClick={(event) => event.stopPropagation()}
+								aria-label={`Open menu for ${workflowLabel}`}
+								title="Menu"
+							>
+								<MoreHorizontal className="size-3" />
+							</Button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="end">
+							<DropdownMenuItem
+								disabled={!canStop}
+								onSelect={() => {
+									if (canStop) onStop(node);
+								}}
+							>
+								<Square className="size-3.5" />
+								Stop
+							</DropdownMenuItem>
+						</DropdownMenuContent>
+					</DropdownMenu>
+					<Button
+						size="icon-xs"
+						variant="ghost"
+						className="absolute top-0 right-0 size-5 shrink-0 text-muted-foreground"
+						onClick={(event) => {
+							event.stopPropagation();
+							onArchive(node);
+						}}
+						aria-label={`Archive ${workflowLabel}`}
+						title="Archive"
+					>
+						<X className="size-3" />
+					</Button>
+				</div>
 			</div>
 			{expanded &&
-				node.children.map((child) => (
-					<WorktreeSessionRow
-						key={child.id}
-						node={child}
+				steps.map((step) => (
+					<WorktreeWorkflowStepRow
+						key={step.id}
+						step={step}
 						indentPx={indentPx + WORKFLOW_NAME_OFFSET_PX}
-						agentState={sessionAgentStates.get(child.id) ?? child.agentState}
-						selected={isWorkflowSessionSelected(centerSelection, node, child)}
-						showClose={false}
-						onSelect={() => onSelectSession(node, child)}
+						selected={isWorkflowStepSelected(centerSelection, node, step)}
+						onSelect={() => onSelectStep(node, step)}
 					/>
 				))}
 		</div>
+	);
+}
+
+function WorktreeWorkflowStepRow({
+	step,
+	indentPx,
+	selected,
+	onSelect,
+}: {
+	step: WorkspaceWorkflowStepNode;
+	indentPx: number;
+	selected?: boolean;
+	onSelect: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			className={`flex h-8 w-full min-w-0 items-center gap-2 rounded-md pr-2 text-left text-sm transition-colors ${
+				selected
+					? "bg-foreground/10 text-foreground"
+					: "text-foreground/90 hover:bg-foreground/5"
+			}`}
+			style={{ paddingLeft: indentPx }}
+			onClick={onSelect}
+			aria-current={selected ? "page" : undefined}
+		>
+			<WorkflowStepStatusIcon
+				status={step.status}
+				containerClassName="flex size-5 shrink-0 items-center justify-center"
+				iconClassName="size-3"
+				circleClassName="size-2"
+			/>
+			<span className="min-w-0 flex-1 truncate">{step.title}</span>
+		</button>
 	);
 }
 
@@ -371,18 +430,15 @@ function WorktreeTreeItem({
 		[branch.worktree_path, selectCenter],
 	);
 
-	const handleSelectWorkflowSession = useCallback(
-		(workflow: WorkspaceWorkflowNode, node: WorkspaceSessionNode) => {
+	const handleSelectWorkflowStep = useCallback(
+		(workflow: WorkspaceWorkflowNode, step: WorkspaceWorkflowStepNode) => {
 			if (!branch.worktree_path) return;
 			selectCenter({
-				kind: "workflowRun",
+				kind: "workflowStep",
 				worktreePath: branch.worktree_path,
 				runId: workflow.runId,
-				focus: {
-					sessionId: node.id,
-					stepName: node.stepName ?? node.title,
-					runIndex: node.runIndex ?? undefined,
-				},
+				stepId: step.id,
+				stepName: step.title,
 			});
 		},
 		[branch.worktree_path, selectCenter],
@@ -396,13 +452,8 @@ function WorktreeTreeItem({
 				runId: workflow.runId,
 			});
 			await refreshTree();
-			selectCenter({
-				kind: "workflowRun",
-				worktreePath: branch.worktree_path,
-				runId: workflow.runId,
-			});
 		},
-		[branch.worktree_path, refreshTree, selectCenter],
+		[branch.worktree_path, refreshTree],
 	);
 
 	const handleArchiveWorkflow = useCallback(
@@ -415,6 +466,14 @@ function WorktreeTreeItem({
 			await refreshTree();
 		},
 		[branch.worktree_path, refreshTree],
+	);
+
+	const handleStopWorkflow = useCallback(
+		async (workflow: WorkspaceWorkflowNode) => {
+			await invoke("abort_workflow", { runId: workflow.runId });
+			await refreshTree();
+		},
+		[refreshTree],
 	);
 
 	const handleNewSession = useCallback(() => {
@@ -439,7 +498,7 @@ function WorktreeTreeItem({
 		setWorkflowStarting(true);
 		setWorkflowStartError(null);
 		try {
-			const runId = await invoke<string>("start_workflow", {
+			await invoke<string>("start_workflow", {
 				workflowName: selectedWorkflowName,
 				worktreePath: branch.worktree_path,
 				task: workflowTaskInput.trim() || null,
@@ -448,11 +507,6 @@ function WorktreeTreeItem({
 			setSelectedWorkflowName(null);
 			setWorkflowTaskInput("");
 			await refreshTree();
-			selectCenter({
-				kind: "workflowRun",
-				worktreePath: branch.worktree_path,
-				runId,
-			});
 		} catch (e) {
 			setWorkflowStartError(String(e));
 		} finally {
@@ -461,7 +515,6 @@ function WorktreeTreeItem({
 	}, [
 		branch.worktree_path,
 		refreshTree,
-		selectCenter,
 		selectedWorkflowName,
 		workflowStarting,
 		workflowTaskInput,
@@ -757,10 +810,9 @@ function WorktreeTreeItem({
 									key={node.runId}
 									node={node}
 									indentPx={WORKTREE_NAME_INDENT_PX}
-									selected={isWorkflowSelected(scopedCenterSelection, node)}
 									centerSelection={scopedCenterSelection}
-									sessionAgentStates={sessionAgentStates}
-									onSelectSession={handleSelectWorkflowSession}
+									onSelectStep={handleSelectWorkflowStep}
+									onStop={(workflow) => void handleStopWorkflow(workflow)}
 									onArchive={(workflow) => void handleArchiveWorkflow(workflow)}
 								/>
 							) : (
@@ -907,13 +959,15 @@ function RepoTreeSectionView({
 					className="flex min-w-0 flex-1 items-center gap-1.5 rounded text-left transition-colors hover:text-foreground"
 					onClick={() => setCollapsed((prev) => !prev)}
 				>
+					<span className="min-w-0 truncate">{repoName}</span>
 					{collapsed ? (
 						<ChevronRight className="size-3.5 shrink-0" />
 					) : (
 						<ChevronDown className="size-3.5 shrink-0" />
 					)}
-					<span className="min-w-0 flex-1 truncate">{repoName}</span>
-					<span className="shrink-0 text-[11px]">{branches.length}</span>
+					<span className="ml-auto shrink-0 text-[11px]">
+						{branches.length}
+					</span>
 				</button>
 				<Button
 					size="icon-xs"

@@ -635,6 +635,14 @@ mod tests {
                 execution_count: 1,
                 timestamp: 0.0,
             },
+            WorkflowEvent::StepSessionStarted {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                node_name: "n".to_string(),
+                execution_count: 1,
+                session_id: "s".to_string(),
+                timestamp: 0.0,
+            },
             WorkflowEvent::NodeCompleted {
                 run_id: rid.to_string(),
                 workflow_name: "w".to_string(),

@@ -143,7 +143,6 @@ impl<'a> WorkflowStepLifecycle<'a> {
 }
 
 pub(crate) async fn release_step_runtime_on_done_with_gateways(
-    sessions: &dyn WorkflowStepSessionGateway,
     runtime: &dyn WorkflowStepRuntimeGateway,
     session_id: &str,
 ) {
@@ -152,11 +151,6 @@ pub(crate) async fn release_step_runtime_on_done_with_gateways(
     if let Err(_e) = runtime.close_runtime_on_step_done(session_id).await {
         log::warn!(
             "workflow_step_runtime_cleanup_failed code=runtime_close_failed message=failed_to_close_runtime"
-        );
-    }
-    if let Err(_e) = sessions.close_step_tab(session_id) {
-        log::warn!(
-            "workflow_step_tab_cleanup_failed code=session_state_update_failed message=failed_to_close_step_tab"
         );
     }
 }
@@ -280,35 +274,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_step_runtime_on_done_with_gateways_closes_runtime_and_tab() {
+    async fn release_step_runtime_on_done_with_gateways_closes_runtime_only() {
         let state = Arc::new(StdMutex::new(FakeLifecycleState::open_runtime_and_tab()));
-        let (sessions, runtime) = fake_lifecycle_gateways(Arc::clone(&state));
+        let (_, runtime) = fake_lifecycle_gateways(Arc::clone(&state));
 
-        release_step_runtime_on_done_with_gateways(&sessions, &runtime, "step").await;
+        release_step_runtime_on_done_with_gateways(&runtime, "step").await;
 
         let state = state.lock().unwrap();
         assert_eq!(state.runtime_done_close_calls, 1);
-        assert_eq!(state.tab_close_calls, 1);
+        assert_eq!(state.tab_close_calls, 0);
         assert!(!state.runtime_active);
-        assert!(!state.tab_open);
+        assert!(state.tab_open);
         assert_eq!(state.history_len, 1);
     }
 
     #[tokio::test]
-    async fn release_step_runtime_on_done_with_gateways_still_closes_tab_after_runtime_error() {
+    async fn release_step_runtime_on_done_with_gateways_keeps_tab_after_runtime_error() {
         let state = Arc::new(StdMutex::new(FakeLifecycleState {
             fail_done_runtime_close: true,
             ..FakeLifecycleState::open_runtime_and_tab()
         }));
-        let (sessions, runtime) = fake_lifecycle_gateways(Arc::clone(&state));
+        let (_, runtime) = fake_lifecycle_gateways(Arc::clone(&state));
 
-        release_step_runtime_on_done_with_gateways(&sessions, &runtime, "step").await;
+        release_step_runtime_on_done_with_gateways(&runtime, "step").await;
 
         let state = state.lock().unwrap();
         assert_eq!(state.runtime_done_close_calls, 1);
-        assert_eq!(state.tab_close_calls, 1);
+        assert_eq!(state.tab_close_calls, 0);
         assert!(!state.runtime_active);
-        assert!(!state.tab_open);
+        assert!(state.tab_open);
         assert_eq!(state.history_len, 1);
     }
 

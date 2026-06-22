@@ -334,6 +334,25 @@ pub(crate) fn node_started_event_for_snapshot(snapshot: &WorkflowState) -> Workf
     }
 }
 
+pub(crate) fn node_session_started_event_for_snapshot(
+    snapshot: &WorkflowState,
+) -> Option<WorkflowEvent> {
+    let session_id = snapshot.current_session_id.clone()?;
+    let exec_count = snapshot
+        .step_execution_counts
+        .get(&snapshot.current_step_name)
+        .copied()
+        .unwrap_or(1);
+    Some(WorkflowEvent::StepSessionStarted {
+        run_id: snapshot.execution_id.clone(),
+        workflow_name: snapshot.workflow_name.clone(),
+        node_name: snapshot.current_step_name.clone(),
+        execution_count: exec_count,
+        session_id,
+        timestamp: snapshot.updated_at,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PostCommitProgressEventPlan {
     TransitionAndStart,

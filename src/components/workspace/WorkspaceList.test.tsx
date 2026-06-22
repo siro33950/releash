@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceList } from "./WorkspaceList";
@@ -90,23 +90,76 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					kind: "workflow",
 					runId: "run-1",
 					worktreePath: "/repo/wt",
+					workflowName: "release",
 					title: "Deploy workflow",
 					status: "running",
 					updatedAt: 1100,
-					children: [
+					steps: [
 						{
-							kind: "session",
-							id: "step-build",
+							kind: "step",
+							id: "run-1:step-build",
+							runId: "run-1",
 							worktreePath: "/repo/wt",
 							title: "Build step",
-							state: "active",
+							status: "running",
+							stepType: "agent",
 							updatedAt: 1100,
-							workflowStepSession: true,
-							stepName: "build",
-							runIndex: 1,
-							agentState: "running",
+							sessions: [
+								{
+									kind: "session",
+									id: "step-build",
+									worktreePath: "/repo/wt",
+									title: "Build step",
+									state: "active",
+									updatedAt: 1100,
+									workflowStepSession: true,
+									stepName: "build",
+									runIndex: 1,
+									agentState: "running",
+								},
+							],
 						},
 					],
+				},
+				{
+					kind: "workflow",
+					runId: "run-waiting",
+					worktreePath: "/repo/wt",
+					workflowName: "waiting-flow",
+					title: "Waiting workflow",
+					status: "waiting_approval",
+					updatedAt: 1101,
+					steps: [],
+				},
+				{
+					kind: "workflow",
+					runId: "run-completed",
+					worktreePath: "/repo/wt",
+					workflowName: "completed-flow",
+					title: "Completed workflow",
+					status: "completed",
+					updatedAt: 1102,
+					steps: [],
+				},
+				{
+					kind: "workflow",
+					runId: "run-failed",
+					worktreePath: "/repo/wt",
+					workflowName: "failed-flow",
+					title: "Failed workflow",
+					status: "failed",
+					updatedAt: 1103,
+					steps: [],
+				},
+				{
+					kind: "workflow",
+					runId: "run-aborted",
+					worktreePath: "/repo/wt",
+					workflowName: "aborted-flow",
+					title: "Aborted workflow",
+					status: "aborted",
+					updatedAt: 1104,
+					steps: [],
 				},
 			],
 			closedSessions: [
@@ -136,7 +189,6 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					updatedAt: 3,
 					archivedAt: 4,
 					archiveReason: "manual",
-					children: [],
 				},
 			],
 			loading: false,
@@ -263,14 +315,17 @@ describe("WorkspaceList", () => {
 		const user = userEvent.setup();
 		const { onSelectWorktree } = renderWorkspaceList();
 
+		expect(screen.getByText("release")).toBeInTheDocument();
+		expect(screen.queryByText("Deploy workflow")).not.toBeInTheDocument();
 		expect(screen.getByText("Build step")).toBeInTheDocument();
-		await user.click(screen.getByText("Deploy workflow"));
+		await user.click(screen.getByText("release"));
 
 		expect(screen.queryByText("Build step")).not.toBeInTheDocument();
+		expect(screen.queryByText("Running")).not.toBeInTheDocument();
 		expect(onSelectWorktree).not.toHaveBeenCalled();
 	});
 
-	it("emits a workflowRun selection when a WorkflowSession row is clicked", async () => {
+	it("emits a workflowStep selection when a Workflow Step row is clicked", async () => {
 		const user = userEvent.setup();
 		const { onSelectWorktree } = renderWorkspaceList();
 
@@ -281,16 +336,84 @@ describe("WorkspaceList", () => {
 			"feature",
 			"repo",
 			{
-				kind: "workflowRun",
+				kind: "workflowStep",
 				worktreePath: "/repo/wt",
 				runId: "run-1",
-				focus: {
-					sessionId: "step-build",
-					stepName: "build",
-					runIndex: 1,
-				},
+				stepId: "run-1:step-build",
+				stepName: "Build step",
 			},
 		);
+	});
+
+	it("opens the Workflow row menu and stops a stoppable Workflow", async () => {
+		const user = userEvent.setup();
+		const { onSelectWorktree } = renderWorkspaceList();
+
+		await user.click(screen.getByLabelText("Open menu for release"));
+		const stop = await screen.findByText("Stop");
+		await user.click(stop);
+
+		await waitFor(() => {
+			expect(mocks.invoke).toHaveBeenCalledWith("abort_workflow", {
+				runId: "run-1",
+			});
+		});
+		expect(mocks.refreshTree).toHaveBeenCalled();
+		expect(onSelectWorktree).not.toHaveBeenCalled();
+	});
+
+	it("keeps Stop enabled for a waiting approval Workflow", async () => {
+		const user = userEvent.setup();
+		renderWorkspaceList();
+
+		await user.click(screen.getByLabelText("Open menu for waiting-flow"));
+		const stop = await screen.findByRole("menuitem", { name: /Stop/ });
+		expect(stop).not.toHaveAttribute("aria-disabled", "true");
+		await user.click(stop);
+
+		await waitFor(() => {
+			expect(mocks.invoke).toHaveBeenCalledWith("abort_workflow", {
+				runId: "run-waiting",
+			});
+		});
+	});
+
+	it.each([
+		["completed", "completed-flow"],
+		["failed", "failed-flow"],
+		["aborted", "aborted-flow"],
+	])("disables Stop for a %s Workflow and ignores clicks", async (_status, workflowLabel) => {
+		const user = userEvent.setup();
+		renderWorkspaceList();
+
+		await user.click(screen.getByLabelText(`Open menu for ${workflowLabel}`));
+		const stop = await screen.findByRole("menuitem", { name: /Stop/ });
+		expect(stop).toHaveAttribute("aria-disabled", "true");
+		fireEvent.click(stop);
+
+		expect(mocks.invoke).not.toHaveBeenCalledWith(
+			"abort_workflow",
+			expect.anything(),
+		);
+	});
+
+	it("archives a Workflow row without changing CenterSelection", async () => {
+		const user = userEvent.setup();
+		const { onSelectWorktree } = renderWorkspaceList();
+
+		await user.click(screen.getByLabelText("Archive release"));
+
+		await waitFor(() => {
+			expect(mocks.invoke).toHaveBeenCalledWith(
+				"archive_workspace_workflow_run",
+				{
+					worktreePath: "/repo/wt",
+					runId: "run-1",
+				},
+			);
+		});
+		expect(mocks.refreshTree).toHaveBeenCalled();
+		expect(onSelectWorktree).not.toHaveBeenCalled();
 	});
 
 	it("opens the Worktree menu with history, PR link, and delete actions", async () => {
@@ -321,6 +444,7 @@ describe("WorkspaceList", () => {
 		renderWorkspaceList();
 
 		expect(screen.queryByText("Open")).not.toBeInTheDocument();
+		expect(screen.queryByText("Running")).not.toBeInTheDocument();
 		expect(screen.queryByText("Closed")).not.toBeInTheDocument();
 		expect(screen.queryByText("1日")).not.toBeInTheDocument();
 		expect(screen.queryByText("もっと表示する")).not.toBeInTheDocument();

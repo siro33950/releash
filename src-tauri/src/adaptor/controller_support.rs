@@ -12,9 +12,7 @@ use crate::infrastructure::agent_session::runtime::{
 };
 use crate::infrastructure::agent_session::runtime_gateway::AgentRuntimeGateway;
 use crate::usecase::agent_session::session::{ChatSession, OpenTabRegistry, SessionStore};
-use crate::usecase::workflow::step_lifecycle::{
-    ResolvedWorkflowStepSession, WorkflowStepLifecycleError,
-};
+use crate::usecase::workflow::step_lifecycle::ResolvedWorkflowStepSession;
 use crate::usecase::workflow::{WorkflowRuntimeUsecase, WorkflowStepLifecycleUsecase};
 
 pub(crate) type AgentProcessMapState = Arc<Mutex<AgentProcessMap>>;
@@ -55,13 +53,6 @@ pub(crate) async fn dispatch_agent_message_with_runtime(
         req,
     )
     .await
-}
-
-pub(crate) async fn open_workflow_step_tab(
-    step_lifecycle: &WorkflowStepLifecycleUsecaseState,
-    chat_session_id: &str,
-) -> Result<ResolvedWorkflowStepSession, WorkflowStepLifecycleError> {
-    step_lifecycle.open_tab(chat_session_id).await
 }
 
 pub(crate) async fn emit_after_workflow_step_message<R: tauri::Runtime>(

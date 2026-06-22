@@ -4745,7 +4745,7 @@ fn can_change_session_backend_from_meta(
 /// 除外し、free chat（`workflow_step_session == false`）の先頭を採用する。free chat が
 /// 1 件もない場合は active 候補無し（`None`）で、UI は空状態を描く。
 fn pick_initial_active_session_candidate(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
-    sessions.iter().find(|s| !s.workflow_step_session)
+    sessions.iter().find(|s| !s.is_workflow_step_session())
 }
 
 fn ensure_session_backend_selected(
@@ -7432,7 +7432,7 @@ async fn prepare_send_agent_message_internal(
         let mut session = session_store
             .get_session_shell(data_dir, sid)?
             .ok_or_else(|| format!("Session not found: {sid}"))?;
-        if !session.workflow_step_session && session.worktree_path != worktree_path {
+        if !session.is_workflow_step_session() && session.worktree_path != worktree_path {
             return Err(session_target_rejected());
         }
         // 既存セッション分岐でも検証済み pm をセッション保存層に書き戻す。
@@ -8428,6 +8428,7 @@ mod tests {
             selected_model: Some("sonnet".to_string()),
             backend_id: Some("mock".to_string()),
             workflow_step_session: true,
+            workflow_step_context: None,
         }
     }
 
@@ -12497,6 +12498,7 @@ mod tests {
             permission_profile_id: None,
             backend_id: Some("mock".to_string()),
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         session_store
             .save_full_session_for_migration_or_restore(data_dir.path(), &session)
@@ -13425,6 +13427,7 @@ mod tests {
                 permission_profile_id: None,
                 backend_id: Some("claude".to_string()),
                 workflow_step_session: workflow_step,
+                workflow_step_context: None,
             }
         }
 
@@ -16180,6 +16183,7 @@ mod tests {
             selected_model: None,
             backend_id: Some("mock".to_string()),
             workflow_step_session: false,
+            workflow_step_context: None,
         }
     }
 
@@ -17457,6 +17461,7 @@ mod tests {
             selected_model: Some("selected-model".to_string()),
             backend_id: Some(CLAUDE_BACKEND_ID.to_string()),
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         session_store
             .save_full_session_for_migration_or_restore(temp.path(), &session)
@@ -17877,6 +17882,7 @@ mod tests {
             selected_model,
             backend_id: Some(backend_id.to_string()),
             workflow_step_session: false,
+            workflow_step_context: None,
         }
     }
 

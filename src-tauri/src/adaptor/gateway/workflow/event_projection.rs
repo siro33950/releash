@@ -79,6 +79,14 @@ fn child_output_from_run_aborted_snapshot(
     }
 }
 
+fn completed_parallel_history_result(aggregate_result: &str) -> String {
+    if aggregate_result == "advance" {
+        "complete".to_string()
+    } else {
+        aggregate_result.to_string()
+    }
+}
+
 /// spec issues-1023: event 列から (step_name, run_index) ごとの started/completed/duration を
 /// 集約する純粋関数。engine 側 event projection の責務として、所要時間計算と
 /// 単位変換（秒 → ミリ秒）を担う（frontend は表示用フォーマットのみ）。
@@ -104,6 +112,12 @@ pub(crate) fn compute_step_timings(events: &[WorkflowEvent]) -> Vec<WorkflowStep
     for event in events {
         match event {
             WorkflowEvent::NodeStarted {
+                node_name,
+                execution_count,
+                timestamp,
+                ..
+            }
+            | WorkflowEvent::StepSessionStarted {
                 node_name,
                 execution_count,
                 timestamp,
@@ -1006,9 +1020,9 @@ pub(crate) fn reconstruct_state_from_events(
         .map(|s| s.name.clone())
         .unwrap_or_default();
     let mut current_step_index = 0usize;
+    let mut current_session_id: Option<String> = None;
     let mut workflow_name = String::new();
     let mut active_parallel_steps: Vec<ParallelStepState> = Vec::new();
-    let mut current_session_id: Option<String> = None;
 
     for event in events {
         match event {
@@ -1047,11 +1061,23 @@ pub(crate) fn reconstruct_state_from_events(
                 updated_at = *timestamp;
             }
             WorkflowEvent::StepSessionStarted {
+                node_name,
                 session_id,
+                execution_count,
                 timestamp,
                 ..
             } => {
+                current_step_name = node_name.clone();
+                current_step_index = workflow
+                    .nodes
+                    .iter()
+                    .position(|s| s.name == *node_name)
+                    .unwrap_or(0);
                 current_session_id = Some(session_id.clone());
+                step_execution_counts.insert(node_name.clone(), *execution_count);
+                if matches!(exec_state, WorkflowExecutionState::WaitingApproval) {
+                    exec_state = WorkflowExecutionState::Running;
+                }
                 updated_at = *timestamp;
             }
             WorkflowEvent::NodeCompleted {
@@ -1066,7 +1092,7 @@ pub(crate) fn reconstruct_state_from_events(
             } => {
                 let ri = run_index
                     .unwrap_or_else(|| step_execution_counts.get(node_name).copied().unwrap_or(0));
-                step_history.push(StepHistoryEntry {
+                let completed_entry = StepHistoryEntry {
                     step_name: node_name.clone(),
                     completed_at: *timestamp,
                     result: result.clone(),
@@ -1076,7 +1102,23 @@ pub(crate) fn reconstruct_state_from_events(
                     run_index: ri,
                     child_outputs: None,
                     state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
-                });
+                };
+                if let Some(existing) = step_history
+                    .last_mut()
+                    .filter(|entry| entry.step_name == *node_name && entry.run_index == ri)
+                {
+                    existing.completed_at = completed_entry.completed_at;
+                    existing.result = completed_entry.result.or(existing.result.take());
+                    existing.session_id = completed_entry.session_id.or(existing.session_id.take());
+                    existing.token_usage =
+                        completed_entry.token_usage.or(existing.token_usage.take());
+                    existing.structured_output = completed_entry
+                        .structured_output
+                        .or(existing.structured_output.take());
+                    existing.state = completed_entry.state;
+                } else {
+                    step_history.push(completed_entry);
+                }
                 if structured_output.is_some() {
                     step_outputs.insert(
                         node_name.clone(),
@@ -1376,7 +1418,101 @@ pub(crate) fn reconstruct_state_from_events(
                 }
                 updated_at = *timestamp;
             }
-            WorkflowEvent::ParallelCompleted { timestamp, .. } => {
+            WorkflowEvent::ParallelCompleted {
+                parent_node_name,
+                aggregate_result,
+                timestamp,
+                ..
+            } => {
+                let parent_run_index = step_execution_counts
+                    .get(parent_node_name)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        step_history
+                            .iter()
+                            .filter(|entry| entry.step_name == *parent_node_name)
+                            .count() as u32
+                            + 1
+                    });
+                let mut combined_tokens = TokenUsage::default();
+                let mut child_tokens_seen = false;
+                let mut children_output = serde_json::Map::new();
+                let child_snapshots = active_parallel_steps
+                    .iter()
+                    .map(|child| {
+                        let output = step_outputs.get(&child.step_name);
+                        if let Some(usage) = output.and_then(|output| output.token_usage.as_ref()) {
+                            child_tokens_seen = true;
+                            combined_tokens.add(usage);
+                        }
+                        if let Some(output) = output {
+                            children_output.insert(
+                                child.step_name.clone(),
+                                output
+                                    .structured_output
+                                    .clone()
+                                    .unwrap_or(serde_json::Value::Null),
+                            );
+                        } else if let Some(structured_output) = child.structured_output.clone() {
+                            children_output.insert(child.step_name.clone(), structured_output);
+                        }
+                        ChildOutputSnapshot {
+                            step_name: child.step_name.clone(),
+                            session_id: output
+                                .and_then(|output| output.session_id.clone())
+                                .or_else(|| child.session_id.clone()),
+                            result: output
+                                .and_then(|output| output.result.clone())
+                                .or_else(|| child.result.clone()),
+                            run_index: if child.run_index == 0 {
+                                output.map(|output| output.run_index).unwrap_or(0)
+                            } else {
+                                child.run_index
+                            },
+                            completed_at: output
+                                .map(|output| output.completed_at)
+                                .or(child.completed_at)
+                                .unwrap_or(*timestamp),
+                            structured_output: child.structured_output.clone().or_else(|| {
+                                output.and_then(|output| output.structured_output.clone())
+                            }),
+                            output_contract: child.output_contract.clone().or_else(|| {
+                                output.and_then(|output| output.output_contract.clone())
+                            }),
+                            state: STEP_STATE_COMPLETED.to_string(),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if !child_snapshots.is_empty() {
+                    step_outputs.insert(
+                        parent_node_name.clone(),
+                        StepOutput {
+                            step_name: parent_node_name.clone(),
+                            run_index: parent_run_index,
+                            session_id: None,
+                            result: None,
+                            structured_output: Some(serde_json::Value::Object(children_output)),
+                            output_contract: None,
+                            token_usage: Some(combined_tokens.clone()),
+                            completed_at: *timestamp,
+                        },
+                    );
+                    step_history.push(StepHistoryEntry {
+                        step_name: parent_node_name.clone(),
+                        completed_at: *timestamp,
+                        result: Some(completed_parallel_history_result(aggregate_result)),
+                        session_id: None,
+                        token_usage: if child_tokens_seen {
+                            Some(combined_tokens)
+                        } else {
+                            None
+                        },
+                        structured_output: None,
+                        run_index: parent_run_index,
+                        child_outputs: Some(child_snapshots),
+                        state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
+                    });
+                }
                 active_parallel_steps.clear();
                 updated_at = *timestamp;
             }
@@ -1526,6 +1662,37 @@ mod tests {
             result.is_none(),
             "RunStarted を含まない events 列は復元対象外"
         );
+    }
+
+    #[test]
+    fn projection_restores_current_session_from_node_session_started() {
+        let workflow = workflow_with_nodes("wf", vec!["implement"]);
+        let events = vec![
+            run_started("exec-1", workflow),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-1".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "implement".to_string(),
+                execution_count: 1,
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::StepSessionStarted {
+                run_id: "exec-1".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "implement".to_string(),
+                execution_count: 1,
+                session_id: "step-session-1".to_string(),
+                timestamp: 1002.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events("exec-1", &events)
+            .unwrap()
+            .expect("state should be restored");
+
+        assert_eq!(state.current_step_name, "implement");
+        assert_eq!(state.current_session_id.as_deref(), Some("step-session-1"));
+        assert_eq!(state.step_execution_counts.get("implement"), Some(&1));
     }
 
     /// [04] C1 担保: `total_steps` / `step_states` は `RunStarted.workflow_definition`
@@ -1902,6 +2069,136 @@ mod tests {
     }
 
     #[test]
+    fn projection_records_completed_parallel_child_sessions_in_parent_history() {
+        let snapshot = workflow_with_nodes("wf", vec!["parallel-review", "done"]);
+        let events = vec![
+            run_started("exec-parallel-complete", snapshot),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-parallel-complete".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "parallel-review".to_string(),
+                execution_count: 1,
+                timestamp: 1.0,
+            },
+            WorkflowEvent::ParallelStarted {
+                run_id: "exec-parallel-complete".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_names: vec!["review-a".to_string(), "review-b".to_string()],
+                timestamp: 1.1,
+            },
+            WorkflowEvent::ParallelChildStarted {
+                run_id: "exec-parallel-complete".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "review-a".to_string(),
+                session_id: "session-review-a".to_string(),
+                execution_count: 1,
+                timestamp: 1.2,
+            },
+            WorkflowEvent::ParallelChildStarted {
+                run_id: "exec-parallel-complete".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "review-b".to_string(),
+                session_id: "session-review-b".to_string(),
+                execution_count: 1,
+                timestamp: 1.2,
+            },
+            WorkflowEvent::OutputSubmitted {
+                run_id: "exec-parallel-complete".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review-a".to_string(),
+                contract: "review-verdict".to_string(),
+                structured_output: serde_json::json!({ "verdict": "LGTM" }),
+                request_id: None,
+                submitted_at: Some(1.3),
+                timestamp: 1.3,
+            },
+            WorkflowEvent::ParallelChildCompleted {
+                run_id: "exec-parallel-complete".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "review-a".to_string(),
+                session_id: "session-review-a".to_string(),
+                run_index: 1,
+                result: Some("LGTM".to_string()),
+                token_usage: Some(TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 3,
+                }),
+                structured_output: None,
+                timestamp: 1.5,
+            },
+            WorkflowEvent::ParallelChildCompleted {
+                run_id: "exec-parallel-complete".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "review-b".to_string(),
+                session_id: "session-review-b".to_string(),
+                run_index: 1,
+                result: Some("LGTM".to_string()),
+                token_usage: Some(TokenUsage {
+                    input_tokens: 7,
+                    output_tokens: 2,
+                }),
+                structured_output: Some(serde_json::json!({ "verdict": "LGTM" })),
+                timestamp: 1.6,
+            },
+            WorkflowEvent::ParallelCompleted {
+                run_id: "exec-parallel-complete".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                aggregate_result: "advance".to_string(),
+                timestamp: 1.7,
+            },
+        ];
+
+        let state = reconstruct_state_from_events("exec-parallel-complete", &events)
+            .unwrap()
+            .unwrap();
+        assert!(
+            state.active_parallel_steps.is_empty(),
+            "ParallelCompleted 後は active_parallel_steps を空にする"
+        );
+        assert_eq!(state.step_history.len(), 1);
+        let parent = &state.step_history[0];
+        assert_eq!(parent.step_name, "parallel-review");
+        assert_eq!(parent.result.as_deref(), Some("complete"));
+        assert_eq!(parent.run_index, 1);
+        assert_eq!(
+            parent.token_usage.as_ref().map(|usage| usage.input_tokens),
+            Some(17)
+        );
+        assert_eq!(
+            parent.token_usage.as_ref().map(|usage| usage.output_tokens),
+            Some(5)
+        );
+        let children = parent
+            .child_outputs
+            .as_ref()
+            .expect("completed parallel parent は child_outputs を持つ");
+        assert_eq!(children.len(), 2);
+        let child_a = children
+            .iter()
+            .find(|child| child.step_name == "review-a")
+            .expect("review-a snapshot");
+        assert_eq!(child_a.session_id.as_deref(), Some("session-review-a"));
+        assert_eq!(child_a.state.as_str(), STEP_STATE_COMPLETED);
+        assert_eq!(
+            child_a.structured_output,
+            Some(serde_json::json!({ "verdict": "LGTM" }))
+        );
+        assert_eq!(child_a.output_contract.as_deref(), Some("review-verdict"));
+        let child_b = children
+            .iter()
+            .find(|child| child.step_name == "review-b")
+            .expect("review-b snapshot");
+        assert_eq!(child_b.session_id.as_deref(), Some("session-review-b"));
+        assert_eq!(child_b.state.as_str(), STEP_STATE_COMPLETED);
+    }
+
+    #[test]
     fn projection_keeps_submitted_parallel_child_output_on_child_completed() {
         let snapshot = workflow_with_nodes("wf", vec!["parallel-review"]);
         let events = vec![
@@ -2073,6 +2370,37 @@ mod tests {
         assert_eq!(timings.len(), 1);
         assert_eq!(timings[0].step_name, "child-a");
         assert_eq!(timings[0].duration_ms, Some(200_000.0));
+    }
+
+    #[test]
+    fn compute_step_timings_uses_node_session_started_as_start_marker() {
+        let events = vec![
+            WorkflowEvent::StepSessionStarted {
+                run_id: "r".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                execution_count: 1,
+                session_id: "s1".to_string(),
+                timestamp: 100.0,
+            },
+            WorkflowEvent::NodeCompleted {
+                run_id: "r".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                result: None,
+                session_id: Some("s1".to_string()),
+                token_usage: None,
+                structured_output: None,
+                run_index: Some(1),
+                timestamp: 250.0,
+            },
+        ];
+
+        let timings = compute_step_timings(&events);
+
+        assert_eq!(timings.len(), 1);
+        assert_eq!(timings[0].started_at_ms, Some(100_000.0));
+        assert_eq!(timings[0].duration_ms, Some(150_000.0));
     }
 
     #[test]

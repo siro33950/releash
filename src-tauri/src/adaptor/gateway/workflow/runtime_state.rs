@@ -467,6 +467,7 @@ impl WorkflowExecution {
             .step_execution_counts
             .entry(step_name.to_string())
             .or_insert(0) += 1;
+        self.current_session_id = None;
         self.clear_step_outputs_for_new_execution(step_index);
         self.updated_at = current_timestamp();
 
