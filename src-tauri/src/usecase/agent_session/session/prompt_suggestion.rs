@@ -251,6 +251,7 @@ mod tests {
                 permission_profile_id: None,
                 backend_id: Some("claude".to_string()),
                 workflow_step_session: false,
+                workflow_step_context: None,
                 first_message_preview: "Implementation is done.".to_string(),
                 message_count: 200,
                 body_format_version: SESSION_BODY_FORMAT_VERSION,

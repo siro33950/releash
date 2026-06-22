@@ -15,10 +15,13 @@ use crate::adaptor::gateway::workflow::parallel_runtime::{
 use crate::adaptor::gateway::workflow::prompt_rendering as workflow_prompt;
 use crate::adaptor::gateway::workflow::runtime_state::{SessionWorkflowRef, WorkflowExecution};
 use crate::adaptor::gateway::workflow::state::{WorkflowExecutionState, WorkflowState};
-use crate::adaptor::gateway::workflow::step_settings::{resolve_step_settings, WorkflowDefaults};
+use crate::adaptor::gateway::workflow::step_settings::{
+    resolve_step_settings, ResolvedStepSettings, WorkflowDefaults,
+};
 use crate::domain::workflow::services::history::{
     self as workflow_history, RuntimeStartFailureKind,
 };
+use crate::domain::workflow::WorkflowStepContext;
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::permission::PermissionMode;
 use crate::usecase::agent_session::session::{ChatSession, OpenTabRegistry, SessionStore};
@@ -128,17 +131,19 @@ pub(crate) fn resolve_step_model_with_registry(
     Ok(backend_id)
 }
 
-/// ステップ設定の解決 → セッション生成 → 解決済み設定の反映 → 保存を一括で行う。
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn create_step_session_with_settings<R: tauri::Runtime>(
+#[derive(Debug, Clone)]
+struct StepSessionCreationSettings {
+    backend_id: Option<String>,
+    selected_model: Option<String>,
+    permission_mode: PermissionMode,
+}
+
+async fn resolve_step_session_creation_settings<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    session_store: &SessionStore,
-    data_dir: &Path,
-    worktree_path: &str,
     step_model: Option<String>,
     step_permission: Option<String>,
     workflow_defaults: &WorkflowDefaults,
-) -> Result<ChatSession, WorkflowEngineError> {
+) -> Result<StepSessionCreationSettings, WorkflowEngineError> {
     let resolved_backend_id = match step_model {
         Some(ref model) => resolve_backend_for_step_model(app, model).await?,
         None => None,
@@ -149,28 +154,66 @@ pub(crate) async fn create_step_session_with_settings<R: tauri::Runtime>(
         resolved_backend_id,
         workflow_defaults,
     );
+    step_session_creation_settings_from_resolved(settings)
+}
 
-    // Spec issues-947: 検証済み permission_mode と step session 属性を初回保存で確定する。
-    // edit デフォルトで save → 上書きで再 save する二段階を排除し、途中失敗時に
-    // 抽象モード不一致のセッションが残らないようにする。
+fn step_session_creation_settings_from_resolved(
+    settings: ResolvedStepSettings,
+) -> Result<StepSessionCreationSettings, WorkflowEngineError> {
     let permission_mode = PermissionMode::parse(&settings.permission_mode)
         .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
-    let step_session =
-        crate::usecase::agent_session::session::create_session_internal_with_attributes(
-            session_store,
-            data_dir,
-            worktree_path,
-            settings.backend_id,
-            permission_mode,
-            crate::usecase::agent_session::session::SessionCreationAttributes {
-                selected_model: settings.selected_model,
-                workflow_step_session: true,
-                ..Default::default()
-            },
-        )
-        .map_err(|e| WorkflowEngineError::SessionStore(format!("create step session: {e}")))?;
+    Ok(StepSessionCreationSettings {
+        backend_id: settings.backend_id,
+        selected_model: settings.selected_model,
+        permission_mode,
+    })
+}
 
-    Ok(step_session)
+fn create_step_session_from_resolved_settings(
+    session_store: &SessionStore,
+    data_dir: &Path,
+    worktree_path: &str,
+    settings: StepSessionCreationSettings,
+    workflow_step_context: WorkflowStepContext,
+) -> Result<ChatSession, WorkflowEngineError> {
+    crate::usecase::agent_session::session::create_session_internal_with_attributes(
+        session_store,
+        data_dir,
+        worktree_path,
+        settings.backend_id,
+        settings.permission_mode,
+        crate::usecase::agent_session::session::SessionCreationAttributes {
+            selected_model: settings.selected_model,
+            workflow_step_session: true,
+            workflow_step_context: Some(workflow_step_context),
+            ..Default::default()
+        },
+    )
+    .map_err(|e| WorkflowEngineError::SessionStore(format!("create step session: {e}")))
+}
+
+/// ステップ設定の解決 → セッション生成 → 解決済み設定の反映 → 保存を一括で行う。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_step_session_with_settings<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &SessionStore,
+    data_dir: &Path,
+    worktree_path: &str,
+    step_model: Option<String>,
+    step_permission: Option<String>,
+    workflow_defaults: &WorkflowDefaults,
+    workflow_step_context: WorkflowStepContext,
+) -> Result<ChatSession, WorkflowEngineError> {
+    let settings =
+        resolve_step_session_creation_settings(app, step_model, step_permission, workflow_defaults)
+            .await?;
+    create_step_session_from_resolved_settings(
+        session_store,
+        data_dir,
+        worktree_path,
+        settings,
+        workflow_step_context,
+    )
 }
 
 /// ワークフロー状態をブロードキャストする。
@@ -232,14 +275,10 @@ pub(crate) async fn release_completed_step_session<R: tauri::Runtime>(
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_id: &str,
 ) {
-    let open_tabs_state =
-        app.try_state::<Arc<crate::usecase::agent_session::session::OpenTabRegistry>>();
-    let open_tabs = open_tabs_state.as_ref().map(|state| state.inner().as_ref());
     crate::adaptor::gateway::workflow::release_step_runtime_on_done(
         app,
         session_store,
         handles,
-        open_tabs,
         session_id,
     )
     .await;
@@ -265,21 +304,36 @@ pub(crate) async fn prepare_parallel_child_session_setups<R: tauri::Runtime>(
     parallel_start: &ParallelStartContext,
     prompt_inputs: &ParallelPromptInputs,
 ) -> Result<Vec<ParallelChildSessionSetup>, WorkflowEngineError> {
+    let prompt_plans =
+        prepare_parallel_child_prompt_plans(worktree_path, parallel_start, prompt_inputs)?;
+    let creation_plans =
+        prepare_parallel_child_creation_plans(app, parallel_start, prompt_plans).await?;
     let data_dir = crate::app_data_dir::resolve_data_dir(app)
         .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
     let mut child_setups = Vec::new();
+    let mut created_session_ids = Vec::new();
 
-    for ps in &parallel_start.parallel_steps {
-        let step_session = create_step_session_with_settings(
-            app,
+    for creation_plan in creation_plans {
+        let ps = &parallel_start.parallel_steps[creation_plan.step_index];
+        let step_session = match create_step_session_from_resolved_settings(
             session_store,
             &data_dir,
             worktree_path,
-            ps.model.clone(),
-            ps.permission.clone(),
-            &parallel_start.workflow_defaults,
-        )
-        .await?;
+            creation_plan.settings,
+            creation_plan.workflow_step_context,
+        ) {
+            Ok(session) => session,
+            Err(err) => {
+                return Err(rollback_created_parallel_child_sessions(
+                    session_store,
+                    &data_dir,
+                    session_workflow_refs,
+                    &created_session_ids,
+                    err,
+                )
+                .await);
+            }
+        };
         let child_permission_mode = step_session.permission_mode.clone();
         let step_session_id = step_session.id.clone();
 
@@ -292,30 +346,138 @@ pub(crate) async fn prepare_parallel_child_session_setups<R: tauri::Runtime>(
                 },
             );
         }
-
-        let (system_prompt, user_message) = workflow_prompt::build_parallel_step_prompt(
-            ps,
-            &parallel_start.execution_id,
-            worktree_path,
-            parallel_start.task.as_deref(),
-            &prompt_inputs.step_outputs,
-            ps.pass_previous_response.unwrap_or(false),
-            ps.pass_output_from.as_deref(),
-            &prompt_inputs.workflow_variables,
-            &prompt_inputs.workflow_declared_variables,
-        )?;
+        created_session_ids.push(step_session_id.clone());
 
         child_setups.push(ParallelChildSessionSetup {
             step_name: ps.name.clone(),
             session_id: step_session_id,
-            system_prompt,
-            user_message,
+            system_prompt: creation_plan.system_prompt,
+            user_message: creation_plan.user_message,
             permission_mode: child_permission_mode,
             output_contract: ps.output_contract.clone(),
+            run_index: creation_plan.run_index,
         });
     }
 
     Ok(child_setups)
+}
+
+struct ParallelChildPromptPlan {
+    step_index: usize,
+    run_index: u32,
+    system_prompt: Option<String>,
+    user_message: String,
+}
+
+struct ParallelChildCreationPlan {
+    step_index: usize,
+    run_index: u32,
+    system_prompt: Option<String>,
+    user_message: String,
+    settings: StepSessionCreationSettings,
+    workflow_step_context: WorkflowStepContext,
+}
+
+fn prepare_parallel_child_prompt_plans(
+    worktree_path: &str,
+    parallel_start: &ParallelStartContext,
+    prompt_inputs: &ParallelPromptInputs,
+) -> Result<Vec<ParallelChildPromptPlan>, WorkflowEngineError> {
+    parallel_start
+        .parallel_steps
+        .iter()
+        .enumerate()
+        .zip(parallel_start.child_run_indices.iter().copied())
+        .map(|((step_index, ps), run_index)| {
+            let (system_prompt, user_message) = workflow_prompt::build_parallel_step_prompt(
+                ps,
+                &parallel_start.execution_id,
+                worktree_path,
+                parallel_start.task.as_deref(),
+                &prompt_inputs.step_outputs,
+                ps.pass_previous_response.unwrap_or(false),
+                ps.pass_output_from.as_deref(),
+                &prompt_inputs.workflow_variables,
+                &prompt_inputs.workflow_declared_variables,
+            )?;
+            Ok(ParallelChildPromptPlan {
+                step_index,
+                run_index,
+                system_prompt,
+                user_message,
+            })
+        })
+        .collect()
+}
+
+async fn prepare_parallel_child_creation_plans<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    parallel_start: &ParallelStartContext,
+    prompt_plans: Vec<ParallelChildPromptPlan>,
+) -> Result<Vec<ParallelChildCreationPlan>, WorkflowEngineError> {
+    let mut creation_plans = Vec::with_capacity(prompt_plans.len());
+    for prompt_plan in prompt_plans {
+        let ps = &parallel_start.parallel_steps[prompt_plan.step_index];
+        let settings = resolve_step_session_creation_settings(
+            app,
+            ps.model.clone(),
+            ps.permission.clone(),
+            &parallel_start.workflow_defaults,
+        )
+        .await?;
+        creation_plans.push(ParallelChildCreationPlan {
+            step_index: prompt_plan.step_index,
+            run_index: prompt_plan.run_index,
+            system_prompt: prompt_plan.system_prompt,
+            user_message: prompt_plan.user_message,
+            settings,
+            workflow_step_context: WorkflowStepContext {
+                run_id: parallel_start.execution_id.clone(),
+                workflow_name: parallel_start.workflow_name.clone(),
+                step_name: ps.name.clone(),
+                run_index: prompt_plan.run_index,
+                parent_step_name: Some(parallel_start.parent_step_name.clone()),
+                parent_run_index: Some(parallel_start.parent_run_index),
+                order: parallel_start.order,
+            },
+        });
+    }
+    Ok(creation_plans)
+}
+
+async fn rollback_created_parallel_child_sessions(
+    session_store: &SessionStore,
+    data_dir: &Path,
+    session_workflow_refs: &Mutex<HashMap<String, SessionWorkflowRef>>,
+    created_session_ids: &[String],
+    original_error: WorkflowEngineError,
+) -> WorkflowEngineError {
+    if created_session_ids.is_empty() {
+        return original_error;
+    }
+
+    {
+        let mut refs = session_workflow_refs.lock().await;
+        for session_id in created_session_ids {
+            refs.remove(session_id);
+        }
+    }
+
+    let mut rollback_errors = Vec::new();
+    for session_id in created_session_ids {
+        if let Err(err) = session_store.remove_session_for_rollback(data_dir, session_id) {
+            rollback_errors.push(format!("{session_id}: {err}"));
+        }
+    }
+
+    if rollback_errors.is_empty() {
+        original_error
+    } else {
+        WorkflowEngineError::SessionStore(format!(
+            "parallel child setup failed: {original_error}; rollback failed for created child sessions: {}",
+            rollback_errors.join("; ")
+        ))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

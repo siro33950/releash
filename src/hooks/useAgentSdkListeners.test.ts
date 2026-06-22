@@ -432,6 +432,7 @@ describe("SET_PERMISSION_MODE from agent-permission-mode-changed event", () => {
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "SET_PERMISSION_MODE",
+			sessionId: "session-1",
 			mode: "ask",
 		});
 	});

@@ -76,6 +76,7 @@ use crate::domain::workflow::services::history::RuntimeStartFailureKind;
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
 use crate::domain::workflow::services::transition as workflow_transition;
 use crate::domain::workflow::OutcomeCommitMode;
+use crate::domain::workflow::WorkflowStepContext;
 use crate::domain::workflow::STEP_STATE_FAILED;
 #[cfg(test)]
 use crate::domain::workflow::STEP_STATE_RUNNING;
@@ -3086,8 +3087,9 @@ impl WorkflowRuntimeService {
     /// 2. `deps.create_step_session`（`exec.workflow_defaults` を継承元に注入）
     /// 3. `session_workflow_refs` への登録
     /// 4. `deps.dispatch_session_start`（AgentSession 開始）
-    /// 5. `executions.current_session_id` 更新と永続化・ブロードキャスト
-    /// 6. `deps.start_agent_turn`（ターン起動）
+    /// 5. `executions.current_session_id` 更新
+    /// 6. `NodeSessionStarted` append とブロードキャスト
+    /// 7. `deps.start_agent_turn`（ターン起動）
     ///
     /// 1 で失敗した場合、2 以降は一切実行されない（合成失敗時に
     /// ChatSession 生成や `session_workflow_refs` への孤立 entry が残らない）。
@@ -3106,11 +3108,17 @@ impl WorkflowRuntimeService {
             workflow_variables_clone,
             workflow_declared_variables_clone,
             workflow_defaults_clone,
+            workflow_step_context,
         ) = {
             let execs = self.executions.lock().await;
             let (run_id, exec) = find_by_worktree(&execs, worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             let step = &exec.workflow.nodes[exec.current_step_index];
+            let step_run_index = exec
+                .step_execution_counts
+                .get(&step.name)
+                .copied()
+                .unwrap_or(1);
             (
                 run_id.clone(),
                 step.clone(),
@@ -3120,6 +3128,15 @@ impl WorkflowRuntimeService {
                 exec.workflow_variables.clone(),
                 exec.workflow.variables.clone(),
                 exec.workflow_defaults.clone(),
+                WorkflowStepContext {
+                    run_id: run_id.clone(),
+                    workflow_name: exec.workflow.name.clone(),
+                    step_name: step.name.clone(),
+                    run_index: step_run_index,
+                    parent_step_name: None,
+                    parent_run_index: None,
+                    order: exec.step_history.len() as u32,
+                },
             )
         };
 
@@ -3146,6 +3163,7 @@ impl WorkflowRuntimeService {
                 step_clone.model.clone(),
                 step_clone.permission.clone(),
                 workflow_defaults_clone,
+                workflow_step_context,
             )
             .await?;
         let permission_mode = step_session.permission_mode.clone();
@@ -3184,26 +3202,8 @@ impl WorkflowRuntimeService {
             }
         };
 
-        // event log に session_id を露出することで、projection 経由の
-        // workspace_tree 等の read-model から逐次 step session を観測できる。
-        if let Some(ref snapshot) = snapshot {
-            let exec_count = snapshot
-                .step_execution_counts
-                .get(&snapshot.current_step_name)
-                .copied()
-                .unwrap_or(1);
-            deps.write_step_session_started_event(WorkflowEvent::StepSessionStarted {
-                run_id: snapshot.execution_id.clone(),
-                workflow_name: snapshot.workflow_name.clone(),
-                node_name: snapshot.current_step_name.clone(),
-                execution_count: exec_count,
-                session_id: step_session_id.clone(),
-                timestamp: snapshot.updated_at,
-            })
-            .await;
-        }
-
         if let Some(snapshot) = snapshot {
+            deps.append_node_session_started(&snapshot).await?;
             deps.broadcast_state(worktree_path, snapshot).await;
         }
 

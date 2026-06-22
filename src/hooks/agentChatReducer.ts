@@ -39,6 +39,8 @@ export interface AgentChatState {
 	error: string | null;
 	permissionMode: PermissionMode;
 	planMode: PlanMode;
+	sessionPermissionModes: Record<string, PermissionMode>;
+	sessionPlanModes: Record<string, PlanMode>;
 	pendingPermissions: Record<string, PermissionRequest>;
 	pendingQueues: Record<string, QueuedAgentTurn[]>;
 	latestTokenUsage: Record<string, TokenUsage | null>;
@@ -80,8 +82,12 @@ export type AgentChatAction =
 			agentSessionId: string | null;
 			updatedAt: number | null;
 	  }
-	| { type: "SET_PERMISSION_MODE"; mode: PermissionMode }
-	| { type: "SET_PLAN_MODE"; enabled: PlanMode }
+	| {
+			type: "SET_PERMISSION_MODE";
+			mode: PermissionMode;
+			sessionId?: string | null;
+	  }
+	| { type: "SET_PLAN_MODE"; enabled: PlanMode; sessionId?: string | null }
 	| {
 			type: "SET_PENDING_PERMISSION";
 			sessionId: string;
@@ -226,12 +232,27 @@ function upsertSession(
 		existing && session.messages.length === 0
 			? { ...session, messages: existing.messages }
 			: session;
+	const sessionPermissionModes = {
+		...state.sessionPermissionModes,
+		[storedSession.id]: storedSession.permissionMode,
+	};
+	const sessionPlanModes = {
+		...state.sessionPlanModes,
+		[storedSession.id]: storedSession.planMode ?? false,
+	};
+	const isActive = state.activeSessionId === storedSession.id;
 	return {
 		...state,
 		sessionsById: {
 			...state.sessionsById,
 			[session.id]: storedSession,
 		},
+		permissionMode: isActive
+			? storedSession.permissionMode
+			: state.permissionMode,
+		planMode: isActive ? (storedSession.planMode ?? false) : state.planMode,
+		sessionPermissionModes,
+		sessionPlanModes,
 		error: null,
 	};
 }
@@ -286,12 +307,29 @@ export function reducer(
 			return { ...state, closedSessions: action.sessions };
 		case "UPSERT_SESSION":
 			return upsertSession(state, action.session);
-		case "SET_ACTIVE_SESSION_ID":
+		case "SET_ACTIVE_SESSION_ID": {
+			if (!action.sessionId) {
+				return {
+					...state,
+					activeSessionId: null,
+					error: null,
+				};
+			}
+			const activeSession = state.sessionsById[action.sessionId];
 			return {
 				...state,
 				activeSessionId: action.sessionId,
+				permissionMode:
+					state.sessionPermissionModes[action.sessionId] ??
+					activeSession?.permissionMode ??
+					state.permissionMode,
+				planMode:
+					state.sessionPlanModes[action.sessionId] ??
+					activeSession?.planMode ??
+					state.planMode,
 				error: null,
 			};
+		}
 		case "ADD_MESSAGE": {
 			return updateSessionInStore(state, action.sessionId, (s) =>
 				appendMessage(s, action.message),
@@ -362,8 +400,34 @@ export function reducer(
 			};
 		}
 		case "SET_PERMISSION_MODE":
+			if (action.sessionId) {
+				return {
+					...state,
+					permissionMode:
+						state.activeSessionId === action.sessionId
+							? action.mode
+							: state.permissionMode,
+					sessionPermissionModes: {
+						...state.sessionPermissionModes,
+						[action.sessionId]: action.mode,
+					},
+				};
+			}
 			return { ...state, permissionMode: action.mode };
 		case "SET_PLAN_MODE":
+			if (action.sessionId) {
+				return {
+					...state,
+					planMode:
+						state.activeSessionId === action.sessionId
+							? action.enabled
+							: state.planMode,
+					sessionPlanModes: {
+						...state.sessionPlanModes,
+						[action.sessionId]: action.enabled,
+					},
+				};
+			}
 			return { ...state, planMode: action.enabled };
 		case "SET_PENDING_PERMISSION": {
 			if (action.request === null) {
@@ -497,6 +561,10 @@ export function reducer(
 				state.runtimeSlashCommands;
 			const { [action.sessionId]: _sm, ...restSessionModels } =
 				state.sessionModels;
+			const { [action.sessionId]: _perm, ...restSessionPermissionModes } =
+				state.sessionPermissionModes;
+			const { [action.sessionId]: _plan, ...restSessionPlanModes } =
+				state.sessionPlanModes;
 			const { [action.sessionId]: _sb, ...restSessionsById } =
 				state.sessionsById;
 			return {
@@ -508,6 +576,8 @@ export function reducer(
 				latestTokenUsage: restLatestTokenUsage,
 				runtimeSlashCommands: restRuntimeSlashCommands,
 				sessionModels: restSessionModels,
+				sessionPermissionModes: restSessionPermissionModes,
+				sessionPlanModes: restSessionPlanModes,
 				sessionsById: restSessionsById,
 				activeSessionId:
 					state.activeSessionId === action.sessionId
@@ -560,6 +630,8 @@ export const INITIAL_STATE: AgentChatState = {
 	error: null,
 	permissionMode: "edit",
 	planMode: false,
+	sessionPermissionModes: {},
+	sessionPlanModes: {},
 	pendingPermissions: {},
 	pendingQueues: {},
 	latestTokenUsage: {},

@@ -34,7 +34,7 @@ use crate::adaptor::gateway::workflow::{
     TauriWorkflowRuntimeCommandGateway, TauriWorkflowStepLifecycleGateway,
     WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
     WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository, WorkflowFacetFileRepository,
-    WorkflowRunFileRepository, WorkflowSecretSourceConfigGateway,
+    WorkflowRunArchiveFileRepository, WorkflowRunFileRepository, WorkflowSecretSourceConfigGateway,
     WorkflowStateProjectionLogRepository, WorkflowStepDetailProjectionLogRepository,
 };
 use crate::domain::app_config::{ConfigRepository, ConfigSecretRepository};
@@ -152,6 +152,7 @@ fn build_workflow_usecase_with_gateways(
     let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
     let facets_base_dir = workflows_dir.clone();
     let runs = Arc::new(WorkflowRunFileRepository::new(data_dir.clone()));
+    let archive_runs = Arc::new(WorkflowRunArchiveFileRepository::new(data_dir.clone()));
     let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
         workflows_dir.clone(),
         facets_base_dir.clone(),
@@ -182,6 +183,7 @@ fn build_workflow_usecase_with_gateways(
         diagnostics,
         config_paths,
         secrets,
+        archive_runs,
     )
 }
 

@@ -19,10 +19,10 @@ function createPanels(overrides?: Partial<TogglePanel>): TogglePanel[] {
 	];
 }
 
-function renderHeader(panels: TogglePanel[]) {
+function renderHeader(panels: TogglePanel[], leftSlot?: React.ReactNode) {
 	return render(
 		<TooltipProvider>
-			<RightPanelHeader panels={panels} />
+			<RightPanelHeader panels={panels} leftSlot={leftSlot} />
 		</TooltipProvider>,
 	);
 }
@@ -42,6 +42,17 @@ describe("RightPanelHeader", () => {
 
 		await user.click(screen.getByLabelText("Toggle Right Sidebar"));
 		expect(panels[0].onToggle).toHaveBeenCalledOnce();
+	});
+
+	it("renders the left slot before panel toggles", () => {
+		renderHeader(
+			createPanels(),
+			<div data-testid="right-header-left-slot">Branch selector</div>,
+		);
+
+		expect(screen.getByTestId("right-header-left-slot")).toBeInTheDocument();
+		expect(screen.getByText("Branch selector")).toBeInTheDocument();
+		expect(screen.getByLabelText("Toggle Right Sidebar")).toBeInTheDocument();
 	});
 
 	it("applies foreground color to visible panels and muted to hidden", () => {

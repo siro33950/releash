@@ -68,7 +68,6 @@ vi.mock("./useSessionStore", () => ({
 		permissionMode: "edit",
 	}),
 	restoreSession: vi.fn().mockResolvedValue({ restoredWorkflowStep: false }),
-	openWorkflowStepTab: vi.fn().mockResolvedValue(undefined),
 	listClosedSessions: vi.fn().mockResolvedValue([]),
 	listAgentBackends: vi.fn().mockResolvedValue({
 		backends: [],
@@ -1921,6 +1920,84 @@ describe("useAgentChat", () => {
 			chatSessionId: "s1",
 			planMode: true,
 		});
+	});
+
+	it("sendMessage uses the addressed session permission and plan mode", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		act(() => {
+			const cleanupA = result.current.registerViewableSession("session-a");
+			const cleanupB = result.current.registerViewableSession("session-b");
+			result.current.setPermissionMode("session-a", "ask");
+			result.current.setPlanMode("session-a", true);
+			result.current.setPermissionMode("session-b", "full");
+			result.current.setPlanMode("session-b", false);
+			cleanupA();
+			cleanupB();
+		});
+
+		await act(async () => {
+			await result.current.sendMessage("session-a", "hello a");
+			await result.current.sendMessage("session-b", "hello b");
+		});
+
+		expect(sessionStore.sendAgentMessage).toHaveBeenNthCalledWith(
+			1,
+			"session-a",
+			"/repo",
+			"hello a",
+			"ask",
+			true,
+			null,
+			undefined,
+			undefined,
+		);
+		expect(sessionStore.sendAgentMessage).toHaveBeenNthCalledWith(
+			2,
+			"session-b",
+			"/repo",
+			"hello b",
+			"full",
+			false,
+			null,
+			undefined,
+			undefined,
+		);
+	});
+
+	it("workflow approval chat uses the addressed session permission and plan mode", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() =>
+			useAgentChat("/repo", "approval-session", "run-1"),
+		);
+
+		act(() => {
+			const cleanup =
+				result.current.registerViewableSession("approval-session");
+			result.current.setPermissionMode("approval-session", "full");
+			result.current.setPlanMode("approval-session", true);
+			cleanup();
+		});
+
+		await act(async () => {
+			await result.current.sendMessage("approval-session", "approve");
+		});
+
+		expect(sessionStore.sendWorkflowApprovalChatMessage).toHaveBeenCalledWith(
+			"run-1",
+			"approve",
+			"full",
+			true,
+			undefined,
+			undefined,
+		);
 	});
 
 	it("setModel invokes set_agent_model with chatSessionId and modelId for active session", async () => {

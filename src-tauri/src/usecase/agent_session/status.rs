@@ -2,7 +2,6 @@ use crate::usecase::agent_session::session::SessionState;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -550,10 +549,7 @@ impl AgentStatusCenter {
 }
 
 pub fn current_timestamp() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
+    crate::other::utils::unix_timestamp_seconds()
 }
 
 #[cfg(test)]

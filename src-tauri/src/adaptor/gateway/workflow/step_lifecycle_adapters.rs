@@ -23,7 +23,7 @@ pub(crate) fn resolve_step_session_with_data_dir(
     else {
         return Ok(None);
     };
-    if !session.workflow_step_session {
+    if !session.is_workflow_step_session() {
         return Ok(None);
     }
     Ok(Some(ResolvedWorkflowStepSession {
@@ -39,7 +39,7 @@ pub(crate) fn hydrate_open_workflow_step_tabs(
     open_tabs: &OpenTabRegistry,
 ) -> Result<(), String> {
     for session in session_store.list_worktree_sessions(data_dir, worktree_path)? {
-        if session.workflow_step_session && session.state != SessionState::Closed {
+        if session.is_workflow_step_session() && session.state != SessionState::Closed {
             open_tabs.add(&session.id);
         }
     }
@@ -391,39 +391,6 @@ impl<'a, R: tauri::Runtime> TauriWorkflowStepLifecycle<'a, R> {
     }
 }
 
-pub(crate) struct StoredWorkflowStepSessionGateway<'a> {
-    pub(crate) session_store: &'a SessionStore,
-    pub(crate) data_dir: &'a std::path::Path,
-    pub(crate) open_tabs: Option<&'a OpenTabRegistry>,
-}
-
-impl WorkflowStepSessionGateway for StoredWorkflowStepSessionGateway<'_> {
-    fn resolve_step_session(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
-        resolve_step_session_with_data_dir(self.session_store, self.data_dir, session_id)
-    }
-
-    fn open_step_tab(&self, session_id: &str) -> Result<(), WorkflowStepLifecycleError> {
-        let Some(open_tabs) = self.open_tabs else {
-            return Err(WorkflowStepLifecycleError::SessionStore(
-                "open tab registry unavailable".to_string(),
-            ));
-        };
-        open_step_session_tab_state(self.session_store, self.data_dir, open_tabs, session_id)
-    }
-
-    fn close_step_tab(&self, session_id: &str) -> Result<bool, WorkflowStepLifecycleError> {
-        try_close_step_session_tab_state(
-            self.session_store,
-            self.data_dir,
-            self.open_tabs,
-            session_id,
-        )
-    }
-}
-
 pub(crate) fn mark_started_step_tab_open<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_id: &str,
@@ -437,24 +404,16 @@ pub(crate) async fn release_step_runtime_on_done<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
-    open_tabs: Option<&OpenTabRegistry>,
     session_id: &str,
 ) {
-    if let Ok(data_dir) = resolve_data_dir(app) {
-        let sessions = StoredWorkflowStepSessionGateway {
-            session_store,
-            data_dir: &data_dir,
-            open_tabs,
-        };
-        let runtime = TauriWorkflowStepRuntimeGateway { app, handles };
-        release_step_runtime_on_done_with_gateways(&sessions, &runtime, session_id).await;
-    }
+    let runtime = TauriWorkflowStepRuntimeGateway { app, handles };
+    release_step_runtime_on_done_with_gateways(&runtime, session_id).await;
     crate::infrastructure::agent_session::runtime::notify_status_transition(
         app,
         session_store,
         session_id,
         crate::infrastructure::agent_session::runtime::TurnPhase::Idle,
-        Some(SessionState::Closed),
+        None,
     );
 }
 
@@ -467,13 +426,8 @@ mod tests {
     use crate::infrastructure::agent_session::runtime::AgentProcessMap;
     use crate::usecase::agent_session::session::{OpenTabRegistry, SessionState, SessionStore};
 
-    async fn release_step_runtime_on_done_state<F, Fut>(
-        session_store: &SessionStore,
-        data_dir: &std::path::Path,
-        open_tabs: Option<&OpenTabRegistry>,
-        session_id: &str,
-        close_runtime: F,
-    ) where
+    async fn release_step_runtime_on_done_state<F, Fut>(close_runtime: F)
+    where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<(), WorkflowStepLifecycleError>>,
     {
@@ -482,26 +436,16 @@ mod tests {
                 "workflow_step_runtime_cleanup_failed code=runtime_close_failed message=failed_to_close_runtime"
             );
         }
-        close_step_session_tab_state(session_store, data_dir, open_tabs, session_id);
     }
 
     async fn release_on_step_done_for_test(
-        session_store: &SessionStore,
-        data_dir: &std::path::Path,
         handles: &Arc<Mutex<AgentProcessMap>>,
-        open_tabs: Option<&OpenTabRegistry>,
         session_id: &str,
     ) {
-        release_step_runtime_on_done_state(
-            session_store,
-            data_dir,
-            open_tabs,
-            session_id,
-            || async {
-                handles.lock().await.remove(session_id);
-                Ok(())
-            },
-        )
+        release_step_runtime_on_done_state(|| async {
+            handles.lock().await.remove(session_id);
+            Ok(())
+        })
         .await;
     }
 
@@ -534,6 +478,7 @@ mod tests {
                 crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
             ),
             workflow_step_session: true,
+            workflow_step_context: None,
         }
     }
 
@@ -1088,7 +1033,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_on_step_done_releases_runtime_and_open_tab_but_preserves_history() {
+    async fn release_on_step_done_releases_runtime_without_closing_step() {
         let tmp = tempfile::TempDir::new().unwrap();
         let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
@@ -1107,14 +1052,7 @@ mod tests {
             crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
 
-        release_on_step_done_for_test(
-            &session_store,
-            tmp.path(),
-            &handles,
-            Some(&open_tabs),
-            &session_id,
-        )
-        .await;
+        release_on_step_done_for_test(&handles, &session_id).await;
 
         let view = crate::adaptor::gateway::workflow::build_workflow_state_view_from_snapshot(
             workflow_state_for_test(&session_id),
@@ -1123,12 +1061,12 @@ mod tests {
         )
         .await;
         assert!(!view.runtime_states[&session_id].runtime_active);
-        assert!(!view.runtime_states[&session_id].tab_open);
+        assert!(view.runtime_states[&session_id].tab_open);
         let session = session_store
             .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("step history session remains");
-        assert_eq!(session.state, SessionState::Closed);
+        assert_eq!(session.state, SessionState::Idle);
         assert_eq!(session.agent_session_id.as_deref(), Some("sdk-session"));
         assert_eq!(session.messages.len(), 1);
     }
@@ -1151,14 +1089,7 @@ mod tests {
             crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
 
-        release_on_step_done_for_test(
-            &session_store,
-            tmp.path(),
-            &handles,
-            Some(&open_tabs),
-            &session_id,
-        )
-        .await;
+        release_on_step_done_for_test(&handles, &session_id).await;
 
         let view = crate::adaptor::gateway::workflow::build_workflow_state_view_from_snapshot(
             workflow_state_for_test(&session_id),
@@ -1178,7 +1109,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_on_step_done_releases_busy_runtime_and_closes_tab_state() {
+    async fn release_on_step_done_releases_busy_runtime_without_closing_step() {
         let tmp = tempfile::TempDir::new().unwrap();
         let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
@@ -1210,22 +1141,15 @@ mod tests {
         );
         handles.lock().await.insert(session_id.clone(), proc);
 
-        release_on_step_done_for_test(
-            &session_store,
-            tmp.path(),
-            &handles,
-            Some(&open_tabs),
-            &session_id,
-        )
-        .await;
+        release_on_step_done_for_test(&handles, &session_id).await;
 
         assert!(!handles.lock().await.contains_key(&session_id));
-        assert!(!open_tabs.contains(&session_id));
+        assert!(open_tabs.contains(&session_id));
         let session = session_store
             .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("step history session remains");
-        assert_eq!(session.state, SessionState::Closed);
+        assert_eq!(session.state, SessionState::Idle);
     }
 
     #[tokio::test]
@@ -1248,14 +1172,7 @@ mod tests {
             crate::infrastructure::agent_session::runtime::make_test_agent_process(),
         );
 
-        release_on_step_done_for_test(
-            &session_store,
-            tmp.path(),
-            &handles,
-            Some(&open_tabs),
-            &session_id,
-        )
-        .await;
+        release_on_step_done_for_test(&handles, &session_id).await;
         try_close_step_session_tab_state(&session_store, tmp.path(), Some(&open_tabs), &session_id)
             .unwrap();
 
@@ -1402,35 +1319,26 @@ mod tests {
         };
 
         let step_done_release = {
-            let session_store = Arc::clone(&session_store);
-            let open_tabs = Arc::clone(&open_tabs);
             let handles = Arc::clone(&handles);
             let session_id = session_id.clone();
             let close_count = Arc::clone(&close_count);
-            let data_dir = data_dir.clone();
             async move {
                 let _guard =
                     crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(
                         &session_id,
                     )
                     .await;
-                release_step_runtime_on_done_state(
-                    &session_store,
-                    &data_dir,
-                    Some(open_tabs.as_ref()),
-                    &session_id,
-                    {
-                        let handles = Arc::clone(&handles);
-                        let session_id = session_id.clone();
-                        let close_count = Arc::clone(&close_count);
-                        move || async move {
-                            if handles.lock().await.remove(&session_id).is_some() {
-                                close_count.fetch_add(1, Ordering::SeqCst);
-                            }
-                            Ok(())
+                release_step_runtime_on_done_state({
+                    let handles = Arc::clone(&handles);
+                    let session_id = session_id.clone();
+                    let close_count = Arc::clone(&close_count);
+                    move || async move {
+                        if handles.lock().await.remove(&session_id).is_some() {
+                            close_count.fetch_add(1, Ordering::SeqCst);
                         }
-                    },
-                )
+                        Ok(())
+                    }
+                })
                 .await;
             }
         };

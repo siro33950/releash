@@ -70,6 +70,77 @@ test.describe("Workspace Manager", () => {
 
 		await expect(page.getByText("Direct session")).not.toBeVisible();
 	});
+
+	test("Workflow menu stays anchored to its trigger after hover out", async ({
+		page,
+	}) => {
+		const worktreePath = "/test/repo-worktrees/feat-wip";
+		const config = buildMockConfig({
+			list_branches_with_status: kanbanBranches.filter(
+				(branch) => branch.name === "feat/wip",
+			),
+			list_workspace_worktree_nodes: [
+				{
+					kind: "workflow",
+					runId: "run-1",
+					worktreePath,
+					workflowName: "release",
+					title: "Release workflow",
+					status: "running",
+					updatedAt: 1000,
+					steps: [
+						{
+							kind: "step",
+							id: "run-1:build:1",
+							runId: "run-1",
+							worktreePath,
+							title: "build",
+							status: "running",
+							stepType: "agent",
+							updatedAt: 1000,
+							runIndex: 1,
+							sessions: [],
+						},
+					],
+				},
+			],
+		});
+		await setupTauriMock(page, config);
+		await waitForApp(page);
+
+		await page.getByText("release", { exact: true }).hover();
+		const trigger = page.getByRole("button", {
+			name: "Open menu for release",
+		});
+		await expect(trigger).toBeVisible();
+		const triggerBox = await trigger.boundingBox();
+		expect(triggerBox).not.toBeNull();
+		await trigger.click();
+
+		const menu = page.getByRole("menu").filter({ hasText: "Stop" });
+		await expect(menu).toBeVisible();
+		const menuBox = await menu.boundingBox();
+		expect(menuBox).not.toBeNull();
+		expect(menuBox!.x).toBeGreaterThan(10);
+		expect(menuBox!.y).toBeGreaterThan(10);
+		expect(
+			Math.abs(
+				menuBox!.x + menuBox!.width / 2 - (triggerBox!.x + triggerBox!.width / 2),
+			),
+		).toBeLessThan(160);
+		expect(
+			Math.abs(menuBox!.y - (triggerBox!.y + triggerBox!.height)),
+		).toBeLessThan(40);
+
+		await page.mouse.move(700, 500);
+		await expect(menu).toBeVisible();
+		const afterHoverOutBox = await menu.boundingBox();
+		expect(afterHoverOutBox).not.toBeNull();
+		expect(afterHoverOutBox!.x).toBeGreaterThan(10);
+		expect(afterHoverOutBox!.y).toBeGreaterThan(10);
+		expect(Math.abs(afterHoverOutBox!.x - menuBox!.x)).toBeLessThan(2);
+		expect(Math.abs(afterHoverOutBox!.y - menuBox!.y)).toBeLessThan(2);
+	});
 });
 
 test.describe("CreateWorktreeModal", () => {

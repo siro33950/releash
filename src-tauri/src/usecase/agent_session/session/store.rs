@@ -39,9 +39,17 @@ pub type SessionReaderPort = dyn AgentSessionReader<
     > + Send
     + Sync;
 
+/// テストで session 保存パスへ失敗を注入するためのフック。
+/// workflow step session の作成ロールバック経路（並列子ステップの save 失敗等）を
+/// 検証するために用いる。
+#[cfg(test)]
+pub(crate) type SessionSaveHook = Arc<dyn Fn(&ChatSession) -> Result<(), String> + Send + Sync>;
+
 pub struct SessionStore {
     storage: Arc<SessionStoragePort>,
     state_change_listeners: RwLock<Vec<SessionStateChangeListener>>,
+    #[cfg(test)]
+    save_hook: RwLock<Option<SessionSaveHook>>,
 }
 
 fn compact_session_title(title: &str) -> String {
@@ -119,7 +127,14 @@ impl SessionStore {
         Self {
             storage,
             state_change_listeners: RwLock::new(Vec::new()),
+            #[cfg(test)]
+            save_hook: RwLock::new(None),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_save_hook_for_test(&self, hook: SessionSaveHook) {
+        *self.save_hook.write() = Some(hook);
     }
 
     pub fn list_sessions(
@@ -316,6 +331,17 @@ impl SessionStore {
             .load_full_session_for_restore(app_data_dir, session_id)
     }
 
+    /// workflow step session のセットアップ失敗時に、作成済みの子 session を
+    /// 取り除くロールバック経路。storage 層へ削除を委譲する。
+    pub(crate) fn remove_session_for_rollback(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<(), String> {
+        self.storage.remove_session(app_data_dir, session_id);
+        Ok(())
+    }
+
     pub fn list_worktree_sessions(
         &self,
         app_data_dir: &Path,
@@ -373,6 +399,11 @@ impl SessionStore {
             };
             &normalized_session
         };
+
+        #[cfg(test)]
+        if let Some(hook) = self.save_hook.read().clone() {
+            hook(session)?;
+        }
 
         let previous_state = self
             .storage

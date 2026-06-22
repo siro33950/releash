@@ -35,7 +35,6 @@ pub(crate) mod output;
 pub(crate) mod run;
 pub(crate) mod runtime;
 pub(crate) mod session_errors;
-pub(crate) mod step;
 
 const COMMAND_NAMES: &[&str] = &[
     "list_workflows",
@@ -48,7 +47,6 @@ const COMMAND_NAMES: &[&str] = &[
     "get_workflow_state",
     "approve_workflow_step",
     "send_workflow_approval_chat_message",
-    "open_workflow_step_tab",
     "list_workflow_runs",
     "get_workflow_run",
     "get_workflow_run_log",
@@ -94,7 +92,6 @@ pub(crate) fn invoke_handler(
         runtime::get_workflow_state,
         runtime::approve_workflow_step,
         runtime::send_workflow_approval_chat_message,
-        step::open_workflow_step_tab,
         run::list_workflow_runs,
         run::get_workflow_run,
         run::get_workflow_run_log,
@@ -2396,7 +2393,6 @@ mod tests {
                     app.handle().clone(),
                 ),
             ),
-            workflow_archive_index_lock: Arc::new(tokio::sync::Mutex::new(())),
         });
         (app, engine, data_dir)
     }

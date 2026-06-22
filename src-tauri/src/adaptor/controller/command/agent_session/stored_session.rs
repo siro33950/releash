@@ -340,6 +340,7 @@ mod tests {
                 crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
             ),
             workflow_step_session: true,
+            workflow_step_context: None,
         }
     }
 

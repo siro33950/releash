@@ -9,6 +9,14 @@ use crate::domain::workflow::value_objects::{
 };
 use crate::domain::workflow::WorkflowError;
 
+pub const WORKFLOW_ARCHIVE_REASON_MANUAL: &str = "manual";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkflowRunManualArchiveRecord {
+    pub run_id: String,
+    pub archived_at: f64,
+}
+
 pub trait WorkflowRunRepository: Send + Sync {
     fn register_active(&self, run: WorkflowRunRecord) -> Result<(), WorkflowError>;
     fn complete_run(
@@ -24,6 +32,12 @@ pub trait WorkflowRunRepository: Send + Sync {
         worktree_path: &str,
     ) -> Result<Option<RunId>, WorkflowError>;
     fn resolve_worktree_by_run(&self, run_id: &RunId) -> Result<Option<String>, WorkflowError>;
+}
+
+pub trait WorkflowRunArchiveRepository: Send + Sync {
+    fn archive_manual(&self, run_id: &RunId, archived_at: f64) -> Result<(), WorkflowError>;
+    fn restore_manual(&self, run_id: &RunId, restored_at: f64) -> Result<(), WorkflowError>;
+    fn manual_archive_records(&self) -> Result<Vec<WorkflowRunManualArchiveRecord>, WorkflowError>;
 }
 
 pub trait WorkflowDefinitionRepository: Send + Sync {

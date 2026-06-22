@@ -9,6 +9,8 @@ mod stored_lifecycle;
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::workflow::WorkflowStepContext;
+
 pub use crate::usecase::agent_session::status::TurnPhase;
 pub(crate) use image_attachment::{
     reject_oversized_base64_image, validate_image_bytes, validate_image_bytes_for_media_type,
@@ -203,6 +205,49 @@ impl MessageMention {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStepContextDto {
+    pub run_id: String,
+    pub workflow_name: String,
+    pub step_name: String,
+    pub run_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub parent_step_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub parent_run_index: Option<u32>,
+    pub order: u32,
+}
+
+pub(crate) mod workflow_step_context_mapper {
+    use super::WorkflowStepContextDto;
+    use crate::domain::workflow::WorkflowStepContext;
+
+    pub(crate) fn to_dto(context: WorkflowStepContext) -> WorkflowStepContextDto {
+        WorkflowStepContextDto {
+            run_id: context.run_id,
+            workflow_name: context.workflow_name,
+            step_name: context.step_name,
+            run_index: context.run_index,
+            parent_step_name: context.parent_step_name,
+            parent_run_index: context.parent_run_index,
+            order: context.order,
+        }
+    }
+
+    pub(crate) fn to_domain(context: WorkflowStepContextDto) -> WorkflowStepContext {
+        WorkflowStepContext {
+            run_id: context.run_id,
+            workflow_name: context.workflow_name,
+            step_name: context.step_name,
+            run_index: context.run_index,
+            parent_step_name: context.parent_step_name,
+            parent_run_index: context.parent_run_index,
+            order: context.order,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ActivityEntry {
@@ -302,6 +347,8 @@ pub struct ChatSession {
     pub backend_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow_step_session: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub workflow_step_context: Option<WorkflowStepContextDto>,
 }
 
 pub const SESSION_BODY_FORMAT_VERSION: u32 = 1;
@@ -333,6 +380,10 @@ pub struct SessionMeta {
     pub backend_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow_step_session: bool,
+    /// workflow step session の context（step 名等）。message body と異なり軽量な
+    /// メタ情報なので、Workflow View のヘッダー表示のため meta に保持する。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub workflow_step_context: Option<WorkflowStepContextDto>,
     pub first_message_preview: String,
     pub message_count: usize,
     pub body_format_version: u32,
@@ -516,6 +567,8 @@ pub struct SessionSummary {
     pub backend_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow_step_session: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub workflow_step_context: Option<WorkflowStepContextDto>,
 }
 
 pub(crate) fn first_message_preview(messages: &[ChatMessage]) -> String {
@@ -552,6 +605,13 @@ pub(crate) fn first_message_preview(messages: &[ChatMessage]) -> String {
 }
 
 impl SessionMeta {
+    /// 軽量 meta 経路での workflow step session 判定。
+    /// `workflow_step_session` フラグは context を持つ場合も必ず立つ正典だが、
+    /// context の有無も合わせて見て ChatSession 側の判定と一致させる。
+    pub fn is_workflow_step_session(&self) -> bool {
+        self.workflow_step_session || self.workflow_step_context.is_some()
+    }
+
     pub fn from_session(session: &ChatSession) -> Self {
         Self {
             id: session.id.clone(),
@@ -566,7 +626,8 @@ impl SessionMeta {
             selected_model: session.selected_model.clone(),
             permission_profile_id: session.permission_profile_id.clone(),
             backend_id: session.backend_id.clone(),
-            workflow_step_session: session.workflow_step_session,
+            workflow_step_session: session.is_workflow_step_session(),
+            workflow_step_context: session.workflow_step_context.clone(),
             first_message_preview: first_message_preview(&session.messages),
             message_count: session.messages.len(),
             body_format_version: SESSION_BODY_FORMAT_VERSION,
@@ -588,7 +649,8 @@ impl SessionMeta {
             selected_model: self.selected_model.clone(),
             permission_profile_id: self.permission_profile_id.clone(),
             backend_id: self.backend_id.clone(),
-            workflow_step_session: self.workflow_step_session,
+            workflow_step_session: self.is_workflow_step_session(),
+            workflow_step_context: self.workflow_step_context.clone(),
         }
     }
 
@@ -607,12 +669,17 @@ impl SessionMeta {
             plan_mode: self.plan_mode,
             permission_profile_id: self.permission_profile_id.clone(),
             backend_id: self.backend_id.clone(),
-            workflow_step_session: self.workflow_step_session,
+            workflow_step_session: self.is_workflow_step_session(),
+            workflow_step_context: self.workflow_step_context.clone(),
         }
     }
 }
 
 impl ChatSession {
+    pub fn is_workflow_step_session(&self) -> bool {
+        self.workflow_step_session || self.workflow_step_context.is_some()
+    }
+
     pub fn to_summary(&self) -> SessionSummary {
         SessionSummary {
             id: self.id.clone(),
@@ -628,16 +695,20 @@ impl ChatSession {
             plan_mode: self.plan_mode,
             permission_profile_id: self.permission_profile_id.clone(),
             backend_id: self.backend_id.clone(),
-            workflow_step_session: self.workflow_step_session,
+            workflow_step_session: self.is_workflow_step_session(),
+            workflow_step_context: self.workflow_step_context.clone(),
         }
     }
 }
 
+impl SessionSummary {
+    pub fn is_workflow_step_session(&self) -> bool {
+        self.workflow_step_session || self.workflow_step_context.is_some()
+    }
+}
+
 pub(crate) fn now_timestamp() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
+    crate::other::utils::unix_timestamp_seconds()
 }
 
 pub fn parts_to_legacy(
@@ -766,6 +837,7 @@ pub struct SessionCreationAttributes {
     pub selected_model: Option<String>,
     pub plan_mode: bool,
     pub workflow_step_session: bool,
+    pub workflow_step_context: Option<WorkflowStepContext>,
 }
 
 /// 検証済み抽象モード・selected_model・workflow_step_session フラグを初回保存で確定する内部 API。
@@ -779,13 +851,19 @@ pub fn create_session_internal_with_attributes(
     permission_mode: crate::permission::PermissionMode,
     attributes: SessionCreationAttributes,
 ) -> Result<ChatSession, String> {
+    let workflow_step_session =
+        attributes.workflow_step_session || attributes.workflow_step_context.is_some();
+    let workflow_step_context = attributes
+        .workflow_step_context
+        .map(workflow_step_context_mapper::to_dto);
     let session = build_new_session(
         worktree_path,
         backend_id,
         permission_mode,
         attributes.selected_model,
         attributes.plan_mode,
-        attributes.workflow_step_session,
+        workflow_step_session,
+        workflow_step_context,
     );
     session_store.save_full_session_for_migration_or_restore(data_dir, &session)?;
     Ok(session)
@@ -798,6 +876,7 @@ fn build_new_session(
     selected_model: Option<String>,
     plan_mode: bool,
     workflow_step_session: bool,
+    workflow_step_context: Option<WorkflowStepContextDto>,
 ) -> ChatSession {
     let now = now_timestamp();
     ChatSession {
@@ -815,6 +894,7 @@ fn build_new_session(
         permission_profile_id: None,
         backend_id,
         workflow_step_session,
+        workflow_step_context,
     }
 }
 
@@ -892,6 +972,7 @@ pub fn create_session_with_model_and_plan_mode(
         Some(selected_model),
         plan_mode,
         false,
+        None,
     );
     session_store.save_full_session_for_migration_or_restore(data_dir, &session)?;
     Ok(session)
@@ -1058,6 +1139,80 @@ mod tests {
         }
     }
 
+    fn workflow_step_context_for_test() -> WorkflowStepContext {
+        WorkflowStepContext {
+            run_id: "run-1".to_string(),
+            workflow_name: "workflow".to_string(),
+            step_name: "review".to_string(),
+            run_index: 1,
+            parent_step_name: None,
+            parent_run_index: None,
+            order: 0,
+        }
+    }
+
+    #[test]
+    fn workflow_step_session_predicate_uses_flag_or_context() {
+        let mut session = build_new_session(
+            "/repo",
+            None,
+            crate::permission::PermissionMode::Edit,
+            None,
+            false,
+            false,
+            None,
+        );
+        assert!(!session.is_workflow_step_session());
+        assert!(!session.to_summary().is_workflow_step_session());
+
+        session.workflow_step_context = Some(workflow_step_context_mapper::to_dto(
+            workflow_step_context_for_test(),
+        ));
+        assert!(session.is_workflow_step_session());
+        assert!(session.to_summary().is_workflow_step_session());
+        assert!(session.to_summary().workflow_step_session);
+
+        session.workflow_step_context = None;
+        session.workflow_step_session = true;
+        assert!(session.is_workflow_step_session());
+        assert!(session.to_summary().is_workflow_step_session());
+    }
+
+    #[test]
+    fn workflow_step_context_persist_serializeは移行前のcamelcase等価() {
+        let mut session = build_new_session(
+            "/repo",
+            None,
+            crate::permission::PermissionMode::Edit,
+            None,
+            false,
+            true,
+            Some(workflow_step_context_mapper::to_dto(
+                workflow_step_context_for_test(),
+            )),
+        );
+        let value = serde_json::to_value(&session).unwrap();
+        let context = &value["workflowStepContext"];
+        assert_eq!(context["runId"], serde_json::json!("run-1"));
+        assert_eq!(context["workflowName"], serde_json::json!("workflow"));
+        assert_eq!(context["stepName"], serde_json::json!("review"));
+        assert_eq!(context["runIndex"], serde_json::json!(1));
+        assert!(context.get("parentStepName").is_none());
+        assert!(context.get("parentRunIndex").is_none());
+        assert_eq!(context["order"], serde_json::json!(0));
+
+        let summary = session.to_summary();
+        let summary_value = serde_json::to_value(&summary).unwrap();
+        assert_eq!(
+            summary_value["workflowStepContext"],
+            value["workflowStepContext"]
+        );
+
+        session.workflow_step_context = None;
+        let value = serde_json::to_value(&session).unwrap();
+        assert!(value.get("workflowStepContext").is_none());
+    }
+
     #[test]
     fn chat_message_mentions_persist_serializeは移行前のcamelcase等価() {
         // usecase の保存モデルが adaptor/protocol へ逆依存せず、serialize 表現だけを
@@ -1139,6 +1294,7 @@ mod tests {
                 selected_model: None,
                 backend_id: None,
                 workflow_step_session: false,
+                workflow_step_context: None,
             };
             let err = validate_session_permission_mode(&session).unwrap_err();
             assert!(
@@ -1174,6 +1330,7 @@ mod tests {
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.id, "s1");
@@ -1210,6 +1367,7 @@ mod tests {
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message.len(), 100 + "…".len());
@@ -1244,6 +1402,7 @@ mod tests {
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         let summary = session.to_summary();
         // 100 chars of "あ" (300 bytes) + "…" (3 bytes)
@@ -1269,6 +1428,7 @@ mod tests {
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message, "");
@@ -1297,6 +1457,7 @@ mod tests {
             selected_model: None,
             backend_id: None,
             workflow_step_session: true,
+            workflow_step_context: None,
         };
         let mut regular = workflow_step.clone();
         regular.id = regular_id.clone();
@@ -1354,6 +1515,7 @@ mod tests {
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         store
             .save_full_session_for_migration_or_restore(tmp.path(), &session)
@@ -1418,6 +1580,7 @@ mod tests {
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         store
             .save_full_session_for_migration_or_restore(tmp.path(), &session)
@@ -1567,6 +1730,7 @@ mod tests {
             selected_model: None,
             backend_id: None,
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         let back: ChatSession = serde_json::from_str(&json).unwrap();
@@ -1601,6 +1765,7 @@ mod tests {
             selected_model: Some("claude-opus-4-6".to_string()),
             backend_id: None,
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("selectedModel"));
@@ -2276,6 +2441,7 @@ mod tests {
             selected_model: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("\"backendId\":\"claude\""));
@@ -2309,6 +2475,7 @@ mod tests {
             selected_model: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
+            workflow_step_context: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.backend_id, Some("claude".to_string()));
@@ -2336,6 +2503,7 @@ mod tests {
                 selected_model: None,
                 backend_id: backend_id.map(str::to_string),
                 workflow_step_session: false,
+                workflow_step_context: None,
             }
         }
 
@@ -2377,5 +2545,84 @@ mod tests {
             assert!(result.is_ok());
             assert_eq!(session.backend_id, Some("claude".to_string()));
         }
+    }
+}
+
+/// workflow step session の context が meta 経路（meta.json 永続化を含む）を通じて
+/// SessionSummary / ChatSession まで保持されることを保証する回帰テスト。
+/// context が meta で None に落ちると Workflow View の step ヘッダー（`step.title` =
+/// step 名）が消えるため、その退行を防ぐ。
+#[cfg(test)]
+mod workflow_step_context_meta_tests {
+    use super::*;
+
+    fn step_context_dto() -> WorkflowStepContextDto {
+        WorkflowStepContextDto {
+            run_id: "run-1".to_string(),
+            workflow_name: "wf".to_string(),
+            step_name: "step-a".to_string(),
+            run_index: 0,
+            parent_step_name: None,
+            parent_run_index: None,
+            order: 0,
+        }
+    }
+
+    fn session_with_context(context: Option<WorkflowStepContextDto>) -> ChatSession {
+        ChatSession {
+            id: "s1".to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: Vec::new(),
+            state: SessionState::Active,
+            created_at: 1.0,
+            updated_at: 1.0,
+            agent_session_id: None,
+            context_carry: None,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            selected_model: None,
+            permission_profile_id: None,
+            backend_id: Some("claude".to_string()),
+            workflow_step_session: false,
+            workflow_step_context: context,
+        }
+    }
+
+    #[test]
+    fn meta_round_trip_preserves_workflow_step_context() {
+        let meta = SessionMeta::from_session(&session_with_context(Some(step_context_dto())));
+
+        // from_session で context が meta に乗る。
+        assert!(meta.workflow_step_session);
+        assert_eq!(
+            meta.workflow_step_context
+                .as_ref()
+                .map(|c| c.step_name.as_str()),
+            Some("step-a")
+        );
+
+        // to_summary / to_session の両経路で context が届く（ヘッダー表示の正典経路）。
+        let summary = meta.to_summary();
+        assert!(summary.workflow_step_session);
+        assert_eq!(summary.workflow_step_context, Some(step_context_dto()));
+        let restored_session = meta.to_session(Vec::new());
+        assert!(restored_session.workflow_step_session);
+        assert_eq!(
+            restored_session.workflow_step_context,
+            Some(step_context_dto())
+        );
+
+        // meta.json の serde round-trip でも context を保持する。
+        let json = serde_json::to_string(&meta).unwrap();
+        let restored: SessionMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.workflow_step_context, Some(step_context_dto()));
+        assert!(restored.is_workflow_step_session());
+    }
+
+    #[test]
+    fn meta_without_context_stays_none() {
+        let meta = SessionMeta::from_session(&session_with_context(None));
+        assert!(meta.workflow_step_context.is_none());
+        assert_eq!(meta.to_summary().workflow_step_context, None);
     }
 }

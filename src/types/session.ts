@@ -123,6 +123,16 @@ export type ContextCarryState = "resumed" | "reinjected" | "failed";
 
 export type TurnPhase = "idle" | "streaming" | "waiting_permission";
 
+export interface WorkflowStepContext {
+	runId: string;
+	workflowName: string;
+	stepName: string;
+	runIndex: number;
+	parentStepName?: string | null;
+	parentRunIndex?: number | null;
+	order: number;
+}
+
 export type MessagePart =
 	| { type: "thinking"; content: string; parentToolUseId?: string }
 	| { type: "text"; content: string; parentToolUseId?: string }
@@ -242,6 +252,7 @@ export interface ChatSession {
 	permissionProfileId?: string | null;
 	backendId?: string | null;
 	workflowStepSession?: boolean;
+	workflowStepContext?: WorkflowStepContext | null;
 }
 
 export function getTextContent(parts: MessagePart[]): string {
@@ -266,6 +277,7 @@ export interface SessionSummary {
 	permissionProfileId?: string | null;
 	backendId?: string | null;
 	workflowStepSession?: boolean;
+	workflowStepContext?: WorkflowStepContext | null;
 }
 
 export interface SessionSearchResult {

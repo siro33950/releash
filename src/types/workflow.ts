@@ -241,6 +241,15 @@ export type WorkflowEvent =
 			timestampMs: number;
 	  }
 	| {
+			event: "step_session_started";
+			run_id: string;
+			workflow_name: string;
+			node_name: string;
+			session_id: string;
+			execution_count: number;
+			timestampMs: number;
+	  }
+	| {
 			event: "node_completed";
 			run_id: string;
 			workflow_name: string;

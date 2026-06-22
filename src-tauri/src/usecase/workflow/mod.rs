@@ -16,13 +16,15 @@ pub(crate) mod query_service;
 pub(crate) mod runtime_command;
 pub(crate) mod step_lifecycle;
 pub(crate) mod turn_complete;
+mod workspace_tree;
 
 use serde_json::Value;
 
 use crate::domain::workflow::{
     FacetKind, FacetRepository, FacetSummary, ManagedWorktreeGateway, RunId, RunListFilter,
     RunStatusFilter, SecretSourceGateway, WorkflowDefinition, WorkflowDefinitionRepository,
-    WorkflowError, WorkflowRunSummary, WorkflowStateSnapshot, WorkflowSummary,
+    WorkflowError, WorkflowRunArchiveRepository, WorkflowRunManualArchiveRecord,
+    WorkflowRunSummary, WorkflowStateSnapshot, WorkflowSummary,
 };
 use crate::usecase::workflow::ports::{
     ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDiagnosticsGateway,
@@ -37,6 +39,10 @@ pub use query_service::{WorkflowEventView, WorkflowGetOutputResult, WorkflowStep
 pub use runtime_command::WorkflowRuntimeUsecase;
 pub(crate) use step_lifecycle::WorkflowStepLifecycleUsecase;
 pub(crate) use step_lifecycle::{ResolvedWorkflowStepSession, WorkflowStepLifecycleError};
+pub(crate) use workspace_tree::{
+    WorkspaceSessionGateway, WorkspaceSessionInput, WorkspaceSessionState, WorkspaceTreeNodeDto,
+    WorkspaceWorkflowHistoryItemDto, WorkspaceWorkflowStepNodeDto,
+};
 
 #[derive(Clone)]
 pub struct WorkflowUsecase {
@@ -48,6 +54,7 @@ pub struct WorkflowUsecase {
     editors: std::sync::Arc<dyn ExternalEditorGateway>,
     diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
     config_paths: std::sync::Arc<dyn WorkflowConfigPathGateway>,
+    archive_runs: std::sync::Arc<dyn WorkflowRunArchiveRepository>,
 }
 
 impl WorkflowUsecase {
@@ -61,6 +68,7 @@ impl WorkflowUsecase {
         diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
         config_paths: std::sync::Arc<dyn WorkflowConfigPathGateway>,
         secrets: std::sync::Arc<dyn SecretSourceGateway>,
+        archive_runs: std::sync::Arc<dyn WorkflowRunArchiveRepository>,
     ) -> Self {
         let definition_commands = WorkflowDefinitionUsecase::new(definitions);
         let facet_commands = WorkflowFacetUsecase::new(facets.clone());
@@ -74,6 +82,7 @@ impl WorkflowUsecase {
             editors,
             diagnostics,
             config_paths,
+            archive_runs,
         }
     }
 
@@ -641,6 +650,24 @@ mod tests {
         }
     }
 
+    struct NoopArchiveRepository;
+
+    impl WorkflowRunArchiveRepository for NoopArchiveRepository {
+        fn archive_manual(&self, _run_id: &RunId, _archived_at: f64) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
+        fn restore_manual(&self, _run_id: &RunId, _restored_at: f64) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
+        fn manual_archive_records(
+            &self,
+        ) -> Result<Vec<WorkflowRunManualArchiveRecord>, WorkflowError> {
+            Ok(Vec::new())
+        }
+    }
+
     struct FakeManagedWorktreeGateway;
 
     impl ManagedWorktreeGateway for FakeManagedWorktreeGateway {
@@ -734,6 +761,7 @@ mod tests {
                 Arc::new(FakeDiagnosticsGateway),
                 Arc::new(FakeConfigPathGateway),
                 Arc::new(FakeSecretSourceGateway),
+                Arc::new(NoopArchiveRepository),
             );
             Self { usecase, editors }
         }

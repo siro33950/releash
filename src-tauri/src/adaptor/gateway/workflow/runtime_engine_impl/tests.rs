@@ -145,6 +145,7 @@ fn chat_session_for_test(
             crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
         ),
         workflow_step_session,
+        workflow_step_context: None,
     }
 }
 
@@ -402,63 +403,6 @@ async fn terminal_outcome_cleanup_includes_parent_entry_and_parallel_child_outpu
 use crate::adaptor::gateway::workflow::schema::{
     CollectConfig, CycleGuard, ParallelAggregate, ReduceStrategy, TransitionRule, Workflow,
 };
-
-#[allow(dead_code)]
-fn make_approved_fix_policy_workflow() -> Workflow {
-    Workflow {
-        variables: Default::default(),
-        name: "approved-fix-policy-test".to_string(),
-        description: "test".to_string(),
-        builtin: false,
-        nodes: vec![
-            NodeDefinition {
-                name: "code_review_parallel".to_string(),
-                node_type: NodeType::Parallel,
-                policy: None,
-                knowledge: None,
-                instruction: None,
-                output_contract: None,
-                transition_rules: vec![],
-                cycle_guard: None,
-                pass_previous_response: None,
-                pass_output_from: None,
-                inline_prompt: None,
-                collect: None,
-                parallel_children: Some(vec![]),
-                aggregate: Some(ParallelAggregate {
-                    all_match: Some("LGTM".to_string()),
-                    any_match: None,
-                    then: "done".to_string(),
-                    r#else: "implementation_fix_policy".to_string(),
-                }),
-                resets_cycle_for: None,
-                model: None,
-                permission: None,
-                ..Default::default()
-            },
-            NodeDefinition {
-                name: "implementation_fix_policy".to_string(),
-                node_type: NodeType::Approval,
-                policy: None,
-                knowledge: None,
-                instruction: Some("Review fix policy".to_string()),
-                output_contract: Some("approved-fix-policy".to_string()),
-                transition_rules: vec![],
-                cycle_guard: None,
-                pass_previous_response: None,
-                pass_output_from: Some(vec!["code_review_parallel".to_string()]),
-                inline_prompt: None,
-                collect: None,
-                parallel_children: None,
-                aggregate: None,
-                resets_cycle_for: None,
-                model: None,
-                permission: None,
-                ..Default::default()
-            },
-        ],
-    }
-}
 
 fn make_minimal_approval_exec(
     execution_id: &str,
@@ -2254,10 +2198,13 @@ struct RecordingStepSessionDeps {
     create_step_session_count: std::sync::atomic::AtomicUsize,
     dispatch_session_start_count: std::sync::atomic::AtomicUsize,
     mark_step_tab_open_count: std::sync::atomic::AtomicUsize,
+    append_node_session_started_count: std::sync::atomic::AtomicUsize,
+    append_node_session_started_should_fail: std::sync::atomic::AtomicBool,
     broadcast_state_count: std::sync::atomic::AtomicUsize,
     start_agent_turn_count: std::sync::atomic::AtomicUsize,
     assert_runtime_lock_during_start: std::sync::atomic::AtomicBool,
     runtime_lock_was_held_during_start: std::sync::atomic::AtomicBool,
+    created_contexts: std::sync::Mutex<Vec<WorkflowStepContext>>,
 }
 
 impl RecordingStepSessionDeps {
@@ -2281,9 +2228,23 @@ impl RecordingStepSessionDeps {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    fn append_node_session_started_count(&self) -> usize {
+        self.append_node_session_started_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn fail_append_node_session_started(&self) {
+        self.append_node_session_started_should_fail
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     fn start_agent_turn_count(&self) -> usize {
         self.start_agent_turn_count
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn created_contexts(&self) -> Vec<WorkflowStepContext> {
+        self.created_contexts.lock().unwrap().clone()
     }
 
     fn assert_runtime_lock_during_start(&self) {
@@ -2305,9 +2266,14 @@ impl StepSessionDeps for RecordingStepSessionDeps {
         _step_model: Option<String>,
         _step_permission: Option<String>,
         _workflow_defaults: WorkflowDefaults,
+        workflow_step_context: WorkflowStepContext,
     ) -> Result<StepSessionInfo, WorkflowEngineError> {
         self.create_step_session_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.created_contexts
+            .lock()
+            .unwrap()
+            .push(workflow_step_context);
         Ok(StepSessionInfo {
             id: "step-session-id".to_string(),
             permission_mode: "ask".to_string(),
@@ -2331,11 +2297,26 @@ impl StepSessionDeps for RecordingStepSessionDeps {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
-    async fn write_step_session_started_event(&self, _event: WorkflowEvent) {}
-
     async fn broadcast_state(&self, _worktree_path: &str, _snapshot: WorkflowState) {
         self.broadcast_state_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    async fn append_node_session_started(
+        &self,
+        _snapshot: &WorkflowState,
+    ) -> Result<(), WorkflowEngineError> {
+        self.append_node_session_started_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self
+            .append_node_session_started_should_fail
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(WorkflowEngineError::SessionStore(
+                "append step session started failed".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     async fn start_agent_turn_locked(
@@ -2477,6 +2458,11 @@ async fn start_step_session_with_deps_skips_side_effects_when_prompt_synthesis_f
         "broadcast_state must NOT be invoked when prompt synthesis fails"
     );
     assert_eq!(
+        deps.append_node_session_started_count(),
+        0,
+        "NodeSessionStarted must NOT be appended when prompt synthesis fails"
+    );
+    assert_eq!(
         deps.start_agent_turn_count(),
         0,
         "start_agent_turn must NOT be invoked when prompt synthesis fails"
@@ -2501,7 +2487,7 @@ async fn start_step_session_with_deps_skips_side_effects_when_prompt_synthesis_f
 async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success() {
     // 副作用境界が正しい順序で呼ばれる成功経路を併せて検証する。
     // プロンプト合成が成功した場合は、create_step_session → dispatch_session_start
-    // → broadcast_state → start_agent_turn の全境界が各 1 回ずつ呼ばれ、
+    // → NodeSessionStarted append → broadcast_state → start_agent_turn の全境界が各 1 回ずつ呼ばれ、
     // engine.session_workflow_refs と executions["/repo"].current_session_id が
     // 期待通り更新されることを assert する。
     let engine = WorkflowRuntimeService::new_for_test();
@@ -2527,8 +2513,21 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
     assert_eq!(deps.create_step_session_count(), 1);
     assert_eq!(deps.dispatch_session_start_count(), 1);
     assert_eq!(deps.mark_step_tab_open_count(), 1);
+    assert_eq!(deps.append_node_session_started_count(), 1);
     assert_eq!(deps.broadcast_state_count(), 1);
     assert_eq!(deps.start_agent_turn_count(), 1);
+    assert_eq!(
+        deps.created_contexts(),
+        vec![WorkflowStepContext {
+            run_id: "exec-id".to_string(),
+            workflow_name: "regression-workflow".to_string(),
+            step_name: "ok-step".to_string(),
+            run_index: 1,
+            parent_step_name: None,
+            parent_run_index: None,
+            order: 0,
+        }]
+    );
     assert!(
         deps.runtime_lock_was_held_during_start(),
         "step session runtime lock must cover the path until start_agent_turn marks it streaming"
@@ -2549,6 +2548,46 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
         exec.current_session_id.as_deref(),
         Some("step-session-id"),
         "current_session_id must be updated to the created step session id"
+    );
+}
+
+#[tokio::test]
+async fn start_step_session_with_deps_propagates_node_session_append_failure() {
+    let engine = WorkflowRuntimeService::new_for_test();
+
+    let mut step = make_test_step("ok-step", NodeType::Agent, "unused", vec![], None);
+    step.instruction = None;
+    step.inline_prompt = Some("hello".to_string());
+
+    {
+        let mut execs = engine.executions.lock().await;
+        insert_single_step_execution(&mut execs, step);
+    }
+
+    let deps = RecordingStepSessionDeps::default();
+    deps.fail_append_node_session_started();
+    let err = engine
+        .start_step_session_with_deps(&deps, "/repo")
+        .await
+        .expect_err("append failure must propagate to the start flow");
+
+    assert!(
+        matches!(&err, WorkflowEngineError::SessionStore(message) if message.contains("append step session started failed")),
+        "append failure must surface as SessionStore error, got: {err:?}"
+    );
+    assert_eq!(deps.create_step_session_count(), 1);
+    assert_eq!(deps.dispatch_session_start_count(), 1);
+    assert_eq!(deps.mark_step_tab_open_count(), 1);
+    assert_eq!(deps.append_node_session_started_count(), 1);
+    assert_eq!(
+        deps.broadcast_state_count(),
+        0,
+        "broadcast_state must not run after append failure"
+    );
+    assert_eq!(
+        deps.start_agent_turn_count(),
+        0,
+        "start_agent_turn must not run after append failure"
     );
 }
 
@@ -3163,6 +3202,7 @@ fn latest_assistant_output_after_approval_chat_adjustment_is_selected() {
         selected_model: None,
         backend_id: None,
         workflow_step_session: false,
+        workflow_step_context: None,
     };
 
     let output =
@@ -4228,6 +4268,7 @@ fn apply_advance_clears_step_outputs_for_new_step() {
     // ループで同一 step が再実行されるとき、advance による遷移で
     // 遷移先 step の前回出力が step_outputs から破棄されることを検証する。
     let mut exec = make_exec(0); // plan → implement
+    exec.current_session_id = Some("plan-session".to_string());
     exec.step_outputs.insert(
         "implement".to_string(),
         make_step_output_fixture("implement", 1),
@@ -4244,12 +4285,14 @@ fn apply_advance_clears_step_outputs_for_new_step() {
     );
     assert!(!exec.step_outputs.contains_key("implement"));
     assert!(exec.step_outputs.contains_key("plan"));
+    assert!(exec.current_session_id.is_none());
 }
 
 #[test]
 fn apply_transition_clears_step_outputs_for_target_step() {
     // ループで前ステップ（review）に戻る遷移でも、遷移先の前回出力が破棄される。
     let mut exec = make_exec(2); // review
+    exec.current_session_id = Some("review-session".to_string());
     exec.step_outputs.insert(
         "implement".to_string(),
         make_step_output_fixture("implement", 1),
@@ -4262,6 +4305,7 @@ fn apply_transition_clears_step_outputs_for_target_step() {
         "implement"
     );
     assert!(!exec.step_outputs.contains_key("implement"));
+    assert!(exec.current_session_id.is_none());
 }
 
 #[test]
@@ -4501,6 +4545,7 @@ fn step_session_persists_permission_workflow_flag_and_model_on_initial_save() {
         crate::usecase::agent_session::session::SessionCreationAttributes {
             selected_model: settings.selected_model.clone(),
             workflow_step_session: true,
+            workflow_step_context: None,
             ..Default::default()
         },
     )
@@ -4551,6 +4596,7 @@ fn step_session_inherits_parent_permission_and_backend_on_initial_save() {
         crate::usecase::agent_session::session::SessionCreationAttributes {
             selected_model: settings.selected_model,
             workflow_step_session: true,
+            workflow_step_context: None,
             ..Default::default()
         },
     )
@@ -6020,7 +6066,6 @@ mod dispatch_boundary_tests {
                 repo_paths_usecase,
                 code_usecase,
                 workflow_usecase,
-                workflow_archive_index_lock: Arc::new(tokio::sync::Mutex::new(())),
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("tauri mock test app must build")
@@ -6101,6 +6146,178 @@ mod dispatch_boundary_tests {
         let mut config = config_repository.load().unwrap();
         config.app.last_repo_paths = vec![repo_path.to_string_lossy().to_string()];
         config_repository.save(config).unwrap();
+    }
+
+    #[tokio::test]
+    async fn parallel_child_prompt_failure_skips_sessions_refs_and_execution_mutation() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let engine = WorkflowRuntimeService::new_for_test();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/parallel-prompt-failure";
+        let mut child = make_parallel_step("missing-facet-child");
+        child.policy = Some(format!(
+            "nonexistent_policy_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+
+        let workflow = Workflow {
+            variables: Default::default(),
+            name: "parallel-prompt-failure-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "parallel-review".to_string(),
+                node_type: NodeType::Parallel,
+                parallel_children: Some(vec![child]),
+                ..NodeDefinition::default()
+            }],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 0;
+        exec.current_session_id = None;
+        exec.step_execution_counts = HashMap::from([("parallel-review".to_string(), 1)]);
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let result = engine
+            .start_parallel_children(app.handle(), &session_store, &handles, worktree_path, false)
+            .await;
+
+        let err = result.expect_err("unresolved child facet must fail before side effects");
+        assert!(
+            matches!(err, WorkflowEngineError::InvalidWorkflow(_)),
+            "missing child facet must produce InvalidWorkflow, got: {err:?}"
+        );
+        assert!(
+            session_store
+                .list_sessions(&data_dir, worktree_path)
+                .unwrap()
+                .is_empty(),
+            "prompt failure must not persist Workflow Step Sessions"
+        );
+        assert!(
+            engine.session_workflow_refs.lock().await.is_empty(),
+            "prompt failure must not register session_workflow_refs"
+        );
+
+        let execs = engine.executions.lock().await;
+        let (_, exec) = find_by_worktree(&execs, worktree_path)
+            .expect("execution must remain registered after prompt failure");
+        assert!(
+            exec.parallel_run.is_none(),
+            "prompt failure must not apply parallel_run state"
+        );
+        assert!(
+            exec.current_session_id.is_none(),
+            "prompt failure must not set current_session_id"
+        );
+        assert_eq!(
+            exec.step_execution_counts,
+            HashMap::from([("parallel-review".to_string(), 1)]),
+            "prompt failure must not record child run indices"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_child_setup_failure_rolls_back_created_sessions_refs_and_execution_mutation()
+    {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let engine = WorkflowRuntimeService::new_for_test();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps();
+        let save_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let save_attempts_for_hook = save_attempts.clone();
+        session_store.set_save_hook_for_test(Arc::new(move |session| {
+            save_attempts_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if session
+                .workflow_step_context
+                .as_ref()
+                .is_some_and(|context| context.step_name == "review-b")
+            {
+                Err("injected second child save failure".to_string())
+            } else {
+                Ok(())
+            }
+        }));
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/parallel-setup-rollback";
+        let workflow = Workflow {
+            variables: Default::default(),
+            name: "parallel-setup-rollback-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "parallel-review".to_string(),
+                node_type: NodeType::Parallel,
+                parallel_children: Some(vec![
+                    make_parallel_step("review-a"),
+                    make_parallel_step("review-b"),
+                ]),
+                ..NodeDefinition::default()
+            }],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 0;
+        exec.current_session_id = None;
+        exec.step_execution_counts = HashMap::from([("parallel-review".to_string(), 1)]);
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let result = engine
+            .start_parallel_children(app.handle(), &session_store, &handles, worktree_path, false)
+            .await;
+
+        let err = result.expect_err("second child save failure must fail setup");
+        assert!(
+            matches!(err, WorkflowEngineError::SessionStore(_)),
+            "injected save failure must surface as SessionStore, got: {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .contains("injected second child save failure"),
+            "original setup failure must remain diagnosable, got: {err}"
+        );
+        assert_eq!(
+            save_attempts.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "test must exercise first child save success followed by second child save failure"
+        );
+        assert!(
+            session_store
+                .list_sessions(&data_dir, worktree_path)
+                .unwrap()
+                .is_empty(),
+            "rollback must remove the first child ChatSession from SessionStore"
+        );
+        assert!(
+            engine.session_workflow_refs.lock().await.is_empty(),
+            "rollback must remove refs for created child sessions"
+        );
+
+        let execs = engine.executions.lock().await;
+        let (_, exec) = find_by_worktree(&execs, worktree_path)
+            .expect("execution must remain registered after setup failure");
+        assert!(
+            exec.parallel_run.is_none(),
+            "setup failure must not apply parallel_run state"
+        );
+        assert!(
+            exec.current_session_id.is_none(),
+            "setup failure must not set current_session_id"
+        );
+        assert_eq!(
+            exec.step_execution_counts,
+            HashMap::from([("parallel-review".to_string(), 1)]),
+            "setup failure must not record child run indices"
+        );
     }
 
     /// Spec [04]: ApprovalResolved event は decision を typed (snake_case) で記録し、

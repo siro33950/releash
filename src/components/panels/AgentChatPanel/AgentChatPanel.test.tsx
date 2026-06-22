@@ -188,9 +188,15 @@ const mockRegisterDropZone = vi.fn(
 );
 
 function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
-	const sessions = (overrides.sessions ?? []) as Array<{ id: string }>;
-	const orderedSessions = overrides.orderedSessions ?? sessions;
-	const activeSession = (overrides.activeSession ?? null) as {
+	const {
+		getSessionTurnPhase: overrideGetSessionTurnPhase,
+		getSessionPermissionMode: overrideGetSessionPermissionMode,
+		getSessionPlanMode: overrideGetSessionPlanMode,
+		...restOverrides
+	} = overrides;
+	const sessions = (restOverrides.sessions ?? []) as Array<{ id: string }>;
+	const orderedSessions = restOverrides.orderedSessions ?? sessions;
+	const activeSession = (restOverrides.activeSession ?? null) as {
 		id: string;
 	} | null;
 	const sessionsById = activeSession
@@ -199,9 +205,15 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 	// 旧 API の `isStreaming` フラグを BoundSessionChat 内部の派生
 	// `getSessionTurnPhase` に橋渡しする。テストが `isStreaming: true` を渡したら、
 	// active session の turnPhase を "streaming" として返す mock を立てる。
-	const isStreaming = overrides.isStreaming === true;
-	const explicitTurnPhase = overrides.getSessionTurnPhase as
+	const isStreaming = restOverrides.isStreaming === true;
+	const explicitTurnPhase = overrideGetSessionTurnPhase as
 		| ((id: string) => string)
+		| undefined;
+	const explicitPermissionMode = overrideGetSessionPermissionMode as
+		| ((id: string) => string)
+		| undefined;
+	const explicitPlanMode = overrideGetSessionPlanMode as
+		| ((id: string) => boolean)
 		| undefined;
 	const getSessionTurnPhase = explicitTurnPhase
 		? vi.fn(explicitTurnPhase)
@@ -252,12 +264,18 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		),
 		registerViewableSession: vi.fn().mockReturnValue(() => {}),
 		getSessionTurnPhase,
+		getSessionPermissionMode: explicitPermissionMode
+			? vi.fn(explicitPermissionMode)
+			: vi.fn(() => restOverrides.permissionMode ?? "edit"),
+		getSessionPlanMode: explicitPlanMode
+			? vi.fn(explicitPlanMode)
+			: vi.fn(() => restOverrides.planMode ?? false),
 		getSessionSelectedModel: vi.fn().mockReturnValue(null),
 		getSessionPendingQueue: vi.fn().mockReturnValue([]),
 		getSessionLatestTokenUsage: vi.fn().mockReturnValue(null),
 		getSessionRuntimeSlashCommands: vi.fn().mockReturnValue([]),
 		getSessionInterrupting: vi.fn().mockReturnValue(false),
-		...overrides,
+		...restOverrides,
 	});
 }
 

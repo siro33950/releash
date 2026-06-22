@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use super::runtime_events as workflow_runtime_events;
 use super::runtime_session as workflow_runtime_session;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
-use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 use crate::adaptor::gateway::workflow::state::WorkflowState;
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
+use crate::domain::workflow::WorkflowStepContext;
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::usecase::agent_session::session::SessionStore;
 
@@ -69,6 +70,7 @@ pub(crate) trait StepSessionDeps: Send + Sync {
         step_model: Option<String>,
         step_permission: Option<String>,
         workflow_defaults: WorkflowDefaults,
+        workflow_step_context: WorkflowStepContext,
     ) -> Result<StepSessionInfo, WorkflowEngineError>;
 
     /// 合成済み `system_prompt` を AgentSession 開始経路へ受け渡す。
@@ -82,13 +84,14 @@ pub(crate) trait StepSessionDeps: Send + Sync {
 
     async fn mark_step_tab_open(&self, step_session_id: &str);
 
-    /// 逐次 step session 起動を event log に記録する（best-effort）。
-    /// projection 経路（`event_projection::reconstruct_state_from_events`）から
-    /// `current_session_id` を観測するために必要。
-    async fn write_step_session_started_event(&self, event: WorkflowEvent);
-
     /// ワークフロー状態をブロードキャストする（best-effort）。
     async fn broadcast_state(&self, worktree_path: &str, snapshot: WorkflowState);
+
+    /// step session と node の紐付きを event log に確定する。
+    async fn append_node_session_started(
+        &self,
+        snapshot: &WorkflowState,
+    ) -> Result<(), WorkflowEngineError>;
 
     /// Runtime lock acquired by the caller variant.
     async fn start_agent_turn_locked(
@@ -122,6 +125,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         step_model: Option<String>,
         step_permission: Option<String>,
         workflow_defaults: WorkflowDefaults,
+        workflow_step_context: WorkflowStepContext,
     ) -> Result<StepSessionInfo, WorkflowEngineError> {
         let data_dir = crate::app_data_dir::resolve_data_dir(self.app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
@@ -133,6 +137,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
             step_model,
             step_permission,
             &workflow_defaults,
+            workflow_step_context,
         )
         .await?;
         Ok(StepSessionInfo {
@@ -167,19 +172,26 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         crate::adaptor::gateway::workflow::mark_started_step_tab_open(self.app, step_session_id);
     }
 
-    async fn write_step_session_started_event(&self, event: WorkflowEvent) {
-        if let Err(e) =
-            crate::adaptor::gateway::workflow::event_log_writer::append_required_events_for_app(
-                self.app,
-                std::slice::from_ref(&event),
-            )
-        {
-            log::warn!("Failed to write StepSessionStarted event: {e}");
-        }
-    }
-
     async fn broadcast_state(&self, worktree_path: &str, snapshot: WorkflowState) {
         workflow_runtime_session::broadcast_state(self.app, worktree_path, snapshot).await;
+    }
+
+    async fn append_node_session_started(
+        &self,
+        snapshot: &WorkflowState,
+    ) -> Result<(), WorkflowEngineError> {
+        let Some(event) =
+            workflow_runtime_events::node_session_started_event_for_snapshot(snapshot)
+        else {
+            return Ok(());
+        };
+        crate::adaptor::gateway::workflow::event_log_writer::append_required_events_for_app(
+            self.app,
+            &[event],
+        )
+        .map_err(|e| {
+            WorkflowEngineError::SessionStore(format!("append NodeSessionStarted failed: {e}"))
+        })
     }
 
     async fn start_agent_turn_locked(

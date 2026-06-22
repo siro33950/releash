@@ -68,17 +68,17 @@ export function useWorkspaceTreeNodes(
 			setLoading(true);
 		}
 		try {
-			const nextNodes = await invoke<WorkspaceTreeNode[]>(
-				"list_workspace_worktree_nodes",
-				{ worktreePath },
-			);
-			const [nextClosedSessions, nextWorkflowHistory] = await Promise.all([
-				listClosedSessions(worktreePath),
-				invoke<WorkspaceWorkflowHistoryItem[]>(
-					"list_workspace_workflow_history",
-					{ worktreePath },
-				),
-			]);
+			const [nextNodes, nextClosedSessions, nextWorkflowHistory] =
+				await Promise.all([
+					invoke<WorkspaceTreeNode[]>("list_workspace_worktree_nodes", {
+						worktreePath,
+					}),
+					listClosedSessions(worktreePath),
+					invoke<WorkspaceWorkflowHistoryItem[]>(
+						"list_workspace_workflow_history",
+						{ worktreePath },
+					),
+				]);
 			if (seq !== refreshSeqRef.current) return;
 			loadedWorktreePathRef.current = worktreePath;
 			updateNodes(nextNodes);
@@ -117,14 +117,10 @@ export function useWorkspaceTreeNodes(
 			if (node.kind === "session") {
 				return node.id === sessionId;
 			}
-			return node.children.some((child) => child.id === sessionId);
+			return node.steps.some((step) =>
+				step.sessions.some((session) => session.id === sessionId),
+			);
 		});
-	}, []);
-
-	const hasWorkflowNode = useCallback((runId: string): boolean => {
-		return nodesRef.current.some(
-			(node) => node.kind === "workflow" && node.runId === runId,
-		);
 	}, []);
 
 	useEffect(() => {
@@ -175,15 +171,7 @@ export function useWorkspaceTreeNodes(
 				(event) => {
 					if (!mounted) return;
 					if (event.payload.worktreePath !== worktreePath) return;
-					const stateType = event.payload.workflowState.state.type;
-					if (
-						!hasWorkflowNode(event.payload.workflowState.executionId) ||
-						stateType === "completed" ||
-						stateType === "failed" ||
-						stateType === "aborted"
-					) {
-						scheduleRefresh();
-					}
+					scheduleRefresh();
 				},
 			);
 			if (!mounted) {
@@ -207,7 +195,7 @@ export function useWorkspaceTreeNodes(
 				refreshTimerRef.current = null;
 			}
 		};
-	}, [hasSessionNode, hasWorkflowNode, scheduleRefresh, worktreePath]);
+	}, [hasSessionNode, scheduleRefresh, worktreePath]);
 
 	return { nodes, closedSessions, workflowHistory, loading, error, refresh };
 }

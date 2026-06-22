@@ -45,6 +45,8 @@ import type {
 	CenterSelectionRequest,
 } from "@/types/workspace-tree";
 
+const WORKFLOW_CENTER_MIN_WIDTH = 336;
+
 interface MainLayoutProps {
 	selectedRootPath: string | null;
 	settings: AppSettings;
@@ -62,6 +64,7 @@ function WorktreeContent({
 	onRightResize,
 	leftPanels,
 	branchSelector,
+	rightSlot,
 	togglePanels,
 	centerSelection,
 	centerSelectionRequest,
@@ -77,6 +80,7 @@ function WorktreeContent({
 	onRightResize: (size: PanelSize) => void;
 	leftPanels?: TogglePanel[];
 	branchSelector: React.ReactNode;
+	rightSlot?: React.ReactNode;
 	togglePanels: TogglePanel[];
 	centerSelection: CenterSelection | null;
 	centerSelectionRequest?: CenterSelectionRequest | null;
@@ -183,7 +187,7 @@ function WorktreeContent({
 		centerSelectionRequest?.worktreePath === rootPath
 			? centerSelectionRequest
 			: null;
-	const showWorkflow = scopedCenterSelection?.kind === "workflowRun";
+	const showWorkflow = scopedCenterSelection?.kind === "workflowStep";
 	const handleNewSessionCreated = useCallback(
 		(sessionId: string) => {
 			onCenterSelectionResolved?.({
@@ -211,29 +215,39 @@ function WorktreeContent({
 		<AgentChatProvider worktreePath={rootPath}>
 			<ReviewThreadHandoffProvider worktreeName={worktreeName}>
 				{/* Center */}
-				<Panel id="center" defaultSize="50%" minSize="30%">
+				<Panel
+					id="center"
+					defaultSize="50%"
+					minSize={showWorkflow ? WORKFLOW_CENTER_MIN_WIDTH : "30%"}
+				>
 					<div className="h-full relative overflow-hidden flex flex-col">
-						<ViewToolbar leftPanels={leftPanels} rightSlot={branchSelector} />
-						<div className="flex-1 overflow-hidden">
-							{showWorkflow ? (
-								<WorkflowView
-									worktreePath={rootPath}
-									selectionRequest={scopedCenterSelectionRequest}
-								/>
-							) : (
-								<AgentChatPanel
-									worktreePath={rootPath}
-									selectionRequest={scopedCenterSelectionRequest}
-									activeEditorPath={activeEditorPath}
-									openEditorPaths={openEditorPaths}
-									activeEditorSelection={activeEditorSelection}
-									registerDropZone={s.registerDropZone}
-									sendMessageRef={sendAgentMessageRef}
-									onOpenDiffFile={handleOpenDiffFile}
-									onNewSessionCreated={handleNewSessionCreated}
-								/>
-							)}
-						</div>
+						{showWorkflow ? (
+							<WorkflowView
+								worktreePath={rootPath}
+								selectionRequest={
+									scopedCenterSelectionRequest ?? scopedCenterSelection
+								}
+								leftPanels={leftPanels}
+								rightSlot={rightSlot}
+							/>
+						) : (
+							<>
+								<ViewToolbar leftPanels={leftPanels} rightSlot={rightSlot} />
+								<div className="flex-1 overflow-hidden">
+									<AgentChatPanel
+										worktreePath={rootPath}
+										selectionRequest={scopedCenterSelectionRequest}
+										activeEditorPath={activeEditorPath}
+										openEditorPaths={openEditorPaths}
+										activeEditorSelection={activeEditorSelection}
+										registerDropZone={s.registerDropZone}
+										sendMessageRef={sendAgentMessageRef}
+										onOpenDiffFile={handleOpenDiffFile}
+										onNewSessionCreated={handleNewSessionCreated}
+									/>
+								</div>
+							</>
+						)}
 					</div>
 				</Panel>
 				<Separator />
@@ -248,7 +262,7 @@ function WorktreeContent({
 					onResize={onRightResize}
 				>
 					<div className="flex flex-col h-full border-l border-border">
-						<RightPanelHeader panels={togglePanels} />
+						<RightPanelHeader panels={togglePanels} leftSlot={branchSelector} />
 						<div className="flex-1 overflow-hidden">
 							<Group orientation="vertical">
 								<Panel
@@ -440,7 +454,6 @@ export function MainLayout({
 	const rightSlotContent = useMemo(
 		() => (
 			<>
-				{branchSelector}
 				{!rightVisible &&
 					togglePanels.map((p) => (
 						<Tooltip key={p.id}>
@@ -463,7 +476,7 @@ export function MainLayout({
 					))}
 			</>
 		),
-		[branchSelector, rightVisible, togglePanels],
+		[rightVisible, togglePanels],
 	);
 
 	return (
@@ -521,7 +534,8 @@ export function MainLayout({
 								rightPanelRef={rightPanelRef}
 								onRightResize={handleRightResize}
 								leftPanels={leftNavVisible ? undefined : [leftToggle]}
-								branchSelector={rightSlotContent}
+								branchSelector={branchSelector}
+								rightSlot={rightSlotContent}
 								togglePanels={togglePanels}
 								centerSelection={centerSelection}
 								centerSelectionRequest={centerSelectionRequest}

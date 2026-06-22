@@ -202,6 +202,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             // Workspace tree
             crate::adaptor::controller::command::workspace_tree::list_workspace_worktree_nodes,
             crate::adaptor::controller::command::workspace_tree::list_workspace_workflow_history,
+            crate::adaptor::controller::command::workspace_tree::get_workspace_workflow_step_detail,
             crate::adaptor::controller::command::workspace_tree::archive_workspace_workflow_run,
             crate::adaptor::controller::command::workspace_tree::restore_workspace_workflow_run,
             // Menu
