@@ -602,7 +602,7 @@ mod tests {
 
     fn make_adapter_deps() -> (Arc<SessionStore>, Arc<Mutex<AgentProcessMap>>) {
         (
-            Arc::new(SessionStore::default()),
+            Arc::new(crate::test_support::build_session_store()),
             Arc::new(Mutex::new(AgentProcessMap::new())),
         )
     }

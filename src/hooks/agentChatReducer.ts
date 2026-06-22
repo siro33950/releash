@@ -58,6 +58,7 @@ export type AgentChatAction =
 	/** Main panel の active session id を変更する。*/
 	| { type: "SET_ACTIVE_SESSION_ID"; sessionId: string | null }
 	| { type: "ADD_MESSAGE"; sessionId: string; message: ChatMessage }
+	| { type: "PREPEND_MESSAGES"; sessionId: string; messages: ChatMessage[] }
 	| {
 			type: "SET_TURN_PHASE";
 			sessionId: string;
@@ -158,7 +159,23 @@ function appendMessage(
 	session: ChatSession,
 	message: ChatMessage,
 ): ChatSession {
+	if (session.messages.some((existing) => existing.id === message.id)) {
+		return session;
+	}
 	return { ...session, messages: [...session.messages, message] };
+}
+
+function prependMessages(
+	session: ChatSession,
+	messages: ChatMessage[],
+): ChatSession {
+	if (messages.length === 0) return session;
+	const existingIds = new Set(session.messages.map((message) => message.id));
+	const newMessages = messages.filter(
+		(message) => !existingIds.has(message.id),
+	);
+	if (newMessages.length === 0) return session;
+	return { ...session, messages: [...newMessages, ...session.messages] };
 }
 
 function getActiveSession(state: AgentChatState): ChatSession | null {
@@ -196,11 +213,16 @@ function upsertSession(
 	state: AgentChatState,
 	session: ChatSession,
 ): AgentChatState {
+	const existing = state.sessionsById[session.id];
+	const storedSession =
+		existing && session.messages.length === 0
+			? { ...session, messages: existing.messages }
+			: session;
 	return {
 		...state,
 		sessionsById: {
 			...state.sessionsById,
-			[session.id]: session,
+			[session.id]: storedSession,
 		},
 		error: null,
 	};
@@ -267,6 +289,10 @@ export function reducer(
 				appendMessage(s, action.message),
 			);
 		}
+		case "PREPEND_MESSAGES":
+			return updateSessionInStore(state, action.sessionId, (s) =>
+				prependMessages(s, action.messages),
+			);
 		case "SET_TURN_PHASE": {
 			// idle に戻ったら interrupting 楽観フラグをクリアする。
 			const nextInterrupting =

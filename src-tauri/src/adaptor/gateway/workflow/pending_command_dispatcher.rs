@@ -621,7 +621,7 @@ mod tests {
         Arc<Mutex<AgentProcessMap>>,
     ) {
         (
-            Arc::new(crate::usecase::agent_session::session::SessionStore::default()),
+            Arc::new(crate::test_support::build_session_store()),
             Arc::new(Mutex::new(AgentProcessMap::new())),
         )
     }

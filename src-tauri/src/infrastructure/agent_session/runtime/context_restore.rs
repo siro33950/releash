@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::usecase::agent_session::session::{
-    parts_to_legacy, ChatMessage, ChatSession, ContextCarryState, MessageRole,
+    parts_to_legacy, ChatMessage, ChatSession, ContextCarryState, MessageRole, SessionMeta,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +101,23 @@ pub(crate) fn restore_context_payload(messages: &[ChatMessage]) -> Option<Restor
     }
     let prompt_prefix = build_restore_context_prompt_prefix(&messages);
     Some(RestoreContextPayload { prompt_prefix })
+}
+
+pub(crate) fn context_restore_plan_from_meta(meta: &SessionMeta) -> Option<ContextRestorePlan> {
+    if let Some(session_id) = meta
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(ContextRestorePlan::Resume {
+            session_id: session_id.to_string(),
+        });
+    }
+    if meta.context_carry == Some(ContextCarryState::Failed) || meta.message_count == 0 {
+        return Some(ContextRestorePlan::NoContext);
+    }
+    None
 }
 
 pub(crate) fn context_restore_plan_for_session(
@@ -232,6 +249,44 @@ mod tests {
             context_restore_plan_for_session(Some(&session)),
             ContextRestorePlan::NoContext
         ));
+    }
+
+    #[test]
+    fn context_restore_plan_from_meta_resolves_resume_without_messages() {
+        let mut session = session_with_messages(vec![ChatMessage {
+            id: "m1".to_string(),
+            role: MessageRole::Human,
+            content: "remember alpha".to_string(),
+            thinking: None,
+            activities: None,
+            parts: None,
+            timestamp: 1.0,
+            mentions: None,
+        }]);
+        session.agent_session_id = Some("sdk-session".to_string());
+        let meta = SessionMeta::from_session(&session);
+
+        assert!(matches!(
+            context_restore_plan_from_meta(&meta),
+            Some(ContextRestorePlan::Resume { ref session_id }) if session_id == "sdk-session"
+        ));
+    }
+
+    #[test]
+    fn context_restore_plan_from_meta_defers_when_reinject_may_need_messages() {
+        let session = session_with_messages(vec![ChatMessage {
+            id: "m1".to_string(),
+            role: MessageRole::Human,
+            content: "remember alpha".to_string(),
+            thinking: None,
+            activities: None,
+            parts: None,
+            timestamp: 1.0,
+            mentions: None,
+        }]);
+        let meta = SessionMeta::from_session(&session);
+
+        assert_eq!(context_restore_plan_from_meta(&meta), None);
     }
 
     #[test]

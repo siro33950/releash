@@ -12,7 +12,8 @@ use crate::infrastructure::agent_session::runtime::{
 };
 use crate::usecase::agent_session::session::errors::session_target_rejected;
 use crate::usecase::agent_session::session::{
-    ChatMessage, ChatSession, MessagePart, SessionState, SessionStore,
+    ChatMessage, ChatSession, MessagePart, PageCursor, SessionPage, SessionState, SessionStore,
+    DEFAULT_SESSION_PAGE_LIMIT,
 };
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -42,13 +43,6 @@ pub struct AgentTaskListReport {
     pub completed_count: usize,
     pub total_count: usize,
     pub items: Vec<AgentTaskListItem>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentThreadSearchRequest {
-    pub messages: Vec<ChatMessage>,
-    pub query: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -314,7 +308,7 @@ fn message_search_text(message: &ChatMessage) -> String {
                         text.push_str(detail);
                     }
                 }
-                MessagePart::Image { .. } => {}
+                MessagePart::Image { .. } | MessagePart::ImageRef { .. } => {}
             }
         }
         if !text.trim().is_empty() {
@@ -392,6 +386,18 @@ fn search_thread_messages(messages: &[ChatMessage], query: &str) -> Vec<AgentThr
             })
         })
         .collect()
+}
+
+fn search_session_messages(
+    session_store: &SessionStore,
+    data_dir: &std::path::Path,
+    session_id: &str,
+    query: &str,
+) -> Result<Vec<AgentThreadSearchMatch>, String> {
+    let session = session_store
+        .load_full_session_for_restore(data_dir, session_id)?
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    Ok(search_thread_messages(&session.messages, query))
 }
 
 fn search_sessions(
@@ -506,6 +512,55 @@ pub async fn get_session(
 }
 
 #[tauri::command]
+pub async fn get_session_page(
+    state: tauri::State<'_, Arc<SessionStore>>,
+    handles: tauri::State<
+        '_,
+        Arc<Mutex<crate::infrastructure::agent_session::runtime::AgentProcessMap>>,
+    >,
+    app: tauri::AppHandle,
+    session_id: String,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> Result<Option<SessionPage>, String> {
+    let data_dir = resolve_data_dir(&app)?;
+    let cursor = cursor
+        .as_deref()
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map(PageCursor)
+                .map_err(|_| "Invalid session page cursor".to_string())
+        })
+        .transpose()?;
+    crate::infrastructure::agent_session::runtime::get_session_page_internal_with_data_dir(
+        state.inner(),
+        handles.inner(),
+        &data_dir,
+        &session_id,
+        cursor,
+        limit.unwrap_or(DEFAULT_SESSION_PAGE_LIMIT),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_session_attachment(
+    state: tauri::State<'_, Arc<SessionStore>>,
+    app: tauri::AppHandle,
+    session_id: String,
+    attachment_id: String,
+) -> Result<Option<ImageAttachment>, String> {
+    let data_dir = resolve_data_dir(&app)?;
+    Ok(state
+        .get_session_attachment(&data_dir, &session_id, &attachment_id)?
+        .map(|attachment| ImageAttachment {
+            data: attachment.data,
+            media_type: attachment.media_type,
+        }))
+}
+
+#[tauri::command]
 pub async fn search_agent_sessions(
     app: tauri::AppHandle,
     session_store: tauri::State<'_, Arc<SessionStore>>,
@@ -515,7 +570,7 @@ pub async fn search_agent_sessions(
     limit: Option<usize>,
 ) -> Result<Vec<SessionSearchResult>, String> {
     let data_dir = resolve_data_dir(&app)?;
-    let sessions = session_store.list_worktree_sessions(&data_dir, &worktree_path)?;
+    let sessions = session_store.list_worktree_sessions_full(&data_dir, &worktree_path)?;
     let mut results = search_sessions(
         sessions,
         &query,
@@ -531,10 +586,14 @@ pub async fn search_agent_sessions(
 }
 
 #[tauri::command]
-pub async fn search_agent_thread_messages(
-    request: AgentThreadSearchRequest,
+pub async fn search_agent_session_messages(
+    app: tauri::AppHandle,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    session_id: String,
+    query: String,
 ) -> Result<Vec<AgentThreadSearchMatch>, String> {
-    Ok(search_thread_messages(&request.messages, &request.query))
+    let data_dir = resolve_data_dir(&app)?;
+    search_session_messages(session_store.inner(), &data_dir, &session_id, &query)
 }
 
 #[tauri::command]
@@ -583,7 +642,7 @@ pub async fn build_agent_task_list_report(
 ) -> Result<AgentTaskListReport, String> {
     let data_dir = resolve_data_dir(&app)?;
     let mut parts = session_store
-        .get_session(&data_dir, &chat_session_id)?
+        .load_full_session_for_restore(&data_dir, &chat_session_id)?
         .map(|session| {
             session
                 .messages
@@ -649,7 +708,7 @@ pub async fn start_agent_session(
 
     let data_dir = resolve_data_dir(&app)?;
     let mut session = session_store
-        .get_session(&data_dir, &chat_session_id)
+        .get_session_shell(&data_dir, &chat_session_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
     reject_explicit_start_for_workflow_step_session(&session, &cwd)?;
@@ -708,7 +767,6 @@ pub async fn start_agent_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usecase::agent_session::session::SessionStore;
 
     fn session_for_start_guard(
         workflow_step_session: bool,
@@ -970,6 +1028,69 @@ mod tests {
     }
 
     #[test]
+    fn search_session_messages_uses_full_session_beyond_latest_page() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = crate::test_support::build_session_store();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let messages = (0..(DEFAULT_SESSION_PAGE_LIMIT + 2))
+            .map(|index| {
+                let content = if index == 0 {
+                    "needle only in unloaded history".to_string()
+                } else {
+                    format!("ordinary message {index}")
+                };
+                human_prompt(&format!("m{index}"), &content, index as f64)
+            })
+            .collect::<Vec<_>>();
+        let session = crate::usecase::agent_session::session::ChatSession {
+            id: session_id.clone(),
+            worktree_path: "/repo".to_string(),
+            messages,
+            state: crate::usecase::agent_session::session::SessionState::Idle,
+            created_at: 1.0,
+            updated_at: 2.0,
+            agent_session_id: None,
+            context_carry: None,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            permission_profile_id: None,
+            selected_model: None,
+            backend_id: Some(
+                crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
+            ),
+            workflow_step_session: false,
+        };
+        store
+            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
+            .unwrap();
+
+        let latest_page = store
+            .get_session_page(
+                data_dir.path(),
+                &session_id,
+                None,
+                DEFAULT_SESSION_PAGE_LIMIT,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!latest_page
+            .messages
+            .iter()
+            .any(|message| message.id == "m0"));
+
+        let results = search_session_messages(&store, data_dir.path(), &session_id, "needle")
+            .expect("search should load full session");
+
+        assert_eq!(
+            results,
+            vec![AgentThreadSearchMatch {
+                message_id: "m0".to_string(),
+                match_index: 0,
+            }]
+        );
+    }
+
+    #[test]
     fn search_sessions_excludes_archived_sessions() {
         let archived = crate::usecase::agent_session::session::ChatSession {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1009,7 +1130,7 @@ mod tests {
     #[tokio::test]
     async fn start_agent_session_invalid_permission_mode_does_not_mutate_persisted_state() {
         let data_dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::default());
+        let store = Arc::new(crate::test_support::build_session_store());
         let session = crate::usecase::agent_session::session::ChatSession {
             id: uuid::Uuid::new_v4().to_string(),
             worktree_path: "/repo".to_string(),
@@ -1028,7 +1149,9 @@ mod tests {
             ),
             workflow_step_session: false,
         };
-        store.save_session(data_dir.path(), &session).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
+            .unwrap();
         let handles = Arc::new(Mutex::new(
             crate::infrastructure::agent_session::runtime::AgentProcessMap::new(),
         ));
@@ -1038,7 +1161,7 @@ mod tests {
             assert!(result.is_err(), "{invalid:?} must be rejected");
             // command 本体は ? で早期 return するため、保存値・runtime ハンドルとも不変。
             let saved = store
-                .get_session(data_dir.path(), &session.id)
+                .load_full_session_for_restore(data_dir.path(), &session.id)
                 .unwrap()
                 .unwrap();
             assert_eq!(saved.permission_mode, "edit");
@@ -1074,7 +1197,7 @@ pub async fn close_agent_session(
 ) -> Result<(), String> {
     let data_dir = resolve_data_dir(&app)?;
     let session = session_store
-        .get_session(&data_dir, &chat_session_id)
+        .get_session_shell(&data_dir, &chat_session_id)
         .map_err(|e| e.to_string())?;
     if should_skip_close_agent_session(session.as_ref()) {
         return Ok(());

@@ -241,6 +241,23 @@ describe("agentChatReducer", () => {
 			expect(next.error).toBeNull();
 		});
 
+		it("UPSERT_SESSION preserves existing messages when the incoming session is a shell", () => {
+			const existing = makeMessage({ id: "m1" });
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: {
+					s1: makeSession({ id: "s1", messages: [existing] }),
+				},
+			};
+			const next = reducer(state, {
+				type: "UPSERT_SESSION",
+				session: makeSession({ id: "s1", messages: [], state: "idle" }),
+			});
+
+			expect(next.sessionsById.s1.state).toBe("idle");
+			expect(next.sessionsById.s1.messages).toEqual([existing]);
+		});
+
 		it("SET_ACTIVE_SESSION_ID resolves active session from sessionsById", () => {
 			const session = makeSession();
 			const upserted = reducer(INITIAL_STATE, {
@@ -313,6 +330,45 @@ describe("agentChatReducer", () => {
 			});
 			expect(next.sessionsById["step-1"].messages).toHaveLength(1);
 			expect(next.sessionsById["step-1"].messages[0]).toBe(msg);
+		});
+
+		it("does not append duplicate messages", () => {
+			const msg = makeMessage({ id: "m1" });
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
+			};
+			const next = reducer(state, {
+				type: "ADD_MESSAGE",
+				sessionId: "s1",
+				message: makeMessage({ id: "m1" }),
+			});
+
+			expect(next.sessionsById.s1.messages).toEqual([msg]);
+		});
+	});
+
+	describe("PREPEND_MESSAGES", () => {
+		it("prepends older page messages without duplicating existing messages", () => {
+			const existing = makeMessage({ id: "m2", timestamp: 1002 });
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: {
+					s1: makeSession({ id: "s1", messages: [existing] }),
+				},
+			};
+			const older = makeMessage({ id: "m1", timestamp: 1001 });
+			const duplicate = makeMessage({ id: "m2", timestamp: 1002 });
+
+			const next = reducer(state, {
+				type: "PREPEND_MESSAGES",
+				sessionId: "s1",
+				messages: [older, duplicate],
+			});
+
+			expect(
+				next.sessionsById.s1.messages.map((message) => message.id),
+			).toEqual(["m1", "m2"]);
 		});
 	});
 

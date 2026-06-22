@@ -4,6 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MessageRole } from "@/types/session";
 import { StreamMessage } from "./StreamMessage";
 
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({
+	invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
+
 const mockOpenUrl = vi.fn().mockResolvedValue(undefined);
 vi.mock("@tauri-apps/plugin-opener", () => ({
 	openUrl: (...args: unknown[]) => mockOpenUrl(...args),
@@ -62,6 +67,8 @@ const system: MessageRole = "system";
 
 describe("StreamMessage", () => {
 	beforeEach(() => {
+		mockInvoke.mockReset();
+		mockInvoke.mockResolvedValue(null);
 		mockOpenUrl.mockClear();
 		markdownSpy.mockClear();
 	});
@@ -183,6 +190,44 @@ describe("StreamMessage", () => {
 		expect(imgs.length).toBe(1);
 		expect(imgs[0].getAttribute("src")).toBe("data:image/png;base64,aGVsbG8=");
 		expect(el.textContent).toContain("Check this");
+	});
+
+	it("loads image refs in human message when rendered", async () => {
+		mockInvoke.mockResolvedValueOnce({
+			data: "aGVsbG8=",
+			mediaType: "image/png",
+		});
+		const images = [
+			{
+				type: "image_ref" as const,
+				attachment: {
+					id: "att-1",
+					mediaType: "image/png",
+					byteSize: 5,
+				},
+			},
+		];
+
+		render(
+			<StreamMessage
+				content="Check this"
+				role={human}
+				images={images}
+				sessionId="session-1"
+			/>,
+		);
+
+		expect(screen.getByLabelText("Loading image")).toBeDefined();
+		await waitFor(() => {
+			const img = screen
+				.getByTestId("stream-message-human")
+				.querySelector("img");
+			expect(img?.getAttribute("src")).toBe("data:image/png;base64,aGVsbG8=");
+		});
+		expect(mockInvoke).toHaveBeenCalledWith("get_session_attachment", {
+			sessionId: "session-1",
+			attachmentId: "att-1",
+		});
 	});
 
 	it("renders human message without images when no image parts", () => {

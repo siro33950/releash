@@ -31,7 +31,7 @@ pub async fn dispatch_agent_message(
         Some(session_id) => context
             .gateway
             .session_store
-            .get_session(&data_dir, session_id)?
+            .get_session_meta(&data_dir, session_id)?
             .map(|session| session.workflow_step_session)
             .unwrap_or(false),
         None => false,

@@ -35,7 +35,7 @@ use crate::review_comments::{
     AuthorScope, ReviewActor, ReviewCommentStore, ReviewTarget, ReviewThreadFilter,
     ReviewThreadState,
 };
-use crate::usecase::agent_session::session::{SessionState, SessionStore};
+use crate::usecase::agent_session::session::SessionState;
 use crate::usecase::agent_session::status::current_timestamp;
 use crate::usecase::workflow::command::WorkflowPendingCommandUsecase;
 use crate::usecase::workflow::event_draft;
@@ -704,9 +704,9 @@ fn review_actor_and_worktree(
             "--session-id must not be empty".to_string(),
         ));
     }
-    let session_store = SessionStore::default();
+    let session_store = crate::adaptor::controller::wiring::build_session_store();
     let session = session_store
-        .get_session(data_dir, session_id)
+        .get_session_meta(data_dir, session_id)
         .map_err(CliError::Other)?
         .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
     if session.state == SessionState::Closed {
@@ -744,9 +744,9 @@ fn review_worktree_from_session(data_dir: &Path, session_id: &str) -> Result<Str
             "--session-id must not be empty".to_string(),
         ));
     }
-    let session_store = SessionStore::default();
+    let session_store = crate::adaptor::controller::wiring::build_session_store();
     let session = session_store
-        .get_session(data_dir, session_id)
+        .get_session_meta(data_dir, session_id)
         .map_err(CliError::Other)?
         .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
     Ok(session.worktree_path)
@@ -1465,7 +1465,7 @@ models = ["opus"]
         backend_id: Option<&str>,
         model: Option<&str>,
     ) {
-        let store = SessionStore::default();
+        let store = crate::test_support::build_session_store();
         let session = crate::usecase::agent_session::session::ChatSession {
             id: session_id.to_string(),
             worktree_path: "/repo".to_string(),
@@ -1482,7 +1482,9 @@ models = ["opus"]
             backend_id: backend_id.map(str::to_string),
             workflow_step_session: false,
         };
-        store.save_session(data_dir, &session).unwrap();
+        store
+            .save_full_session_for_migration_or_restore(data_dir, &session)
+            .unwrap();
     }
 
     fn make_run(run_id: &str, worktree: &str, status: RunStatus, started_at: f64) -> WorkflowRun {
@@ -1567,7 +1569,7 @@ models = ["opus"]
         let session_id = uuid::Uuid::new_v4().to_string();
         write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
 
-        SessionStore::default()
+        crate::test_support::build_session_store()
             .set_session_state(tmp.path(), &session_id, SessionState::Closed)
             .unwrap();
         let closed = cmd_review(

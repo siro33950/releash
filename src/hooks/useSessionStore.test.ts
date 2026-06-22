@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LegacyChatMessage } from "@/types/session";
-import { legacyToParts } from "./useSessionStore";
+import { getSession, getSessionPage, legacyToParts } from "./useSessionStore";
 
 function makeLegacyMsg(
 	overrides?: Partial<LegacyChatMessage>,
@@ -120,3 +121,104 @@ describe("legacyToParts", () => {
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn().mockResolvedValue(undefined),
 }));
+
+describe("session paging", () => {
+	beforeEach(() => {
+		vi.mocked(invoke).mockReset();
+	});
+
+	it("getSession uses messages and initial page metadata returned by get_session", async () => {
+		vi.mocked(invoke).mockResolvedValueOnce({
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [
+				{
+					id: "m1",
+					role: "human",
+					content: "hello",
+					timestamp: 1001,
+				},
+			],
+			state: "active",
+			createdAt: 1000,
+			updatedAt: 1000,
+			permissionMode: "edit",
+			selectedModel: "claude:sonnet",
+			turnPhase: "idle",
+			availableModels: [],
+			initialPage: {
+				nextCursor: "1",
+				hasMore: true,
+				totalCount: 10,
+			},
+			latestTokenUsage: { inputTokens: 1, outputTokens: 2 },
+		});
+
+		const response = await getSession("s1");
+
+		expect(invoke).toHaveBeenCalledTimes(1);
+		expect(invoke).toHaveBeenCalledWith("get_session", {
+			sessionId: "s1",
+		});
+		expect(response?.session.messages).toEqual([
+			{
+				id: "m1",
+				role: "human",
+				parts: [{ type: "text", content: "hello" }],
+				timestamp: 1001,
+				mentions: undefined,
+			},
+		]);
+		expect(response?.initialPage).toEqual({
+			nextCursor: "1",
+			hasMore: true,
+			totalCount: 10,
+		});
+		expect(response?.latestTokenUsage).toEqual({
+			inputTokens: 1,
+			outputTokens: 2,
+		});
+	});
+
+	it("getSessionPage forwards cursor and limit", async () => {
+		vi.mocked(invoke).mockResolvedValueOnce({
+			messages: [
+				{
+					id: "m2",
+					role: "human",
+					content: "older",
+					timestamp: 1000,
+				},
+			],
+			messageMetadata: [{ messageId: "m2", tokenMeta: { input: 1 } }],
+			nextCursor: null,
+			hasMore: false,
+			totalCount: 1,
+			latestTokenUsage: null,
+		});
+
+		const page = await getSessionPage("s1", "7", 25);
+
+		expect(invoke).toHaveBeenCalledWith("get_session_page", {
+			sessionId: "s1",
+			cursor: "7",
+			limit: 25,
+		});
+		expect(page).toEqual({
+			messages: [
+				{
+					id: "m2",
+					role: "human",
+					parts: [{ type: "text", content: "older" }],
+					timestamp: 1000,
+					mentions: undefined,
+				},
+			],
+			messageMetadata: [{ messageId: "m2", tokenMeta: { input: 1 } }],
+			nextCursor: null,
+			hasMore: false,
+			totalCount: 1,
+			latestTokenUsage: null,
+		});
+	});
+});

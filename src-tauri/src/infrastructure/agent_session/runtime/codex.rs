@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
@@ -26,14 +27,16 @@ use crate::infrastructure::agent_session::runtime::codex_app_server::{
 };
 use crate::infrastructure::agent_session::runtime::context_restore::{
     context_restore_plan_for_session, context_restore_plan_for_session_before_turn,
-    ContextRestorePlan, RestoreContextPayload,
+    context_restore_plan_from_meta, ContextRestorePlan, RestoreContextPayload,
 };
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::wait_until_session_close_finished;
 use crate::infrastructure::agent_session::runtime::{
     AgentBackend, AgentEditorContext, AgentMessage, ImageAttachment, PermissionResponse,
     SessionConfig, SessionHandle,
 };
-use crate::usecase::agent_session::session::{ContextCarryState, SessionStore};
+use crate::usecase::agent_session::session::{
+    ContextCarryState, SessionMeta, SessionReaderPort, SessionStore,
+};
 
 /// Codex app-server バックエンド。
 /// Codex の実行・approval・streaming は `codex app-server` の JSON-RPC に委譲する。
@@ -261,6 +264,33 @@ fn persist_pending_context_restore_failure<R: tauri::Runtime>(
     }
 }
 
+fn resolve_codex_context_restore_plan(
+    session_reader: &SessionReaderPort,
+    data_dir: &Path,
+    chat_session_id: &str,
+    current_turn_agent_message_id: Option<&str>,
+) -> Result<(Option<SessionMeta>, ContextRestorePlan), String> {
+    let stored_meta = session_reader.get_session_meta(data_dir, chat_session_id)?;
+    if let Some(plan) = stored_meta
+        .as_ref()
+        .and_then(context_restore_plan_from_meta)
+    {
+        return Ok((stored_meta, plan));
+    }
+    if stored_meta.is_none() {
+        return Ok((None, ContextRestorePlan::NoContext));
+    }
+
+    let stored_session = session_reader.load_full_session_for_restore(data_dir, chat_session_id)?;
+    let context_restore_plan = match current_turn_agent_message_id {
+        Some(agent_message_id) => {
+            context_restore_plan_for_session_before_turn(stored_session.as_ref(), agent_message_id)
+        }
+        None => context_restore_plan_for_session(stored_session.as_ref()),
+    };
+    Ok((stored_meta, context_restore_plan))
+}
+
 struct AppServerCodexRuntime {
     app: AppHandle,
     handles: Arc<Mutex<AgentProcessMap>>,
@@ -335,18 +365,13 @@ impl AppServerCodexRuntime {
         {
             child_envs.push((key.to_string(), value));
         }
-        let parts = spawn_app_server_process_parts(&self.cli_path, Some(&config.cwd), &child_envs)?;
         let data_dir = resolve_data_dir(&self.app)?;
-        let stored_session = self
-            .session_store
-            .get_session(&data_dir, &config.chat_session_id)?;
-        let context_restore_plan = match current_turn_agent_message_id {
-            Some(agent_message_id) => context_restore_plan_for_session_before_turn(
-                stored_session.as_ref(),
-                agent_message_id,
-            ),
-            None => context_restore_plan_for_session(stored_session.as_ref()),
-        };
+        let (stored_meta, context_restore_plan) = resolve_codex_context_restore_plan(
+            self.session_store.as_ref(),
+            &data_dir,
+            &config.chat_session_id,
+            current_turn_agent_message_id,
+        )?;
         let restore_context = context_restore_plan.restore_context().cloned();
         let context_carry_on_ready = match &context_restore_plan {
             ContextRestorePlan::Resume { .. } => Some(ContextCarryState::Resumed),
@@ -356,9 +381,8 @@ impl AppServerCodexRuntime {
             restore_context,
             context_carry_on_ready,
         )));
-        let selected_model = stored_session.as_ref().and_then(|session| {
-            session
-                .selected_model
+        let selected_model = stored_meta.as_ref().and_then(|meta| {
+            meta.selected_model
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -371,9 +395,9 @@ impl AppServerCodexRuntime {
             .permission_mode
             .as_deref()
             .or_else(|| {
-                stored_session
+                stored_meta
                     .as_ref()
-                    .map(|session| session.permission_mode.as_str())
+                    .map(|meta| meta.permission_mode.as_str())
             })
             .unwrap_or("edit")
             .to_string();
@@ -381,14 +405,15 @@ impl AppServerCodexRuntime {
             .permission_profile_id
             .as_deref()
             .or_else(|| {
-                stored_session
+                stored_meta
                     .as_ref()
-                    .and_then(|session| session.permission_profile_id.as_deref())
+                    .and_then(|meta| meta.permission_profile_id.as_deref())
             })
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToString::to_string);
 
+        let parts = spawn_app_server_process_parts(&self.cli_path, Some(&config.cwd), &child_envs)?;
         register_external_agent_process(
             &self.app,
             &self.session_store,
@@ -843,7 +868,7 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
         let data_dir = resolve_data_dir(&self.app)?;
         let stored_session = self
             .session_store
-            .get_session(&data_dir, &session.chat_session_id)?
+            .get_session_meta(&data_dir, &session.chat_session_id)?
             .ok_or_else(|| format!("Session not found: {}", session.chat_session_id))?;
         let config = SessionConfig {
             chat_session_id: session.chat_session_id.clone(),
@@ -880,7 +905,7 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
         let data_dir = resolve_data_dir(&self.app)?;
         let stored_session = self
             .session_store
-            .get_session(&data_dir, &session.chat_session_id)?
+            .get_session_meta(&data_dir, &session.chat_session_id)?
             .ok_or_else(|| format!("Session not found: {}", session.chat_session_id))?;
         let state = self
             .session_state(&session.chat_session_id)
@@ -1200,12 +1225,123 @@ impl AgentBackend for CodexBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::agent_session::{AgentSessionReader, AgentSessionStorageTypes};
+    use crate::usecase::agent_session::session::{
+        ChatMessage, ChatSession, MessagePart, PageCursor, SessionAttachment, SessionPage,
+        SessionState, SESSION_BODY_FORMAT_VERSION,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingRestoreStorage {
+        meta: SessionMeta,
+        full_loads: Arc<AtomicUsize>,
+    }
+
+    impl AgentSessionStorageTypes for CountingRestoreStorage {
+        type Session = ChatSession;
+        type Meta = SessionMeta;
+        type PageCursor = PageCursor;
+        type Page = SessionPage;
+        type Message = ChatMessage;
+        type MessagePart = MessagePart;
+        type Attachment = SessionAttachment;
+    }
+
+    impl AgentSessionReader for CountingRestoreStorage {
+        fn list_metas(&self, _app_data_dir: &Path) -> Result<Vec<Self::Meta>, String> {
+            Ok(vec![self.meta.clone()])
+        }
+
+        fn session_title(
+            &self,
+            _app_data_dir: &Path,
+            _session_id: &str,
+        ) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn get_session_meta(
+            &self,
+            _app_data_dir: &Path,
+            session_id: &str,
+        ) -> Result<Option<Self::Meta>, String> {
+            Ok((session_id == self.meta.id).then(|| self.meta.clone()))
+        }
+
+        fn load_full_session_for_restore(
+            &self,
+            _app_data_dir: &Path,
+            _session_id: &str,
+        ) -> Result<Option<Self::Session>, String> {
+            self.full_loads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(self.meta.to_session(Vec::new())))
+        }
+
+        fn get_session_page(
+            &self,
+            _app_data_dir: &Path,
+            _session_id: &str,
+            _cursor: Option<Self::PageCursor>,
+            _limit: usize,
+        ) -> Result<Option<Self::Page>, String> {
+            unimplemented!("not needed by codex restore plan tests")
+        }
+
+        fn get_session_attachment(
+            &self,
+            _app_data_dir: &Path,
+            _session_id: &str,
+            _attachment_id: &str,
+        ) -> Result<Option<Self::Attachment>, String> {
+            Ok(None)
+        }
+    }
+
+    fn resume_meta() -> SessionMeta {
+        SessionMeta {
+            id: "session-1".to_string(),
+            worktree_path: "/repo".to_string(),
+            state: SessionState::Active,
+            created_at: 1.0,
+            updated_at: 1.0,
+            agent_session_id: Some("codex-thread-1".to_string()),
+            context_carry: None,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            selected_model: Some("gpt-5.1-codex".to_string()),
+            permission_profile_id: None,
+            backend_id: Some(CODEX_BACKEND_ID.to_string()),
+            workflow_step_session: false,
+            first_message_preview: "Hello".to_string(),
+            message_count: 100,
+            body_format_version: SESSION_BODY_FORMAT_VERSION,
+        }
+    }
 
     #[test]
     fn fixed_models_returns_codex_fixed_list_in_order() {
         let backend = CodexBackend::new();
         let expected: Vec<String> = CODEX_FIXED_MODELS.iter().map(|s| s.to_string()).collect();
         assert_eq!(backend.fixed_models(), Some(expected));
+    }
+
+    #[test]
+    fn resolve_codex_context_restore_plan_uses_meta_resume_without_full_load() {
+        let full_loads = Arc::new(AtomicUsize::new(0));
+        let store = CountingRestoreStorage {
+            meta: resume_meta(),
+            full_loads: Arc::clone(&full_loads),
+        };
+        let data_dir = tempfile::tempdir().unwrap();
+
+        let (_meta, plan) =
+            resolve_codex_context_restore_plan(&store, data_dir.path(), "session-1", None).unwrap();
+
+        assert!(matches!(
+            plan,
+            ContextRestorePlan::Resume { ref session_id } if session_id == "codex-thread-1"
+        ));
+        assert_eq!(full_loads.load(Ordering::SeqCst), 0);
     }
 
     #[test]

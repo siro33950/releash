@@ -36,6 +36,8 @@ interface LegacyChatSession {
 	workflowStepSession?: boolean;
 }
 
+export const INITIAL_SESSION_PAGE_LIMIT = 50;
+
 export function legacyToParts(msg: LegacyChatMessage): MessagePart[] {
 	const parts: MessagePart[] = [];
 	if (msg.thinking) {
@@ -115,6 +117,35 @@ export interface GetSessionResponse {
 	pendingQueue?: QueuedAgentTurn[];
 	pendingQueueCount?: number;
 	latestTokenUsage?: TokenUsage | null;
+	initialPage?: {
+		nextCursor: string | null;
+		hasMore: boolean;
+		totalCount: number;
+	};
+}
+
+interface RawSessionPage {
+	messages: (LegacyChatMessage & { parts?: MessagePart[] })[];
+	messageMetadata?: MessagePageMetadata[];
+	nextCursor?: string | null;
+	hasMore: boolean;
+	totalCount: number;
+	latestTokenUsage?: TokenUsage | null;
+}
+
+export interface MessagePageMetadata {
+	messageId: string;
+	tokenMeta?: unknown;
+	runMeta?: unknown;
+}
+
+export interface GetSessionPageResponse {
+	messages: ChatMessage[];
+	messageMetadata: MessagePageMetadata[];
+	nextCursor: string | null;
+	hasMore: boolean;
+	totalCount: number;
+	latestTokenUsage: TokenUsage | null;
 }
 
 interface RawGetSessionResponse {
@@ -138,6 +169,11 @@ interface RawGetSessionResponse {
 	latestTokenUsage?: TokenUsage | null;
 	workflowStepSession?: boolean;
 	turnPhase: TurnPhase;
+	initialPage?: {
+		nextCursor?: string | null;
+		hasMore: boolean;
+		totalCount: number;
+	};
 }
 
 function convertRawGetSessionResponse(
@@ -165,7 +201,38 @@ function convertRawGetSessionResponse(
 		pendingQueue: raw.pendingQueue ?? [],
 		pendingQueueCount: raw.pendingQueueCount ?? 0,
 		latestTokenUsage: raw.latestTokenUsage ?? null,
+		initialPage: raw.initialPage
+			? {
+					nextCursor: raw.initialPage.nextCursor ?? null,
+					hasMore: raw.initialPage.hasMore,
+					totalCount: raw.initialPage.totalCount,
+				}
+			: undefined,
 	};
+}
+
+function convertRawSessionPage(raw: RawSessionPage): GetSessionPageResponse {
+	return {
+		messages: raw.messages.map(convertLegacyMessage),
+		messageMetadata: raw.messageMetadata ?? [],
+		nextCursor: raw.nextCursor ?? null,
+		hasMore: raw.hasMore,
+		totalCount: raw.totalCount,
+		latestTokenUsage: raw.latestTokenUsage ?? null,
+	};
+}
+
+export async function getSessionPage(
+	sessionId: string,
+	cursor: string | null = null,
+	limit: number = INITIAL_SESSION_PAGE_LIMIT,
+): Promise<GetSessionPageResponse | null> {
+	const raw = await invoke<RawSessionPage | null>("get_session_page", {
+		sessionId,
+		cursor,
+		limit,
+	});
+	return raw ? convertRawSessionPage(raw) : null;
 }
 
 export async function getSession(

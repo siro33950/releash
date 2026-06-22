@@ -177,7 +177,17 @@ export type MessagePart =
 			type: "image";
 			data: string;
 			mediaType: string;
+	  }
+	| {
+			type: "image_ref";
+			attachment: AttachmentRef;
 	  };
+
+export interface AttachmentRef {
+	id: string;
+	mediaType: string;
+	byteSize: number;
+}
 
 export type ActivityEntry =
 	| {
@@ -319,6 +329,8 @@ export interface WorkspaceStatus {
 }
 
 export type ImagePart = Extract<MessagePart, { type: "image" }>;
+export type ImageRefPart = Extract<MessagePart, { type: "image_ref" }>;
+export type DisplayImagePart = ImagePart | ImageRefPart;
 
 export interface ImageAttachment {
 	data: string;

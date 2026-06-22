@@ -168,7 +168,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::agent_session::permission::respond_agent_permission,
             crate::adaptor::controller::command::agent_session::session::send_agent_message,
             crate::adaptor::controller::command::agent_session::session::search_agent_sessions,
-            crate::adaptor::controller::command::agent_session::session::search_agent_thread_messages,
+            crate::adaptor::controller::command::agent_session::session::search_agent_session_messages,
             crate::adaptor::controller::command::agent_session::session::init_agent_sessions,
             crate::adaptor::controller::command::agent_session::action::scan_agent_skills,
             crate::adaptor::controller::command::agent_session::action::read_codex_skill_catalog,
@@ -185,6 +185,8 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             // Session
             crate::adaptor::controller::command::agent_session::stored_session::list_sessions,
             crate::adaptor::controller::command::agent_session::session::get_session,
+            crate::adaptor::controller::command::agent_session::session::get_session_page,
+            crate::adaptor::controller::command::agent_session::session::get_session_attachment,
             crate::adaptor::controller::command::agent_session::stored_session::create_session,
             crate::adaptor::controller::command::agent_session::stored_session::close_session,
             crate::adaptor::controller::command::agent_session::stored_session::restore_session,

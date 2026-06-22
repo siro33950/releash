@@ -19,11 +19,11 @@ pub async fn set_agent_permission_mode(
     let pm = crate::permission::PermissionMode::parse(&permission_mode)
         .map_err(|error| error.to_string())?;
     let data_dir = crate::app_data_dir::resolve_data_dir(&app)?;
-    let session = session_store
-        .get_session(&data_dir, &chat_session_id)?
+    let meta = session_store
+        .get_session_meta(&data_dir, &chat_session_id)?
         .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
 
-    if session.backend_id.as_deref() == Some(CODEX_BACKEND_ID) {
+    if meta.backend_id.as_deref() == Some(CODEX_BACKEND_ID) {
         session_store.update_permission_mode(&data_dir, &chat_session_id, pm.as_str())?;
         session_store.update_permission_profile_id(&data_dir, &chat_session_id, None)?;
         if let Some(backend) = registry.get(CODEX_BACKEND_ID) {
@@ -33,7 +33,7 @@ pub async fn set_agent_permission_mode(
                         chat_session_id: chat_session_id.clone(),
                         backend_id: CODEX_BACKEND_ID.to_string(),
                     },
-                    &session.worktree_path,
+                    &meta.worktree_path,
                     pm.as_str(),
                 )
                 .await

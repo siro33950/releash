@@ -1,8 +1,8 @@
 //! mention 参照の転送型。
 //!
-//! domain VO `MentionReference` は serde 非依存（純粋データ）であり、フロント／永続化が
-//! 利用する転送表現（camelCase・行範囲省略）は本 adaptor 型が所有する。`into_domain()` /
-//! `from_domain()` で双方向変換し、フィールド名・camelCase・省略表現は移行前と等価に保つ。
+//! domain VO `MentionReference` は serde 非依存（純粋データ）であり、フロント入力が
+//! 利用する転送表現（camelCase・行範囲省略）は本 adaptor 型が所有する。永続化側は
+//! usecase の `MessageMention` を使い、controller 境界でのみ domain へ変換する。
 
 use serde::{Deserialize, Serialize};
 
@@ -25,14 +25,6 @@ impl MentionReferenceInput {
             file_path: self.file_path,
             start_line: self.start_line,
             end_line: self.end_line,
-        }
-    }
-
-    pub fn from_domain(d: MentionReference) -> Self {
-        Self {
-            file_path: d.file_path,
-            start_line: d.start_line,
-            end_line: d.end_line,
         }
     }
 }

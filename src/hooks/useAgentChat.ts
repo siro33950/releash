@@ -40,6 +40,7 @@ import {
 	createSession,
 	forkSession as forkSessionApi,
 	getSession,
+	getSessionPage,
 	initAgentSessions,
 	listAgentBackends,
 	listClosedSessions,
@@ -70,6 +71,11 @@ export type SendMessageOptions = {
 	activateNewSession?: boolean;
 	editorContext?: AgentEditorContext;
 };
+type GetSessionInitialPage = {
+	nextCursor: string | null;
+	hasMore: boolean;
+	totalCount: number;
+};
 
 /**
  * SDK listener gating のために「現在 UI 上で表示中の session id 集合」を購読する registry。
@@ -94,8 +100,8 @@ export interface UseAgentChatResult {
 	sessionAgentStates: Map<string, AgentState>;
 	/**
 	 * 送信先 session を明示する API。`sessionId === null` は「新規 session を作成して送る」を
-	 * 表す。送信応答の `response.session` は内部で `UPSERT_SESSION` され、各 panel は
-	 * `getSessionById(id)` 経由で最新内容を観測する。
+	 * 表す。送信応答の `response.session` は shell として `UPSERT_SESSION` され、
+	 * 永続化された human/agent message は別フィールドから追加される。
 	 */
 	sendMessage: (
 		sessionId: string | null,
@@ -144,6 +150,8 @@ export interface UseAgentChatResult {
 	getSessionById: (sessionId: string | null | undefined) => ChatSession | null;
 	/** SDK イベント反映の gating 用に、現在 panel で表示している session を登録する。*/
 	registerViewableSession: (sessionId: string) => () => void;
+	/** cursor paging で過去方向の message page を読み込む。*/
+	loadOlderMessages: (sessionId: string) => Promise<void>;
 	/** per-session lookup（既存）。*/
 	getSessionTurnPhase: (sessionId: string) => TurnPhase;
 	getSessionInterrupting: (sessionId: string) => boolean;
@@ -265,6 +273,27 @@ export function useAgentChat(
 	availableModelsRef.current = state.availableModels;
 	const sessionModelsRef = useRef(state.sessionModels);
 	sessionModelsRef.current = state.sessionModels;
+	const pageStateRef = useRef<
+		Record<
+			string,
+			{ nextCursor: string | null; hasMore: boolean; loading: boolean }
+		>
+	>({});
+
+	const rememberInitialPage = useCallback(
+		(response: {
+			session: ChatSession;
+			initialPage?: GetSessionInitialPage;
+		}) => {
+			const page = response.initialPage;
+			pageStateRef.current[response.session.id] = {
+				nextCursor: page?.nextCursor ?? null,
+				hasMore: page?.hasMore ?? false,
+				loading: false,
+			};
+		},
+		[],
+	);
 
 	// SDK listener gating: 表示中の session id 集合を管理する registry。
 	// 各 panel が register したものは getIds() で参照される（listener が更新を gate する）。
@@ -323,6 +352,7 @@ export function useAgentChat(
 						const response = await getSession(nextSession.id);
 						if (activeSessionIdRef.current === previousActiveSessionId) {
 							if (response) {
+								rememberInitialPage(response);
 								dispatch({ type: "UPSERT_SESSION", session: response.session });
 								dispatch({
 									type: "SET_ACTIVE_SESSION_ID",
@@ -346,7 +376,7 @@ export function useAgentChat(
 				return [];
 			}
 		},
-		[],
+		[rememberInitialPage],
 	);
 
 	const refreshClosedSessions = useCallback(async () => {
@@ -361,32 +391,37 @@ export function useAgentChat(
 		}
 	}, []);
 
-	const selectSession = useCallback(async (sessionId: string) => {
-		try {
-			const response = await getSession(sessionId);
-			if (response) {
-				dispatch({ type: "UPSERT_SESSION", session: response.session });
+	const selectSession = useCallback(
+		async (sessionId: string) => {
+			try {
+				const response = await getSession(sessionId);
+				if (response) {
+					rememberInitialPage(response);
+					dispatch({ type: "UPSERT_SESSION", session: response.session });
+					dispatch({
+						type: "SET_ACTIVE_SESSION_ID",
+						sessionId: response.session.id,
+					});
+					dispatchSessionMeta(dispatch, sessionId, response);
+				} else {
+					dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
+				}
+			} catch (e) {
 				dispatch({
-					type: "SET_ACTIVE_SESSION_ID",
-					sessionId: response.session.id,
+					type: "SET_ERROR",
+					error: `セッションの読み込みに失敗: ${e}`,
 				});
-				dispatchSessionMeta(dispatch, sessionId, response);
-			} else {
-				dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 			}
-		} catch (e) {
-			dispatch({
-				type: "SET_ERROR",
-				error: `セッションの読み込みに失敗: ${e}`,
-			});
-		}
-	}, []);
+		},
+		[rememberInitialPage],
+	);
 
 	const loadSession = useCallback(
 		async (sessionId: string): Promise<ChatSession | null> => {
 			try {
 				const response = await getSession(sessionId);
 				if (response) {
+					rememberInitialPage(response);
 					dispatch({ type: "UPSERT_SESSION", session: response.session });
 					dispatchSessionMeta(dispatch, sessionId, response);
 					return response.session;
@@ -400,8 +435,43 @@ export function useAgentChat(
 				return null;
 			}
 		},
-		[],
+		[rememberInitialPage],
 	);
+
+	const loadOlderMessages = useCallback(async (sessionId: string) => {
+		const pageState = pageStateRef.current[sessionId];
+		if (!pageState?.hasMore || !pageState.nextCursor || pageState.loading) {
+			return;
+		}
+		pageState.loading = true;
+		try {
+			const page = await getSessionPage(sessionId, pageState.nextCursor);
+			if (!page) {
+				pageStateRef.current[sessionId] = {
+					nextCursor: null,
+					hasMore: false,
+					loading: false,
+				};
+				return;
+			}
+			dispatch({
+				type: "PREPEND_MESSAGES",
+				sessionId,
+				messages: page.messages,
+			});
+			pageStateRef.current[sessionId] = {
+				nextCursor: page.nextCursor,
+				hasMore: page.hasMore,
+				loading: false,
+			};
+		} catch (e) {
+			pageState.loading = false;
+			dispatch({
+				type: "SET_ERROR",
+				error: `過去メッセージの読み込みに失敗: ${e}`,
+			});
+		}
+	}, []);
 
 	const interrupt = useCallback((sessionId: string) => {
 		if (!sessionId) return;
@@ -502,6 +572,20 @@ export function useAgentChat(
 									);
 				const responseSessionId = response.session.id;
 				dispatch({ type: "UPSERT_SESSION", session: response.session });
+				if (!response.queuedTurn) {
+					dispatch({
+						type: "ADD_MESSAGE",
+						sessionId: responseSessionId,
+						message: response.humanMessage,
+					});
+					if (response.agentMessage) {
+						dispatch({
+							type: "ADD_MESSAGE",
+							sessionId: responseSessionId,
+							message: response.agentMessage,
+						});
+					}
+				}
 				dispatch({
 					type: "SET_PENDING_QUEUE",
 					sessionId: responseSessionId,
@@ -569,6 +653,7 @@ export function useAgentChat(
 					if (nextSession) {
 						const response = await getSession(nextSession.id);
 						if (response) {
+							rememberInitialPage(response);
 							dispatch({ type: "UPSERT_SESSION", session: response.session });
 							dispatch({
 								type: "SET_ACTIVE_SESSION_ID",
@@ -592,7 +677,7 @@ export function useAgentChat(
 				});
 			}
 		},
-		[refreshSessions, refreshClosedSessions],
+		[refreshSessions, refreshClosedSessions, rememberInitialPage],
 	);
 
 	const restoreSessionFn = useCallback(
@@ -603,6 +688,7 @@ export function useAgentChat(
 				restoredWorkflowStep = restoreResult.restoredWorkflowStep === true;
 				const response = await getSession(sessionId);
 				if (response) {
+					rememberInitialPage(response);
 					dispatch({ type: "UPSERT_SESSION", session: response.session });
 					dispatch({
 						type: "SET_ACTIVE_SESSION_ID",
@@ -633,7 +719,7 @@ export function useAgentChat(
 				});
 			}
 		},
-		[refreshSessions, refreshClosedSessions],
+		[refreshSessions, refreshClosedSessions, rememberInitialPage],
 	);
 
 	const archiveSessionFn = useCallback(
@@ -671,6 +757,7 @@ export function useAgentChat(
 					if (nextSession) {
 						const response = await getSession(nextSession.id);
 						if (response) {
+							rememberInitialPage(response);
 							dispatch({ type: "UPSERT_SESSION", session: response.session });
 							dispatch({
 								type: "SET_ACTIVE_SESSION_ID",
@@ -694,7 +781,7 @@ export function useAgentChat(
 				});
 			}
 		},
-		[refreshSessions, refreshClosedSessions],
+		[refreshSessions, refreshClosedSessions, rememberInitialPage],
 	);
 
 	const forkSessionFn = useCallback(
@@ -703,6 +790,9 @@ export function useAgentChat(
 				const forked = await forkSessionApi(sessionId);
 				const response = await getSession(forked.id);
 				const activeSession = response?.session ?? forked;
+				if (response) {
+					rememberInitialPage(response);
+				}
 				dispatch({ type: "UPSERT_SESSION", session: activeSession });
 				dispatch({
 					type: "SET_ACTIVE_SESSION_ID",
@@ -723,7 +813,7 @@ export function useAgentChat(
 				});
 			}
 		},
-		[refreshSessions],
+		[refreshSessions, rememberInitialPage],
 	);
 
 	const setSessionTitleFn = useCallback(
@@ -768,6 +858,9 @@ export function useAgentChat(
 					);
 			const response = await getSession(session.id);
 			const activeSession = response?.session ?? session;
+			if (response) {
+				rememberInitialPage(response);
+			}
 			dispatch({ type: "UPSERT_SESSION", session: activeSession });
 			dispatch({
 				type: "SET_ACTIVE_SESSION_ID",
@@ -789,7 +882,7 @@ export function useAgentChat(
 			});
 			return null;
 		}
-	}, [refreshSessions]);
+	}, [refreshSessions, rememberInitialPage]);
 
 	const reorderSessions = useCallback((sessionOrder: string[]) => {
 		dispatch({ type: "REORDER_SESSIONS", sessionOrder });
@@ -986,6 +1079,7 @@ export function useAgentChat(
 				enabled: response.planMode ?? false,
 			});
 			if (response.activeSession) {
+				rememberInitialPage(response.activeSession);
 				dispatch({
 					type: "UPSERT_SESSION",
 					session: response.activeSession.session,
@@ -1006,7 +1100,7 @@ export function useAgentChat(
 				error: `セッション初期化に失敗: ${e}`,
 			});
 		}
-	}, []);
+	}, [rememberInitialPage]);
 
 	// Load sessions and backends on mount
 	useEffect(() => {
@@ -1146,6 +1240,7 @@ export function useAgentChat(
 		loadSession,
 		getSessionById,
 		registerViewableSession,
+		loadOlderMessages,
 		getSessionTurnPhase,
 		getSessionInterrupting,
 		getSessionSelectedModel,
