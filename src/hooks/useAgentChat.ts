@@ -33,6 +33,7 @@ import {
 } from "./deriveActivityStatus";
 import { useAgentSdkListeners } from "./useAgentSdkListeners";
 import {
+	type ActiveMessageEvictionPlan,
 	archiveOpenSession as archiveOpenSessionApi,
 	archiveSession as archiveSessionApi,
 	cancelAgentQueuedTurn,
@@ -42,9 +43,11 @@ import {
 	getSession,
 	getSessionPage,
 	initAgentSessions,
+	type LoadedMessagePage,
 	listAgentBackends,
 	listClosedSessions,
 	listSessions,
+	planAgentChatEviction,
 	restoreSession as restoreSessionApi,
 	sendAgentMessage,
 	sendWorkflowApprovalChatMessage,
@@ -75,6 +78,16 @@ type GetSessionInitialPage = {
 	nextCursor: string | null;
 	hasMore: boolean;
 	totalCount: number;
+};
+type SessionPageState = {
+	nextCursor: string | null;
+	hasMore: boolean;
+	loading: boolean;
+	loadedPages: LoadedMessagePage[];
+};
+export type OlderMessageEvictionOptions = {
+	oldestVisibleIndex?: number;
+	onEvicted?: (eviction: { count: number; direction: "older" }) => void;
 };
 
 /**
@@ -152,6 +165,11 @@ export interface UseAgentChatResult {
 	registerViewableSession: (sessionId: string) => () => void;
 	/** cursor paging で過去方向の message page を読み込む。*/
 	loadOlderMessages: (sessionId: string) => Promise<void>;
+	/** 可視範囲から離れた古い page を webview キャッシュから退避する。*/
+	evictOlderMessages: (
+		sessionId: string,
+		options?: OlderMessageEvictionOptions,
+	) => Promise<void>;
 	/** per-session lookup（既存）。*/
 	getSessionTurnPhase: (sessionId: string) => TurnPhase;
 	getSessionInterrupting: (sessionId: string) => boolean;
@@ -179,6 +197,55 @@ function startAgentProcess(
 	}).catch((e) => {
 		console.error(`Failed to start agent session ${chatSessionId}:`, e);
 	});
+}
+
+function loadedMessageCount(pages: LoadedMessagePage[]): number {
+	return pages.reduce((sum, page) => sum + page.count, 0);
+}
+
+function initialLoadedPages(count: number): LoadedMessagePage[] {
+	return count > 0 ? [{ requestCursor: null, count }] : [];
+}
+
+function loadedPagesEqual(
+	left: LoadedMessagePage[],
+	right: LoadedMessagePage[],
+): boolean {
+	if (left.length !== right.length) return false;
+	return left.every(
+		(page, index) =>
+			page.requestCursor === right[index]?.requestCursor &&
+			page.count === right[index]?.count,
+	);
+}
+
+type PageWindowSnapshot = {
+	messageCount: number;
+	nextCursor: string | null;
+	hasMore: boolean;
+	loadedPages: LoadedMessagePage[];
+};
+
+function pageWindowUnchanged(
+	currentPageState: SessionPageState,
+	currentSession: ChatSession,
+	snapshot: PageWindowSnapshot,
+	plan: ActiveMessageEvictionPlan,
+): boolean {
+	return (
+		!currentPageState.loading &&
+		currentSession.messages.length === snapshot.messageCount &&
+		currentPageState.nextCursor === snapshot.nextCursor &&
+		currentPageState.hasMore === snapshot.hasMore &&
+		loadedPagesEqual(currentPageState.loadedPages, snapshot.loadedPages) &&
+		loadedMessageCount(plan.loadedPages) === snapshot.messageCount - plan.count
+	);
+}
+
+function reportEvictionPlanSkipped(e: unknown): void {
+	console.warn(
+		`メッセージ退避計画の取得に失敗。退避をスキップし、次回トリガで再試行します: ${e}`,
+	);
 }
 
 function dispatchSessionMeta(
@@ -273,26 +340,34 @@ export function useAgentChat(
 	availableModelsRef.current = state.availableModels;
 	const sessionModelsRef = useRef(state.sessionModels);
 	sessionModelsRef.current = state.sessionModels;
-	const pageStateRef = useRef<
-		Record<
-			string,
-			{ nextCursor: string | null; hasMore: boolean; loading: boolean }
-		>
-	>({});
+	const pageStateRef = useRef<Record<string, SessionPageState>>({});
+	const evictInactiveSessionsRef = useRef<() => void>(() => {});
+	const activeMessageEvictionsRef = useRef<Set<string>>(new Set());
+	const sessionAccessSeqRef = useRef(0);
+	const sessionEvictionRanksRef = useRef<Record<string, number>>({});
+
+	const touchSessionAccess = useCallback((sessionId: string) => {
+		const nextRank = sessionAccessSeqRef.current + 1;
+		sessionAccessSeqRef.current = nextRank;
+		sessionEvictionRanksRef.current[sessionId] = nextRank;
+	}, []);
 
 	const rememberInitialPage = useCallback(
 		(response: {
 			session: ChatSession;
 			initialPage?: GetSessionInitialPage;
 		}) => {
+			touchSessionAccess(response.session.id);
 			const page = response.initialPage;
+			const loadedPages = initialLoadedPages(response.session.messages.length);
 			pageStateRef.current[response.session.id] = {
 				nextCursor: page?.nextCursor ?? null,
 				hasMore: page?.hasMore ?? false,
 				loading: false,
+				loadedPages,
 			};
 		},
-		[],
+		[touchSessionAccess],
 	);
 
 	// SDK listener gating: 表示中の session id 集合を管理する registry。
@@ -301,6 +376,7 @@ export function useAgentChat(
 	const viewableRegistry = useMemo<ViewableSessionRegistry>(
 		() => ({
 			register: (sessionId: string) => {
+				touchSessionAccess(sessionId);
 				const map = viewableIdsRef.current;
 				map.set(sessionId, (map.get(sessionId) ?? 0) + 1);
 				return () => {
@@ -308,6 +384,7 @@ export function useAgentChat(
 					const next = (m.get(sessionId) ?? 0) - 1;
 					if (next <= 0) {
 						m.delete(sessionId);
+						evictInactiveSessionsRef.current();
 					} else {
 						m.set(sessionId, next);
 					}
@@ -315,6 +392,149 @@ export function useAgentChat(
 			},
 			getIds: () => new Set(viewableIdsRef.current.keys()),
 		}),
+		[touchSessionAccess],
+	);
+
+	const dispatchWithMessageWindowTracking = useCallback(
+		(action: AgentChatAction) => {
+			if (action.type === "ADD_MESSAGE") {
+				const pageState = pageStateRef.current[action.sessionId];
+				const session = sessionsByIdRef.current[action.sessionId];
+				const alreadyLoaded =
+					session?.messages.some(
+						(message) => message.id === action.message.id,
+					) ?? false;
+				if (pageState && !alreadyLoaded) {
+					const latestPage = pageState.loadedPages[0];
+					pageStateRef.current[action.sessionId] = {
+						...pageState,
+						loadedPages: latestPage
+							? [
+									{ ...latestPage, count: latestPage.count + 1 },
+									...pageState.loadedPages.slice(1),
+								]
+							: [{ requestCursor: null, count: 1 }],
+					};
+				}
+			}
+			dispatch(action);
+		},
+		[],
+	);
+
+	const evictInactiveSessions = useCallback(async () => {
+		const protectedIds = new Set(viewableIdsRef.current.keys());
+		if (activeSessionIdRef.current) {
+			protectedIds.add(activeSessionIdRef.current);
+		}
+		const sessions = Object.entries(sessionsByIdRef.current).map(
+			([sessionId, session]) => ({
+				sessionId,
+				messageCount: session.messages.length,
+				evictionRank: sessionEvictionRanksRef.current[sessionId] ?? 0,
+				protected: protectedIds.has(sessionId),
+				loading: pageStateRef.current[sessionId]?.loading ?? false,
+			}),
+		);
+		if (!sessions.some((session) => session.messageCount > 0)) return;
+
+		try {
+			const plan = await planAgentChatEviction({ sessions });
+			for (const sessionId of plan.evictSessionIds) {
+				const session = sessionsByIdRef.current[sessionId];
+				if (!session || session.messages.length === 0) continue;
+				if (activeSessionIdRef.current === sessionId) continue;
+				if (viewableIdsRef.current.has(sessionId)) continue;
+				if (pageStateRef.current[sessionId]?.loading) continue;
+				dispatch({ type: "EVICT_SESSION_BODY", sessionId });
+				delete pageStateRef.current[sessionId];
+			}
+		} catch (e) {
+			reportEvictionPlanSkipped(e);
+		}
+	}, []);
+	evictInactiveSessionsRef.current = () => {
+		void evictInactiveSessions();
+	};
+
+	useEffect(() => {
+		for (const [sessionId, session] of Object.entries(state.sessionsById)) {
+			if (session.messages.length === 0) continue;
+			if (pageStateRef.current[sessionId]) continue;
+			pageStateRef.current[sessionId] = {
+				nextCursor: null,
+				hasMore: false,
+				loading: false,
+				loadedPages: initialLoadedPages(session.messages.length),
+			};
+		}
+	}, [state.sessionsById]);
+
+	const evictOlderMessages = useCallback(
+		async (sessionId: string, options: OlderMessageEvictionOptions = {}) => {
+			if (activeMessageEvictionsRef.current.has(sessionId)) return;
+			const pageState = pageStateRef.current[sessionId];
+			const session = sessionsByIdRef.current[sessionId];
+			if (!pageState || !session || pageState.loading) return;
+			const messageCount = session.messages.length;
+			if (messageCount === 0) return;
+			if (loadedMessageCount(pageState.loadedPages) !== messageCount) return;
+			const oldestVisibleIndex = options.oldestVisibleIndex ?? 0;
+			const snapshot = {
+				messageCount,
+				nextCursor: pageState.nextCursor,
+				hasMore: pageState.hasMore,
+				loadedPages: pageState.loadedPages,
+			};
+			activeMessageEvictionsRef.current.add(sessionId);
+			try {
+				const plan = await planAgentChatEviction({
+					active: {
+						sessionId,
+						messageCount,
+						oldestVisibleIndex,
+						loadedPages: pageState.loadedPages,
+						turnPhase: turnPhasesRef.current[sessionId] ?? "idle",
+					},
+				});
+				const activePlan = plan.active;
+				if (!activePlan || activePlan.count <= 0) return;
+				if (activePlan.sessionId !== sessionId) return;
+				const currentPageState = pageStateRef.current[sessionId];
+				const currentSession = sessionsByIdRef.current[sessionId];
+				if (!currentPageState || !currentSession) return;
+				if (
+					!pageWindowUnchanged(
+						currentPageState,
+						currentSession,
+						snapshot,
+						activePlan,
+					)
+				) {
+					return;
+				}
+				pageStateRef.current[sessionId] = {
+					...currentPageState,
+					nextCursor: activePlan.nextCursor,
+					hasMore: activePlan.hasMore,
+					loading: false,
+					loadedPages: activePlan.loadedPages,
+				};
+				dispatch({
+					type: "EVICT_OLDER_MESSAGES",
+					sessionId,
+					count: activePlan.count,
+				});
+				options.onEvicted?.({
+					count: activePlan.count,
+					direction: "older",
+				});
+			} catch (e) {
+				reportEvictionPlanSkipped(e);
+			} finally {
+				activeMessageEvictionsRef.current.delete(sessionId);
+			}
+		},
 		[],
 	);
 
@@ -438,40 +658,73 @@ export function useAgentChat(
 		[rememberInitialPage],
 	);
 
-	const loadOlderMessages = useCallback(async (sessionId: string) => {
-		const pageState = pageStateRef.current[sessionId];
-		if (!pageState?.hasMore || !pageState.nextCursor || pageState.loading) {
-			return;
-		}
-		pageState.loading = true;
-		try {
-			const page = await getSessionPage(sessionId, pageState.nextCursor);
-			if (!page) {
-				pageStateRef.current[sessionId] = {
-					nextCursor: null,
-					hasMore: false,
-					loading: false,
-				};
+	const loadOlderMessages = useCallback(
+		async (sessionId: string) => {
+			const pageState = pageStateRef.current[sessionId];
+			if (
+				!pageState?.hasMore ||
+				!pageState.nextCursor ||
+				pageState.loading ||
+				activeMessageEvictionsRef.current.has(sessionId)
+			) {
 				return;
 			}
-			dispatch({
-				type: "PREPEND_MESSAGES",
-				sessionId,
-				messages: page.messages,
-			});
-			pageStateRef.current[sessionId] = {
-				nextCursor: page.nextCursor,
-				hasMore: page.hasMore,
-				loading: false,
-			};
-		} catch (e) {
-			pageState.loading = false;
-			dispatch({
-				type: "SET_ERROR",
-				error: `過去メッセージの読み込みに失敗: ${e}`,
-			});
-		}
-	}, []);
+			touchSessionAccess(sessionId);
+			const requestCursor = pageState.nextCursor;
+			pageState.loading = true;
+			try {
+				const page = await getSessionPage(sessionId, requestCursor);
+				const currentPageState = pageStateRef.current[sessionId];
+				if (
+					!currentPageState?.loading ||
+					currentPageState.nextCursor !== requestCursor
+				) {
+					return;
+				}
+				if (!page) {
+					pageStateRef.current[sessionId] = {
+						...currentPageState,
+						nextCursor: null,
+						hasMore: false,
+						loading: false,
+					};
+					return;
+				}
+				const existingIds = new Set(
+					(sessionsByIdRef.current[sessionId]?.messages ?? []).map(
+						(message) => message.id,
+					),
+				);
+				const newMessageCount = page.messages.filter(
+					(message) => !existingIds.has(message.id),
+				).length;
+				dispatch({
+					type: "PREPEND_MESSAGES",
+					sessionId,
+					messages: page.messages,
+				});
+				pageStateRef.current[sessionId] = {
+					nextCursor: page.nextCursor,
+					hasMore: page.hasMore,
+					loading: false,
+					loadedPages:
+						newMessageCount > 0
+							? [
+									...currentPageState.loadedPages,
+									{ requestCursor, count: newMessageCount },
+								]
+							: currentPageState.loadedPages,
+				};
+			} catch (e) {
+				pageState.loading = false;
+				dispatch({
+					type: "SET_ERROR",
+					error: `過去メッセージの読み込みに失敗: ${e}`,
+				});
+			}
+		},
+		[touchSessionAccess],
+	);
 
 	const interrupt = useCallback((sessionId: string) => {
 		if (!sessionId) return;
@@ -571,15 +824,16 @@ export function useAgentChat(
 										mentions,
 									);
 				const responseSessionId = response.session.id;
+				touchSessionAccess(responseSessionId);
 				dispatch({ type: "UPSERT_SESSION", session: response.session });
 				if (!response.queuedTurn) {
-					dispatch({
+					dispatchWithMessageWindowTracking({
 						type: "ADD_MESSAGE",
 						sessionId: responseSessionId,
 						message: response.humanMessage,
 					});
 					if (response.agentMessage) {
-						dispatch({
+						dispatchWithMessageWindowTracking({
 							type: "ADD_MESSAGE",
 							sessionId: responseSessionId,
 							message: response.agentMessage,
@@ -609,7 +863,7 @@ export function useAgentChat(
 				});
 			}
 		},
-		[],
+		[dispatchWithMessageWindowTracking, touchSessionAccess],
 	);
 
 	const cancelQueuedTurn = useCallback(
@@ -1038,7 +1292,7 @@ export function useAgentChat(
 		[],
 	);
 	useAgentSdkListeners({
-		dispatch,
+		dispatch: dispatchWithMessageWindowTracking,
 		viewableRegistry,
 		refreshSessions,
 		hasMessage,
@@ -1052,6 +1306,23 @@ export function useAgentChat(
 		const cleanup = viewableRegistry.register(state.activeSessionId);
 		return cleanup;
 	}, [state.activeSessionId, viewableRegistry]);
+
+	const hydratedSessionEvictionKey = useMemo(
+		() =>
+			[
+				state.activeSessionId ?? "",
+				...Object.entries(state.sessionsById)
+					.filter(([, session]) => session.messages.length > 0)
+					.map(([sessionId]) => sessionId)
+					.sort(),
+			].join("|"),
+		[state.activeSessionId, state.sessionsById],
+	);
+
+	useEffect(() => {
+		if (hydratedSessionEvictionKey.length === 0) return;
+		void evictInactiveSessions();
+	}, [evictInactiveSessions, hydratedSessionEvictionKey]);
 
 	const fetchBackends = useCallback(async () => {
 		try {
@@ -1191,7 +1462,9 @@ export function useAgentChat(
 	);
 
 	const registerViewableSession = useCallback(
-		(sessionId: string) => viewableRegistry.register(sessionId),
+		(sessionId: string) => {
+			return viewableRegistry.register(sessionId);
+		},
 		[viewableRegistry],
 	);
 
@@ -1241,6 +1514,7 @@ export function useAgentChat(
 		getSessionById,
 		registerViewableSession,
 		loadOlderMessages,
+		evictOlderMessages,
 		getSessionTurnPhase,
 		getSessionInterrupting,
 		getSessionSelectedModel,

@@ -20,6 +20,7 @@ import React, {
 	useRef,
 	useState,
 } from "react";
+import type { OlderMessageEvictionOptions } from "@/hooks/useAgentChat";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
 import type {
 	AgentEditorContext,
@@ -156,6 +157,18 @@ export function shouldTailFollowMessageChange(
 interface AgentPromptSuggestion {
 	text: string;
 	source: string;
+}
+
+const LOAD_OLDER_SCROLL_TOP_PX = 80;
+const AGENT_MESSAGE_ESTIMATED_HEIGHT_PX = 112;
+const HUMAN_MESSAGE_ESTIMATED_HEIGHT_PX = 72;
+const SHIMMER_ESTIMATED_HEIGHT_PX = 56;
+
+function estimateMessageRowSize(message: ChatMessage | undefined): number {
+	if (!message) return HUMAN_MESSAGE_ESTIMATED_HEIGHT_PX;
+	return message.role === "agent"
+		? AGENT_MESSAGE_ESTIMATED_HEIGHT_PX
+		: HUMAN_MESSAGE_ESTIMATED_HEIGHT_PX;
 }
 
 function isEditableShortcutTarget(target: EventTarget | null): boolean {
@@ -583,6 +596,9 @@ export interface ChatSessionViewProps {
 	onInterrupt: () => void;
 	onCancelQueuedTurn: (queuedTurnId?: string | null) => Promise<void>;
 	onLoadOlderMessages?: () => Promise<void>;
+	onEvictOlderMessages?: (
+		options: OlderMessageEvictionOptions,
+	) => void | Promise<void>;
 	onPermissionModeChange: (mode: PermissionMode) => void;
 	onPlanModeChange: (enabled: PlanMode) => void;
 	onModelChange: (modelId: string) => void;
@@ -638,6 +654,7 @@ export function ChatSessionView({
 	onInterrupt,
 	onCancelQueuedTurn,
 	onLoadOlderMessages,
+	onEvictOlderMessages,
 	onPermissionModeChange,
 	onPlanModeChange,
 	onModelChange,
@@ -695,11 +712,16 @@ export function ChatSessionView({
 	const searchInputRef = useRef<HTMLInputElement>(null);
 	const messageRefs = useRef(new Map<string, HTMLDivElement>());
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const pendingScrollCompensationRef = useRef(0);
 	const lastMessageSnapshotRef = useRef<{
 		sessionId: string;
 		messageIds: string[];
 	}>({ sessionId: "", messageIds: [] });
+	const lastEvictionCheckMessageLengthRef = useRef(session.messages.length);
 	const isNearBottomRef = useRef(true);
+	const pendingTopLoadEvictionRef = useRef<{
+		firstMessageId: string | null;
+	} | null>(null);
 	const lastTaskListRevisionRef = useRef<string | null>(null);
 	const currentTaskListRevision = useMemo(
 		() => taskListRevision(session.messages),
@@ -748,17 +770,6 @@ export function ChatSessionView({
 			setIsFileDragOver(false);
 		}
 	}, []);
-
-	// Track scroll position via onScroll handler
-	const handleScroll = useCallback(() => {
-		const el = scrollRef.current;
-		if (!el) return;
-		isNearBottomRef.current =
-			el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-		if (el.scrollTop < 80) {
-			void onLoadOlderMessages?.();
-		}
-	}, [onLoadOlderMessages]);
 
 	// Derive streaming content tracking values
 	const agentMessages = session.messages.filter((m) => m.role === "agent");
@@ -830,14 +841,98 @@ export function ChatSessionView({
 		getScrollElement: () => scrollRef.current,
 		getItemKey: (index) => session.messages[index]?.id ?? "agent-shimmer",
 		estimateSize: (index) => {
-			if (index >= session.messages.length) return 56;
-			return session.messages[index]?.role === "agent" ? 112 : 72;
+			if (index >= session.messages.length) return SHIMMER_ESTIMATED_HEIGHT_PX;
+			return estimateMessageRowSize(session.messages[index]);
 		},
 		overscan: 8,
 		initialRect: {
 			width: 800,
 			height: 800,
 		},
+	});
+
+	const prefixOffsetForCount = useCallback(
+		(count: number) => {
+			if (count <= 0) return 0;
+			const offset = messageVirtualizer.getOffsetForIndex(count, "start")?.[0];
+			if (typeof offset === "number" && Number.isFinite(offset)) {
+				return offset;
+			}
+			const virtualItem = messageVirtualizer
+				.getVirtualItems()
+				.find((item) => item.index === count);
+			return virtualItem?.start ?? 0;
+		},
+		[messageVirtualizer],
+	);
+
+	const requestMessageEviction = useCallback(
+		(allowTopWindow = false) => {
+			const virtualItems = messageVirtualizer
+				.getVirtualItems()
+				.filter((item) => item.index < session.messages.length);
+			const firstVirtualItem = virtualItems[0];
+			if (!firstVirtualItem) return;
+			if (!allowTopWindow && firstVirtualItem.index <= 0) return;
+			void onEvictOlderMessages?.({
+				oldestVisibleIndex: firstVirtualItem.index,
+				onEvicted: ({ count }) => {
+					pendingScrollCompensationRef.current += prefixOffsetForCount(count);
+				},
+			});
+		},
+		[
+			session.messages.length,
+			messageVirtualizer,
+			onEvictOlderMessages,
+			prefixOffsetForCount,
+		],
+	);
+
+	const firstMessageId = session.messages[0]?.id ?? null;
+
+	// Track scroll position via onScroll handler.
+	const handleScroll = useCallback(() => {
+		const el = scrollRef.current;
+		if (!el) return;
+		isNearBottomRef.current =
+			el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+		if (el.scrollTop < LOAD_OLDER_SCROLL_TOP_PX) {
+			pendingTopLoadEvictionRef.current = { firstMessageId };
+			void onLoadOlderMessages?.();
+			return;
+		}
+		pendingTopLoadEvictionRef.current = null;
+		requestMessageEviction();
+	}, [firstMessageId, onLoadOlderMessages, requestMessageEviction]);
+
+	useEffect(() => {
+		const previousLength = lastEvictionCheckMessageLengthRef.current;
+		lastEvictionCheckMessageLengthRef.current = session.messages.length;
+		if (session.messages.length <= previousLength) return;
+		const pendingTopLoadEviction = pendingTopLoadEvictionRef.current;
+		if (pendingTopLoadEviction) {
+			const didPrependOlderMessages =
+				firstMessageId !== pendingTopLoadEviction.firstMessageId;
+			if (didPrependOlderMessages) {
+				pendingTopLoadEvictionRef.current = null;
+				requestMessageEviction(true);
+				return;
+			}
+		}
+		if (!isNearBottomRef.current) return;
+		requestMessageEviction();
+	}, [firstMessageId, requestMessageEviction, session.messages.length]);
+
+	useLayoutEffect(() => {
+		const compensation = pendingScrollCompensationRef.current;
+		if (compensation <= 0) return;
+		pendingScrollCompensationRef.current = 0;
+		const el = scrollRef.current;
+		if (!el) return;
+		el.scrollTop = Math.max(0, el.scrollTop - compensation);
+		isNearBottomRef.current =
+			el.scrollHeight - el.scrollTop - el.clientHeight < 100;
 	});
 
 	// Auto-scroll: keep tail-following behavior while only mounted rows are in the DOM.

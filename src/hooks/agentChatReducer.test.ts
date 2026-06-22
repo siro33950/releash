@@ -372,6 +372,138 @@ describe("agentChatReducer", () => {
 		});
 	});
 
+	describe("message body eviction", () => {
+		it("EVICT_OLDER_MESSAGES drops only the oldest prefix", () => {
+			const messages = [
+				makeMessage({ id: "m1" }),
+				makeMessage({ id: "m2" }),
+				makeMessage({ id: "m3" }),
+			];
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: { s1: makeSession({ id: "s1", messages }) },
+			};
+
+			const next = reducer(state, {
+				type: "EVICT_OLDER_MESSAGES",
+				sessionId: "s1",
+				count: 1,
+			});
+
+			expect(
+				next.sessionsById.s1.messages.map((message) => message.id),
+			).toEqual(["m2", "m3"]);
+			expect(
+				state.sessionsById.s1.messages.map((message) => message.id),
+			).toEqual(["m1", "m2", "m3"]);
+		});
+
+		it("EVICT_OLDER_MESSAGES is a no-op for count=0 and empties when count exceeds length", () => {
+			const messages = [makeMessage({ id: "m1" }), makeMessage({ id: "m2" })];
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: { s1: makeSession({ id: "s1", messages }) },
+			};
+
+			const unchanged = reducer(state, {
+				type: "EVICT_OLDER_MESSAGES",
+				sessionId: "s1",
+				count: 0,
+			});
+			expect(unchanged.sessionsById.s1.messages).toBe(messages);
+
+			const emptied = reducer(state, {
+				type: "EVICT_OLDER_MESSAGES",
+				sessionId: "s1",
+				count: 99,
+			});
+			expect(emptied.sessionsById.s1.messages).toEqual([]);
+		});
+
+		it("EVICT_SESSION_BODY clears messages while keeping session shell and per-session metadata", () => {
+			const session = makeSession({
+				id: "s1",
+				state: "active",
+				messages: [makeMessage({ id: "m1" })],
+				agentSessionId: "agent-1",
+			});
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: {
+					s1: session,
+					s2: makeSession({
+						id: "s2",
+						messages: [makeMessage({ id: "other" })],
+					}),
+				},
+				turnPhases: { s1: "streaming" },
+				pendingQueues: {
+					s1: [
+						{
+							id: "q1",
+							contentPreview: "queued",
+							createdAt: 1,
+							permissionMode: "edit",
+							imageCount: 0,
+						},
+					],
+				},
+				latestTokenUsage: { s1: { inputTokens: 1, outputTokens: 2 } },
+			};
+
+			const next = reducer(state, {
+				type: "EVICT_SESSION_BODY",
+				sessionId: "s1",
+			});
+
+			expect(next.sessionsById.s1).toMatchObject({
+				id: "s1",
+				state: "active",
+				agentSessionId: "agent-1",
+			});
+			expect(next.sessionsById.s1.messages).toEqual([]);
+			expect(
+				next.sessionsById.s2.messages.map((message) => message.id),
+			).toEqual(["other"]);
+			expect(next.turnPhases.s1).toBe("streaming");
+			expect(next.pendingQueues.s1).toEqual(state.pendingQueues.s1);
+			expect(next.latestTokenUsage.s1).toEqual({
+				inputTokens: 1,
+				outputTokens: 2,
+			});
+		});
+
+		it("evicted older messages can be rehydrated with PREPEND_MESSAGES without duplicates or order changes", () => {
+			const old = makeMessage({ id: "m1", timestamp: 1001 });
+			const middle = makeMessage({ id: "m2", timestamp: 1002 });
+			const latest = makeMessage({ id: "m3", timestamp: 1003 });
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: {
+					s1: makeSession({
+						id: "s1",
+						messages: [old, middle, latest],
+					}),
+				},
+			};
+
+			const evicted = reducer(state, {
+				type: "EVICT_OLDER_MESSAGES",
+				sessionId: "s1",
+				count: 1,
+			});
+			const rehydrated = reducer(evicted, {
+				type: "PREPEND_MESSAGES",
+				sessionId: "s1",
+				messages: [old, middle],
+			});
+
+			expect(
+				rehydrated.sessionsById.s1.messages.map((message) => message.id),
+			).toEqual(["m1", "m2", "m3"]);
+		});
+	});
+
 	describe("SET_TURN_PHASE", () => {
 		it("sets turn phase for a session", () => {
 			const next = reducer(INITIAL_STATE, {

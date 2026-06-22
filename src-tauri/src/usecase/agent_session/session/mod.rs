@@ -1,6 +1,7 @@
 pub(crate) mod errors;
 pub(crate) mod image_attachment;
 pub(crate) mod lifecycle_controller;
+mod message_window;
 mod open_tabs;
 mod prompt_suggestion;
 mod store;
@@ -11,6 +12,9 @@ use serde::{Deserialize, Serialize};
 pub use crate::usecase::agent_session::status::TurnPhase;
 pub(crate) use image_attachment::{
     reject_oversized_base64_image, validate_image_bytes, validate_image_bytes_for_media_type,
+};
+pub(crate) use message_window::{
+    plan_agent_chat_eviction, AgentChatEvictionPlan, AgentChatEvictionPlanRequest,
 };
 pub use open_tabs::OpenTabRegistry;
 pub(crate) use prompt_suggestion::{
