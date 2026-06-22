@@ -322,7 +322,10 @@ function WorkflowStepHeaderContent({
 												type="button"
 												variant="ghost"
 												size="xs"
-												onClick={() => setRejectOpen(false)}
+												onClick={() => {
+													setRejectComment("");
+													setRejectOpen(false);
+												}}
 											>
 												Cancel
 											</Button>

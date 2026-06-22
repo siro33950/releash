@@ -241,7 +241,7 @@ export type WorkflowEvent =
 			timestampMs: number;
 	  }
 	| {
-			event: "node_session_started";
+			event: "step_session_started";
 			run_id: string;
 			workflow_name: string;
 			node_name: string;

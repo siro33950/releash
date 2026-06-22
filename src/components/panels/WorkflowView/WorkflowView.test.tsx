@@ -375,6 +375,9 @@ describe("WorkflowView", () => {
 		await waitFor(() => {
 			expect(screen.queryByLabelText("Reject comment")).toBeNull();
 		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+		expect(screen.getByLabelText("Reject comment")).toHaveValue("");
 	});
 
 	it("keeps the action error icon after closing the error popup", async () => {

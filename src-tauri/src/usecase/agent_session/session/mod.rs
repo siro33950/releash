@@ -626,7 +626,7 @@ impl SessionMeta {
             selected_model: session.selected_model.clone(),
             permission_profile_id: session.permission_profile_id.clone(),
             backend_id: session.backend_id.clone(),
-            workflow_step_session: session.workflow_step_session,
+            workflow_step_session: session.is_workflow_step_session(),
             workflow_step_context: session.workflow_step_context.clone(),
             first_message_preview: first_message_preview(&session.messages),
             message_count: session.messages.len(),
@@ -649,7 +649,7 @@ impl SessionMeta {
             selected_model: self.selected_model.clone(),
             permission_profile_id: self.permission_profile_id.clone(),
             backend_id: self.backend_id.clone(),
-            workflow_step_session: self.workflow_step_session,
+            workflow_step_session: self.is_workflow_step_session(),
             workflow_step_context: self.workflow_step_context.clone(),
         }
     }
@@ -669,7 +669,7 @@ impl SessionMeta {
             plan_mode: self.plan_mode,
             permission_profile_id: self.permission_profile_id.clone(),
             backend_id: self.backend_id.clone(),
-            workflow_step_session: self.workflow_step_session,
+            workflow_step_session: self.is_workflow_step_session(),
             workflow_step_context: self.workflow_step_context.clone(),
         }
     }
@@ -695,7 +695,7 @@ impl ChatSession {
             plan_mode: self.plan_mode,
             permission_profile_id: self.permission_profile_id.clone(),
             backend_id: self.backend_id.clone(),
-            workflow_step_session: self.workflow_step_session,
+            workflow_step_session: self.is_workflow_step_session(),
             workflow_step_context: self.workflow_step_context.clone(),
         }
     }
@@ -1170,6 +1170,7 @@ mod tests {
         ));
         assert!(session.is_workflow_step_session());
         assert!(session.to_summary().is_workflow_step_session());
+        assert!(session.to_summary().workflow_step_session);
 
         session.workflow_step_context = None;
         session.workflow_step_session = true;
@@ -2582,7 +2583,7 @@ mod workflow_step_context_meta_tests {
             selected_model: None,
             permission_profile_id: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: context.is_some(),
+            workflow_step_session: false,
             workflow_step_context: context,
         }
     }
@@ -2592,6 +2593,7 @@ mod workflow_step_context_meta_tests {
         let meta = SessionMeta::from_session(&session_with_context(Some(step_context_dto())));
 
         // from_session で context が meta に乗る。
+        assert!(meta.workflow_step_session);
         assert_eq!(
             meta.workflow_step_context
                 .as_ref()
@@ -2600,12 +2602,13 @@ mod workflow_step_context_meta_tests {
         );
 
         // to_summary / to_session の両経路で context が届く（ヘッダー表示の正典経路）。
+        let summary = meta.to_summary();
+        assert!(summary.workflow_step_session);
+        assert_eq!(summary.workflow_step_context, Some(step_context_dto()));
+        let restored_session = meta.to_session(Vec::new());
+        assert!(restored_session.workflow_step_session);
         assert_eq!(
-            meta.to_summary().workflow_step_context,
-            Some(step_context_dto())
-        );
-        assert_eq!(
-            meta.to_session(Vec::new()).workflow_step_context,
+            restored_session.workflow_step_context,
             Some(step_context_dto())
         );
 

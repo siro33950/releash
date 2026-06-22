@@ -2199,6 +2199,7 @@ struct RecordingStepSessionDeps {
     dispatch_session_start_count: std::sync::atomic::AtomicUsize,
     mark_step_tab_open_count: std::sync::atomic::AtomicUsize,
     append_node_session_started_count: std::sync::atomic::AtomicUsize,
+    append_node_session_started_should_fail: std::sync::atomic::AtomicBool,
     broadcast_state_count: std::sync::atomic::AtomicUsize,
     start_agent_turn_count: std::sync::atomic::AtomicUsize,
     assert_runtime_lock_during_start: std::sync::atomic::AtomicBool,
@@ -2230,6 +2231,11 @@ impl RecordingStepSessionDeps {
     fn append_node_session_started_count(&self) -> usize {
         self.append_node_session_started_count
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn fail_append_node_session_started(&self) {
+        self.append_node_session_started_should_fail
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn start_agent_turn_count(&self) -> usize {
@@ -2291,8 +2297,6 @@ impl StepSessionDeps for RecordingStepSessionDeps {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
-    async fn write_step_session_started_event(&self, _event: WorkflowEvent) {}
-
     async fn broadcast_state(&self, _worktree_path: &str, _snapshot: WorkflowState) {
         self.broadcast_state_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2304,6 +2308,14 @@ impl StepSessionDeps for RecordingStepSessionDeps {
     ) -> Result<(), WorkflowEngineError> {
         self.append_node_session_started_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self
+            .append_node_session_started_should_fail
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(WorkflowEngineError::SessionStore(
+                "append step session started failed".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -2536,6 +2548,46 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
         exec.current_session_id.as_deref(),
         Some("step-session-id"),
         "current_session_id must be updated to the created step session id"
+    );
+}
+
+#[tokio::test]
+async fn start_step_session_with_deps_propagates_node_session_append_failure() {
+    let engine = WorkflowRuntimeService::new_for_test();
+
+    let mut step = make_test_step("ok-step", NodeType::Agent, "unused", vec![], None);
+    step.instruction = None;
+    step.inline_prompt = Some("hello".to_string());
+
+    {
+        let mut execs = engine.executions.lock().await;
+        insert_single_step_execution(&mut execs, step);
+    }
+
+    let deps = RecordingStepSessionDeps::default();
+    deps.fail_append_node_session_started();
+    let err = engine
+        .start_step_session_with_deps(&deps, "/repo")
+        .await
+        .expect_err("append failure must propagate to the start flow");
+
+    assert!(
+        matches!(&err, WorkflowEngineError::SessionStore(message) if message.contains("append step session started failed")),
+        "append failure must surface as SessionStore error, got: {err:?}"
+    );
+    assert_eq!(deps.create_step_session_count(), 1);
+    assert_eq!(deps.dispatch_session_start_count(), 1);
+    assert_eq!(deps.mark_step_tab_open_count(), 1);
+    assert_eq!(deps.append_node_session_started_count(), 1);
+    assert_eq!(
+        deps.broadcast_state_count(),
+        0,
+        "broadcast_state must not run after append failure"
+    );
+    assert_eq!(
+        deps.start_agent_turn_count(),
+        0,
+        "start_agent_turn must not run after append failure"
     );
 }
 
