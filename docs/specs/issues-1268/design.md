@@ -69,7 +69,8 @@ interface WorkflowRowStatusIconProps {
 ```
 
 - `circleClassName` は持たない（`queued` 用 `Circle` 形状を使わず、形状は常に `Workflow` で固定のため）。
-- 呼び出し側（`WorktreeWorkflowRow`）は現行レイアウトを踏襲して `containerClassName="flex size-5 shrink-0 items-center justify-center"` / `iconClassName="size-3"` を渡す（仮定 A3）。
+- 呼び出し側（`WorktreeWorkflowRow`）は **Session 行（`AgentStateIcon`）と同一のアイコン配置に揃える**。すなわち `containerClassName` を渡さず（ラップ `span` はサイズ指定なし）、既定の `iconClassName="size-3.5 shrink-0"` をそのまま用いる（仮定 A3 改訂）。
+  - 当初は旧 `WorkflowStepStatusIcon`（Step 行）のレイアウト（`containerClassName="flex size-5 shrink-0 items-center justify-center"` / `iconClassName="size-3"`）を踏襲したが、Workflow 行はサイドバー上で Step 行ではなく **Session 行と縦に並ぶ**。`AgentStateIcon` は 14px (`size-3.5`) アイコンをサイズ指定なしの `span` で左端に置くのに対し、size-5 (20px) ボックス中央寄せ＋12px アイコンでは左余白とボックス幅の差でアイコン・ラベルが右へずれる。R2（Session 行と表現方式を統一）の観点からも `AgentStateIcon` に揃えるのが正しい。
 
 ### 色・pulse マッピング
 
@@ -115,13 +116,13 @@ export function WorkflowRowStatusIcon({
     const pulse = pulseStatuses.has(status) ? "animate-pulse" : undefined;
     return (
         <span title={status} className={containerClassName}>
-            <Workflow className={cn("size-3.5 shrink-0", colorClass, pulse, iconClassName)} />
+            <Workflow className={cn(iconClassName, colorClass, pulse)} />
         </span>
     );
 }
 ```
 
-（最終的な className 合成順・既定サイズは実装時に既存 2 コンポーネントと揃える。`AgentStateIcon` が `size-3.5` 既定、Workflow 行呼び出しが `size-3` 上書きである点を踏襲。）
+（既定サイズは `AgentStateIcon` と揃え `iconClassName="size-3.5 shrink-0"`。`WorktreeWorkflowRow` は `containerClassName`/`iconClassName` を渡さず既定のまま用いるため、ラップ `span` はサイズ指定なし・アイコンは 14px となり Session 行と一致する。）
 
 ## エラー処理
 

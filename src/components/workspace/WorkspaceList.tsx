@@ -264,11 +264,7 @@ function WorktreeWorkflowRow({
 					className="flex min-w-0 flex-1 items-center gap-2 text-left"
 					onClick={() => setExpanded((prev) => !prev)}
 				>
-					<WorkflowRowStatusIcon
-						status={node.status}
-						containerClassName="flex size-5 shrink-0 items-center justify-center"
-						iconClassName="size-3"
-					/>
+					<WorkflowRowStatusIcon status={node.status} />
 					<span className="min-w-0 truncate">{workflowLabel}</span>
 					{expanded ? (
 						<ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />

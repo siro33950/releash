@@ -15,13 +15,7 @@ const statuses: WorkspaceStepStatus[] = [
 ];
 
 function renderIcon(status: WorkspaceStepStatus) {
-	return render(
-		<WorkflowRowStatusIcon
-			status={status}
-			containerClassName="flex size-5 shrink-0 items-center justify-center"
-			iconClassName="size-3"
-		/>,
-	);
+	return render(<WorkflowRowStatusIcon status={status} />);
 }
 
 describe("WorkflowRowStatusIcon", () => {
