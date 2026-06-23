@@ -569,6 +569,21 @@ describe("WorkspaceList", () => {
 		expect(screen.getAllByTitle("completed").length).toBeGreaterThanOrEqual(1);
 	});
 
+	it("uses a fixed Workflow icon for Workflow rows and keeps Step row status icons", () => {
+		renderWorkspaceList();
+
+		const workflowButton = screen.getByText("release").closest("button");
+		const stepButton = screen.getByText("Build step").closest("button");
+
+		expect(
+			workflowButton?.querySelector('[title="failed"] svg.lucide-workflow'),
+		).toBeInTheDocument();
+		expect(
+			stepButton?.querySelector('[title="waiting"] svg.lucide-clock'),
+		).toBeInTheDocument();
+		expect(stepButton?.querySelector("svg.lucide-workflow")).toBeNull();
+	});
+
 	it("does not enable Stop from a live representative status on a terminal Workflow", async () => {
 		const user = userEvent.setup();
 		renderWorkspaceList();
