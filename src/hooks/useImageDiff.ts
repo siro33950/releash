@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { readFile } from "@tauri-apps/plugin-fs";
 import { useEffect, useState } from "react";
 import { buildDataUrl, getMimeType } from "@/lib/imageUtils";
 import type { DiffBase, DiffSection } from "@/types/settings";
@@ -10,12 +9,9 @@ export interface ImageDiffResult {
 	loading: boolean;
 }
 
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-	let binary = "";
-	for (let i = 0; i < bytes.length; i++) {
-		binary += String.fromCharCode(bytes[i]);
-	}
-	return btoa(binary);
+interface ReviewImageDiff {
+	originalBase64: string | null;
+	modifiedBase64: string | null;
 }
 
 export function useImageDiff(
@@ -41,78 +37,34 @@ export function useImageDiff(
 
 		const mime = getMimeType(filePath);
 
-		const fetchWorkingTree = async (): Promise<string | null> => {
-			try {
-				const bytes = await readFile(filePath);
-				const base64 = uint8ArrayToBase64(bytes);
-				return buildDataUrl(base64, mime);
-			} catch {
-				return null;
-			}
-		};
-
-		const fetchStaged = async (): Promise<string | null> => {
-			try {
-				const base64 = await invoke<string>("get_binary_staged_content", {
-					filePath,
-				});
-				return buildDataUrl(base64, mime);
-			} catch {
-				return null;
-			}
-		};
-
-		const fetchHead = async (): Promise<string | null> => {
-			try {
-				const base64 = await invoke<string>("get_binary_file_at_ref", {
-					filePath,
-					gitRef: "HEAD",
-				});
-				return buildDataUrl(base64, mime);
-			} catch {
-				return null;
-			}
-		};
-
-		const fetchBranchBase = async (): Promise<string | null> => {
-			try {
-				const base64 = await invoke<string>("get_binary_file_at_branch_base", {
-					filePath,
-				});
-				return buildDataUrl(base64, mime);
-			} catch {
-				return null;
-			}
-		};
-
 		const fetchAll = async () => {
-			let original: string | null;
-			let modified: string | null;
-
-			if (diffBase === "branch-base") {
-				[original, modified] = await Promise.all([
-					fetchBranchBase(),
-					fetchWorkingTree(),
-				]);
-			} else if (section === "staged") {
-				// Staged Changes: HEAD → Staged
-				[original, modified] = await Promise.all([fetchHead(), fetchStaged()]);
-			} else {
-				// Changes: Staged → Working Tree
-				[original, modified] = await Promise.all([
-					fetchStaged(),
-					fetchWorkingTree(),
-				]);
-			}
+			const { originalBase64, modifiedBase64 } = await invoke<ReviewImageDiff>(
+				"get_review_image_diff",
+				{
+					filePath,
+					diffBase,
+					section,
+				},
+			);
 
 			if (!cancelled) {
-				setOriginalUrl(original);
-				setModifiedUrl(modified);
+				setOriginalUrl(
+					originalBase64 ? buildDataUrl(originalBase64, mime) : null,
+				);
+				setModifiedUrl(
+					modifiedBase64 ? buildDataUrl(modifiedBase64, mime) : null,
+				);
 				setLoading(false);
 			}
 		};
 
-		fetchAll();
+		fetchAll().catch(() => {
+			if (!cancelled) {
+				setOriginalUrl(null);
+				setModifiedUrl(null);
+				setLoading(false);
+			}
+		});
 
 		return () => {
 			cancelled = true;

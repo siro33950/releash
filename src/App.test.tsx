@@ -18,7 +18,13 @@ vi.mock("react-resizable-panels", () => {
 const mockInvoke = vi.mocked(invoke);
 
 beforeEach(() => {
-	mockInvoke.mockRejectedValue(new Error("not in a git repo"));
+	localStorage.clear();
+	mockInvoke.mockImplementation((cmd: string) => {
+		if (cmd === "get_performance_telemetry_enabled") {
+			return Promise.resolve(true);
+		}
+		return Promise.reject(new Error("not in a git repo"));
+	});
 });
 
 describe("App", () => {
@@ -33,5 +39,34 @@ describe("App", () => {
 				screen.getByText("Select a worktree from the sidebar to start working"),
 			).toBeInTheDocument();
 		});
+	});
+
+	it("reads performance telemetry from Rust without writing localStorage to Rust on startup", async () => {
+		localStorage.setItem(
+			"releash-settings",
+			JSON.stringify({ performanceTelemetry: true }),
+		);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_performance_telemetry_enabled") {
+				return Promise.resolve(false);
+			}
+			return Promise.reject(new Error("not in a git repo"));
+		});
+
+		render(
+			<TooltipProvider>
+				<App />
+			</TooltipProvider>,
+		);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_performance_telemetry_enabled",
+			);
+		});
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"update_performance_telemetry",
+			{ enabled: true },
+		);
 	});
 });

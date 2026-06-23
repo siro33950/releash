@@ -47,7 +47,7 @@ import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { useAutomation } from "@/hooks/useAutomation";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
 import { useWebhookConfig } from "@/hooks/useWebhookConfig";
-import { trackEvent } from "@/lib/telemetry";
+import { setPerformanceTelemetryEnabled, trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
 import type { BranchInfo } from "@/types/git";
 import {
@@ -1331,20 +1331,20 @@ function PrivacySection({
 
 			<div className="flex items-center gap-2">
 				<Checkbox
-					id="telemetry-enabled"
-					checked={draft.telemetryEnabled}
+					id="performance-telemetry"
+					checked={draft.performanceTelemetry}
 					onCheckedChange={(checked) =>
 						updateDraft((d) => ({
 							...d,
-							telemetryEnabled: checked === true,
+							performanceTelemetry: checked === true,
 						}))
 					}
 				/>
 				<label
-					htmlFor="telemetry-enabled"
+					htmlFor="performance-telemetry"
 					className={`${labelClass} cursor-pointer`}
 				>
-					Send anonymous usage data
+					Send anonymous performance metrics
 				</label>
 			</div>
 
@@ -1533,6 +1533,8 @@ export function SettingsModal({
 	const handleSave = useCallback(async () => {
 		dispatchSettings({ type: "SAVE_START" });
 		try {
+			const performanceTelemetryChanged =
+				draft.performanceTelemetry !== settings.performanceTelemetry;
 			onSave(draft);
 			if (webhookIsDirty) {
 				await webhookSave();
@@ -1555,9 +1557,10 @@ export function SettingsModal({
 			if (shortcutsIsDirty) {
 				await shortcutsSave();
 			}
-			if (draft.telemetryEnabled) {
-				trackEvent("settings_saved");
+			if (performanceTelemetryChanged) {
+				await setPerformanceTelemetryEnabled(draft.performanceTelemetry);
 			}
+			trackEvent("settings_saved");
 		} catch {
 			// webhook などの保存失敗はフック内部でerror stateに反映されUIに表示される
 			dispatchSettings({ type: "SAVE_ERROR" });
@@ -1567,6 +1570,7 @@ export function SettingsModal({
 	}, [
 		draft,
 		onSave,
+		settings.performanceTelemetry,
 		webhookIsDirty,
 		webhookSave,
 		backgroundIsDirty,

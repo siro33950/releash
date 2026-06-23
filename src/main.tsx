@@ -1,35 +1,28 @@
-import { invoke } from "@tauri-apps/api/core";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
-import { SentryErrorBoundary } from "./components/ErrorBoundary";
+import { FrontendErrorBoundary } from "./components/ErrorBoundary";
 import { preloadHighlighter } from "./hooks/useShikiHighlighter";
 import "./index.css";
-import { initSentry } from "./lib/sentry";
+import {
+	installFrontendErrorHandlers,
+	reportFrontendError,
+} from "./lib/telemetry";
 
 async function bootstrap() {
 	preloadHighlighter();
-
-	let crashReportingEnabled = true;
-	try {
-		crashReportingEnabled = await invoke<boolean>(
-			"get_crash_reporting_enabled",
-		);
-	} catch {
-		// Rust側が応答しない場合はデフォルト(有効)で初期化
-	}
-
-	initSentry(crashReportingEnabled);
+	installFrontendErrorHandlers();
 
 	ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
 		<React.StrictMode>
-			<SentryErrorBoundary>
+			<FrontendErrorBoundary>
 				<App />
-			</SentryErrorBoundary>
+			</FrontendErrorBoundary>
 		</React.StrictMode>,
 	);
 }
 
 bootstrap().catch((err) => {
+	reportFrontendError(err, "bootstrap_error");
 	console.error("Failed to bootstrap application:", err);
 });

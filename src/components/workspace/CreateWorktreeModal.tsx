@@ -198,9 +198,7 @@ export function CreateWorktreeModal({
 
 			if (createdEntries.length > 0) {
 				const lastEntry = createdEntries[createdEntries.length - 1];
-				trackEvent("worktree_created", {
-					count: String(createdEntries.length),
-				});
+				trackEvent("worktree_created");
 				onCreated(lastEntry.path, lastEntry.branch, repoName);
 			}
 

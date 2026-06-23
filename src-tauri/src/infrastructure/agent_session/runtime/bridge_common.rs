@@ -1101,6 +1101,14 @@ fn emit_streaming_parts<R: tauri::Runtime>(
         "message_id": message_id,
         "parts": parts,
     });
+    crate::other::telemetry::record_payload_size(
+        crate::other::telemetry::Payload::TauriEvent,
+        || {
+            serde_json::to_vec(&payload)
+                .map(|body| body.len())
+                .unwrap_or(0)
+        },
+    );
     let tauri_ok = app.emit("agent-streaming-updated", &payload).is_ok();
     if let Some(broadcaster) = app.try_state::<Arc<crate::ws_bridge::WsBroadcaster>>() {
         broadcaster.send_stream_sync(crate::protocol::AgentStreamSync {
@@ -1244,7 +1252,11 @@ fn apply_streaming_emit_result(
     if tauri_ok && ws_ok {
         proc.pending_stream_part_count = 0;
         proc.pending_stream_bytes = 0;
-        proc.last_stream_emit_at = Some(Instant::now());
+        let now = Instant::now();
+        if let Some(previous) = proc.last_stream_emit_at {
+            crate::other::telemetry::record_emit_interval(now.duration_since(previous));
+        }
+        proc.last_stream_emit_at = Some(now);
         true
     } else {
         // NB: deliberately exclude payload content / tool I/O / mentions —
@@ -9547,6 +9559,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_streaming_emit_result_records_interval_on_second_success() {
+        let _guard = crate::other::telemetry::lock_test_telemetry();
+        crate::other::telemetry::reset_test_metrics();
+        crate::other::telemetry::set_performance_configured(true);
+        crate::other::telemetry::set_performance_enabled(true);
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at = Some(Instant::now() - Duration::from_millis(25));
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "abc".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
+
+        assert!(ok);
+        let records = crate::other::telemetry::test_metric_records();
+        assert!(records.iter().any(|record| {
+            record.name == "releash.agent_stream.emit_interval_ms" && record.value >= 25.0
+        }));
+        crate::other::telemetry::reset_test_metrics();
+    }
+
+    #[tokio::test]
+    async fn apply_streaming_emit_result_does_not_record_interval_on_first_success() {
+        let _guard = crate::other::telemetry::lock_test_telemetry();
+        crate::other::telemetry::reset_test_metrics();
+        crate::other::telemetry::set_performance_configured(true);
+        crate::other::telemetry::set_performance_enabled(true);
+        let mut proc = make_streaming_test_process();
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "abc".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
+
+        assert!(ok);
+        assert!(!crate::other::telemetry::test_metric_records()
+            .iter()
+            .any(|record| record.name == "releash.agent_stream.emit_interval_ms"));
+        crate::other::telemetry::reset_test_metrics();
+    }
+
+    #[tokio::test]
     async fn apply_streaming_emit_result_retains_pending_on_failure() {
         let mut proc = make_streaming_test_process();
         enqueue_pending_delta(
@@ -9566,6 +9630,32 @@ mod tests {
             proc.last_stream_emit_at.is_none(),
             "last_emit_at must not advance on failure"
         );
+    }
+
+    #[tokio::test]
+    async fn apply_streaming_emit_result_does_not_record_interval_on_failure() {
+        let _guard = crate::other::telemetry::lock_test_telemetry();
+        crate::other::telemetry::reset_test_metrics();
+        crate::other::telemetry::set_performance_configured(true);
+        crate::other::telemetry::set_performance_enabled(true);
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at = Some(Instant::now() - Duration::from_millis(25));
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "abc".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, false, true);
+
+        assert!(!ok);
+        assert!(!crate::other::telemetry::test_metric_records()
+            .iter()
+            .any(|record| record.name == "releash.agent_stream.emit_interval_ms"));
+        crate::other::telemetry::reset_test_metrics();
     }
 
     #[tokio::test]

@@ -73,7 +73,7 @@ export interface AppSettings {
 	agentAutoApprove: boolean;
 	terminalStartupCommand: string;
 	autoUpdate: boolean;
-	telemetryEnabled: boolean;
+	performanceTelemetry: boolean;
 	enableCrashReporting: boolean;
 	defaultDiffOnlyMode: boolean;
 	agentMaxConcurrent: number;
@@ -89,7 +89,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	agentAutoApprove: false,
 	terminalStartupCommand: "",
 	autoUpdate: true,
-	telemetryEnabled: true,
+	performanceTelemetry: true,
 	enableCrashReporting: true,
 	agentMaxConcurrent: 0,
 };

@@ -24,8 +24,13 @@ impl FileSessionStorage {
     }
 
     pub fn list_metas(&self, app_data_dir: &Path) -> Result<Vec<SessionMeta>, String> {
-        self.ensure_loaded(app_data_dir)?;
-        Ok(self.cache.read().values().cloned().collect())
+        crate::other::telemetry::measure_result(
+            crate::other::telemetry::HotPath::SessionList,
+            || {
+                self.ensure_loaded(app_data_dir)?;
+                Ok(self.cache.read().values().cloned().collect())
+            },
+        )
     }
 
     pub fn remove_session(&self, app_data_dir: &Path, session_id: &str) {
@@ -37,11 +42,16 @@ impl FileSessionStorage {
         app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<SessionMeta>, String> {
-        self.ensure_loaded(app_data_dir)?;
-        if let Some(err) = self.invalid_sessions.read().get(session_id) {
-            return Err(err.clone());
-        }
-        Ok(self.cache.read().get(session_id).cloned())
+        crate::other::telemetry::measure_result(
+            crate::other::telemetry::HotPath::SessionGetMeta,
+            || {
+                self.ensure_loaded(app_data_dir)?;
+                if let Some(err) = self.invalid_sessions.read().get(session_id) {
+                    return Err(err.clone());
+                }
+                Ok(self.cache.read().get(session_id).cloned())
+            },
+        )
     }
 
     /// `file_lock` を保持したまま meta を read-modify-write する原子更新 API。

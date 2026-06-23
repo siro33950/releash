@@ -118,7 +118,12 @@ impl WsBroadcaster {
                 .latest_stream_sync
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            slot.insert((msg.session_id.clone(), msg.message_id.clone()), msg);
+            if slot
+                .insert((msg.session_id.clone(), msg.message_id.clone()), msg)
+                .is_some()
+            {
+                crate::other::telemetry::increment_dropped_stream_frames();
+            }
         }
         drop(sender_guard);
         self.stream_sync_notify.notify_one();
@@ -150,6 +155,9 @@ impl WsBroadcaster {
     pub fn set_sender(&self, sender: Option<WsSender>) {
         let mut guard = self.sender.lock().unwrap_or_else(|e| e.into_inner());
         let cleared = sender.is_none();
+        if sender.is_some() {
+            crate::other::telemetry::increment_ws_reconnects();
+        }
         *guard = sender;
         if cleared {
             // No active WS session — drop the queued cumulative snapshots so

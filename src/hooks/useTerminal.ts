@@ -3,6 +3,10 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { FitAddon } from "@xterm/addon-fit";
 import { type ITheme, Terminal } from "@xterm/xterm";
 import { type RefObject, useCallback, useEffect, useRef } from "react";
+import {
+	reportMountedXtermMounted,
+	reportMountedXtermUnmounted,
+} from "@/lib/telemetry";
 import type { Theme } from "@/types/settings";
 
 interface PtyOutput {
@@ -123,6 +127,7 @@ export function useTerminal(
 			fontSize: 14,
 			theme: getTerminalTheme(themeRef.current, container),
 		});
+		reportMountedXtermMounted();
 
 		const fitAddon = new FitAddon();
 		terminal.loadAddon(fitAddon);
@@ -337,6 +342,7 @@ export function useTerminal(
 			}
 			ptyIdRef.current = null;
 			terminal.dispose();
+			reportMountedXtermUnmounted();
 		};
 	}, [containerRef, cwd, sessionKey, label]);
 

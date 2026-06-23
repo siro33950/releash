@@ -89,6 +89,11 @@ const baseIpcHandler: Record<string, unknown> = {
 	// Telemetry
 	get_crash_reporting_enabled: true,
 	update_crash_reporting: null,
+	get_performance_telemetry_enabled: true,
+	update_performance_telemetry: null,
+	report_frontend_error: null,
+	report_mounted_xterm_count: null,
+	report_usage_event: null,
 
 	// Background / Autostart
 	get_app_settings: {

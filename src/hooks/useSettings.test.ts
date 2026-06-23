@@ -1,4 +1,5 @@
-import { act, renderHook } from "@testing-library/react";
+import { invoke } from "@tauri-apps/api/core";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "@/types/settings";
 import { useSettings } from "./useSettings";
@@ -7,6 +8,7 @@ describe("useSettings", () => {
 	beforeEach(() => {
 		localStorage.clear();
 		document.documentElement.classList.remove("light", "dark");
+		vi.clearAllMocks();
 	});
 
 	afterEach(() => {
@@ -50,6 +52,7 @@ describe("useSettings", () => {
 
 		const stored = JSON.parse(localStorage.getItem("releash-settings") ?? "{}");
 		expect(stored.fontSize).toBe(20);
+		expect(stored).not.toHaveProperty("performanceTelemetry");
 	});
 
 	it("should update theme and apply class to document", () => {
@@ -101,5 +104,77 @@ describe("useSettings", () => {
 		);
 		const { result } = renderHook(() => useSettings());
 		expect(result.current.settings.enableCrashReporting).toBe(false);
+	});
+
+	it("should not load performanceTelemetry from localStorage", () => {
+		localStorage.setItem(
+			"releash-settings",
+			JSON.stringify({ performanceTelemetry: false, telemetryEnabled: false }),
+		);
+		const { result } = renderHook(() => useSettings());
+		expect(result.current.settings.performanceTelemetry).toBe(
+			DEFAULT_SETTINGS.performanceTelemetry,
+		);
+	});
+
+	it("should remove performance telemetry keys from persisted settings", () => {
+		localStorage.setItem(
+			"releash-settings",
+			JSON.stringify({ performanceTelemetry: false, telemetryEnabled: false }),
+		);
+		const { result } = renderHook(() => useSettings());
+
+		act(() => {
+			result.current.updateFontSize(20);
+		});
+
+		const stored = JSON.parse(localStorage.getItem("releash-settings") ?? "{}");
+		expect(stored.fontSize).toBe(20);
+		expect(stored).not.toHaveProperty("performanceTelemetry");
+		expect(stored).not.toHaveProperty("telemetryEnabled");
+	});
+
+	it("should initialize performanceTelemetry from Rust without writing localStorage value back", async () => {
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			if (cmd === "get_performance_telemetry_enabled") {
+				return Promise.resolve(false);
+			}
+			return Promise.resolve(null);
+		});
+		localStorage.setItem(
+			"releash-settings",
+			JSON.stringify({ performanceTelemetry: true }),
+		);
+
+		const { result } = renderHook(() => useSettings());
+
+		await waitFor(() => {
+			expect(result.current.settings.performanceTelemetry).toBe(false);
+		});
+		const stored = JSON.parse(localStorage.getItem("releash-settings") ?? "{}");
+		expect(stored).not.toHaveProperty("performanceTelemetry");
+		expect(invoke).toHaveBeenCalledWith("get_performance_telemetry_enabled");
+		expect(invoke).not.toHaveBeenCalledWith("update_performance_telemetry", {
+			enabled: true,
+		});
+	});
+
+	it("should keep Rust opt-out when localStorage is corrupt", async () => {
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			if (cmd === "get_performance_telemetry_enabled") {
+				return Promise.resolve(false);
+			}
+			return Promise.resolve(null);
+		});
+		localStorage.setItem("releash-settings", "not-json");
+
+		const { result } = renderHook(() => useSettings());
+
+		await waitFor(() => {
+			expect(result.current.settings.performanceTelemetry).toBe(false);
+		});
+		expect(invoke).not.toHaveBeenCalledWith("update_performance_telemetry", {
+			enabled: true,
+		});
 	});
 });

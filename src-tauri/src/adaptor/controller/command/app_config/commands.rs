@@ -17,15 +17,24 @@ fn map_join_error(error: tokio::task::JoinError) -> String {
 }
 
 #[tauri::command]
-pub async fn update_telemetry_enabled(
+pub async fn update_performance_telemetry(
     state: State<'_, Arc<dyn ConfigRepository>>,
     enabled: bool,
 ) -> Result<(), String> {
     let usecase = build_usecase(state.inner().clone());
-    tokio::task::spawn_blocking(move || usecase.update_telemetry_enabled(enabled))
+    tokio::task::spawn_blocking(move || usecase.update_performance_telemetry(enabled))
         .await
         .map_err(map_join_error)?
-        .map_err(String::from)
+        .map_err(String::from)?;
+    crate::other::telemetry::set_performance_enabled(
+        crate::infrastructure::telemetry::config::telemetry_active(
+            crate::infrastructure::telemetry::config::BuildType::current(),
+            crate::infrastructure::telemetry::config::endpoint(),
+            crate::infrastructure::telemetry::config::license_key(),
+            enabled,
+        ),
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -85,6 +94,17 @@ pub fn get_crash_reporting_enabled(
 }
 
 #[tauri::command]
+pub fn get_performance_telemetry_enabled(
+    state: State<'_, Arc<dyn ConfigRepository>>,
+) -> Result<bool, String> {
+    let usecase = build_usecase(state.inner().clone());
+    usecase
+        .query()
+        .get_performance_telemetry_enabled()
+        .map_err(String::from)
+}
+
+#[tauri::command]
 pub async fn update_crash_reporting(
     state: State<'_, Arc<dyn ConfigRepository>>,
     enabled: bool,
@@ -94,6 +114,6 @@ pub async fn update_crash_reporting(
         .await
         .map_err(map_join_error)?
         .map_err(String::from)?;
-    crate::sentry_integration::set_crash_reporting_enabled(enabled);
+    crate::infrastructure::telemetry::crash::set_crash_reporting_enabled(enabled);
     Ok(())
 }

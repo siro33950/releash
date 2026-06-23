@@ -10,7 +10,6 @@ import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
 import { useWorkspaceNavigation } from "@/hooks/useWorkspaceNavigation";
-import { setTelemetryEnabled } from "@/lib/telemetry";
 import { MainLayout } from "@/screens/MainLayout";
 import type { ProviderStatus, WorktreeEntry } from "@/types/git";
 import type {
@@ -32,10 +31,6 @@ function App() {
 	const [showAppSettings, setShowAppSettings] = useState(false);
 	const [centerSelectionRequest, setCenterSelectionRequest] =
 		useState<CenterSelectionRequest | null>(null);
-
-	useEffect(() => {
-		setTelemetryEnabled(settings.telemetryEnabled);
-	}, [settings.telemetryEnabled]);
 
 	useEffect(() => {
 		const suppress = (e: MouseEvent) => e.preventDefault();
