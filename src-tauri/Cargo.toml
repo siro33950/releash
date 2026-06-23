@@ -43,12 +43,12 @@ tree-sitter-typescript = "0.23"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
 tree-sitter-go = "0.25"
-toml = "1.0"
+toml = "1.1"
 serde-saphyr = "0.0"
 rand = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "process"] }
 tokio-tungstenite = "0.29"
-hmac = "0.13.0-rc.6"
+hmac = "0.13.0"
 sha2 = "0.11"
 hex = "0.4"
 hyper = { version = "1", features = ["http1", "server"] }
@@ -73,7 +73,7 @@ clap = { version = "4", features = ["derive"] }
 opentelemetry = "0.32"
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs", "http-proto", "reqwest-blocking-client"] }
 opentelemetry_sdk = "0.32"
-sysinfo = { version = "0.38", default-features = false, features = ["system"] }
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
