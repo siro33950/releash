@@ -33,11 +33,12 @@ export function useWorkspaceTreeNodes(
 	const [workflowHistory, setWorkflowHistory] = useState<
 		WorkspaceWorkflowHistoryItem[]
 	>([]);
-	const [loading, setLoading] = useState(false);
+	const [loading, setLoading] = useState(() => Boolean(worktreePath));
 	const [error, setError] = useState<string | null>(null);
 	const refreshTimerRef = useRef<number | null>(null);
 	const refreshSeqRef = useRef(0);
 	const loadedWorktreePathRef = useRef<string | null>(null);
+	const errorWorktreePathRef = useRef<string | null>(null);
 	const nodesRef = useRef<WorkspaceTreeNode[]>([]);
 
 	const updateNodes = useCallback((nextNodes: WorkspaceTreeNode[]) => {
@@ -54,6 +55,7 @@ export function useWorkspaceTreeNodes(
 		if (!worktreePath) {
 			refreshSeqRef.current += 1;
 			loadedWorktreePathRef.current = null;
+			errorWorktreePathRef.current = null;
 			nodesRef.current = [];
 			setNodes([]);
 			setClosedSessions([]);
@@ -81,6 +83,7 @@ export function useWorkspaceTreeNodes(
 				]);
 			if (seq !== refreshSeqRef.current) return;
 			loadedWorktreePathRef.current = worktreePath;
+			errorWorktreePathRef.current = null;
 			updateNodes(nextNodes);
 			setClosedSessions(
 				nextClosedSessions.filter((session) => !session.workflowStepSession),
@@ -94,6 +97,7 @@ export function useWorkspaceTreeNodes(
 				setClosedSessions([]);
 				setWorkflowHistory([]);
 			}
+			errorWorktreePathRef.current = worktreePath;
 			setError(String(e));
 		} finally {
 			if (seq === refreshSeqRef.current) {
@@ -197,5 +201,22 @@ export function useWorkspaceTreeNodes(
 		};
 	}, [hasSessionNode, scheduleRefresh, worktreePath]);
 
-	return { nodes, closedSessions, workflowHistory, loading, error, refresh };
+	const currentError =
+		errorWorktreePathRef.current === worktreePath ? error : null;
+	const currentLoading =
+		loading ||
+		Boolean(
+			worktreePath &&
+				!hasLoadedCurrentWorktree() &&
+				errorWorktreePathRef.current !== worktreePath,
+		);
+
+	return {
+		nodes,
+		closedSessions,
+		workflowHistory,
+		loading: currentLoading,
+		error: currentError,
+		refresh,
+	};
 }

@@ -125,6 +125,57 @@ describe("useWorkspaceTreeNodes", () => {
 		});
 	});
 
+	it("marks a valid Worktree as loading before the first fetch completes", async () => {
+		const pending = deferred<WorkspaceTreeNode[]>();
+		treeResponses.push(pending.promise);
+
+		const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
+
+		expect(result.current.loading).toBe(true);
+
+		await act(async () => {
+			pending.resolve([]);
+			await pending.promise;
+		});
+
+		await waitFor(() => {
+			expect(result.current.loading).toBe(false);
+		});
+	});
+
+	it("marks a changed Worktree path as loading until that path has loaded", async () => {
+		const initial = [makeSessionNode("session-1")];
+		treeResponses.push(initial);
+
+		const { result, rerender } = renderHook(
+			({ worktreePath }: { worktreePath: string }) =>
+				useWorkspaceTreeNodes(worktreePath),
+			{ initialProps: { worktreePath: "/repo" } },
+		);
+
+		await waitFor(() => {
+			expect(result.current.nodes).toEqual(initial);
+		});
+		expect(result.current.loading).toBe(false);
+
+		const pending = deferred<WorkspaceTreeNode[]>();
+		treeResponses.push(pending.promise);
+
+		rerender({ worktreePath: "/repo/next" });
+
+		expect(result.current.loading).toBe(true);
+
+		await act(async () => {
+			pending.resolve([]);
+			await pending.promise;
+		});
+
+		await waitFor(() => {
+			expect(result.current.loading).toBe(false);
+		});
+		expect(result.current.nodes).toEqual([]);
+	});
+
 	it("unsubscribes listeners when cleanup runs after setup completes", async () => {
 		const unlistenStatus = vi.fn();
 		const unlistenWorkflow = vi.fn();
