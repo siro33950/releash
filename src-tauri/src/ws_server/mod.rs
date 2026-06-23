@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::domain::app_config::ConfigRepository;
+use crate::usecase::pty_session::query_service::PtySessionReplayReader;
 use crate::ws_bridge::WsBroadcaster;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -45,6 +46,7 @@ pub(crate) struct WsServerState {
     active_connection: Arc<Mutex<bool>>,
     rate_limits: Arc<Mutex<HashMap<std::net::IpAddr, rate_limit::RateLimitEntry>>>,
     broadcaster: Arc<WsBroadcaster>,
+    pty_replay_reader: Arc<dyn PtySessionReplayReader>,
     app_config: Arc<dyn ConfigRepository>,
     tls_enabled: bool,
 }
@@ -52,6 +54,7 @@ pub(crate) struct WsServerState {
 impl WsServerState {
     pub(crate) fn new(
         broadcaster: Arc<WsBroadcaster>,
+        pty_replay_reader: Arc<dyn PtySessionReplayReader>,
         app_config: Arc<dyn ConfigRepository>,
         tls_enabled: bool,
     ) -> Self {
@@ -59,6 +62,7 @@ impl WsServerState {
             active_connection: Arc::new(Mutex::new(false)),
             rate_limits: Arc::new(Mutex::new(HashMap::new())),
             broadcaster,
+            pty_replay_reader,
             app_config,
             tls_enabled,
         }

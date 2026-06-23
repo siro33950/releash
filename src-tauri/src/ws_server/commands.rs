@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use crate::domain::app_config::ConfigRepository;
+use crate::usecase::pty_session::query_service::PtySessionReplayReader;
 use crate::ws_bridge::WsBroadcaster;
 
 use super::http::start_ws_server;
@@ -24,6 +25,7 @@ pub async fn start_server_core(
     let handle = app.state::<WsServerHandle>();
     let config_state = app.state::<Arc<dyn ConfigRepository>>();
     let broadcaster = app.state::<Arc<WsBroadcaster>>();
+    let pty_replay_reader = app.state::<Arc<dyn PtySessionReplayReader>>();
 
     {
         let running = handle.running.lock();
@@ -69,6 +71,7 @@ pub async fn start_server_core(
 
     let server_state = Arc::new(WsServerState::new(
         Arc::clone(&broadcaster),
+        Arc::clone(&pty_replay_reader),
         Arc::clone(config_state.inner()),
         cfg.server.tls.enabled,
     ));

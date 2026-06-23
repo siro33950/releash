@@ -10,7 +10,7 @@ pub use branch::*;
 pub use error::*;
 pub use worktree::*;
 
-use crate::adaptor::protocol::pty::{PtyExitMsg, PtyOutputMsg};
+use crate::adaptor::protocol::pty::{PtyEvictedMsg, PtyExitMsg, PtyOutputMsg};
 use crate::adaptor::protocol::workflow::WorkflowStateSync;
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +31,8 @@ pub enum WsMessage {
     PtyOutput(PtyOutputMsg),
     #[serde(rename = "pty_exit")]
     PtyExit(PtyExitMsg),
+    #[serde(rename = "pty_evicted")]
+    PtyEvicted(PtyEvictedMsg),
 
     // Worktree / branch push
     #[serde(rename = "worktree_pr_status_sync")]
@@ -62,7 +64,9 @@ pub fn deserialize_message(json: &str) -> Result<WsMessage, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::protocol::pty::{PtyExitMsg, PtyOutputMsg};
+    use crate::adaptor::protocol::pty::{
+        PtyEvictReasonMsg, PtyEvictedMsg, PtyExitMsg, PtyOutputMsg,
+    };
 
     #[test]
     fn serialize_auth_challenge() {
@@ -140,10 +144,16 @@ mod tests {
             WsMessage::PtyOutput(PtyOutputMsg {
                 pty_id: 1,
                 data: "d".to_string(),
+                sequence: 1,
             }),
             WsMessage::PtyExit(PtyExitMsg {
                 pty_id: 1,
                 exit_code: Some(0),
+            }),
+            WsMessage::PtyEvicted(PtyEvictedMsg {
+                pty_id: 1,
+                session_key: "key".to_string(),
+                reason: PtyEvictReasonMsg::Idle,
             }),
             WsMessage::WorktreePrStatusSync(WorktreePrStatusSync {
                 entries: vec![WorktreePrEntry {

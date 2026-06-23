@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,13 +6,27 @@ import { _resetIdCounters } from "@/hooks/useTerminalPanes";
 import { _resetContainerIdCounter } from "@/lib/paneTree";
 import { TerminalTabPanel } from "./TerminalTabPanel";
 
+const mockTerminalHandle = vi.hoisted(() => ({
+	writeToTerminal: vi.fn(),
+	requestKill: vi.fn(),
+}));
+
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/components/panels/TerminalPanel", () => ({
-	TerminalPanel: vi.fn(() => <div data-testid="terminal-panel" />),
-}));
+vi.mock("@/components/panels/TerminalPanel", async () => {
+	const React = await import("react");
+	return {
+		TerminalPanel: React.forwardRef(function MockTerminalPanel(
+			{ label }: { label?: string },
+			ref,
+		) {
+			React.useImperativeHandle(ref, () => mockTerminalHandle, []);
+			return <div data-testid="terminal-panel" data-label={label} />;
+		}),
+	};
+});
 
 vi.mock("react-resizable-panels", () => ({
 	Group: ({ children }: { children: React.ReactNode }) => (
@@ -67,6 +81,37 @@ describe("TerminalTabPanel", () => {
 			"aria-selected",
 			"true",
 		);
+	});
+
+	it("inactive tab の TerminalPanel は mount されない", async () => {
+		const user = userEvent.setup();
+		render(<TerminalTabPanel />);
+
+		expect(screen.getAllByTestId("terminal-panel")).toHaveLength(1);
+
+		await user.click(screen.getByLabelText("Add terminal tab"));
+		expect(screen.getAllByTestId("terminal-panel")).toHaveLength(1);
+
+		await user.click(screen.getByText("Terminal 1"));
+		expect(screen.getAllByTestId("terminal-panel")).toHaveLength(1);
+	});
+
+	it("inactive pane の TerminalPanel は mount されない", () => {
+		render(<TerminalTabPanel />);
+
+		fireEvent.keyDown(window, { key: "d", metaKey: true });
+
+		expect(screen.getAllByTestId("terminal-panel")).toHaveLength(1);
+		expect(screen.getByLabelText("Focus Terminal 1")).toBeInTheDocument();
+	});
+
+	it("pending の active pane を閉じる前に requestKill を呼ぶ", () => {
+		render(<TerminalTabPanel />);
+
+		fireEvent.keyDown(window, { key: "d", metaKey: true });
+		fireEvent.click(screen.getByLabelText("Close Terminal 2"));
+
+		expect(mockTerminalHandle.requestKill).toHaveBeenCalledTimes(1);
 	});
 
 	it("x ボタンでタブが閉じられる", async () => {

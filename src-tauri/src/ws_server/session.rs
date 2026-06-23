@@ -6,6 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::adaptor::protocol::pty::PtyOutputMsg;
 use crate::protocol::*;
 use crate::ws_bridge::WsBroadcaster;
 
@@ -213,6 +214,8 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         write
     });
 
+    replay_pty_buffers(state);
+
     // --- メッセージルーティングフェーズ ---
     while let Some(msg) = read.next().await {
         let msg = match msg {
@@ -252,4 +255,211 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 
     log::info!("Client disconnected: {}", peer_addr);
     Ok(())
+}
+
+fn replay_pty_buffers(state: &WsServerState) {
+    for output in state.pty_replay_reader.replay_outputs() {
+        let sent = state
+            .broadcaster
+            .send_without_buffer(WsMessage::PtyOutput(PtyOutputMsg {
+                pty_id: output.pty_id,
+                data: output.data,
+                sequence: output.sequence,
+            }));
+        if !sent {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use futures_util::{SinkExt, StreamExt};
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::Sha256;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    use crate::domain::app_config::repository::ConfigUpdate;
+    use crate::domain::app_config::value_objects::{
+        AgentShortcutConfig, AppConfigDocument, AppSettings, ServerConfig, TelemetryConfig,
+        TlsConfig, WorkflowConfig,
+    };
+    use crate::domain::app_config::{AppConfigError, ConfigRepository};
+    use crate::domain::notification::{DesktopNotifyMode, NotifyConfig};
+    use crate::protocol::{deserialize_message, serialize_message, AuthResponse, WsMessage};
+    use crate::usecase::pty_session::dto::PtyReplayOutput;
+    use crate::usecase::pty_session::query_service::PtySessionReplayReader;
+
+    use super::*;
+
+    type HmacSha256 = Hmac<Sha256>;
+
+    struct MockReplayReader;
+
+    impl PtySessionReplayReader for MockReplayReader {
+        fn replay_outputs(&self) -> Vec<PtyReplayOutput> {
+            vec![PtyReplayOutput {
+                pty_id: 7,
+                data: "buffered output".to_string(),
+                sequence: 42,
+            }]
+        }
+    }
+
+    struct MockConfigRepository;
+
+    impl ConfigRepository for MockConfigRepository {
+        fn load(&self) -> Result<AppConfigDocument, AppConfigError> {
+            Ok(AppConfigDocument {
+                server: ServerConfig {
+                    bind: "127.0.0.1".to_string(),
+                    port: 0,
+                    hook_port: 0,
+                    token: "token".to_string(),
+                    tls: TlsConfig {
+                        enabled: false,
+                        cert: String::new(),
+                        key: String::new(),
+                    },
+                    notify: NotifyConfig {
+                        webhook_url: String::new(),
+                        on_running: false,
+                        on_done: false,
+                        on_error: false,
+                        on_waiting: false,
+                        desktop_mode: DesktopNotifyMode::Always,
+                        inactive_timeout_minutes: 0,
+                    },
+                },
+                telemetry: TelemetryConfig {
+                    crash_reporting: false,
+                    performance_telemetry: false,
+                },
+                app: AppSettings {
+                    close_to_tray: false,
+                    auto_launch: false,
+                    start_minimized: false,
+                    last_root_path: String::new(),
+                    last_repo_paths: Vec::new(),
+                    external_editor: String::new(),
+                    agent_shortcuts: AgentShortcutConfig::default(),
+                },
+                workflow: WorkflowConfig {
+                    approval_auto_approve: false,
+                },
+            })
+        }
+
+        fn save(&self, _config: AppConfigDocument) -> Result<(), AppConfigError> {
+            Ok(())
+        }
+
+        fn update(&self, _f: ConfigUpdate) -> Result<(), AppConfigError> {
+            Ok(())
+        }
+    }
+
+    fn hmac_response(challenge: &str, token: &str) -> String {
+        let mut mac = HmacSha256::new_from_slice(token.as_bytes()).unwrap();
+        mac.update(challenge.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    }
+
+    #[test]
+    fn replay_pty_buffers_sends_buffered_output_to_subscriber() {
+        let broadcaster = Arc::new(WsBroadcaster::default());
+        let (tx, mut rx) = WsBroadcaster::create_channel();
+        broadcaster.set_sender(Some(tx));
+        let state = WsServerState::new(
+            broadcaster,
+            Arc::new(MockReplayReader),
+            Arc::new(MockConfigRepository),
+            false,
+        );
+
+        replay_pty_buffers(&state);
+
+        match rx.try_recv().unwrap() {
+            WsMessage::PtyOutput(output) => {
+                assert_eq!(output.pty_id, 7);
+                assert_eq!(output.data, "buffered output");
+                assert_eq!(output.sequence, 42);
+            }
+            other => panic!("unexpected replay message: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn authenticated_connection_replays_pty_buffers_to_websocket_client() {
+        let state = Arc::new(WsServerState::new(
+            Arc::new(WsBroadcaster::default()),
+            Arc::new(MockReplayReader),
+            Arc::new(MockConfigRepository),
+            false,
+        ));
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let server_ws =
+            tokio_tungstenite::WebSocketStream::from_raw_socket(server_io, Role::Server, None)
+                .await;
+        let mut client_ws =
+            tokio_tungstenite::WebSocketStream::from_raw_socket(client_io, Role::Client, None)
+                .await;
+        let peer_addr = "127.0.0.1:48121".parse().unwrap();
+        let server_state = Arc::clone(&state);
+        let server_task = tokio::spawn(async move {
+            handle_ws_authenticated(server_ws, peer_addr, "token", server_state.as_ref()).await
+        });
+
+        let challenge_text = match client_ws.next().await.unwrap().unwrap() {
+            Message::Text(text) => text,
+            other => panic!("unexpected challenge frame: {other:?}"),
+        };
+        let challenge = match deserialize_message(&challenge_text).unwrap() {
+            WsMessage::AuthChallenge(challenge) => challenge.challenge,
+            other => panic!("unexpected challenge message: {other:?}"),
+        };
+        let auth_response = WsMessage::AuthResponse(AuthResponse {
+            hmac: hmac_response(&challenge, "token"),
+        });
+        client_ws
+            .send(Message::text(serialize_message(&auth_response).unwrap()))
+            .await
+            .unwrap();
+
+        let auth_result_text = match client_ws.next().await.unwrap().unwrap() {
+            Message::Text(text) => text,
+            other => panic!("unexpected auth result frame: {other:?}"),
+        };
+        match deserialize_message(&auth_result_text).unwrap() {
+            WsMessage::AuthResult(result) => assert!(result.success),
+            other => panic!("unexpected auth result message: {other:?}"),
+        }
+
+        let replay_text = tokio::time::timeout(Duration::from_secs(1), async {
+            match client_ws.next().await.unwrap().unwrap() {
+                Message::Text(text) => text,
+                other => panic!("unexpected replay frame: {other:?}"),
+            }
+        })
+        .await
+        .expect("authenticated connection should receive PTY replay output");
+
+        match deserialize_message(&replay_text).unwrap() {
+            WsMessage::PtyOutput(output) => {
+                assert_eq!(output.pty_id, 7);
+                assert_eq!(output.data, "buffered output");
+                assert_eq!(output.sequence, 42);
+            }
+            other => panic!("unexpected replay message: {other:?}"),
+        }
+
+        client_ws.send(Message::Close(None)).await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), server_task)
+            .await
+            .expect("server task should stop after client close")
+            .unwrap();
+        assert!(result.is_ok());
+    }
 }

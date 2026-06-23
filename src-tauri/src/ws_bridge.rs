@@ -1,16 +1,13 @@
 use crate::protocol::{AgentStreamSync, WsMessage};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, Notify};
 
 pub type WsSender = mpsc::UnboundedSender<WsMessage>;
 pub type WsReceiver = mpsc::UnboundedReceiver<WsMessage>;
 
-const PTY_OUTPUT_BUFFER_SIZE: usize = 64 * 1024;
-
 pub struct WsBroadcaster {
     sender: Mutex<Option<WsSender>>,
-    pty_output_buffers: Mutex<HashMap<u64, VecDeque<u8>>>,
     /// Latest cumulative `AgentStreamSync` snapshot per
     /// `(chat_session_id, message_id)`. The producer writes a fresh snapshot
     /// here on every flush; the consumer drains the slot when woken. This
@@ -29,7 +26,6 @@ impl Default for WsBroadcaster {
     fn default() -> Self {
         Self {
             sender: Mutex::new(None),
-            pty_output_buffers: Mutex::new(HashMap::new()),
             latest_stream_sync: Mutex::new(HashMap::new()),
             stream_sync_notify: Arc::new(Notify::new()),
         }
@@ -38,38 +34,9 @@ impl Default for WsBroadcaster {
 
 impl WsBroadcaster {
     pub fn try_send(&self, msg: WsMessage) {
-        if let WsMessage::PtyOutput(ref pty) = msg {
-            let mut buffers = self
-                .pty_output_buffers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let buf = buffers.entry(pty.pty_id).or_default();
-            for byte in pty.data.as_bytes() {
-                if buf.len() >= PTY_OUTPUT_BUFFER_SIZE {
-                    buf.pop_front();
-                }
-                buf.push_back(*byte);
-            }
-        }
-
         let guard = self.sender.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(sender) = guard.as_ref() {
             let _ = sender.send(msg);
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn get_pty_output_buffer(&self, pty_id: u64) -> String {
-        let buffers = self
-            .pty_output_buffers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        match buffers.get(&pty_id) {
-            Some(buf) => {
-                let bytes: Vec<u8> = buf.iter().copied().collect();
-                String::from_utf8_lossy(&bytes).to_string()
-            }
-            None => String::new(),
         }
     }
 
@@ -78,7 +45,6 @@ impl WsBroadcaster {
     /// when no sender is registered (no WS client to satisfy — not a failure),
     /// and `false` only when the sender is registered but `send` failed
     /// (i.e. the receiver was dropped).
-    #[allow(dead_code)]
     pub fn send_without_buffer(&self, msg: WsMessage) -> bool {
         let guard = self.sender.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
@@ -170,12 +136,11 @@ impl WsBroadcaster {
         }
     }
 
-    pub fn remove_pty_output_buffer(&self, pty_id: u64) {
-        let mut buffers = self
-            .pty_output_buffers
+    pub fn has_subscriber(&self) -> bool {
+        self.sender
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        buffers.remove(&pty_id);
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
     }
 
     pub fn create_channel() -> (WsSender, WsReceiver) {
@@ -189,131 +154,69 @@ mod tests {
     use crate::adaptor::protocol::pty::PtyOutputMsg;
 
     #[test]
-    fn empty_buffer_returns_empty_string() {
+    fn has_subscriber_tracks_registered_sender() {
         let broadcaster = WsBroadcaster::default();
-        assert_eq!(broadcaster.get_pty_output_buffer(1), "");
+        assert!(!broadcaster.has_subscriber());
+
+        let (tx, _rx) = WsBroadcaster::create_channel();
+        broadcaster.set_sender(Some(tx));
+        assert!(broadcaster.has_subscriber());
+
+        broadcaster.set_sender(None);
+        assert!(!broadcaster.has_subscriber());
     }
 
     #[test]
-    fn buffer_accumulates_pty_output() {
-        let broadcaster = WsBroadcaster::default();
-        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
-            pty_id: 1,
-            data: "hello".to_string(),
-        }));
-        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
-            pty_id: 1,
-            data: " world".to_string(),
-        }));
-        assert_eq!(broadcaster.get_pty_output_buffer(1), "hello world");
-    }
-
-    #[test]
-    fn buffer_ring_evicts_oldest_bytes() {
-        let broadcaster = WsBroadcaster::default();
-        let chunk = "A".repeat(PTY_OUTPUT_BUFFER_SIZE);
-        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
-            pty_id: 1,
-            data: chunk,
-        }));
-        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
-            pty_id: 1,
-            data: "B".to_string(),
-        }));
-        let buf = broadcaster.get_pty_output_buffer(1);
-        assert_eq!(buf.len(), PTY_OUTPUT_BUFFER_SIZE);
-        assert!(buf.starts_with('A'));
-        assert!(buf.ends_with('B'));
-    }
-
-    #[test]
-    fn non_pty_output_does_not_affect_buffer() {
-        let broadcaster = WsBroadcaster::default();
-        broadcaster.try_send(WsMessage::Error(crate::protocol::ErrorMsg {
-            code: "TEST".to_string(),
-            message: "test".to_string(),
-        }));
-        assert_eq!(broadcaster.get_pty_output_buffer(1), "");
-    }
-
-    #[test]
-    fn separate_buffers_per_pty_id() {
-        let broadcaster = WsBroadcaster::default();
-        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
-            pty_id: 1,
-            data: "aaa".to_string(),
-        }));
-        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
-            pty_id: 2,
-            data: "bbb".to_string(),
-        }));
-        assert_eq!(broadcaster.get_pty_output_buffer(1), "aaa");
-        assert_eq!(broadcaster.get_pty_output_buffer(2), "bbb");
-    }
-
-    #[test]
-    fn remove_pty_output_buffer_clears_entry() {
+    fn try_send_drops_pty_output_when_no_sender() {
         let broadcaster = WsBroadcaster::default();
         broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
             pty_id: 1,
             data: "hello".to_string(),
+            sequence: 1,
         }));
-        assert_eq!(broadcaster.get_pty_output_buffer(1), "hello");
-        broadcaster.remove_pty_output_buffer(1);
-        assert_eq!(broadcaster.get_pty_output_buffer(1), "");
+        assert!(!broadcaster.has_subscriber());
     }
 
     #[test]
-    fn remove_pty_output_buffer_nonexistent_is_noop() {
-        let broadcaster = WsBroadcaster::default();
-        broadcaster.remove_pty_output_buffer(999);
-        assert_eq!(broadcaster.get_pty_output_buffer(999), "");
-    }
-
-    #[test]
-    fn remove_pty_output_buffer_does_not_affect_other_ptys() {
-        let broadcaster = WsBroadcaster::default();
-        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
-            pty_id: 1,
-            data: "aaa".to_string(),
-        }));
-        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
-            pty_id: 2,
-            data: "bbb".to_string(),
-        }));
-        broadcaster.remove_pty_output_buffer(1);
-        assert_eq!(broadcaster.get_pty_output_buffer(1), "");
-        assert_eq!(broadcaster.get_pty_output_buffer(2), "bbb");
-    }
-
-    #[test]
-    fn send_without_buffer_does_not_affect_buffer() {
+    fn try_send_forwards_pty_output_to_registered_sender_without_buffering() {
         let broadcaster = WsBroadcaster::default();
         let (tx, mut rx) = WsBroadcaster::create_channel();
         broadcaster.set_sender(Some(tx));
 
         broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
             pty_id: 1,
-            data: "original".to_string(),
+            data: "aaa".to_string(),
+            sequence: 1,
         }));
-        assert_eq!(broadcaster.get_pty_output_buffer(1), "original");
+
+        match rx.try_recv().unwrap() {
+            WsMessage::PtyOutput(msg) => {
+                assert_eq!(msg.pty_id, 1);
+                assert_eq!(msg.data, "aaa");
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn send_without_buffer_sends_without_side_effects() {
+        let broadcaster = WsBroadcaster::default();
+        let (tx, mut rx) = WsBroadcaster::create_channel();
+        broadcaster.set_sender(Some(tx));
 
         let sent = broadcaster.send_without_buffer(WsMessage::PtyOutput(PtyOutputMsg {
             pty_id: 1,
             data: "original".to_string(),
+            sequence: 1,
         }));
         assert!(sent, "send must succeed when a receiver is registered");
-        assert_eq!(
-            broadcaster.get_pty_output_buffer(1),
-            "original",
-            "send_without_buffer must not append to buffer"
-        );
 
         let mut received = vec![];
         while let Ok(msg) = rx.try_recv() {
             received.push(msg);
         }
-        assert_eq!(received.len(), 2, "both messages should be sent to channel");
+        assert_eq!(received.len(), 1, "message should be sent to channel");
     }
 
     #[test]

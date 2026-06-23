@@ -25,6 +25,24 @@ impl From<PtySessionSnapshot> for PtySessionInfo {
 pub struct FoundPtySession {
     pub snapshot: PtySessionSnapshot,
     pub buffered_output: String,
+    pub buffered_output_sequence: u64,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct GetPtyBufferedOutputResult {
+    pub pty_id: u64,
+    pub session_key: String,
+    pub buffered_output: String,
+    pub buffered_output_sequence: u64,
+    pub is_exited: bool,
+    pub exit_code: Option<i32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PtyReplayOutput {
+    pub pty_id: u64,
+    pub data: String,
+    pub sequence: u64,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -32,6 +50,7 @@ pub struct GetOrSpawnPtyResult {
     pub pty_id: u64,
     pub session_key: String,
     pub buffered_output: String,
+    pub buffered_output_sequence: u64,
     pub is_new: bool,
     pub is_exited: bool,
     pub exit_code: Option<i32>,
@@ -57,6 +76,7 @@ mod tests {
             pty_id: 1,
             session_key: "key".to_string(),
             buffered_output: String::new(),
+            buffered_output_sequence: 0,
             is_new: true,
             is_exited: false,
             exit_code: None,

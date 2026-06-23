@@ -1,6 +1,12 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useTerminal } from "./useTerminal";
+import {
+	createBoundedPtyOutputQueue,
+	MAX_INITIAL_REFETCH,
+	QUEUED_INITIAL_OUTPUT_MAX_BYTES,
+	QUEUED_INITIAL_OUTPUT_MAX_ITEMS,
+	useTerminal,
+} from "./useTerminal";
 
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
@@ -87,14 +93,18 @@ describe("useTerminal", () => {
 	let containerRef: { current: HTMLDivElement | null };
 	let mockUnlistenOutput: ReturnType<typeof vi.fn>;
 	let mockUnlistenExit: ReturnType<typeof vi.fn>;
+	let mockUnlistenEvicted: ReturnType<typeof vi.fn>;
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mockInvoke.mockReset();
+		mockListen.mockReset();
 
 		containerRef = { current: document.createElement("div") };
 
 		mockUnlistenOutput = vi.fn();
 		mockUnlistenExit = vi.fn();
+		mockUnlistenEvicted = vi.fn();
 
 		mockInvoke.mockImplementation((cmd: string) => {
 			if (cmd === "get_or_spawn_pty") {
@@ -102,6 +112,7 @@ describe("useTerminal", () => {
 					pty_id: 1,
 					session_key: "test-uuid-1234",
 					buffered_output: "",
+					buffered_output_sequence: 0,
 					is_new: true,
 					is_exited: false,
 					exit_code: null,
@@ -111,7 +122,8 @@ describe("useTerminal", () => {
 		});
 		mockListen
 			.mockResolvedValueOnce(mockUnlistenOutput)
-			.mockResolvedValueOnce(mockUnlistenExit);
+			.mockResolvedValueOnce(mockUnlistenExit)
+			.mockResolvedValueOnce(mockUnlistenEvicted);
 	});
 
 	it("Terminal と FitAddon が正しく生成される", () => {
@@ -140,7 +152,7 @@ describe("useTerminal", () => {
 		});
 	});
 
-	it("pty-output と pty-exit のリスナーが登録される", async () => {
+	it("PTY event listeners are registered", async () => {
 		renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
@@ -149,7 +161,365 @@ describe("useTerminal", () => {
 				expect.any(Function),
 			);
 			expect(mockListen).toHaveBeenCalledWith("pty-exit", expect.any(Function));
+			expect(mockListen).toHaveBeenCalledWith(
+				"pty-evicted",
+				expect.any(Function),
+			);
 		});
+	});
+
+	it("PTY ready state is synced as active while mounted and cleared on unmount", async () => {
+		const { unmount } = renderHook(() => useTerminal(containerRef, "/repo"));
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("register_active_terminal", {
+				worktreePath: "/repo",
+				sessionKey: "test-uuid-1234",
+				activeToken: expect.any(String),
+			});
+		});
+		const registerCall = mockInvoke.mock.calls.find(
+			(call: unknown[]) => call[0] === "register_active_terminal",
+		) as [string, { activeToken: string }] | undefined;
+		const activeToken = registerCall?.[1].activeToken;
+
+		unmount();
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("unregister_active_terminal", {
+				worktreePath: "/repo",
+				sessionKey: "test-uuid-1234",
+				activeToken,
+			});
+		});
+	});
+
+	it("uses a new active token after remounting the same session", async () => {
+		mockListen.mockImplementation(() => Promise.resolve(vi.fn()));
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") {
+				return Promise.resolve({
+					pty_id: 1,
+					session_key: "same-session",
+					buffered_output: "",
+					buffered_output_sequence: 0,
+					is_new: false,
+					is_exited: false,
+					exit_code: null,
+				});
+			}
+			return Promise.resolve();
+		});
+
+		const first = renderHook(() =>
+			useTerminal(containerRef, "/repo", undefined, undefined, "same-session"),
+		);
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("register_active_terminal", {
+				worktreePath: "/repo",
+				sessionKey: "same-session",
+				activeToken: expect.any(String),
+			});
+		});
+		const firstRegister = mockInvoke.mock.calls.find(
+			(call: unknown[]) => call[0] === "register_active_terminal",
+		) as [string, { activeToken: string }] | undefined;
+		const firstToken = firstRegister?.[1].activeToken;
+
+		first.unmount();
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("unregister_active_terminal", {
+				worktreePath: "/repo",
+				sessionKey: "same-session",
+				activeToken: firstToken,
+			});
+		});
+
+		mockInvoke.mockClear();
+		const secondContainerRef = { current: document.createElement("div") };
+		renderHook(() =>
+			useTerminal(
+				secondContainerRef,
+				"/repo",
+				undefined,
+				undefined,
+				"same-session",
+			),
+		);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("register_active_terminal", {
+				worktreePath: "/repo",
+				sessionKey: "same-session",
+				activeToken: expect.any(String),
+			});
+		});
+		const secondRegister = mockInvoke.mock.calls.find(
+			(call: unknown[]) => call[0] === "register_active_terminal",
+		) as [string, { activeToken: string }] | undefined;
+		expect(secondRegister?.[1].activeToken).not.toBe(firstToken);
+	});
+
+	it("get_or_spawn resolves after unmount still reports the session key for managed panes", async () => {
+		type SpawnResult = {
+			pty_id: number;
+			session_key: string;
+			buffered_output: string;
+			buffered_output_sequence: number;
+			is_new: boolean;
+			is_exited: boolean;
+			exit_code: number | null;
+		};
+		let resolveSpawn!: (value: SpawnResult) => void;
+		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
+			resolveSpawn = resolve;
+		});
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") return pendingSpawn;
+			return Promise.resolve();
+		});
+		const onPtyReady = vi.fn();
+
+		const { unmount } = renderHook(() =>
+			useTerminal(
+				containerRef,
+				"/repo",
+				undefined,
+				undefined,
+				undefined,
+				"repo terminal",
+				onPtyReady,
+			),
+		);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+		unmount();
+		mockInvoke.mockClear();
+
+		resolveSpawn({
+			pty_id: 7,
+			session_key: "late-session",
+			buffered_output: "",
+			buffered_output_sequence: 0,
+			is_new: true,
+			is_exited: false,
+			exit_code: null,
+		});
+
+		await waitFor(() => {
+			expect(onPtyReady).toHaveBeenCalledWith(7, "late-session");
+		});
+		expect(mockInvoke).toHaveBeenCalledWith("unregister_active_terminal", {
+			worktreePath: "/repo",
+			sessionKey: "late-session",
+			activeToken: expect.any(String),
+		});
+		expect(mockInvoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
+	});
+
+	it("requestKill() 後に get_or_spawn が解決した pending PTY は onPtyReady を呼ばない", async () => {
+		type SpawnResult = {
+			pty_id: number;
+			session_key: string;
+			buffered_output: string;
+			buffered_output_sequence: number;
+			is_new: boolean;
+			is_exited: boolean;
+			exit_code: number | null;
+		};
+		let resolveSpawn!: (value: SpawnResult) => void;
+		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
+			resolveSpawn = resolve;
+		});
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") return pendingSpawn;
+			return Promise.resolve();
+		});
+		const onPtyReady = vi.fn();
+
+		const { result, unmount } = renderHook(() =>
+			useTerminal(
+				containerRef,
+				"/repo",
+				undefined,
+				undefined,
+				undefined,
+				"repo terminal",
+				onPtyReady,
+			),
+		);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+		result.current.requestKill();
+		unmount();
+		mockInvoke.mockClear();
+
+		resolveSpawn({
+			pty_id: 7,
+			session_key: "late-session",
+			buffered_output: "",
+			buffered_output_sequence: 0,
+			is_new: true,
+			is_exited: false,
+			exit_code: null,
+		});
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("unregister_active_terminal", {
+				worktreePath: "/repo",
+				sessionKey: "late-session",
+				activeToken: expect.any(String),
+			});
+		});
+		expect(onPtyReady).not.toHaveBeenCalled();
+	});
+
+	it("requestKill() 後に get_or_spawn が解決した pending PTY を kill する", async () => {
+		type SpawnResult = {
+			pty_id: number;
+			session_key: string;
+			buffered_output: string;
+			buffered_output_sequence: number;
+			is_new: boolean;
+			is_exited: boolean;
+			exit_code: number | null;
+		};
+		let resolveSpawn!: (value: SpawnResult) => void;
+		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
+			resolveSpawn = resolve;
+		});
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") return pendingSpawn;
+			return Promise.resolve();
+		});
+
+		const { result, unmount } = renderHook(() =>
+			useTerminal(containerRef, "/repo"),
+		);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+		result.current.requestKill();
+		unmount();
+		mockInvoke.mockClear();
+
+		resolveSpawn({
+			pty_id: 7,
+			session_key: "late-session",
+			buffered_output: "",
+			buffered_output_sequence: 0,
+			is_new: true,
+			is_exited: false,
+			exit_code: null,
+		});
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("kill_pty", { ptyId: 7 });
+		});
+		expect(mockInvoke).toHaveBeenCalledWith("unregister_active_terminal", {
+			worktreePath: "/repo",
+			sessionKey: "late-session",
+			activeToken: expect.any(String),
+		});
+	});
+
+	it("PTY initialization failures are displayed and reported to the caller", async () => {
+		const onPtyError = vi.fn();
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") {
+				return Promise.reject({
+					code: "CAP_REACHED",
+					message: "PTY limit unavailable for worktree /repo",
+				});
+			}
+			return Promise.resolve();
+		});
+
+		renderHook(() =>
+			useTerminal(
+				containerRef,
+				"/repo",
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				onPtyError,
+			),
+		);
+
+		await waitFor(() => {
+			expect(onPtyError).toHaveBeenCalledWith(
+				"Terminal limit reached: PTY limit unavailable for worktree /repo",
+			);
+		});
+		expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+			"\r\n\x1b[31mTerminal limit reached: PTY limit unavailable for worktree /repo\x1b[0m\r\n",
+		);
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"register_active_terminal",
+			expect.objectContaining({ sessionKey: "test-uuid-1234" }),
+		);
+	});
+
+	it("PTY cap-looking text without a stable code is treated as a generic init failure", async () => {
+		const onPtyError = vi.fn();
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") {
+				return Promise.reject("PTY cap reached for worktree /repo");
+			}
+			return Promise.resolve();
+		});
+
+		renderHook(() =>
+			useTerminal(
+				containerRef,
+				"/repo",
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				onPtyError,
+			),
+		);
+
+		await waitFor(() => {
+			expect(onPtyError).toHaveBeenCalledWith(
+				"Failed to initialize terminal: PTY cap reached for worktree /repo",
+			);
+		});
+	});
+
+	it("initial output queue is bounded by item count and bytes", () => {
+		const queue = createBoundedPtyOutputQueue();
+		const payload = "x".repeat(1024);
+
+		for (
+			let sequence = 1;
+			sequence <= QUEUED_INITIAL_OUTPUT_MAX_ITEMS * 4;
+			sequence += 1
+		) {
+			queue.enqueue({ pty_id: 1, data: payload, sequence });
+		}
+
+		expect(queue.size()).toBeLessThanOrEqual(QUEUED_INITIAL_OUTPUT_MAX_ITEMS);
+		expect(queue.bytes()).toBeLessThanOrEqual(QUEUED_INITIAL_OUTPUT_MAX_BYTES);
+		expect(queue.hasDropped()).toBe(true);
 	});
 
 	it("ユーザー入力時に write_pty が呼び出される", async () => {
@@ -184,6 +554,7 @@ describe("useTerminal", () => {
 
 		expect(mockUnlistenOutput).toHaveBeenCalled();
 		expect(mockUnlistenExit).toHaveBeenCalled();
+		expect(mockUnlistenEvicted).toHaveBeenCalled();
 		expect(mockInvoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
 		expect(mockTerminalInstance.dispose).toHaveBeenCalled();
 	});
@@ -228,6 +599,38 @@ describe("useTerminal", () => {
 		expect(mockInvoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
 	});
 
+	it("pty-evicted for current PTY disables later writes", async () => {
+		renderHook(() => useTerminal(containerRef));
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+
+		const evictedListener = mockListen.mock.calls.find(
+			(call: unknown[]) => call[0] === "pty-evicted",
+		)?.[1] as (event: {
+			payload: { pty_id: number; session_key: string; reason: string };
+		}) => void;
+		evictedListener({
+			payload: {
+				pty_id: 1,
+				session_key: "test-uuid-1234",
+				reason: "idle",
+			},
+		});
+
+		mockInvoke.mockClear();
+		mockOnDataCallback("after eviction");
+
+		expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+			"\r\n\x1b[90m[Terminal evicted]\x1b[0m\r\n",
+		);
+		expect(mockInvoke).not.toHaveBeenCalledWith("write_pty", expect.anything());
+	});
+
 	it("containerRef が null の場合は初期化されない", () => {
 		const nullContainerRef = { current: null };
 		const previousInstance = mockTerminalInstance;
@@ -245,6 +648,7 @@ describe("useTerminal", () => {
 					pty_id: 1,
 					session_key: "pre-spawned-key",
 					buffered_output: "previously buffered text\r\n$ ",
+					buffered_output_sequence: 3,
 					is_new: false,
 					is_exited: false,
 					exit_code: null,
@@ -260,6 +664,386 @@ describe("useTerminal", () => {
 				"previously buffered text\r\n$ ",
 			);
 		});
+	});
+
+	it("初期復元中に届いたlive outputをbuffered_output後に書き込む", async () => {
+		type SpawnResult = {
+			pty_id: number;
+			session_key: string;
+			buffered_output: string;
+			buffered_output_sequence: number;
+			is_new: boolean;
+			is_exited: boolean;
+			exit_code: number | null;
+		};
+		let resolveSpawn!: (value: SpawnResult) => void;
+		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
+			resolveSpawn = resolve;
+		});
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") return pendingSpawn;
+			return Promise.resolve();
+		});
+
+		renderHook(() => useTerminal(containerRef));
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+		const outputListener = mockListen.mock.calls.find(
+			(call: unknown[]) => call[0] === "pty-output",
+		)?.[1] as (event: {
+			payload: { pty_id: number; data: string; sequence: number };
+		}) => void;
+		outputListener({
+			payload: { pty_id: 7, data: "live during init", sequence: 4 },
+		});
+
+		resolveSpawn({
+			pty_id: 7,
+			session_key: "pre-spawned-key",
+			buffered_output: "previously buffered text\r\n$ ",
+			buffered_output_sequence: 3,
+			is_new: false,
+			is_exited: false,
+			exit_code: null,
+		});
+
+		await waitFor(() => {
+			expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+				"live during init",
+			);
+		});
+		expect(mockTerminalInstance.write.mock.calls.map(([data]) => data)).toEqual(
+			["previously buffered text\r\n$ ", "live during init"],
+		);
+	});
+
+	it("初期復元中に届いたsnapshot済みoutputは重複して書き込まない", async () => {
+		type SpawnResult = {
+			pty_id: number;
+			session_key: string;
+			buffered_output: string;
+			buffered_output_sequence: number;
+			is_new: boolean;
+			is_exited: boolean;
+			exit_code: number | null;
+		};
+		let resolveSpawn!: (value: SpawnResult) => void;
+		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
+			resolveSpawn = resolve;
+		});
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") return pendingSpawn;
+			return Promise.resolve();
+		});
+
+		renderHook(() => useTerminal(containerRef));
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+		const outputListener = mockListen.mock.calls.find(
+			(call: unknown[]) => call[0] === "pty-output",
+		)?.[1] as (event: {
+			payload: { pty_id: number; data: string; sequence: number };
+		}) => void;
+		outputListener({
+			payload: { pty_id: 7, data: "already snapshotted", sequence: 3 },
+		});
+
+		resolveSpawn({
+			pty_id: 7,
+			session_key: "pre-spawned-key",
+			buffered_output: "previously buffered text\r\n$ already snapshotted",
+			buffered_output_sequence: 3,
+			is_new: false,
+			is_exited: false,
+			exit_code: null,
+		});
+
+		await waitFor(() => {
+			expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+				"previously buffered text\r\n$ already snapshotted",
+			);
+		});
+		expect(mockTerminalInstance.write.mock.calls.map(([data]) => data)).toEqual(
+			["previously buffered text\r\n$ already snapshotted"],
+		);
+	});
+
+	it("初期復元queueでdropが起きた場合は最新buffered_outputを再取得して欠落を補う", async () => {
+		type SpawnResult = {
+			pty_id: number;
+			session_key: string;
+			buffered_output: string;
+			buffered_output_sequence: number;
+			is_new: boolean;
+			is_exited: boolean;
+			exit_code: number | null;
+		};
+		let resolveSpawn!: (value: SpawnResult) => void;
+		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
+			resolveSpawn = resolve;
+		});
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") return pendingSpawn;
+			if (cmd === "get_pty_buffered_output") {
+				return Promise.resolve({
+					pty_id: 7,
+					session_key: "pre-spawned-key",
+					buffered_output: "backend replay through 256",
+					buffered_output_sequence: 256,
+					is_exited: false,
+					exit_code: null,
+				});
+			}
+			return Promise.resolve();
+		});
+
+		renderHook(() =>
+			useTerminal(
+				containerRef,
+				"/repo",
+				undefined,
+				undefined,
+				"pre-spawned-key",
+			),
+		);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+		const outputListener = mockListen.mock.calls.find(
+			(call: unknown[]) => call[0] === "pty-output",
+		)?.[1] as (event: {
+			payload: { pty_id: number; data: string; sequence: number };
+		}) => void;
+
+		for (
+			let sequence = 1;
+			sequence <= QUEUED_INITIAL_OUTPUT_MAX_ITEMS + 4;
+			sequence += 1
+		) {
+			outputListener({
+				payload: { pty_id: 7, data: `chunk-${sequence}`, sequence },
+			});
+		}
+
+		resolveSpawn({
+			pty_id: 7,
+			session_key: "pre-spawned-key",
+			buffered_output: "stale backend replay",
+			buffered_output_sequence: 0,
+			is_new: false,
+			is_exited: false,
+			exit_code: null,
+		});
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("get_pty_buffered_output", {
+				sessionKey: "pre-spawned-key",
+				worktreePath: "/repo",
+			});
+		});
+		await waitFor(() => {
+			expect(mockTerminalInstance.write).toHaveBeenCalledWith("chunk-260");
+		});
+
+		expect(mockTerminalInstance.write.mock.calls.map(([data]) => data)).toEqual(
+			[
+				"backend replay through 256",
+				"chunk-257",
+				"chunk-258",
+				"chunk-259",
+				"chunk-260",
+			],
+		);
+	});
+
+	it("初期復元queueのdropが続いても最大refetch回数で終了して入力を受け付ける", async () => {
+		type SpawnResult = {
+			pty_id: number;
+			session_key: string;
+			buffered_output: string;
+			buffered_output_sequence: number;
+			is_new: boolean;
+			is_exited: boolean;
+			exit_code: number | null;
+		};
+		let resolveSpawn!: (value: SpawnResult) => void;
+		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
+			resolveSpawn = resolve;
+		});
+		const oversizedOutput = "x".repeat(QUEUED_INITIAL_OUTPUT_MAX_BYTES + 1);
+		let outputListener: (event: {
+			payload: { pty_id: number; data: string; sequence: number };
+		}) => void = () => {};
+		let refetchCount = 0;
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") return pendingSpawn;
+			if (cmd === "get_pty_buffered_output") {
+				refetchCount += 1;
+				outputListener({
+					payload: {
+						pty_id: 7,
+						data: oversizedOutput,
+						sequence: 1000 + refetchCount,
+					},
+				});
+				return Promise.resolve({
+					pty_id: 7,
+					session_key: "pre-spawned-key",
+					buffered_output: `backend replay ${refetchCount}`,
+					buffered_output_sequence: 1000 + refetchCount,
+					is_exited: false,
+					exit_code: null,
+				});
+			}
+			return Promise.resolve();
+		});
+
+		const { result } = renderHook(() =>
+			useTerminal(
+				containerRef,
+				"/repo",
+				undefined,
+				undefined,
+				"pre-spawned-key",
+			),
+		);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+		outputListener = mockListen.mock.calls.find(
+			(call: unknown[]) => call[0] === "pty-output",
+		)?.[1] as (event: {
+			payload: { pty_id: number; data: string; sequence: number };
+		}) => void;
+		outputListener({
+			payload: { pty_id: 7, data: oversizedOutput, sequence: 1 },
+		});
+
+		resolveSpawn({
+			pty_id: 7,
+			session_key: "pre-spawned-key",
+			buffered_output: "stale backend replay",
+			buffered_output_sequence: 0,
+			is_new: false,
+			is_exited: false,
+			exit_code: null,
+		});
+
+		await waitFor(() => {
+			expect(result.current.ptyIdRef.current).toBe(7);
+		});
+
+		const refetchCalls = mockInvoke.mock.calls.filter(
+			(call) => call[0] === "get_pty_buffered_output",
+		);
+		expect(refetchCalls).toHaveLength(MAX_INITIAL_REFETCH);
+		expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+			`backend replay ${MAX_INITIAL_REFETCH}`,
+		);
+
+		mockOnDataCallback("after init");
+
+		expect(mockInvoke).toHaveBeenCalledWith("write_pty", {
+			ptyId: 7,
+			data: "after init",
+		});
+	});
+
+	it("初期復元queueのdropが解消したら最大refetch回数未満で終了する", async () => {
+		type SpawnResult = {
+			pty_id: number;
+			session_key: string;
+			buffered_output: string;
+			buffered_output_sequence: number;
+			is_new: boolean;
+			is_exited: boolean;
+			exit_code: number | null;
+		};
+		let resolveSpawn!: (value: SpawnResult) => void;
+		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
+			resolveSpawn = resolve;
+		});
+		const oversizedOutput = "x".repeat(QUEUED_INITIAL_OUTPUT_MAX_BYTES + 1);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") return pendingSpawn;
+			if (cmd === "get_pty_buffered_output") {
+				return Promise.resolve({
+					pty_id: 7,
+					session_key: "pre-spawned-key",
+					buffered_output: "backend replay after drop",
+					buffered_output_sequence: 256,
+					is_exited: false,
+					exit_code: null,
+				});
+			}
+			return Promise.resolve();
+		});
+
+		const { result } = renderHook(() =>
+			useTerminal(
+				containerRef,
+				"/repo",
+				undefined,
+				undefined,
+				"pre-spawned-key",
+			),
+		);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+		const outputListener = mockListen.mock.calls.find(
+			(call: unknown[]) => call[0] === "pty-output",
+		)?.[1] as (event: {
+			payload: { pty_id: number; data: string; sequence: number };
+		}) => void;
+		outputListener({
+			payload: { pty_id: 7, data: oversizedOutput, sequence: 1 },
+		});
+
+		resolveSpawn({
+			pty_id: 7,
+			session_key: "pre-spawned-key",
+			buffered_output: "stale backend replay",
+			buffered_output_sequence: 0,
+			is_new: false,
+			is_exited: false,
+			exit_code: null,
+		});
+
+		await waitFor(() => {
+			expect(result.current.ptyIdRef.current).toBe(7);
+		});
+
+		const refetchCalls = mockInvoke.mock.calls.filter(
+			(call) => call[0] === "get_pty_buffered_output",
+		);
+		expect(refetchCalls.length).toBeLessThan(MAX_INITIAL_REFETCH);
+		expect(refetchCalls).toHaveLength(1);
+		expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+			"backend replay after drop",
+		);
 	});
 
 	it("新規セッション（is_new: true）のとき起動コマンドが送信される", async () => {
@@ -280,6 +1064,7 @@ describe("useTerminal", () => {
 					pty_id: 1,
 					session_key: "test-uuid-existing",
 					buffered_output: "",
+					buffered_output_sequence: 0,
 					is_new: false,
 					is_exited: false,
 					exit_code: null,
