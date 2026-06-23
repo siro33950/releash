@@ -14,22 +14,43 @@ use crate::usecase::agent_session::session::{
     MAX_SESSION_PAGE_LIMIT, SESSION_BODY_FORMAT_VERSION,
 };
 
+fn measure_save_result<T, F, S>(
+    metric: crate::other::telemetry::HotPath,
+    size: S,
+    f: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+    S: FnOnce() -> usize,
+{
+    let result = crate::other::telemetry::measure_result(metric, f);
+    if result.is_ok() {
+        crate::other::telemetry::record_session_save_bytes(metric, size);
+    }
+    result
+}
+
 impl FileSessionStorage {
     pub fn load_full_session_for_restore(
         &self,
         app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<ChatSession>, String> {
-        self.ensure_loaded(app_data_dir)?;
-        if let Some(err) = self.invalid_sessions.read().get(session_id) {
-            return Err(err.clone());
-        }
-        if !self.cache.read().contains_key(session_id) {
-            return Ok(None);
-        }
-        self.ensure_session_layout(app_data_dir, session_id)?;
-        self.load_full_session_from_layout(app_data_dir, session_id)
-            .map(Some)
+        crate::other::telemetry::measure_result(
+            crate::other::telemetry::HotPath::SessionLoadFull,
+            || {
+                self.ensure_loaded(app_data_dir)?;
+                if let Some(err) = self.invalid_sessions.read().get(session_id) {
+                    return Err(err.clone());
+                }
+                if !self.cache.read().contains_key(session_id) {
+                    return Ok(None);
+                }
+                self.ensure_session_layout(app_data_dir, session_id)?;
+                self.load_full_session_from_layout(app_data_dir, session_id)
+                    .map(Some)
+            },
+        )
     }
 
     pub fn save_full_session_for_migration_or_restore(
@@ -37,8 +58,18 @@ impl FileSessionStorage {
         app_data_dir: &Path,
         session: &ChatSession,
     ) -> Result<(), String> {
-        self.persist_and_update_cache(app_data_dir, session)?;
-        Ok(())
+        measure_save_result(
+            crate::other::telemetry::HotPath::SessionSaveFull,
+            || {
+                serde_json::to_vec(session)
+                    .map(|body| body.len())
+                    .unwrap_or(0)
+            },
+            || {
+                self.persist_and_update_cache(app_data_dir, session)?;
+                Ok(())
+            },
+        )
     }
 
     pub(super) fn persist_and_update_cache(
@@ -72,32 +103,38 @@ impl FileSessionStorage {
         cursor: Option<PageCursor>,
         limit: usize,
     ) -> Result<Option<SessionPage>, String> {
-        self.ensure_loaded(app_data_dir)?;
-        if let Some(err) = self.invalid_sessions.read().get(session_id) {
-            return Err(err.clone());
-        }
-        if !self.cache.read().contains_key(session_id) {
-            return Ok(None);
-        }
-        self.ensure_session_layout(app_data_dir, session_id)?;
-        let dir = session_dir(app_data_dir, session_id)?;
-        let limit = limit.clamp(1, MAX_SESSION_PAGE_LIMIT);
-        let mut index = self.read_consistent_index_from_dir(&dir, session_id)?;
-        let (mut page, needs_repair) =
-            self.read_page_from_index(&dir, session_id, &index, cursor.clone(), limit)?;
-        if needs_repair {
-            let _lock = self.file_lock.lock();
-            index = self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
-            let (reread_page, reread_needs_repair) =
-                self.read_page_from_index(&dir, session_id, &index, cursor.clone(), limit)?;
-            if reread_needs_repair {
-                index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
-                (page, _) = self.read_page_from_index(&dir, session_id, &index, cursor, limit)?;
-            } else {
-                page = reread_page;
-            }
-        }
-        Ok(Some(page))
+        crate::other::telemetry::measure_result(
+            crate::other::telemetry::HotPath::SessionGetPage,
+            || {
+                self.ensure_loaded(app_data_dir)?;
+                if let Some(err) = self.invalid_sessions.read().get(session_id) {
+                    return Err(err.clone());
+                }
+                if !self.cache.read().contains_key(session_id) {
+                    return Ok(None);
+                }
+                self.ensure_session_layout(app_data_dir, session_id)?;
+                let dir = session_dir(app_data_dir, session_id)?;
+                let limit = limit.clamp(1, MAX_SESSION_PAGE_LIMIT);
+                let mut index = self.read_consistent_index_from_dir(&dir, session_id)?;
+                let (mut page, needs_repair) =
+                    self.read_page_from_index(&dir, session_id, &index, cursor.clone(), limit)?;
+                if needs_repair {
+                    let _lock = self.file_lock.lock();
+                    index = self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
+                    let (reread_page, reread_needs_repair) =
+                        self.read_page_from_index(&dir, session_id, &index, cursor.clone(), limit)?;
+                    if reread_needs_repair {
+                        index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
+                        (page, _) =
+                            self.read_page_from_index(&dir, session_id, &index, cursor, limit)?;
+                    } else {
+                        page = reread_page;
+                    }
+                }
+                Ok(Some(page))
+            },
+        )
     }
 
     pub fn append_message(
@@ -106,55 +143,66 @@ impl FileSessionStorage {
         session_id: &str,
         message: &ChatMessage,
     ) -> Result<(), String> {
-        self.ensure_loaded(app_data_dir)?;
-        if let Some(err) = self.invalid_sessions.read().get(session_id) {
-            return Err(err.clone());
-        }
-        if !self.cache.read().contains_key(session_id) {
-            return Err(format!("Session not found: {session_id}"));
-        }
-        self.ensure_session_layout(app_data_dir, session_id)?;
-        let _lock = self.file_lock.lock();
-        let dir = session_dir(app_data_dir, session_id)?;
-        let mut index = self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
-        let seq = index
-            .iter()
-            .map(|entry| entry.seq)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
-        let (stored_message, attachment_refs) =
-            self.externalize_message_attachments(&dir, message)?;
-        let hash = content_hash(&stored_message)?;
-        write_json_pretty_atomic(
-            &message_file_in_dir(&dir, seq),
-            &stored_message,
-            "message chunk",
-        )?;
+        measure_save_result(
+            crate::other::telemetry::HotPath::SessionAppend,
+            || {
+                serde_json::to_vec(message)
+                    .map(|body| body.len())
+                    .unwrap_or(0)
+            },
+            || {
+                self.ensure_loaded(app_data_dir)?;
+                if let Some(err) = self.invalid_sessions.read().get(session_id) {
+                    return Err(err.clone());
+                }
+                if !self.cache.read().contains_key(session_id) {
+                    return Err(format!("Session not found: {session_id}"));
+                }
+                self.ensure_session_layout(app_data_dir, session_id)?;
+                let _lock = self.file_lock.lock();
+                let dir = session_dir(app_data_dir, session_id)?;
+                let mut index =
+                    self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
+                let seq = index
+                    .iter()
+                    .map(|entry| entry.seq)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                let (stored_message, attachment_refs) =
+                    self.externalize_message_attachments(&dir, message)?;
+                let hash = content_hash(&stored_message)?;
+                write_json_pretty_atomic(
+                    &message_file_in_dir(&dir, seq),
+                    &stored_message,
+                    "message chunk",
+                )?;
 
-        let mut meta = self.read_meta_from_dir(&dir, session_id)?;
-        let was_empty = index.is_empty();
-        index.push(MessageIndexEntry {
-            id: stored_message.id.clone(),
-            seq,
-            role: stored_message.role.clone(),
-            timestamp: stored_message.timestamp,
-            content_hash: hash,
-            attachment_refs,
-            token_meta: None,
-        });
-        meta.message_count = index.len();
-        meta.updated_at = message.timestamp;
-        if was_empty {
-            meta.first_message_preview =
-                first_message_preview(std::slice::from_ref(&stored_message));
-        }
+                let mut meta = self.read_meta_from_dir(&dir, session_id)?;
+                let was_empty = index.is_empty();
+                index.push(MessageIndexEntry {
+                    id: stored_message.id.clone(),
+                    seq,
+                    role: stored_message.role.clone(),
+                    timestamp: stored_message.timestamp,
+                    content_hash: hash,
+                    attachment_refs,
+                    token_meta: None,
+                });
+                meta.message_count = index.len();
+                meta.updated_at = message.timestamp;
+                if was_empty {
+                    meta.first_message_preview =
+                        first_message_preview(std::slice::from_ref(&stored_message));
+                }
 
-        write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
-        write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
-        self.cache.write().insert(session_id.to_string(), meta);
-        self.invalid_sessions.write().remove(session_id);
-        Ok(())
+                write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
+                write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
+                self.cache.write().insert(session_id.to_string(), meta);
+                self.invalid_sessions.write().remove(session_id);
+                Ok(())
+            },
+        )
     }
     pub fn persist_message_parts(
         &self,
@@ -164,46 +212,59 @@ impl FileSessionStorage {
         parts: &[MessagePart],
         completed_at: Option<f64>,
     ) -> Result<(), String> {
-        self.ensure_loaded(app_data_dir)?;
-        if let Some(err) = self.invalid_sessions.read().get(session_id) {
-            return Err(err.clone());
-        }
-        if !self.cache.read().contains_key(session_id) {
-            return Err(format!("Session not found: {session_id}"));
-        }
-        self.ensure_session_layout(app_data_dir, session_id)?;
-        let _lock = self.file_lock.lock();
-        let dir = session_dir(app_data_dir, session_id)?;
-        let mut index = self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
-        let Some(entry) = index.iter_mut().find(|entry| entry.id == message_id) else {
-            return Err(format!("Message not found: {session_id}/{message_id}"));
-        };
-        let path = message_file_in_dir(&dir, entry.seq);
-        let mut message = self.read_message_file(&path)?;
-        let (content, thinking, activities) = parts_to_legacy(parts);
-        message.content = content;
-        message.thinking = thinking;
-        message.activities = activities;
-        message.parts = Some(parts.to_vec());
-        let updated_at = completed_at.unwrap_or_else(now_timestamp);
-        if let Some(completed_at) = completed_at {
-            message.timestamp = completed_at;
-        }
-        let (message, attachment_refs) = self.externalize_message_attachments(&dir, &message)?;
-        entry.timestamp = message.timestamp;
-        entry.content_hash = content_hash(&message)?;
-        entry.attachment_refs = attachment_refs;
-        write_json_pretty_atomic(&path, &message, "message chunk")?;
+        measure_save_result(
+            crate::other::telemetry::HotPath::SessionPersistParts,
+            || {
+                serde_json::to_vec(parts)
+                    .map(|body| body.len())
+                    .unwrap_or(0)
+            },
+            || {
+                self.ensure_loaded(app_data_dir)?;
+                if let Some(err) = self.invalid_sessions.read().get(session_id) {
+                    return Err(err.clone());
+                }
+                if !self.cache.read().contains_key(session_id) {
+                    return Err(format!("Session not found: {session_id}"));
+                }
+                self.ensure_session_layout(app_data_dir, session_id)?;
+                let _lock = self.file_lock.lock();
+                let dir = session_dir(app_data_dir, session_id)?;
+                let mut index =
+                    self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
+                let Some(entry) = index.iter_mut().find(|entry| entry.id == message_id) else {
+                    return Err(format!("Message not found: {session_id}/{message_id}"));
+                };
+                let path = message_file_in_dir(&dir, entry.seq);
+                let mut message = self.read_message_file(&path)?;
+                let (content, thinking, activities) = parts_to_legacy(parts);
+                message.content = content;
+                message.thinking = thinking;
+                message.activities = activities;
+                message.parts = Some(parts.to_vec());
+                let updated_at = completed_at.unwrap_or_else(now_timestamp);
+                if let Some(completed_at) = completed_at {
+                    message.timestamp = completed_at;
+                }
+                let (message, attachment_refs) =
+                    self.externalize_message_attachments(&dir, &message)?;
+                entry.timestamp = message.timestamp;
+                entry.content_hash = content_hash(&message)?;
+                entry.attachment_refs = attachment_refs;
+                write_json_pretty_atomic(&path, &message, "message chunk")?;
 
-        let mut meta = self.read_meta_from_dir(&dir, session_id)?;
-        meta.updated_at = updated_at;
-        if index.first().is_some_and(|first| first.id == message_id) {
-            meta.first_message_preview = first_message_preview(std::slice::from_ref(&message));
-        }
-        write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
-        write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
-        self.cache.write().insert(session_id.to_string(), meta);
-        Ok(())
+                let mut meta = self.read_meta_from_dir(&dir, session_id)?;
+                meta.updated_at = updated_at;
+                if index.first().is_some_and(|first| first.id == message_id) {
+                    meta.first_message_preview =
+                        first_message_preview(std::slice::from_ref(&message));
+                }
+                write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
+                write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
+                self.cache.write().insert(session_id.to_string(), meta);
+                Ok(())
+            },
+        )
     }
 
     pub(super) fn ensure_session_layout(

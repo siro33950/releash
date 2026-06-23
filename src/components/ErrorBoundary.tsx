@@ -1,5 +1,5 @@
-import * as Sentry from "@sentry/react";
-import type { ReactNode } from "react";
+import { Component, type ErrorInfo, type ReactNode } from "react";
+import { reportFrontendError } from "@/lib/telemetry";
 
 function FallbackUI({
 	error,
@@ -25,14 +25,37 @@ function FallbackUI({
 	);
 }
 
-export function SentryErrorBoundary({ children }: { children: ReactNode }) {
-	return (
-		<Sentry.ErrorBoundary
-			fallback={({ error, resetError }) => (
-				<FallbackUI error={error as Error} resetError={resetError} />
-			)}
-		>
-			{children}
-		</Sentry.ErrorBoundary>
-	);
+interface FrontendErrorBoundaryProps {
+	children: ReactNode;
+}
+
+interface FrontendErrorBoundaryState {
+	error: Error | null;
+}
+
+export class FrontendErrorBoundary extends Component<
+	FrontendErrorBoundaryProps,
+	FrontendErrorBoundaryState
+> {
+	state: FrontendErrorBoundaryState = { error: null };
+
+	static getDerivedStateFromError(error: Error): FrontendErrorBoundaryState {
+		return { error };
+	}
+
+	componentDidCatch(error: Error, info: ErrorInfo): void {
+		reportFrontendError(error, "react_error", info.componentStack ?? undefined);
+	}
+
+	reset = (): void => {
+		this.setState({ error: null });
+	};
+
+	render() {
+		const { error } = this.state;
+		if (error) {
+			return <FallbackUI error={error} resetError={this.reset} />;
+		}
+		return this.props.children;
+	}
 }

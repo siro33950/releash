@@ -6,7 +6,6 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { setSentryEnabled } from "@/lib/sentry";
 import {
 	type AgentType,
 	type AppSettings,
@@ -18,15 +17,22 @@ import {
 
 const STORAGE_KEY = "releash-settings";
 
+type StoredSettings = Partial<AppSettings> & {
+	telemetryEnabled?: unknown;
+};
+
 function loadSettings(): AppSettings {
 	try {
 		const stored = localStorage.getItem(STORAGE_KEY);
 		if (stored) {
-			const parsed = JSON.parse(stored) as Partial<AppSettings>;
+			const parsed = JSON.parse(stored) as StoredSettings;
 			// Migration: "staged" was removed from DiffBase
 			if ((parsed as Record<string, unknown>).defaultDiffBase === "staged") {
 				parsed.defaultDiffBase = "head";
 			}
+			// Rust app_config is the source of truth for performance telemetry.
+			delete parsed.performanceTelemetry;
+			delete parsed.telemetryEnabled;
 			return { ...DEFAULT_SETTINGS, ...parsed };
 		}
 	} catch {
@@ -36,7 +42,9 @@ function loadSettings(): AppSettings {
 }
 
 function saveSettings(settings: AppSettings): void {
-	localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+	const { performanceTelemetry: _performanceTelemetry, ...storedSettings } =
+		settings;
+	localStorage.setItem(STORAGE_KEY, JSON.stringify(storedSettings));
 }
 
 function applyTheme(theme: Theme): void {
@@ -56,6 +64,23 @@ export function useSettings() {
 	useLayoutEffect(() => {
 		applyTheme(settings.theme);
 	}, [settings.theme]);
+
+	useEffect(() => {
+		let cancelled = false;
+		invoke<boolean>("get_performance_telemetry_enabled")
+			.then((enabled) => {
+				if (cancelled || typeof enabled !== "boolean") return;
+				setSettings((prev) =>
+					prev.performanceTelemetry === enabled
+						? prev
+						: { ...prev, performanceTelemetry: enabled },
+				);
+			})
+			.catch(() => {});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 
 	useEffect(() => {
 		saveSettings(settings);
@@ -99,16 +124,18 @@ export function useSettings() {
 		setSettings((prev) => ({ ...prev, agentAutoApprove }));
 	}, []);
 
-	const updateTelemetryEnabled = useCallback((telemetryEnabled: boolean) => {
-		setSettings((prev) => ({ ...prev, telemetryEnabled }));
-	}, []);
+	const updatePerformanceTelemetry = useCallback(
+		(performanceTelemetry: boolean) => {
+			setSettings((prev) => ({ ...prev, performanceTelemetry }));
+		},
+		[],
+	);
 
 	const prevCrashReporting = useRef(settings.enableCrashReporting);
 
 	const updateSettings = useCallback((next: AppSettings) => {
 		if (next.enableCrashReporting !== prevCrashReporting.current) {
 			prevCrashReporting.current = next.enableCrashReporting;
-			setSentryEnabled(next.enableCrashReporting);
 			invoke("update_crash_reporting", {
 				enabled: next.enableCrashReporting,
 			}).catch(() => {});
@@ -126,7 +153,7 @@ export function useSettings() {
 		updateTerminalStartupCommand,
 		updateAgent,
 		updateAgentAutoApprove,
-		updateTelemetryEnabled,
+		updatePerformanceTelemetry,
 		updateSettings,
 	};
 }

@@ -4,7 +4,6 @@ pub use crate::domain::notification::NotifyConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppConfigDocument {
-    pub telemetry_enabled: bool,
     pub server: ServerConfig,
     pub telemetry: TelemetryConfig,
     pub app: AppSettings,
@@ -31,6 +30,7 @@ pub struct TlsConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetryConfig {
     pub crash_reporting: bool,
+    pub performance_telemetry: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

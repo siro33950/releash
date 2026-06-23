@@ -921,7 +921,6 @@ mod tests {
             "pty",
             "qr_code",
             "review_comments",
-            "sentry_integration",
             concat!("session", "_commands"),
             "shell_integration",
             "tls",

@@ -1,45 +1,123 @@
-import { trackEvent as aptabaseTrackEvent } from "@aptabase/tauri";
+import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { setTelemetryEnabled, trackEvent } from "../telemetry";
+import {
+	__resetTelemetryForTests,
+	installFrontendErrorHandlers,
+	reportFrontendError,
+	reportMountedXtermMounted,
+	reportMountedXtermUnmounted,
+	setPerformanceTelemetryEnabled,
+	trackEvent,
+} from "../telemetry";
 
 describe("telemetry", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		setTelemetryEnabled(true);
+		__resetTelemetryForTests();
 	});
 
-	it("enabled の場合、aptabase の trackEvent を呼び出す", () => {
-		trackEvent("test_event", { key: "value" });
-		expect(aptabaseTrackEvent).toHaveBeenCalledWith("test_event", {
-			key: "value",
+	it("enabled の場合、Rust の usage event コマンドを呼び出す", () => {
+		trackEvent("test_event");
+		expect(invoke).toHaveBeenCalledWith("report_usage_event", {
+			name: "test_event",
 		});
 	});
 
-	it("disabled の場合、aptabase の trackEvent を呼び出さない", () => {
-		setTelemetryEnabled(false);
+	it("performance telemetry disabled でも usage event 転送は frontend でゲートしない", async () => {
+		await setPerformanceTelemetryEnabled(false);
+		vi.clearAllMocks();
 		trackEvent("test_event");
-		expect(aptabaseTrackEvent).not.toHaveBeenCalled();
+		expect(invoke).toHaveBeenCalledWith("report_usage_event", {
+			name: "test_event",
+		});
 	});
 
-	it("再度 enabled にすると aptabase の trackEvent を呼び出す", () => {
-		setTelemetryEnabled(false);
+	it("performance telemetry 更新は Rust command を呼び出す", async () => {
+		await setPerformanceTelemetryEnabled(false);
 		trackEvent("first");
-		expect(aptabaseTrackEvent).not.toHaveBeenCalled();
+		expect(invoke).toHaveBeenCalledWith("update_performance_telemetry", {
+			enabled: false,
+		});
 
-		setTelemetryEnabled(true);
+		await setPerformanceTelemetryEnabled(true);
 		trackEvent("second");
-		expect(aptabaseTrackEvent).toHaveBeenCalledWith("second", undefined);
+		expect(invoke).toHaveBeenCalledWith("report_usage_event", {
+			name: "second",
+		});
 	});
 
-	it("props なしで呼び出せる", () => {
-		trackEvent("no_props");
-		expect(aptabaseTrackEvent).toHaveBeenCalledWith("no_props", undefined);
+	it("xterm の mount 数をRustへ送る", () => {
+		reportMountedXtermMounted();
+		reportMountedXtermMounted();
+		reportMountedXtermUnmounted();
+		expect(invoke).toHaveBeenCalledWith("report_mounted_xterm_count", {
+			count: 1,
+		});
 	});
 
-	it("aptabase がエラーを投げてもクラッシュしない", () => {
-		vi.mocked(aptabaseTrackEvent).mockRejectedValueOnce(
-			new Error("network error"),
+	it("xterm の unmount は 0 未満にならない", () => {
+		reportMountedXtermUnmounted();
+		expect(invoke).toHaveBeenCalledWith("report_mounted_xterm_count", {
+			count: 0,
+		});
+	});
+
+	it("xterm の mount/unmount は対称に増減する", () => {
+		reportMountedXtermMounted();
+		reportMountedXtermUnmounted();
+		expect(invoke).toHaveBeenNthCalledWith(1, "report_mounted_xterm_count", {
+			count: 1,
+		});
+		expect(invoke).toHaveBeenNthCalledWith(2, "report_mounted_xterm_count", {
+			count: 0,
+		});
+	});
+
+	it("frontend error をRustへ送る", () => {
+		const error = new Error("boom");
+		reportFrontendError(error, "react_error", "component stack");
+		expect(invoke).toHaveBeenCalledWith("report_frontend_error", {
+			payload: expect.objectContaining({
+				errorType: "react_error",
+				message: "boom",
+				stack: expect.stringContaining("component stack"),
+			}),
+		});
+	});
+
+	it("window error から frontend error をRustへ送る", () => {
+		installFrontendErrorHandlers();
+		window.dispatchEvent(
+			new ErrorEvent("error", {
+				error: new Error("window boom"),
+				message: "window boom",
+			}),
 		);
+		expect(invoke).toHaveBeenCalledWith("report_frontend_error", {
+			payload: expect.objectContaining({
+				errorType: "unhandled_error",
+				message: "window boom",
+			}),
+		});
+	});
+
+	it("unhandledrejection から frontend error をRustへ送る", () => {
+		installFrontendErrorHandlers();
+		const event = new Event("unhandledrejection") as PromiseRejectionEvent;
+		Object.defineProperty(event, "reason", {
+			value: new Error("promise boom"),
+		});
+		window.dispatchEvent(event);
+		expect(invoke).toHaveBeenCalledWith("report_frontend_error", {
+			payload: expect.objectContaining({
+				errorType: "unhandled_rejection",
+				message: "promise boom",
+			}),
+		});
+	});
+
+	it("Rust コマンドがエラーを返してもクラッシュしない", () => {
+		vi.mocked(invoke).mockRejectedValueOnce(new Error("ipc error"));
 		expect(() => trackEvent("fail_event")).not.toThrow();
 	});
 });

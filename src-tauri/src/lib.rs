@@ -17,7 +17,6 @@ mod path_aliases;
 mod permission;
 mod protocol;
 mod review_comments;
-mod sentry_integration;
 #[cfg(test)]
 mod test_support;
 mod tray;
@@ -28,22 +27,21 @@ mod ws_server;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 use adaptor::gateway::app_config::{load_or_create_config, AppConfig};
 use domain::app_config::{
     AgentConfigRepository, ConfigRepository, ConfigSecretRepository, NotionConfigRepository,
 };
 use tauri::Manager;
-use tauri_plugin_aptabase::EventTracker;
 use tokio::sync::Mutex;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _sentry_guard = sentry_integration::init_sentry();
+    let startup_started = Instant::now();
+    other::telemetry::set_startup_origin(startup_started);
 
-    // aptabase プラグインの setup 内で tokio::spawn が呼ばれるため、
-    // Tauri Builder 起動前に Tokio ランタイムを共有する必要がある。
-    // ref: https://github.com/aptabase/tauri-plugin-aptabase/issues/22
+    // OTLP exporter and async commands share the Tokio runtime installed for Tauri.
     let _runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let _runtime_guard = _runtime.enter();
     tauri::async_runtime::set(_runtime.handle().clone());
@@ -90,7 +88,7 @@ pub fn run() {
         .manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
             parking_lot::RwLock::new(Vec::new()),
         ))
-        .setup(|app| {
+        .setup(move |app| {
             let data_dir = app.path().app_data_dir()?;
             app.manage(Arc::new(
                 adaptor::gateway::workspace_state::WorkspaceStateStore::new(data_dir.clone()),
@@ -104,10 +102,9 @@ pub fn run() {
             let config_path = data_dir.join("releash.toml");
             let config = load_or_create_config(&config_path)
                 .map_err(|e| format!("設定ファイルの読み込みに失敗: {e}"))?;
-            let telemetry_enabled = config.telemetry_enabled;
-
-            app.handle()
-                .plugin(tauri_plugin_aptabase::Builder::new("A-US-6336372584").build())?;
+            if let Some(telemetry_guard) = infrastructure::telemetry::init_telemetry(&config) {
+                app.manage(telemetry_guard);
+            }
 
             {
                 let session_store_state = app
@@ -268,6 +265,9 @@ pub fn run() {
                 log::warn!("Main window not found; focus tracking will be disabled");
             }
             if let Some(window) = window {
+                other::telemetry::record_startup_from_origin(
+                    other::telemetry::Startup::FirstWindowReady,
+                );
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::Focused(focused) = event {
                         let mut tracker = ft.lock();
@@ -410,9 +410,7 @@ pub fn run() {
                 .join();
             }
 
-            if telemetry_enabled {
-                let _ = app.track_event("app_started", None);
-            }
+            other::telemetry::record_startup_from_origin(other::telemetry::Startup::AppStartup);
 
             Ok(())
         });
@@ -465,8 +463,7 @@ mod tests {
         let _guard = runtime.enter();
         tauri::async_runtime::set(runtime.handle().clone());
 
-        // aptabase 等のプラグインが tokio::spawn を直接呼ぶため、
-        // スレッドローカルのランタイムコンテキストが必要
+        // Tauri-side async work needs a thread-local runtime context.
         let handle = tokio::spawn(async { 42 });
         let result = runtime.block_on(handle).unwrap();
         assert_eq!(result, 42);

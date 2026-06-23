@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { readTextFile } from "@tauri-apps/plugin-fs";
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useFileDiffContent } from "../useFileDiffContent";
@@ -8,12 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/plugin-fs", () => ({
-	readTextFile: vi.fn(),
-}));
-
 const mockInvoke = vi.mocked(invoke);
-const mockReadTextFile = vi.mocked(readTextFile);
 
 describe("useFileDiffContent", () => {
 	beforeEach(() => {
@@ -35,8 +29,10 @@ describe("useFileDiffContent", () => {
 	});
 
 	it("fetches branch-base content (fetchBranchBase + fetchWorkingTree)", async () => {
-		mockInvoke.mockResolvedValueOnce("base content");
-		mockReadTextFile.mockResolvedValueOnce("working content");
+		mockInvoke.mockResolvedValueOnce({
+			original: "base content",
+			modified: "working content",
+		});
 
 		const { result, unmount } = renderHook(() =>
 			useFileDiffContent("/repo/src/main.ts", "branch-base", "changes", 0),
@@ -48,17 +44,19 @@ describe("useFileDiffContent", () => {
 
 		expect(result.current.originalContent).toBe("base content");
 		expect(result.current.modifiedContent).toBe("working content");
-		expect(mockInvoke).toHaveBeenCalledWith("get_file_at_branch_base", {
+		expect(mockInvoke).toHaveBeenCalledWith("get_review_text_diff", {
 			filePath: "/repo/src/main.ts",
+			diffBase: "branch-base",
+			section: "changes",
 		});
-		expect(mockReadTextFile).toHaveBeenCalledWith("/repo/src/main.ts");
 		unmount();
 	});
 
 	it("fetches head/staged content (fetchHead + fetchStaged)", async () => {
-		mockInvoke
-			.mockResolvedValueOnce("head content") // get_file_at_ref
-			.mockResolvedValueOnce("staged content"); // get_staged_content
+		mockInvoke.mockResolvedValueOnce({
+			original: "head content",
+			modified: "staged content",
+		});
 
 		const { result, unmount } = renderHook(() =>
 			useFileDiffContent("/repo/src/main.ts", "head", "staged", 0),
@@ -74,8 +72,10 @@ describe("useFileDiffContent", () => {
 	});
 
 	it("fetches head/changes content (fetchStaged + fetchWorkingTree)", async () => {
-		mockInvoke.mockResolvedValueOnce("staged content"); // get_staged_content
-		mockReadTextFile.mockResolvedValueOnce("working content");
+		mockInvoke.mockResolvedValueOnce({
+			original: "staged content",
+			modified: "working content",
+		});
 
 		const { result, unmount } = renderHook(() =>
 			useFileDiffContent("/repo/src/main.ts", "head", "changes", 0),
@@ -92,7 +92,6 @@ describe("useFileDiffContent", () => {
 
 	it("handles fetch errors by returning empty strings and setting loading to false", async () => {
 		mockInvoke.mockRejectedValueOnce(new Error("fail"));
-		mockReadTextFile.mockRejectedValueOnce(new Error("fail"));
 
 		const { result, unmount } = renderHook(() =>
 			useFileDiffContent("/repo/src/main.ts", "branch-base", "changes", 0),
@@ -108,8 +107,10 @@ describe("useFileDiffContent", () => {
 	});
 
 	it("re-fetches when gitRefreshKey changes", async () => {
-		mockInvoke.mockResolvedValue("content");
-		mockReadTextFile.mockResolvedValue("working");
+		mockInvoke.mockResolvedValue({
+			original: "content",
+			modified: "working",
+		});
 
 		const { result, rerender, unmount } = renderHook(
 			({ refreshKey }) =>

@@ -21,9 +21,9 @@ impl AppConfigUsecase {
         &self.query
     }
 
-    pub fn update_telemetry_enabled(&self, enabled: bool) -> Result<(), UsecaseError> {
+    pub fn update_performance_telemetry(&self, enabled: bool) -> Result<(), UsecaseError> {
         self.repository.update(Box::new(move |config| {
-            config.telemetry_enabled = enabled;
+            config.telemetry.performance_telemetry = enabled;
             Ok(())
         }))?;
         Ok(())
@@ -128,7 +128,6 @@ mod app_config_usecase_tests {
 
     fn test_config() -> AppConfigDocument {
         AppConfigDocument {
-            telemetry_enabled: true,
             server: ServerConfig {
                 bind: "127.0.0.1".to_string(),
                 port: 9700,
@@ -151,6 +150,7 @@ mod app_config_usecase_tests {
             },
             telemetry: TelemetryConfig {
                 crash_reporting: true,
+                performance_telemetry: true,
             },
             app: AppSettings {
                 close_to_tray: true,

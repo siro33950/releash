@@ -10,10 +10,8 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReleashConfig {
-    #[serde(default = "default_true")]
-    pub telemetry_enabled: bool,
     #[serde(default)]
     pub server: ServerSection,
     #[serde(default)]
@@ -100,30 +98,23 @@ fn default_crash_reporting() -> bool {
     true
 }
 
+fn default_performance_telemetry() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TelemetrySection {
     #[serde(default = "default_crash_reporting")]
     pub crash_reporting: bool,
+    #[serde(default = "default_performance_telemetry")]
+    pub performance_telemetry: bool,
 }
 
 impl Default for TelemetrySection {
     fn default() -> Self {
         Self {
             crash_reporting: true,
-        }
-    }
-}
-
-impl Default for ReleashConfig {
-    fn default() -> Self {
-        Self {
-            telemetry_enabled: true,
-            server: ServerSection::default(),
-            telemetry: TelemetrySection::default(),
-            notion: HashMap::new(),
-            app: AppSection::default(),
-            agents: AgentsSection::default(),
-            workflow: WorkflowSection::default(),
+            performance_telemetry: true,
         }
     }
 }
@@ -225,7 +216,6 @@ impl Default for ServerSection {
 
 pub fn config_to_domain(config: &ReleashConfig) -> domain_vo::AppConfigDocument {
     domain_vo::AppConfigDocument {
-        telemetry_enabled: config.telemetry_enabled,
         server: server_to_domain(&config.server),
         telemetry: telemetry_to_domain(&config.telemetry),
         app: app_to_domain(&config.app),
@@ -234,7 +224,6 @@ pub fn config_to_domain(config: &ReleashConfig) -> domain_vo::AppConfigDocument 
 }
 
 pub fn apply_domain_to_config(config: &mut ReleashConfig, domain: domain_vo::AppConfigDocument) {
-    config.telemetry_enabled = domain.telemetry_enabled;
     config.server = server_to_model(domain.server);
     config.telemetry = telemetry_to_model(domain.telemetry);
     config.app = app_to_model(domain.app);
@@ -304,12 +293,14 @@ pub fn notify_to_model(notify: domain_vo::NotifyConfig) -> NotifySection {
 pub fn telemetry_to_domain(telemetry: &TelemetrySection) -> domain_vo::TelemetryConfig {
     domain_vo::TelemetryConfig {
         crash_reporting: telemetry.crash_reporting,
+        performance_telemetry: telemetry.performance_telemetry,
     }
 }
 
 pub fn telemetry_to_model(telemetry: domain_vo::TelemetryConfig) -> TelemetrySection {
     TelemetrySection {
         crash_reporting: telemetry.crash_reporting,
+        performance_telemetry: telemetry.performance_telemetry,
     }
 }
 
@@ -366,7 +357,6 @@ mod config_models_tests {
         apply_domain_to_config(&mut roundtripped, domain);
 
         // Then
-        assert_eq!(roundtripped.telemetry_enabled, config.telemetry_enabled);
         assert_eq!(roundtripped.server, config.server);
         assert_eq!(roundtripped.telemetry, config.telemetry);
         assert_eq!(roundtripped.app, config.app);
@@ -394,7 +384,6 @@ mod config_models_tests {
     fn test_config_model変換_変更済み値がdomain往復で同値になる() {
         // Given
         let config = ReleashConfig {
-            telemetry_enabled: false,
             server: ServerSection {
                 bind: "0.0.0.0".to_string(),
                 port: 18080,
@@ -416,6 +405,7 @@ mod config_models_tests {
             },
             telemetry: TelemetrySection {
                 crash_reporting: false,
+                performance_telemetry: false,
             },
             app: AppSection {
                 close_to_tray: false,

@@ -50,7 +50,6 @@
     "dialog:allow-open",
     "updater:default",
     "process:allow-restart",
-    "aptabase:allow-track-event",
     "core:window:allow-start-dragging"
   ]
 }

@@ -1,7 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import { readTextFile } from "@tauri-apps/plugin-fs";
 import { useEffect, useRef, useState } from "react";
 import type { DiffBase, DiffSection } from "@/types/settings";
+
+interface ReviewTextDiff {
+	original: string;
+	modified: string;
+}
 
 export function useFileDiffContent(
 	filePath: string | null,
@@ -27,71 +31,12 @@ export function useFileDiffContent(
 
 		setLoading(true);
 
-		const fetchStaged = async (): Promise<string | null> => {
-			try {
-				return await invoke<string>("get_staged_content", { filePath });
-			} catch {
-				return null;
-			}
-		};
-
-		const fetchHead = async () => {
-			try {
-				return await invoke<string>("get_file_at_ref", {
-					filePath,
-					gitRef: "HEAD",
-				});
-			} catch {
-				return "";
-			}
-		};
-
-		const fetchBranchBase = async () => {
-			try {
-				return await invoke<string>("get_file_at_branch_base", {
-					filePath,
-				});
-			} catch {
-				return "";
-			}
-		};
-
-		const fetchWorkingTree = async (): Promise<string | null> => {
-			try {
-				return await readTextFile(filePath);
-			} catch {
-				return null;
-			}
-		};
-
-		let fetchPair: Promise<[string, string]>;
-
-		if (diffBase === "branch-base") {
-			fetchPair = Promise.all([fetchBranchBase(), fetchWorkingTree()]).then(
-				([base, wt]) => [base, wt ?? ""] as [string, string],
-			);
-		} else if (section === "staged") {
-			// Staged Changes: HEAD → Staged
-			fetchPair = Promise.all([fetchHead(), fetchStaged()]).then(
-				([head, staged]) => [head, staged ?? ""] as [string, string],
-			);
-		} else {
-			// Changes: Staged → Working Tree
-			// When both fetch fail (null = deleted file),
-			// fall back to HEAD for original content
-			fetchPair = Promise.all([fetchStaged(), fetchWorkingTree()]).then(
-				async ([staged, workingTree]) => {
-					if (staged === null && workingTree === null) {
-						const head = await fetchHead();
-						return [head, ""] as [string, string];
-					}
-					return [staged ?? "", workingTree ?? ""] as [string, string];
-				},
-			);
-		}
-
-		fetchPair
-			.then(([original, modified]) => {
+		invoke<ReviewTextDiff>("get_review_text_diff", {
+			filePath,
+			diffBase,
+			section,
+		})
+			.then(({ original, modified }) => {
 				if (requestId !== requestIdRef.current) return;
 				setOriginalContent(original);
 				setModifiedContent(modified);

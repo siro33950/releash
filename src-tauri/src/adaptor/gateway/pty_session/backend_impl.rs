@@ -227,7 +227,12 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
 
     fn insert_session(&self, session: PtySession, runtime: Self::Runtime) {
         let pty_id = session.pty_id;
-        self.registry.lock().insert(session);
+        let active_count = {
+            let mut registry = self.registry.lock();
+            registry.insert(session);
+            registry.len()
+        };
+        crate::other::telemetry::set_active_pty_count(active_count as u64);
         self.runtimes.lock().insert(pty_id, runtime);
     }
 
@@ -287,10 +292,13 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
 
     fn remove_session(&self, pty_id: u64) -> Option<PtySessionSnapshot> {
         self.runtimes.lock().remove(&pty_id);
-        self.registry
-            .lock()
-            .remove(pty_id)
-            .map(|session| session.snapshot())
+        let (removed, active_count) = {
+            let mut registry = self.registry.lock();
+            let removed = registry.remove(pty_id);
+            (removed, registry.len())
+        };
+        crate::other::telemetry::set_active_pty_count(active_count as u64);
+        removed.map(|session| session.snapshot())
     }
 
     fn write(&self, pty_id: u64, data: &str) -> Result<(), UsecaseError> {

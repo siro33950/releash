@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { readFile } from "@tauri-apps/plugin-fs";
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useImageDiff } from "../useImageDiff";
@@ -8,12 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/plugin-fs", () => ({
-	readFile: vi.fn(),
-}));
-
 const mockInvoke = vi.mocked(invoke);
-const mockReadFile = vi.mocked(readFile);
 
 describe("useImageDiff", () => {
 	beforeEach(() => {
@@ -29,10 +23,11 @@ describe("useImageDiff", () => {
 		expect(result.current.loading).toBe(false);
 	});
 
-	it("fetches modified from readFile and original from get_binary_file_at_branch_base", async () => {
-		const pngBytes = new Uint8Array([137, 80, 78, 71]);
-		mockReadFile.mockResolvedValue(pngBytes);
-		mockInvoke.mockResolvedValue("iVBORw0KGgo=");
+	it("fetches original and modified through batched review image command", async () => {
+		mockInvoke.mockResolvedValue({
+			originalBase64: "iVBORw0KGgo=",
+			modifiedBase64: "iVBORw0KGgo=",
+		});
 
 		const { result } = renderHook(() =>
 			useImageDiff("/repo/image.png", "branch-base", "changes"),
@@ -42,9 +37,10 @@ describe("useImageDiff", () => {
 			expect(result.current.loading).toBe(false);
 		});
 
-		expect(mockReadFile).toHaveBeenCalledWith("/repo/image.png");
-		expect(mockInvoke).toHaveBeenCalledWith("get_binary_file_at_branch_base", {
+		expect(mockInvoke).toHaveBeenCalledWith("get_review_image_diff", {
 			filePath: "/repo/image.png",
+			diffBase: "branch-base",
+			section: "changes",
 		});
 
 		expect(result.current.modifiedUrl).toMatch(/^data:image\/png;base64,/);
@@ -54,9 +50,10 @@ describe("useImageDiff", () => {
 	});
 
 	it("uses Staged→Working Tree when section is changes (HEAD mode)", async () => {
-		const pngBytes = new Uint8Array([1, 2, 3]);
-		mockReadFile.mockResolvedValue(pngBytes);
-		mockInvoke.mockResolvedValue("AQID");
+		mockInvoke.mockResolvedValue({
+			originalBase64: "STAGED64",
+			modifiedBase64: "AQID",
+		});
 
 		const { result } = renderHook(() =>
 			useImageDiff("/repo/image.png", "head", "changes"),
@@ -66,20 +63,17 @@ describe("useImageDiff", () => {
 			expect(result.current.loading).toBe(false);
 		});
 
-		// original = get_binary_staged_content
-		expect(mockInvoke).toHaveBeenCalledWith("get_binary_staged_content", {
+		expect(mockInvoke).toHaveBeenCalledWith("get_review_image_diff", {
 			filePath: "/repo/image.png",
+			diffBase: "head",
+			section: "changes",
 		});
-		// modified = readFile
-		expect(mockReadFile).toHaveBeenCalledWith("/repo/image.png");
 	});
 
 	it("uses HEAD→Staged when section is staged", async () => {
-		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_binary_file_at_ref") return Promise.resolve("HEAD64");
-			if (cmd === "get_binary_staged_content")
-				return Promise.resolve("STAGED64");
-			return Promise.resolve("");
+		mockInvoke.mockResolvedValue({
+			originalBase64: "HEAD64",
+			modifiedBase64: "STAGED64",
 		});
 
 		const { result } = renderHook(() =>
@@ -90,21 +84,18 @@ describe("useImageDiff", () => {
 			expect(result.current.loading).toBe(false);
 		});
 
-		// original = HEAD
-		expect(mockInvoke).toHaveBeenCalledWith("get_binary_file_at_ref", {
+		expect(mockInvoke).toHaveBeenCalledWith("get_review_image_diff", {
 			filePath: "/repo/image.png",
-			gitRef: "HEAD",
-		});
-		// modified = staged
-		expect(mockInvoke).toHaveBeenCalledWith("get_binary_staged_content", {
-			filePath: "/repo/image.png",
+			diffBase: "head",
+			section: "staged",
 		});
 	});
 
 	it("sets originalUrl to null when invoke fails (new file)", async () => {
-		const pngBytes = new Uint8Array([1, 2, 3]);
-		mockReadFile.mockResolvedValue(pngBytes);
-		mockInvoke.mockRejectedValue(new Error("not found"));
+		mockInvoke.mockResolvedValue({
+			originalBase64: null,
+			modifiedBase64: "AQID",
+		});
 
 		const { result } = renderHook(() =>
 			useImageDiff("/repo/new-image.png", "branch-base", "changes"),
@@ -118,9 +109,11 @@ describe("useImageDiff", () => {
 		expect(result.current.modifiedUrl).toMatch(/^data:image\/png;base64,/);
 	});
 
-	it("sets modifiedUrl to null when readFile fails (deleted file)", async () => {
-		mockReadFile.mockRejectedValue(new Error("file not found"));
-		mockInvoke.mockResolvedValue("AQID");
+	it("sets modifiedUrl to null when modified image is missing", async () => {
+		mockInvoke.mockResolvedValue({
+			originalBase64: "AQID",
+			modifiedBase64: null,
+		});
 
 		const { result } = renderHook(() =>
 			useImageDiff("/repo/deleted.png", "branch-base", "changes"),

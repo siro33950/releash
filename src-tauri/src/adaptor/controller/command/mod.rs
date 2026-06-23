@@ -6,6 +6,7 @@ pub(crate) mod hooks;
 pub(crate) mod notification;
 pub(crate) mod pty_session;
 pub(crate) mod repository;
+pub(crate) mod telemetry;
 pub(crate) mod workflow;
 pub(crate) mod workspace_state;
 pub(crate) mod workspace_tree;
@@ -71,6 +72,8 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::code::file_content::get_file_at_branch_base,
             crate::adaptor::controller::command::code::file_content::get_binary_file_at_branch_base,
             crate::adaptor::controller::command::code::file_content::get_binary_file_at_ref,
+            crate::adaptor::controller::command::code::file_content::get_review_text_diff,
+            crate::adaptor::controller::command::code::file_content::get_review_image_diff,
             crate::adaptor::controller::command::code::diff::get_branch_diff_summary,
             crate::adaptor::controller::command::code::diff::build_diff_file_tree,
             crate::adaptor::controller::command::code::diff::get_file_navigation,
@@ -215,6 +218,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
     hooks::register(&mut router);
     notification::register(&mut router);
     pty_session::register(&mut router);
+    telemetry::register(&mut router);
     workspace_state::register(&mut router);
     workflow::register(&mut router);
     builder.invoke_handler(move |invoke: tauri::ipc::Invoke<tauri::Wry>| router.handle(invoke))

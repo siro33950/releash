@@ -180,6 +180,10 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                     for sync in drained {
                         let msg = WsMessage::AgentStreamSync(sync);
                         if let Ok(json) = serialize_message(&msg) {
+                            crate::other::telemetry::record_payload_size(
+                                crate::other::telemetry::Payload::WebSocket,
+                                || json.len(),
+                            );
                             if write.send(Message::text(json)).await.is_err() {
                                 send_failed = true;
                                 break;
@@ -192,6 +196,10 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                     match maybe {
                         Some(msg) => {
                             if let Ok(json) = serialize_message(&msg) {
+                                crate::other::telemetry::record_payload_size(
+                                    crate::other::telemetry::Payload::WebSocket,
+                                    || json.len(),
+                                );
                                 if write.send(Message::text(json)).await.is_err() {
                                     break;
                                 }

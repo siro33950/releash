@@ -219,6 +219,9 @@ describe("SettingsModal", () => {
 	it("should navigate to Privacy section and display crash reporting toggle", () => {
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Privacy & Updates"));
+		expect(
+			screen.getByText("Send anonymous performance metrics"),
+		).toBeInTheDocument();
 		expect(screen.getByText("Send crash reports")).toBeInTheDocument();
 	});
 
@@ -235,6 +238,104 @@ describe("SettingsModal", () => {
 		expect(onSave).toHaveBeenCalledWith(
 			expect.objectContaining({ enableCrashReporting: false }),
 		);
+	});
+
+	it("should toggle performance telemetry off and call onSave", async () => {
+		const user = userEvent.setup();
+		const onSave = vi.fn();
+		const { invoke } = await import("@tauri-apps/api/core");
+		render(<SettingsModal {...defaultProps} onSave={onSave} />);
+		fireEvent.click(screen.getByText("Privacy & Updates"));
+		const checkbox = screen.getByRole("checkbox", {
+			name: "Send anonymous performance metrics",
+		});
+		await user.click(checkbox);
+		await user.click(screen.getByRole("button", { name: "Save" }));
+		expect(onSave).toHaveBeenCalledWith(
+			expect.objectContaining({ performanceTelemetry: false }),
+		);
+		expect(invoke).toHaveBeenCalledWith("update_performance_telemetry", {
+			enabled: false,
+		});
+	});
+
+	it("should re-enable performance telemetry and call onSave", async () => {
+		const user = userEvent.setup();
+		const onSave = vi.fn();
+		const { invoke } = await import("@tauri-apps/api/core");
+		render(
+			<SettingsModal
+				{...defaultProps}
+				settings={{ ...defaultSettings, performanceTelemetry: false }}
+				onSave={onSave}
+			/>,
+		);
+		fireEvent.click(screen.getByText("Privacy & Updates"));
+		const checkbox = screen.getByRole("checkbox", {
+			name: "Send anonymous performance metrics",
+		});
+		await user.click(checkbox);
+		await user.click(screen.getByRole("button", { name: "Save" }));
+		expect(onSave).toHaveBeenCalledWith(
+			expect.objectContaining({ performanceTelemetry: true }),
+		);
+		expect(invoke).toHaveBeenCalledWith("update_performance_telemetry", {
+			enabled: true,
+		});
+	});
+
+	it("should call settings_saved after performance telemetry update completes", async () => {
+		const user = userEvent.setup();
+		const onSave = vi.fn();
+		const { invoke } = await import("@tauri-apps/api/core");
+		const callOrder: string[] = [];
+		let resolveTelemetryUpdate: (() => void) | undefined;
+
+		render(<SettingsModal {...defaultProps} onSave={onSave} />);
+		fireEvent.click(screen.getByText("Privacy & Updates"));
+		await user.click(
+			screen.getByRole("checkbox", {
+				name: "Send anonymous performance metrics",
+			}),
+		);
+		vi.clearAllMocks();
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			if (cmd === "update_performance_telemetry") {
+				callOrder.push("update_performance_telemetry:start");
+				return new Promise((resolve) => {
+					resolveTelemetryUpdate = () => {
+						callOrder.push("update_performance_telemetry:done");
+						resolve(null);
+					};
+				});
+			}
+			if (cmd === "report_usage_event") {
+				callOrder.push("settings_saved");
+				return Promise.resolve(null);
+			}
+			return Promise.resolve(null);
+		});
+		await user.click(screen.getByRole("button", { name: "Save" }));
+
+		await waitFor(() => {
+			expect(callOrder).toEqual(["update_performance_telemetry:start"]);
+		});
+		expect(invoke).not.toHaveBeenCalledWith("report_usage_event", {
+			name: "settings_saved",
+		});
+
+		resolveTelemetryUpdate?.();
+
+		await waitFor(() => {
+			expect(callOrder).toEqual([
+				"update_performance_telemetry:start",
+				"update_performance_telemetry:done",
+				"settings_saved",
+			]);
+		});
+		expect(invoke).toHaveBeenCalledWith("report_usage_event", {
+			name: "settings_saved",
+		});
 	});
 
 	it("should display Notifications in nav", () => {

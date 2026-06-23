@@ -141,11 +141,19 @@ UI は多機能な IDE ではなく、AI agent の作業監督・差分確認・
 
 まず、改善前後を比較できる最低限の数値を入れる。
 
+- 観測先は OpenTelemetry OTLP + New Relic に統一する。`OTLP_ENDPOINT` と
+  `NEW_RELIC_LICENSE_KEY` が未設定なら no-op。`OTLP_ENDPOINT` は base URL でも
+  `/v1/traces` 等の signal URL でもよく、Rust 側で signal 別 path に正規化する。
+- Sentry / Aptabase は撤去する。`app_started` 相当は startup metric/span として扱う。
+- frontend は OTel SDK と license key を持たない。未捕捉 frontend error と mounted xterm count
+  だけを Tauri command で Rust に転送する。
+- resource attributes は `service.version` / `os.type` / `releash.build_type` /
+  `service.name` のみ。ユーザー、端末、セッションの永続識別子は送らない。
 - startup time、first window ready、first repo snapshot ready
 - Git status scan duration、diff stats duration、review file open duration
 - Tauri event payload size、WS payload size、streaming emit interval / dropped frame count
 - session list duration、session get duration、session save bytes
-- Rust RSS、WebView JS heap、xterm count、active PTY count
+- Rust RSS、CPU%、mounted xterm count、active PTY count
 
 初期の性能予算案:
 
@@ -270,7 +278,7 @@ GitHub の open Issue と Milestone を確認した。今回の監査は既存�
 に新規 Issue として切った。
 
 1. [#1209 Performance budget / telemetry を追加する](https://github.com/siro33950/releash/issues/1209)
-   - startup、repo snapshot、diff open、stream payload、session IO、JS heap、Rust RSS を測る。
+   - OTel OTLP + New Relic に統一し、startup、repo snapshot、diff open、stream payload、session IO、Rust RSS/CPU、xterm/PTY count を測る。
 2. [#1210 RepositoryStateService を導入し watcher / status / stats を 1 系統化する](https://github.com/siro33950/releash/issues/1210)
    - watcher / status / stats / branch / worktree dirty count / diff tree を 1 系統化する。
 3. [#1211 ReviewSnapshot / ReviewFileView command を追加し diff 表示を Rust read model に寄せる](https://github.com/siro33950/releash/issues/1211)
@@ -296,7 +304,7 @@ GitHub の open Issue と Milestone を確認した。今回の監査は既存�
 
 1. #1194 / #1195 / #1196: 既存のメモリ削減分割 Issue を片付け、turn / frontend message / workflow runtime の残留を止める。
 2. #1192 / #1178: bridge process death detection、respawn、stuck Thinking recovery を入れ、runtime lifecycle の復旧性を上げる。
-3. #1209: 計測を入れ、session save bytes / streaming event bytes / JS heap / Rust RSS を見えるようにする。
+3. #1209: 計測を入れ、session save bytes / streaming event bytes / Rust RSS/CPU / xterm/PTY count を見えるようにする。
 4. #1210 / #1211 / #1212: RepositoryStateService、ReviewSnapshot / ReviewFileView、id-based hunk operation を入れ、Git / diff の重複 scan と frontend patch 再生成を止める。
 5. #1213 / #1190: Agent session storage を summary index + paging に変え、復帰時 context restoration と保存正典を揃える。
 6. #1214: streaming delta protocol に移り、通常 payload が応答全体長に比例して増えないようにする。

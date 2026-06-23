@@ -230,17 +230,37 @@ pub fn read_config_if_exists(path: &Path) -> Result<Option<ReleashConfig>, Strin
     Ok(Some(config))
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+struct LegacyConfigProbe {
+    telemetry_enabled: Option<bool>,
+    #[serde(default)]
+    telemetry: LegacyTelemetryProbe,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct LegacyTelemetryProbe {
+    performance_telemetry: Option<bool>,
+}
+
 pub fn load_or_create_config(path: &Path) -> Result<ReleashConfig, String> {
+    let mut needs_write = false;
     let mut config = if path.exists() {
         let content =
             fs::read_to_string(path).map_err(|e| format!("設定ファイル読み込み失敗: {e}"))?;
-        toml::from_str::<ReleashConfig>(&content)
-            .map_err(|e| format!("設定ファイルのパース失敗: {e}"))?
+        let mut config = toml::from_str::<ReleashConfig>(&content)
+            .map_err(|e| format!("設定ファイルのパース失敗: {e}"))?;
+        let probe = toml::from_str::<LegacyConfigProbe>(&content)
+            .map_err(|e| format!("設定ファイルのパース失敗: {e}"))?;
+        if probe.telemetry.performance_telemetry.is_none() && probe.telemetry_enabled == Some(false)
+        {
+            config.telemetry.performance_telemetry = false;
+            needs_write = true;
+        }
+        config
     } else {
         ReleashConfig::default()
     };
 
-    let mut needs_write = false;
     if config.server.token.is_empty() {
         config.server.token = generate_token();
         needs_write = true;
@@ -335,7 +355,7 @@ mod tests {
         assert_eq!(config.server.port, 9700);
         assert_eq!(config.server.token.len(), TOKEN_LENGTH);
         assert!(!config.server.tls.enabled);
-        assert!(config.telemetry_enabled);
+        assert!(config.telemetry.performance_telemetry);
         assert!(path.exists());
     }
 
@@ -459,7 +479,7 @@ token = ""
     }
 
     #[test]
-    fn telemetry_enabled_defaults_to_true() {
+    fn performance_telemetry_defaults_to_true() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
 
@@ -467,19 +487,137 @@ token = ""
         fs::write(&path, content).unwrap();
 
         let config = load_or_create_config(&path).unwrap();
-        assert!(config.telemetry_enabled);
+        assert!(config.telemetry.performance_telemetry);
     }
 
     #[test]
-    fn telemetry_disabled_persists() {
+    fn performance_telemetry_disabled_persists() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
 
-        let content = "telemetry_enabled = false\n\n[server]\nport = 9700\n";
+        let content = "[server]\nport = 9700\n\n[telemetry]\nperformance_telemetry = false\n";
         fs::write(&path, content).unwrap();
 
         let config = load_or_create_config(&path).unwrap();
-        assert!(!config.telemetry_enabled);
+        assert!(!config.telemetry.performance_telemetry);
+    }
+
+    #[test]
+    fn legacy_telemetry_enabled_false_migrates_to_performance_telemetry_false() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+telemetry_enabled = false
+
+[server]
+token = "existing_token_value_here_with_enough_length_!!"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+
+        assert!(!config.telemetry.performance_telemetry);
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("telemetry_enabled"));
+        assert!(saved.contains("performance_telemetry = false"));
+    }
+
+    #[test]
+    fn legacy_telemetry_enabled_true_defaults_performance_telemetry_to_true() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+telemetry_enabled = true
+
+[server]
+token = "existing_token_value_here_with_enough_length_!!"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+
+        assert!(config.telemetry.performance_telemetry);
+    }
+
+    #[test]
+    fn missing_legacy_telemetry_enabled_defaults_performance_telemetry_to_true() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+[server]
+token = "existing_token_value_here_with_enough_length_!!"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+
+        assert!(config.telemetry.performance_telemetry);
+    }
+
+    #[test]
+    fn explicit_new_performance_telemetry_true_wins_over_legacy_false() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+telemetry_enabled = false
+
+[server]
+token = "existing_token_value_here_with_enough_length_!!"
+
+[telemetry]
+performance_telemetry = true
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+
+        assert!(config.telemetry.performance_telemetry);
+    }
+
+    #[test]
+    fn explicit_new_performance_telemetry_false_wins_over_legacy_true() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+telemetry_enabled = true
+
+[server]
+token = "existing_token_value_here_with_enough_length_!!"
+
+[telemetry]
+performance_telemetry = false
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+
+        assert!(!config.telemetry.performance_telemetry);
+    }
+
+    #[test]
+    fn read_config_if_exists_does_not_migrate_legacy_telemetry_enabled() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+telemetry_enabled = false
+
+[server]
+token = "existing_token_value_here_with_enough_length_!!"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = read_config_if_exists(&path).unwrap().unwrap();
+        let unchanged = fs::read_to_string(&path).unwrap();
+
+        assert!(config.telemetry.performance_telemetry);
+        assert!(unchanged.contains("telemetry_enabled = false"));
+        assert!(!unchanged.contains("performance_telemetry = false"));
     }
 
     #[test]
@@ -549,6 +687,7 @@ close_to_tray = false
     fn telemetry_defaults_to_enabled() {
         let config = ReleashConfig::default();
         assert!(config.telemetry.crash_reporting);
+        assert!(config.telemetry.performance_telemetry);
     }
 
     #[test]
@@ -559,11 +698,13 @@ close_to_tray = false
         let mut config = ReleashConfig::default();
         config.server.token = generate_token();
         config.telemetry.crash_reporting = false;
+        config.telemetry.performance_telemetry = false;
         write_config(&path, &config).unwrap();
 
         let reloaded = fs::read_to_string(&path).unwrap();
         let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
         assert!(!reloaded.telemetry.crash_reporting);
+        assert!(!reloaded.telemetry.performance_telemetry);
     }
 
     #[test]
@@ -581,6 +722,7 @@ token = "existing_token_value_here_with_enough_length_!!"
 
         let config = load_or_create_config(&path).unwrap();
         assert!(config.telemetry.crash_reporting);
+        assert!(config.telemetry.performance_telemetry);
     }
 
     #[test]
