@@ -68,6 +68,7 @@ import type {
 } from "@/types/workspace-tree";
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
+import { WorkflowRowStatusIcon } from "./WorkflowRowStatusIcon";
 import { WorkflowStepStatusIcon } from "./WorkflowStepStatusIcon";
 
 interface WorkspaceListProps {
@@ -263,12 +264,7 @@ function WorktreeWorkflowRow({
 					className="flex min-w-0 flex-1 items-center gap-2 text-left"
 					onClick={() => setExpanded((prev) => !prev)}
 				>
-					<WorkflowStepStatusIcon
-						status={node.status}
-						containerClassName="flex size-5 shrink-0 items-center justify-center"
-						iconClassName="size-3"
-						circleClassName="size-2"
-					/>
+					<WorkflowRowStatusIcon status={node.status} />
 					<span className="min-w-0 truncate">{workflowLabel}</span>
 					{expanded ? (
 						<ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
