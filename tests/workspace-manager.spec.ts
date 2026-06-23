@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import {
 	branchList,
 	buildMockConfig,
@@ -6,6 +6,16 @@ import {
 } from "./helpers/fixtures";
 import { setupTauriMock } from "./helpers/tauri-mock";
 import { waitForApp } from "./helpers/utils";
+
+async function waitForAnimations(locator: Locator) {
+	await locator.evaluate(async (element) => {
+		await Promise.all(
+			element
+				.getAnimations({ subtree: true })
+				.map((animation) => animation.finished.catch(() => undefined)),
+		);
+	});
+}
 
 test.describe("Workspace Manager", () => {
 	test("リポジトリが存在しない場合 No Repository が表示される", async ({
@@ -119,6 +129,7 @@ test.describe("Workspace Manager", () => {
 
 		const menu = page.getByRole("menu").filter({ hasText: "Stop" });
 		await expect(menu).toBeVisible();
+		await waitForAnimations(menu);
 		const menuBox = await menu.boundingBox();
 		expect(menuBox).not.toBeNull();
 		expect(menuBox!.x).toBeGreaterThan(10);
