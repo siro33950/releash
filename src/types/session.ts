@@ -323,6 +323,8 @@ export interface SessionStatus {
 	session_state: SessionState;
 	pending_permission: boolean;
 	last_activity_at: number;
+	workflow_step?: string | null;
+	workflow_execution_state?: string | null;
 }
 
 /**

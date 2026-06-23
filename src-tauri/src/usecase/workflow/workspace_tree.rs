@@ -2,13 +2,17 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Serialize;
 
+use crate::domain::workflow::services::session_projection;
+use crate::domain::workflow::status_aggregation::{
+    aggregate_representative_statuses, session_result, RepresentativeStatus, SessionActivity,
+    StepProgress,
+};
 use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::{
     domain::workflow::{
         NodeType, RunId, RunListFilter, RunStatus, WorkflowError, WorkflowRunManualArchiveRecord,
-        WorkflowRunSummary, WorkflowStateSnapshot, WorkflowStepContext, STEP_STATE_ABORTED,
-        STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_PENDING, STEP_STATE_RUNNING,
-        STEP_STATE_WAITING_APPROVAL, WORKFLOW_ARCHIVE_REASON_MANUAL,
+        WorkflowRunSummary, WorkflowStateSnapshot, WorkflowStepContext,
+        WORKFLOW_ARCHIVE_REASON_MANUAL,
     },
     other::utils::unix_timestamp_seconds,
 };
@@ -87,6 +91,7 @@ pub(crate) struct WorkspaceWorkflowNodeDto {
     pub workflow_name: String,
     pub title: String,
     pub status: String,
+    pub can_stop: bool,
     pub updated_at: f64,
     pub steps: Vec<WorkspaceWorkflowStepNodeDto>,
 }
@@ -334,13 +339,18 @@ fn workflow_node(
     state: Option<&WorkflowStateSnapshot>,
 ) -> WorkspaceWorkflowNodeDto {
     let steps = workflow_steps(&run, workflow_sessions, &step_refs, state);
+    let status = workflow_status_for_steps(&steps)
+        .unwrap_or_else(|| run_status_representative(run.status))
+        .as_str()
+        .to_string();
 
     WorkspaceWorkflowNodeDto {
         run_id: run.run_id.clone(),
         worktree_path: run.worktree_path.clone(),
         workflow_name: run.workflow_name.clone(),
         title: workflow_title(&run),
-        status: run_status_label(run.status).to_string(),
+        status,
+        can_stop: workflow_can_stop(run.status),
         updated_at: run.updated_at,
         steps,
     }
@@ -428,14 +438,35 @@ fn state_ref_for_session<'a>(
         .find(|step_ref| step_ref.session_id.as_deref() == Some(session_id))
 }
 
+fn retain_unique_step_refs(refs: &mut Vec<StepSessionRef>) {
+    let mut seen = HashSet::new();
+    refs.retain(|step_ref| {
+        seen.insert((
+            step_ref.session_id.clone(),
+            step_ref.step_name.clone(),
+            step_ref.run_index,
+            step_ref.group_step_name.clone(),
+            step_ref.group_run_index,
+        ))
+    });
+}
+
 fn step_status_from_session_lifecycle(state: &WorkspaceSessionState) -> &'static str {
+    session_result(
+        StepProgress::Completed,
+        session_activity_from_workspace_lifecycle(state),
+    )
+    .as_str()
+}
+
+fn session_activity_from_workspace_lifecycle(state: &WorkspaceSessionState) -> SessionActivity {
     match state {
-        WorkspaceSessionState::Active => STEP_STATE_RUNNING,
-        WorkspaceSessionState::Error => STEP_STATE_FAILED,
-        WorkspaceSessionState::Idle
-        | WorkspaceSessionState::Done
+        WorkspaceSessionState::Active => SessionActivity::Running,
+        WorkspaceSessionState::Idle => SessionActivity::Waiting,
+        WorkspaceSessionState::Error => SessionActivity::Error,
+        WorkspaceSessionState::Done
         | WorkspaceSessionState::Closed
-        | WorkspaceSessionState::Archived => STEP_STATE_COMPLETED,
+        | WorkspaceSessionState::Archived => SessionActivity::Done,
     }
 }
 
@@ -518,84 +549,18 @@ fn workflow_title(run: &WorkflowRunSummary) -> String {
 }
 
 fn collect_step_session_refs(state: &WorkflowStateSnapshot) -> Vec<StepSessionRef> {
-    let mut refs = Vec::new();
-    let mut next_order = 0usize;
-    for entry in &state.step_history {
-        let order = next_order;
-        next_order += 1;
-        refs.push(StepSessionRef {
-            session_id: entry.session_id.clone(),
-            step_name: entry.step_name.clone(),
-            run_index: Some(entry.run_index),
-            group_step_name: entry.step_name.clone(),
-            group_run_index: Some(entry.run_index),
-            state: normalize_step_status(&entry.state).to_string(),
-            order,
-        });
-        if let Some(children) = entry.child_outputs.as_ref() {
-            refs.extend(children.iter().map(|child| StepSessionRef {
-                session_id: child.session_id.clone(),
-                step_name: child.step_name.clone(),
-                run_index: Some(child.run_index),
-                group_step_name: entry.step_name.clone(),
-                group_run_index: Some(entry.run_index),
-                state: normalize_step_status(&child.state).to_string(),
-                order,
-            }));
-        }
-    }
-    if state.current_session_id.is_some()
-        || matches!(
-            state.state,
-            crate::domain::workflow::WorkflowExecutionState::Running
-                | crate::domain::workflow::WorkflowExecutionState::WaitingApproval
-        )
-    {
-        let order = next_order;
-        let run_index = state
-            .step_execution_counts
-            .get(&state.current_step_name)
-            .copied()
-            .or(Some(1));
-        refs.push(StepSessionRef {
-            session_id: state.current_session_id.clone(),
-            step_name: state.current_step_name.clone(),
-            run_index,
-            group_step_name: state.current_step_name.clone(),
-            group_run_index: run_index,
-            state: workflow_execution_state_label(&state.state).to_string(),
-            order,
-        });
-        refs.extend(
-            state
-                .active_parallel_steps
-                .iter()
-                .map(|step| StepSessionRef {
-                    session_id: step.session_id.clone(),
-                    step_name: step.step_name.clone(),
-                    run_index: Some(step.run_index),
-                    group_step_name: state.current_step_name.clone(),
-                    group_run_index: run_index,
-                    state: normalize_step_status(&step.state).to_string(),
-                    order,
-                }),
-        );
-    }
-    retain_unique_step_refs(&mut refs);
-    refs
-}
-
-fn retain_unique_step_refs(refs: &mut Vec<StepSessionRef>) {
-    let mut seen = HashSet::new();
-    refs.retain(|step_ref| {
-        seen.insert((
-            step_ref.session_id.clone(),
-            step_ref.step_name.clone(),
-            step_ref.run_index,
-            step_ref.group_step_name.clone(),
-            step_ref.group_run_index,
-        ))
-    });
+    session_projection::collect_step_session_projections(state)
+        .into_iter()
+        .map(|projection| StepSessionRef {
+            session_id: projection.session_id,
+            step_name: projection.step_name,
+            run_index: projection.run_index,
+            group_step_name: projection.group_step_name,
+            group_run_index: projection.group_run_index,
+            state: projection.representative.as_str().to_string(),
+            order: projection.order,
+        })
+        .collect()
 }
 
 fn workflow_steps(
@@ -679,43 +644,24 @@ fn step_status_for_group(
     refs: &[&StepSessionRef],
     state: Option<&WorkflowStateSnapshot>,
 ) -> &'static str {
+    let mut candidates = refs
+        .iter()
+        .map(|step_ref| RepresentativeStatus::from_status_str(&step_ref.state))
+        .collect::<Vec<_>>();
+
     if let Some(state) = state {
         if state.current_step_name == step_name {
-            if current_run_index(state) == run_index {
-                return workflow_execution_state_label(&state.state);
+            if session_projection::current_run_index(state) == run_index {
+                candidates.push(workflow_execution_state_representative(&state.state));
             }
         } else if let Some(step_state) = state.step_states.get(step_name) {
-            return normalize_step_status(step_state);
+            candidates.push(StepProgress::from_status_str(step_state).representative());
         }
     }
-    if refs
-        .iter()
-        .any(|step_ref| step_ref.state == STEP_STATE_FAILED)
-    {
-        return STEP_STATE_FAILED;
-    }
-    if refs
-        .iter()
-        .any(|step_ref| step_ref.state == STEP_STATE_ABORTED)
-    {
-        return STEP_STATE_ABORTED;
-    }
-    if refs
-        .iter()
-        .any(|step_ref| step_ref.state == STEP_STATE_WAITING_APPROVAL)
-    {
-        return STEP_STATE_WAITING_APPROVAL;
-    }
-    if refs
-        .iter()
-        .any(|step_ref| step_ref.state == STEP_STATE_RUNNING)
-    {
-        return STEP_STATE_RUNNING;
-    }
-    if !refs.is_empty() {
-        return STEP_STATE_COMPLETED;
-    }
-    "queued"
+
+    aggregate_representative_statuses(candidates)
+        .unwrap_or(RepresentativeStatus::Queued)
+        .as_str()
 }
 
 fn step_type_for_group(step_name: &str, state: Option<&WorkflowStateSnapshot>) -> &'static str {
@@ -749,7 +695,7 @@ fn step_can_reject(
     if state.current_step_name != step_name {
         return None;
     }
-    if current_run_index(state) != run_index {
+    if session_projection::current_run_index(state) != run_index {
         return None;
     }
     if !matches!(
@@ -766,38 +712,26 @@ fn step_can_reject(
     )
 }
 
-fn current_run_index(state: &WorkflowStateSnapshot) -> Option<u32> {
-    state
-        .step_execution_counts
-        .get(&state.current_step_name)
-        .copied()
-        .or(Some(1))
-}
-
-fn workflow_execution_state_label(
+fn workflow_execution_state_representative(
     state: &crate::domain::workflow::WorkflowExecutionState,
-) -> &'static str {
+) -> RepresentativeStatus {
     match state {
-        crate::domain::workflow::WorkflowExecutionState::Running => STEP_STATE_RUNNING,
+        crate::domain::workflow::WorkflowExecutionState::Running => RepresentativeStatus::Running,
         crate::domain::workflow::WorkflowExecutionState::WaitingApproval => {
-            STEP_STATE_WAITING_APPROVAL
+            RepresentativeStatus::Waiting
         }
-        crate::domain::workflow::WorkflowExecutionState::Completed => STEP_STATE_COMPLETED,
-        crate::domain::workflow::WorkflowExecutionState::Failed { .. } => STEP_STATE_FAILED,
-        crate::domain::workflow::WorkflowExecutionState::Aborted => STEP_STATE_ABORTED,
+        crate::domain::workflow::WorkflowExecutionState::Completed => {
+            RepresentativeStatus::Completed
+        }
+        crate::domain::workflow::WorkflowExecutionState::Failed { .. } => {
+            RepresentativeStatus::Failed
+        }
+        crate::domain::workflow::WorkflowExecutionState::Aborted => RepresentativeStatus::Aborted,
     }
 }
 
 fn normalize_step_status(status: &str) -> &'static str {
-    match status {
-        STEP_STATE_RUNNING => STEP_STATE_RUNNING,
-        STEP_STATE_WAITING_APPROVAL => STEP_STATE_WAITING_APPROVAL,
-        STEP_STATE_COMPLETED => STEP_STATE_COMPLETED,
-        STEP_STATE_FAILED => STEP_STATE_FAILED,
-        STEP_STATE_ABORTED => STEP_STATE_ABORTED,
-        STEP_STATE_PENDING => "queued",
-        _ => "queued",
-    }
+    RepresentativeStatus::from_status_str(status).as_str()
 }
 
 fn compare_session_nodes(
@@ -814,13 +748,31 @@ fn compare_titles(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 fn run_status_label(status: RunStatus) -> &'static str {
+    run_status_representative(status).as_str()
+}
+
+fn run_status_representative(status: RunStatus) -> RepresentativeStatus {
     match status {
-        RunStatus::Running => STEP_STATE_RUNNING,
-        RunStatus::WaitingApproval => "waiting_approval",
-        RunStatus::Completed => "completed",
-        RunStatus::Failed => "failed",
-        RunStatus::Aborted => "aborted",
+        RunStatus::Running => RepresentativeStatus::Running,
+        RunStatus::WaitingApproval => RepresentativeStatus::Waiting,
+        RunStatus::Completed => RepresentativeStatus::Completed,
+        RunStatus::Failed => RepresentativeStatus::Failed,
+        RunStatus::Aborted => RepresentativeStatus::Aborted,
     }
+}
+
+fn workflow_can_stop(status: RunStatus) -> bool {
+    !status.is_terminal()
+}
+
+fn workflow_status_for_steps(
+    steps: &[WorkspaceWorkflowStepNodeDto],
+) -> Option<RepresentativeStatus> {
+    aggregate_representative_statuses(
+        steps
+            .iter()
+            .map(|step| RepresentativeStatus::from_status_str(&step.status)),
+    )
 }
 
 #[cfg(test)]
@@ -829,8 +781,8 @@ mod tests {
     use crate::domain::workflow::{
         ApprovalOperations, ChildOutputSnapshot, NodeDefinition, NodeType, ParallelStepState,
         StepHistoryEntry, TriggerSource, WorkflowDefinition, WorkflowExecutionState,
-        STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_RUNNING,
-        STEP_STATE_WAITING_APPROVAL,
+        STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_PENDING,
+        STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
     };
 
     fn session(id: &str, title: &str, workflow_step_session: bool) -> WorkspaceSessionInput {
@@ -1260,9 +1212,12 @@ mod tests {
     #[test]
     fn explicit_context_without_state_ref_uses_session_lifecycle_for_step_status() {
         for (session_state, expected_status) in [
-            (WorkspaceSessionState::Error, STEP_STATE_FAILED),
             (WorkspaceSessionState::Active, STEP_STATE_RUNNING),
+            (WorkspaceSessionState::Idle, "waiting"),
+            (WorkspaceSessionState::Error, "error"),
+            (WorkspaceSessionState::Done, STEP_STATE_COMPLETED),
             (WorkspaceSessionState::Closed, STEP_STATE_COMPLETED),
+            (WorkspaceSessionState::Archived, STEP_STATE_COMPLETED),
         ] {
             let archives = Vec::new();
             let mut step_session = session_with_context(
@@ -1377,7 +1332,7 @@ mod tests {
         assert_eq!(previous.step_type, "approval");
         assert_eq!(previous.can_reject, None);
         assert_eq!(previous.sessions[0].id, "review-1");
-        assert_eq!(current.status, STEP_STATE_WAITING_APPROVAL);
+        assert_eq!(current.status, "waiting");
         assert_eq!(current.step_type, "approval");
         assert_eq!(current.can_reject, Some(true));
         assert_eq!(current.sessions[0].id, "review-2");
@@ -1513,19 +1468,27 @@ mod tests {
                     STEP_STATE_WAITING_APPROVAL,
                     STEP_STATE_RUNNING,
                 ],
+                STEP_STATE_RUNNING,
+            ),
+            (
+                vec![STEP_STATE_FAILED, "error", STEP_STATE_WAITING_APPROVAL],
                 STEP_STATE_FAILED,
+            ),
+            (
+                vec!["error", STEP_STATE_WAITING_APPROVAL, STEP_STATE_ABORTED],
+                "error",
             ),
             (
                 vec![
                     STEP_STATE_ABORTED,
                     STEP_STATE_WAITING_APPROVAL,
-                    STEP_STATE_RUNNING,
+                    STEP_STATE_COMPLETED,
                 ],
-                STEP_STATE_ABORTED,
+                "waiting",
             ),
             (
-                vec![STEP_STATE_WAITING_APPROVAL, STEP_STATE_RUNNING],
-                STEP_STATE_WAITING_APPROVAL,
+                vec![STEP_STATE_ABORTED, STEP_STATE_COMPLETED],
+                STEP_STATE_ABORTED,
             ),
             (vec![STEP_STATE_RUNNING], STEP_STATE_RUNNING),
         ] {
@@ -1554,6 +1517,29 @@ mod tests {
             matches!(&nodes[0], WorkspaceTreeNodeDto::Workflow(node) if node.run_id == "run-1")
         );
         assert!(archives.is_empty());
+    }
+
+    #[test]
+    fn workflow_can_stop_comes_from_run_lifecycle_status() {
+        for (status, expected) in [
+            (RunStatus::Running, true),
+            (RunStatus::WaitingApproval, true),
+            (RunStatus::Completed, false),
+            (RunStatus::Failed, false),
+            (RunStatus::Aborted, false),
+        ] {
+            let nodes = project_workspace_tree_nodes(
+                vec![],
+                vec![run_with_status("run-1", "Lifecycle", status)],
+                HashMap::new(),
+                &[],
+            );
+
+            let WorkspaceTreeNodeDto::Workflow(workflow) = &nodes[0] else {
+                panic!("expected workflow node");
+            };
+            assert_eq!(workflow.can_stop, expected);
+        }
     }
 
     #[test]
@@ -1595,7 +1581,7 @@ mod tests {
         );
         assert_eq!(
             normalize_step_status(STEP_STATE_WAITING_APPROVAL),
-            STEP_STATE_WAITING_APPROVAL
+            "waiting"
         );
         assert_eq!(
             normalize_step_status(STEP_STATE_COMPLETED),

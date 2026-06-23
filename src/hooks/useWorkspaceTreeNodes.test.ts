@@ -293,6 +293,7 @@ describe("useWorkspaceTreeNodes", () => {
 				workflowName: "workflow",
 				title: "workflow",
 				status: "running",
+				canStop: true,
 				updatedAt: 1_000,
 				steps: [
 					{
@@ -379,6 +380,7 @@ describe("useWorkspaceTreeNodes", () => {
 				workflowName: "workflow",
 				title: "workflow",
 				status: "running",
+				canStop: true,
 				updatedAt: 1_000,
 				steps: [],
 			},
@@ -419,6 +421,7 @@ describe("useWorkspaceTreeNodes", () => {
 				workflowName: "workflow",
 				title: "workflow",
 				status: "running",
+				canStop: true,
 				updatedAt: 1_000,
 				steps: [],
 			},
@@ -440,7 +443,8 @@ describe("useWorkspaceTreeNodes", () => {
 				worktreePath: "/repo",
 				workflowName: "workflow",
 				title: "workflow",
-				status: "waiting_approval",
+				status: "waiting",
+				canStop: true,
 				updatedAt: 2_000,
 				steps: [],
 			},

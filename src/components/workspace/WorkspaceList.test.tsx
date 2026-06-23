@@ -93,6 +93,7 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					workflowName: "release",
 					title: "Deploy workflow",
 					status: "running",
+					canStop: true,
 					updatedAt: 1100,
 					steps: [
 						{
@@ -127,7 +128,8 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					worktreePath: "/repo/wt",
 					workflowName: "waiting-flow",
 					title: "Waiting workflow",
-					status: "waiting_approval",
+					status: "waiting",
+					canStop: true,
 					updatedAt: 1101,
 					steps: [],
 				},
@@ -138,6 +140,7 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					workflowName: "completed-flow",
 					title: "Completed workflow",
 					status: "completed",
+					canStop: false,
 					updatedAt: 1102,
 					steps: [],
 				},
@@ -148,6 +151,7 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					workflowName: "failed-flow",
 					title: "Failed workflow",
 					status: "failed",
+					canStop: false,
 					updatedAt: 1103,
 					steps: [],
 				},
@@ -158,6 +162,7 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					workflowName: "aborted-flow",
 					title: "Aborted workflow",
 					status: "aborted",
+					canStop: false,
 					updatedAt: 1104,
 					steps: [],
 				},
@@ -232,6 +237,17 @@ vi.mock("@/hooks/useWorktreeList", () => ({
 }));
 vi.mock("@/hooks/useWorktreeSessionStatuses", () => ({
 	useWorktreeSessionStatuses: () => new Map(),
+}));
+vi.mock("@/hooks/useWorktreeStepStatuses", () => ({
+	workflowStepStatusKey: (
+		executionId: string,
+		stepName: string,
+		runIndex?: number | null,
+	) => `${executionId}:${stepName}:${runIndex ?? 1}`,
+	useWorktreeStepStatuses: () => ({
+		steps: new Map([["run-1:Build step:1", "waiting"]]),
+		workflows: new Map([["run-1", "failed"]]),
+	}),
 }));
 
 function renderWorkspaceList(
@@ -392,6 +408,29 @@ describe("WorkspaceList", () => {
 				runId: "run-waiting",
 			});
 		});
+	});
+
+	it("uses live representative statuses for Step and Workflow rows", () => {
+		renderWorkspaceList();
+
+		expect(screen.getAllByTitle("waiting").length).toBeGreaterThanOrEqual(2);
+		expect(screen.getAllByTitle("failed").length).toBeGreaterThanOrEqual(2);
+		expect(screen.getAllByTitle("completed").length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("does not enable Stop from a live representative status on a terminal Workflow", async () => {
+		const user = userEvent.setup();
+		renderWorkspaceList();
+
+		await user.click(screen.getByLabelText("Open menu for completed-flow"));
+		const stop = await screen.findByRole("menuitem", { name: /Stop/ });
+		expect(stop).toHaveAttribute("aria-disabled", "true");
+		fireEvent.click(stop);
+
+		expect(mocks.invoke).not.toHaveBeenCalledWith(
+			"abort_workflow",
+			expect.anything(),
+		);
 	});
 
 	it.each([

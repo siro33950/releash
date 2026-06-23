@@ -121,7 +121,7 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 	});
 
 	it("reloads the selected Step detail when its workflow state changes", async () => {
-		responses.push(stepDetail(), stepDetail({ status: "waiting_approval" }));
+		responses.push(stepDetail(), stepDetail({ status: "waiting" }));
 		const { result } = renderHook(() =>
 			useWorkspaceWorkflowStepDetail({
 				worktreePath: "/repo",
@@ -144,7 +144,7 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 		});
 
 		await waitFor(() => {
-			expect(result.current.detail?.status).toBe("waiting_approval");
+			expect(result.current.detail?.status).toBe("waiting");
 		});
 		expect(mockInvoke).toHaveBeenCalledTimes(2);
 	});

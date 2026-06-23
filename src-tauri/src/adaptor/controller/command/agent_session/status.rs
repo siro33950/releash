@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use crate::usecase::agent_session::status::{AgentStatusCenter, SessionStatus, WorkspaceStatus};
+use crate::usecase::agent_session::status::{
+    AgentStatusCenter, SessionStatus, WorkflowStepStatusChange, WorkspaceStatus,
+};
 
 #[tauri::command]
 pub fn get_session_status(
@@ -28,4 +30,11 @@ pub fn list_workspace_statuses(center: State<'_, Arc<AgentStatusCenter>>) -> Vec
 #[tauri::command]
 pub fn list_session_statuses(center: State<'_, Arc<AgentStatusCenter>>) -> Vec<SessionStatus> {
     center.list_sessions()
+}
+
+#[tauri::command]
+pub fn list_workflow_step_statuses(
+    center: State<'_, Arc<AgentStatusCenter>>,
+) -> Vec<WorkflowStepStatusChange> {
+    center.list_workflow_step_statuses()
 }

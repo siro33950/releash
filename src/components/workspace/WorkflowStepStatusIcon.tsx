@@ -12,10 +12,11 @@ import type { WorkspaceStepStatus } from "@/types/workspace-tree";
 export const workflowStepIconClasses: Record<WorkspaceStepStatus, string> = {
 	queued: "text-muted-foreground",
 	running: "text-blue-600 dark:text-blue-300",
-	waiting_approval: "text-yellow-600 dark:text-yellow-300",
-	completed: "text-green-600 dark:text-green-300",
 	failed: "text-red-600 dark:text-red-300",
+	error: "text-destructive",
+	waiting: "text-yellow-600 dark:text-yellow-300",
 	aborted: "text-muted-foreground",
+	completed: "text-green-600 dark:text-green-300",
 };
 
 interface WorkflowStepStatusIconProps {
@@ -39,9 +40,9 @@ export function WorkflowStepStatusIcon({
 			<Loader2 className={cn(baseIconClassName, "animate-spin")} />
 		) : status === "completed" ? (
 			<CheckCircle2 className={baseIconClassName} />
-		) : status === "failed" ? (
+		) : status === "failed" || status === "error" ? (
 			<AlertTriangle className={baseIconClassName} />
-		) : status === "waiting_approval" ? (
+		) : status === "waiting" ? (
 			<Clock className={baseIconClassName} />
 		) : status === "aborted" ? (
 			<Ban className={baseIconClassName} />
@@ -53,5 +54,9 @@ export function WorkflowStepStatusIcon({
 		return icon;
 	}
 
-	return <span className={cn(containerClassName, colorClassName)}>{icon}</span>;
+	return (
+		<span className={cn(containerClassName, colorClassName)} title={status}>
+			{icon}
+		</span>
+	);
 }

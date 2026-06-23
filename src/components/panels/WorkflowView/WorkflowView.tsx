@@ -227,7 +227,8 @@ function WorkflowStepHeaderContent({
 }) {
 	const [rejectOpen, setRejectOpen] = useState(false);
 	const [rejectComment, setRejectComment] = useState("");
-	const canRespondApproval = step.status === "waiting_approval";
+	const canRespondApproval =
+		step.status === "waiting" && step.canReject != null;
 	const canReject = canRespondApproval && step.canReject !== false;
 	const canSubmitReject =
 		rejectComment.trim().length > 0 && pendingAction == null;
