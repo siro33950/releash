@@ -13,6 +13,7 @@ pub(crate) mod repo_paths_usecase;
 pub(crate) mod repository_dto;
 pub(crate) mod repository_error;
 pub(crate) mod repository_query_service;
+pub(crate) mod repository_state;
 pub(crate) mod repository_usecase;
 pub(crate) mod workspace_state;
 // #1034 staged workflow migration: controller wiring switches to this module in #1037.

@@ -22,14 +22,6 @@ export interface DiffTreeNode {
 	children: DiffTreeNode[];
 }
 
-interface StatusFileStat {
-	path: string;
-	index_additions: number;
-	index_deletions: number;
-	wt_additions: number;
-	wt_deletions: number;
-}
-
 export interface UseDiffFileTreeResult {
 	stagedTree: DiffTreeNode[];
 	changesTree: DiffTreeNode[];
@@ -38,6 +30,25 @@ export interface UseDiffFileTreeResult {
 	branchBaseTree: DiffTreeNode[];
 	branchBaseFileCount: number;
 	loading: boolean;
+}
+
+interface HeadDiffFileTreeSnapshot {
+	version: number;
+	stale: boolean;
+	loading: boolean;
+	limited: boolean;
+	combined_tree: DiffTreeNode[];
+	staged_tree: DiffTreeNode[];
+	changes_tree: DiffTreeNode[];
+	staged_file_count: number;
+	changes_file_count: number;
+}
+
+async function buildTreeFromEntries(
+	entries: DiffFileEntry[],
+): Promise<DiffTreeNode[]> {
+	if (entries.length === 0) return [];
+	return invoke<DiffTreeNode[]>("build_diff_file_tree", { entries });
 }
 
 function branchDiffToEntries(files: BranchDiffChangedFile[]): DiffFileEntry[] {
@@ -49,49 +60,13 @@ function branchDiffToEntries(files: BranchDiffChangedFile[]): DiffFileEntry[] {
 	}));
 }
 
-function stagedToIndexEntries(
-	stagedFiles: GitFileStatus[],
-	statsMap: Map<string, StatusFileStat>,
-): DiffFileEntry[] {
-	return stagedFiles.map((f) => {
-		const stat = statsMap.get(f.path);
-		return {
-			path: f.path,
-			status: f.index_status,
-			additions: stat?.index_additions ?? 0,
-			deletions: stat?.index_deletions ?? 0,
-		};
-	});
-}
-
-function changedToWtEntries(
-	changedFiles: GitFileStatus[],
-	statsMap: Map<string, StatusFileStat>,
-): DiffFileEntry[] {
-	return changedFiles.map((f) => {
-		const stat = statsMap.get(f.path);
-		return {
-			path: f.path,
-			status: f.worktree_status,
-			additions: stat?.wt_additions ?? 0,
-			deletions: stat?.wt_deletions ?? 0,
-		};
-	});
-}
-
-async function buildTreeFromEntries(
-	entries: DiffFileEntry[],
-): Promise<DiffTreeNode[]> {
-	if (entries.length === 0) return [];
-	return invoke<DiffTreeNode[]>("build_diff_file_tree", { entries });
-}
-
 export function useDiffFileTree(
 	diffBase: DiffBase,
 	branchDiffFiles: BranchDiffChangedFile[],
 	stagedFiles: GitFileStatus[],
 	changedFiles: GitFileStatus[],
 	rootPath?: string,
+	statusVersion?: number,
 ): UseDiffFileTreeResult {
 	const [stagedTree, setStagedTree] = useState<DiffTreeNode[]>([]);
 	const [changesTree, setChangesTree] = useState<DiffTreeNode[]>([]);
@@ -101,9 +76,11 @@ export function useDiffFileTree(
 	const [branchBaseFileCount, setBranchBaseFileCount] = useState(0);
 	const [loading, setLoading] = useState(false);
 	const requestIdRef = useRef(0);
+	const headStatusVersion = diffBase === "head" ? statusVersion : undefined;
 
 	const buildTree = useCallback(async () => {
 		const requestId = ++requestIdRef.current;
+		const requestedStatusVersion = headStatusVersion;
 
 		if (diffBase === "branch-base") {
 			// Branch Base mode: single tree
@@ -139,53 +116,54 @@ export function useDiffFileTree(
 			setBranchBaseTree([]);
 			setBranchBaseFileCount(0);
 
-			let statsMap = new Map<string, StatusFileStat>();
-			if (rootPath && (stagedFiles.length > 0 || changedFiles.length > 0)) {
-				try {
-					const stats = await invoke<StatusFileStat[]>(
-						"get_status_diff_stats",
-						{ repoPath: rootPath },
-					);
-					if (requestId !== requestIdRef.current) return;
-					statsMap = new Map(stats.map((s) => [s.path, s]));
-				} catch {
-					// Fall back to 0 stats
-				}
-				if (requestId !== requestIdRef.current) return;
-			}
-
-			const stagedEntries = stagedToIndexEntries(stagedFiles, statsMap);
-			const changesEntries = changedToWtEntries(changedFiles, statsMap);
-			setStagedFileCount(stagedEntries.length);
-			setChangesFileCount(changesEntries.length);
-
-			if (stagedEntries.length === 0 && changesEntries.length === 0) {
+			if (
+				!rootPath ||
+				(stagedFiles.length === 0 && changedFiles.length === 0)
+			) {
 				setStagedTree([]);
 				setChangesTree([]);
+				setStagedFileCount(0);
+				setChangesFileCount(0);
 				setLoading(false);
 				return;
 			}
 
 			setLoading(true);
 			try {
-				const [sTree, cTree] = await Promise.all([
-					buildTreeFromEntries(stagedEntries),
-					buildTreeFromEntries(changesEntries),
-				]);
+				const snapshot = await invoke<HeadDiffFileTreeSnapshot>(
+					"get_head_diff_file_tree_snapshot",
+					{ repoPath: rootPath },
+				);
 				if (requestId !== requestIdRef.current) return;
-				setStagedTree(sTree);
-				setChangesTree(cTree);
+				if (
+					requestedStatusVersion != null &&
+					snapshot.version < requestedStatusVersion
+				)
+					return;
+				setStagedTree(snapshot.staged_tree);
+				setChangesTree(snapshot.changes_tree);
+				setStagedFileCount(snapshot.staged_file_count);
+				setChangesFileCount(snapshot.changes_file_count);
 			} catch {
 				if (requestId !== requestIdRef.current) return;
 				setStagedTree([]);
 				setChangesTree([]);
+				setStagedFileCount(0);
+				setChangesFileCount(0);
 			} finally {
 				if (requestId === requestIdRef.current) {
 					setLoading(false);
 				}
 			}
 		}
-	}, [diffBase, branchDiffFiles, stagedFiles, changedFiles, rootPath]);
+	}, [
+		diffBase,
+		branchDiffFiles,
+		stagedFiles,
+		changedFiles,
+		rootPath,
+		headStatusVersion,
+	]);
 
 	useEffect(() => {
 		buildTree();

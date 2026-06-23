@@ -124,25 +124,17 @@ describe("useDiffFileTree", () => {
 			},
 		];
 
-		mockInvoke
-			.mockResolvedValueOnce([
-				{
-					path: "a.ts",
-					index_additions: 10,
-					index_deletions: 3,
-					wt_additions: 1,
-					wt_deletions: 0,
-				},
-				{
-					path: "b.ts",
-					index_additions: 0,
-					index_deletions: 0,
-					wt_additions: 1,
-					wt_deletions: 0,
-				},
-			]) // get_status_diff_stats
-			.mockResolvedValueOnce(mockStagedTree) // build_diff_file_tree for staged
-			.mockResolvedValueOnce(mockChangesTree); // build_diff_file_tree for changes
+		mockInvoke.mockResolvedValueOnce({
+			version: 7,
+			stale: false,
+			loading: false,
+			limited: false,
+			combined_tree: [...mockStagedTree, ...mockChangesTree],
+			staged_tree: mockStagedTree,
+			changes_tree: mockChangesTree,
+			staged_file_count: 1,
+			changes_file_count: 1,
+		});
 
 		const staged: GitFileStatus[] = [
 			{ path: "a.ts", index_status: "modified", worktree_status: "none" },
@@ -160,9 +152,12 @@ describe("useDiffFileTree", () => {
 			expect(result.current.changesTree).toEqual(mockChangesTree);
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith("get_status_diff_stats", {
-			repoPath: "/repo",
-		});
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"get_head_diff_file_tree_snapshot",
+			{
+				repoPath: "/repo",
+			},
+		);
 		expect(result.current.stagedFileCount).toBe(1);
 		expect(result.current.changesFileCount).toBe(1);
 		unmount();
@@ -182,11 +177,17 @@ describe("useDiffFileTree", () => {
 			},
 		];
 
-		// get_status_diff_stats, then build_diff_file_tree for changes only
-		// (staged entries are empty so buildTreeFromEntries returns [] without invoking)
-		mockInvoke
-			.mockResolvedValueOnce([]) // get_status_diff_stats returns empty
-			.mockResolvedValueOnce(mockTree); // build_diff_file_tree for changes
+		mockInvoke.mockResolvedValueOnce({
+			version: 1,
+			stale: false,
+			loading: false,
+			limited: false,
+			combined_tree: mockTree,
+			staged_tree: [],
+			changes_tree: mockTree,
+			staged_file_count: 0,
+			changes_file_count: 1,
+		});
 
 		const changed: GitFileStatus[] = [
 			{ path: "README.md", index_status: "none", worktree_status: "modified" },
@@ -206,56 +207,14 @@ describe("useDiffFileTree", () => {
 			expect(result.current.changesTree).toEqual(mockTree);
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith("get_status_diff_stats", {
-			repoPath: "/repo",
-		});
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"get_head_diff_file_tree_snapshot",
+			{
+				repoPath: "/repo",
+			},
+		);
 		expect(result.current.stagedFileCount).toBe(0);
 		expect(result.current.changesFileCount).toBe(1);
-		unmount();
-	});
-
-	it("head mode merges wt stats from get_status_diff_stats for changes", async () => {
-		const mockTree: DiffTreeNode[] = [];
-		// get_status_diff_stats, then build_diff_file_tree for changes only
-		// (staged entries are empty so buildTreeFromEntries returns [] without invoking)
-		mockInvoke
-			.mockResolvedValueOnce([
-				{
-					path: "file.ts",
-					index_additions: 0,
-					index_deletions: 0,
-					wt_additions: 5,
-					wt_deletions: 2,
-				},
-			])
-			.mockResolvedValueOnce(mockTree); // changes tree
-
-		const changed: GitFileStatus[] = [
-			{ path: "file.ts", index_status: "none", worktree_status: "modified" },
-		];
-
-		const { unmount } = renderHook(() =>
-			useDiffFileTree(
-				"head",
-				EMPTY_BRANCH_FILES,
-				EMPTY_STAGED,
-				changed,
-				"/repo",
-			),
-		);
-
-		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith("build_diff_file_tree", {
-				entries: [
-					{
-						path: "file.ts",
-						status: "modified",
-						additions: 5,
-						deletions: 2,
-					},
-				],
-			});
-		});
 		unmount();
 	});
 
@@ -273,19 +232,17 @@ describe("useDiffFileTree", () => {
 			},
 		];
 
-		// get_status_diff_stats, then build_diff_file_tree for staged only
-		// (changes entries are empty so buildTreeFromEntries returns [] without invoking)
-		mockInvoke
-			.mockResolvedValueOnce([
-				{
-					path: "a.ts",
-					index_additions: 3,
-					index_deletions: 1,
-					wt_additions: 0,
-					wt_deletions: 0,
-				},
-			]) // get_status_diff_stats
-			.mockResolvedValueOnce(mockStagedTree); // build_diff_file_tree for staged
+		mockInvoke.mockResolvedValueOnce({
+			version: 2,
+			stale: false,
+			loading: false,
+			limited: false,
+			combined_tree: mockStagedTree,
+			staged_tree: mockStagedTree,
+			changes_tree: [],
+			staged_file_count: 1,
+			changes_file_count: 0,
+		});
 
 		const staged: GitFileStatus[] = [
 			{ path: "a.ts", index_status: "modified", worktree_status: "none" },
@@ -307,6 +264,93 @@ describe("useDiffFileTree", () => {
 
 		expect(result.current.stagedFileCount).toBe(1);
 		expect(result.current.changesFileCount).toBe(0);
+		unmount();
+	});
+
+	it("head mode refetches when status version changes without status list changes", async () => {
+		const firstTree: DiffTreeNode[] = [
+			{
+				id: "file:a.ts",
+				name: "a.ts",
+				path: "a.ts",
+				node_type: "file",
+				status: "modified",
+				additions: 1,
+				deletions: 0,
+				children: [],
+			},
+		];
+		const secondTree: DiffTreeNode[] = [
+			{
+				id: "file:a.ts",
+				name: "a.ts",
+				path: "a.ts",
+				node_type: "file",
+				status: "modified",
+				additions: 2,
+				deletions: 1,
+				children: [],
+			},
+		];
+		mockInvoke
+			.mockResolvedValueOnce({
+				version: 1,
+				stale: false,
+				loading: false,
+				limited: false,
+				combined_tree: firstTree,
+				staged_tree: [],
+				changes_tree: firstTree,
+				staged_file_count: 0,
+				changes_file_count: 1,
+			})
+			.mockResolvedValueOnce({
+				version: 2,
+				stale: false,
+				loading: false,
+				limited: false,
+				combined_tree: secondTree,
+				staged_tree: [],
+				changes_tree: secondTree,
+				staged_file_count: 0,
+				changes_file_count: 1,
+			});
+
+		const changed: GitFileStatus[] = [
+			{ path: "a.ts", index_status: "none", worktree_status: "modified" },
+		];
+
+		const { result, rerender, unmount } = renderHook(
+			({ statusVersion }: { statusVersion: number }) =>
+				useDiffFileTree(
+					"head",
+					EMPTY_BRANCH_FILES,
+					EMPTY_STAGED,
+					changed,
+					"/repo",
+					statusVersion,
+				),
+			{ initialProps: { statusVersion: 1 } },
+		);
+
+		await waitFor(() => {
+			expect(result.current.changesTree).toEqual(firstTree);
+		});
+
+		rerender({ statusVersion: 2 });
+
+		await waitFor(() => {
+			expect(result.current.changesTree).toEqual(secondTree);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledTimes(2);
+		expect(mockInvoke).toHaveBeenNthCalledWith(
+			2,
+			"get_head_diff_file_tree_snapshot",
+			{
+				repoPath: "/repo",
+			},
+		);
 		unmount();
 	});
 

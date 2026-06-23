@@ -950,9 +950,14 @@ mod tests {
             "std::net::",
             "std::process::",
             "use std::fs",
+            "canonicalize(",
         ];
         assert_no_forbidden_production_patterns("domain/workflow", &external_dependency_patterns);
         assert_no_forbidden_production_patterns("usecase/workflow", &external_dependency_patterns);
+        assert_no_forbidden_production_patterns(
+            "usecase/repository_state",
+            &external_dependency_patterns,
+        );
     }
 
     #[test]
