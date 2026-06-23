@@ -14,7 +14,8 @@ use super::ports::{
     PendingRuntimeCommandPayload, WorkflowAbortRunGateway, WorkflowApprovalChatGateway,
     WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeCommandGateway,
     WorkflowRuntimeStateGateway, WorkflowStartRunGateway, WorkflowSubmitOutputGateway,
-    WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnTokenUsage,
+    WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnCompleteNotification,
+    WorkflowTurnTokenUsage,
 };
 use super::turn_complete::WorkflowTurnCompleteUsecase;
 
@@ -71,7 +72,7 @@ impl WorkflowRuntimeUsecase {
 
     pub async fn complete_turn(
         &self,
-        command: WorkflowTurnCompleteCommand,
+        command: WorkflowTurnCompleteNotification,
     ) -> Result<(), WorkflowError> {
         self.turn_complete.complete_turn(command).await
     }
@@ -295,7 +296,7 @@ mod tests {
             .await;
         assert_eq!(pending, PendingRuntimeCommandOutcome::Accepted);
         usecase
-            .complete_turn(WorkflowTurnCompleteCommand {
+            .complete_turn(WorkflowTurnCompleteNotification {
                 chat_session_id: "chat".to_string(),
                 exit_code: 0,
                 final_text_parts: vec!["ok".to_string()],
@@ -303,6 +304,7 @@ mod tests {
                     input_tokens: 1,
                     output_tokens: 2,
                 }),
+                interrupted: false,
             })
             .await
             .unwrap();
@@ -343,11 +345,12 @@ mod tests {
         let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
 
         usecase
-            .complete_turn(WorkflowTurnCompleteCommand {
+            .complete_turn(WorkflowTurnCompleteNotification {
                 chat_session_id: "chat".to_string(),
                 exit_code: 0,
                 final_text_parts: Vec::new(),
                 token_usage: None,
+                interrupted: false,
             })
             .await
             .unwrap();

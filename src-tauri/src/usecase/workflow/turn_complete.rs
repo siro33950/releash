@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use crate::domain::workflow::WorkflowError;
 use crate::usecase::workflow::command::WorkflowRuntimeCommandPreflight;
-use crate::usecase::workflow::ports::{WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway};
+use crate::usecase::workflow::ports::{
+    WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnCompleteNotification,
+};
 
 #[derive(Clone)]
 pub struct WorkflowTurnCompleteUsecase {
@@ -29,7 +31,7 @@ impl WorkflowTurnCompleteUsecase {
 
     pub async fn complete_turn(
         &self,
-        command: WorkflowTurnCompleteCommand,
+        command: WorkflowTurnCompleteNotification,
     ) -> Result<(), WorkflowError> {
         self.preflight.validate_turn_complete(&command)?;
         if !self
@@ -39,8 +41,18 @@ impl WorkflowTurnCompleteUsecase {
         {
             return Ok(());
         }
+        if command.interrupted {
+            return Ok(());
+        }
         self.runtime.pickup_pending_submit_outputs().await;
-        self.runtime.complete_turn(command).await
+        self.runtime
+            .complete_turn(WorkflowTurnCompleteCommand {
+                chat_session_id: command.chat_session_id,
+                exit_code: command.exit_code,
+                final_text_parts: command.final_text_parts,
+                token_usage: command.token_usage,
+            })
+            .await
     }
 }
 
@@ -81,11 +93,12 @@ mod tests {
         let usecase = WorkflowTurnCompleteUsecase::new(gateway.clone());
 
         let err = usecase
-            .complete_turn(WorkflowTurnCompleteCommand {
+            .complete_turn(WorkflowTurnCompleteNotification {
                 chat_session_id: " ".to_string(),
                 exit_code: 0,
                 final_text_parts: Vec::new(),
                 token_usage: None,
+                interrupted: false,
             })
             .await
             .unwrap_err();
@@ -100,11 +113,12 @@ mod tests {
         let usecase = WorkflowTurnCompleteUsecase::new(gateway.clone());
 
         usecase
-            .complete_turn(WorkflowTurnCompleteCommand {
+            .complete_turn(WorkflowTurnCompleteNotification {
                 chat_session_id: "chat".to_string(),
                 exit_code: 0,
                 final_text_parts: Vec::new(),
                 token_usage: None,
+                interrupted: false,
             })
             .await
             .unwrap();
@@ -121,11 +135,12 @@ mod tests {
         let usecase = WorkflowTurnCompleteUsecase::new(gateway.clone());
 
         usecase
-            .complete_turn(WorkflowTurnCompleteCommand {
+            .complete_turn(WorkflowTurnCompleteNotification {
                 chat_session_id: "chat".to_string(),
                 exit_code: 0,
                 final_text_parts: vec!["done".to_string()],
                 token_usage: None,
+                interrupted: false,
             })
             .await
             .unwrap();
@@ -134,5 +149,27 @@ mod tests {
             gateway.calls.lock().unwrap().as_slice(),
             ["is_running", "pickup_pending", "complete_turn"]
         );
+    }
+
+    #[tokio::test]
+    async fn interrupted_turn_skips_normal_completion() {
+        let gateway = Arc::new(FakeRuntimeGateway {
+            session_running: true,
+            ..Default::default()
+        });
+        let usecase = WorkflowTurnCompleteUsecase::new(gateway.clone());
+
+        usecase
+            .complete_turn(WorkflowTurnCompleteNotification {
+                chat_session_id: "chat".to_string(),
+                exit_code: 0,
+                final_text_parts: Vec::new(),
+                token_usage: None,
+                interrupted: true,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(gateway.calls.lock().unwrap().as_slice(), ["is_running"]);
     }
 }

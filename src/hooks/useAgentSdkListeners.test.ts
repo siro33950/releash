@@ -337,6 +337,53 @@ describe("agent-session-state-changed event", () => {
 		});
 	});
 
+	it("keeps interrupted idle events distinct from completed turns", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		setViewable(refs, "session-1");
+
+		renderHook(() => useAgentSdkListeners(refs));
+
+		for (const { resolve } of listenResolvers) {
+			resolve(vi.fn());
+		}
+
+		const cb = listenCallbacks.get("agent-session-state-changed");
+		expect(cb).toBeDefined();
+
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				turn_phase: "idle",
+				exit_code: 0,
+				completed_at: 1234,
+				interrupted: true,
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_TURN_PHASE",
+			sessionId: "session-1",
+			turnPhase: "idle",
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_PENDING_PERMISSION",
+			sessionId: "session-1",
+			request: null,
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "UPDATE_SESSION_STATE",
+			sessionId: "session-1",
+			state: "idle",
+		});
+		expect(refs.dispatch).not.toHaveBeenCalledWith({
+			type: "MARK_AGENT_TURN_COMPLETED",
+			sessionId: "session-1",
+			completedAt: 1234,
+		});
+	});
+
 	it("dispatches SET_PENDING_PERMISSION when permission_request is received", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();

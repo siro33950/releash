@@ -47,6 +47,7 @@ interface SessionStateChanged {
 	turn_phase: TurnPhase;
 	exit_code: number | null;
 	completed_at?: number | null;
+	interrupted?: boolean;
 }
 
 interface StreamingMessageUpdated {
@@ -454,8 +455,13 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		let cancelled = false;
 
 		listen<SessionStateChanged>("agent-session-state-changed", (event) => {
-			const { chat_session_id, turn_phase, exit_code, completed_at } =
-				event.payload;
+			const {
+				chat_session_id,
+				turn_phase,
+				exit_code,
+				completed_at,
+				interrupted,
+			} = event.payload;
 
 			dispatch({
 				type: "SET_TURN_PHASE",
@@ -465,7 +471,11 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 
 			// Turn completed (idle with exit_code): update session state and clear permissions
 			if (turn_phase === "idle" && exit_code != null) {
-				if (typeof completed_at === "number" && Number.isFinite(completed_at)) {
+				if (
+					!interrupted &&
+					typeof completed_at === "number" &&
+					Number.isFinite(completed_at)
+				) {
 					dispatch({
 						type: "MARK_AGENT_TURN_COMPLETED",
 						sessionId: chat_session_id,
@@ -479,7 +489,11 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 					request: null,
 				});
 
-				const newState: SessionState = exit_code === 0 ? "done" : "error";
+				const newState: SessionState = interrupted
+					? "idle"
+					: exit_code === 0
+						? "done"
+						: "error";
 				if (isViewable(chat_session_id, viewableRegistry)) {
 					dispatch({
 						type: "UPDATE_SESSION_STATE",

@@ -44,3 +44,74 @@ export function shouldResolvePromptForCurrentQuery(state) {
 		state.hasPendingPromptResolver && !state.completedResultForCurrentQuery
 	);
 }
+
+/**
+ * Build a bridge turn completion message. The interrupted flag is explicit so
+ * Rust does not need to infer user interrupts from exit codes.
+ *
+ * @param {{ sessionId?: string|null, exitCode: number, interrupted?: boolean, turnToken?: string|null }} state
+ * @returns {object}
+ */
+export function buildTurnCompleteMessage(state) {
+	const message = {
+		type: "turn_complete",
+		session_id: state.sessionId || null,
+		exit_code: state.exitCode,
+	};
+	if (state.interrupted) {
+		message.interrupted = true;
+	}
+	if (state.turnToken) {
+		message.turn_token = state.turnToken;
+	}
+	return message;
+}
+
+/**
+ * Build the completion state for an SDK result message. If the turn was already
+ * aborted, interruption wins over a successful result so the interrupted SDK
+ * session never becomes the clean resume point.
+ *
+ * @param {{ sessionId?: string|null, currentSessionId?: string|null, hasErrors: boolean, wasAborted: boolean, turnToken?: string|null }} state
+ * @returns {{ message: object, exitCode: number, completedSessionIdForResume: string|null }}
+ */
+export function buildResultTurnCompletion(state) {
+	const exitCode = state.wasAborted ? 0 : state.hasErrors ? 1 : 0;
+	const completedSessionIdForResume =
+		!state.wasAborted && exitCode === 0
+			? state.sessionId || state.currentSessionId || null
+			: null;
+	return {
+		message: buildTurnCompleteMessage({
+			sessionId: state.sessionId || null,
+			exitCode,
+			interrupted: state.wasAborted,
+			turnToken: state.turnToken,
+		}),
+		exitCode,
+		completedSessionIdForResume,
+	};
+}
+
+/**
+ * Abort rolls the SDK resume point back to the last cleanly completed result.
+ * If no clean result exists, the next query must start a fresh SDK session.
+ *
+ * @param {{ lastResultSessionId?: string|null }} state
+ * @returns {string|null}
+ */
+export function rollbackResumeSessionIdAfterInterrupt(state) {
+	return state.lastResultSessionId || null;
+}
+
+/**
+ * Echo the Rust-issued turn token on SDK events generated for that turn.
+ *
+ * @param {object} message
+ * @param {string|null|undefined} turnToken
+ * @returns {object}
+ */
+export function withTurnToken(message, turnToken) {
+	if (!turnToken) return message;
+	return { ...message, turn_token: turnToken };
+}
