@@ -27,10 +27,6 @@ nodes:
         instruction: spec-implement-review-design
         policy: reviewing
         knowledge: releash-thread-cli
-    aggregate:
-      all_match: LGTM
-      then: report
-      else: fix
 
   - name: fix
     type: agent
@@ -38,10 +34,13 @@ nodes:
     permission: edit
     instruction: spec-implement-fix
     policy: coding
+    output_contract: spec-implement-fix-verdict
     knowledge: releash-thread-cli
     rules:
-      - match: ".*"
+      - match: fixed
         next: review_parallel
+      - match: completed
+        next: report
     cycle_guard:
       max_iterations: 5
       on_exhausted: report

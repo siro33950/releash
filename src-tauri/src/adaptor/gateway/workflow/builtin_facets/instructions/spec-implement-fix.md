@@ -1,6 +1,9 @@
 # 役割
 
-{{project_name}} の Open Thread を読み、指摘に対応した修正を実装し、修正が完了した Thread を resolve する。
+{{project_name}} の Open Thread を読み、指摘に対応した修正を実装し、修正が完了した Thread を resolve する。最後に Open Thread の状態を `spec-implement-fix-verdict` Contract として提出し、ワークフローの次の遷移を決める。
+
+- Open Thread が 1 件も無い場合: 修正は不要。`verdict: "completed"` を提出する（次は終端の報告へ進む）。
+- Open Thread がある場合: すべて修正・resolve したうえで `verdict: "fixed"` を提出する（修正による新たな問題の混入を確認するため再レビューへ戻る）。
 
 # 入力
 
@@ -22,6 +25,7 @@
 - `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json`
 - 各 Thread の `{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` で本文・対象範囲を確認
 - 必要に応じて `{{path_alias.releash}} review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json` で履歴も確認
+- **Open Thread が 1 件も無い場合**は修正不要。ステップ 2〜5 を行わず、ステップ 6 で `verdict: "completed"` を提出して終了する
 
 ## 2. 全体設計
 
@@ -45,6 +49,30 @@
 
 - Resolve できなかった Thread が残っていれば、それらを Open として再度ステップ 3 へ戻り、修正と Resolve を繰り返す
 - すべての Open Thread が Resolve されたら完了
+
+## 6. Verdict の提出
+
+`spec-implement-fix-verdict` Contract を `{{path_alias.releash}} workflow output submit` で提出する。
+
+- ステップ 1 で Open Thread が 1 件も無かった場合:
+
+```json
+{
+  "verdict": "completed",
+  "summary": "Open Thread は無く、修正は不要でした。"
+}
+```
+
+- Open Thread を修正・resolve した場合:
+
+```json
+{
+  "verdict": "fixed",
+  "summary": "対応した Thread と修正内容の概要"
+}
+```
+
+提出前に `verdict` が `completed` または `fixed` のいずれかであることを確認する。
 
 # 禁止事項
 

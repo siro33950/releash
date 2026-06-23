@@ -29,7 +29,7 @@
 2. **ループ検知**：投稿先ファイルに紐づく既存 Thread を全件確認する（`releash review list` / `releash review get` / `releash review history` で Resolved 含む全件取得）。同一指摘・競合指摘がないか点検する
 3. 下記「検証手順」を順次実施する
 4. 問題と判断したものを 1 件ずつ Thread として投稿する。手順 2 で既に同一・競合の Thread が存在するものは新規投稿しない
-5. 全件のレビューが終わったら、出力末尾に必ず `LGTM`（指摘なし）または `NEEDS_FIX`（指摘あり）のどちらかを出力する
+5. 全件のレビューが終わったら終了する。指摘の有無は投稿した Thread が表す（後続の fix ステップが Open Thread の有無で判断するため、終端文字列の出力は不要）
 
 # 検証手順
 
@@ -58,7 +58,7 @@
 
 - 投稿 subcommand: `releash review create`
 - content フォーマット: `[design][scope:<diff|touched>] <問題の説明と修正提案>`
-- 出力末尾の終端文字列: `LGTM`（指摘なし）または `NEEDS_FIX`（指摘あり）のどちらかを必ず出力する
+- 指摘は Thread の投稿のみで表現する。終端文字列（`LGTM` / `NEEDS_FIX`）は出力しない
 
 # 禁止事項
 

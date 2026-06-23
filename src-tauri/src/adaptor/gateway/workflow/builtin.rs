@@ -312,6 +312,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         content: include_str!("builtin_facets/contracts/review-fix-tasks.md"),
     },
     BuiltinFacetEntry {
+        kind: FacetKind::Contract,
+        key: "spec-implement-fix-verdict",
+        content: include_str!("builtin_facets/contracts/spec-implement-fix-verdict.md"),
+    },
+    BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "review-acceptance",
         content: include_str!("builtin_facets/instructions/review-acceptance.md"),
