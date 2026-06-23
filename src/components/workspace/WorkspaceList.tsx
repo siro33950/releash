@@ -852,6 +852,13 @@ function WorktreeTreeItem({
 						>
 							{treeError}
 						</div>
+					) : displayNodes.length === 0 ? (
+						<div
+							className="truncate py-1 text-xs text-muted-foreground"
+							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
+						>
+							No sessions or workflows
+						</div>
 					) : (
 						displayNodes.map((node) =>
 							node.kind === "workflow" ? (

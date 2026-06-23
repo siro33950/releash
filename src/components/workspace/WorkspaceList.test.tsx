@@ -1,7 +1,21 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorktreeBranch } from "@/types/git";
+import type {
+	WorkspaceSessionHistoryItem,
+	WorkspaceTreeNode,
+	WorkspaceWorkflowHistoryItem,
+} from "@/types/workspace-tree";
 import { WorkspaceList } from "./WorkspaceList";
+
+type MockWorkspaceTreeState = {
+	nodes: WorkspaceTreeNode[];
+	closedSessions?: WorkspaceSessionHistoryItem[];
+	workflowHistory?: WorkspaceWorkflowHistoryItem[];
+	loading?: boolean;
+	error?: string | null;
+};
 
 const mocks = vi.hoisted(() => ({
 	invoke: vi.fn().mockResolvedValue([]),
@@ -12,6 +26,8 @@ const mocks = vi.hoisted(() => ({
 	restoreSession: vi.fn().mockResolvedValue(undefined),
 	refreshTree: vi.fn().mockResolvedValue(undefined),
 	refreshWorktrees: vi.fn().mockResolvedValue(undefined),
+	treeStateOverrides: new Map<string, MockWorkspaceTreeState>(),
+	worktreeBranches: [] as WorktreeBranch[],
 }));
 
 vi.mock("react-resizable-panels", () => {
@@ -54,6 +70,17 @@ vi.mock("@/hooks/useWorkflowConfig", () => ({
 }));
 vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 	useWorkspaceTreeNodes: (worktreePath: string) => {
+		const override = mocks.treeStateOverrides.get(worktreePath);
+		if (override) {
+			return {
+				nodes: override.nodes,
+				closedSessions: override.closedSessions ?? [],
+				workflowHistory: override.workflowHistory ?? [],
+				loading: override.loading ?? false,
+				error: override.error ?? null,
+				refresh: mocks.refreshTree,
+			};
+		}
 		if (worktreePath !== "/repo/wt") {
 			return {
 				nodes: [],
@@ -204,33 +231,7 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 }));
 vi.mock("@/hooks/useWorktreeList", () => ({
 	useWorktreeList: () => ({
-		branches: [
-			{
-				name: "main",
-				is_main_worktree: true,
-				worktree_path: "/repo/main",
-				dirty_count: 0,
-				is_merged: false,
-				ahead: 0,
-				behind: 0,
-				has_upstream: false,
-				base_ahead: 0,
-			},
-			{
-				name: "feature",
-				is_main_worktree: false,
-				worktree_path: "/repo/wt",
-				dirty_count: 0,
-				is_merged: false,
-				has_pr: true,
-				pr_number: 12,
-				pr_url: "https://example.test/pr/12",
-				ahead: 0,
-				behind: 0,
-				has_upstream: false,
-				base_ahead: 0,
-			},
-		],
+		branches: mocks.worktreeBranches,
 		loading: false,
 		refresh: mocks.refreshWorktrees,
 	}),
@@ -250,11 +251,56 @@ vi.mock("@/hooks/useWorktreeStepStatuses", () => ({
 	}),
 }));
 
+function makeBranch(overrides: Partial<WorktreeBranch>): WorktreeBranch {
+	return {
+		name: "feature",
+		is_main_worktree: false,
+		worktree_path: "/repo/wt",
+		dirty_count: 0,
+		is_merged: false,
+		ahead: 0,
+		behind: 0,
+		has_upstream: false,
+		base_ahead: 0,
+		...overrides,
+	};
+}
+
+const defaultWorktreeBranches = [
+	makeBranch({
+		name: "main",
+		is_main_worktree: true,
+		worktree_path: "/repo/main",
+	}),
+	makeBranch({
+		name: "feature",
+		is_main_worktree: false,
+		worktree_path: "/repo/wt",
+		has_pr: true,
+		pr_number: 12,
+		pr_url: "https://example.test/pr/12",
+	}),
+];
+
+function setSingleWorktree(
+	worktreePath: string,
+	state: MockWorkspaceTreeState,
+	name = "empty",
+) {
+	mocks.worktreeBranches = [
+		makeBranch({
+			name,
+			worktree_path: worktreePath,
+		}),
+	];
+	mocks.treeStateOverrides.set(worktreePath, state);
+}
+
 function renderWorkspaceList(
 	props: Partial<React.ComponentProps<typeof WorkspaceList>> = {},
 ) {
 	const onSelectWorktree = vi.fn();
-	render(
+	const renderResult = render(
 		<WorkspaceList
 			repoPaths={["/repo"]}
 			selectedRootPath="/repo/wt"
@@ -265,13 +311,26 @@ function renderWorkspaceList(
 			{...props}
 		/>,
 	);
-	return { onSelectWorktree };
+	return { onSelectWorktree, ...renderResult };
 }
 
 beforeEach(() => {
-	for (const mock of Object.values(mocks)) {
+	for (const mock of [
+		mocks.invoke,
+		mocks.emit,
+		mocks.openUrl,
+		mocks.archiveSession,
+		mocks.closeSession,
+		mocks.restoreSession,
+		mocks.refreshTree,
+		mocks.refreshWorktrees,
+	]) {
 		mock.mockClear();
 	}
+	mocks.treeStateOverrides.clear();
+	mocks.worktreeBranches = defaultWorktreeBranches.map((branch) => ({
+		...branch,
+	}));
 	mocks.invoke.mockResolvedValue([]);
 });
 
@@ -307,6 +366,98 @@ describe("WorkspaceList", () => {
 
 		expect(screen.queryByText("Direct session")).not.toBeInTheDocument();
 		expect(onSelectWorktree).not.toHaveBeenCalled();
+	});
+
+	it("shows an empty placeholder for an expanded Worktree with no sessions or workflows", () => {
+		setSingleWorktree("/repo/empty", {
+			nodes: [],
+			loading: false,
+			error: null,
+		});
+		renderWorkspaceList({ selectedRootPath: "/repo/empty" });
+
+		const placeholder = screen.getByText("No sessions or workflows");
+		expect(placeholder).toBeInTheDocument();
+		expect(placeholder).toHaveClass("text-muted-foreground");
+		expect(placeholder).toHaveStyle({ paddingLeft: "26px" });
+		expect(screen.queryByText("Direct session")).not.toBeInTheDocument();
+		expect(screen.queryByText("release")).not.toBeInTheDocument();
+	});
+
+	it("does not show the empty placeholder when the Worktree has nodes", () => {
+		mocks.worktreeBranches = [
+			makeBranch({
+				name: "feature",
+				worktree_path: "/repo/wt",
+				has_pr: true,
+				pr_number: 12,
+				pr_url: "https://example.test/pr/12",
+			}),
+		];
+		renderWorkspaceList();
+
+		expect(screen.getByText("Direct session")).toBeInTheDocument();
+		expect(screen.getByText("release")).toBeInTheDocument();
+		expect(
+			screen.queryByText("No sessions or workflows"),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps the empty placeholder hidden while Worktree nodes are loading", () => {
+		setSingleWorktree(
+			"/repo/loading",
+			{
+				nodes: [],
+				loading: true,
+				error: null,
+			},
+			"loading",
+		);
+		const { container } = renderWorkspaceList({
+			selectedRootPath: "/repo/loading",
+		});
+
+		expect(container.querySelector(".animate-spin")).toBeInTheDocument();
+		expect(
+			screen.queryByText("No sessions or workflows"),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps the empty placeholder hidden when Worktree node loading fails with no nodes", () => {
+		setSingleWorktree(
+			"/repo/error",
+			{
+				nodes: [],
+				loading: false,
+				error: "Failed to load workspace tree",
+			},
+			"error",
+		);
+		renderWorkspaceList({ selectedRootPath: "/repo/error" });
+
+		expect(
+			screen.getByText("Failed to load workspace tree"),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText("No sessions or workflows"),
+		).not.toBeInTheDocument();
+	});
+
+	it("does not render the empty placeholder for a collapsed Worktree", async () => {
+		const user = userEvent.setup();
+		setSingleWorktree("/repo/empty", {
+			nodes: [],
+			loading: false,
+			error: null,
+		});
+		renderWorkspaceList({ selectedRootPath: "/repo/empty" });
+
+		expect(screen.getByText("No sessions or workflows")).toBeInTheDocument();
+		await user.click(screen.getByTestId("worktree-item-empty"));
+
+		expect(
+			screen.queryByText("No sessions or workflows"),
+		).not.toBeInTheDocument();
 	});
 
 	it("emits an agentSession selection when a Session row is clicked", async () => {
