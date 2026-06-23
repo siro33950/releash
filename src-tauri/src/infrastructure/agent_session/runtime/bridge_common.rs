@@ -68,27 +68,6 @@ pub enum TurnPhase {
     WaitingPermission,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum TurnOrigin {
-    #[default]
-    Desktop,
-    Headless,
-}
-
-impl TurnOrigin {
-    fn permission_timeout_applies(self) -> bool {
-        matches!(self, Self::Headless)
-    }
-}
-
-fn turn_origin_for_session(workflow_step_session: bool) -> TurnOrigin {
-    if workflow_step_session {
-        TurnOrigin::Headless
-    } else {
-        TurnOrigin::Desktop
-    }
-}
-
 /// A message queued while the agent is streaming, consumed on turn_complete.
 pub struct PendingMessage {
     pub id: String,
@@ -167,10 +146,8 @@ pub struct AgentProcess {
     streaming_timer_active: bool,
     /// Last meaningful SDK/bridge progress observed for the current turn.
     pub last_progress_at: Option<Instant>,
-    /// Timestamp of the current turn phase; used for permission wait timeout.
+    /// Timestamp of the current turn phase; used as the streaming stale fallback.
     pub turn_phase_since: Instant,
-    /// Origin of the current turn. Headless turns apply permission timeout.
-    turn_origin: TurnOrigin,
     /// Monotonic per-process turn sequence. Watchdogs capture it to avoid
     /// acting on a later turn that reused the same bridge process.
     pub turn_seq: u64,
@@ -215,7 +192,6 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         streaming_timer_active: false,
         last_progress_at: None,
         turn_phase_since: Instant::now(),
-        turn_origin: TurnOrigin::Desktop,
         turn_seq: 0,
         turn_watchdog_active: false,
     }
@@ -441,12 +417,9 @@ const PERSIST_INTERVAL_MS: u64 = 1000;
 const BRIDGE_EOF_ERROR_MESSAGE: &str = "Bridge process exited unexpectedly.";
 pub(crate) const STALE_EXIT_CODE: i64 = 124;
 const STALE_TIMEOUT_SECS: u64 = 180;
-const PERMISSION_TIMEOUT_SECS: u64 = 300;
 const STALE_RECOVERY_GRACE_SECS: u64 = 10;
 const WATCHDOG_TICK_SECS: u64 = 5;
 const STALE_ERROR_MESSAGE: &str = "Claude 応答が停止したため中断しました。もう一度お試しください。";
-const PERMISSION_TIMEOUT_ERROR_MESSAGE: &str =
-    "権限承認の待機がタイムアウトしたため中断しました。もう一度お試しください。";
 
 /// Aggregation interval for `agent-streaming-updated` / `AgentStreamSync`.
 /// Roughly 30fps — balances UI smoothness against re-render cost.
@@ -465,21 +438,18 @@ const STREAMING_PENDING_BYTE_LIMIT: usize = 256 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TurnLivenessTimeout {
     Stale,
-    PermissionTimeout,
 }
 
 impl TurnLivenessTimeout {
     fn user_message(self) -> &'static str {
         match self {
             Self::Stale => STALE_ERROR_MESSAGE,
-            Self::PermissionTimeout => PERMISSION_TIMEOUT_ERROR_MESSAGE,
         }
     }
 }
 
 fn evaluate_turn_liveness(
     turn_phase: TurnPhase,
-    turn_origin: TurnOrigin,
     last_progress_at: Option<Instant>,
     turn_phase_since: Instant,
     now: Instant,
@@ -489,10 +459,6 @@ fn evaluate_turn_liveness(
             let base = last_progress_at.unwrap_or(turn_phase_since);
             (now.duration_since(base) > Duration::from_secs(STALE_TIMEOUT_SECS))
                 .then_some(TurnLivenessTimeout::Stale)
-        }
-        TurnPhase::WaitingPermission if turn_origin.permission_timeout_applies() => {
-            (now.duration_since(turn_phase_since) > Duration::from_secs(PERMISSION_TIMEOUT_SECS))
-                .then_some(TurnLivenessTimeout::PermissionTimeout)
         }
         TurnPhase::Idle | TurnPhase::WaitingPermission => None,
     }
@@ -599,10 +565,9 @@ impl AgentProcess {
         self.task_id_map.clear();
     }
 
-    fn begin_turn_liveness(&mut self, origin: TurnOrigin) {
+    fn begin_turn_liveness(&mut self) {
         let now = Instant::now();
         self.turn_seq = self.turn_seq.saturating_add(1);
-        self.turn_origin = origin;
         self.last_progress_at = Some(now);
         self.turn_phase_since = now;
     }
@@ -3484,7 +3449,6 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                 streaming_timer_active: false,
                 last_progress_at: None,
                 turn_phase_since: Instant::now(),
-                turn_origin: TurnOrigin::Desktop,
                 turn_seq: 0,
                 turn_watchdog_active: false,
             },
@@ -4095,7 +4059,6 @@ fn turn_watchdog_decision(
     }
     match evaluate_turn_liveness(
         proc.turn_phase,
-        proc.turn_origin,
         proc.last_progress_at,
         proc.turn_phase_since,
         now,
@@ -4920,7 +4883,36 @@ fn get_persisted_spawn_info<R: tauri::Runtime>(
     )
 }
 
-fn get_persisted_spawn_info_before_turn<R: tauri::Runtime>(
+fn require_session_meta_for_turn(
+    session_store: &SessionStore,
+    data_dir: &Path,
+    chat_session_id: &str,
+) -> Result<SessionMeta, String> {
+    session_store
+        .get_session_meta(data_dir, chat_session_id)?
+        .ok_or_else(|| format!("Session not found: {chat_session_id}"))
+}
+
+fn get_required_persisted_spawn_info_for_turn<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &SessionStore,
+    chat_session_id: &str,
+) -> Result<PersistedSpawnInfo, String> {
+    let data_dir = resolve_data_dir(app)?;
+    let registry =
+        app.try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>();
+    let meta = require_session_meta_for_turn(session_store, &data_dir, chat_session_id)?;
+    resolve_spawn_info_from_meta_or_full(
+        session_store,
+        &data_dir,
+        chat_session_id,
+        Some(meta),
+        registry.as_deref(),
+        None,
+    )
+}
+
+fn get_required_persisted_spawn_info_before_turn<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_store: &SessionStore,
     chat_session_id: &str,
@@ -4929,12 +4921,12 @@ fn get_persisted_spawn_info_before_turn<R: tauri::Runtime>(
     let data_dir = resolve_data_dir(app)?;
     let registry =
         app.try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>();
-    let meta = session_store.get_session_meta(&data_dir, chat_session_id)?;
+    let meta = require_session_meta_for_turn(session_store, &data_dir, chat_session_id)?;
     resolve_spawn_info_from_meta_or_full(
         session_store,
         &data_dir,
         chat_session_id,
-        meta,
+        Some(meta),
         registry.as_deref(),
         Some(streaming_agent_message_id),
     )
@@ -5458,20 +5450,6 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
     .await
 }
 
-/// Core logic for starting a new agent turn: spawn Bridge if needed, send prompt.
-/// Used by send_agent_message and pending message consumption.
-fn turn_origin_for_chat_session<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    session_store: &SessionStore,
-    chat_session_id: &str,
-) -> Result<TurnOrigin, String> {
-    let data_dir = resolve_data_dir(app)?;
-    let meta = session_store
-        .get_session_meta(&data_dir, chat_session_id)?
-        .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
-    Ok(turn_origin_for_session(meta.workflow_step_session))
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -5485,8 +5463,8 @@ pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
-    let origin = turn_origin_for_chat_session(app, session_store, chat_session_id)?;
-    let spawn_info = get_persisted_spawn_info(app, session_store, chat_session_id)?;
+    let spawn_info =
+        get_required_persisted_spawn_info_for_turn(app, session_store, chat_session_id)?;
     if spawn_info.backend_id == CODEX_BACKEND_ID {
         return start_codex_backend_turn(
             app,
@@ -5509,10 +5487,9 @@ pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
         prompt,
         streaming_message_id,
         images,
-        origin,
         || async {
             wait_until_session_close_finished(chat_session_id).await;
-            let spawn_info = get_persisted_spawn_info_before_turn(
+            let spawn_info = get_required_persisted_spawn_info_before_turn(
                 app,
                 session_store,
                 chat_session_id,
@@ -5564,8 +5541,8 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
-    let origin = turn_origin_for_chat_session(app, session_store, chat_session_id)?;
-    let spawn_info = get_persisted_spawn_info(app, session_store, chat_session_id)?;
+    let spawn_info =
+        get_required_persisted_spawn_info_for_turn(app, session_store, chat_session_id)?;
     if spawn_info.backend_id == CODEX_BACKEND_ID {
         return start_codex_backend_turn(
             app,
@@ -5588,9 +5565,8 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
         prompt,
         streaming_message_id,
         images,
-        origin,
         || async {
-            let spawn_info = get_persisted_spawn_info_before_turn(
+            let spawn_info = get_required_persisted_spawn_info_before_turn(
                 app,
                 session_store,
                 chat_session_id,
@@ -5679,7 +5655,6 @@ async fn start_agent_turn_with_runtime_spawner<R: tauri::Runtime, F, Fut>(
     prompt: &str,
     streaming_message_id: &str,
     images: &[ImageAttachment],
-    origin: TurnOrigin,
     spawn_runtime: F,
 ) -> Result<(), String>
 where
@@ -5697,7 +5672,6 @@ where
         prompt,
         streaming_message_id,
         images,
-        origin,
         spawn_runtime,
     )
     .await
@@ -5713,7 +5687,6 @@ async fn start_agent_turn_with_runtime_spawner_locked<R: tauri::Runtime, F, Fut>
     prompt: &str,
     streaming_message_id: &str,
     images: &[ImageAttachment],
-    origin: TurnOrigin,
     spawn_runtime: F,
 ) -> Result<(), String>
 where
@@ -5741,7 +5714,7 @@ where
             proc.turn_phase = TurnPhase::Streaming;
             proc.streaming_message_id = Some(streaming_message_id.to_string());
             proc.reset_streaming_state_for_new_turn();
-            proc.begin_turn_liveness(origin);
+            proc.begin_turn_liveness();
             proc.stdin
                 .write_all(data.as_bytes())
                 .await
@@ -6800,7 +6773,6 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
                 streaming_timer_active: false,
                 last_progress_at: None,
                 turn_phase_since: Instant::now(),
-                turn_origin: TurnOrigin::Desktop,
                 turn_seq: 0,
                 turn_watchdog_active: false,
             },
@@ -10385,7 +10357,6 @@ mod tests {
         let now = Instant::now();
         let timeout = evaluate_turn_liveness(
             TurnPhase::Streaming,
-            TurnOrigin::Desktop,
             Some(now - Duration::from_secs(STALE_TIMEOUT_SECS + 1)),
             now - Duration::from_secs(STALE_TIMEOUT_SECS + 1),
             now,
@@ -10399,7 +10370,6 @@ mod tests {
         let now = Instant::now();
         let timeout = evaluate_turn_liveness(
             TurnPhase::Streaming,
-            TurnOrigin::Desktop,
             Some(now - Duration::from_secs(STALE_TIMEOUT_SECS - 1)),
             now - Duration::from_secs(STALE_TIMEOUT_SECS + 10),
             now,
@@ -10409,48 +10379,23 @@ mod tests {
     }
 
     #[test]
-    fn liveness_permission_timeout_applies_only_to_headless() {
+    fn liveness_keeps_waiting_permission_alive_after_long_wait() {
         let now = Instant::now();
-        let since = now - Duration::from_secs(PERMISSION_TIMEOUT_SECS + 1);
+        let since = now - Duration::from_secs(3600);
 
         assert_eq!(
-            evaluate_turn_liveness(
-                TurnPhase::WaitingPermission,
-                TurnOrigin::Headless,
-                None,
-                since,
-                now,
-            ),
-            Some(TurnLivenessTimeout::PermissionTimeout)
-        );
-        assert_eq!(
-            evaluate_turn_liveness(
-                TurnPhase::WaitingPermission,
-                TurnOrigin::Desktop,
-                None,
-                since,
-                now,
-            ),
+            evaluate_turn_liveness(TurnPhase::WaitingPermission, None, since, now),
             None
         );
     }
 
     #[test]
-    fn turn_origin_is_derived_from_session_workflow_step_flag() {
-        let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let mut session =
-            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
+    fn liveness_keeps_idle_alive() {
+        let now = Instant::now();
 
         assert_eq!(
-            turn_origin_for_session(session.workflow_step_session),
-            TurnOrigin::Desktop
-        );
-
-        session.workflow_step_session = true;
-        assert_eq!(
-            turn_origin_for_session(session.workflow_step_session),
-            TurnOrigin::Headless
+            evaluate_turn_liveness(TurnPhase::Idle, None, now - Duration::from_secs(3600), now),
+            None
         );
     }
 
@@ -10478,7 +10423,7 @@ mod tests {
     async fn timeout_finalize_rechecks_liveness_and_continues_when_progress_arrives_after_decision()
     {
         let mut proc = make_streaming_test_process();
-        proc.begin_turn_liveness(TurnOrigin::Desktop);
+        proc.begin_turn_liveness();
         proc.turn_watchdog_active = true;
         let captured_gen_id = proc.generation_id;
         let captured_turn_seq = proc.turn_seq;
@@ -10516,7 +10461,7 @@ mod tests {
     #[tokio::test]
     async fn finalize_timeout_adds_error_part_and_completes_as_failure() {
         let mut proc = make_streaming_test_process();
-        proc.begin_turn_liveness(TurnOrigin::Desktop);
+        proc.begin_turn_liveness();
         let partial = MessagePart::Text {
             content: "partial response".to_string(),
             parent_tool_use_id: None,
@@ -10553,7 +10498,7 @@ mod tests {
     #[tokio::test]
     async fn late_turn_complete_after_timeout_does_not_restore_ready_state() {
         let mut proc = make_streaming_test_process();
-        proc.begin_turn_liveness(TurnOrigin::Desktop);
+        proc.begin_turn_liveness();
         let _ = finalize_turn_as_timeout_locked(
             &mut proc,
             "csid",
@@ -12761,6 +12706,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn turn_start_requires_existing_session_meta() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(
+                data_dir.path().to_path_buf(),
+            ))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        let err = start_agent_turn(
+            app.handle(),
+            &handles,
+            &session_store,
+            "missing-turn",
+            "/repo",
+            "edit",
+            false,
+            "hello",
+            "agent-msg-1",
+            &[],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "Session not found: missing-turn");
+
+        let err = start_agent_turn_locked(
+            app.handle(),
+            &handles,
+            &session_store,
+            "missing-locked-turn",
+            "/repo",
+            "edit",
+            false,
+            "hello",
+            "agent-msg-2",
+            &[],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "Session not found: missing-locked-turn");
+        assert!(handles.lock().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn stopped_workflow_step_turn_start_spawns_resume_runtime_once() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -12777,7 +12768,6 @@ mod tests {
             "resume step",
             "agent-msg-1",
             &[],
-            TurnOrigin::Desktop,
             {
                 let handles = Arc::clone(&handles);
                 let session_id = session_id.clone();
@@ -12824,7 +12814,6 @@ mod tests {
             "continue step",
             "agent-msg-2",
             &[],
-            TurnOrigin::Desktop,
             {
                 let spawn_count = Arc::clone(&spawn_count);
                 move || async move {
@@ -12863,7 +12852,6 @@ mod tests {
                     "resume step",
                     "agent-msg-locked",
                     &[],
-                    TurnOrigin::Desktop,
                     {
                         let handles = Arc::clone(&handles);
                         let session_id = session_id.clone();
@@ -12920,7 +12908,6 @@ mod tests {
                     "first",
                     "agent-msg-1",
                     &[],
-                    TurnOrigin::Desktop,
                     {
                         let handles = Arc::clone(&handles);
                         let session_id = session_id.clone();
@@ -12952,7 +12939,6 @@ mod tests {
                     "second",
                     "agent-msg-2",
                     &[],
-                    TurnOrigin::Desktop,
                     {
                         let handles = Arc::clone(&handles);
                         let session_id = session_id.clone();
@@ -13278,7 +13264,6 @@ mod tests {
                 streaming_timer_active: false,
                 last_progress_at: None,
                 turn_phase_since: Instant::now(),
-                turn_origin: TurnOrigin::Desktop,
                 turn_seq: 0,
                 turn_watchdog_active: false,
             },
@@ -16228,7 +16213,6 @@ mod tests {
             streaming_timer_active: false,
             last_progress_at: None,
             turn_phase_since: Instant::now(),
-            turn_origin: TurnOrigin::Desktop,
             turn_seq: 0,
             turn_watchdog_active: false,
         };
@@ -16940,7 +16924,6 @@ mod tests {
                 streaming_timer_active: false,
                 last_progress_at: None,
                 turn_phase_since: Instant::now(),
-                turn_origin: TurnOrigin::Desktop,
                 turn_seq: 0,
                 turn_watchdog_active: false,
             }
