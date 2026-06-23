@@ -64,11 +64,14 @@ Issue #1259 の要求:
 ### R4. 既存ステータス種別との整合
 
 - 代表ステータスは下記の 7 種 (`running / failed / error / waiting / aborted / completed / queued`) に統一する。`waiting` は従来の Step `waiting_approval` と Session の入力/許可待ち (`AgentState == waiting`) を 1 つに統合したものとする。
-- 既存の `WorkflowStepStatusIcon` / `AgentStateIcon` の表示は、この 7 種の代表ステータスに整合させること。
+- Session 行の `AgentStateIcon` は既存どおり raw `AgentState` を表示し、7 種の代表ステータス集約の対象外とすること。
+- Step / Workflow 行の `WorkflowStepStatusIcon` の表示は、この 7 種の代表ステータスに整合させること。
 
 ### R5. リアルタイム更新
 
-- Session の稼働状態は `session-status-changed` イベント購読 (`useWorktreeSessionStatuses`) によりリアルタイムに更新されること。新たなポーリング機構を追加しないこと。
+- Session の稼働状態は `session-status-changed` イベント購読 (`useWorktreeSessionStatuses`) によりリアルタイムに更新されること。
+- Step / Workflow の代表ステータスは `workflow-step-status-changed` イベント購読 (`useWorktreeStepStatuses`) によりリアルタイムに更新されること。
+- 新たなポーリング機構を追加しないこと。
 
 ## 確定ステータス仕様
 
