@@ -176,6 +176,15 @@ pub struct WorkflowTurnCompleteCommand {
     pub token_usage: Option<WorkflowTurnTokenUsage>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowTurnCompleteNotification {
+    pub chat_session_id: String,
+    pub exit_code: i64,
+    pub final_text_parts: Vec<String>,
+    pub token_usage: Option<WorkflowTurnTokenUsage>,
+    pub interrupted: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingRuntimeCommand {
     pub run_id: String,

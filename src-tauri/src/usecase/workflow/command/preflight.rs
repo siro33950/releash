@@ -5,7 +5,7 @@ use crate::domain::workflow::{
 
 use super::{AbortRunCommand, ApprovalCommand, StartRunCommand, SubmitOutputCommand};
 use crate::usecase::workflow::ports::{
-    PendingRuntimeCommand, PendingRuntimeCommandPayload, WorkflowTurnCompleteCommand,
+    PendingRuntimeCommand, PendingRuntimeCommandPayload, WorkflowTurnCompleteNotification,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -94,7 +94,7 @@ impl WorkflowRuntimeCommandPreflight {
 
     pub(crate) fn validate_turn_complete(
         &self,
-        command: &WorkflowTurnCompleteCommand,
+        command: &WorkflowTurnCompleteNotification,
     ) -> Result<(), WorkflowError> {
         if command.chat_session_id.trim().is_empty() {
             return Err(WorkflowError::validation(

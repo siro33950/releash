@@ -1,9 +1,13 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import crypto from "node:crypto";
 import {
+	buildResultTurnCompletion,
 	buildSystemPromptOption,
+	buildTurnCompleteMessage,
+	rollbackResumeSessionIdAfterInterrupt,
 	shouldContinueBridgeLoopAfterQueryEnd,
 	shouldResolvePromptForCurrentQuery,
+	withTurnToken,
 } from "./bridge-utils.mjs";
 
 const pendingPermissions = new Map();
@@ -11,6 +15,8 @@ const messageQueue = [];
 let currentQuery = null;
 let currentAbortController = null;
 let currentSessionId = null;
+let lastResultSessionId = null;
+let currentTurnToken = null;
 let messageResolve = null;
 let closed = false;
 let sessionReady = false;
@@ -32,19 +38,22 @@ async function* promptGenerator(promptState) {
 	while (!closed) {
 		if (promptState.completedResult) return;
 		if (messageQueue.length > 0) {
-			yield messageQueue.shift();
+			const queued = messageQueue.shift();
+			currentTurnToken = queued.turnToken;
+			yield queued.message;
 			continue;
 		}
-		const prompt = await new Promise((resolve) => {
+		const queued = await new Promise((resolve) => {
 			messageResolve = resolve;
 		});
 		messageResolve = null;
-		if (prompt === null) return;
+		if (queued === null) return;
 		if (promptState.completedResult) {
-			messageQueue.unshift(prompt);
+			messageQueue.unshift(queued);
 			return;
 		}
-		yield prompt;
+		currentTurnToken = queued.turnToken;
+		yield queued.message;
 	}
 }
 
@@ -143,6 +152,13 @@ function handleCommand(cmd) {
 			break;
 		case "message": {
 			const msg = toUserMessage(applyRestoreContext(cmd.prompt), cmd.images);
+			const queued = {
+				message: msg,
+				turnToken:
+					typeof cmd.turn_token === "string" && cmd.turn_token.length > 0
+						? cmd.turn_token
+						: null,
+			};
 			if (
 				shouldResolvePromptForCurrentQuery({
 					hasPendingPromptResolver: Boolean(messageResolve),
@@ -151,9 +167,9 @@ function handleCommand(cmd) {
 					),
 				})
 			) {
-				messageResolve(msg);
+				messageResolve(queued);
 			} else {
-				messageQueue.push(msg);
+				messageQueue.push(queued);
 			}
 			break;
 		}
@@ -238,20 +254,26 @@ async function handleInit(cmd) {
 		return new Promise((resolve) => {
 			const requestId = crypto.randomUUID();
 			pendingPermissions.set(requestId, { resolve, input });
-			emit({
-				type: "permission_request",
-				request_id: requestId,
-				tool_name: toolName,
-				input,
-				tool_use_id: meta.toolUseID,
-				title: meta.title,
-				display_name: meta.displayName,
-				description: meta.description,
-				decision_reason: meta.decisionReason,
-			});
+			emit(
+				withTurnToken(
+					{
+						type: "permission_request",
+						request_id: requestId,
+						tool_name: toolName,
+						input,
+						tool_use_id: meta.toolUseID,
+						title: meta.title,
+						display_name: meta.displayName,
+						description: meta.description,
+						decision_reason: meta.decisionReason,
+					},
+					currentTurnToken,
+				),
+			);
 		});
 	};
 
+	lastResultSessionId = cmd.sessionId || null;
 	if (cmd.sessionId) {
 		options.resume = cmd.sessionId;
 	}
@@ -294,22 +316,33 @@ async function handleInit(cmd) {
 			for await (const message of currentQuery) {
 				if (message.session_id && message.session_id !== currentSessionId) {
 					currentSessionId = message.session_id;
-					emit({ type: "session_ready", session_id: message.session_id });
+					emit(
+						withTurnToken(
+							{ type: "session_ready", session_id: message.session_id },
+							currentTurnToken,
+						),
+					);
 					sessionReady = true;
 				}
-				emit(message);
+				emit(withTurnToken(message, currentTurnToken));
 
 				if (message.type === "result") {
 					gotResult = true;
 					promptState.completedResult = true;
 					const hasErrors =
 						message.errors && Array.isArray(message.errors) && message.errors.length > 0;
-					turnExitCode = hasErrors ? 1 : 0;
-					emit({
-						type: "turn_complete",
-						session_id: message.session_id || null,
-						exit_code: turnExitCode,
+					const completion = buildResultTurnCompletion({
+						sessionId: message.session_id || null,
+						currentSessionId,
+						hasErrors,
+						wasAborted: Boolean(currentAbortController.signal.aborted),
+						turnToken: currentTurnToken,
 					});
+					turnExitCode = completion.exitCode;
+					if (completion.completedSessionIdForResume) {
+						lastResultSessionId = completion.completedSessionIdForResume;
+					}
+					emit(completion.message);
 					closePendingPromptForCurrentQuery();
 				}
 			}
@@ -319,12 +352,18 @@ async function handleInit(cmd) {
 				closePendingPromptForCurrentQuery();
 				if (!gotResult) {
 					turnExitCode = 0;
-					emit({
-						type: "turn_complete",
-						session_id: currentSessionId || null,
-						exit_code: 0,
-					});
+					emit(
+						buildTurnCompleteMessage({
+							sessionId: currentSessionId || null,
+							exitCode: 0,
+							interrupted: true,
+							turnToken: currentTurnToken,
+						}),
+					);
 				}
+				currentSessionId = rollbackResumeSessionIdAfterInterrupt({
+					lastResultSessionId,
+				});
 				if (shouldContinueBridgeLoopAfterQueryEnd({ closed, turnExitCode })) {
 					continue;
 				}
@@ -335,11 +374,13 @@ async function handleInit(cmd) {
 				continue;
 			}
 			if (!closed && !gotResult) {
-				emit({
-					type: "turn_complete",
-					session_id: currentSessionId || null,
-					exit_code: 1,
-				});
+				emit(
+					buildTurnCompleteMessage({
+						sessionId: currentSessionId || null,
+						exitCode: 1,
+						turnToken: currentTurnToken,
+					}),
+				);
 			}
 			break;
 		} catch (e) {
@@ -348,12 +389,18 @@ async function handleInit(cmd) {
 				closePendingPromptForCurrentQuery();
 				if (!gotResult) {
 					turnExitCode = 0;
-					emit({
-						type: "turn_complete",
-						session_id: currentSessionId || null,
-						exit_code: 0,
-					});
+					emit(
+						buildTurnCompleteMessage({
+							sessionId: currentSessionId || null,
+							exitCode: 0,
+							interrupted: true,
+							turnToken: currentTurnToken,
+						}),
+					);
 				}
+				currentSessionId = rollbackResumeSessionIdAfterInterrupt({
+					lastResultSessionId,
+				});
 				if (shouldContinueBridgeLoopAfterQueryEnd({ closed, turnExitCode })) {
 					continue;
 				}

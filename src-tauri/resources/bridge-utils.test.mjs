@@ -1,8 +1,14 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	buildResultTurnCompletion,
 	buildSystemPromptOption,
+	buildTurnCompleteMessage,
+	rollbackResumeSessionIdAfterInterrupt,
 	shouldContinueBridgeLoopAfterQueryEnd,
 	shouldResolvePromptForCurrentQuery,
+	withTurnToken,
 } from "./bridge-utils.mjs";
 
 describe("buildSystemPromptOption", () => {
@@ -102,5 +108,144 @@ describe("shouldResolvePromptForCurrentQuery", () => {
 				completedResultForCurrentQuery: false,
 			}),
 		).toBe(false);
+	});
+});
+
+describe("buildResultTurnCompletion", () => {
+	it("treats a result delivered after abort as interrupted", () => {
+		expect(
+			buildResultTurnCompletion({
+				sessionId: "sdk-interrupted",
+				currentSessionId: "sdk-interrupted",
+				hasErrors: false,
+				wasAborted: true,
+				turnToken: "agent-message-1",
+			}),
+		).toEqual({
+			message: {
+				type: "turn_complete",
+				session_id: "sdk-interrupted",
+				exit_code: 0,
+				interrupted: true,
+				turn_token: "agent-message-1",
+			},
+			exitCode: 0,
+			completedSessionIdForResume: null,
+		});
+	});
+
+	it("keeps a successful non-aborted result reusable for resume", () => {
+		expect(
+			buildResultTurnCompletion({
+				sessionId: "sdk-clean",
+				currentSessionId: "sdk-current",
+				hasErrors: false,
+				wasAborted: false,
+			}),
+		).toEqual({
+			message: {
+				type: "turn_complete",
+				session_id: "sdk-clean",
+				exit_code: 0,
+			},
+			exitCode: 0,
+			completedSessionIdForResume: "sdk-clean",
+		});
+	});
+
+	it("does not reuse errored result sessions for resume", () => {
+		expect(
+			buildResultTurnCompletion({
+				sessionId: "sdk-error",
+				currentSessionId: "sdk-current",
+				hasErrors: true,
+				wasAborted: false,
+			}),
+		).toEqual({
+			message: {
+				type: "turn_complete",
+				session_id: "sdk-error",
+				exit_code: 1,
+			},
+			exitCode: 1,
+			completedSessionIdForResume: null,
+		});
+	});
+});
+
+describe("buildTurnCompleteMessage", () => {
+	it("marks interrupted completions explicitly and echoes turn token", () => {
+		expect(
+			buildTurnCompleteMessage({
+				sessionId: "sdk-interrupted",
+				exitCode: 0,
+				interrupted: true,
+				turnToken: "agent-message-1",
+			}),
+		).toEqual({
+			type: "turn_complete",
+			session_id: "sdk-interrupted",
+			exit_code: 0,
+			interrupted: true,
+			turn_token: "agent-message-1",
+		});
+	});
+
+	it("keeps normal completions backward compatible", () => {
+		expect(
+			buildTurnCompleteMessage({
+				sessionId: "sdk-ok",
+				exitCode: 0,
+			}),
+		).toEqual({
+			type: "turn_complete",
+			session_id: "sdk-ok",
+			exit_code: 0,
+		});
+	});
+});
+
+describe("rollbackResumeSessionIdAfterInterrupt", () => {
+	it("rolls back to the last successful result session", () => {
+		expect(
+			rollbackResumeSessionIdAfterInterrupt({
+				lastResultSessionId: "sdk-clean",
+			}),
+		).toBe("sdk-clean");
+	});
+
+	it("starts fresh when the first turn was interrupted", () => {
+		expect(
+			rollbackResumeSessionIdAfterInterrupt({
+				lastResultSessionId: null,
+			}),
+		).toBeNull();
+	});
+});
+
+describe("withTurnToken", () => {
+	it("adds turn_token when present", () => {
+		expect(withTurnToken({ type: "assistant" }, "agent-message-1")).toEqual({
+			type: "assistant",
+			turn_token: "agent-message-1",
+		});
+	});
+
+	it("does not change tokenless messages", () => {
+		const message = { type: "assistant" };
+		expect(withTurnToken(message, null)).toBe(message);
+	});
+});
+
+describe("claude bridge permission requests", () => {
+	it("emits permission_request with the current turn token", () => {
+		const source = readFileSync(
+			join(process.cwd(), "src-tauri/resources/claude-sdk-bridge.mjs"),
+			"utf8",
+		);
+
+		expect(source).toMatch(
+			/emit\(\s*withTurnToken\(\s*\{\s*type: "permission_request"[\s\S]*?\},\s*currentTurnToken,\s*\),\s*\);/,
+		);
 	});
 });
