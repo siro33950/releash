@@ -9199,7 +9199,6 @@ mod tests {
             &pending.content,
             &agent_msg.id,
             &pending.images,
-            TurnOrigin::Desktop,
             {
                 let spawn_count = Arc::clone(&spawn_count);
                 move || async move {
