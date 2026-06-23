@@ -133,6 +133,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::agent_session::status::get_workspace_status,
             crate::adaptor::controller::command::agent_session::status::list_workspace_statuses,
             crate::adaptor::controller::command::agent_session::status::list_session_statuses,
+            crate::adaptor::controller::command::agent_session::status::list_workflow_step_statuses,
             // Repo paths（repository ドメイン）
             crate::adaptor::controller::command::repository::repo_paths::get_repo_paths,
             crate::adaptor::controller::command::repository::repo_paths::add_repo_path,

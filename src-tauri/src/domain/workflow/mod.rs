@@ -11,6 +11,7 @@ pub mod gateway;
 #[allow(clippy::module_inception)]
 pub mod repository;
 pub mod services;
+pub mod status_aggregation;
 pub mod value_objects;
 
 pub use entities::workflow_execution::{

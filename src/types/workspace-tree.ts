@@ -42,10 +42,11 @@ export interface WorkspaceSessionNode {
 export type WorkspaceStepStatus =
 	| "queued"
 	| "running"
-	| "waiting_approval"
-	| "completed"
 	| "failed"
-	| "aborted";
+	| "error"
+	| "waiting"
+	| "aborted"
+	| "completed";
 
 export type WorkspaceStepType = "agent" | "bash" | "approval" | "parallel";
 
@@ -71,7 +72,8 @@ export interface WorkspaceWorkflowNode {
 	worktreePath: string;
 	workflowName: string;
 	title: string;
-	status: WorkflowRunSummary["status"];
+	status: WorkspaceStepStatus;
+	canStop: boolean;
 	updatedAt: number;
 	steps: WorkspaceWorkflowStepNode[];
 }
@@ -80,7 +82,7 @@ export interface WorkspaceWorkflowHistoryItem {
 	runId: string;
 	worktreePath: string;
 	title: string;
-	status: WorkflowRunSummary["status"];
+	status: WorkspaceStepStatus | WorkflowRunSummary["status"];
 	updatedAt: number;
 	archivedAt: number;
 	archiveReason: "auto_no_sessions" | "manual" | string;
@@ -89,3 +91,13 @@ export interface WorkspaceWorkflowHistoryItem {
 export type WorkspaceTreeNode = WorkspaceSessionNode | WorkspaceWorkflowNode;
 
 export type WorkspaceSessionHistoryItem = SessionSummary;
+
+export interface WorkflowStepStatusChange {
+	worktreePath: string;
+	executionId: string;
+	stepName: string;
+	runIndex?: number | null;
+	representative?: WorkspaceStepStatus | null;
+	workflowRepresentative?: WorkspaceStepStatus | null;
+	version: number;
+}

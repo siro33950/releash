@@ -126,6 +126,11 @@ pub(crate) async fn emit_workflow_state_from_snapshot<R: tauri::Runtime>(
     open_tabs: &OpenTabRegistry,
 ) {
     let execution_id = state.execution_id.clone();
+    let workflow_execution_state = state.state.as_str().to_string();
+    let step_session_projections =
+        crate::domain::workflow::services::session_projection::collect_step_session_projections(
+            &state,
+        );
     let workflow_agent_state =
         crate::usecase::agent_session::status::AgentStatusCenter::workflow_execution_state_to_agent_state(
             &state.state,
@@ -139,6 +144,18 @@ pub(crate) async fn emit_workflow_state_from_snapshot<R: tauri::Runtime>(
     if let Some(center) =
         app.try_state::<Arc<crate::usecase::agent_session::status::AgentStatusCenter>>()
     {
+        for changes in center.sync_workflow_step_session_statuses(
+            worktree_path,
+            &execution_id,
+            &workflow_execution_state,
+            step_session_projections,
+        ) {
+            crate::agent_status_events::emit_agent_status_changes(
+                app,
+                broadcaster.as_deref(),
+                changes,
+            );
+        }
         let changes = center.update_workflow_snapshot(
             worktree_path,
             &execution_id,
@@ -177,19 +194,18 @@ pub(crate) async fn emit_workflow_state_snapshot<R: tauri::Runtime>(
     );
     let view = workflow_state_view_from_projection(projection);
     emit_workflow_state_view(app, worktree_path, &view);
-
-    for status in center.list_sessions() {
-        if status.worktree_path == worktree_path {
-            let mut updated = status;
-            updated.workflow_step = Some(workflow_state.current_step_name.clone());
-            updated.workflow_execution_state = Some(workflow_state.state.as_str().to_string());
-            let changes = center.update_session(updated);
-            crate::agent_status_events::emit_agent_status_changes(
-                app,
-                broadcaster.as_deref(),
-                changes,
-            );
-        }
+    let workflow_execution_state = workflow_state.state.as_str().to_string();
+    let step_session_projections =
+        crate::domain::workflow::services::session_projection::collect_step_session_projections(
+            &workflow_state,
+        );
+    for changes in center.sync_workflow_step_session_statuses(
+        worktree_path,
+        &workflow_state.execution_id,
+        &workflow_execution_state,
+        step_session_projections,
+    ) {
+        crate::agent_status_events::emit_agent_status_changes(app, broadcaster.as_deref(), changes);
     }
 
     let workflow_agent_state =

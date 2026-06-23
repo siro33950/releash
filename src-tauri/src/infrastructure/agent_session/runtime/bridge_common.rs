@@ -2282,10 +2282,18 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
         AgentStatusCenter::derive_agent_state(status_turn_phase, session_state.clone());
 
     if let Some(center) = app.try_state::<Arc<AgentStatusCenter>>() {
-        let (wf_step, wf_state) = center
+        let (wf_step, wf_state, wf_execution_id, wf_run_index, wf_step_progress) = center
             .get_session(chat_session_id)
-            .map(|s| (s.workflow_step, s.workflow_execution_state))
-            .unwrap_or((None, None));
+            .map(|s| {
+                (
+                    s.workflow_step,
+                    s.workflow_execution_state,
+                    s.workflow_execution_id,
+                    s.workflow_run_index,
+                    s.workflow_step_progress,
+                )
+            })
+            .unwrap_or((None, None, None, None, None));
         let status = SessionStatus {
             chat_session_id: chat_session_id.to_string(),
             worktree_id: worktree_path.clone(),
@@ -2298,6 +2306,9 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
             last_activity_at: current_timestamp(),
             workflow_step: wf_step,
             workflow_execution_state: wf_state,
+            workflow_execution_id: wf_execution_id,
+            workflow_run_index: wf_run_index,
+            workflow_step_progress: wf_step_progress,
         };
         let changes = center.update_session(status);
         let broadcaster = app

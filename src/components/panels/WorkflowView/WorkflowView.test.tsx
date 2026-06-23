@@ -287,7 +287,7 @@ describe("WorkflowView", () => {
 	it("keeps Reject hidden when the approval step cannot reject", () => {
 		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
 			stepDetailState({
-				status: "waiting_approval",
+				status: "waiting",
 				canReject: false,
 				sessions: [stepDetail().sessions[0]],
 			}),
@@ -302,7 +302,7 @@ describe("WorkflowView", () => {
 	it("submits Approve from the Step header", async () => {
 		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
 			stepDetailState({
-				status: "waiting_approval",
+				status: "waiting",
 				canReject: true,
 				sessions: [stepDetail().sessions[0]],
 			}),
@@ -326,7 +326,7 @@ describe("WorkflowView", () => {
 	it("requires a comment before submitting Reject", async () => {
 		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
 			stepDetailState({
-				status: "waiting_approval",
+				status: "waiting",
 				canReject: true,
 				sessions: [stepDetail().sessions[0]],
 			}),
@@ -358,7 +358,7 @@ describe("WorkflowView", () => {
 	it("closes Reject comment input without submitting when Cancel is clicked", async () => {
 		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
 			stepDetailState({
-				status: "waiting_approval",
+				status: "waiting",
 				canReject: true,
 				sessions: [stepDetail().sessions[0]],
 			}),
@@ -383,7 +383,7 @@ describe("WorkflowView", () => {
 	it("keeps the action error icon after closing the error popup", async () => {
 		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
 			stepDetailState({
-				status: "waiting_approval",
+				status: "waiting",
 				canReject: true,
 				sessions: [stepDetail().sessions[0]],
 			}),

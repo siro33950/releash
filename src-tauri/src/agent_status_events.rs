@@ -28,6 +28,9 @@ pub(crate) fn emit_agent_status_changes<R: tauri::Runtime>(
     if let Some(workspace) = changes.workspace {
         let _ = app.emit("workspace-status-changed", workspace);
     }
+    for workflow_step in changes.workflow_steps {
+        let _ = app.emit("workflow-step-status-changed", workflow_step);
+    }
     if let Some(agent_state) = changes.agent_state {
         let payload = AgentStateSync {
             worktree_path: agent_state.worktree_path,

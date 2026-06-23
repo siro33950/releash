@@ -51,6 +51,11 @@ import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
 import { useWorktreeList } from "@/hooks/useWorktreeList";
 import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
+import {
+	useWorktreeStepStatuses,
+	type WorktreeStepStatuses,
+	workflowStepStatusKey,
+} from "@/hooks/useWorktreeStepStatuses";
 import { trackEvent } from "@/lib/telemetry";
 import type { WorktreeBranch } from "@/types/git";
 import type {
@@ -82,6 +87,23 @@ interface WorkspaceListProps {
 const WORKTREE_NAME_INDENT_PX = 26;
 const WORKFLOW_NAME_OFFSET_PX = 22;
 const DEFAULT_SESSION_TITLE = "NewSession";
+
+function applyLiveWorkflowStatuses(
+	node: WorkspaceWorkflowNode,
+	stepStatuses: WorktreeStepStatuses,
+): WorkspaceWorkflowNode {
+	return {
+		...node,
+		status: stepStatuses.workflows.get(node.runId) ?? node.status,
+		steps: node.steps.map((step) => ({
+			...step,
+			status:
+				stepStatuses.steps.get(
+					workflowStepStatusKey(node.runId, step.title, step.runIndex),
+				) ?? step.status,
+		})),
+	};
+}
 
 function repoNameFromPath(path: string): string {
 	return path.split("/").filter(Boolean).pop() ?? path;
@@ -227,8 +249,7 @@ function WorktreeWorkflowRow({
 	const [expanded, setExpanded] = useState(true);
 	const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
 	const steps = node.steps;
-	const canStop =
-		node.status === "running" || node.status === "waiting_approval";
+	const canStop = node.canStop;
 	const actionControlsVisible = workflowMenuOpen;
 	const workflowLabel = node.workflowName.trim() || node.title;
 	return (
@@ -242,7 +263,12 @@ function WorktreeWorkflowRow({
 					className="flex min-w-0 flex-1 items-center gap-2 text-left"
 					onClick={() => setExpanded((prev) => !prev)}
 				>
-					<Workflow className="size-3.5 shrink-0 text-muted-foreground/80" />
+					<WorkflowStepStatusIcon
+						status={node.status}
+						containerClassName="flex size-5 shrink-0 items-center justify-center"
+						iconClassName="size-3"
+						circleClassName="size-2"
+					/>
 					<span className="min-w-0 truncate">{workflowLabel}</span>
 					{expanded ? (
 						<ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
@@ -400,6 +426,7 @@ function WorktreeTreeItem({
 		error: workflowsError,
 	} = useWorkflowConfig(createMenuOpen);
 	const sessionStatuses = useWorktreeSessionStatuses(branch.worktree_path);
+	const liveWorkflowStatuses = useWorktreeStepStatuses(branch.worktree_path);
 	const sessionAgentStates = useMemo(() => {
 		const map = new Map<string, WorkspaceSessionNode["agentState"]>();
 		for (const [sessionId, status] of sessionStatuses) {
@@ -407,6 +434,15 @@ function WorktreeTreeItem({
 		}
 		return map;
 	}, [sessionStatuses]);
+	const displayNodes = useMemo(
+		() =>
+			nodes.map((node) =>
+				node.kind === "workflow"
+					? applyLiveWorkflowStatuses(node, liveWorkflowStatuses)
+					: node,
+			),
+		[nodes, liveWorkflowStatuses],
+	);
 
 	const selectCenter = useCallback(
 		(centerSelection: CenterSelection) => {
@@ -817,7 +853,7 @@ function WorktreeTreeItem({
 							{treeError}
 						</div>
 					) : (
-						nodes.map((node) =>
+						displayNodes.map((node) =>
 							node.kind === "workflow" ? (
 								<WorktreeWorkflowRow
 									key={node.runId}
