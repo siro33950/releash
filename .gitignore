@@ -62,3 +62,10 @@ src-tauri/rust-codecov.json
 # Playwright
 test-results/
 playwright-report/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example

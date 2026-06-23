@@ -1,0 +1,5 @@
+newrelic_account_id = 12345678
+newrelic_api_key    = "NRAK-REPLACE-ME"
+newrelic_region     = "US"
+
+dashboard_permissions = "private"
