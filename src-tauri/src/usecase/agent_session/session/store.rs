@@ -6,6 +6,7 @@ use parking_lot::RwLock;
 use crate::domain::agent_session::{
     AgentSessionReader, AgentSessionStorage, AgentSessionStorageTypes,
 };
+use crate::usecase::agent_session::event_log::{AgentSessionEvent, TurnEventLog};
 
 use super::{
     now_timestamp, ChatMessage, ChatSession, ContextCarryState, MessagePart, PageCursor,
@@ -25,6 +26,7 @@ pub type SessionStoragePort = dyn AgentSessionStorage<
         Message = ChatMessage,
         MessagePart = MessagePart,
         Attachment = SessionAttachment,
+        Event = AgentSessionEvent,
     > + Send
     + Sync;
 
@@ -36,6 +38,7 @@ pub type SessionReaderPort = dyn AgentSessionReader<
         Message = ChatMessage,
         MessagePart = MessagePart,
         Attachment = SessionAttachment,
+        Event = AgentSessionEvent,
     > + Send
     + Sync;
 
@@ -68,6 +71,7 @@ impl AgentSessionStorageTypes for SessionStore {
     type Message = ChatMessage;
     type MessagePart = MessagePart;
     type Attachment = SessionAttachment;
+    type Event = AgentSessionEvent;
 }
 
 impl AgentSessionReader for SessionStore {
@@ -100,6 +104,19 @@ impl AgentSessionReader for SessionStore {
             .load_full_session_for_restore(app_data_dir, session_id)
     }
 
+    fn load_previous_human_message_before_agent(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        agent_message_id: &str,
+    ) -> Result<Option<Self::Message>, String> {
+        self.storage.load_previous_human_message_before_agent(
+            app_data_dir,
+            session_id,
+            agent_message_id,
+        )
+    }
+
     fn get_session_page(
         &self,
         app_data_dir: &Path,
@@ -119,6 +136,14 @@ impl AgentSessionReader for SessionStore {
     ) -> Result<Option<Self::Attachment>, String> {
         self.storage
             .get_session_attachment(app_data_dir, session_id, attachment_id)
+    }
+
+    fn load_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Vec<Self::Event>, String> {
+        self.storage.load_session_events(app_data_dir, session_id)
     }
 }
 
@@ -329,6 +354,44 @@ impl SessionStore {
     ) -> Result<Option<ChatSession>, String> {
         self.storage
             .load_full_session_for_restore(app_data_dir, session_id)
+    }
+
+    pub fn load_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Vec<AgentSessionEvent>, String> {
+        self.storage.load_session_events(app_data_dir, session_id)
+    }
+
+    pub fn append_session_event_and_project_state(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        event: AgentSessionEvent,
+    ) -> Result<SessionState, String> {
+        let events = self
+            .storage
+            .append_session_event(app_data_dir, session_id, &event)?;
+        let projected_state = TurnEventLog::from_events(events)
+            .project()
+            .status
+            .session_state;
+        self.set_session_state(app_data_dir, session_id, projected_state.clone())?;
+        Ok(projected_state)
+    }
+
+    pub fn load_previous_human_message_before_agent(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        agent_message_id: &str,
+    ) -> Result<Option<ChatMessage>, String> {
+        self.storage.load_previous_human_message_before_agent(
+            app_data_dir,
+            session_id,
+            agent_message_id,
+        )
     }
 
     /// workflow step session のセットアップ失敗時に、作成済みの子 session を

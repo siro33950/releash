@@ -8,6 +8,7 @@ pub trait AgentSessionStorageTypes: Send + Sync {
     type Message;
     type MessagePart;
     type Attachment;
+    type Event;
 }
 
 pub trait AgentSessionReader: AgentSessionStorageTypes {
@@ -31,6 +32,13 @@ pub trait AgentSessionReader: AgentSessionStorageTypes {
         session_id: &str,
     ) -> Result<Option<Self::Session>, String>;
 
+    fn load_previous_human_message_before_agent(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        agent_message_id: &str,
+    ) -> Result<Option<Self::Message>, String>;
+
     fn get_session_page(
         &self,
         app_data_dir: &Path,
@@ -45,6 +53,12 @@ pub trait AgentSessionReader: AgentSessionStorageTypes {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<Option<Self::Attachment>, String>;
+
+    fn load_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Vec<Self::Event>, String>;
 }
 
 pub trait AgentSessionWriter: AgentSessionStorageTypes {
@@ -96,6 +110,13 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         parts: &[Self::MessagePart],
         completed_at: Option<f64>,
     ) -> Result<(), String>;
+
+    fn append_session_event(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        event: &Self::Event,
+    ) -> Result<Vec<Self::Event>, String>;
 }
 
 pub trait AgentSessionStorage: AgentSessionReader + AgentSessionWriter {}

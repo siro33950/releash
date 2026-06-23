@@ -27,6 +27,10 @@ use crate::infrastructure::agent_session::runtime::{
     AgentEditorContext, AgentMessage, BackendRuntimeConfig, ImageAttachment, ModelInfo,
     SessionConfig, SessionHandle,
 };
+use crate::usecase::agent_session::event_log::{
+    human_parts_from_content_images, AgentSessionEvent, InterruptReason, PartEventMode,
+    PermissionDecision, PromptInput, TurnEventLog, TurnTokenUsage, WorkflowTurnCompleteInput,
+};
 #[cfg(test)]
 use crate::usecase::agent_session::session::create_session_internal;
 #[cfg(test)]
@@ -35,8 +39,8 @@ use crate::usecase::agent_session::session::validate_image_bytes;
 use crate::usecase::agent_session::session::{
     add_message_internal, now_timestamp, parts_to_legacy, ChatMessage, ChatSession,
     ContextCarryState, GetSessionResponse, InitialSessionPage, MessagePart, MessageRole,
-    PageCursor, SessionMeta, SessionPage, SessionStore, SessionSummary, SystemNotificationType,
-    TokenUsage, INITIAL_SESSION_PAGE_LIMIT,
+    PageCursor, SessionMeta, SessionPage, SessionState, SessionStore, SessionSummary,
+    SystemNotificationType, TokenUsage, INITIAL_SESSION_PAGE_LIMIT,
 };
 
 pub(crate) use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
@@ -103,6 +107,9 @@ pub struct AgentProcess {
     /// `last_message_id` can accept post-turn background task updates.
     post_turn_message_token: Option<String>,
     pub streaming_parts: Vec<MessagePart>,
+    /// Per-turn durable event buffer. This is the fact stream used by projection;
+    /// `streaming_parts` remains only as the existing cumulative live buffer.
+    pub turn_event_log: TurnEventLog,
     /// Retained after turn_complete so post-turn background task events
     /// can still be accumulated and emitted via `agent-streaming-updated`.
     pub last_message_id: Option<String>,
@@ -185,6 +192,7 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         active_turn_token: None,
         post_turn_message_token: None,
         streaming_parts: Vec::new(),
+        turn_event_log: TurnEventLog::default(),
         last_message_id: None,
         post_turn_base_untrusted_message_id: None,
         task_id_map: HashMap::new(),
@@ -211,23 +219,39 @@ pub type AgentProcessMap = HashMap<String, AgentProcess>;
 /// drain 時に永続化する人間メッセージの parts を pending から構築する。
 /// 画像が無ければ None（content は add_message_internal が text として扱う）。
 fn pending_human_parts(pending: &PendingMessage) -> Option<Vec<MessagePart>> {
-    if pending.images.is_empty() {
-        return None;
+    let parts = human_parts_from_content_images(
+        &pending.content,
+        pending
+            .images
+            .iter()
+            .map(|image| (image.data.clone(), image.media_type.clone())),
+    );
+    (!parts.is_empty()).then_some(parts)
+}
+
+struct StartedTurnPrompt {
+    message_id: String,
+    prompt: PromptInput,
+}
+
+fn fallback_prompt_message_id(streaming_message_id: &str) -> String {
+    format!("{streaming_message_id}:prompt")
+}
+
+fn started_turn_prompt_from_fallback(
+    streaming_message_id: &str,
+    content: &str,
+    images: &[ImageAttachment],
+) -> StartedTurnPrompt {
+    StartedTurnPrompt {
+        message_id: fallback_prompt_message_id(streaming_message_id),
+        prompt: PromptInput::from_content_images(
+            content,
+            images
+                .iter()
+                .map(|image| (image.data.clone(), image.media_type.clone())),
+        ),
     }
-    let mut p: Vec<MessagePart> = Vec::new();
-    if !pending.content.is_empty() {
-        p.push(MessagePart::Text {
-            content: pending.content.clone(),
-            parent_tool_use_id: None,
-        });
-    }
-    for img in &pending.images {
-        p.push(MessagePart::Image {
-            data: img.data.clone(),
-            media_type: img.media_type.clone(),
-        });
-    }
-    Some(p)
 }
 
 fn pending_message_to_queued_turn(
@@ -565,6 +589,7 @@ impl AgentProcess {
     /// would block the first emit of the new turn from firing immediately.
     fn reset_streaming_state_for_new_turn(&mut self) {
         self.streaming_parts.clear();
+        self.turn_event_log.clear();
         self.pending_stream_part_count = 0;
         self.pending_stream_bytes = 0;
         self.last_stream_emit_at = None;
@@ -613,8 +638,269 @@ fn release_completed_turn_streaming_buffer(proc: &mut AgentProcess) -> Vec<Messa
     released_parts
 }
 
+fn from_projected_turn_phase(phase: crate::usecase::agent_session::status::TurnPhase) -> TurnPhase {
+    match phase {
+        crate::usecase::agent_session::status::TurnPhase::Idle => TurnPhase::Idle,
+        crate::usecase::agent_session::status::TurnPhase::Streaming => TurnPhase::Streaming,
+        crate::usecase::agent_session::status::TurnPhase::WaitingPermission => {
+            TurnPhase::WaitingPermission
+        }
+    }
+}
+
+fn event_turn_id(proc: &AgentProcess) -> u64 {
+    proc.turn_event_log
+        .current_turn_id()
+        .unwrap_or(proc.turn_seq)
+}
+
+fn begin_turn_event_log(
+    proc: &mut AgentProcess,
+    prompt_message_id: &str,
+    prompt: PromptInput,
+    assistant_message_id: &str,
+    at: f64,
+) {
+    proc.turn_event_log.begin_turn(
+        proc.turn_seq,
+        prompt_message_id.to_string(),
+        assistant_message_id.to_string(),
+        prompt,
+        at,
+    );
+    proc.turn_phase = from_projected_turn_phase(proc.turn_event_log.project().status.turn_phase);
+}
+
+fn projected_session_state_for_current_turn(proc: &AgentProcess) -> Option<SessionState> {
+    proc.turn_event_log.current_turn_id()?;
+    Some(proc.turn_event_log.project().status.session_state)
+}
+
+fn ensure_turn_event_log_started(proc: &mut AgentProcess) {
+    if proc.turn_event_log.current_turn_id().is_some() {
+        return;
+    }
+    let Some(message_id) = proc
+        .streaming_message_id
+        .clone()
+        .or_else(|| proc.last_message_id.clone())
+    else {
+        return;
+    };
+    let prompt_message_id = fallback_prompt_message_id(&message_id);
+    begin_turn_event_log(
+        proc,
+        &prompt_message_id,
+        PromptInput::default(),
+        &message_id,
+        now_timestamp(),
+    );
+}
+
+fn record_durable_parts_for_current_turn(
+    proc: &mut AgentProcess,
+    message_id: &str,
+    parts: &[MessagePart],
+) -> usize {
+    ensure_turn_event_log_started(proc);
+    let turn_id = event_turn_id(proc);
+    let appended = proc.turn_event_log.append_part_events(
+        turn_id,
+        message_id,
+        parts,
+        PartEventMode::DurableOnly,
+    );
+    if appended == 0 {
+        return 0;
+    }
+    let read_model = proc.turn_event_log.project();
+    if parts
+        .iter()
+        .any(|part| matches!(part, MessagePart::ToolUse { .. }))
+    {
+        if let Some(retry) = read_model.tool_retries.last() {
+            log::trace!(
+                "agent session event log recorded tool retry: turn={} tool_use_id={} attempt={}",
+                retry.turn_id,
+                retry.tool_use_id,
+                retry.attempt
+            );
+        }
+    }
+    proc.turn_phase = from_projected_turn_phase(read_model.status.turn_phase);
+    appended
+}
+
+fn record_permission_resolution_for_current_turn(
+    proc: &mut AgentProcess,
+    request_id: &str,
+    behavior: &str,
+    answers: Option<serde_json::Value>,
+) {
+    ensure_turn_event_log_started(proc);
+    let decision = if behavior == "allow" {
+        PermissionDecision::Allowed
+    } else {
+        PermissionDecision::Denied
+    };
+    let turn_id = event_turn_id(proc);
+    proc.turn_event_log
+        .append(AgentSessionEvent::PermissionResolved {
+            turn_id,
+            tool_use_id: None,
+            request_id: Some(request_id.to_string()),
+            decision,
+            answers,
+        });
+    proc.turn_phase = from_projected_turn_phase(proc.turn_event_log.project().status.turn_phase);
+}
+
+fn workflow_token_usage(token_usage: Option<(u64, u64)>) -> Option<TurnTokenUsage> {
+    token_usage.map(|(input_tokens, output_tokens)| TurnTokenUsage {
+        input_tokens,
+        output_tokens,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct ProjectedTurnTerminal {
+    final_parts: Vec<MessagePart>,
+    workflow_turn_complete: Option<WorkflowTurnCompleteInput>,
+    session_state: SessionState,
+    turn_completed: bool,
+}
+
+fn append_terminal_events_and_project(
+    proc: &mut AgentProcess,
+    message_id: &str,
+    exit_code: i64,
+    interrupt: Option<(InterruptReason, Option<String>)>,
+    token_usage: Option<(u64, u64)>,
+) -> Option<ProjectedTurnTerminal> {
+    let turn_id = proc.turn_event_log.current_turn_id()?;
+    let final_live_parts = consolidate_parts_from_slice(&proc.streaming_parts);
+    append_terminal_part_events_in_order(proc, turn_id, message_id, &final_live_parts);
+    if interrupt.is_none() && !final_live_parts.is_empty() {
+        proc.turn_event_log
+            .append(AgentSessionEvent::FinalPartsRecorded {
+                turn_id,
+                message_id: message_id.to_string(),
+                parts: final_live_parts.clone(),
+            });
+    }
+
+    match interrupt {
+        Some((reason, error)) => proc
+            .turn_event_log
+            .finalize(turn_id, reason, error, exit_code),
+        None => proc
+            .turn_event_log
+            .append(AgentSessionEvent::TurnCompleted {
+                turn_id,
+                exit_code,
+                token_usage: workflow_token_usage(token_usage),
+            }),
+    }
+
+    let read_model = proc.turn_event_log.project();
+    proc.turn_phase = from_projected_turn_phase(read_model.status.turn_phase);
+    let final_parts = read_model.agent_parts_for_message(message_id);
+    let session_state = read_model.status.session_state;
+    let workflow_turn_complete = read_model.workflow_turn_complete;
+    let turn_completed = workflow_turn_complete
+        .as_ref()
+        .is_some_and(|input| input.turn_id == turn_id);
+    Some(ProjectedTurnTerminal {
+        final_parts,
+        workflow_turn_complete,
+        session_state,
+        turn_completed,
+    })
+}
+
+fn append_terminal_part_events_in_order(
+    proc: &mut AgentProcess,
+    turn_id: u64,
+    message_id: &str,
+    final_parts: &[MessagePart],
+) {
+    let projected_parts = proc
+        .turn_event_log
+        .project()
+        .agent_parts_for_message(message_id);
+    let mut consumed_projected = vec![false; projected_parts.len()];
+    for part in final_parts {
+        if let Some(index) =
+            projected_parts
+                .iter()
+                .enumerate()
+                .find_map(|(index, projected_part)| {
+                    (!consumed_projected[index] && projected_part == part).then_some(index)
+                })
+        {
+            consumed_projected[index] = true;
+            continue;
+        }
+
+        let mode = if terminal_part_has_live_final_event(part) {
+            PartEventMode::FinalLiveBlocks
+        } else {
+            PartEventMode::DurableOnly
+        };
+        proc.turn_event_log.append_part_events(
+            turn_id,
+            message_id,
+            std::slice::from_ref(part),
+            mode,
+        );
+    }
+}
+
+fn terminal_part_has_live_final_event(part: &MessagePart) -> bool {
+    matches!(
+        part,
+        MessagePart::Text { .. } | MessagePart::Thinking { .. } | MessagePart::Error { .. }
+    )
+}
+
 fn mark_post_turn_store_base_untrusted(proc: &mut AgentProcess, message_id: &str) {
     proc.post_turn_base_untrusted_message_id = Some(message_id.to_string());
+}
+
+fn append_parts_to_event_log_in_order(
+    log: &mut TurnEventLog,
+    turn_id: u64,
+    message_id: &str,
+    parts: &[MessagePart],
+) {
+    for (index, part) in parts.iter().enumerate() {
+        if text_is_projected_by_following_todo_snapshot(part, parts.get(index + 1)) {
+            continue;
+        }
+        let mode = if terminal_part_has_live_final_event(part) {
+            PartEventMode::FinalLiveBlocks
+        } else {
+            PartEventMode::DurableOnly
+        };
+        log.append_part_events(turn_id, message_id, std::slice::from_ref(part), mode);
+    }
+}
+
+fn text_is_projected_by_following_todo_snapshot(
+    part: &MessagePart,
+    next: Option<&MessagePart>,
+) -> bool {
+    let MessagePart::Text {
+        content,
+        parent_tool_use_id: None,
+    } = part
+    else {
+        return false;
+    };
+    let Some(MessagePart::TodoListSnapshot { items }) = next else {
+        return false;
+    };
+    content == &todo_update_log(items)
 }
 
 fn clear_post_turn_store_base_untrusted_after_persist_success(
@@ -1360,14 +1646,14 @@ fn flush_streaming_before_transition<F>(
 where
     F: FnMut(&str, &[MessagePart]) -> (bool, bool),
 {
-    let was_streaming = proc.state == BridgeState::Streaming;
+    let turn_completed = proc.state == BridgeState::Streaming;
     let Some(mid) = proc.streaming_message_id.clone() else {
-        return was_streaming;
+        return turn_completed;
     };
     let _ = force_flush_pending_streaming(proc, chat_session_id, &mid, |parts| {
         emit_stream(&mid, parts)
     });
-    was_streaming
+    turn_completed
 }
 
 /// Effect returned by `run_permission_request_transition_locked`. The caller
@@ -1377,6 +1663,7 @@ where
 #[derive(Debug, Default, PartialEq, Eq)]
 struct PermissionRequestTransition {
     did_transition: bool,
+    projected_session_state: Option<SessionState>,
 }
 
 /// Run the in-lock part of the `permission_request` transition: force-flush
@@ -1393,26 +1680,28 @@ fn run_permission_request_transition_locked<F>(
 where
     F: FnMut(&str, &[MessagePart]) -> (bool, bool),
 {
-    let was_streaming = flush_streaming_before_transition(proc, chat_session_id, emit_stream);
-    if was_streaming {
+    let turn_completed = flush_streaming_before_transition(proc, chat_session_id, emit_stream);
+    if turn_completed {
         proc.turn_phase = TurnPhase::WaitingPermission;
         proc.mark_turn_phase_since_now();
     }
     PermissionRequestTransition {
-        did_transition: was_streaming,
+        did_transition: turn_completed,
+        projected_session_state: projected_session_state_for_current_turn(proc),
     }
 }
 
 /// Effect returned by `run_turn_complete_transition_locked`. Carries the
 /// data the caller needs to perform the post-lock follow-ups: state-change
-/// emission, message persistence, and workflow hooks. `was_streaming` gates
+/// emission, message persistence, and workflow hooks. `turn_completed` gates
 /// the `agent-session-state-changed(Idle)` emission.
 #[derive(Debug, Default)]
 struct TurnCompleteTransition {
-    was_streaming: bool,
+    turn_completed: bool,
     final_msg_id: Option<String>,
     final_parts: Vec<MessagePart>,
-    turn_token_usage: Option<(u64, u64)>,
+    workflow_turn_complete: Option<WorkflowTurnCompleteInput>,
+    projected_session_state: Option<SessionState>,
     released_streaming_parts: Vec<MessagePart>,
 }
 
@@ -1421,6 +1710,7 @@ struct TurnCompleteTransition {
 /// snapshot the data the caller needs after releasing the lock. Mirrors the
 /// production stdout reader so tests can drive the exact same code path
 /// (instead of mirroring prepare/apply inline).
+#[cfg(test)]
 fn run_turn_complete_transition_locked<F>(
     proc: &mut AgentProcess,
     chat_session_id: &str,
@@ -1430,10 +1720,35 @@ fn run_turn_complete_transition_locked<F>(
 where
     F: FnMut(&str, &[MessagePart]) -> (bool, bool),
 {
+    run_turn_complete_transition_locked_with_interrupt(
+        proc,
+        chat_session_id,
+        exit_code,
+        None,
+        None,
+        emit_stream,
+    )
+}
+
+fn run_turn_complete_transition_locked_with_interrupt<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    exit_code: i64,
+    interrupt_reason: Option<InterruptReason>,
+    interrupt_error: Option<String>,
+    emit_stream: F,
+) -> TurnCompleteTransition
+where
+    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+{
     if proc.turn_phase == TurnPhase::Idle && proc.state != BridgeState::Initializing {
         return TurnCompleteTransition::default();
     }
-    let was_streaming = flush_streaming_before_transition(proc, chat_session_id, emit_stream);
+    debug_assert_eq!(
+        proc.state == BridgeState::Streaming,
+        proc.streaming_message_id.is_some()
+    );
+    let _flushed_streaming = flush_streaming_before_transition(proc, chat_session_id, emit_stream);
     proc.state = if exit_code == 0 {
         BridgeState::Ready
     } else {
@@ -1444,8 +1759,28 @@ where
     proc.last_progress_at = None;
     proc.turn_watchdog_active = false;
     let turn_token_usage = proc.last_result_token_usage.take();
-    let final_parts = consolidate_parts_from_slice(&proc.streaming_parts);
     let final_msg_id = proc.streaming_message_id.take();
+    let projected_terminal = final_msg_id.as_ref().and_then(|message_id| {
+        append_terminal_events_and_project(
+            proc,
+            message_id,
+            exit_code,
+            interrupt_reason.map(|reason| (reason, interrupt_error.clone())),
+            turn_token_usage,
+        )
+    });
+    let final_parts = projected_terminal
+        .as_ref()
+        .map(|terminal| terminal.final_parts.clone())
+        .unwrap_or_else(|| consolidate_parts_from_slice(&proc.streaming_parts));
+    let turn_completed = projected_terminal
+        .as_ref()
+        .is_some_and(|terminal| terminal.turn_completed);
+    let projected_session_state = projected_terminal
+        .as_ref()
+        .map(|terminal| terminal.session_state.clone());
+    let workflow_turn_complete =
+        projected_terminal.and_then(|terminal| terminal.workflow_turn_complete);
     let completed_turn_token = proc.active_turn_token.take();
     proc.post_turn_message_token = if exit_code == 0 && final_msg_id.is_some() {
         completed_turn_token
@@ -1455,7 +1790,7 @@ where
     if final_msg_id.is_some() {
         proc.last_message_id.clone_from(&final_msg_id);
     }
-    if was_streaming && !final_parts.is_empty() {
+    if turn_completed && !final_parts.is_empty() {
         if let Some(ref mid) = final_msg_id {
             mark_post_turn_store_base_untrusted(proc, mid);
         }
@@ -1466,10 +1801,11 @@ where
         Vec::new()
     };
     TurnCompleteTransition {
-        was_streaming,
+        turn_completed,
         final_msg_id,
         final_parts,
-        turn_token_usage,
+        workflow_turn_complete,
+        projected_session_state,
         released_streaming_parts,
     }
 }
@@ -1492,7 +1828,14 @@ where
     };
     proc.streaming_parts.push(error_part.clone());
     enqueue_pending_delta(proc, &[error_part]);
-    run_turn_complete_transition_locked(proc, chat_session_id, STALE_EXIT_CODE, emit_stream)
+    run_turn_complete_transition_locked_with_interrupt(
+        proc,
+        chat_session_id,
+        STALE_EXIT_CODE,
+        Some(InterruptReason::Timeout),
+        Some(timeout.user_message().to_string()),
+        emit_stream,
+    )
 }
 
 #[derive(Debug, Default)]
@@ -1519,8 +1862,18 @@ where
         proc.streaming_parts.push(part.clone());
         enqueue_pending_delta(proc, std::slice::from_ref(&part));
     }
-    let turn_complete = run_turn_complete_transition_locked(proc, chat_session_id, 1, emit_stream);
-    let context_restore_failed_on_init = !turn_complete.was_streaming
+    let turn_complete = run_turn_complete_transition_locked_with_interrupt(
+        proc,
+        chat_session_id,
+        1,
+        Some(InterruptReason::BridgeCrash),
+        Some(match sdk_error_part_from_message(msg) {
+            MessagePart::Error { content, .. } => content,
+            _ => "Error: Unknown bridge error".to_string(),
+        }),
+        emit_stream,
+    );
+    let context_restore_failed_on_init = !turn_complete.turn_completed
         && was_initializing
         && proc.context_carry_on_ready.take().is_some();
 
@@ -1538,6 +1891,7 @@ where
 #[derive(Debug, Default, PartialEq, Eq)]
 struct PermissionResponseTransition {
     did_transition: bool,
+    projected_session_state: Option<SessionState>,
 }
 
 /// Run the in-lock part of `respond_agent_permission`: flip `turn_phase`
@@ -1594,7 +1948,16 @@ where
             emit_stream(&mid, parts)
         });
     }
-    PermissionResponseTransition { did_transition }
+    record_permission_resolution_for_current_turn(
+        proc,
+        request_id,
+        behavior,
+        answers_value.cloned(),
+    );
+    PermissionResponseTransition {
+        did_transition,
+        projected_session_state: projected_session_state_for_current_turn(proc),
+    }
 }
 
 /// Per-delta flush decision used by the stdout reader. `post_turn` is true
@@ -1765,7 +2128,18 @@ fn accumulate_loaded_post_turn_base_without_streaming_state<F>(
 where
     F: FnMut(&str, &[MessagePart]) -> (bool, bool),
 {
-    let mut parts = base_parts;
+    let old_turn_id = 1;
+    let mut old_message_log = TurnEventLog::default();
+    old_message_log.begin_turn(
+        old_turn_id,
+        fallback_prompt_message_id(&base_mid),
+        base_mid.clone(),
+        PromptInput::default(),
+        now_timestamp(),
+    );
+    append_parts_to_event_log_in_order(&mut old_message_log, old_turn_id, &base_mid, &base_parts);
+
+    let mut parts = base_parts.clone();
     let mut task_id_map = task_id_map_from_parts(&parts);
     let prev_parts = parts.clone();
     let (acc, updated_parts) = accumulate_sdk_message(msg, &mut parts, &mut task_id_map);
@@ -1785,7 +2159,8 @@ where
         };
     }
 
-    let persist_parts = consolidate_parts_from_slice(&parts);
+    append_parts_to_event_log_in_order(&mut old_message_log, old_turn_id, &base_mid, &delta);
+    let persist_parts = old_message_log.project().agent_parts_for_message(&base_mid);
     let _ = emit_stream(&base_mid, &persist_parts);
 
     log::warn!(
@@ -1906,6 +2281,7 @@ where
     let acc = accumulation.handled;
     let updated_parts = accumulation.updated_parts;
     if !acc {
+        proc.streaming_parts.truncate(prev_len);
         if post_turn {
             let start_streaming_timer = proc.pending_stream_part_count > 0;
             let released_streaming_parts = if !start_streaming_timer {
@@ -1954,6 +2330,11 @@ where
         };
     }
 
+    let durable_parts_appended = if let Some(ref mid) = mid {
+        record_durable_parts_for_current_turn(proc, mid, &delta) > 0
+    } else {
+        false
+    };
     enqueue_pending_delta(proc, &delta);
 
     if should_flush_per_delta(proc, &delta, post_turn) {
@@ -1964,12 +2345,28 @@ where
         }
     }
 
-    let should_persist = post_turn || elapsed_persist_ms >= PERSIST_INTERVAL_MS;
+    let mut should_persist = post_turn || elapsed_persist_ms >= PERSIST_INTERVAL_MS;
+    if in_streaming && !durable_parts_appended {
+        should_persist = false;
+    }
     let persist_parts = if should_persist {
-        consolidate_parts_from_slice(&proc.streaming_parts)
+        if in_streaming {
+            mid.as_ref()
+                .map(|message_id| {
+                    proc.turn_event_log
+                        .project()
+                        .agent_parts_for_message(message_id)
+                })
+                .unwrap_or_default()
+        } else {
+            consolidate_parts_from_slice(&proc.streaming_parts)
+        }
     } else {
         Vec::new()
     };
+    if in_streaming && persist_parts.is_empty() {
+        should_persist = false;
+    }
     if post_turn && should_persist {
         if let Some(ref mid) = mid {
             mark_post_turn_store_base_untrusted(proc, mid);
@@ -2146,18 +2543,18 @@ where
         return BridgeEofCrashTransition::default();
     }
 
-    let was_streaming = proc.state == BridgeState::Streaming;
+    let turn_completed = proc.state == BridgeState::Streaming;
     let was_initializing = proc.state == BridgeState::Initializing;
     // Ready/Idle EOF: the turn already completed but the child exited, so the
     // process is no longer reusable and must be evicted before the next send.
     let should_evict = proc.state == BridgeState::Ready && proc.turn_phase == TurnPhase::Idle;
-    let sdk_error_message = if was_streaming || was_initializing {
+    let sdk_error_message = if turn_completed || was_initializing {
         Some(format!("{}: {BRIDGE_EOF_ERROR_MESSAGE}", proc.backend_id))
     } else {
         None
     };
 
-    if was_streaming {
+    if turn_completed {
         let part = MessagePart::Error {
             content: format!("Error: {BRIDGE_EOF_ERROR_MESSAGE}"),
             parent_tool_use_id: None,
@@ -2166,12 +2563,19 @@ where
         enqueue_pending_delta(proc, &[part]);
     }
 
-    let turn_complete = if was_streaming || was_initializing {
-        run_turn_complete_transition_locked(proc, chat_session_id, -1, emit_stream)
+    let turn_complete = if turn_completed || was_initializing {
+        run_turn_complete_transition_locked_with_interrupt(
+            proc,
+            chat_session_id,
+            -1,
+            Some(InterruptReason::BridgeCrash),
+            Some(format!("Error: {BRIDGE_EOF_ERROR_MESSAGE}")),
+            emit_stream,
+        )
     } else {
         TurnCompleteTransition::default()
     };
-    let context_restore_failed_on_init = !turn_complete.was_streaming
+    let context_restore_failed_on_init = !turn_complete.turn_completed
         && was_initializing
         && proc.context_carry_on_ready.take().is_some();
 
@@ -2275,7 +2679,15 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
         _ => return,
     };
     let worktree_path = meta.worktree_path.clone();
-    let session_state = session_state_override.unwrap_or_else(|| meta.state.clone());
+    let session_state = match (&meta.state, session_state_override) {
+        (
+            crate::usecase::agent_session::session::SessionState::Done
+            | crate::usecase::agent_session::session::SessionState::Archived,
+            _,
+        ) => meta.state.clone(),
+        (_, Some(projected)) => projected,
+        (_, None) => meta.state.clone(),
+    };
 
     let status_turn_phase = to_status_turn_phase(turn_phase);
     let agent_state =
@@ -2709,7 +3121,11 @@ fn push_or_update_tool_result(
             };
             let mut delta_content = String::new();
             if !content.is_empty() {
-                if content.contains(existing.as_str()) || existing.is_empty() {
+                if *existing_error && !is_error {
+                    delta_content = content.clone();
+                    *existing = content;
+                    *existing_error = false;
+                } else if content.contains(existing.as_str()) || existing.is_empty() {
                     delta_content = content.clone();
                     *existing = content;
                 } else {
@@ -3500,6 +3916,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                 active_turn_token: None,
                 post_turn_message_token: None,
                 streaming_parts: Vec::new(),
+                turn_event_log: TurnEventLog::default(),
                 last_message_id: None,
                 post_turn_base_untrusted_message_id: None,
                 task_id_map: HashMap::new(),
@@ -3792,10 +4209,13 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                     // exact same flush → state-mutation order. Flush
                                     // failure is best-effort — we still mutate state so
                                     // turn_complete notification fires.
-                                    let effect = run_turn_complete_transition_locked(
+                                    let effect = run_turn_complete_transition_locked_with_interrupt(
                                         proc,
                                         &csid_stdout,
                                         exit_code,
+                                        interrupted.then_some(InterruptReason::Abort),
+                                        interrupted
+                                            .then(|| "Turn interrupted by abort".to_string()),
                                         |mid, parts| {
                                             emit_streaming_parts(
                                                 &app_stdout,
@@ -3809,12 +4229,12 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                         proc.sdk_session_id = rollback_sdk_session_id.clone();
                                         proc.post_turn_message_token = None;
                                     }
-                                    let context_restore_failed_on_init = !effect.was_streaming
+                                    let context_restore_failed_on_init = !effect.turn_completed
                                         && exit_code != 0
                                         && proc.context_carry_on_ready.take().is_some();
 
                                     // User turn succeeded: persist agent_session_id to SessionStore
-                                    if effect.was_streaming && exit_code == 0 && !interrupted {
+                                    if effect.turn_completed && exit_code == 0 && !interrupted {
                                         let sid = completed_session_id
                                             .clone()
                                             .or_else(|| proc.sdk_session_id.clone());
@@ -3840,7 +4260,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         }
 
                         // Resume failure (error during init) → clear stale agent_session_id
-                        if !effect.was_streaming && exit_code != 0 {
+                        if !effect.turn_completed && exit_code != 0 {
                             persist_context_carry_failed_after_init_error(
                                 &app_stdout,
                                 &session_store_clone,
@@ -3856,11 +4276,9 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                             &session_store_clone,
                             &handles_stdout,
                             &csid_stdout,
-                            exit_code,
                             effect,
                             TurnCompletePostOptions {
                                 consume_pending: true,
-                                interrupted,
                             },
                         )
                         .await;
@@ -3904,11 +4322,9 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                             &session_store_clone,
                             &handles_stdout,
                             &csid_stdout,
-                            1,
                             turn_complete,
                             TurnCompletePostOptions {
                                 consume_pending: true,
-                                interrupted: false,
                             },
                         )
                         .await;
@@ -4032,10 +4448,10 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                         // accumulated text before SET_PENDING_PERMISSION dispatches
                         // and the WaitingPermission state notification fires.
                         // Order: buffer flush → state notify → followup.
-                        let permission_did_transition = if msg_type == "permission_request" {
+                        let permission_transition = if msg_type == "permission_request" {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
-                                let effect = run_permission_request_transition_locked(
+                                run_permission_request_transition_locked(
                                     proc,
                                     &csid_stdout,
                                     |mid, parts| {
@@ -4046,13 +4462,12 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                             parts.to_vec(),
                                         )
                                     },
-                                );
-                                effect.did_transition
+                                )
                             } else {
-                                false
+                                PermissionRequestTransition::default()
                             }
                         } else {
-                            false
+                            PermissionRequestTransition::default()
                         };
 
                         // Forward non-accumulated messages (meta events) as agent-sdk-message.
@@ -4061,7 +4476,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                             let _ = app_stdout.emit("agent-sdk-message", &msg);
                         }
 
-                        if permission_did_transition {
+                        if permission_transition.did_transition {
                             emit_session_state_changed(
                                 &app_stdout,
                                 &csid_stdout,
@@ -4074,7 +4489,7 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
                                 &session_store_clone,
                                 &csid_stdout,
                                 TurnPhase::WaitingPermission,
-                                None,
+                                permission_transition.projected_session_state,
                             );
                         }
                     }
@@ -4134,17 +4549,15 @@ async fn spawn_bridge_process<R: tauri::Runtime>(
         }
         let was_initializing = transition.was_initializing;
         let effect = transition.turn_complete;
-        if effect.was_streaming {
+        if effect.turn_completed {
             complete_streaming_turn_post_lock(
                 &app_stdout,
                 &session_store_clone,
                 &handles_stdout,
                 &csid_stdout,
-                -1,
                 effect,
                 TurnCompletePostOptions {
                     consume_pending: true,
-                    interrupted: false,
                 },
             )
             .await;
@@ -4220,7 +4633,6 @@ fn try_mark_turn_watchdog_active(proc: &mut AgentProcess) -> bool {
 #[derive(Debug, Clone, Copy)]
 struct TurnCompletePostOptions {
     consume_pending: bool,
-    interrupted: bool,
 }
 
 async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
@@ -4228,14 +4640,17 @@ async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
-    exit_code: i64,
     effect: TurnCompleteTransition,
     options: TurnCompletePostOptions,
 ) {
-    if !effect.was_streaming {
+    if !effect.turn_completed {
         return;
     }
-    let interrupted = options.interrupted;
+    let Some(projected_turn_complete) = effect.workflow_turn_complete.as_ref() else {
+        return;
+    };
+    let interrupted = projected_turn_complete.interrupted;
+    let projected_exit_code = projected_turn_complete.exit_code;
 
     if let Some(ref mid) = effect.final_msg_id {
         if !effect.final_parts.is_empty() {
@@ -4258,34 +4673,15 @@ async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
         app,
         chat_session_id,
         TurnPhase::Idle,
-        Some(exit_code),
+        Some(projected_exit_code),
         interrupted,
     );
-    let override_state = if interrupted {
-        Some(crate::usecase::agent_session::session::SessionState::Idle)
-    } else if exit_code != 0 {
-        Some(crate::usecase::agent_session::session::SessionState::Error)
-    } else {
-        None
-    };
-    if interrupted {
-        if let Ok(data_dir) = resolve_data_dir(app) {
-            if let Err(e) = crate::usecase::agent_session::session::update_session_state_in_data_dir(
-                session_store,
-                &data_dir,
-                chat_session_id,
-                crate::usecase::agent_session::session::SessionState::Idle,
-            ) {
-                log::warn!("Failed to mark interrupted session idle for {chat_session_id}: {e}");
-            }
-        }
-    }
     notify_status_transition(
         app,
         session_store,
         chat_session_id,
         TurnPhase::Idle,
-        override_state,
+        effect.projected_session_state.clone(),
     );
 
     let pending = if options.consume_pending {
@@ -4298,11 +4694,8 @@ async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
         Arc::clone(session_store),
         Arc::clone(handles),
         chat_session_id.to_string(),
-        exit_code,
-        effect.final_parts,
-        effect.turn_token_usage,
+        effect.workflow_turn_complete,
         pending,
-        interrupted,
     );
 }
 
@@ -4405,7 +4798,7 @@ async fn finalize_timed_out_turn<R: tauri::Runtime>(
         };
     };
 
-    if !effect.was_streaming {
+    if !effect.turn_completed {
         return TimeoutFinalizeOutcome {
             completed: false,
             continue_watchdog: false,
@@ -4418,11 +4811,9 @@ async fn finalize_timed_out_turn<R: tauri::Runtime>(
         session_store,
         handles,
         chat_session_id,
-        STALE_EXIT_CODE,
         effect,
         TurnCompletePostOptions {
             consume_pending: true,
-            interrupted: false,
         },
     )
     .await;
@@ -5687,7 +6078,7 @@ pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
         .await;
     }
 
-    start_agent_turn_with_runtime_spawner(
+    let projected_session_state = start_agent_turn_with_runtime_spawner(
         Some(app),
         Some(session_store),
         handles,
@@ -5731,7 +6122,7 @@ pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
         session_store,
         chat_session_id,
         TurnPhase::Streaming,
-        None,
+        projected_session_state,
     );
 
     Ok(())
@@ -5765,7 +6156,7 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
         .await;
     }
 
-    start_agent_turn_with_runtime_spawner_locked(
+    let projected_session_state = start_agent_turn_with_runtime_spawner_locked(
         Some(app),
         Some(session_store),
         handles,
@@ -5808,7 +6199,7 @@ async fn start_agent_turn_locked<R: tauri::Runtime>(
         session_store,
         chat_session_id,
         TurnPhase::Streaming,
-        None,
+        projected_session_state,
     );
 
     Ok(())
@@ -5865,7 +6256,7 @@ async fn start_agent_turn_with_runtime_spawner<R: tauri::Runtime, F, Fut>(
     streaming_message_id: &str,
     images: &[ImageAttachment],
     spawn_runtime: F,
-) -> Result<(), String>
+) -> Result<Option<SessionState>, String>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<(), String>>,
@@ -5886,6 +6277,53 @@ where
     .await
 }
 
+fn prompt_input_for_started_turn<R: tauri::Runtime>(
+    app: Option<&tauri::AppHandle<R>>,
+    session_store: Option<&Arc<SessionStore>>,
+    chat_session_id: &str,
+    streaming_message_id: &str,
+    fallback_prompt: &str,
+    fallback_images: &[ImageAttachment],
+) -> StartedTurnPrompt {
+    let fallback = || {
+        started_turn_prompt_from_fallback(streaming_message_id, fallback_prompt, fallback_images)
+    };
+    let Some(app) = app else {
+        return fallback();
+    };
+    let Some(session_store) = session_store else {
+        return fallback();
+    };
+    let data_dir = match resolve_data_dir(app) {
+        Ok(data_dir) => data_dir,
+        Err(e) => {
+            log::warn!("Failed to resolve data dir for turn event prompt input: {e}");
+            return fallback();
+        }
+    };
+    let human_message = match session_store.load_previous_human_message_before_agent(
+        &data_dir,
+        chat_session_id,
+        streaming_message_id,
+    ) {
+        Ok(Some(message)) => message,
+        Ok(None) => {
+            return fallback();
+        }
+        Err(e) => {
+            log::warn!("Failed to load session for turn event prompt input: {e}");
+            return fallback();
+        }
+    };
+    if human_message.role != MessageRole::Human {
+        return fallback();
+    }
+    StartedTurnPrompt {
+        message_id: human_message.id.clone(),
+        prompt: PromptInput::from_human_message(&human_message),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn start_agent_turn_with_runtime_spawner_locked<R: tauri::Runtime, F, Fut>(
     app: Option<&tauri::AppHandle<R>>,
@@ -5897,7 +6335,7 @@ async fn start_agent_turn_with_runtime_spawner_locked<R: tauri::Runtime, F, Fut>
     streaming_message_id: &str,
     images: &[ImageAttachment],
     spawn_runtime: F,
-) -> Result<(), String>
+) -> Result<Option<SessionState>, String>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<(), String>>,
@@ -5905,6 +6343,14 @@ where
     let canonical_permission_mode =
         crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
     ensure_runtime_for_turn(handles, chat_session_id, spawn_runtime).await?;
+    let started_turn_prompt = prompt_input_for_started_turn(
+        app,
+        session_store,
+        chat_session_id,
+        streaming_message_id,
+        prompt,
+        images,
+    );
 
     // Send message command.
     // Even if a message is sent while the SDK is still processing an interrupt,
@@ -5913,7 +6359,7 @@ where
     let msg_cmd = build_message_cmd(prompt, images, Some(streaming_message_id));
     let data = format!("{}\n", msg_cmd);
 
-    {
+    let projected_session_state = {
         let mut map = handles.lock().await;
         if let Some(proc) = map.get_mut(chat_session_id) {
             proc.sync_pre_turn_settings(permission_mode).await?;
@@ -5925,6 +6371,13 @@ where
             proc.active_turn_token = Some(streaming_message_id.to_string());
             proc.reset_streaming_state_for_new_turn();
             proc.begin_turn_liveness();
+            begin_turn_event_log(
+                proc,
+                &started_turn_prompt.message_id,
+                started_turn_prompt.prompt,
+                streaming_message_id,
+                now_timestamp(),
+            );
             proc.stdin
                 .write_all(data.as_bytes())
                 .await
@@ -5939,12 +6392,13 @@ where
                     spawn_turn_watchdog(app, handles, session_store, chat_session_id, proc);
                 }
             }
+            projected_session_state_for_current_turn(proc)
         } else {
             return Err(format!("No agent process for session {chat_session_id}"));
         }
-    }
+    };
 
-    Ok(())
+    Ok(projected_session_state)
 }
 
 async fn ensure_runtime_for_turn<F, Fut>(
@@ -6803,7 +7257,7 @@ pub async fn respond_agent_permission_internal(
             .await?;
     }
 
-    let did_transition_to_streaming;
+    let permission_transition;
     {
         let mut map = handles.lock().await;
         if let Some(proc) = map.get_mut(&chat_session_id) {
@@ -6831,12 +7285,12 @@ pub async fn respond_agent_permission_internal(
                 answers_value.as_ref(),
                 |mid, parts| emit_streaming_parts(app, &chat_session_id, mid, parts.to_vec()),
             );
-            did_transition_to_streaming = effect.did_transition;
+            permission_transition = effect;
 
             // Resuming the turn: restart the per-turn auxiliary timer if it
             // has already exited (turn left Streaming when WaitingPermission
             // was entered). Idempotent — no-op if a timer is still alive.
-            if did_transition_to_streaming {
+            if permission_transition.did_transition {
                 spawn_streaming_timer(app, handles, &chat_session_id, proc);
             }
         } else {
@@ -6847,14 +7301,14 @@ pub async fn respond_agent_permission_internal(
     }
 
     // Emit state change only if we actually transitioned: WaitingPermission → Streaming
-    if did_transition_to_streaming {
+    if permission_transition.did_transition {
         emit_session_state_changed(app, &chat_session_id, TurnPhase::Streaming, None, false);
         notify_status_transition(
             app,
             session_store,
             &chat_session_id,
             TurnPhase::Streaming,
-            None,
+            permission_transition.projected_session_state,
         );
     }
 
@@ -6875,17 +7329,32 @@ impl Default for ExternalBridgeMessageState {
 }
 
 #[allow(dead_code)]
+pub(crate) struct ExternalAgentTurnStart<'a> {
+    pub permission_mode: &'a str,
+    pub streaming_message_id: &'a str,
+    pub prompt: &'a str,
+    pub images: &'a [ImageAttachment],
+}
+
+#[allow(dead_code)]
 pub(crate) async fn start_external_agent_turn_state<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
-    permission_mode: &str,
-    streaming_message_id: &str,
+    turn: ExternalAgentTurnStart<'_>,
 ) -> Result<(), String> {
-    let canonical_permission_mode =
-        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
-    {
+    let canonical_permission_mode = crate::permission::PermissionMode::parse(turn.permission_mode)
+        .map_err(|e| e.to_string())?;
+    let started_turn_prompt = prompt_input_for_started_turn(
+        Some(app),
+        Some(session_store),
+        chat_session_id,
+        turn.streaming_message_id,
+        turn.prompt,
+        turn.images,
+    );
+    let projected_session_state = {
         let mut map = handles.lock().await;
         let proc = map
             .get_mut(chat_session_id)
@@ -6893,18 +7362,27 @@ pub(crate) async fn start_external_agent_turn_state<R: tauri::Runtime>(
         proc.current_permission_mode = canonical_permission_mode.as_str().to_string();
         proc.state = BridgeState::Streaming;
         proc.turn_phase = TurnPhase::Streaming;
-        proc.streaming_message_id = Some(streaming_message_id.to_string());
-        proc.active_turn_token = Some(streaming_message_id.to_string());
+        proc.streaming_message_id = Some(turn.streaming_message_id.to_string());
+        proc.active_turn_token = Some(turn.streaming_message_id.to_string());
         proc.reset_streaming_state_for_new_turn();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(
+            proc,
+            &started_turn_prompt.message_id,
+            started_turn_prompt.prompt,
+            turn.streaming_message_id,
+            now_timestamp(),
+        );
         spawn_streaming_timer(app, handles, chat_session_id, proc);
-    }
+        projected_session_state_for_current_turn(proc)
+    };
     emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None, false);
     notify_status_transition(
         app,
         session_store,
         chat_session_id,
         TurnPhase::Streaming,
-        None,
+        projected_session_state,
     );
     Ok(())
 }
@@ -6971,6 +7449,7 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
                 active_turn_token: None,
                 post_turn_message_token: None,
                 streaming_parts: Vec::new(),
+                turn_event_log: TurnEventLog::default(),
                 last_message_id: None,
                 post_turn_base_untrusted_message_id: None,
                 task_id_map: HashMap::new(),
@@ -7123,6 +7602,7 @@ pub(crate) async fn finish_external_pending_message_turn_start(chat_session_id: 
     clear_pending_turn_starting(chat_session_id).await;
 }
 
+#[cfg(test)]
 fn workflow_final_text_parts(final_parts: &[MessagePart]) -> Vec<String> {
     final_parts
         .iter()
@@ -7152,11 +7632,8 @@ fn spawn_workflow_turn_complete_notification<R: tauri::Runtime>(
     session_store: Arc<SessionStore>,
     handles: Arc<Mutex<AgentProcessMap>>,
     chat_session_id: String,
-    exit_code: i64,
-    final_parts: Vec<MessagePart>,
-    token_usage: Option<(u64, u64)>,
+    workflow_turn_complete: Option<WorkflowTurnCompleteInput>,
     pending: Option<PendingMessage>,
-    interrupted: bool,
 ) {
     let workflow_runtime: Option<Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>> = app
         .try_state::<Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>()
@@ -7164,22 +7641,22 @@ fn spawn_workflow_turn_complete_notification<R: tauri::Runtime>(
     let handle = tokio::runtime::Handle::current();
     std::thread::spawn(move || {
         handle.block_on(async move {
-            if let Some(runtime) = workflow_runtime {
+            if let (Some(runtime), Some(projected)) = (workflow_runtime, workflow_turn_complete) {
                 if runtime.is_session_running(&chat_session_id).await {
-                    let final_text_parts = workflow_final_text_parts(&final_parts);
-                    let token_usage = token_usage.map(|(input_tokens, output_tokens)| {
+                    let final_text_parts = projected.final_text_parts.clone();
+                    let token_usage = projected.token_usage.map(|usage| {
                         crate::usecase::workflow::ports::WorkflowTurnTokenUsage {
-                            input_tokens,
-                            output_tokens,
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
                         }
                     });
                     let command =
                         crate::usecase::workflow::ports::WorkflowTurnCompleteNotification {
                             chat_session_id: chat_session_id.clone(),
-                            exit_code,
+                            exit_code: projected.exit_code,
                             final_text_parts,
                             token_usage,
-                            interrupted,
+                            interrupted: projected.interrupted,
                         };
                     if let Err(e) = runtime.complete_turn(command).await {
                         log::error!("Workflow turn completion error for {chat_session_id}: {e}");
@@ -7300,10 +7777,12 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                     if bridge_message_is_stale_for_active_turn(proc, &msg) {
                         (None, false, true)
                     } else {
-                        let effect = run_turn_complete_transition_locked(
+                        let effect = run_turn_complete_transition_locked_with_interrupt(
                             proc,
                             chat_session_id,
                             exit_code,
+                            interrupted.then_some(InterruptReason::Abort),
+                            interrupted.then(|| "Turn interrupted by abort".to_string()),
                             |mid, parts| {
                                 emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
                             },
@@ -7312,7 +7791,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                             proc.sdk_session_id = rollback_sdk_session_id.clone();
                             proc.post_turn_message_token = None;
                         }
-                        let context_restore_failed_on_init = !effect.was_streaming
+                        let context_restore_failed_on_init = !effect.turn_completed
                             && exit_code != 0
                             && proc.context_carry_on_ready.take().is_some();
                         (Some(effect), context_restore_failed_on_init, false)
@@ -7329,13 +7808,14 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                 return;
             };
             let TurnCompleteTransition {
-                was_streaming,
+                turn_completed,
                 final_msg_id,
                 final_parts,
-                turn_token_usage,
+                workflow_turn_complete,
+                projected_session_state,
                 released_streaming_parts,
             } = effect;
-            if was_streaming {
+            if turn_completed {
                 if exit_code == 0 && !interrupted {
                     if let Some(sid) = completed_session_id.as_deref() {
                         persist_agent_session_id(app, session_store, chat_session_id, sid);
@@ -7362,42 +7842,22 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                     }
                 }
                 drop(released_streaming_parts);
-                if interrupted {
-                    if let Ok(data_dir) = resolve_data_dir(app) {
-                        if let Err(e) =
-                            crate::usecase::agent_session::session::update_session_state_in_data_dir(
-                                session_store,
-                                &data_dir,
-                                chat_session_id,
-                                crate::usecase::agent_session::session::SessionState::Idle,
-                            )
-                        {
-                            log::warn!(
-                                "Failed to mark interrupted session idle for {chat_session_id}: {e}"
-                            );
-                        }
-                    }
-                }
+                let Some(projected_turn_complete) = workflow_turn_complete.as_ref() else {
+                    return;
+                };
                 emit_session_state_changed(
                     app,
                     chat_session_id,
                     TurnPhase::Idle,
-                    Some(exit_code),
-                    interrupted,
+                    Some(projected_turn_complete.exit_code),
+                    projected_turn_complete.interrupted,
                 );
-                let override_state = if interrupted {
-                    Some(crate::usecase::agent_session::session::SessionState::Idle)
-                } else if exit_code != 0 {
-                    Some(crate::usecase::agent_session::session::SessionState::Error)
-                } else {
-                    None
-                };
                 notify_status_transition(
                     app,
                     session_store,
                     chat_session_id,
                     TurnPhase::Idle,
-                    override_state,
+                    projected_session_state,
                 );
                 // Codex app-server は独自の pending キュー
                 // (`start_next_app_server_pending_turn`) で follow-up turn を起動するため、
@@ -7421,11 +7881,8 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                     Arc::clone(session_store),
                     Arc::clone(handles),
                     chat_session_id.to_string(),
-                    exit_code,
-                    final_parts,
-                    turn_token_usage,
+                    workflow_turn_complete,
                     pending,
-                    interrupted,
                 );
             } else if exit_code != 0 {
                 persist_context_carry_failed_after_init_error(
@@ -7451,7 +7908,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
 
             let transition = transition.unwrap_or_default();
             let effect = transition.turn_complete;
-            if effect.was_streaming {
+            if effect.turn_completed {
                 if let Some(ref mid) = effect.final_msg_id {
                     if !effect.final_parts.is_empty() {
                         let persisted = persist_streaming_parts(
@@ -7472,13 +7929,22 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                         }
                     }
                 }
-                emit_session_state_changed(app, chat_session_id, TurnPhase::Idle, Some(1), false);
+                let Some(projected_turn_complete) = effect.workflow_turn_complete.as_ref() else {
+                    return;
+                };
+                emit_session_state_changed(
+                    app,
+                    chat_session_id,
+                    TurnPhase::Idle,
+                    Some(projected_turn_complete.exit_code),
+                    projected_turn_complete.interrupted,
+                );
                 notify_status_transition(
                     app,
                     session_store,
                     chat_session_id,
                     TurnPhase::Idle,
-                    Some(crate::usecase::agent_session::session::SessionState::Error),
+                    effect.projected_session_state.clone(),
                 );
                 let pending = {
                     let is_legacy_bridge = {
@@ -7497,11 +7963,8 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                     Arc::clone(session_store),
                     Arc::clone(handles),
                     chat_session_id.to_string(),
-                    1,
-                    effect.final_parts,
-                    effect.turn_token_usage,
+                    effect.workflow_turn_complete,
                     pending,
-                    false,
                 );
             } else if transition.was_initializing {
                 notify_status_transition(
@@ -7582,28 +8045,23 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             }
             drop(std::mem::take(&mut effect.released_streaming_parts));
 
-            let permission_did_transition = if msg_type == "permission_request" {
+            let permission_transition = if msg_type == "permission_request" {
                 let mut map = handles.lock().await;
                 if let Some(proc) = map.get_mut(chat_session_id) {
-                    let effect = run_permission_request_transition_locked(
-                        proc,
-                        chat_session_id,
-                        |mid, parts| {
-                            emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
-                        },
-                    );
-                    effect.did_transition
+                    run_permission_request_transition_locked(proc, chat_session_id, |mid, parts| {
+                        emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
+                    })
                 } else {
-                    false
+                    PermissionRequestTransition::default()
                 }
             } else {
-                false
+                PermissionRequestTransition::default()
             };
 
             if should_forward_sdk_message(effect.accumulated, msg_type) {
                 let _ = app.emit("agent-sdk-message", &msg);
             }
-            if permission_did_transition {
+            if permission_transition.did_transition {
                 emit_session_state_changed(
                     app,
                     chat_session_id,
@@ -7616,7 +8074,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                     session_store,
                     chat_session_id,
                     TurnPhase::WaitingPermission,
-                    None,
+                    permission_transition.projected_session_state,
                 );
             }
         }
@@ -8520,12 +8978,14 @@ pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptor::gateway::agent_session::FileSessionStorage;
     use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
     use crate::adaptor::gateway::workflow::test_support::TestRuntimeKernel;
     use crate::infrastructure::agent_session::runtime::{
         AgentBackend, AgentBackendRegistry, AgentMessage, PermissionResponse, SessionConfig,
         SessionHandle,
     };
+    use crate::usecase::agent_session::session::{AttachmentRef, MessageMention};
     use async_trait::async_trait;
 
     fn approved_fix_policy_output(policy: &str, review_step: &str) -> String {
@@ -8552,6 +9012,494 @@ mod tests {
 
     fn test_pending_message(id: &str, content: &str) -> PendingMessage {
         pending_message_for_test(id, content, 1.0)
+    }
+
+    fn test_prompt_input(content: &str) -> PromptInput {
+        PromptInput::from_content_images(content, std::iter::empty::<(String, String)>())
+    }
+
+    fn begin_test_turn_event_log(proc: &mut AgentProcess) {
+        let assistant_message_id = proc
+            .streaming_message_id
+            .as_deref()
+            .unwrap_or("m1")
+            .to_string();
+        begin_turn_event_log(
+            proc,
+            "human-1",
+            test_prompt_input("prompt"),
+            &assistant_message_id,
+            1.0,
+        );
+    }
+
+    fn assert_started_turn_prompt_matches_fallback(
+        started_turn_prompt: StartedTurnPrompt,
+        streaming_message_id: &str,
+        fallback_prompt: &str,
+        fallback_images: &[ImageAttachment],
+    ) {
+        let expected = started_turn_prompt_from_fallback(
+            streaming_message_id,
+            fallback_prompt,
+            fallback_images,
+        );
+        assert_eq!(started_turn_prompt.message_id, expected.message_id);
+        assert_eq!(started_turn_prompt.prompt, expected.prompt);
+    }
+
+    #[test]
+    fn prompt_input_from_human_message_preserves_mentions_and_prompt_parts() {
+        let attachment = AttachmentRef {
+            id: "att-1".to_string(),
+            media_type: "image/png".to_string(),
+            byte_size: 42,
+        };
+        let parts = vec![
+            MessagePart::Text {
+                content: "inspect this".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ImageRef {
+                attachment: attachment.clone(),
+            },
+        ];
+        let mentions = vec![MessageMention {
+            file_path: "src/main.rs".to_string(),
+            start_line: Some(7),
+            end_line: Some(9),
+        }];
+        let message = ChatMessage {
+            id: "human-1".to_string(),
+            role: MessageRole::Human,
+            content: "inspect this".to_string(),
+            thinking: None,
+            activities: None,
+            parts: Some(parts.clone()),
+            timestamp: 1.0,
+            mentions: Some(mentions.clone()),
+        };
+
+        let prompt = PromptInput::from_human_message(&message);
+
+        assert_eq!(prompt.content, "inspect this");
+        assert_eq!(prompt.mentions, mentions);
+        assert_eq!(prompt.attachment_refs, vec![attachment]);
+        assert_eq!(prompt.parts, parts);
+    }
+
+    #[test]
+    fn started_turn_prompt_uses_saved_human_message_id_and_parts() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let parts = vec![MessagePart::Text {
+            content: "inspect this".to_string(),
+            parent_tool_use_id: None,
+        }];
+        let mentions = vec![crate::domain::code::MentionReference {
+            file_path: "src/main.rs".to_string(),
+            start_line: Some(7),
+            end_line: Some(9),
+        }];
+        let human_message = add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Human,
+            "inspect this",
+            Some(parts.clone()),
+            Some(mentions),
+        )
+        .unwrap();
+        let agent_message = add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let started_turn_prompt = prompt_input_for_started_turn(
+            Some(&app.handle()),
+            Some(&store),
+            &session.id,
+            &agent_message.id,
+            "fallback",
+            &[],
+        );
+
+        assert_eq!(started_turn_prompt.message_id, human_message.id.as_str());
+        assert_eq!(
+            started_turn_prompt.prompt,
+            PromptInput::from_human_message(&human_message)
+        );
+    }
+
+    #[test]
+    fn started_turn_prompt_selects_previous_human_before_target_agent_with_single_message_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let storage = Arc::new(FileSessionStorage::default());
+        let store = Arc::new(SessionStore::new(storage.clone()));
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Human,
+            "first",
+            None,
+            None,
+        )
+        .unwrap();
+        add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "first answer",
+            None,
+            None,
+        )
+        .unwrap();
+        let expected_human = add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Human,
+            "second",
+            None,
+            None,
+        )
+        .unwrap();
+        let target_agent = add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            None,
+            None,
+        )
+        .unwrap();
+
+        storage.reset_message_read_count();
+        let started_turn_prompt = prompt_input_for_started_turn(
+            Some(&app.handle()),
+            Some(&store),
+            &session.id,
+            &target_agent.id,
+            "fallback",
+            &[],
+        );
+
+        assert_eq!(storage.message_read_count(), 1);
+        assert_eq!(started_turn_prompt.message_id, expected_human.id);
+        assert_eq!(started_turn_prompt.prompt.content, "second");
+    }
+
+    #[test]
+    fn started_turn_prompt_falls_back_when_target_or_previous_human_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let agent_without_human = add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            None,
+            None,
+        )
+        .unwrap();
+
+        for streaming_message_id in [&agent_without_human.id, "missing-agent"] {
+            let started_turn_prompt = prompt_input_for_started_turn(
+                Some(&app.handle()),
+                Some(&store),
+                &session.id,
+                streaming_message_id,
+                "fallback",
+                &[],
+            );
+
+            assert_eq!(
+                started_turn_prompt.message_id,
+                fallback_prompt_message_id(streaming_message_id)
+            );
+            assert_eq!(started_turn_prompt.prompt.content, "fallback");
+        }
+    }
+
+    #[test]
+    fn started_turn_prompt_falls_back_when_app_store_or_lightweight_load_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let fallback_images = vec![ImageAttachment {
+            data: "encoded".to_string(),
+            media_type: "image/png".to_string(),
+        }];
+
+        let missing_app = prompt_input_for_started_turn::<tauri::test::MockRuntime>(
+            None,
+            Some(&store),
+            "session-1",
+            "agent-1",
+            "fallback",
+            &fallback_images,
+        );
+        assert_started_turn_prompt_matches_fallback(
+            missing_app,
+            "agent-1",
+            "fallback",
+            &fallback_images,
+        );
+
+        let missing_store = prompt_input_for_started_turn(
+            Some(&app.handle()),
+            None,
+            "session-1",
+            "agent-2",
+            "fallback",
+            &fallback_images,
+        );
+        assert_started_turn_prompt_matches_fallback(
+            missing_store,
+            "agent-2",
+            "fallback",
+            &fallback_images,
+        );
+
+        let broken_data_dir = tempfile::tempdir().unwrap();
+        std::fs::write(broken_data_dir.path().join("sessions"), "not a directory").unwrap();
+        let broken_app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(
+                broken_data_dir.path().to_path_buf(),
+            ))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let broken_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
+        let storage_failure = prompt_input_for_started_turn(
+            Some(&broken_app.handle()),
+            Some(&broken_store),
+            "session-1",
+            "agent-3",
+            "fallback",
+            &fallback_images,
+        );
+        assert_started_turn_prompt_matches_fallback(
+            storage_failure,
+            "agent-3",
+            "fallback",
+            &fallback_images,
+        );
+    }
+
+    #[test]
+    fn started_turn_prompt_hydrates_saved_human_like_full_restore() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let storage = Arc::new(FileSessionStorage::default());
+        let store = Arc::new(SessionStore::new(storage.clone()));
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let image =
+            validate_and_encode_image(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        let parts = vec![
+            MessagePart::Text {
+                content: "inspect image".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Image {
+                data: image.data.clone(),
+                media_type: image.media_type.clone(),
+            },
+        ];
+        let mentions = vec![crate::domain::code::MentionReference {
+            file_path: "src/lib.rs".to_string(),
+            start_line: Some(2),
+            end_line: Some(4),
+        }];
+        let human_message = add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Human,
+            "inspect image",
+            Some(parts),
+            Some(mentions),
+        )
+        .unwrap();
+        let agent_message = add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            None,
+            None,
+        )
+        .unwrap();
+        let full_session = store
+            .load_full_session_for_restore(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        let full_human = full_session
+            .messages
+            .iter()
+            .find(|message| message.id == human_message.id)
+            .unwrap();
+        let expected_prompt = PromptInput::from_human_message(full_human);
+
+        storage.reset_message_read_count();
+        let started_turn_prompt = prompt_input_for_started_turn(
+            Some(&app.handle()),
+            Some(&store),
+            &session.id,
+            &agent_message.id,
+            "fallback",
+            &[],
+        );
+
+        assert_eq!(storage.message_read_count(), 1);
+        assert_eq!(started_turn_prompt.message_id, human_message.id);
+        assert_eq!(started_turn_prompt.prompt, expected_prompt);
+    }
+
+    #[tokio::test]
+    async fn external_agent_turn_state_records_saved_human_prompt_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CODEX_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let image =
+            validate_and_encode_image(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        let parts = vec![
+            MessagePart::Text {
+                content: "saved prompt".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Image {
+                data: image.data.clone(),
+                media_type: image.media_type.clone(),
+            },
+        ];
+        let mentions = vec![crate::domain::code::MentionReference {
+            file_path: "src/lib.rs".to_string(),
+            start_line: Some(2),
+            end_line: Some(4),
+        }];
+        let human_message = add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Human,
+            "saved prompt",
+            Some(parts.clone()),
+            Some(mentions),
+        )
+        .unwrap();
+        let agent_message = add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            None,
+            None,
+        )
+        .unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.backend_id = CODEX_BACKEND_ID.to_string();
+        handles.lock().await.insert(session.id.clone(), proc);
+
+        start_external_agent_turn_state(
+            &app.handle(),
+            &store,
+            &handles,
+            &session.id,
+            ExternalAgentTurnStart {
+                permission_mode: "edit",
+                streaming_message_id: &agent_message.id,
+                prompt: "fallback prompt",
+                images: std::slice::from_ref(&image),
+            },
+        )
+        .await
+        .unwrap();
+
+        let read_model = {
+            let map = handles.lock().await;
+            map.get(&session.id).unwrap().turn_event_log.project()
+        };
+        let human = read_model
+            .messages
+            .iter()
+            .find(|message| message.role == MessageRole::Human)
+            .expect("projected human message");
+        assert_eq!(human.id.as_str(), human_message.id.as_str());
+        assert_eq!(human.content, "saved prompt");
+        assert_eq!(human.mentions.as_ref(), human_message.mentions.as_ref());
+        assert_eq!(human.parts.as_ref(), human_message.parts.as_ref());
+
+        let mut proc = handles.lock().await.remove(&session.id).unwrap();
+        let _ = proc.child.kill().await;
     }
 
     struct MockModelBackend {
@@ -9022,6 +9970,9 @@ mod tests {
         proc.backend_id = CODEX_BACKEND_ID.to_string();
         proc.state = BridgeState::Streaming;
         proc.turn_phase = TurnPhase::Streaming;
+        proc.streaming_message_id = Some("agent-message-1".to_string());
+        proc.active_turn_token = Some("agent-message-1".to_string());
+        begin_test_turn_event_log(&mut proc);
         handles.lock().await.insert(session.id.clone(), proc);
         let mut state = ExternalBridgeMessageState::default();
 
@@ -9034,6 +9985,7 @@ mod tests {
                 "type": "turn_complete",
                 "session_id": "new-codex-thread",
                 "exit_code": 0,
+                "turn_token": "agent-message-1",
             }),
             &mut state,
         )
@@ -9052,7 +10004,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interrupted_turn_complete_does_not_persist_session_id_and_marks_idle() {
+    async fn interrupted_turn_complete_does_not_persist_session_id_or_overwrite_done_state() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
             .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
@@ -9109,7 +10061,7 @@ mod tests {
         );
         assert_eq!(
             loaded.state,
-            crate::usecase::agent_session::session::SessionState::Idle
+            crate::usecase::agent_session::session::SessionState::Done
         );
         let removed = handles.lock().await.remove(&session.id);
         if let Some(mut proc) = removed {
@@ -9160,12 +10112,19 @@ mod tests {
             content: "old response".to_string(),
             parent_tool_use_id: None,
         });
+        begin_turn_event_log(
+            &mut proc,
+            "human-old",
+            test_prompt_input("old prompt"),
+            old_turn_token,
+            1.0,
+        );
         proc.pending_messages
             .push_back(test_pending_message("queued-followup", "next prompt"));
         handles.lock().await.insert(session.id.clone(), proc);
 
         let interrupted = true;
-        let (final_parts, turn_token_usage) = {
+        let (final_parts, workflow_turn_complete) = {
             let mut map = handles.lock().await;
             let proc = map.get_mut(&session.id).unwrap();
             let effect =
@@ -9174,11 +10133,11 @@ mod tests {
                 });
             proc.sdk_session_id = Some("previous-good-session".to_string());
             proc.post_turn_message_token = None;
-            assert!(effect.was_streaming);
+            assert!(effect.turn_completed);
             assert_eq!(proc.state, BridgeState::Ready);
             assert_eq!(proc.turn_phase, TurnPhase::Idle);
             assert!(proc.active_turn_token.is_none());
-            (effect.final_parts, effect.turn_token_usage)
+            (effect.final_parts, effect.workflow_turn_complete)
         };
 
         let loaded = store
@@ -9310,11 +10269,13 @@ mod tests {
                     chat_session_id: session.id.clone(),
                     exit_code: 0,
                     final_text_parts: workflow_final_text_parts(&final_parts),
-                    token_usage: turn_token_usage.map(|(input_tokens, output_tokens)| {
-                        crate::usecase::workflow::ports::WorkflowTurnTokenUsage {
-                            input_tokens,
-                            output_tokens,
-                        }
+                    token_usage: workflow_turn_complete.and_then(|input| {
+                        input.token_usage.map(|usage| {
+                            crate::usecase::workflow::ports::WorkflowTurnTokenUsage {
+                                input_tokens: usage.input_tokens,
+                                output_tokens: usage.output_tokens,
+                            }
+                        })
                     }),
                     interrupted,
                 },
@@ -10529,13 +11490,15 @@ mod tests {
             }],
         );
         let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+        let records_before = crate::other::telemetry::test_metric_records();
 
         let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, false, true);
 
         assert!(!ok);
-        assert!(!crate::other::telemetry::test_metric_records()
-            .iter()
-            .any(|record| record.name == "releash.agent_stream.emit_interval_ms"));
+        assert_eq!(
+            crate::other::telemetry::test_metric_records(),
+            records_before
+        );
         crate::other::telemetry::reset_test_metrics();
     }
 
@@ -11315,7 +12278,7 @@ mod tests {
             exit_code,
             recording_emit(events),
         );
-        if effect.was_streaming {
+        if effect.turn_completed {
             events.push(RecordedEmit::StateChanged {
                 phase: TurnPhase::Idle,
                 exit_code: Some(exit_code),
@@ -11482,6 +12445,7 @@ mod tests {
     async fn finalize_timeout_adds_error_part_and_completes_as_failure() {
         let mut proc = make_streaming_test_process();
         proc.begin_turn_liveness();
+        begin_test_turn_event_log(&mut proc);
         let partial = MessagePart::Text {
             content: "partial response".to_string(),
             parent_tool_use_id: None,
@@ -11497,7 +12461,7 @@ mod tests {
             recording_emit(&mut events),
         );
 
-        assert!(effect.was_streaming);
+        assert!(effect.turn_completed);
         assert_eq!(proc.state, BridgeState::Crashed);
         assert_eq!(proc.turn_phase, TurnPhase::Idle);
         assert_eq!(effect.final_msg_id.as_deref(), Some("m1"));
@@ -11529,7 +12493,7 @@ mod tests {
         let effect =
             run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
 
-        assert!(!effect.was_streaming);
+        assert!(!effect.turn_completed);
         assert_eq!(proc.state, BridgeState::Crashed);
         assert_eq!(proc.turn_phase, TurnPhase::Idle);
         let _ = proc.child.kill().await;
@@ -11653,6 +12617,7 @@ mod tests {
         // Spec: ターン完了時に未配信バッファを強制配信する。
         // streaming emit が state emit (Idle) より前に観測される。
         let mut proc = make_streaming_test_process();
+        begin_test_turn_event_log(&mut proc);
         let delta = vec![MessagePart::Text {
             content: "tail-before-idle".to_string(),
             parent_tool_use_id: None,
@@ -11690,6 +12655,7 @@ mod tests {
     async fn turn_complete_with_nonzero_exit_code_still_flushes_before_state() {
         // 失敗終了 (exit_code != 0) でも emit 順序は同じ: streaming → state。
         let mut proc = make_streaming_test_process();
+        begin_test_turn_event_log(&mut proc);
         let delta = vec![MessagePart::Text {
             content: "tail-error".to_string(),
             parent_tool_use_id: None,
@@ -11712,8 +12678,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn turn_complete_without_turn_started_flushes_but_skips_projection_followup_gate() {
+        for backend_id in [CLAUDE_BACKEND_ID, CODEX_BACKEND_ID] {
+            let mut proc = make_streaming_test_process();
+            proc.backend_id = backend_id.to_string();
+            let delta = vec![MessagePart::Text {
+                content: format!("tail-{backend_id}"),
+                parent_tool_use_id: None,
+            }];
+            proc.streaming_parts.extend(delta.clone());
+            enqueue_pending_delta(&mut proc, &delta);
+
+            let mut events = Vec::new();
+            let effect = run_turn_complete_transition_locked(
+                &mut proc,
+                "csid",
+                0,
+                recording_emit(&mut events),
+            );
+
+            assert!(!effect.turn_completed);
+            assert!(effect.workflow_turn_complete.is_none());
+            assert!(effect.projected_session_state.is_none());
+            assert_eq!(
+                events.len(),
+                1,
+                "stream snapshot still flushes for {backend_id}"
+            );
+            assert!(matches!(events[0], RecordedEmit::StreamingFlush { .. }));
+            assert_eq!(proc.turn_event_log.current_turn_id(), None);
+            assert!(proc
+                .turn_event_log
+                .project()
+                .workflow_turn_complete
+                .is_none());
+            assert_eq!(proc.state, BridgeState::Ready);
+            assert_eq!(proc.turn_phase, TurnPhase::Idle);
+            let _ = proc.child.kill().await;
+        }
+    }
+
+    #[tokio::test]
     async fn turn_complete_releases_streaming_parts_after_final_snapshot() {
         let mut proc = make_streaming_test_process();
+        begin_test_turn_event_log(&mut proc);
         proc.task_id_map
             .insert("background-1".to_string(), "tool-1".to_string());
         let raw_parts = vec![
@@ -11738,7 +12746,7 @@ mod tests {
         let effect =
             run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
 
-        assert!(effect.was_streaming);
+        assert!(effect.turn_completed);
         assert_eq!(effect.final_msg_id.as_deref(), Some("m1"));
         assert_eq!(effect.final_parts, consolidate_parts_from_slice(&raw_parts));
         assert_eq!(effect.released_streaming_parts, raw_parts);
@@ -11763,8 +12771,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn permission_request_transition_carries_projected_active_session_state() {
+        let mut proc = make_streaming_test_process();
+        begin_test_turn_event_log(&mut proc);
+        let permission_part = MessagePart::Permission {
+            request: serde_json::json!({ "request_id": "req-1" }),
+            status: "pending".to_string(),
+            answers: None,
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(permission_part.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&permission_part));
+        record_durable_parts_for_current_turn(
+            &mut proc,
+            "m1",
+            std::slice::from_ref(&permission_part),
+        );
+
+        let effect = run_permission_request_transition_locked(&mut proc, "csid", |_mid, _parts| {
+            (true, true)
+        });
+
+        assert!(effect.did_transition);
+        assert_eq!(
+            effect.projected_session_state,
+            Some(crate::usecase::agent_session::session::SessionState::Active)
+        );
+        assert_eq!(proc.turn_phase, TurnPhase::WaitingPermission);
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
     async fn post_turn_skips_stale_store_base_when_final_persist_failed() {
         let mut proc = make_streaming_test_process();
+        begin_test_turn_event_log(&mut proc);
         let fresh_parts = vec![
             MessagePart::Text {
                 content: "fresh base".to_string(),
@@ -11834,6 +12874,7 @@ mod tests {
     #[tokio::test]
     async fn turn_complete_emit_failure_retains_retry_state_until_timer_drains() {
         let mut proc = make_streaming_test_process();
+        begin_test_turn_event_log(&mut proc);
         let raw_parts = vec![MessagePart::Text {
             content: "tail".to_string(),
             parent_tool_use_id: None,
@@ -11844,7 +12885,7 @@ mod tests {
         let effect =
             run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (false, true));
 
-        assert!(effect.was_streaming);
+        assert!(effect.turn_completed);
         assert_eq!(effect.final_msg_id.as_deref(), Some("m1"));
         assert_eq!(effect.final_parts, consolidate_parts_from_slice(&raw_parts));
         assert!(effect.released_streaming_parts.is_empty());
@@ -11877,6 +12918,7 @@ mod tests {
     #[tokio::test]
     async fn turn_complete_nonzero_exit_code_emit_failure_releases_after_final_snapshot() {
         let mut proc = make_streaming_test_process();
+        begin_test_turn_event_log(&mut proc);
         let raw_parts = vec![MessagePart::Text {
             content: "tail-before-crash".to_string(),
             parent_tool_use_id: None,
@@ -11890,7 +12932,7 @@ mod tests {
             (false, true)
         });
 
-        assert!(effect.was_streaming);
+        assert!(effect.turn_completed);
         assert_eq!(effect.final_msg_id.as_deref(), Some("m1"));
         assert_eq!(effect.final_parts, consolidate_parts_from_slice(&raw_parts));
         assert_eq!(effect.released_streaming_parts, raw_parts);
@@ -12158,6 +13200,14 @@ mod tests {
         proc.turn_phase = TurnPhase::Streaming;
         proc.streaming_message_id = Some("new-message".to_string());
         proc.reset_streaming_state_for_new_turn();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(
+            &mut proc,
+            "new-human",
+            test_prompt_input("new prompt"),
+            "new-message",
+            2.0,
+        );
         let new_turn_parts = vec![MessagePart::Text {
             content: "new turn".to_string(),
             parent_tool_use_id: None,
@@ -12223,6 +13273,109 @@ mod tests {
             proc.task_id_map.get("new-task").map(String::as_str),
             Some("new-tool")
         );
+        assert!(
+            proc.turn_event_log
+                .project()
+                .agent_parts_for_message("new-message")
+                .iter()
+                .all(|part| !matches!(
+                    part,
+                    MessagePart::ToolResult {
+                        content,
+                        tool_use_id: Some(id),
+                        ..
+                    } if id == "tool-1" && content == "late"
+                )),
+            "stale post-turn delta must not be appended to the active turn event log"
+        );
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn post_turn_loaded_base_preserves_projected_todo_text_without_reprojection_duplication()
+    {
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        proc.streaming_message_id = Some("new-message".to_string());
+        proc.begin_turn_liveness();
+        begin_turn_event_log(
+            &mut proc,
+            "new-human",
+            test_prompt_input("new prompt"),
+            "new-message",
+            2.0,
+        );
+
+        let items = vec![crate::usecase::agent_session::session::TodoListItem {
+            text: "ship fix".to_string(),
+            completed: true,
+        }];
+        let todo_text = MessagePart::Text {
+            content: todo_update_log(&items),
+            parent_tool_use_id: None,
+        };
+        let todo_snapshot = MessagePart::TodoListSnapshot {
+            items: items.clone(),
+        };
+        let tool_use = MessagePart::ToolUse {
+            tool: "Bash".to_string(),
+            input: serde_json::json!({ "cmd": "date" }),
+            id: "tool-1".to_string(),
+            parent_tool_use_id: None,
+        };
+        let base_parts = vec![todo_text.clone(), todo_snapshot.clone(), tool_use.clone()];
+        let expected_parts = vec![
+            todo_text.clone(),
+            todo_snapshot,
+            tool_use,
+            MessagePart::ToolResult {
+                content: "done".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+            },
+        ];
+        let mut emitted = Vec::new();
+
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &post_turn_tool_result_message("tool-1", "done"),
+            0,
+            |mid, parts| {
+                emitted.push((mid.to_string(), parts.to_vec()));
+                (true, true)
+            },
+            Some(("old-message".to_string(), base_parts)),
+        );
+
+        assert!(effect.accumulated);
+        assert_eq!(effect.emit_msg_id.as_deref(), Some("old-message"));
+        assert!(effect.should_persist);
+        assert_eq!(effect.persist_parts, expected_parts);
+        assert_eq!(
+            effect
+                .persist_parts
+                .iter()
+                .filter(|part| matches!(
+                    part,
+                    MessagePart::Text { content, .. } if content == &todo_update_log(&items)
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            emitted,
+            vec![("old-message".to_string(), effect.persist_parts.clone())]
+        );
+        assert!(
+            proc.turn_event_log
+                .project()
+                .agent_parts_for_message("new-message")
+                .is_empty(),
+            "loaded old-message parts must not be reprojected into the active turn"
+        );
         let _ = proc.child.kill().await;
     }
 
@@ -12232,6 +13385,14 @@ mod tests {
         proc.state = BridgeState::Streaming;
         proc.turn_phase = TurnPhase::Streaming;
         proc.streaming_message_id = Some("new-message".to_string());
+        proc.begin_turn_liveness();
+        begin_turn_event_log(
+            &mut proc,
+            "new-human",
+            test_prompt_input("new prompt"),
+            "new-message",
+            2.0,
+        );
         let new_turn_parts = vec![MessagePart::Text {
             content: "new turn".to_string(),
             parent_tool_use_id: None,
@@ -12284,6 +13445,20 @@ mod tests {
             Some("new-tool")
         );
         assert!(!proc.task_id_map.contains_key("old-task"));
+        assert!(
+            proc.turn_event_log
+                .project()
+                .agent_parts_for_message("new-message")
+                .iter()
+                .all(|part| !matches!(
+                    part,
+                    MessagePart::TaskStatus {
+                        task_tool_use_id,
+                        ..
+                    } if task_tool_use_id == "old-tool"
+                )),
+            "old task status must not be appended to the active turn event log"
+        );
         let _ = proc.child.kill().await;
     }
 
@@ -12667,6 +13842,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn respond_permission_transition_carries_projected_active_session_state() {
+        let mut proc = make_process_waiting_for_permission("req-1");
+        begin_test_turn_event_log(&mut proc);
+        let permission_part = proc
+            .streaming_parts
+            .iter()
+            .find(|part| matches!(part, MessagePart::Permission { .. }))
+            .cloned()
+            .expect("permission part");
+        record_durable_parts_for_current_turn(
+            &mut proc,
+            "m1",
+            std::slice::from_ref(&permission_part),
+        );
+
+        let effect = apply_respond_permission_locked(
+            &mut proc,
+            "csid",
+            "req-1",
+            "allow",
+            None,
+            |_mid, _parts| (true, true),
+        );
+
+        assert!(effect.did_transition);
+        assert_eq!(
+            effect.projected_session_state,
+            Some(crate::usecase::agent_session::session::SessionState::Active)
+        );
+        assert_eq!(proc.turn_phase, TurnPhase::Streaming);
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
     async fn respond_permission_no_transition_when_not_waiting() {
         // 直前に WaitingPermission でなかった場合、state は変更されず、
         // 後続の state-changed emit も発火しないこと。
@@ -12703,7 +13912,7 @@ mod tests {
         });
         let transition =
             run_bridge_error_transition_locked(proc, chat_session_id, &msg, recording_emit(events));
-        if transition.turn_complete.was_streaming {
+        if transition.turn_complete.turn_completed {
             events.push(RecordedEmit::StateChanged {
                 phase: TurnPhase::Idle,
                 exit_code: Some(1),
@@ -12726,7 +13935,7 @@ mod tests {
             chat_session_id,
             recording_emit(events),
         );
-        if transition.turn_complete.was_streaming {
+        if transition.turn_complete.turn_completed {
             events.push(RecordedEmit::StateChanged {
                 phase: TurnPhase::Idle,
                 exit_code: Some(-1),
@@ -12860,6 +14069,7 @@ mod tests {
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let mut proc = make_streaming_test_process();
         proc.backend_id = CODEX_BACKEND_ID.to_string();
+        begin_test_turn_event_log(&mut proc);
         let streaming_parts = vec![MessagePart::Text {
             content: "before error".to_string(),
             parent_tool_use_id: None,
@@ -12905,6 +14115,7 @@ mod tests {
         //   未配信 delta + 合成 error part が同一 cumulative payload として
         //   state 通知 (Idle) より前にフロントエンドへ配信されること。
         let mut proc = make_streaming_test_process();
+        begin_test_turn_event_log(&mut proc);
         // 未配信 text が pending に残っている状態でクラッシュが起こる。
         let pending_text = MessagePart::Text {
             content: "tail-before-crash".to_string(),
@@ -12918,7 +14129,7 @@ mod tests {
             drive_bridge_error_path(&mut proc, "csid", "bridge reported failure", &mut events);
 
         assert_eq!(events.len(), 2, "flush emit then state emit");
-        assert!(transition.turn_complete.was_streaming);
+        assert!(transition.turn_complete.turn_completed);
         assert!(transition
             .turn_complete
             .final_parts
@@ -12955,6 +14166,628 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accumulate_records_durable_events_but_keeps_text_delta_live_only() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+
+        let text_delta = serde_json::json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "hello"}
+            }
+        });
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &text_delta,
+            0,
+            |_mid, _parts| (true, true),
+            None,
+        );
+
+        assert!(effect.accumulated);
+        assert!(
+            proc.turn_event_log
+                .project()
+                .agent_parts_for_message("m1")
+                .is_empty(),
+            "text_delta must remain live-only until the terminal flush records the final block"
+        );
+
+        let tool_use = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "name": "Read",
+                    "input": {"file_path": "src/lib.rs"},
+                    "id": "tool-1"
+                }]
+            }
+        });
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &tool_use,
+            0,
+            |_mid, _parts| (true, true),
+            None,
+        );
+
+        assert!(effect.accumulated);
+        let projected_parts = proc.turn_event_log.project().agent_parts_for_message("m1");
+        assert!(projected_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::ToolUse { id, tool, .. } if id == "tool-1" && tool == "Read"
+        )));
+
+        let retried_tool_use = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "name": "Read",
+                    "input": {"file_path": "src/main.rs"},
+                    "id": "tool-1"
+                }]
+            }
+        });
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &retried_tool_use,
+            0,
+            |_mid, _parts| (true, true),
+            None,
+        );
+
+        assert!(effect.accumulated);
+        let projected = proc.turn_event_log.project();
+        assert_eq!(projected.tool_retries.len(), 1);
+        assert_eq!(projected.tool_retries[0].tool_use_id, "tool-1");
+        assert_eq!(projected.tool_retries[0].attempt, 2);
+    }
+
+    #[tokio::test]
+    async fn live_only_durable_record_skips_projection_and_durable_part_updates_phase() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+        proc.turn_phase = TurnPhase::WaitingPermission;
+
+        record_durable_parts_for_current_turn(
+            &mut proc,
+            "m1",
+            &[MessagePart::Text {
+                content: "live".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+
+        assert_eq!(proc.turn_phase, TurnPhase::WaitingPermission);
+        assert!(proc
+            .turn_event_log
+            .project()
+            .agent_parts_for_message("m1")
+            .is_empty());
+
+        record_durable_parts_for_current_turn(
+            &mut proc,
+            "m1",
+            &[MessagePart::ToolUse {
+                tool: "Read".to_string(),
+                input: serde_json::json!({}),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+
+        assert_eq!(proc.turn_phase, TurnPhase::Streaming);
+        assert!(proc
+            .turn_event_log
+            .project()
+            .agent_parts_for_message("m1")
+            .iter()
+            .any(|part| matches!(part, MessagePart::ToolUse { id, .. } if id == "tool-1")));
+    }
+
+    #[tokio::test]
+    async fn turn_complete_appends_terminal_event_and_projects_workflow_input() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+        proc.last_result_token_usage = Some((11, 13));
+        let final_text = MessagePart::Text {
+            content: "final text".to_string(),
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(final_text.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&final_text));
+
+        let effect =
+            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+
+        assert!(effect.turn_completed);
+        assert_eq!(effect.final_parts, vec![final_text]);
+        assert_eq!(
+            effect.workflow_turn_complete,
+            Some(WorkflowTurnCompleteInput {
+                turn_id: 1,
+                exit_code: 0,
+                final_text_parts: vec!["final text".to_string()],
+                token_usage: Some(TurnTokenUsage {
+                    input_tokens: 11,
+                    output_tokens: 13,
+                }),
+                interrupted: false,
+            })
+        );
+        assert_eq!(
+            proc.turn_event_log.project().status.turn_phase,
+            crate::usecase::agent_session::status::TurnPhase::Idle
+        );
+    }
+
+    #[tokio::test]
+    async fn nonzero_turn_complete_without_interrupt_projects_completed_workflow_input() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+        let final_text = MessagePart::Text {
+            content: "failed but complete".to_string(),
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(final_text.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&final_text));
+
+        let effect =
+            run_turn_complete_transition_locked(&mut proc, "csid", 7, |_mid, _parts| (true, true));
+        let projected = proc.turn_event_log.project();
+
+        assert!(effect.turn_completed);
+        assert_eq!(
+            effect.workflow_turn_complete,
+            Some(WorkflowTurnCompleteInput {
+                turn_id: 1,
+                exit_code: 7,
+                final_text_parts: vec!["failed but complete".to_string()],
+                token_usage: None,
+                interrupted: false,
+            })
+        );
+        assert_eq!(
+            projected.status.session_state,
+            crate::usecase::agent_session::session::SessionState::Error
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_interrupt_paths_project_interrupted_workflow_input() {
+        for reason in [
+            InterruptReason::Abort,
+            InterruptReason::Timeout,
+            InterruptReason::BridgeCrash,
+        ] {
+            let mut proc = make_streaming_test_process();
+            proc.begin_turn_liveness();
+            begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+
+            let effect = run_turn_complete_transition_locked_with_interrupt(
+                &mut proc,
+                "csid",
+                1,
+                Some(reason),
+                Some("stopped".to_string()),
+                |_mid, _parts| (true, true),
+            );
+
+            assert_eq!(
+                effect.workflow_turn_complete,
+                Some(WorkflowTurnCompleteInput {
+                    turn_id: 1,
+                    exit_code: 1,
+                    final_text_parts: Vec::new(),
+                    token_usage: None,
+                    interrupted: true,
+                })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_complete_does_not_record_terminal_text_already_projected_from_durable_event() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+        let items = vec![crate::usecase::agent_session::session::TodoListItem {
+            text: "ship fix".to_string(),
+            completed: true,
+        }];
+        let todo_text = MessagePart::Text {
+            content: "TODO を更新しました（1/1 完了）".to_string(),
+            parent_tool_use_id: None,
+        };
+        let todo_snapshot = MessagePart::TodoListSnapshot {
+            items: items.clone(),
+        };
+        record_durable_parts_for_current_turn(
+            &mut proc,
+            "m1",
+            std::slice::from_ref(&todo_snapshot),
+        );
+        proc.streaming_parts
+            .extend([todo_text.clone(), todo_snapshot.clone()]);
+        enqueue_pending_delta(&mut proc, &[todo_text, todo_snapshot]);
+
+        let effect =
+            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+
+        assert_eq!(
+            effect
+                .final_parts
+                .iter()
+                .filter(|part| matches!(
+                    part,
+                    MessagePart::Text { content, .. }
+                        if content == "TODO を更新しました（1/1 完了）"
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            proc.turn_event_log
+                .project()
+                .agent_parts_for_message("m1")
+                .iter()
+                .filter(|part| matches!(
+                    part,
+                    MessagePart::Text { content, .. }
+                        if content == "TODO を更新しました（1/1 完了）"
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_complete_preserves_non_adjacent_duplicate_part_occurrences() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+        let final_parts = vec![
+            MessagePart::Text {
+                content: "ok".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolUse {
+                tool: "Read".to_string(),
+                input: serde_json::json!({"file_path": "a"}),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Text {
+                content: "ok".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        proc.streaming_parts = final_parts.clone();
+        enqueue_pending_delta(&mut proc, &final_parts);
+
+        let effect =
+            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+        let projected_parts = proc.turn_event_log.project().agent_parts_for_message("m1");
+
+        assert_eq!(effect.final_parts, final_parts);
+        assert_eq!(projected_parts, final_parts);
+    }
+
+    #[tokio::test]
+    async fn turn_complete_does_not_append_preexisting_projected_occurrence_twice() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+        let tool_use = MessagePart::ToolUse {
+            tool: "Read".to_string(),
+            input: serde_json::json!({"file_path": "a"}),
+            id: "tool-1".to_string(),
+            parent_tool_use_id: None,
+        };
+        record_durable_parts_for_current_turn(&mut proc, "m1", std::slice::from_ref(&tool_use));
+        proc.streaming_parts = vec![tool_use.clone()];
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&tool_use));
+
+        let effect =
+            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+        let projected_parts = proc.turn_event_log.project().agent_parts_for_message("m1");
+
+        assert_eq!(effect.final_parts, vec![tool_use.clone()]);
+        assert_eq!(projected_parts, vec![tool_use]);
+    }
+
+    #[tokio::test]
+    async fn representative_sdk_sequence_projects_same_parts_as_legacy_consolidation() {
+        let sdk_messages = vec![
+            serde_json::json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "hello "}
+                }
+            }),
+            serde_json::json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": "think"}
+                }
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "message": {
+                    "content": [{
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {"file_path": "src/lib.rs"},
+                        "id": "tool-1"
+                    }]
+                }
+            }),
+            serde_json::json!({
+                "type": "user",
+                "message": {
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "contents agentId: task-1",
+                        "is_error": false
+                    }]
+                }
+            }),
+            serde_json::json!({
+                "type": "user",
+                "message": {
+                    "content": [{
+                        "type": "tool_result",
+                        "content": "standalone",
+                        "is_error": true
+                    }]
+                }
+            }),
+            serde_json::json!({
+                "type": "permission_request",
+                "request_id": "req-1",
+                "tool_use_id": "tool-1",
+                "tool_name": "Edit"
+            }),
+            serde_json::json!({
+                "type": "permission_denied",
+                "request_id": "req-1",
+                "tool_use_id": "tool-1",
+                "tool_name": "Edit",
+                "message": "denied"
+            }),
+            serde_json::json!({
+                "type": "todo_list_snapshot",
+                "items": [{"text": "ship", "completed": true}]
+            }),
+            serde_json::json!({
+                "type": "system",
+                "status": "compacting"
+            }),
+            serde_json::json!({
+                "type": "system",
+                "subtype": "compact_boundary",
+                "compact_metadata": {
+                    "trigger": "manual",
+                    "pre_summary_token_count": 123
+                }
+            }),
+            serde_json::json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "done"}
+                }
+            }),
+        ];
+
+        let mut legacy_parts = Vec::new();
+        let mut legacy_task_id_map = HashMap::new();
+        for message in &sdk_messages {
+            let _ = accumulate_sdk_message(message, &mut legacy_parts, &mut legacy_task_id_map);
+        }
+        let expected = consolidate_parts_from_slice(&legacy_parts);
+
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+        for message in &sdk_messages {
+            let prev_len = proc.streaming_parts.len();
+            let accumulation = accumulate_sdk_message_with_liveness(
+                message,
+                &mut proc.streaming_parts,
+                &mut proc.task_id_map,
+            );
+            assert!(accumulation.handled);
+            let mut delta = proc.streaming_parts[prev_len..].to_vec();
+            if let Some(updated) = accumulation.updated_parts {
+                delta.extend(updated);
+            }
+            record_durable_parts_for_current_turn(&mut proc, "m1", &delta);
+        }
+        let terminal =
+            append_terminal_events_and_project(&mut proc, "m1", 0, None, None).expect("terminal");
+        let projected = terminal.final_parts;
+
+        assert_eq!(projected, expected);
+    }
+
+    #[tokio::test]
+    async fn streaming_periodic_persist_uses_durable_projection_not_live_text_buffer() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+        proc.turn_event_log.reset_project_call_count();
+        proc.turn_phase = TurnPhase::WaitingPermission;
+
+        let text_delta = serde_json::json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "live only"}
+            }
+        });
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &text_delta,
+            PERSIST_INTERVAL_MS,
+            |_mid, _parts| (true, true),
+            None,
+        );
+        assert!(effect.accumulated);
+        assert!(!effect.should_persist);
+        assert!(effect.persist_parts.is_empty());
+        assert_eq!(
+            proc.turn_event_log.project_call_count(),
+            0,
+            "live-only periodic persist must not project the durable event log"
+        );
+        assert_eq!(
+            proc.turn_phase,
+            TurnPhase::WaitingPermission,
+            "skipping live-only projection must preserve the current turn phase"
+        );
+
+        let tool_use = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "name": "Read",
+                    "input": {"file_path": "src/lib.rs"},
+                    "id": "tool-1"
+                }]
+            }
+        });
+        let effect = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &tool_use,
+            PERSIST_INTERVAL_MS,
+            |_mid, _parts| (true, true),
+            None,
+        );
+
+        assert!(effect.should_persist);
+        assert!(
+            proc.turn_event_log.project_call_count() > 0,
+            "durable deltas still project for phase and persist parts"
+        );
+        assert_eq!(effect.persist_parts.len(), 1);
+        assert!(matches!(
+            effect.persist_parts.as_slice(),
+            [MessagePart::ToolUse { id, tool, .. }] if id == "tool-1" && tool == "Read"
+        ));
+    }
+
+    #[tokio::test]
+    async fn bridge_error_finalizes_partial_tool_and_permission_events() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+        record_durable_parts_for_current_turn(
+            &mut proc,
+            "m1",
+            &[
+                MessagePart::ToolUse {
+                    tool: "Edit".to_string(),
+                    input: serde_json::json!({}),
+                    id: "tool-1".to_string(),
+                    parent_tool_use_id: None,
+                },
+                MessagePart::Permission {
+                    request: serde_json::json!({
+                        "request_id": "req-1",
+                        "tool_use_id": "tool-1",
+                        "tool_name": "Edit",
+                    }),
+                    status: "pending".to_string(),
+                    answers: None,
+                    parent_tool_use_id: None,
+                },
+            ],
+        );
+
+        let transition = run_bridge_error_transition_locked(
+            &mut proc,
+            "csid",
+            &serde_json::json!({"type": "error", "message": "bridge failed"}),
+            |_mid, _parts| (true, true),
+        );
+        let projected = proc.turn_event_log.project();
+        let projected_parts = projected.agent_parts_for_message("m1");
+
+        assert!(transition.turn_complete.turn_completed);
+        assert!(projected_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::ToolResult {
+                tool_use_id: Some(id),
+                is_error: true,
+                content,
+                ..
+            } if id == "tool-1" && content == "Error: bridge failed により中断"
+        )));
+        assert!(projected_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Permission { status, .. } if status == "cancelled"
+        )));
+        assert_eq!(
+            projected.status.session_state,
+            crate::usecase::agent_session::session::SessionState::Error
+        );
+        assert_eq!(
+            projected.status.turn_phase,
+            crate::usecase::agent_session::status::TurnPhase::Idle
+        );
+        assert_eq!(
+            transition.turn_complete.workflow_turn_complete,
+            Some(WorkflowTurnCompleteInput {
+                turn_id: 1,
+                exit_code: 1,
+                final_text_parts: Vec::new(),
+                token_usage: None,
+                interrupted: true,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn eof_crash_workflow_exit_code_is_projected_from_interrupted_event() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+
+        let transition =
+            run_bridge_eof_crash_transition_locked(true, &mut proc, "csid", |_mid, _parts| {
+                (true, true)
+            });
+
+        assert_eq!(
+            transition.turn_complete.workflow_turn_complete,
+            Some(WorkflowTurnCompleteInput {
+                turn_id: 1,
+                exit_code: -1,
+                final_text_parts: Vec::new(),
+                token_usage: None,
+                interrupted: true,
+            })
+        );
+    }
+
+    #[tokio::test]
     async fn bridge_eof_crash_emits_pending_before_state_change() {
         // Spec (Rule: ターン完了・状態遷移時には未配信バッファを強制配信する,
         //  Examples ストリーミング → クラッシュ):
@@ -12962,6 +14795,7 @@ mod tests {
         //   part が同一 cumulative payload として state 通知 (Idle) より前に
         //   フロントエンドへ配信されること。
         let mut proc = make_streaming_test_process();
+        begin_test_turn_event_log(&mut proc);
         let pending_text = MessagePart::Text {
             content: "tail-before-eof".to_string(),
             parent_tool_use_id: None,
@@ -13065,6 +14899,7 @@ mod tests {
         proc.state = BridgeState::Streaming;
         proc.turn_phase = TurnPhase::Streaming;
         proc.streaming_message_id = Some("message-1".to_string());
+        begin_test_turn_event_log(&mut proc);
         proc.streaming_parts.push(MessagePart::Text {
             content: "partial".to_string(),
             parent_tool_use_id: None,
@@ -13077,7 +14912,7 @@ mod tests {
 
         assert_eq!(proc.state, BridgeState::Crashed);
         assert_eq!(proc.turn_phase, TurnPhase::Idle);
-        assert!(transition.turn_complete.was_streaming);
+        assert!(transition.turn_complete.turn_completed);
         assert_eq!(
             transition.turn_complete.final_msg_id.as_deref(),
             Some("message-1")
@@ -13814,6 +15649,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn turn_start_transition_carries_projected_active_session_state() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "projected-start".to_string();
+
+        let projected_session_state = start_agent_turn_with_runtime_spawner(
+            None::<&tauri::AppHandle>,
+            None,
+            &handles,
+            &session_id,
+            "edit",
+            "start turn",
+            "agent-msg-1",
+            &[],
+            {
+                let handles = Arc::clone(&handles);
+                let session_id = session_id.clone();
+                move || async move {
+                    handles
+                        .lock()
+                        .await
+                        .insert(session_id, make_test_agent_process());
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            projected_session_state,
+            Some(crate::usecase::agent_session::session::SessionState::Active)
+        );
+        let mut proc = handles.lock().await.remove(&session_id).unwrap();
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
     async fn running_workflow_step_turn_start_reuses_existing_runtime_without_spawn() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -14271,6 +16143,7 @@ mod tests {
                 active_turn_token: None,
                 post_turn_message_token: None,
                 streaming_parts: Vec::new(),
+                turn_event_log: TurnEventLog::default(),
                 last_message_id: None,
                 post_turn_base_untrusted_message_id: None,
                 task_id_map: HashMap::new(),
@@ -17222,6 +19095,7 @@ mod tests {
             active_turn_token: None,
             post_turn_message_token: None,
             streaming_parts: Vec::new(),
+            turn_event_log: TurnEventLog::default(),
             last_message_id: None,
             post_turn_base_untrusted_message_id: None,
             task_id_map: HashMap::new(),
@@ -17937,6 +19811,7 @@ mod tests {
                 active_turn_token: None,
                 post_turn_message_token: None,
                 streaming_parts: Vec::new(),
+                turn_event_log: TurnEventLog::default(),
                 last_message_id: None,
                 post_turn_base_untrusted_message_id: None,
                 task_id_map: HashMap::new(),

@@ -4,11 +4,13 @@ use std::sync::atomic::AtomicBool;
 
 use parking_lot::RwLock;
 
+use crate::usecase::agent_session::event_log::AgentSessionEvent;
 use crate::usecase::agent_session::session::{
     ChatMessage, ChatSession, MessagePart, PageCursor, SessionAttachment, SessionMeta, SessionPage,
 };
 
 mod attachment_blob;
+mod event_store;
 mod fork_copier;
 mod layout;
 mod legacy;
@@ -52,6 +54,7 @@ impl crate::domain::agent_session::AgentSessionStorageTypes for FileSessionStora
     type Message = ChatMessage;
     type MessagePart = MessagePart;
     type Attachment = SessionAttachment;
+    type Event = AgentSessionEvent;
 }
 
 impl crate::domain::agent_session::AgentSessionReader for FileSessionStorage {
@@ -83,6 +86,20 @@ impl crate::domain::agent_session::AgentSessionReader for FileSessionStorage {
         FileSessionStorage::load_full_session_for_restore(self, app_data_dir, session_id)
     }
 
+    fn load_previous_human_message_before_agent(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        agent_message_id: &str,
+    ) -> Result<Option<Self::Message>, String> {
+        FileSessionStorage::load_previous_human_message_before_agent(
+            self,
+            app_data_dir,
+            session_id,
+            agent_message_id,
+        )
+    }
+
     fn get_session_page(
         &self,
         app_data_dir: &Path,
@@ -100,6 +117,14 @@ impl crate::domain::agent_session::AgentSessionReader for FileSessionStorage {
         attachment_id: &str,
     ) -> Result<Option<Self::Attachment>, String> {
         FileSessionStorage::get_session_attachment(self, app_data_dir, session_id, attachment_id)
+    }
+
+    fn load_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Vec<Self::Event>, String> {
+        FileSessionStorage::load_session_events(self, app_data_dir, session_id)
     }
 }
 
@@ -168,5 +193,14 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
             parts,
             completed_at,
         )
+    }
+
+    fn append_session_event(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        event: &Self::Event,
+    ) -> Result<Vec<Self::Event>, String> {
+        FileSessionStorage::append_session_event(self, app_data_dir, session_id, event)
     }
 }

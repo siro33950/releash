@@ -38,6 +38,22 @@ pub(crate) struct TestMetricRecord {
 static TEST_METRIC_RECORDS: Mutex<Vec<TestMetricRecord>> = Mutex::new(Vec::new());
 #[cfg(test)]
 static TEST_TELEMETRY_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+thread_local! {
+    static TEST_TELEMETRY_RECORDING_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) struct TestTelemetryGuard {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for TestTelemetryGuard {
+    fn drop(&mut self) {
+        TEST_TELEMETRY_RECORDING_ENABLED.with(|enabled| enabled.set(false));
+    }
+}
 
 struct Metrics {
     hot_path_duration: Histogram<f64>,
@@ -188,6 +204,9 @@ pub(crate) fn record_first_repo_snapshot_ready() {
 
 #[cfg(test)]
 fn record_test_metric(name: &'static str, value: f64, attrs: &[KeyValue]) {
+    if !TEST_TELEMETRY_RECORDING_ENABLED.with(|enabled| enabled.get()) {
+        return;
+    }
     TEST_METRIC_RECORDS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -227,10 +246,12 @@ pub(crate) fn first_repo_snapshot_recorded_for_tests() -> bool {
 }
 
 #[cfg(test)]
-pub(crate) fn lock_test_telemetry() -> std::sync::MutexGuard<'static, ()> {
-    TEST_TELEMETRY_LOCK
+pub(crate) fn lock_test_telemetry() -> TestTelemetryGuard {
+    let guard = TEST_TELEMETRY_LOCK
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| e.into_inner());
+    TEST_TELEMETRY_RECORDING_ENABLED.with(|enabled| enabled.set(true));
+    TestTelemetryGuard { _guard: guard }
 }
 
 pub(crate) fn measure_result<T, E, F>(metric: HotPathMetric, f: F) -> Result<T, E>
