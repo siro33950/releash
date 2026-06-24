@@ -37,6 +37,7 @@ pub(crate) trait PtySessionGateway: PtySessionReadGateway {
     fn now_ms(&self) -> u64;
     fn record_activity(&self, pty_id: u64, now_ms: u64) -> bool;
     fn pin_session_key(&self, session_key: &str);
+    fn unpin_session_key_if_unused(&self, session_key: &str);
     fn register_active_terminal(&self, worktree_path: &str, session_key: &str, active_token: &str);
     fn unregister_active_terminal(
         &self,

@@ -322,6 +322,72 @@ describe("useTerminal", () => {
 		expect(mockInvoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
 	});
 
+	it("pending kill callback kills a late managed PTY instead of reporting ready", async () => {
+		type SpawnResult = {
+			pty_id: number;
+			session_key: string;
+			buffered_output: string;
+			buffered_output_sequence: number;
+			is_new: boolean;
+			is_exited: boolean;
+			exit_code: number | null;
+		};
+		let resolveSpawn!: (value: SpawnResult) => void;
+		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
+			resolveSpawn = resolve;
+		});
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") return pendingSpawn;
+			return Promise.resolve();
+		});
+		const onPtyReady = vi.fn();
+		const shouldKillPendingPty = vi.fn(() => false);
+
+		const { unmount } = renderHook(() =>
+			useTerminal(
+				containerRef,
+				"/repo",
+				undefined,
+				undefined,
+				undefined,
+				"repo terminal",
+				onPtyReady,
+				undefined,
+				shouldKillPendingPty,
+			),
+		);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+		shouldKillPendingPty.mockReturnValue(true);
+		unmount();
+		mockInvoke.mockClear();
+
+		resolveSpawn({
+			pty_id: 7,
+			session_key: "late-session",
+			buffered_output: "",
+			buffered_output_sequence: 0,
+			is_new: true,
+			is_exited: false,
+			exit_code: null,
+		});
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("kill_pty", { ptyId: 7 });
+		});
+		expect(onPtyReady).not.toHaveBeenCalled();
+		expect(mockInvoke).toHaveBeenCalledWith("unregister_active_terminal", {
+			worktreePath: "/repo",
+			sessionKey: "late-session",
+			activeToken: expect.any(String),
+		});
+	});
+
 	it("requestKill() 後に get_or_spawn が解決した pending PTY は onPtyReady を呼ばない", async () => {
 		type SpawnResult = {
 			pty_id: number;

@@ -243,6 +243,10 @@ impl PtySessionRegistry {
         }
     }
 
+    pub fn unpin_session_key_if_unused(&mut self, session_key: &str) {
+        self.clear_pin_if_unused(session_key);
+    }
+
     pub fn register_active_terminal(
         &mut self,
         worktree_path: &str,

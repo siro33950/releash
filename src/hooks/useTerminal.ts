@@ -262,6 +262,7 @@ export function useTerminal(
 	label?: string,
 	onPtyReady?: (ptyId: number, sessionKey: string) => void,
 	onPtyError?: (message: string) => void,
+	shouldKillPendingPty?: () => boolean,
 ) {
 	const terminalRef = useRef<Terminal | null>(null);
 	const fitAddonRef = useRef<FitAddon | null>(null);
@@ -276,6 +277,8 @@ export function useTerminal(
 	onPtyReadyRef.current = onPtyReady;
 	const onPtyErrorRef = useRef(onPtyError);
 	onPtyErrorRef.current = onPtyError;
+	const shouldKillPendingPtyRef = useRef(shouldKillPendingPty);
+	shouldKillPendingPtyRef.current = shouldKillPendingPty;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -403,9 +406,12 @@ export function useTerminal(
 			}
 
 			if (!isMounted) {
-				if (killOnUnmountRef.current && !result.is_exited) {
+				const shouldKillDetachedPty =
+					killOnUnmountRef.current ||
+					(shouldKillPendingPtyRef.current?.() ?? false);
+				if (shouldKillDetachedPty && !result.is_exited) {
 					invoke("kill_pty", { ptyId: result.pty_id }).catch(() => {});
-				} else if (!killOnUnmountRef.current) {
+				} else if (!shouldKillDetachedPty) {
 					onPtyReadyRef.current?.(result.pty_id, result.session_key);
 				}
 				unregisterActiveTerminal(

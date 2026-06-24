@@ -98,6 +98,7 @@ export interface UseTerminalPanesReturn {
 		sessionKey: string,
 		ptyId?: number,
 	) => void;
+	markPendingPaneKill: (paneId: string) => void;
 	removePendingPane: (paneId: string) => void;
 	activeTab: TerminalTab | undefined;
 }
@@ -178,7 +179,11 @@ export function useTerminalPanes(
 		listen<PtyEvicted>("pty-evicted", (event) => {
 			if (cancelled) return;
 			setTabs((prev) =>
-				removePaneBySessionKey(prev, event.payload.session_key, activeTabId),
+				removePaneBySessionKey(
+					prev,
+					event.payload.session_key,
+					activeTabIdRef.current,
+				),
 			);
 		})
 			.then((fn) => {
@@ -196,7 +201,7 @@ export function useTerminalPanes(
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [cacheKey, activeTabId]);
+	}, [cacheKey]);
 
 	useEffect(() => {
 		if (!cacheKey) return;
@@ -536,6 +541,10 @@ export function useTerminalPanes(
 		[],
 	);
 
+	const markPendingPaneKill = useCallback((paneId: string) => {
+		setTabs((prev) => markPendingPaneKillById(prev, paneId));
+	}, []);
+
 	const removePendingPane = useCallback((paneId: string) => {
 		setTabs((prev) => removePendingPaneById(prev, paneId, setActiveTabId));
 	}, []);
@@ -555,6 +564,7 @@ export function useTerminalPanes(
 		movePaneToTab,
 		movePaneInTab,
 		updatePaneSessionKey,
+		markPendingPaneKill,
 		removePendingPane,
 		activeTab,
 	};
@@ -568,7 +578,12 @@ function updateNodeSessionKey(
 ): PaneNode {
 	if (node.type === "leaf") {
 		if (node.id === paneId) {
-			return { ...node, ptyId: ptyId ?? node.ptyId, sessionKey };
+			return {
+				...node,
+				ptyId: ptyId ?? node.ptyId,
+				sessionKey,
+				pendingKill: false,
+			};
 		}
 		return node;
 	}
@@ -713,6 +728,7 @@ function removePaneBySessionKeyFromState(
 				...target,
 				ptyId: null,
 				sessionKey: null,
+				pendingKill: false,
 			};
 			return {
 				tabs: [
@@ -723,7 +739,25 @@ function removePaneBySessionKeyFromState(
 			};
 		}
 		if (tab.id === activeTabId && !removeActiveSinglePaneTab) {
-			return { tabs, activeTabId, changed: false };
+			const clearedPane: PaneLeaf = {
+				...target,
+				ptyId: null,
+				sessionKey: null,
+				pendingKill: false,
+			};
+			return {
+				tabs: tabs.map((candidate, index) =>
+					index === tabIndex
+						? {
+								...candidate,
+								paneTree: clearedPane,
+								focusedPaneId: clearedPane.id,
+							}
+						: candidate,
+				),
+				activeTabId,
+				changed: true,
+			};
 		}
 		const nextTabs = tabs.filter((_, index) => index !== tabIndex);
 		const nextActiveTabId =
@@ -758,6 +792,34 @@ function removePaneBySessionKeyFromState(
 		activeTabId,
 		changed: true,
 	};
+}
+
+function markPendingPaneKillById(
+	tabs: TerminalTab[],
+	paneId: string,
+): TerminalTab[] {
+	let changed = false;
+	const nextTabs = tabs.map((tab) => {
+		const updated = markPendingPaneKillInTree(tab.paneTree, paneId);
+		if (updated === tab.paneTree) return tab;
+		changed = true;
+		return { ...tab, paneTree: updated };
+	});
+	return changed ? nextTabs : tabs;
+}
+
+function markPendingPaneKillInTree(node: PaneNode, paneId: string): PaneNode {
+	if (node.type === "leaf") {
+		if (node.id !== paneId || node.pendingKill) return node;
+		return { ...node, pendingKill: true };
+	}
+	let changed = false;
+	const children = node.children.map((child) => {
+		const updated = markPendingPaneKillInTree(child, paneId);
+		if (updated !== child) changed = true;
+		return updated;
+	});
+	return changed ? { ...node, children } : node;
 }
 
 function removePendingPaneById(

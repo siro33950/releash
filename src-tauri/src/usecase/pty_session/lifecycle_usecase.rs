@@ -208,6 +208,8 @@ mod tests {
 
         fn pin_session_key(&self, _session_key: &str) {}
 
+        fn unpin_session_key_if_unused(&self, _session_key: &str) {}
+
         fn register_active_terminal(
             &self,
             _worktree_path: &str,

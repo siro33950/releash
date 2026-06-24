@@ -20,6 +20,7 @@ interface PaneTreeRendererProps {
 	) => (handle: TerminalPanelHandle | null) => void;
 	onPtyReady?: (paneId: string, ptyId: number, sessionKey: string) => void;
 	onPtyError?: (paneId: string, message: string) => void;
+	consumePendingPaneKillRequest?: (paneId: string) => boolean;
 	onDropTab?: (
 		tabId: string,
 		targetPaneId: string,
@@ -49,6 +50,7 @@ export function PaneTreeRenderer({
 	setTerminalRef,
 	onPtyReady,
 	onPtyError,
+	consumePendingPaneKillRequest,
 	onDropTab,
 	onDropPane,
 	onBreakToTab,
@@ -69,6 +71,7 @@ export function PaneTreeRenderer({
 				setTerminalRef={setTerminalRef}
 				onPtyReady={onPtyReady}
 				onPtyError={onPtyError}
+				consumePendingPaneKillRequest={consumePendingPaneKillRequest}
 				onDropTab={onDropTab}
 				onDropPane={onDropPane}
 				onBreakToTab={onBreakToTab}
@@ -102,6 +105,7 @@ export function PaneTreeRenderer({
 					setTerminalRef={setTerminalRef}
 					onPtyReady={onPtyReady}
 					onPtyError={onPtyError}
+					consumePendingPaneKillRequest={consumePendingPaneKillRequest}
 					onDropTab={onDropTab}
 					onDropPane={onDropPane}
 					onBreakToTab={onBreakToTab}
@@ -130,6 +134,7 @@ interface PaneTreePanelProps {
 	) => (handle: TerminalPanelHandle | null) => void;
 	onPtyReady?: (paneId: string, ptyId: number, sessionKey: string) => void;
 	onPtyError?: (paneId: string, message: string) => void;
+	consumePendingPaneKillRequest?: (paneId: string) => boolean;
 	onDropTab?: (
 		tabId: string,
 		targetPaneId: string,
@@ -161,6 +166,7 @@ function PaneTreePanel({
 	setTerminalRef,
 	onPtyReady,
 	onPtyError,
+	consumePendingPaneKillRequest,
 	onDropTab,
 	onDropPane,
 	onBreakToTab,
@@ -182,6 +188,7 @@ function PaneTreePanel({
 					setTerminalRef={setTerminalRef}
 					onPtyReady={onPtyReady}
 					onPtyError={onPtyError}
+					consumePendingPaneKillRequest={consumePendingPaneKillRequest}
 					onDropTab={onDropTab}
 					onDropPane={onDropPane}
 					onBreakToTab={onBreakToTab}

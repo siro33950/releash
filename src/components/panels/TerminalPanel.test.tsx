@@ -39,6 +39,7 @@ describe("TerminalPanel", () => {
 			undefined,
 			undefined,
 			undefined,
+			undefined,
 		);
 	});
 
@@ -54,6 +55,7 @@ describe("TerminalPanel", () => {
 			undefined,
 			undefined,
 			onPtyReady,
+			undefined,
 			undefined,
 		);
 	});

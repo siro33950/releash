@@ -582,6 +582,23 @@ describe("useTerminalPanes", () => {
 			expect(result.current.tabs[0].id).not.toBe(inactiveTab.id);
 		});
 
+		it("markPendingPaneKill records a pending kill on the leaf until PTY ready", () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+			const paneId = result.current.tabs[0].focusedPaneId;
+
+			act(() => result.current.markPendingPaneKill(paneId));
+
+			let leaf = getAllLeaves(result.current.tabs[0].paneTree)[0];
+			expect(leaf.pendingKill).toBe(true);
+
+			act(() => result.current.updatePaneSessionKey(paneId, "key-active", 41));
+
+			leaf = getAllLeaves(result.current.tabs[0].paneTree)[0];
+			expect(leaf.pendingKill).toBe(false);
+		});
+
 		it("pty-evicted removes the matching inactive pane from cached state", async () => {
 			const { result } = renderHook(() =>
 				useTerminalPanes("Terminal", "/repo::Terminal"),
@@ -619,6 +636,78 @@ describe("useTerminalPanes", () => {
 			const remainingLeaves = getAllLeaves(result.current.tabs[0].paneTree);
 			expect(remainingLeaves).toHaveLength(1);
 			expect(remainingLeaves[0].sessionKey).toBe("key-active");
+		});
+
+		it("pty-evicted listener is not re-registered when active tab changes", async () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+
+			await waitFor(() => {
+				expect(
+					mockListen.mock.calls.filter(
+						(call: unknown[]) => call[0] === "pty-evicted",
+					),
+				).toHaveLength(2);
+			});
+
+			act(() => result.current.addTab());
+
+			expect(
+				mockListen.mock.calls.filter(
+					(call: unknown[]) => call[0] === "pty-evicted",
+				),
+			).toHaveLength(2);
+		});
+
+		it("pty-evicted clears the latest active single-pane tab instead of removing it", async () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+
+			await waitFor(() => {
+				expect(mockListen).toHaveBeenCalledWith(
+					"pty-evicted",
+					expect.any(Function),
+				);
+			});
+			const listener = mockListen.mock.calls.find(
+				(call: unknown[]) => call[0] === "pty-evicted",
+			)?.[1] as (event: {
+				payload: { pty_id: number; session_key: string; reason: string };
+			}) => void;
+
+			act(() => result.current.addTab());
+			const activeTab = result.current.activeTab;
+			if (!activeTab) throw new Error("active tab should exist");
+			const activePane = getAllLeaves(activeTab.paneTree)[0];
+			act(() =>
+				result.current.updatePaneSessionKey(
+					activePane.id,
+					"key-latest-active",
+					77,
+				),
+			);
+
+			act(() => {
+				listener({
+					payload: {
+						pty_id: 77,
+						session_key: "key-latest-active",
+						reason: "idle",
+					},
+				});
+			});
+
+			expect(result.current.tabs).toHaveLength(2);
+			expect(result.current.activeTabId).toBe(activeTab.id);
+			const remainingActiveTab = result.current.tabs.find(
+				(tab) => tab.id === activeTab.id,
+			);
+			if (!remainingActiveTab) throw new Error("active tab should remain");
+			const leaf = getAllLeaves(remainingActiveTab.paneTree)[0];
+			expect(leaf.ptyId).toBeNull();
+			expect(leaf.sessionKey).toBeNull();
 		});
 
 		it("global pty-evicted mirror removes cached panes while unmounted", async () => {

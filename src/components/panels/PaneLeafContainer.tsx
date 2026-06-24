@@ -23,6 +23,7 @@ interface PaneLeafContainerProps {
 	) => (handle: TerminalPanelHandle | null) => void;
 	onPtyReady?: (paneId: string, ptyId: number, sessionKey: string) => void;
 	onPtyError?: (paneId: string, message: string) => void;
+	consumePendingPaneKillRequest?: (paneId: string) => boolean;
 	onDropTab?: (
 		tabId: string,
 		targetPaneId: string,
@@ -52,6 +53,7 @@ export function PaneLeafContainer({
 	setTerminalRef,
 	onPtyReady,
 	onPtyError,
+	consumePendingPaneKillRequest,
 	onDropTab,
 	onDropPane,
 	onBreakToTab,
@@ -109,6 +111,10 @@ export function PaneLeafContainer({
 		},
 		[onPtyError, pane.id],
 	);
+
+	const shouldKillPendingPty = useCallback(() => {
+		return consumePendingPaneKillRequest?.(pane.id) ?? false;
+	}, [consumePendingPaneKillRequest, pane.id]);
 
 	const localSetTerminalRef = useCallback(
 		(handle: TerminalPanelHandle | null) => {
@@ -198,6 +204,7 @@ export function PaneLeafContainer({
 						sessionKey={pane.sessionKey ?? undefined}
 						onPtyReady={handlePtyReady}
 						onPtyError={handlePtyError}
+						shouldKillPendingPty={shouldKillPendingPty}
 						onSplitVertical={handleSplitVertical}
 						onSplitHorizontal={handleSplitHorizontal}
 						onBreakToTab={handleBreakToTab}

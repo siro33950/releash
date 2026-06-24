@@ -423,6 +423,12 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
         self.registry.lock().pin_session_key(session_key);
     }
 
+    fn unpin_session_key_if_unused(&self, session_key: &str) {
+        self.registry
+            .lock()
+            .unpin_session_key_if_unused(session_key);
+    }
+
     fn register_active_terminal(&self, worktree_path: &str, session_key: &str, active_token: &str) {
         self.registry
             .lock()

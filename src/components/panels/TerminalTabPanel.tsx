@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { X } from "lucide-react";
 import {
 	type DragEvent,
@@ -53,16 +54,24 @@ export const TerminalTabPanel = forwardRef<
 		movePaneToTab,
 		movePaneInTab,
 		updatePaneSessionKey,
+		markPendingPaneKill,
 		removePendingPane,
 		activeTab,
 	} = useTerminalPanes(tabPrefix, cwd ? `${cwd}::${tabPrefix}` : null);
 
 	const terminalRefs = useRef<Map<string, TerminalPanelHandle>>(new Map());
+	const pendingKillPaneIdsRef = useRef<Set<string>>(new Set());
 	const [terminalError, setTerminalError] = useState<string | null>(null);
 
 	const handlePtyReady = useCallback(
 		(paneId: string, ptyId: number, sessionKey: string) => {
 			setTerminalError(null);
+			if (pendingKillPaneIdsRef.current.delete(paneId)) {
+				invoke("kill_pty", { ptyId }).catch((error) => {
+					console.error("Failed to kill closed pending terminal PTY:", error);
+				});
+				return;
+			}
 			updatePaneSessionKey(paneId, sessionKey, ptyId);
 		},
 		[updatePaneSessionKey],
@@ -70,6 +79,7 @@ export const TerminalTabPanel = forwardRef<
 
 	const handlePtyError = useCallback(
 		(paneId: string, message: string) => {
+			pendingKillPaneIdsRef.current.delete(paneId);
 			setTerminalError(message);
 			removePendingPane(paneId);
 		},
@@ -105,10 +115,20 @@ export const TerminalTabPanel = forwardRef<
 				.flatMap((tab) => getAllLeaves(tab.paneTree))
 				.find((leaf) => leaf.id === paneId);
 			if (!pane || pane.ptyId !== null) return;
-			terminalRefs.current.get(paneId)?.requestKill();
+			const handle = terminalRefs.current.get(paneId);
+			if (handle) {
+				handle.requestKill();
+				return;
+			}
+			pendingKillPaneIdsRef.current.add(paneId);
+			markPendingPaneKill(paneId);
 		},
-		[tabs],
+		[markPendingPaneKill, tabs],
 	);
+
+	const consumePendingPaneKillRequest = useCallback((paneId: string) => {
+		return pendingKillPaneIdsRef.current.delete(paneId);
+	}, []);
 
 	const handleSplit = useCallback(
 		(paneId: string, direction: SplitDirection) => {
@@ -354,6 +374,7 @@ export const TerminalTabPanel = forwardRef<
 								setTerminalRef={setTerminalRef}
 								onPtyReady={handlePtyReady}
 								onPtyError={handlePtyError}
+								consumePendingPaneKillRequest={consumePendingPaneKillRequest}
 								onDropTab={handleDropTab}
 								onDropPane={handleDropPane}
 								onBreakToTab={handleBreakToTab}

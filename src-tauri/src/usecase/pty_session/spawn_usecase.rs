@@ -79,9 +79,20 @@ pub fn spawn<G: PtySessionGateway>(
 }
 
 fn cleanup_failed_spawn(manager: &impl PtySessionGateway, pty_id: u64) {
-    if manager.snapshot(pty_id).is_some() {
-        let _ = manager.kill_runtime(pty_id);
-        manager.remove_session(pty_id);
+    if let Some(snapshot) = manager.snapshot(pty_id) {
+        match manager.kill_runtime(pty_id) {
+            Ok(()) => {
+                manager.remove_session(pty_id);
+            }
+            Err(error) => {
+                manager.unpin_session_key_if_unused(&snapshot.session_key);
+                log::error!(
+                    "Failed to kill PTY {} during failed spawn cleanup: {}",
+                    pty_id,
+                    error
+                );
+            }
+        }
     } else {
         manager.remove_runtime(pty_id);
     }
@@ -166,6 +177,7 @@ mod tests {
         now_ms: AtomicU64,
         fail_spawn: AtomicBool,
         fail_start_reader: AtomicBool,
+        fail_kill_runtime: AtomicBool,
         pin_reserved_after_reserve: AtomicBool,
         spawn_count: Mutex<usize>,
         killed: Mutex<Vec<u64>>,
@@ -185,6 +197,7 @@ mod tests {
                 now_ms: AtomicU64::new(200),
                 fail_spawn: AtomicBool::new(false),
                 fail_start_reader: AtomicBool::new(false),
+                fail_kill_runtime: AtomicBool::new(false),
                 pin_reserved_after_reserve: AtomicBool::new(false),
                 spawn_count: Mutex::new(0),
                 killed: Mutex::new(Vec::new()),
@@ -316,6 +329,13 @@ mod tests {
             self.registry.lock().unwrap().pin_session_key(session_key);
         }
 
+        fn unpin_session_key_if_unused(&self, session_key: &str) {
+            self.registry
+                .lock()
+                .unwrap()
+                .unpin_session_key_if_unused(session_key);
+        }
+
         fn register_active_terminal(
             &self,
             worktree_path: &str,
@@ -414,6 +434,9 @@ mod tests {
 
         fn kill_runtime(&self, pty_id: u64) -> Result<(), UsecaseError> {
             self.killed.lock().unwrap().push(pty_id);
+            if self.fail_kill_runtime.load(Ordering::SeqCst) {
+                return Err(UsecaseError::Gateway("kill failed".to_string()));
+            }
             Ok(())
         }
 
@@ -625,6 +648,43 @@ mod tests {
         assert!(gateway.snapshot(first).is_some());
         assert!(gateway.snapshot(second).is_some());
         assert!(gateway.snapshot(3).is_none());
+    }
+
+    #[test]
+    fn start_reader_failure_keeps_new_session_evictable_when_cleanup_kill_fails() {
+        let gateway = MockGateway::new();
+        gateway.fail_start_reader.store(true, Ordering::SeqCst);
+        gateway.fail_kill_runtime.store(true, Ordering::SeqCst);
+
+        let result = get_or_spawn(
+            &gateway,
+            &(),
+            24,
+            80,
+            Some("/repo".to_string()),
+            None,
+            "/repo".to_string(),
+            None,
+            PtyKind::Terminal,
+        );
+
+        assert!(matches!(
+            result,
+            Err(UsecaseError::Gateway(message)) if message == "reader failed"
+        ));
+        assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
+        assert_eq!(*gateway.killed.lock().unwrap(), vec![1]);
+        assert!(gateway.snapshot(1).is_some());
+        assert!(!gateway.is_pinned(1));
+        assert_eq!(gateway.select_idle_timed_out(300), vec![1]);
+
+        gateway.fail_kill_runtime.store(false, Ordering::SeqCst);
+        let evicted =
+            crate::usecase::pty_session::lifecycle_usecase::sweep_idle(&gateway, &(), 300);
+
+        assert_eq!(evicted, vec![1]);
+        assert_eq!(*gateway.killed.lock().unwrap(), vec![1, 1]);
+        assert!(gateway.snapshot(1).is_none());
     }
 
     #[test]
