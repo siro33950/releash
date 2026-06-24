@@ -830,8 +830,13 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
         chat_session_id: &str,
         events: &mut Vec<RecordedEmit>,
     ) -> bool {
-        let effect =
-            run_permission_request_transition_locked(proc, chat_session_id, recording_emit(events));
+        let effect = run_permission_request_transition_locked(
+            proc,
+            chat_session_id,
+            None,
+            Instant::now(),
+            recording_emit(events),
+        );
         if effect.did_transition {
             events.push(RecordedEmit::StateChanged {
                 phase: TurnPhase::WaitingPermission,

@@ -1954,9 +1954,13 @@ mod moved_tests {
             std::slice::from_ref(&permission_part),
         );
 
-        let effect = run_permission_request_transition_locked(&mut proc, "csid", |_mid, _parts| {
-            (true, true)
-        });
+        let effect = run_permission_request_transition_locked(
+            &mut proc,
+            "csid",
+            None,
+            Instant::now(),
+            |_mid, _parts| (true, true),
+        );
 
         assert!(effect.did_transition);
         assert_eq!(
