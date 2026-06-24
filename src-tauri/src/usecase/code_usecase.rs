@@ -8,7 +8,9 @@
 use std::sync::Arc;
 
 use crate::domain::code::{
-    ChangeGroup, DiffFileEntry, DiffTreeNode, Hunk, MentionReference, StagingRepository,
+    ChangeGroup, DiffFileEntry, DiffTreeNode, Hunk, MentionReference, ReviewBase, ReviewBlobSide,
+    ReviewBlobUrlParams, ReviewBlobUrlProvider, ReviewSection, ReviewSideBytes, ReviewSideMetadata,
+    StagingRepository,
 };
 
 use super::code_dto::{
@@ -22,11 +24,34 @@ use super::code_query_service::CodeQueryService;
 pub struct CodeUsecase {
     staging: Arc<dyn StagingRepository>,
     query: CodeQueryService,
+    blob_urls: Arc<dyn ReviewBlobUrlProvider>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReviewContentSource {
+    BranchBase,
+    Head,
+    Staged,
+    WorkingTree,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SelectedReviewSide {
+    pub source: ReviewContentSource,
+    pub metadata: ReviewSideMetadata,
 }
 
 impl CodeUsecase {
-    pub fn new(staging: Arc<dyn StagingRepository>, query: CodeQueryService) -> Self {
-        Self { staging, query }
+    pub fn new(
+        staging: Arc<dyn StagingRepository>,
+        query: CodeQueryService,
+        blob_urls: Arc<dyn ReviewBlobUrlProvider>,
+    ) -> Self {
+        Self {
+            staging,
+            query,
+            blob_urls,
+        }
     }
 
     // ── staging（書き込み = 差分 Approve） ──
@@ -96,6 +121,107 @@ impl CodeUsecase {
         base_branch: Option<&str>,
     ) -> Result<BranchDiffSummaryDto, CodeUsecaseError> {
         self.query.get_branch_diff_summary(repo_path, base_branch)
+    }
+
+    // ── review primitives（snapshot/version orchestration は ReviewUsecase が持つ） ──
+
+    pub(super) fn review_blob_url(
+        &self,
+        worktree_path: &str,
+        path: &str,
+        side: ReviewBlobSide,
+        section: ReviewSection,
+        base: ReviewBase,
+        version: u64,
+    ) -> String {
+        self.blob_urls.url(&ReviewBlobUrlParams {
+            worktree_path: worktree_path.to_string(),
+            path: path.to_string(),
+            side,
+            section: section.as_str().to_string(),
+            base: base.as_str().to_string(),
+            version,
+        })
+    }
+
+    pub(super) fn select_review_side_source(
+        &self,
+        file_path: &str,
+        side: ReviewBlobSide,
+        section: ReviewSection,
+        base: ReviewBase,
+    ) -> Result<SelectedReviewSide, CodeUsecaseError> {
+        if base.is_branch_base() {
+            let source = match side {
+                ReviewBlobSide::Original => ReviewContentSource::BranchBase,
+                ReviewBlobSide::Modified => ReviewContentSource::WorkingTree,
+            };
+            return self.select_review_source(file_path, source);
+        }
+        if section.is_staged() {
+            let source = match side {
+                ReviewBlobSide::Original => ReviewContentSource::Head,
+                ReviewBlobSide::Modified => ReviewContentSource::Staged,
+            };
+            return self.select_review_source(file_path, source);
+        }
+
+        match side {
+            ReviewBlobSide::Original => {
+                self.select_review_source(file_path, ReviewContentSource::Staged)
+            }
+            ReviewBlobSide::Modified => {
+                self.select_review_source(file_path, ReviewContentSource::WorkingTree)
+            }
+        }
+    }
+
+    fn select_review_source(
+        &self,
+        file_path: &str,
+        source: ReviewContentSource,
+    ) -> Result<SelectedReviewSide, CodeUsecaseError> {
+        Ok(SelectedReviewSide {
+            source,
+            metadata: self.read_review_source_metadata(file_path, source)?,
+        })
+    }
+
+    fn read_review_source_metadata(
+        &self,
+        file_path: &str,
+        source: ReviewContentSource,
+    ) -> Result<ReviewSideMetadata, CodeUsecaseError> {
+        match source {
+            ReviewContentSource::BranchBase => {
+                self.query.review_file_metadata_at_branch_base(file_path)
+            }
+            ReviewContentSource::Head => self.query.review_file_metadata_at_ref(file_path, "HEAD"),
+            ReviewContentSource::Staged => self.query.review_staged_metadata(file_path),
+            ReviewContentSource::WorkingTree => self.query.review_working_tree_metadata(file_path),
+        }
+    }
+
+    pub(super) fn read_review_source_bytes(
+        &self,
+        file_path: &str,
+        source: ReviewContentSource,
+    ) -> Result<ReviewSideBytes, CodeUsecaseError> {
+        match source {
+            ReviewContentSource::BranchBase => {
+                self.query.review_file_bytes_at_branch_base(file_path)
+            }
+            ReviewContentSource::Head => self.query.review_file_bytes_at_ref(file_path, "HEAD"),
+            ReviewContentSource::Staged => self.query.review_staged_bytes(file_path),
+            ReviewContentSource::WorkingTree => self.query.review_working_tree_bytes(file_path),
+        }
+    }
+
+    pub(super) fn review_binary_by_attributes(
+        &self,
+        file_path: &str,
+    ) -> Result<bool, CodeUsecaseError> {
+        self.query.review_binary_by_attributes(file_path)
     }
 
     // ── diff tree ──
@@ -280,6 +406,171 @@ mod code_usecase_tests {
         fn binary_staged_content(&self, _f: &str) -> Result<String, CodeError> {
             Ok("c".to_string())
         }
+        fn review_file_metadata_at_ref(
+            &self,
+            _f: &str,
+            _r: &str,
+        ) -> Result<ReviewSideMetadata, CodeError> {
+            Ok(ReviewSideMetadata::Present { size_bytes: 1 })
+        }
+        fn review_file_bytes_at_ref(
+            &self,
+            _f: &str,
+            _r: &str,
+        ) -> Result<ReviewSideBytes, CodeError> {
+            Ok(ReviewSideBytes::Present(b"c".to_vec()))
+        }
+        fn review_file_metadata_at_branch_base(
+            &self,
+            _f: &str,
+            _b: Option<&str>,
+        ) -> Result<ReviewSideMetadata, CodeError> {
+            Ok(ReviewSideMetadata::Present { size_bytes: 1 })
+        }
+        fn review_file_bytes_at_branch_base(
+            &self,
+            _f: &str,
+            _b: Option<&str>,
+        ) -> Result<ReviewSideBytes, CodeError> {
+            Ok(ReviewSideBytes::Present(b"c".to_vec()))
+        }
+        fn review_staged_metadata(&self, _f: &str) -> Result<ReviewSideMetadata, CodeError> {
+            Ok(ReviewSideMetadata::Missing)
+        }
+        fn review_staged_bytes(&self, _f: &str) -> Result<ReviewSideBytes, CodeError> {
+            Ok(ReviewSideBytes::Missing)
+        }
+        fn review_working_tree_metadata(
+            &self,
+            file_path: &str,
+        ) -> Result<ReviewSideMetadata, CodeError> {
+            match std::fs::metadata(file_path) {
+                Ok(metadata) => Ok(ReviewSideMetadata::Present {
+                    size_bytes: metadata.len(),
+                }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(ReviewSideMetadata::Missing)
+                }
+                Err(e) => Err(CodeError::from(e)),
+            }
+        }
+        fn review_working_tree_bytes(&self, file_path: &str) -> Result<ReviewSideBytes, CodeError> {
+            match std::fs::read(file_path) {
+                Ok(bytes) => Ok(ReviewSideBytes::Present(bytes)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ReviewSideBytes::Missing),
+                Err(e) => Err(CodeError::from(e)),
+            }
+        }
+        fn review_binary_by_attributes(&self, _f: &str) -> Result<bool, CodeError> {
+            Ok(false)
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingFileContent {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl RecordingFileContent {
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        fn record(&self, call: String) {
+            self.calls.lock().unwrap().push(call);
+        }
+    }
+
+    impl FileContentRepository for RecordingFileContent {
+        fn file_at_ref(&self, f: &str, r: &str) -> Result<String, CodeError> {
+            self.record(format!("text:ref:{r}:{f}"));
+            Ok("c".to_string())
+        }
+        fn binary_file_at_ref(&self, f: &str, r: &str) -> Result<String, CodeError> {
+            self.record(format!("binary:ref:{r}:{f}"));
+            Ok("c".to_string())
+        }
+        fn file_at_branch_base(&self, f: &str, b: Option<&str>) -> Result<String, CodeError> {
+            self.record(format!("text:branch-base:{}:{f}", b.unwrap_or("none")));
+            Ok("c".to_string())
+        }
+        fn binary_file_at_branch_base(
+            &self,
+            f: &str,
+            b: Option<&str>,
+        ) -> Result<String, CodeError> {
+            self.record(format!("binary:branch-base:{}:{f}", b.unwrap_or("none")));
+            Ok("c".to_string())
+        }
+        fn staged_content(&self, f: &str) -> Result<String, CodeError> {
+            self.record(format!("text:staged:{f}"));
+            Ok("c".to_string())
+        }
+        fn binary_staged_content(&self, f: &str) -> Result<String, CodeError> {
+            self.record(format!("binary:staged:{f}"));
+            Ok("c".to_string())
+        }
+        fn review_file_metadata_at_ref(
+            &self,
+            f: &str,
+            r: &str,
+        ) -> Result<ReviewSideMetadata, CodeError> {
+            self.record(format!("metadata:ref:{r}:{f}"));
+            Ok(ReviewSideMetadata::Present { size_bytes: 1 })
+        }
+        fn review_file_bytes_at_ref(&self, f: &str, r: &str) -> Result<ReviewSideBytes, CodeError> {
+            self.record(format!("bytes:ref:{r}:{f}"));
+            Ok(ReviewSideBytes::Present(b"head".to_vec()))
+        }
+        fn review_file_metadata_at_branch_base(
+            &self,
+            f: &str,
+            b: Option<&str>,
+        ) -> Result<ReviewSideMetadata, CodeError> {
+            self.record(format!("metadata:branch-base:{}:{f}", b.unwrap_or("none")));
+            Ok(ReviewSideMetadata::Present { size_bytes: 1 })
+        }
+        fn review_file_bytes_at_branch_base(
+            &self,
+            f: &str,
+            b: Option<&str>,
+        ) -> Result<ReviewSideBytes, CodeError> {
+            self.record(format!("bytes:branch-base:{}:{f}", b.unwrap_or("none")));
+            Ok(ReviewSideBytes::Present(b"base".to_vec()))
+        }
+        fn review_staged_metadata(&self, f: &str) -> Result<ReviewSideMetadata, CodeError> {
+            self.record(format!("metadata:staged:{f}"));
+            Ok(ReviewSideMetadata::Present { size_bytes: 1 })
+        }
+        fn review_staged_bytes(&self, f: &str) -> Result<ReviewSideBytes, CodeError> {
+            self.record(format!("bytes:staged:{f}"));
+            Ok(ReviewSideBytes::Present(b"staged".to_vec()))
+        }
+        fn review_working_tree_metadata(&self, f: &str) -> Result<ReviewSideMetadata, CodeError> {
+            self.record(format!("metadata:working-tree:{f}"));
+            Ok(ReviewSideMetadata::Present { size_bytes: 1 })
+        }
+        fn review_working_tree_bytes(&self, f: &str) -> Result<ReviewSideBytes, CodeError> {
+            self.record(format!("bytes:working-tree:{f}"));
+            Ok(ReviewSideBytes::Present(b"working".to_vec()))
+        }
+        fn review_binary_by_attributes(&self, _f: &str) -> Result<bool, CodeError> {
+            Ok(false)
+        }
+    }
+
+    struct StubBlobUrls;
+    impl ReviewBlobUrlProvider for StubBlobUrls {
+        fn url(&self, params: &ReviewBlobUrlParams) -> String {
+            let side = match params.side {
+                ReviewBlobSide::Original => "original",
+                ReviewBlobSide::Modified => "modified",
+            };
+            format!(
+                "review-blob://localhost/blob?side={side}&version={}",
+                params.version
+            )
+        }
     }
 
     struct StubDiffComputer;
@@ -386,7 +677,24 @@ mod code_usecase_tests {
             Arc::new(StubMention),
             Arc::new(StubBranchBase),
         );
-        CodeUsecase::new(staging, query)
+        CodeUsecase::new(staging, query, Arc::new(StubBlobUrls))
+    }
+
+    fn usecase_with_file_content(file_content: Arc<dyn FileContentRepository>) -> CodeUsecase {
+        let query = CodeQueryService::new(
+            file_content,
+            Arc::new(StubDiffComputer),
+            Arc::new(StubBranchDiff),
+            Arc::new(StubMention),
+            Arc::new(StubBranchBase),
+        );
+        CodeUsecase::new(
+            Arc::new(RecordingStaging {
+                calls: Mutex::new(Vec::new()),
+            }),
+            query,
+            Arc::new(StubBlobUrls),
+        )
     }
 
     /// mention 解決のフォールバック挙動テスト用に、指定の `MentionRepository` 実装で
@@ -405,6 +713,7 @@ mod code_usecase_tests {
                 calls: Mutex::new(Vec::new()),
             }),
             query,
+            Arc::new(StubBlobUrls),
         )
     }
 
@@ -432,6 +741,77 @@ mod code_usecase_tests {
         // QueryService 経由でファイル内容参照が返ることを確認（委譲経路の担保）。
         assert_eq!(uc.get_file_at_ref("f.rs", "HEAD").unwrap(), "c");
         assert_eq!(uc.get_language_from_path("a.rs"), "rust");
+    }
+
+    #[test]
+    fn review_side_source_mapping_uses_production_metadata_and_bytes_methods() {
+        let file_content = Arc::new(RecordingFileContent::default());
+        let uc = usecase_with_file_content(file_content.clone());
+        let file_path = "/repo/file.txt";
+        let cases = [
+            (
+                ReviewSection::Changes,
+                ReviewBase::Head,
+                ReviewBlobSide::Original,
+                ReviewContentSource::Staged,
+                format!("metadata:staged:{file_path}"),
+                format!("bytes:staged:{file_path}"),
+            ),
+            (
+                ReviewSection::Changes,
+                ReviewBase::Head,
+                ReviewBlobSide::Modified,
+                ReviewContentSource::WorkingTree,
+                format!("metadata:working-tree:{file_path}"),
+                format!("bytes:working-tree:{file_path}"),
+            ),
+            (
+                ReviewSection::Staged,
+                ReviewBase::Head,
+                ReviewBlobSide::Original,
+                ReviewContentSource::Head,
+                format!("metadata:ref:HEAD:{file_path}"),
+                format!("bytes:ref:HEAD:{file_path}"),
+            ),
+            (
+                ReviewSection::Staged,
+                ReviewBase::Head,
+                ReviewBlobSide::Modified,
+                ReviewContentSource::Staged,
+                format!("metadata:staged:{file_path}"),
+                format!("bytes:staged:{file_path}"),
+            ),
+            (
+                ReviewSection::Changes,
+                ReviewBase::BranchBase,
+                ReviewBlobSide::Original,
+                ReviewContentSource::BranchBase,
+                format!("metadata:branch-base:none:{file_path}"),
+                format!("bytes:branch-base:none:{file_path}"),
+            ),
+            (
+                ReviewSection::Changes,
+                ReviewBase::BranchBase,
+                ReviewBlobSide::Modified,
+                ReviewContentSource::WorkingTree,
+                format!("metadata:working-tree:{file_path}"),
+                format!("bytes:working-tree:{file_path}"),
+            ),
+        ];
+
+        let mut expected_calls = Vec::new();
+        for (section, base, side, expected_source, metadata_call, bytes_call) in cases {
+            let selected = uc
+                .select_review_side_source(file_path, side, section, base)
+                .unwrap();
+            assert_eq!(selected.source, expected_source);
+            uc.read_review_source_bytes(file_path, selected.source)
+                .unwrap();
+            expected_calls.push(metadata_call);
+            expected_calls.push(bytes_call);
+        }
+
+        assert_eq!(file_content.calls(), expected_calls);
     }
 
     // ── mention 参照解決のフォールバック挙動（usecase 層の責務）──

@@ -10,6 +10,7 @@ import {
 	Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Hunk } from "@/lib/computeHunks";
 import { DiffViewerSection } from "../DiffViewerSection";
 
 interface AgentEditPreviewLine {
@@ -120,6 +121,35 @@ function countChangedLines(preview: AgentEditPreview | null) {
 		}
 	}
 	return { added, removed };
+}
+
+function previewHunksToDiffHunks(hunks: AgentEditPreviewHunk[]): Hunk[] {
+	return hunks.map((hunk, index) => {
+		let oldLines = 0;
+		let newLines = 0;
+		const lines = hunk.lines.map((line) => {
+			if (line.kind === "removed") {
+				oldLines += 1;
+				return `-${line.content}`;
+			}
+			if (line.kind === "added") {
+				newLines += 1;
+				return `+${line.content}`;
+			}
+			oldLines += 1;
+			newLines += 1;
+			return ` ${line.content}`;
+		});
+
+		return {
+			index,
+			oldStart: hunk.oldStart,
+			oldLines,
+			newStart: hunk.newStart,
+			newLines,
+			lines,
+		};
+	});
 }
 
 function changeKind(preview: AgentEditPreview | null): "A" | "M" | "D" | null {
@@ -276,6 +306,10 @@ export function AgentEditPreviewPanel({
 					error: null,
 				});
 	const changedLines = useMemo(() => countChangedLines(preview), [preview]);
+	const diffHunks = useMemo(
+		() => (preview ? previewHunksToDiffHunks(preview.hunks) : []),
+		[preview],
+	);
 	const kind = useMemo(() => changeKind(preview), [preview]);
 	const canExpand =
 		Boolean(error) ||
@@ -376,6 +410,7 @@ export function AgentEditPreviewPanel({
 								diffMode="inline"
 								diffOnlyMode={true}
 								filePath={preview.filePath ?? undefined}
+								hunks={diffHunks}
 							/>
 						</div>
 					)}

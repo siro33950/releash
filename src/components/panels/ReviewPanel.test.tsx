@@ -63,45 +63,41 @@ vi.mock("@/hooks/useGitStatus", () => ({
 	}),
 }));
 
-vi.mock("@/hooks/useDiffFileTree", () => ({
-	useDiffFileTree: vi.fn().mockReturnValue({
+vi.mock("@/hooks/useReviewSnapshot", () => ({
+	useReviewSnapshot: vi.fn().mockReturnValue({
+		files: [],
+		stagedFiles: [],
+		changedFiles: [],
 		stagedTree: [],
 		changesTree: [],
 		stagedFileCount: 0,
 		changesFileCount: 0,
 		branchBaseTree: [],
 		branchBaseFileCount: 0,
+		version: 0,
+		limited: false,
 		loading: false,
+		refresh: vi.fn(),
 	}),
 }));
 
-vi.mock("@/hooks/useFileDiffContent", () => ({
-	useFileDiffContent: vi.fn().mockReturnValue({
+vi.mock("@/hooks/useReviewFileView", () => ({
+	useReviewFileView: vi.fn().mockReturnValue({
+		view: null,
 		originalContent: "",
 		modifiedContent: "",
-	}),
-}));
-
-vi.mock("@/hooks/useHunks", () => ({
-	useHunks: vi.fn().mockReturnValue({
+		hunks: [],
 		changeGroups: [],
-		currentIndex: 0,
-		total: 0,
-		goToNext: vi.fn(),
-		goToPrev: vi.fn(),
+		imageDiff: { originalUrl: null, modifiedUrl: null, loading: false },
+		loading: false,
+		error: null,
 	}),
-}));
-
-vi.mock("@/hooks/useImageDiff", () => ({
-	useImageDiff: vi.fn().mockReturnValue(null),
 }));
 
 vi.mock("@/hooks/useGitActions", () => ({
 	useGitActions: vi.fn().mockReturnValue({
 		stage: vi.fn(),
 		unstage: vi.fn(),
-		stageHunk: vi.fn(),
-		unstageHunk: vi.fn(),
 	}),
 }));
 
@@ -127,7 +123,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("./DiffViewerSection", () => ({
-	DiffViewerSection: () => <div data-testid="diff-viewer-section" />,
+	DiffViewerSection: ({ error }: { error?: string | null }) => (
+		<div data-testid="diff-viewer-section" data-error={error ?? ""} />
+	),
 }));
 
 vi.mock("./DiffToolbar", () => ({
@@ -136,10 +134,46 @@ vi.mock("./DiffToolbar", () => ({
 	),
 }));
 
-const { useDiffFileTree } = await import("@/hooks/useDiffFileTree");
+const { useReviewSnapshot } = await import("@/hooks/useReviewSnapshot");
+const { useReviewFileView } = await import("@/hooks/useReviewFileView");
 const { useReviewPanel } = await import("@/hooks/useReviewPanel");
 const { useGitEventRefresh } = await import("@/hooks/useGitEventRefresh");
-const { useFileDiffContent } = await import("@/hooks/useFileDiffContent");
+
+function mockReviewSnapshot(
+	overrides: Partial<ReturnType<typeof useReviewSnapshot>>,
+) {
+	vi.mocked(useReviewSnapshot).mockReturnValue({
+		files: [],
+		stagedFiles: [],
+		changedFiles: [],
+		stagedTree: [],
+		changesTree: [],
+		stagedFileCount: 0,
+		changesFileCount: 0,
+		branchBaseTree: [],
+		branchBaseFileCount: 0,
+		version: 0,
+		limited: false,
+		loading: false,
+		refresh: vi.fn(),
+		snapshot: {
+			version: 0,
+			stale: false,
+			loading: false,
+			limited: false,
+			base: "head",
+			files: [],
+			status: [],
+			diffStats: [],
+			tree: [],
+			stagedTree: [],
+			changesTree: [],
+			stagedFileCount: 0,
+			changesFileCount: 0,
+		},
+		...overrides,
+	});
+}
 
 describe("ReviewPanel", () => {
 	it("should show 'No changes' when totalFileCount is 0", () => {
@@ -147,7 +181,6 @@ describe("ReviewPanel", () => {
 			<TooltipProvider>
 				<ReviewPanel
 					rootPath="/repo"
-					baseBranch="main"
 					diffOnlyMode={false}
 					onDiffOnlyModeChange={vi.fn()}
 				/>
@@ -158,7 +191,7 @@ describe("ReviewPanel", () => {
 	});
 
 	it("should show 'Select a file to view diff' when no file is selected and files exist", () => {
-		vi.mocked(useDiffFileTree).mockReturnValue({
+		mockReviewSnapshot({
 			stagedTree: [],
 			changesTree: [
 				{
@@ -183,7 +216,6 @@ describe("ReviewPanel", () => {
 			<TooltipProvider>
 				<ReviewPanel
 					rootPath="/repo"
-					baseBranch="main"
 					diffOnlyMode={false}
 					onDiffOnlyModeChange={vi.fn()}
 				/>
@@ -194,7 +226,7 @@ describe("ReviewPanel", () => {
 	});
 
 	it("should render DiffFileTree when files exist", () => {
-		vi.mocked(useDiffFileTree).mockReturnValue({
+		mockReviewSnapshot({
 			stagedTree: [],
 			changesTree: [
 				{
@@ -219,7 +251,6 @@ describe("ReviewPanel", () => {
 			<TooltipProvider>
 				<ReviewPanel
 					rootPath="/repo"
-					baseBranch="main"
 					diffOnlyMode={false}
 					onDiffOnlyModeChange={vi.fn()}
 				/>
@@ -241,7 +272,7 @@ describe("ReviewPanel", () => {
 			setDiffMode: vi.fn(),
 			selectFile: vi.fn(),
 		});
-		vi.mocked(useDiffFileTree).mockReturnValue({
+		mockReviewSnapshot({
 			stagedTree: [],
 			changesTree: [
 				{
@@ -266,7 +297,6 @@ describe("ReviewPanel", () => {
 			<TooltipProvider>
 				<ReviewPanel
 					rootPath="/repo"
-					baseBranch="main"
 					diffOnlyMode={false}
 					onDiffOnlyModeChange={() => {}}
 				/>
@@ -280,6 +310,63 @@ describe("ReviewPanel", () => {
 		expect(breadcrumb.getByText("App.tsx")).toBeInTheDocument();
 	});
 
+	it("passes review file view errors to the diff viewer", () => {
+		vi.mocked(useReviewPanel).mockReturnValue({
+			diffBase: "head",
+			diffMode: "gutter",
+			selectedFile: "src/main.ts",
+			selectedSection: "changes",
+			setDiffBase: vi.fn(),
+			setDiffMode: vi.fn(),
+			selectFile: vi.fn(),
+		});
+		mockReviewSnapshot({
+			stagedTree: [],
+			changesTree: [
+				{
+					id: "file:src/main.ts",
+					name: "main.ts",
+					path: "src/main.ts",
+					node_type: "file",
+					status: "modified",
+					additions: 1,
+					deletions: 0,
+					children: [],
+				},
+			],
+			stagedFileCount: 0,
+			changesFileCount: 1,
+			branchBaseTree: [],
+			branchBaseFileCount: 0,
+			loading: false,
+		});
+		vi.mocked(useReviewFileView).mockReturnValue({
+			view: null,
+			originalContent: "",
+			modifiedContent: "",
+			hunks: null,
+			changeGroups: null,
+			imageDiff: { originalUrl: null, modifiedUrl: null, loading: false },
+			loading: false,
+			error: "Failed to load diff: review target is not in snapshot",
+		});
+
+		render(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={() => {}}
+				/>
+			</TooltipProvider>,
+		);
+
+		expect(screen.getByTestId("diff-viewer-section")).toHaveAttribute(
+			"data-error",
+			"Failed to load diff: review target is not in snapshot",
+		);
+	});
+
 	it("should not show breadcrumb when no file is selected", () => {
 		vi.mocked(useReviewPanel).mockReturnValue({
 			diffBase: "head",
@@ -290,7 +377,7 @@ describe("ReviewPanel", () => {
 			setDiffMode: vi.fn(),
 			selectFile: vi.fn(),
 		});
-		vi.mocked(useDiffFileTree).mockReturnValue({
+		mockReviewSnapshot({
 			stagedTree: [],
 			changesTree: [
 				{
@@ -315,7 +402,6 @@ describe("ReviewPanel", () => {
 			<TooltipProvider>
 				<ReviewPanel
 					rootPath="/repo"
-					baseBranch="main"
 					diffOnlyMode={false}
 					onDiffOnlyModeChange={() => {}}
 				/>
@@ -326,7 +412,7 @@ describe("ReviewPanel", () => {
 	});
 
 	it("should pass null filePath to DiffToolbar when no file is selected", () => {
-		vi.mocked(useDiffFileTree).mockReturnValue({
+		mockReviewSnapshot({
 			stagedTree: [],
 			changesTree: [
 				{
@@ -351,7 +437,6 @@ describe("ReviewPanel", () => {
 			<TooltipProvider>
 				<ReviewPanel
 					rootPath="/repo"
-					baseBranch="main"
 					diffOnlyMode={false}
 					onDiffOnlyModeChange={vi.fn()}
 				/>
@@ -364,7 +449,7 @@ describe("ReviewPanel", () => {
 
 	it("clears agent editor line context when selected file is cleared externally", async () => {
 		const onLineRangeSelected = vi.fn();
-		vi.mocked(useDiffFileTree).mockReturnValue({
+		mockReviewSnapshot({
 			stagedTree: [],
 			changesTree: [
 				{
@@ -398,7 +483,6 @@ describe("ReviewPanel", () => {
 			<TooltipProvider>
 				<ReviewPanel
 					rootPath="/repo"
-					baseBranch="main"
 					diffOnlyMode={false}
 					onDiffOnlyModeChange={() => {}}
 					onLineRangeSelected={onLineRangeSelected}
@@ -420,7 +504,6 @@ describe("ReviewPanel", () => {
 			<TooltipProvider>
 				<ReviewPanel
 					rootPath="/repo"
-					baseBranch="main"
 					diffOnlyMode={false}
 					onDiffOnlyModeChange={() => {}}
 					onLineRangeSelected={onLineRangeSelected}
@@ -444,7 +527,7 @@ describe("ReviewPanel", () => {
 			selectFile: vi.fn(),
 		});
 
-		vi.mocked(useDiffFileTree).mockReturnValue({
+		mockReviewSnapshot({
 			stagedTree: [],
 			changesTree: [
 				{
@@ -469,7 +552,6 @@ describe("ReviewPanel", () => {
 			<TooltipProvider>
 				<ReviewPanel
 					rootPath="/repo"
-					baseBranch="main"
 					diffOnlyMode={false}
 					onDiffOnlyModeChange={vi.fn()}
 				/>
@@ -481,7 +563,7 @@ describe("ReviewPanel", () => {
 	});
 
 	it("should show 'Open in editor' button instead of 'Send all comments' button", () => {
-		vi.mocked(useDiffFileTree).mockReturnValue({
+		mockReviewSnapshot({
 			stagedTree: [],
 			changesTree: [
 				{
@@ -506,7 +588,6 @@ describe("ReviewPanel", () => {
 			<TooltipProvider>
 				<ReviewPanel
 					rootPath="/repo"
-					baseBranch="main"
 					diffOnlyMode={false}
 					onDiffOnlyModeChange={vi.fn()}
 				/>
@@ -527,7 +608,6 @@ describe("ReviewPanel", () => {
 				<TooltipProvider>
 					<ReviewPanel
 						rootPath="/repo"
-						baseBranch="main"
 						diffOnlyMode={false}
 						onDiffOnlyModeChange={vi.fn()}
 					/>
@@ -549,21 +629,30 @@ describe("ReviewPanel", () => {
 			);
 
 			const refreshKeys: number[] = [];
-			vi.mocked(useFileDiffContent).mockImplementation(((
+			vi.mocked(useReviewFileView).mockImplementation(((
+				_rootPath,
 				_filePath,
 				_diffBase,
 				_section,
 				gitRefreshKey,
 			) => {
 				refreshKeys.push(gitRefreshKey);
-				return { originalContent: "", modifiedContent: "" };
-			}) as typeof useFileDiffContent);
+				return {
+					view: null,
+					originalContent: "",
+					modifiedContent: "",
+					hunks: [],
+					changeGroups: [],
+					imageDiff: { originalUrl: null, modifiedUrl: null, loading: false },
+					loading: false,
+					error: null,
+				};
+			}) as typeof useReviewFileView);
 
 			render(
 				<TooltipProvider>
 					<ReviewPanel
 						rootPath="/repo"
-						baseBranch="main"
 						diffOnlyMode={false}
 						onDiffOnlyModeChange={vi.fn()}
 					/>
@@ -588,21 +677,30 @@ describe("ReviewPanel", () => {
 			);
 
 			const refreshKeys: number[] = [];
-			vi.mocked(useFileDiffContent).mockImplementation(((
+			vi.mocked(useReviewFileView).mockImplementation(((
+				_rootPath,
 				_filePath,
 				_diffBase,
 				_section,
 				gitRefreshKey,
 			) => {
 				refreshKeys.push(gitRefreshKey);
-				return { originalContent: "", modifiedContent: "" };
-			}) as typeof useFileDiffContent);
+				return {
+					view: null,
+					originalContent: "",
+					modifiedContent: "",
+					hunks: [],
+					changeGroups: [],
+					imageDiff: { originalUrl: null, modifiedUrl: null, loading: false },
+					loading: false,
+					error: null,
+				};
+			}) as typeof useReviewFileView);
 
 			render(
 				<TooltipProvider>
 					<ReviewPanel
 						rootPath="/repo"
-						baseBranch="main"
 						diffOnlyMode={false}
 						onDiffOnlyModeChange={vi.fn()}
 					/>

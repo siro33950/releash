@@ -6,7 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import type { DiffTreeNode } from "@/hooks/useDiffFileTree";
+import type { DiffTreeNode } from "@/types/review";
 import { useFileNavigation } from "./useFileNavigation";
 
 const mockedInvoke = vi.mocked(invoke);

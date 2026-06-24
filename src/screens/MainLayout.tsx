@@ -71,7 +71,6 @@ function WorktreeContent({
 	onCenterSelectionResolved,
 	initialWorkspaceState,
 	internalStateMapRef,
-	baseBranch,
 }: {
 	rootPath: string;
 	settings: AppSettings;
@@ -89,7 +88,6 @@ function WorktreeContent({
 	internalStateMapRef: React.MutableRefObject<
 		Map<string, InternalWorktreeState>
 	>;
-	baseBranch: string | null;
 }) {
 	const rightBottomRef = useRef<PanelImperativeHandle>(null);
 	const reviewRef = useRef<PanelImperativeHandle>(null);
@@ -279,7 +277,6 @@ function WorktreeContent({
 									<div className="h-full overflow-hidden">
 										<ReviewPanel
 											rootPath={rootPath}
-											baseBranch={baseBranch}
 											defaultDiffBase={settings.defaultDiffBase}
 											defaultDiffMode={settings.defaultDiffMode}
 											diffOnlyMode={s.diffOnlyMode}
@@ -542,7 +539,6 @@ export function MainLayout({
 								onCenterSelectionResolved={onCenterSelectionResolved}
 								initialWorkspaceState={getInitialState(selectedRootPath)}
 								internalStateMapRef={internalStateMapRef}
-								baseBranch={baseBranch}
 							/>
 						) : (
 							<Panel id="center" minSize="30%">

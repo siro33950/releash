@@ -22,8 +22,8 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { DiffTreeNode } from "@/hooks/useDiffFileTree";
 import { cn } from "@/lib/utils";
+import type { DiffTreeNode } from "@/types/review";
 import type { DiffBase, DiffSection } from "@/types/settings";
 
 interface DiffFileTreeProps {

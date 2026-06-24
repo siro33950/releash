@@ -8,7 +8,39 @@
 use super::error::CodeError;
 use super::value_objects::{Hunk, MentionReference};
 
-/// 各リビジョン時点のファイル内容参照（テキスト／バイナリ Base64）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewSideMetadata {
+    Present { size_bytes: u64 },
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewSideBytes {
+    Present(Vec<u8>),
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewBlobSide {
+    Original,
+    Modified,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewBlobUrlParams {
+    pub worktree_path: String,
+    pub path: String,
+    pub side: ReviewBlobSide,
+    pub section: String,
+    pub base: String,
+    pub version: u64,
+}
+
+pub trait ReviewBlobUrlProvider: Send + Sync {
+    fn url(&self, params: &ReviewBlobUrlParams) -> String;
+}
+
+/// 各リビジョン時点のファイル内容参照（テキスト／バイナリ bytes / Base64）。
 pub trait FileContentRepository: Send + Sync {
     fn file_at_ref(&self, file_path: &str, git_ref: &str) -> Result<String, CodeError>;
     fn binary_file_at_ref(&self, file_path: &str, git_ref: &str) -> Result<String, CodeError>;
@@ -26,6 +58,34 @@ pub trait FileContentRepository: Send + Sync {
     ) -> Result<String, CodeError>;
     fn staged_content(&self, file_path: &str) -> Result<String, CodeError>;
     fn binary_staged_content(&self, file_path: &str) -> Result<String, CodeError>;
+    fn review_file_metadata_at_ref(
+        &self,
+        file_path: &str,
+        git_ref: &str,
+    ) -> Result<ReviewSideMetadata, CodeError>;
+    fn review_file_bytes_at_ref(
+        &self,
+        file_path: &str,
+        git_ref: &str,
+    ) -> Result<ReviewSideBytes, CodeError>;
+    fn review_file_metadata_at_branch_base(
+        &self,
+        file_path: &str,
+        base_commit_oid: Option<&str>,
+    ) -> Result<ReviewSideMetadata, CodeError>;
+    fn review_file_bytes_at_branch_base(
+        &self,
+        file_path: &str,
+        base_commit_oid: Option<&str>,
+    ) -> Result<ReviewSideBytes, CodeError>;
+    fn review_staged_metadata(&self, file_path: &str) -> Result<ReviewSideMetadata, CodeError>;
+    fn review_staged_bytes(&self, file_path: &str) -> Result<ReviewSideBytes, CodeError>;
+    fn review_working_tree_metadata(
+        &self,
+        file_path: &str,
+    ) -> Result<ReviewSideMetadata, CodeError>;
+    fn review_working_tree_bytes(&self, file_path: &str) -> Result<ReviewSideBytes, CodeError>;
+    fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeError>;
 }
 
 /// 差分の Approve（staging）に関わる index 書き込み操作。

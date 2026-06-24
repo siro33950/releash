@@ -14,12 +14,18 @@ pub enum CodeError {
     /// ドメインルール／前提条件の違反（bare repository・未ステージ・unborn branch 等）。
     /// 移行前の `GitError::Custom` が表していたメッセージと等価に保つ。
     Rule(String),
+    /// review-blob URI が参照する snapshot version が現在の snapshot と一致しない。
+    StaleReviewBlobVersion { requested: u64, current: u64 },
 }
 
 impl std::fmt::Display for CodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::External(msg) | Self::Rule(msg) => f.write_str(msg),
+            Self::StaleReviewBlobVersion { requested, current } => write!(
+                f,
+                "stale review blob version: requested {requested}, current {current}"
+            ),
         }
     }
 }

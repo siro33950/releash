@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { DiffTreeNode } from "@/hooks/useDiffFileTree";
+import type { DiffTreeNode } from "@/types/review";
 import type { DiffBase, DiffSection } from "@/types/settings";
 import { DiffFileTree } from "./DiffFileTree";
 

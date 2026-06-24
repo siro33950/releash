@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { act, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useDiffOperations } from "./useDiffOperations";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -14,75 +14,49 @@ describe("useDiffOperations", () => {
 		vi.clearAllMocks();
 	});
 
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
-
-	it("handleStageGroup calls invoke chain and onStageHunk", async () => {
-		const onStageHunk = vi.fn().mockResolvedValue(undefined);
+	it("handleStageGroup delegates to the Rust review group command", async () => {
 		const onGitChanged = vi.fn();
-
-		mockInvoke
-			.mockResolvedValueOnce("relative/path.ts") // get_relative_path
-			.mockResolvedValueOnce({
-				// compute_diff_hunks
-				hunks: [{ index: 0 }],
-				changeGroups: [{ groupIndex: 0, hunkIndex: 0 }],
-			})
-			.mockResolvedValueOnce("patch-content"); // generate_group_patch
+		mockInvoke.mockResolvedValue(undefined);
 
 		const { result } = renderHook(() =>
 			useDiffOperations({
-				filePath: "/repo/relative/path.ts",
 				rootPath: "/repo",
-				originalContent: "original",
-				modifiedContent: "modified",
-				onStageHunk,
+				filePath: "relative/path.ts",
+				section: "changes",
+				base: "head",
+				snapshotVersion: 17,
 				onGitChanged,
 			}),
 		);
 
 		await act(async () => {
-			await result.current.handleStageGroup(0);
+			await result.current.handleStageGroup(2);
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith("get_relative_path", {
-			rootPath: "/repo",
-			filePath: "/repo/relative/path.ts",
+		expect(mockInvoke).toHaveBeenCalledWith("git_stage_review_group", {
+			input: {
+				worktreePath: "/repo",
+				path: "relative/path.ts",
+				section: "changes",
+				base: "head",
+				groupIndex: 2,
+				snapshotVersion: 17,
+			},
 		});
-		expect(mockInvoke).toHaveBeenCalledWith("compute_diff_hunks", {
-			original: "original",
-			modified: "modified",
-			filePath: "relative/path.ts",
-		});
-		expect(mockInvoke).toHaveBeenCalledWith("generate_group_patch", {
-			filePath: "relative/path.ts",
-			hunk: { index: 0 },
-			group: { groupIndex: 0, hunkIndex: 0 },
-		});
-		expect(onStageHunk).toHaveBeenCalledWith("/repo", "patch-content");
 		expect(onGitChanged).toHaveBeenCalled();
 	});
 
-	it("handleUnstageGroup calls onUnstageHunk", async () => {
-		const onUnstageHunk = vi.fn().mockResolvedValue(undefined);
+	it("handleUnstageGroup delegates to the Rust review group command", async () => {
 		const onGitChanged = vi.fn();
-
-		mockInvoke
-			.mockResolvedValueOnce("relative/path.ts")
-			.mockResolvedValueOnce({
-				hunks: [{ index: 0 }],
-				changeGroups: [{ groupIndex: 0, hunkIndex: 0 }],
-			})
-			.mockResolvedValueOnce("patch-content");
+		mockInvoke.mockResolvedValue(undefined);
 
 		const { result } = renderHook(() =>
 			useDiffOperations({
-				filePath: "/repo/relative/path.ts",
 				rootPath: "/repo",
-				originalContent: "original",
-				modifiedContent: "modified",
-				onUnstageHunk,
+				filePath: "relative/path.ts",
+				section: "staged",
+				base: "head",
+				snapshotVersion: 23,
 				onGitChanged,
 			}),
 		);
@@ -91,20 +65,27 @@ describe("useDiffOperations", () => {
 			await result.current.handleUnstageGroup(0);
 		});
 
-		expect(onUnstageHunk).toHaveBeenCalledWith("/repo", "patch-content");
+		expect(mockInvoke).toHaveBeenCalledWith("git_unstage_review_group", {
+			input: {
+				worktreePath: "/repo",
+				path: "relative/path.ts",
+				section: "staged",
+				base: "head",
+				groupIndex: 0,
+				snapshotVersion: 23,
+			},
+		});
 		expect(onGitChanged).toHaveBeenCalled();
 	});
 
-	it("does nothing when rootPath is null", async () => {
-		const onStageHunk = vi.fn();
-
+	it("does nothing when target identifiers are missing", async () => {
 		const { result } = renderHook(() =>
 			useDiffOperations({
-				filePath: "/repo/file.ts",
-				rootPath: null,
-				originalContent: "original",
-				modifiedContent: "modified",
-				onStageHunk,
+				rootPath: "/repo",
+				filePath: null,
+				section: "changes",
+				base: "head",
+				snapshotVersion: 1,
 			}),
 		);
 
@@ -113,34 +94,23 @@ describe("useDiffOperations", () => {
 		});
 
 		expect(mockInvoke).not.toHaveBeenCalled();
-		expect(onStageHunk).not.toHaveBeenCalled();
 	});
 
-	it("does nothing when group is not found", async () => {
-		const onStageHunk = vi.fn();
-		const onGitChanged = vi.fn();
-
-		mockInvoke.mockResolvedValueOnce("relative/path.ts").mockResolvedValueOnce({
-			hunks: [{ index: 0 }],
-			changeGroups: [{ groupIndex: 5, hunkIndex: 0 }],
-		});
-
+	it("does nothing when snapshot version is missing", async () => {
 		const { result } = renderHook(() =>
 			useDiffOperations({
-				filePath: "/repo/relative/path.ts",
 				rootPath: "/repo",
-				originalContent: "original",
-				modifiedContent: "modified",
-				onStageHunk,
-				onGitChanged,
+				filePath: "relative/path.ts",
+				section: "changes",
+				base: "head",
+				snapshotVersion: null,
 			}),
 		);
 
 		await act(async () => {
-			await result.current.handleStageGroup(99);
+			await result.current.handleStageGroup(0);
 		});
 
-		expect(onStageHunk).not.toHaveBeenCalled();
-		expect(onGitChanged).not.toHaveBeenCalled();
+		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 });

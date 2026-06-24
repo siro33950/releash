@@ -6065,6 +6065,10 @@ mod dispatch_boundary_tests {
                 ),
             ),
         );
+        let review_usecase = Arc::new(crate::usecase::review_usecase::ReviewUsecase::new(
+            repository_state.clone(),
+            code_usecase.clone(),
+        ));
         let workflow_usecase = Arc::new(
             crate::adaptor::controller::wiring::build_workflow_usecase(data_dir.clone()),
         );
@@ -6080,6 +6084,7 @@ mod dispatch_boundary_tests {
                 repository_state,
                 repo_paths_usecase,
                 code_usecase,
+                review_usecase,
                 workflow_usecase,
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
