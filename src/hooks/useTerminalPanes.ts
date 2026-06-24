@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	closePane,
@@ -42,11 +44,28 @@ interface CachedTabState {
 	paneNameCounter: number;
 }
 
+interface PtyEvicted {
+	pty_id: number;
+	session_key: string;
+	reason: string;
+}
+
+interface PtySessionInfo {
+	session_key: string;
+}
+
 const tabStateCache = new Map<string, CachedTabState>();
+let ptyEvictionMirrorPromise: Promise<() => void> | null = null;
+let ptyEvictionMirrorUnlisten: (() => void) | undefined;
+let ptyEvictionMirrorToken = 0;
 
 /** テスト用: キャッシュクリア */
 export function _clearTabStateCache(): void {
 	tabStateCache.clear();
+	ptyEvictionMirrorToken += 1;
+	ptyEvictionMirrorUnlisten?.();
+	ptyEvictionMirrorUnlisten = undefined;
+	ptyEvictionMirrorPromise = null;
 }
 
 type NavigationDirection = "left" | "right" | "up" | "down";
@@ -74,7 +93,13 @@ export interface UseTerminalPanesReturn {
 		direction: SplitDirection,
 		insertBefore?: boolean,
 	) => void;
-	updatePaneSessionKey: (paneId: string, sessionKey: string) => void;
+	updatePaneSessionKey: (
+		paneId: string,
+		sessionKey: string,
+		ptyId?: number,
+	) => void;
+	markPendingPaneKill: (paneId: string) => void;
+	removePendingPane: (paneId: string) => void;
 	activeTab: TerminalTab | undefined;
 }
 
@@ -143,6 +168,77 @@ export function useTerminalPanes(
 	}, [cacheKey, tabs, activeTabId]);
 
 	const activeTab = tabs.find((t) => t.id === activeTabId);
+	const activeTabIdRef = useRef(activeTabId);
+	activeTabIdRef.current = activeTabId;
+
+	useEffect(() => {
+		if (!cacheKey) return;
+		let cancelled = false;
+		let unlisten: (() => void) | undefined;
+
+		listen<PtyEvicted>("pty-evicted", (event) => {
+			if (cancelled) return;
+			setTabs((prev) =>
+				removePaneBySessionKey(
+					prev,
+					event.payload.session_key,
+					activeTabIdRef.current,
+				),
+			);
+		})
+			.then((fn) => {
+				if (cancelled) {
+					fn();
+					return;
+				}
+				unlisten = fn;
+			})
+			.catch((error) => {
+				console.error("Failed to listen for PTY eviction:", error);
+			});
+
+		return () => {
+			cancelled = true;
+			unlisten?.();
+		};
+	}, [cacheKey]);
+
+	useEffect(() => {
+		if (!cacheKey) return;
+		ensurePtyEvictionMirror();
+	}, [cacheKey]);
+
+	useEffect(() => {
+		if (!cacheKey) return;
+		let cancelled = false;
+
+		invoke<PtySessionInfo[]>("list_pty_sessions")
+			.then((sessions) => {
+				if (cancelled || !Array.isArray(sessions)) return;
+				const liveSessionKeys = new Set(
+					sessions.map((session) => session.session_key),
+				);
+				setTabs((prev) => {
+					const result = removeStalePanes(
+						prev,
+						activeTabIdRef.current,
+						liveSessionKeys,
+					);
+					if (!result.changed) return prev;
+					if (result.activeTabId !== activeTabIdRef.current) {
+						setActiveTabId(result.activeTabId);
+					}
+					return result.tabs;
+				});
+			})
+			.catch((error) => {
+				console.error("Failed to reconcile PTY sessions:", error);
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, [cacheKey]);
 
 	const addTab = useCallback(() => {
 		if (tabsLengthRef.current >= MAX_TABS) return;
@@ -163,19 +259,25 @@ export function useTerminalPanes(
 		});
 	}, [tabPrefix, createLeaf]);
 
-	const closeTab = useCallback((tabId: string) => {
-		setTabs((prev) => {
-			if (prev.length <= 1) return prev;
-			const next = prev.filter((t) => t.id !== tabId);
-			setActiveTabId((currentActive) => {
-				if (currentActive !== tabId) return currentActive;
-				const idx = prev.findIndex((t) => t.id === tabId);
-				const fallback = prev[idx - 1] ?? prev[idx + 1];
-				return fallback?.id ?? currentActive;
+	const closeTab = useCallback(
+		(tabId: string) => {
+			const tab = tabs.find((t) => t.id === tabId);
+			if (!tab || tabs.length <= 1) return;
+			killPaneTreePtys(tab.paneTree);
+			setTabs((prev) => {
+				if (prev.length <= 1) return prev;
+				const next = prev.filter((t) => t.id !== tabId);
+				setActiveTabId((currentActive) => {
+					if (currentActive !== tabId) return currentActive;
+					const idx = prev.findIndex((t) => t.id === tabId);
+					const fallback = prev[idx - 1] ?? prev[idx + 1];
+					return fallback?.id ?? currentActive;
+				});
+				return next;
 			});
-			return next;
-		});
-	}, []);
+		},
+		[tabs],
+	);
 
 	const updateActiveTab = useCallback(
 		(updater: (tab: TerminalTab) => TerminalTab) => {
@@ -208,41 +310,58 @@ export function useTerminalPanes(
 		[updateActiveTab, createLeaf],
 	);
 
-	const closeSpecificPane = useCallback((paneId: string) => {
-		setTabs((prev) => {
-			const tabIndex = prev.findIndex((t) => findNode(t.paneTree, paneId));
-			if (tabIndex === -1) return prev;
-
-			const tab = prev[tabIndex];
-
-			const newTree = closePane(tab.paneTree, paneId);
-
-			if (newTree === null) {
-				// 最後のペイン → タブを閉じる
-				if (prev.length <= 1) return prev;
-				const next = prev.filter((_, i) => i !== tabIndex);
-				setActiveTabId((currentActive) => {
-					if (currentActive !== tab.id) return currentActive;
-					const fallback = prev[tabIndex - 1] ?? prev[tabIndex + 1];
-					return fallback?.id ?? currentActive;
-				});
-				return next;
+	const closeSpecificPane = useCallback(
+		(paneId: string) => {
+			const tabIndex = tabs.findIndex((t) => findNode(t.paneTree, paneId));
+			if (tabIndex === -1) return;
+			const tab = tabs[tabIndex];
+			const target = findNode(tab.paneTree, paneId);
+			if (target?.type !== "leaf") return;
+			const isLastPaneInLastTab =
+				countLeaves(tab.paneTree) <= 1 && tabs.length <= 1;
+			if (!isLastPaneInLastTab) {
+				killPanePty(target);
 			}
 
-			// フォーカスを兄弟に移動
-			let newFocused = tab.focusedPaneId;
-			if (paneId === tab.focusedPaneId) {
-				const leaves = getAllLeaves(newTree);
-				newFocused = leaves[0]?.id ?? tab.focusedPaneId;
-			}
+			setTabs((prev) => {
+				const currentTabIndex = prev.findIndex((t) =>
+					findNode(t.paneTree, paneId),
+				);
+				if (currentTabIndex === -1) return prev;
 
-			return prev.map((t, i) =>
-				i === tabIndex
-					? { ...t, paneTree: newTree, focusedPaneId: newFocused }
-					: t,
-			);
-		});
-	}, []);
+				const currentTab = prev[currentTabIndex];
+
+				const newTree = closePane(currentTab.paneTree, paneId);
+
+				if (newTree === null) {
+					// 最後のペイン → タブを閉じる
+					if (prev.length <= 1) return prev;
+					const next = prev.filter((_, i) => i !== currentTabIndex);
+					setActiveTabId((currentActive) => {
+						if (currentActive !== currentTab.id) return currentActive;
+						const fallback =
+							prev[currentTabIndex - 1] ?? prev[currentTabIndex + 1];
+						return fallback?.id ?? currentActive;
+					});
+					return next;
+				}
+
+				// フォーカスを兄弟に移動
+				let newFocused = currentTab.focusedPaneId;
+				if (paneId === currentTab.focusedPaneId) {
+					const leaves = getAllLeaves(newTree);
+					newFocused = leaves[0]?.id ?? currentTab.focusedPaneId;
+				}
+
+				return prev.map((t, i) =>
+					i === currentTabIndex
+						? { ...t, paneTree: newTree, focusedPaneId: newFocused }
+						: t,
+				);
+			});
+		},
+		[tabs],
+	);
 
 	const closeFocusedPane = useCallback(() => {
 		const tab = tabs.find((t) => t.id === activeTabId);
@@ -406,13 +525,14 @@ export function useTerminalPanes(
 	);
 
 	const updatePaneSessionKey = useCallback(
-		(paneId: string, sessionKey: string) => {
+		(paneId: string, sessionKey: string, ptyId?: number) => {
 			setTabs((prev) =>
 				prev.map((tab) => {
 					const updated = updateNodeSessionKey(
 						tab.paneTree,
 						paneId,
 						sessionKey,
+						ptyId,
 					);
 					return updated === tab.paneTree ? tab : { ...tab, paneTree: updated };
 				}),
@@ -420,6 +540,14 @@ export function useTerminalPanes(
 		},
 		[],
 	);
+
+	const markPendingPaneKill = useCallback((paneId: string) => {
+		setTabs((prev) => markPendingPaneKillById(prev, paneId));
+	}, []);
+
+	const removePendingPane = useCallback((paneId: string) => {
+		setTabs((prev) => removePendingPaneById(prev, paneId, setActiveTabId));
+	}, []);
 
 	return {
 		tabs,
@@ -436,6 +564,8 @@ export function useTerminalPanes(
 		movePaneToTab,
 		movePaneInTab,
 		updatePaneSessionKey,
+		markPendingPaneKill,
+		removePendingPane,
 		activeTab,
 	};
 }
@@ -444,18 +574,294 @@ function updateNodeSessionKey(
 	node: PaneNode,
 	paneId: string,
 	sessionKey: string,
+	ptyId?: number,
 ): PaneNode {
 	if (node.type === "leaf") {
 		if (node.id === paneId) {
-			return { ...node, sessionKey };
+			return {
+				...node,
+				ptyId: ptyId ?? node.ptyId,
+				sessionKey,
+				pendingKill: false,
+			};
 		}
 		return node;
 	}
 	let changed = false;
 	const newChildren = node.children.map((child) => {
-		const updated = updateNodeSessionKey(child, paneId, sessionKey);
+		const updated = updateNodeSessionKey(child, paneId, sessionKey, ptyId);
 		if (updated !== child) changed = true;
 		return updated;
 	});
 	return changed ? { ...node, children: newChildren } : node;
+}
+
+function killPaneTreePtys(node: PaneNode): void {
+	for (const leaf of getAllLeaves(node)) {
+		killPanePty(leaf);
+	}
+}
+
+function killPanePty(pane: PaneLeaf): void {
+	if (pane.ptyId === null) return;
+	invoke("kill_pty", { ptyId: pane.ptyId }).catch((error) => {
+		console.error("Failed to kill closed terminal PTY:", error);
+	});
+}
+
+function removePaneBySessionKey(
+	tabs: TerminalTab[],
+	sessionKey: string,
+	activeTabId: string,
+): TerminalTab[] {
+	return removePaneBySessionKeyFromState(tabs, sessionKey, activeTabId, false)
+		.tabs;
+}
+
+interface PaneRemovalResult {
+	tabs: TerminalTab[];
+	activeTabId: string;
+	changed: boolean;
+}
+
+function ensurePtyEvictionMirror(): void {
+	if (ptyEvictionMirrorPromise) return;
+	const token = ptyEvictionMirrorToken;
+	ptyEvictionMirrorPromise = listen<PtyEvicted>("pty-evicted", (event) => {
+		removeEvictedSessionFromTabStateCache(event.payload.session_key);
+	})
+		.then((unlisten) => {
+			if (token !== ptyEvictionMirrorToken) {
+				unlisten();
+				return unlisten;
+			}
+			ptyEvictionMirrorUnlisten = unlisten;
+			return unlisten;
+		})
+		.catch((error) => {
+			if (token === ptyEvictionMirrorToken) {
+				ptyEvictionMirrorPromise = null;
+			}
+			console.error("Failed to listen for global PTY eviction:", error);
+			return () => {};
+		});
+}
+
+function removeEvictedSessionFromTabStateCache(sessionKey: string): void {
+	for (const [key, cached] of tabStateCache) {
+		const result = removePaneBySessionKeyFromState(
+			cached.tabs,
+			sessionKey,
+			cached.activeTabId,
+			true,
+		);
+		if (!result.changed) continue;
+		tabStateCache.set(key, {
+			...cached,
+			tabs: result.tabs,
+			activeTabId: result.activeTabId,
+		});
+	}
+}
+
+function removeStalePanes(
+	tabs: TerminalTab[],
+	activeTabId: string,
+	liveSessionKeys: Set<string>,
+): PaneRemovalResult {
+	let currentTabs = tabs;
+	let currentActiveTabId = activeTabId;
+	let changed = false;
+
+	while (true) {
+		const staleLeaf = currentTabs
+			.flatMap((tab) => getAllLeaves(tab.paneTree))
+			.find(
+				(leaf) =>
+					leaf.sessionKey !== null && !liveSessionKeys.has(leaf.sessionKey),
+			);
+		if (!staleLeaf?.sessionKey) break;
+
+		const result = removePaneBySessionKeyFromState(
+			currentTabs,
+			staleLeaf.sessionKey,
+			currentActiveTabId,
+			true,
+		);
+		if (!result.changed) break;
+		currentTabs = result.tabs;
+		currentActiveTabId = result.activeTabId;
+		changed = true;
+	}
+
+	return {
+		tabs: currentTabs,
+		activeTabId: currentActiveTabId,
+		changed,
+	};
+}
+
+function removePaneBySessionKeyFromState(
+	tabs: TerminalTab[],
+	sessionKey: string,
+	activeTabId: string,
+	removeActiveSinglePaneTab: boolean,
+): PaneRemovalResult {
+	const tabIndex = tabs.findIndex((tab) =>
+		getAllLeaves(tab.paneTree).some((leaf) => leaf.sessionKey === sessionKey),
+	);
+	if (tabIndex === -1) {
+		return { tabs, activeTabId, changed: false };
+	}
+
+	const tab = tabs[tabIndex];
+	const target = getAllLeaves(tab.paneTree).find(
+		(leaf) => leaf.sessionKey === sessionKey,
+	);
+	if (!target) {
+		return { tabs, activeTabId, changed: false };
+	}
+
+	if (countLeaves(tab.paneTree) <= 1) {
+		if (tabs.length <= 1) {
+			const clearedPane: PaneLeaf = {
+				...target,
+				ptyId: null,
+				sessionKey: null,
+				pendingKill: false,
+			};
+			return {
+				tabs: [
+					{ ...tab, paneTree: clearedPane, focusedPaneId: clearedPane.id },
+				],
+				activeTabId,
+				changed: true,
+			};
+		}
+		if (tab.id === activeTabId && !removeActiveSinglePaneTab) {
+			const clearedPane: PaneLeaf = {
+				...target,
+				ptyId: null,
+				sessionKey: null,
+				pendingKill: false,
+			};
+			return {
+				tabs: tabs.map((candidate, index) =>
+					index === tabIndex
+						? {
+								...candidate,
+								paneTree: clearedPane,
+								focusedPaneId: clearedPane.id,
+							}
+						: candidate,
+				),
+				activeTabId,
+				changed: true,
+			};
+		}
+		const nextTabs = tabs.filter((_, index) => index !== tabIndex);
+		const nextActiveTabId =
+			tab.id === activeTabId
+				? ((tabs[tabIndex - 1] ?? tabs[tabIndex + 1])?.id ??
+					nextTabs[0]?.id ??
+					activeTabId)
+				: activeTabId;
+		return {
+			tabs: nextTabs,
+			activeTabId: nextActiveTabId,
+			changed: true,
+		};
+	}
+
+	const newTree = closePane(tab.paneTree, target.id);
+	if (!newTree) {
+		return { tabs, activeTabId, changed: false };
+	}
+	const leaves = getAllLeaves(newTree);
+	const focusedPaneId =
+		tab.focusedPaneId === target.id
+			? (leaves[0]?.id ?? tab.focusedPaneId)
+			: tab.focusedPaneId;
+
+	return {
+		tabs: tabs.map((candidate, index) =>
+			index === tabIndex
+				? { ...candidate, paneTree: newTree, focusedPaneId }
+				: candidate,
+		),
+		activeTabId,
+		changed: true,
+	};
+}
+
+function markPendingPaneKillById(
+	tabs: TerminalTab[],
+	paneId: string,
+): TerminalTab[] {
+	let changed = false;
+	const nextTabs = tabs.map((tab) => {
+		const updated = markPendingPaneKillInTree(tab.paneTree, paneId);
+		if (updated === tab.paneTree) return tab;
+		changed = true;
+		return { ...tab, paneTree: updated };
+	});
+	return changed ? nextTabs : tabs;
+}
+
+function markPendingPaneKillInTree(node: PaneNode, paneId: string): PaneNode {
+	if (node.type === "leaf") {
+		if (node.id !== paneId || node.pendingKill) return node;
+		return { ...node, pendingKill: true };
+	}
+	let changed = false;
+	const children = node.children.map((child) => {
+		const updated = markPendingPaneKillInTree(child, paneId);
+		if (updated !== child) changed = true;
+		return updated;
+	});
+	return changed ? { ...node, children } : node;
+}
+
+function removePendingPaneById(
+	tabs: TerminalTab[],
+	paneId: string,
+	setActiveTabId: (updater: (currentActive: string) => string) => void,
+): TerminalTab[] {
+	const tabIndex = tabs.findIndex((tab) => findNode(tab.paneTree, paneId));
+	if (tabIndex === -1) return tabs;
+
+	const tab = tabs[tabIndex];
+	const target = findNode(tab.paneTree, paneId);
+	if (
+		target?.type !== "leaf" ||
+		target.sessionKey !== null ||
+		target.ptyId !== null
+	) {
+		return tabs;
+	}
+
+	if (countLeaves(tab.paneTree) <= 1) {
+		if (tabs.length <= 1) return tabs;
+		const next = tabs.filter((_, index) => index !== tabIndex);
+		setActiveTabId((currentActive) => {
+			if (currentActive !== tab.id) return currentActive;
+			const fallback = tabs[tabIndex - 1] ?? tabs[tabIndex + 1];
+			return fallback?.id ?? currentActive;
+		});
+		return next;
+	}
+
+	const newTree = closePane(tab.paneTree, paneId);
+	if (!newTree) return tabs;
+	const leaves = getAllLeaves(newTree);
+	const focusedPaneId =
+		tab.focusedPaneId === paneId
+			? (leaves[0]?.id ?? tab.focusedPaneId)
+			: tab.focusedPaneId;
+
+	return tabs.map((candidate, index) =>
+		index === tabIndex
+			? { ...candidate, paneTree: newTree, focusedPaneId }
+			: candidate,
+	);
 }

@@ -6,6 +6,7 @@ export interface PaneLeaf {
 	label: string;
 	ptyId: number | null;
 	sessionKey: string | null;
+	pendingKill?: boolean;
 }
 
 export interface PaneContainer {

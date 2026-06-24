@@ -19,6 +19,8 @@ interface PaneTreeRendererProps {
 		paneId: string,
 	) => (handle: TerminalPanelHandle | null) => void;
 	onPtyReady?: (paneId: string, ptyId: number, sessionKey: string) => void;
+	onPtyError?: (paneId: string, message: string) => void;
+	consumePendingPaneKillRequest?: (paneId: string) => boolean;
 	onDropTab?: (
 		tabId: string,
 		targetPaneId: string,
@@ -47,6 +49,8 @@ export function PaneTreeRenderer({
 	onSplit,
 	setTerminalRef,
 	onPtyReady,
+	onPtyError,
+	consumePendingPaneKillRequest,
 	onDropTab,
 	onDropPane,
 	onBreakToTab,
@@ -66,6 +70,8 @@ export function PaneTreeRenderer({
 				onSplit={onSplit}
 				setTerminalRef={setTerminalRef}
 				onPtyReady={onPtyReady}
+				onPtyError={onPtyError}
+				consumePendingPaneKillRequest={consumePendingPaneKillRequest}
 				onDropTab={onDropTab}
 				onDropPane={onDropPane}
 				onBreakToTab={onBreakToTab}
@@ -98,6 +104,8 @@ export function PaneTreeRenderer({
 					onSplit={onSplit}
 					setTerminalRef={setTerminalRef}
 					onPtyReady={onPtyReady}
+					onPtyError={onPtyError}
+					consumePendingPaneKillRequest={consumePendingPaneKillRequest}
 					onDropTab={onDropTab}
 					onDropPane={onDropPane}
 					onBreakToTab={onBreakToTab}
@@ -125,6 +133,8 @@ interface PaneTreePanelProps {
 		paneId: string,
 	) => (handle: TerminalPanelHandle | null) => void;
 	onPtyReady?: (paneId: string, ptyId: number, sessionKey: string) => void;
+	onPtyError?: (paneId: string, message: string) => void;
+	consumePendingPaneKillRequest?: (paneId: string) => boolean;
 	onDropTab?: (
 		tabId: string,
 		targetPaneId: string,
@@ -155,6 +165,8 @@ function PaneTreePanel({
 	onSplit,
 	setTerminalRef,
 	onPtyReady,
+	onPtyError,
+	consumePendingPaneKillRequest,
 	onDropTab,
 	onDropPane,
 	onBreakToTab,
@@ -175,6 +187,8 @@ function PaneTreePanel({
 					onSplit={onSplit}
 					setTerminalRef={setTerminalRef}
 					onPtyReady={onPtyReady}
+					onPtyError={onPtyError}
+					consumePendingPaneKillRequest={consumePendingPaneKillRequest}
 					onDropTab={onDropTab}
 					onDropPane={onDropPane}
 					onBreakToTab={onBreakToTab}

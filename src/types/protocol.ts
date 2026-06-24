@@ -6,6 +6,12 @@ export interface PtyExitMsg {
 	exit_code: number | null;
 }
 
+export interface PtyEvictedMsg {
+	pty_id: number;
+	session_key: string;
+	reason: "idle" | "cap_exceeded";
+}
+
 export interface WorktreePrEntry {
 	path: string;
 	pr_number: number;
@@ -178,8 +184,12 @@ export type WsMessage =
 	| { type: "auth_challenge"; payload: { challenge: string } }
 	| { type: "auth_response"; payload: { hmac: string } }
 	| { type: "auth_result"; payload: { success: boolean; message?: string } }
-	| { type: "pty_output"; payload: { pty_id: number; data: string } }
+	| {
+			type: "pty_output";
+			payload: { pty_id: number; data: string; sequence: number };
+	  }
 	| { type: "pty_exit"; payload: PtyExitMsg }
+	| { type: "pty_evicted"; payload: PtyEvictedMsg }
 	| { type: "worktree_pr_status_sync"; payload: WorktreePrStatusSync }
 	| { type: "branch_list_sync"; payload: BranchListSync }
 	| { type: "agent_state_sync"; payload: AgentStateSync }

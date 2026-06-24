@@ -1,4 +1,4 @@
-import { type DragEvent, useCallback, useRef } from "react";
+import { type DragEvent, useCallback } from "react";
 import { PANE_DRAG_TYPE, PaneDropZone } from "@/components/panels/PaneDropZone";
 import {
 	TerminalPanel,
@@ -22,6 +22,8 @@ interface PaneLeafContainerProps {
 		paneId: string,
 	) => (handle: TerminalPanelHandle | null) => void;
 	onPtyReady?: (paneId: string, ptyId: number, sessionKey: string) => void;
+	onPtyError?: (paneId: string, message: string) => void;
+	consumePendingPaneKillRequest?: (paneId: string) => boolean;
 	onDropTab?: (
 		tabId: string,
 		targetPaneId: string,
@@ -50,19 +52,18 @@ export function PaneLeafContainer({
 	onSplit,
 	setTerminalRef,
 	onPtyReady,
+	onPtyError,
+	consumePendingPaneKillRequest,
 	onDropTab,
 	onDropPane,
 	onBreakToTab,
 	canBreakToTab,
 }: PaneLeafContainerProps) {
-	const localTerminalRef = useRef<TerminalPanelHandle | null>(null);
-
 	const handleFocus = useCallback(() => {
 		onFocus(pane.id);
 	}, [onFocus, pane.id]);
 
 	const handleClose = useCallback(() => {
-		localTerminalRef.current?.requestKill();
 		onClose(pane.id);
 	}, [onClose, pane.id]);
 
@@ -104,9 +105,19 @@ export function PaneLeafContainer({
 		[onPtyReady, pane.id],
 	);
 
+	const handlePtyError = useCallback(
+		(message: string) => {
+			onPtyError?.(pane.id, message);
+		},
+		[onPtyError, pane.id],
+	);
+
+	const shouldKillPendingPty = useCallback(() => {
+		return consumePendingPaneKillRequest?.(pane.id) ?? false;
+	}, [consumePendingPaneKillRequest, pane.id]);
+
 	const localSetTerminalRef = useCallback(
 		(handle: TerminalPanelHandle | null) => {
-			localTerminalRef.current = handle;
 			setTerminalRef(pane.id)(handle);
 		},
 		[setTerminalRef, pane.id],
@@ -183,21 +194,34 @@ export function PaneLeafContainer({
 		>
 			{paneHeader}
 			<div className="flex-1 min-h-0">
-				<TerminalPanel
-					ref={localSetTerminalRef}
-					cwd={cwd}
-					theme={theme}
-					terminalStartupCommand={terminalStartupCommand}
-					label={pane.label}
-					sessionKey={pane.sessionKey ?? undefined}
-					onPtyReady={handlePtyReady}
-					onSplitVertical={handleSplitVertical}
-					onSplitHorizontal={handleSplitHorizontal}
-					onBreakToTab={handleBreakToTab}
-					onClosePane={handleClose}
-					canBreakToTab={canBreakToTab}
-					isOnlyPane={isOnlyPane}
-				/>
+				{isFocused ? (
+					<TerminalPanel
+						ref={localSetTerminalRef}
+						cwd={cwd}
+						theme={theme}
+						terminalStartupCommand={terminalStartupCommand}
+						label={pane.label}
+						sessionKey={pane.sessionKey ?? undefined}
+						onPtyReady={handlePtyReady}
+						onPtyError={handlePtyError}
+						shouldKillPendingPty={shouldKillPendingPty}
+						onSplitVertical={handleSplitVertical}
+						onSplitHorizontal={handleSplitHorizontal}
+						onBreakToTab={handleBreakToTab}
+						onClosePane={handleClose}
+						canBreakToTab={canBreakToTab}
+						isOnlyPane={isOnlyPane}
+					/>
+				) : (
+					<button
+						type="button"
+						className="h-full w-full flex items-center justify-center bg-muted/10 text-xs text-muted-foreground hover:bg-muted/20 hover:text-foreground transition-colors"
+						onClick={handleFocus}
+						aria-label={`Focus ${pane.label}`}
+					>
+						<span className="truncate px-2">{pane.label}</span>
+					</button>
+				)}
 			</div>
 		</div>
 	);

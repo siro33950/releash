@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { X } from "lucide-react";
 import {
 	type DragEvent,
@@ -6,6 +7,7 @@ import {
 	useEffect,
 	useImperativeHandle,
 	useRef,
+	useState,
 } from "react";
 import { PANE_DRAG_TYPE } from "@/components/panels/PaneDropZone";
 import { PaneTreeRenderer } from "@/components/panels/PaneTreeRenderer";
@@ -52,15 +54,36 @@ export const TerminalTabPanel = forwardRef<
 		movePaneToTab,
 		movePaneInTab,
 		updatePaneSessionKey,
+		markPendingPaneKill,
+		removePendingPane,
 		activeTab,
 	} = useTerminalPanes(tabPrefix, cwd ? `${cwd}::${tabPrefix}` : null);
 
 	const terminalRefs = useRef<Map<string, TerminalPanelHandle>>(new Map());
+	const pendingKillPaneIdsRef = useRef<Set<string>>(new Set());
+	const [terminalError, setTerminalError] = useState<string | null>(null);
 
 	const handlePtyReady = useCallback(
-		(paneId: string, _ptyId: number, sessionKey: string) =>
-			updatePaneSessionKey(paneId, sessionKey),
+		(paneId: string, ptyId: number, sessionKey: string) => {
+			setTerminalError(null);
+			if (pendingKillPaneIdsRef.current.delete(paneId)) {
+				invoke("kill_pty", { ptyId }).catch((error) => {
+					console.error("Failed to kill closed pending terminal PTY:", error);
+				});
+				return;
+			}
+			updatePaneSessionKey(paneId, sessionKey, ptyId);
+		},
 		[updatePaneSessionKey],
+	);
+
+	const handlePtyError = useCallback(
+		(paneId: string, message: string) => {
+			pendingKillPaneIdsRef.current.delete(paneId);
+			setTerminalError(message);
+			removePendingPane(paneId);
+		},
+		[removePendingPane],
 	);
 
 	useImperativeHandle(
@@ -86,26 +109,60 @@ export const TerminalTabPanel = forwardRef<
 		[],
 	);
 
+	const requestPendingPaneKill = useCallback(
+		(paneId: string) => {
+			const pane = tabs
+				.flatMap((tab) => getAllLeaves(tab.paneTree))
+				.find((leaf) => leaf.id === paneId);
+			if (!pane || pane.ptyId !== null) return;
+			const handle = terminalRefs.current.get(paneId);
+			if (handle) {
+				handle.requestKill();
+				return;
+			}
+			pendingKillPaneIdsRef.current.add(paneId);
+			markPendingPaneKill(paneId);
+		},
+		[markPendingPaneKill, tabs],
+	);
+
+	const consumePendingPaneKillRequest = useCallback((paneId: string) => {
+		return pendingKillPaneIdsRef.current.delete(paneId);
+	}, []);
+
 	const handleSplit = useCallback(
 		(paneId: string, direction: SplitDirection) => {
+			setTerminalError(null);
 			setFocusedPane(paneId);
 			splitFocusedPane(direction);
 		},
 		[setFocusedPane, splitFocusedPane],
 	);
 
+	const handleAddTab = useCallback(() => {
+		setTerminalError(null);
+		addTab();
+	}, [addTab]);
+
 	const handleCloseTab = useCallback(
 		(tabId: string) => {
-			const tab = tabs.find((t) => t.id === tabId);
+			const tab = tabs.find((candidate) => candidate.id === tabId);
 			if (tab) {
-				const leaves = getAllLeaves(tab.paneTree);
-				for (const leaf of leaves) {
-					terminalRefs.current.get(leaf.id)?.requestKill();
+				for (const leaf of getAllLeaves(tab.paneTree)) {
+					requestPendingPaneKill(leaf.id);
 				}
 			}
 			closeTab(tabId);
 		},
-		[tabs, closeTab],
+		[closeTab, requestPendingPaneKill, tabs],
+	);
+
+	const handleClosePane = useCallback(
+		(paneId: string) => {
+			requestPendingPaneKill(paneId);
+			closeSpecificPane(paneId);
+		},
+		[closeSpecificPane, requestPendingPaneKill],
 	);
 
 	const isDraggingTabRef = useRef(false);
@@ -180,6 +237,7 @@ export const TerminalTabPanel = forwardRef<
 			// Cmd+D: 垂直分割
 			if (mod && !e.shiftKey && !e.altKey && key === "d") {
 				e.preventDefault();
+				setTerminalError(null);
 				splitFocusedPane("vertical");
 				return;
 			}
@@ -187,6 +245,7 @@ export const TerminalTabPanel = forwardRef<
 			// Cmd+Shift+D: 水平分割
 			if (mod && e.shiftKey && !e.altKey && key === "d") {
 				e.preventDefault();
+				setTerminalError(null);
 				splitFocusedPane("horizontal");
 				return;
 			}
@@ -282,7 +341,7 @@ export const TerminalTabPanel = forwardRef<
 					{tabs.length < MAX_TABS && (
 						<button
 							type="button"
-							onClick={addTab}
+							onClick={handleAddTab}
 							aria-label="Add terminal tab"
 							className="px-2 h-full text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
 						>
@@ -290,13 +349,17 @@ export const TerminalTabPanel = forwardRef<
 						</button>
 					)}
 				</div>
+				{terminalError && (
+					<div className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-1 text-xs text-destructive">
+						{terminalError}
+					</div>
+				)}
 				<div className="flex-1 relative" style={{ minHeight: 0 }}>
 					{tabs.map((tab) => (
 						<TabsContent
 							key={tab.id}
 							value={tab.id}
-							forceMount
-							className="absolute inset-0 m-0 data-[state=inactive]:hidden"
+							className="absolute inset-0 m-0"
 						>
 							<PaneTreeRenderer
 								node={tab.paneTree}
@@ -306,10 +369,12 @@ export const TerminalTabPanel = forwardRef<
 								theme={theme}
 								terminalStartupCommand={terminalStartupCommand}
 								onFocus={setFocusedPane}
-								onClose={closeSpecificPane}
+								onClose={handleClosePane}
 								onSplit={handleSplit}
 								setTerminalRef={setTerminalRef}
 								onPtyReady={handlePtyReady}
+								onPtyError={handlePtyError}
+								consumePendingPaneKillRequest={consumePendingPaneKillRequest}
 								onDropTab={handleDropTab}
 								onDropPane={handleDropPane}
 								onBreakToTab={handleBreakToTab}

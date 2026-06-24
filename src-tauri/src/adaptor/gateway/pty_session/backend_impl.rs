@@ -3,18 +3,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::adaptor::protocol::pty::{PtyExitMsg, PtyOutputMsg};
-use crate::domain::pty_session::entities::{PtySession, PtySessionRegistry, PtySessionSnapshot};
-use crate::domain::pty_session::gateway::{PtyBackend, PtyResizer, SpawnConfig};
-use crate::domain::pty_session::services::{
-    append_output_to_ring_buffer, decode_utf8_chunk, OUTPUT_BUFFER_CAPACITY,
+use crate::adaptor::protocol::pty::{PtyEvictReasonMsg, PtyEvictedMsg, PtyExitMsg, PtyOutputMsg};
+use crate::domain::pty_session::entities::{
+    PtySession, PtySessionRegistry, PtySessionSnapshot, PtySpawnReservation,
+    PtySpawnReservationError,
 };
+use crate::domain::pty_session::gateway::{PtyBackend, PtyResizer, SpawnConfig};
+use crate::domain::pty_session::services::{append_output_to_ring_buffer, decode_utf8_chunk};
+use crate::domain::pty_session::{PtyEvictReason, PtyLifecycleConfig};
 use crate::protocol::WsMessage;
 use crate::usecase::pty_session::dto::FoundPtySession;
 use crate::usecase::pty_session::error::UsecaseError;
-use crate::usecase::pty_session::ports::{PtyBackendSpawnRequest, PtySessionGateway};
+use crate::usecase::pty_session::ports::{
+    PtyBackendSpawnRequest, PtySessionGateway, PtySessionReadGateway,
+};
 use crate::ws_bridge::WsBroadcaster;
 
 use super::direct::DirectPtyBackend;
@@ -23,9 +28,38 @@ pub(crate) struct PtyRuntime {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
     resizer: Arc<Mutex<Box<dyn PtyResizer + Send>>>,
-    output_buffer: Arc<Mutex<VecDeque<u8>>>,
+    output_buffer: Arc<Mutex<PtyOutputBuffer>>,
+    output_buffer_cap: usize,
     reader: Option<Box<dyn Read + Send>>,
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+}
+
+struct PtyOutputBuffer {
+    bytes: VecDeque<u8>,
+    sequence: u64,
+}
+
+impl PtyOutputBuffer {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            bytes: VecDeque::with_capacity(capacity),
+            sequence: 0,
+        }
+    }
+
+    fn append(&mut self, output: &str, capacity: usize) -> u64 {
+        append_output_to_ring_buffer(&mut self.bytes, output, capacity);
+        self.sequence = self.sequence.saturating_add(1);
+        self.sequence
+    }
+
+    fn snapshot(&self) -> (String, u64) {
+        let (a, b) = self.bytes.as_slices();
+        let mut bytes = Vec::with_capacity(a.len() + b.len());
+        bytes.extend_from_slice(a);
+        bytes.extend_from_slice(b);
+        (String::from_utf8_lossy(&bytes).into_owned(), self.sequence)
+    }
 }
 
 pub struct PtySessionRuntimeGateway {
@@ -49,8 +83,9 @@ impl Default for PtySessionRuntimeGateway {
 fn process_pty_output(
     raw_chunk: &[u8],
     pending: &mut Vec<u8>,
-    output_buffer: &Mutex<VecDeque<u8>>,
-) -> Option<String> {
+    output_buffer: &Mutex<PtyOutputBuffer>,
+    output_buffer_cap: usize,
+) -> Option<(String, u64)> {
     let raw = decode_utf8_chunk(raw_chunk, pending)?;
     let result = crate::infrastructure::pty_session::shell_integration::strip_osc_cmd_done(&raw);
 
@@ -58,12 +93,19 @@ fn process_pty_output(
         return None;
     }
 
-    {
-        let mut ring = output_buffer.lock();
-        append_output_to_ring_buffer(&mut ring, &result.filtered_output, OUTPUT_BUFFER_CAPACITY);
-    }
+    let sequence = output_buffer
+        .lock()
+        .append(&result.filtered_output, output_buffer_cap);
 
-    Some(result.filtered_output)
+    Some((result.filtered_output, sequence))
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 fn spawn_output_reader(
@@ -71,32 +113,49 @@ fn spawn_output_reader(
     pty_id: u64,
     mut reader: Box<dyn Read + Send>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
-    output_buffer: Arc<Mutex<VecDeque<u8>>>,
+    output_buffer: Arc<Mutex<PtyOutputBuffer>>,
+    output_buffer_cap: usize,
 ) {
     let rt = tokio::runtime::Handle::current();
     std::thread::spawn(move || {
         let ws = app.try_state::<Arc<WsBroadcaster>>();
         let mut buf = [0u8; 4096];
         let mut pending = Vec::new();
+        let mut last_activity_recorded_ms = 0;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if let Some(filtered) =
-                        process_pty_output(&buf[..n], &mut pending, &output_buffer)
-                    {
+                    if let Some((filtered, sequence)) = process_pty_output(
+                        &buf[..n],
+                        &mut pending,
+                        &output_buffer,
+                        output_buffer_cap,
+                    ) {
+                        let current_ms = now_ms();
+                        if current_ms.saturating_sub(last_activity_recorded_ms) >= 1_000 {
+                            if let Some(gateway) = app.try_state::<Arc<PtySessionRuntimeGateway>>()
+                            {
+                                gateway.record_activity(pty_id, current_ms);
+                            }
+                            last_activity_recorded_ms = current_ms;
+                        }
                         let _ = app.emit(
                             "pty-output",
                             PtyOutput {
                                 pty_id,
                                 data: filtered.clone(),
+                                sequence,
                             },
                         );
                         if let Some(ws) = &ws {
-                            ws.try_send(WsMessage::PtyOutput(PtyOutputMsg {
-                                pty_id,
-                                data: filtered,
-                            }));
+                            if ws.has_subscriber() {
+                                ws.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+                                    pty_id,
+                                    data: filtered,
+                                    sequence,
+                                }));
+                            }
                         }
                     }
                 }
@@ -106,8 +165,12 @@ fn spawn_output_reader(
         }
 
         let exit_code = child.wait().ok().map(|status| status.exit_code() as i32);
-        if let Some(gateway) = app.try_state::<Arc<PtySessionRuntimeGateway>>() {
-            gateway.mark_exited(pty_id, exit_code);
+        let should_emit_exit = app
+            .try_state::<Arc<PtySessionRuntimeGateway>>()
+            .is_none_or(|gateway| gateway.mark_exited(pty_id, exit_code));
+
+        if !should_emit_exit {
+            return;
         }
 
         let _ = app.emit("pty-exit", PtyExit { pty_id, exit_code });
@@ -140,29 +203,78 @@ impl PtySessionRuntimeGateway {
     }
 
     #[allow(dead_code)]
+    pub fn with_backend_and_config(
+        backend: Box<dyn PtyBackend>,
+        config: PtyLifecycleConfig,
+    ) -> Self {
+        Self {
+            registry: Mutex::new(PtySessionRegistry::with_config(config)),
+            runtimes: Mutex::new(HashMap::new()),
+            backend,
+        }
+    }
+
+    #[allow(dead_code)]
     pub fn backend_name(&self) -> &'static str {
         self.backend.backend_name()
     }
 
-    fn mark_exited(&self, pty_id: u64, exit_code: Option<i32>) {
-        self.registry.lock().mark_exited(pty_id, exit_code);
+    pub fn start_idle_sweeper(self: &Arc<Self>, app: AppHandle) {
+        let gateway = Arc::clone(self);
+        let interval = gateway.lifecycle_config().sweep_interval;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let now_ms = gateway.now_ms();
+                crate::usecase::pty_session::lifecycle_usecase::sweep_idle(
+                    gateway.as_ref(),
+                    &app,
+                    now_ms,
+                );
+            }
+        });
     }
 
-    fn buffered_output(&self, pty_id: u64) -> String {
+    fn lifecycle_config(&self) -> PtyLifecycleConfig {
+        self.registry.lock().config().clone()
+    }
+
+    fn mark_exited(&self, pty_id: u64, exit_code: Option<i32>) -> bool {
+        self.registry.lock().mark_exited(pty_id, exit_code)
+    }
+
+    fn buffered_output_snapshot(&self, pty_id: u64) -> (String, u64) {
         let Some(output_buffer) = self
             .runtimes
             .lock()
             .get(&pty_id)
             .map(|runtime| Arc::clone(&runtime.output_buffer))
         else {
-            return String::new();
+            return (String::new(), 0);
         };
-        let ring = output_buffer.lock();
-        let (a, b) = ring.as_slices();
-        let mut bytes = Vec::with_capacity(a.len() + b.len());
-        bytes.extend_from_slice(a);
-        bytes.extend_from_slice(b);
-        String::from_utf8_lossy(&bytes).into_owned()
+        let snapshot = output_buffer.lock().snapshot();
+        snapshot
+    }
+}
+
+impl PtySessionReadGateway for PtySessionRuntimeGateway {
+    fn find_by_session_key(&self, session_key: &str) -> Option<FoundPtySession> {
+        let snapshot = self
+            .registry
+            .lock()
+            .find_by_session_key(session_key)
+            .map(PtySession::snapshot)?;
+        let (buffered_output, buffered_output_sequence) =
+            self.buffered_output_snapshot(snapshot.pty_id);
+        Some(FoundPtySession {
+            snapshot,
+            buffered_output,
+            buffered_output_sequence,
+        })
+    }
+
+    fn list_snapshots(&self) -> Vec<PtySessionSnapshot> {
+        self.registry.lock().list_snapshots()
     }
 }
 
@@ -219,7 +331,10 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
             writer: backend_session.writer,
             killer: Arc::new(Mutex::new(killer)),
             resizer: backend_session.resizer,
-            output_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(OUTPUT_BUFFER_CAPACITY))),
+            output_buffer: Arc::new(Mutex::new(PtyOutputBuffer::with_capacity(
+                self.lifecycle_config().output_buffer_cap,
+            ))),
+            output_buffer_cap: self.lifecycle_config().output_buffer_cap,
             reader: Some(backend_session.reader),
             child: Some(backend_session.child),
         })
@@ -237,7 +352,7 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
     }
 
     fn start_output_reader(&self, app: &Self::AppContext, pty_id: u64) -> Result<(), UsecaseError> {
-        let (reader, child, output_buffer) = {
+        let (reader, child, output_buffer, output_buffer_cap) = {
             let mut runtimes = self.runtimes.lock();
             let runtime = runtimes
                 .get_mut(&pty_id)
@@ -251,31 +366,26 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
                     pty_id
                 ))
             })?;
-            (reader, child, Arc::clone(&runtime.output_buffer))
+            (
+                reader,
+                child,
+                Arc::clone(&runtime.output_buffer),
+                runtime.output_buffer_cap,
+            )
         };
-        spawn_output_reader(app.clone(), pty_id, reader, child, output_buffer);
+        spawn_output_reader(
+            app.clone(),
+            pty_id,
+            reader,
+            child,
+            output_buffer,
+            output_buffer_cap,
+        );
         Ok(())
-    }
-
-    fn find_by_session_key(&self, session_key: &str) -> Option<FoundPtySession> {
-        let snapshot = self
-            .registry
-            .lock()
-            .find_by_session_key(session_key)
-            .map(PtySession::snapshot)?;
-        let buffered_output = self.buffered_output(snapshot.pty_id);
-        Some(FoundPtySession {
-            snapshot,
-            buffered_output,
-        })
     }
 
     fn snapshot(&self, pty_id: u64) -> Option<PtySessionSnapshot> {
         self.registry.lock().get(pty_id).map(PtySession::snapshot)
-    }
-
-    fn list_snapshots(&self) -> Vec<PtySessionSnapshot> {
-        self.registry.lock().list_snapshots()
     }
 
     fn select_kill_targets_by_worktree(&self, worktree_path: &str) -> Vec<u64> {
@@ -301,6 +411,100 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
         removed.map(|session| session.snapshot())
     }
 
+    fn now_ms(&self) -> u64 {
+        now_ms()
+    }
+
+    fn record_activity(&self, pty_id: u64, now_ms: u64) -> bool {
+        self.registry.lock().record_activity(pty_id, now_ms)
+    }
+
+    fn pin_session_key(&self, session_key: &str) {
+        self.registry.lock().pin_session_key(session_key);
+    }
+
+    fn unpin_session_key_if_unused(&self, session_key: &str) {
+        self.registry
+            .lock()
+            .unpin_session_key_if_unused(session_key);
+    }
+
+    fn register_active_terminal(&self, worktree_path: &str, session_key: &str, active_token: &str) {
+        self.registry
+            .lock()
+            .register_active_terminal(worktree_path, session_key, active_token);
+    }
+
+    fn unregister_active_terminal(
+        &self,
+        worktree_path: &str,
+        session_key: &str,
+        active_token: &str,
+    ) {
+        self.registry
+            .lock()
+            .unregister_active_terminal(worktree_path, session_key, active_token);
+    }
+
+    fn reserve_spawn_slot(
+        &self,
+        worktree_path: Option<&str>,
+        now_ms: u64,
+    ) -> Result<PtySpawnReservation, PtySpawnReservationError> {
+        self.registry
+            .lock()
+            .reserve_spawn_slot(worktree_path, now_ms)
+    }
+
+    fn complete_spawn_slot(&self, reservation: &PtySpawnReservation) {
+        self.registry.lock().complete_spawn_slot(reservation);
+    }
+
+    fn rollback_spawn_slot(&self, reservation: &PtySpawnReservation) {
+        self.registry.lock().rollback_spawn_slot(reservation);
+    }
+
+    fn select_idle_timed_out(&self, now_ms: u64) -> Vec<u64> {
+        self.registry.lock().select_idle_timed_out(now_ms)
+    }
+
+    fn snapshot_if_idle_evictable(&self, pty_id: u64, now_ms: u64) -> Option<PtySessionSnapshot> {
+        self.registry
+            .lock()
+            .snapshot_if_idle_evictable(pty_id, now_ms)
+    }
+
+    fn emit_evicted(
+        &self,
+        app: &Self::AppContext,
+        snapshot: &PtySessionSnapshot,
+        reason: PtyEvictReason,
+    ) {
+        let reason_msg = PtyEvictReasonMsg::from(reason);
+        let reason_wire = serde_json::to_value(reason_msg)
+            .expect("PtyEvictReasonMsg should serialize")
+            .as_str()
+            .expect("PtyEvictReasonMsg should serialize to a string")
+            .to_string();
+        let _ = app.emit(
+            "pty-evicted",
+            PtyEvicted {
+                pty_id: snapshot.pty_id,
+                session_key: snapshot.session_key.clone(),
+                reason: reason_wire,
+            },
+        );
+        if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
+            if ws.has_subscriber() {
+                ws.try_send(WsMessage::PtyEvicted(PtyEvictedMsg {
+                    pty_id: snapshot.pty_id,
+                    session_key: snapshot.session_key.clone(),
+                    reason: reason_msg,
+                }));
+            }
+        }
+    }
+
     fn write(&self, pty_id: u64, data: &str) -> Result<(), UsecaseError> {
         let writer = {
             let runtimes = self.runtimes.lock();
@@ -316,6 +520,7 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
         writer
             .flush()
             .map_err(|e| UsecaseError::Gateway(format!("Failed to flush: {}", e)))?;
+        self.record_activity(pty_id, now_ms());
         Ok(())
     }
 
@@ -331,7 +536,9 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
             Arc::clone(&runtime.resizer)
         };
         let result = resizer.lock().resize(rows, cols);
-        result.map_err(UsecaseError::from)
+        result.map_err(UsecaseError::from)?;
+        self.record_activity(pty_id, now_ms());
+        Ok(())
     }
 
     fn get_pty_size(&self, pty_id: u64) -> Result<(u16, u16), UsecaseError> {
@@ -361,6 +568,10 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
         result
     }
 
+    fn remove_runtime(&self, pty_id: u64) {
+        self.runtimes.lock().remove(&pty_id);
+    }
+
     fn remove_if_exited(&self, pty_id: u64) {
         if self
             .snapshot(pty_id)
@@ -375,6 +586,7 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
 pub struct PtyOutput {
     pub pty_id: u64,
     pub data: String,
+    pub sequence: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -383,10 +595,17 @@ pub struct PtyExit {
     pub exit_code: Option<i32>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PtyEvicted {
+    pub pty_id: u64,
+    pub session_key: String,
+    pub reason: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::pty_session::services::MAX_PENDING_BYTES;
+    use crate::domain::pty_session::services::{MAX_PENDING_BYTES, OUTPUT_BUFFER_CAPACITY};
     use crate::domain::pty_session::PtyKind;
 
     #[test]
@@ -441,68 +660,123 @@ mod tests {
     #[test]
     fn process_pty_output_valid_utf8() {
         let mut pending = Vec::new();
-        let output_buffer = Mutex::new(VecDeque::new());
-        let result = process_pty_output(b"hello world", &mut pending, &output_buffer);
-        assert_eq!(result.as_deref(), Some("hello world"));
+        let output_buffer = Mutex::new(PtyOutputBuffer::with_capacity(OUTPUT_BUFFER_CAPACITY));
+        let result = process_pty_output(
+            b"hello world",
+            &mut pending,
+            &output_buffer,
+            OUTPUT_BUFFER_CAPACITY,
+        );
+        assert_eq!(
+            result.as_ref().map(|(data, _)| data.as_str()),
+            Some("hello world")
+        );
+        assert_eq!(result.map(|(_, sequence)| sequence), Some(1));
         assert!(pending.is_empty());
-        assert_eq!(output_buffer.lock().len(), 11);
+        assert_eq!(output_buffer.lock().bytes.len(), 11);
     }
 
     #[test]
     fn process_pty_output_incomplete_utf8_pending() {
         let mut pending = Vec::new();
-        let output_buffer = Mutex::new(VecDeque::new());
-        assert!(process_pty_output(&[0xE3, 0x81], &mut pending, &output_buffer).is_none());
+        let output_buffer = Mutex::new(PtyOutputBuffer::with_capacity(OUTPUT_BUFFER_CAPACITY));
+        assert!(process_pty_output(
+            &[0xE3, 0x81],
+            &mut pending,
+            &output_buffer,
+            OUTPUT_BUFFER_CAPACITY,
+        )
+        .is_none());
         assert_eq!(pending.len(), 2);
-        let result = process_pty_output(&[0x82], &mut pending, &output_buffer);
-        assert_eq!(result.as_deref(), Some("あ"));
+        let result = process_pty_output(
+            &[0x82],
+            &mut pending,
+            &output_buffer,
+            OUTPUT_BUFFER_CAPACITY,
+        );
+        assert_eq!(result.as_ref().map(|(data, _)| data.as_str()), Some("あ"));
+        assert_eq!(result.map(|(_, sequence)| sequence), Some(1));
         assert!(pending.is_empty());
     }
 
     #[test]
     fn process_pty_output_max_pending_drop() {
         let mut pending = Vec::new();
-        let output_buffer = Mutex::new(VecDeque::new());
+        let output_buffer = Mutex::new(PtyOutputBuffer::with_capacity(OUTPUT_BUFFER_CAPACITY));
         let invalid_bytes = vec![0xFF; MAX_PENDING_BYTES + 1];
-        assert!(process_pty_output(&invalid_bytes, &mut pending, &output_buffer).is_none());
+        assert!(process_pty_output(
+            &invalid_bytes,
+            &mut pending,
+            &output_buffer,
+            OUTPUT_BUFFER_CAPACITY,
+        )
+        .is_none());
         assert!(pending.is_empty());
     }
 
     #[test]
     fn process_pty_output_invalid_below_max_pending_retained() {
         let mut pending = Vec::new();
-        let output_buffer = Mutex::new(VecDeque::new());
+        let output_buffer = Mutex::new(PtyOutputBuffer::with_capacity(OUTPUT_BUFFER_CAPACITY));
         let invalid_bytes = vec![0xFF; 10];
-        assert!(process_pty_output(&invalid_bytes, &mut pending, &output_buffer).is_none());
+        assert!(process_pty_output(
+            &invalid_bytes,
+            &mut pending,
+            &output_buffer,
+            OUTPUT_BUFFER_CAPACITY,
+        )
+        .is_none());
         assert_eq!(pending.len(), 10);
     }
 
     #[test]
     fn process_pty_output_ring_buffer_overflow() {
         let mut pending = Vec::new();
-        let output_buffer = Mutex::new(VecDeque::new());
+        let output_buffer = Mutex::new(PtyOutputBuffer::with_capacity(OUTPUT_BUFFER_CAPACITY));
         let data = "x".repeat(OUTPUT_BUFFER_CAPACITY - 10);
-        process_pty_output(data.as_bytes(), &mut pending, &output_buffer);
-        assert_eq!(output_buffer.lock().len(), OUTPUT_BUFFER_CAPACITY - 10);
+        process_pty_output(
+            data.as_bytes(),
+            &mut pending,
+            &output_buffer,
+            OUTPUT_BUFFER_CAPACITY,
+        );
+        assert_eq!(
+            output_buffer.lock().bytes.len(),
+            OUTPUT_BUFFER_CAPACITY - 10
+        );
         let data2 = "y".repeat(20);
-        process_pty_output(data2.as_bytes(), &mut pending, &output_buffer);
-        assert_eq!(output_buffer.lock().len(), OUTPUT_BUFFER_CAPACITY);
+        process_pty_output(
+            data2.as_bytes(),
+            &mut pending,
+            &output_buffer,
+            OUTPUT_BUFFER_CAPACITY,
+        );
+        let buffer = output_buffer.lock();
+        assert_eq!(buffer.bytes.len(), OUTPUT_BUFFER_CAPACITY);
+        assert_eq!(buffer.sequence, 2);
     }
 
     #[test]
     fn process_pty_output_exceeds_capacity() {
         let mut pending = Vec::new();
-        let output_buffer = Mutex::new(VecDeque::new());
+        let output_buffer = Mutex::new(PtyOutputBuffer::with_capacity(OUTPUT_BUFFER_CAPACITY));
         let data = "z".repeat(OUTPUT_BUFFER_CAPACITY + 100);
-        process_pty_output(data.as_bytes(), &mut pending, &output_buffer);
-        assert_eq!(output_buffer.lock().len(), OUTPUT_BUFFER_CAPACITY);
+        process_pty_output(
+            data.as_bytes(),
+            &mut pending,
+            &output_buffer,
+            OUTPUT_BUFFER_CAPACITY,
+        );
+        assert_eq!(output_buffer.lock().bytes.len(), OUTPUT_BUFFER_CAPACITY);
     }
 
     #[test]
     fn process_pty_output_empty_input() {
         let mut pending = Vec::new();
-        let output_buffer = Mutex::new(VecDeque::new());
-        assert!(process_pty_output(b"", &mut pending, &output_buffer).is_none());
+        let output_buffer = Mutex::new(PtyOutputBuffer::with_capacity(OUTPUT_BUFFER_CAPACITY));
+        assert!(
+            process_pty_output(b"", &mut pending, &output_buffer, OUTPUT_BUFFER_CAPACITY).is_none()
+        );
     }
 
     struct MockWriter(Arc<Mutex<Vec<u8>>>);
@@ -563,8 +837,12 @@ mod tests {
     ) -> Arc<std::sync::atomic::AtomicBool> {
         let written = Arc::new(Mutex::new(Vec::<u8>::new()));
         let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let output_buffer = Arc::new(Mutex::new(VecDeque::new()));
-        output_buffer.lock().extend(b"buffered data");
+        let output_buffer = Arc::new(Mutex::new(PtyOutputBuffer::with_capacity(
+            OUTPUT_BUFFER_CAPACITY,
+        )));
+        output_buffer
+            .lock()
+            .append("buffered data", OUTPUT_BUFFER_CAPACITY);
         gateway.insert_session(
             PtySession::new(
                 pty_id,
@@ -580,6 +858,7 @@ mod tests {
                 }))),
                 resizer: Arc::new(Mutex::new(Box::new(MockResizer { rows: 24, cols: 80 }))),
                 output_buffer,
+                output_buffer_cap: OUTPUT_BUFFER_CAPACITY,
                 reader: None,
                 child: None,
             },
@@ -617,6 +896,7 @@ mod tests {
         assert_eq!(found.snapshot.pty_id, 1);
         assert_eq!(found.snapshot.label.as_deref(), Some("dev"));
         assert_eq!(found.buffered_output, "buffered data");
+        assert_eq!(found.buffered_output_sequence, 1);
     }
 
     #[test]
@@ -708,6 +988,15 @@ mod tests {
         assert!(gateway.snapshot(1).is_some());
         assert!(gateway.snapshot(2).is_none());
         assert!(gateway.snapshot(3).is_some());
+    }
+
+    #[test]
+    fn mark_exited_returns_false_after_session_removed() {
+        let gateway = PtySessionRuntimeGateway::default();
+        insert_test_session(&gateway, 1, "key-1", Some("/repo"), None, PtyKind::Terminal);
+        gateway.remove_session(1);
+
+        assert!(!gateway.mark_exited(1, Some(0)));
     }
 
     #[test]

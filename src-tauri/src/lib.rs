@@ -50,6 +50,15 @@ pub fn run() {
     let _ = fix_path_env::fix();
 
     let ws_broadcaster = Arc::new(ws_bridge::WsBroadcaster::default());
+    let pty_gateway =
+        Arc::new(adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default());
+    let pty_gateway_for_setup = Arc::clone(&pty_gateway);
+    let pty_replay_reader: Arc<dyn usecase::pty_session::query_service::PtySessionReplayReader> =
+        Arc::new(
+            usecase::pty_session::query_service::PtySessionReplayQueryService::new(Arc::clone(
+                &pty_gateway,
+            )),
+        );
     let session_storage = Arc::new(adaptor::gateway::agent_session::FileSessionStorage::default());
     let session_store = Arc::new(usecase::agent_session::session::SessionStore::new(
         session_storage.clone(),
@@ -71,9 +80,8 @@ pub fn run() {
         .manage(Arc::new(review_comments::ReviewCommentStore::default()))
         .manage(session_store)
         .manage(prompt_suggestion_usecase)
-        .manage(Arc::new(
-            adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default(),
-        ))
+        .manage(Arc::clone(&pty_gateway))
+        .manage(pty_replay_reader)
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::clone(&ws_broadcaster))
         .manage(Arc::new(tokio::sync::Mutex::new(
@@ -89,6 +97,7 @@ pub fn run() {
             parking_lot::RwLock::new(Vec::new()),
         ))
         .setup(move |app| {
+            pty_gateway_for_setup.start_idle_sweeper(app.handle().clone());
             let data_dir = app.path().app_data_dir()?;
             app.manage(Arc::new(
                 adaptor::gateway::workspace_state::WorkspaceStateStore::new(data_dir.clone()),

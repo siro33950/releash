@@ -1,17 +1,29 @@
 import { invoke } from "@tauri-apps/api/core";
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { countLeaves, getAllLeaves } from "@/lib/paneTree";
-import { _resetIdCounters, useTerminalPanes } from "./useTerminalPanes";
+import {
+	_clearTabStateCache,
+	_resetIdCounters,
+	useTerminalPanes,
+} from "./useTerminalPanes";
+
+const mockListen = vi.fn();
 
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+	listen: (...args: unknown[]) => mockListen(...args),
+}));
+
 describe("useTerminalPanes", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mockListen.mockResolvedValue(vi.fn());
 		_resetIdCounters();
+		_clearTabStateCache();
 	});
 
 	it("初期状態で1タブ1ペイン", () => {
@@ -506,6 +518,331 @@ describe("useTerminalPanes", () => {
 			);
 
 			expect(invoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
+		});
+	});
+
+	describe("Rust lifecycle mirror", () => {
+		it("updatePaneSessionKey stores the PTY id with the session key", () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+			const paneId = result.current.tabs[0].focusedPaneId;
+
+			act(() => result.current.updatePaneSessionKey(paneId, "key-active", 41));
+
+			const leaf = getAllLeaves(result.current.tabs[0].paneTree)[0];
+			expect(leaf.sessionKey).toBe("key-active");
+			expect(leaf.ptyId).toBe(41);
+		});
+
+		it("closeSpecificPane kills the PTY stored on an inactive pane", () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+
+			act(() => result.current.splitFocusedPane("vertical"));
+			const leaves = getAllLeaves(result.current.tabs[0].paneTree);
+			act(() =>
+				result.current.updatePaneSessionKey(leaves[0].id, "key-old", 41),
+			);
+			act(() =>
+				result.current.updatePaneSessionKey(leaves[1].id, "key-active", 42),
+			);
+			vi.mocked(invoke).mockClear();
+
+			act(() => result.current.closeSpecificPane(leaves[0].id));
+
+			expect(invoke).toHaveBeenCalledWith("kill_pty", { ptyId: 41 });
+			const remainingLeaves = getAllLeaves(result.current.tabs[0].paneTree);
+			expect(remainingLeaves).toHaveLength(1);
+			expect(remainingLeaves[0].sessionKey).toBe("key-active");
+		});
+
+		it("closeTab kills PTYs stored on an inactive tab", () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+
+			const inactiveTab = result.current.tabs[0];
+			const inactivePane = getAllLeaves(inactiveTab.paneTree)[0];
+			act(() =>
+				result.current.updatePaneSessionKey(
+					inactivePane.id,
+					"key-inactive-tab",
+					43,
+				),
+			);
+			act(() => result.current.addTab());
+			vi.mocked(invoke).mockClear();
+
+			act(() => result.current.closeTab(inactiveTab.id));
+
+			expect(invoke).toHaveBeenCalledWith("kill_pty", { ptyId: 43 });
+			expect(result.current.tabs).toHaveLength(1);
+			expect(result.current.tabs[0].id).not.toBe(inactiveTab.id);
+		});
+
+		it("markPendingPaneKill records a pending kill on the leaf until PTY ready", () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+			const paneId = result.current.tabs[0].focusedPaneId;
+
+			act(() => result.current.markPendingPaneKill(paneId));
+
+			let leaf = getAllLeaves(result.current.tabs[0].paneTree)[0];
+			expect(leaf.pendingKill).toBe(true);
+
+			act(() => result.current.updatePaneSessionKey(paneId, "key-active", 41));
+
+			leaf = getAllLeaves(result.current.tabs[0].paneTree)[0];
+			expect(leaf.pendingKill).toBe(false);
+		});
+
+		it("pty-evicted removes the matching inactive pane from cached state", async () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+
+			act(() => result.current.splitFocusedPane("vertical"));
+			const leaves = getAllLeaves(result.current.tabs[0].paneTree);
+			act(() => result.current.updatePaneSessionKey(leaves[0].id, "key-old"));
+			act(() =>
+				result.current.updatePaneSessionKey(leaves[1].id, "key-active"),
+			);
+
+			await waitFor(() => {
+				expect(mockListen).toHaveBeenCalledWith(
+					"pty-evicted",
+					expect.any(Function),
+				);
+			});
+			const listener = mockListen.mock.calls.find(
+				(call: unknown[]) => call[0] === "pty-evicted",
+			)?.[1] as (event: {
+				payload: { pty_id: number; session_key: string; reason: string };
+			}) => void;
+
+			act(() => {
+				listener({
+					payload: {
+						pty_id: 1,
+						session_key: "key-old",
+						reason: "idle",
+					},
+				});
+			});
+
+			const remainingLeaves = getAllLeaves(result.current.tabs[0].paneTree);
+			expect(remainingLeaves).toHaveLength(1);
+			expect(remainingLeaves[0].sessionKey).toBe("key-active");
+		});
+
+		it("pty-evicted listener is not re-registered when active tab changes", async () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+
+			await waitFor(() => {
+				expect(
+					mockListen.mock.calls.filter(
+						(call: unknown[]) => call[0] === "pty-evicted",
+					),
+				).toHaveLength(2);
+			});
+
+			act(() => result.current.addTab());
+
+			expect(
+				mockListen.mock.calls.filter(
+					(call: unknown[]) => call[0] === "pty-evicted",
+				),
+			).toHaveLength(2);
+		});
+
+		it("pty-evicted clears the latest active single-pane tab instead of removing it", async () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+
+			await waitFor(() => {
+				expect(mockListen).toHaveBeenCalledWith(
+					"pty-evicted",
+					expect.any(Function),
+				);
+			});
+			const listener = mockListen.mock.calls.find(
+				(call: unknown[]) => call[0] === "pty-evicted",
+			)?.[1] as (event: {
+				payload: { pty_id: number; session_key: string; reason: string };
+			}) => void;
+
+			act(() => result.current.addTab());
+			const activeTab = result.current.activeTab;
+			if (!activeTab) throw new Error("active tab should exist");
+			const activePane = getAllLeaves(activeTab.paneTree)[0];
+			act(() =>
+				result.current.updatePaneSessionKey(
+					activePane.id,
+					"key-latest-active",
+					77,
+				),
+			);
+
+			act(() => {
+				listener({
+					payload: {
+						pty_id: 77,
+						session_key: "key-latest-active",
+						reason: "idle",
+					},
+				});
+			});
+
+			expect(result.current.tabs).toHaveLength(2);
+			expect(result.current.activeTabId).toBe(activeTab.id);
+			const remainingActiveTab = result.current.tabs.find(
+				(tab) => tab.id === activeTab.id,
+			);
+			if (!remainingActiveTab) throw new Error("active tab should remain");
+			const leaf = getAllLeaves(remainingActiveTab.paneTree)[0];
+			expect(leaf.ptyId).toBeNull();
+			expect(leaf.sessionKey).toBeNull();
+		});
+
+		it("global pty-evicted mirror removes cached panes while unmounted", async () => {
+			const { result, unmount } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+
+			act(() => result.current.splitFocusedPane("vertical"));
+			const leaves = getAllLeaves(result.current.tabs[0].paneTree);
+			act(() => result.current.updatePaneSessionKey(leaves[0].id, "key-old"));
+			act(() =>
+				result.current.updatePaneSessionKey(leaves[1].id, "key-active"),
+			);
+
+			await waitFor(() => {
+				expect(
+					mockListen.mock.calls.filter(
+						(call: unknown[]) => call[0] === "pty-evicted",
+					),
+				).toHaveLength(2);
+			});
+			const listeners = mockListen.mock.calls
+				.filter((call: unknown[]) => call[0] === "pty-evicted")
+				.map((call: unknown[]) => call[1]) as Array<
+				(event: {
+					payload: { pty_id: number; session_key: string; reason: string };
+				}) => void
+			>;
+
+			unmount();
+			act(() => {
+				listeners[1]({
+					payload: {
+						pty_id: 1,
+						session_key: "key-old",
+						reason: "idle",
+					},
+				});
+			});
+
+			const { result: remounted } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+			const remainingLeaves = getAllLeaves(remounted.current.tabs[0].paneTree);
+			expect(remainingLeaves).toHaveLength(1);
+			expect(remainingLeaves[0].sessionKey).toBe("key-active");
+		});
+
+		it("mount reconciliation removes cached panes missing from Rust registry", async () => {
+			vi.mocked(invoke).mockImplementation((command) => {
+				if (command === "list_pty_sessions") {
+					return Promise.resolve([
+						{ session_key: "key-old" },
+						{ session_key: "key-active" },
+					]);
+				}
+				return Promise.resolve(undefined);
+			});
+
+			const { result, unmount } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+
+			act(() => result.current.splitFocusedPane("vertical"));
+			const leaves = getAllLeaves(result.current.tabs[0].paneTree);
+			act(() => result.current.updatePaneSessionKey(leaves[0].id, "key-old"));
+			act(() =>
+				result.current.updatePaneSessionKey(leaves[1].id, "key-active"),
+			);
+			await waitFor(() => {
+				expect(invoke).toHaveBeenCalledWith("list_pty_sessions");
+			});
+			unmount();
+
+			vi.mocked(invoke).mockImplementation((command) => {
+				if (command === "list_pty_sessions") {
+					return Promise.resolve([{ session_key: "key-active" }]);
+				}
+				return Promise.resolve(undefined);
+			});
+
+			const { result: remounted } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+
+			await waitFor(() => {
+				const remainingLeaves = getAllLeaves(
+					remounted.current.tabs[0].paneTree,
+				);
+				expect(remainingLeaves).toHaveLength(1);
+				expect(remainingLeaves[0].sessionKey).toBe("key-active");
+			});
+		});
+
+		it("removePendingPane rolls back a split pane before PTY initialization succeeds", () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+
+			act(() => result.current.splitFocusedPane("vertical"));
+			const pendingPaneId = result.current.activeTab?.focusedPaneId;
+			expect(countLeaves(result.current.tabs[0].paneTree)).toBe(2);
+
+			act(() => result.current.removePendingPane(pendingPaneId ?? ""));
+
+			expect(countLeaves(result.current.tabs[0].paneTree)).toBe(1);
+		});
+
+		it("removePendingPane closes a pending tab when it was the only pane", () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+
+			act(() => result.current.addTab());
+			const pendingPaneId = result.current.activeTab?.focusedPaneId;
+			expect(result.current.tabs).toHaveLength(2);
+
+			act(() => result.current.removePendingPane(pendingPaneId ?? ""));
+
+			expect(result.current.tabs).toHaveLength(1);
+		});
+
+		it("removePendingPane keeps panes that already have a session key", () => {
+			const { result } = renderHook(() =>
+				useTerminalPanes("Terminal", "/repo::Terminal"),
+			);
+			const paneId = result.current.tabs[0].focusedPaneId;
+			act(() => result.current.updatePaneSessionKey(paneId, "key-active"));
+
+			act(() => result.current.removePendingPane(paneId));
+
+			expect(result.current.tabs).toHaveLength(1);
+			expect(getAllLeaves(result.current.tabs[0].paneTree)[0].sessionKey).toBe(
+				"key-active",
+			);
 		});
 	});
 });
