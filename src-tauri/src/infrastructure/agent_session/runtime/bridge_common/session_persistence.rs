@@ -107,6 +107,7 @@ pub(super) fn load_post_turn_base_parts_from_store<R: tauri::Runtime>(
 
 pub(super) struct PersistedSpawnInfo {
     pub resume_sid: Option<String>,
+    pub has_session: bool,
     pub selected_model: Option<String>,
     pub backend_id: String,
     pub permission_profile_id: Option<String>,
@@ -192,6 +193,11 @@ pub(super) fn resolve_spawn_info_from_meta(
     registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
     context_restore_plan: ContextRestorePlan,
 ) -> PersistedSpawnInfo {
+    let has_session = meta
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|session_id| !session_id.is_empty());
     let backend_id = meta
         .backend_id
         .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string());
@@ -200,6 +206,7 @@ pub(super) fn resolve_spawn_info_from_meta(
         resume_sid: context_restore_plan
             .resume_session_id()
             .map(ToString::to_string),
+        has_session,
         selected_model,
         backend_id,
         permission_profile_id: meta.permission_profile_id,
@@ -257,11 +264,18 @@ pub(super) fn resolve_spawn_info_with_plan(
     registry: Option<&Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>,
     context_restore_plan: ContextRestorePlan,
 ) -> PersistedSpawnInfo {
-    let (resume_sid, selected_model, backend_id, permission_profile_id, context_restore_plan) =
-        persisted_spawn_info_from_session(persisted, context_restore_plan);
+    let (
+        resume_sid,
+        has_session,
+        selected_model,
+        backend_id,
+        permission_profile_id,
+        context_restore_plan,
+    ) = persisted_spawn_info_from_session(persisted, context_restore_plan);
     let selected_model = resolve_selected_model(selected_model, &backend_id, registry);
     PersistedSpawnInfo {
         resume_sid,
+        has_session,
         selected_model,
         backend_id,
         permission_profile_id,
@@ -274,6 +288,7 @@ pub(super) fn persisted_spawn_info_from_session(
     context_restore_plan: ContextRestorePlan,
 ) -> (
     Option<String>,
+    bool,
     Option<String>,
     String,
     Option<String>,
@@ -281,10 +296,16 @@ pub(super) fn persisted_spawn_info_from_session(
 ) {
     session
         .map(|s| {
+            let has_session = s
+                .agent_session_id
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|session_id| !session_id.is_empty());
             (
                 context_restore_plan
                     .resume_session_id()
                     .map(ToString::to_string),
+                has_session,
                 s.selected_model,
                 s.backend_id
                     .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string()),
@@ -294,6 +315,7 @@ pub(super) fn persisted_spawn_info_from_session(
         })
         .unwrap_or((
             None,
+            false,
             None,
             CLAUDE_BACKEND_ID.to_string(),
             None,
@@ -436,6 +458,8 @@ pub(super) fn pending_message_from_streaming_turn(
         id: uuid::Uuid::new_v4().to_string(),
         content: pending_content_from_human_message(human_message),
         created_at: human_message.timestamp,
+        client_sent_at_ms: None,
+        request_received_at_ms: None,
         permission_mode: candidate.permission_mode.clone(),
         plan_mode: session.plan_mode,
         images: pending_images_from_human_message(human_message),

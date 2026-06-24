@@ -27,6 +27,8 @@ pub struct AgentRuntimeSendRequest {
     pub images: Option<Vec<AgentImageAttachment>>,
     pub mentions: Option<Vec<crate::domain::code::MentionReference>>,
     pub editor_context: Option<runtime::AgentEditorContext>,
+    pub client_sent_at_ms: Option<f64>,
+    pub request_received_at_ms: Option<f64>,
 }
 
 impl AgentRuntimeGateway<'_> {
@@ -49,6 +51,8 @@ impl AgentRuntimeGateway<'_> {
             req.images,
             req.mentions,
             req.editor_context,
+            req.client_sent_at_ms,
+            req.request_received_at_ms,
         )
         .await
     }

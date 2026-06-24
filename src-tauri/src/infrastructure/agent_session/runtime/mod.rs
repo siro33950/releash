@@ -5,6 +5,7 @@ pub mod codex_app_server;
 pub(crate) mod context_restore;
 mod permission_flags;
 pub mod runtime_coordinator;
+mod turn_latency;
 
 pub(crate) use bridge_common::*;
 

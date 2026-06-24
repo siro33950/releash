@@ -5,8 +5,8 @@ use super::process_registry::{
     AgentProcess, AgentProcessMap, BridgeState, PendingMessage, TurnPhase,
 };
 use super::recovery::{
-    remove_pgid, spawn_bridge_process, spawn_turn_watchdog, take_runtime_requiring_spawn_locked,
-    RuntimeSpawnDecision, CLOSE_TIMEOUT_SECS,
+    remove_pgid, runtime_requires_spawn_locked, spawn_bridge_process, spawn_turn_watchdog,
+    take_runtime_requiring_spawn_locked, RuntimeSpawnDecision, CLOSE_TIMEOUT_SECS,
 };
 use super::session_persistence::{
     get_persisted_spawn_info, get_required_persisted_spawn_info_before_turn,
@@ -37,6 +37,7 @@ use crate::infrastructure::agent_session::runtime::runtime_coordinator::mark_pen
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::mark_session_closing;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::prune_session_runtime_lock;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::wait_until_session_close_finished;
+use crate::infrastructure::agent_session::runtime::turn_latency::{self, TurnLatencyState};
 use crate::infrastructure::agent_session::runtime::AgentEditorContext;
 use crate::infrastructure::agent_session::runtime::AgentMessage;
 use crate::infrastructure::agent_session::runtime::ImageAttachment;
@@ -199,6 +200,7 @@ where
         proc.state == BridgeState::Streaming,
         proc.streaming_message_id.is_some()
     );
+    turn_latency::record_complete_latency(&mut proc.turn_latency);
     let _flushed_streaming = flush_streaming_before_transition(proc, chat_session_id, emit_stream);
     proc.state = if exit_code == 0 {
         BridgeState::Ready
@@ -765,6 +767,77 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
     .await
 }
 
+fn record_ui_to_start_latency_for_turn(
+    session: &ChatSession,
+    turn: &PreparedAgentTurn,
+    resume: bool,
+    client_sent_at_ms: Option<f64>,
+    request_received_at_ms: Option<f64>,
+) {
+    if turn.backend_id != CLAUDE_BACKEND_ID {
+        return;
+    }
+    turn_latency::record_ui_to_start_latency(
+        &turn.permission_mode,
+        session.selected_model.as_deref(),
+        session.is_workflow_step_session(),
+        resume,
+        session.agent_session_id.is_some(),
+        client_sent_at_ms,
+        request_received_at_ms,
+    );
+}
+
+fn record_ui_to_start_latency_for_pending_message(
+    session: &ChatSession,
+    pending: &PendingMessage,
+    resume: bool,
+) {
+    let backend_id = session.backend_id.as_deref().unwrap_or(CLAUDE_BACKEND_ID);
+    if backend_id != CLAUDE_BACKEND_ID {
+        return;
+    }
+    turn_latency::record_ui_to_start_latency(
+        &pending.permission_mode,
+        session.selected_model.as_deref(),
+        session.is_workflow_step_session(),
+        resume,
+        session.agent_session_id.is_some(),
+        pending.client_sent_at_ms,
+        pending.request_received_at_ms,
+    );
+}
+
+fn session_has_resume_sid(session: &ChatSession) -> bool {
+    session
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|session_id| !session_id.is_empty())
+}
+
+async fn ui_to_start_resume_for_session(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    session: &ChatSession,
+) -> bool {
+    if !session_has_resume_sid(session) {
+        return false;
+    }
+    let mut map = handles.lock().await;
+    runtime_requires_spawn_locked(&mut map, chat_session_id)
+}
+
+fn maybe_record_bridge_spawn<T, E>(
+    result: &Result<T, E>,
+    dims: &crate::other::telemetry::AgentTurnDimensions,
+    elapsed: std::time::Duration,
+) {
+    if result.is_ok() {
+        turn_latency::record_bridge_spawn(dims, elapsed);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn start_agent_turn<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -810,8 +883,18 @@ pub(super) async fn start_agent_turn<R: tauri::Runtime>(
                 chat_session_id,
                 streaming_message_id,
             )?;
+            let spawn_dims = turn_latency::dimensions_for_session(
+                Some(app),
+                Some(session_store),
+                chat_session_id,
+                permission_mode,
+                spawn_info.selected_model.as_deref(),
+                spawn_info.resume_sid.is_some(),
+                spawn_info.has_session,
+            );
 
-            spawn_bridge_process(
+            let spawn_started = std::time::Instant::now();
+            let result = spawn_bridge_process(
                 app,
                 handles,
                 session_store,
@@ -825,7 +908,9 @@ pub(super) async fn start_agent_turn<R: tauri::Runtime>(
                 None,
                 spawn_info.context_restore_plan.restore_context().cloned(),
             )
-            .await
+            .await;
+            maybe_record_bridge_spawn(&result, &spawn_dims, spawn_started.elapsed());
+            result
         },
     )
     .await?;
@@ -887,8 +972,18 @@ pub(super) async fn start_agent_turn_locked<R: tauri::Runtime>(
                 chat_session_id,
                 streaming_message_id,
             )?;
+            let spawn_dims = turn_latency::dimensions_for_session(
+                Some(app),
+                Some(session_store),
+                chat_session_id,
+                permission_mode,
+                spawn_info.selected_model.as_deref(),
+                spawn_info.resume_sid.is_some(),
+                spawn_info.has_session,
+            );
 
-            spawn_bridge_process(
+            let spawn_started = std::time::Instant::now();
+            let result = spawn_bridge_process(
                 app,
                 handles,
                 session_store,
@@ -902,7 +997,9 @@ pub(super) async fn start_agent_turn_locked<R: tauri::Runtime>(
                 None,
                 spawn_info.context_restore_plan.restore_context().cloned(),
             )
-            .await
+            .await;
+            maybe_record_bridge_spawn(&result, &spawn_dims, spawn_started.elapsed());
+            result
         },
     )
     .await?;
@@ -1086,6 +1183,17 @@ where
             proc.active_turn_token = Some(streaming_message_id.to_string());
             proc.reset_streaming_state_for_new_turn();
             proc.begin_turn_liveness();
+            let has_session = proc.sdk_session_id.is_some();
+            let latency_dims = turn_latency::dimensions_for_session(
+                app,
+                session_store,
+                chat_session_id,
+                canonical_permission_mode.as_str(),
+                proc.selected_model.as_deref(),
+                has_session,
+                has_session,
+            );
+            proc.turn_latency = Some(TurnLatencyState::new(latency_dims));
             begin_turn_event_log(
                 proc,
                 &started_turn_prompt.message_id,
@@ -1397,6 +1505,20 @@ pub(super) async fn start_pending_message_turn<R: tauri::Runtime>(
         &pending.mentions,
     );
 
+    match session_store.get_session_shell(&data_dir, chat_session_id) {
+        Ok(Some(session)) => {
+            let backend_id = session.backend_id.as_deref().unwrap_or(CLAUDE_BACKEND_ID);
+            let resume = if backend_id == CLAUDE_BACKEND_ID {
+                ui_to_start_resume_for_session(handles, chat_session_id, &session).await
+            } else {
+                false
+            };
+            record_ui_to_start_latency_for_pending_message(&session, &pending, resume);
+        }
+        Ok(None) => {}
+        Err(e) => log::warn!("Failed to load session for pending ui_to_start telemetry: {e}"),
+    }
+
     if let Err(_e) = start_agent_turn(
         app,
         handles,
@@ -1684,6 +1806,8 @@ pub(super) async fn prepare_send_agent_message_internal(
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::domain::code::MentionReference>>,
     editor_context: Option<AgentEditorContext>,
+    client_sent_at_ms: Option<f64>,
+    request_received_at_ms: Option<f64>,
 ) -> Result<(SendMessageResponse, Option<PreparedAgentRuntimeInput>), String> {
     let pm = permission_mode.as_str().to_string();
     let images = images.unwrap_or_default();
@@ -1846,6 +1970,8 @@ pub(super) async fn prepare_send_agent_message_internal(
                 id: uuid::Uuid::new_v4().to_string(),
                 content: content.clone(),
                 created_at: now_timestamp(),
+                client_sent_at_ms,
+                request_received_at_ms,
                 permission_mode: pm.clone(),
                 plan_mode,
                 images: images.clone(),
@@ -2040,6 +2166,8 @@ pub async fn send_agent_message_internal(
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::domain::code::MentionReference>>,
     editor_context: Option<AgentEditorContext>,
+    client_sent_at_ms: Option<f64>,
+    request_received_at_ms: Option<f64>,
 ) -> Result<SendMessageResponse, String> {
     let lock_key = chat_session_id
         .as_deref()
@@ -2068,9 +2196,26 @@ pub async fn send_agent_message_internal(
             images,
             mentions,
             editor_context,
+            client_sent_at_ms,
+            request_received_at_ms,
         )
         .await?
     };
+
+    if let Some(PreparedAgentRuntimeInput::Turn(turn)) = prepared_input.as_ref() {
+        let resume = if turn.backend_id == CLAUDE_BACKEND_ID {
+            ui_to_start_resume_for_session(handles, &turn.session_id, &response.session).await
+        } else {
+            false
+        };
+        record_ui_to_start_latency_for_turn(
+            &response.session,
+            turn,
+            resume,
+            client_sent_at_ms,
+            request_received_at_ms,
+        );
+    }
 
     if let Some(input) = prepared_input {
         match input {
@@ -2669,6 +2814,8 @@ mod moved_tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .await;
 
@@ -2749,6 +2896,8 @@ mod moved_tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -2792,6 +2941,8 @@ mod moved_tests {
             crate::permission::PermissionMode::Ask,
             false,
             Some(CLAUDE_BACKEND_ID.to_string()),
+            None,
+            None,
             None,
             None,
             None,
@@ -2879,6 +3030,8 @@ mod moved_tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -2924,6 +3077,8 @@ mod moved_tests {
             crate::permission::PermissionMode::Edit,
             false,
             Some(CODEX_BACKEND_ID.to_string()),
+            None,
+            None,
             None,
             None,
             None,
@@ -2978,6 +3133,8 @@ mod moved_tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -3027,6 +3184,8 @@ mod moved_tests {
             "/status".to_string(),
             crate::permission::PermissionMode::Edit,
             false,
+            None,
+            None,
             None,
             None,
             None,
@@ -3089,6 +3248,8 @@ mod moved_tests {
             "resume step".to_string(),
             crate::permission::PermissionMode::Edit,
             false,
+            None,
+            None,
             None,
             None,
             None,
@@ -3691,6 +3852,7 @@ mod moved_tests {
                 pgid: None,
                 streaming_message_id: None,
                 active_turn_token: None,
+                turn_latency: None,
                 post_turn_message_token: None,
                 streaming_parts: Vec::new(),
                 turn_event_log: TurnEventLog::default(),
@@ -3725,6 +3887,8 @@ mod moved_tests {
             "Narrow the policy to reviewed findings.".to_string(),
             crate::permission::PermissionMode::Edit,
             false,
+            None,
+            None,
             None,
             None,
             None,
@@ -3949,6 +4113,8 @@ mod moved_tests {
             id: "queued-1".to_string(),
             content: "first".to_string(),
             created_at: 1.0,
+            client_sent_at_ms: None,
+            request_received_at_ms: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             images: Vec::new(),
@@ -3962,6 +4128,8 @@ mod moved_tests {
             id: "queued-2".to_string(),
             content: "second".to_string(),
             created_at: 2.0,
+            client_sent_at_ms: None,
+            request_received_at_ms: None,
             permission_mode: "ask".to_string(),
             plan_mode: false,
             images: Vec::new(),
@@ -3995,6 +4163,8 @@ mod moved_tests {
             id: "keep".to_string(),
             content: "first".to_string(),
             created_at: 1.0,
+            client_sent_at_ms: None,
+            request_received_at_ms: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             images: Vec::new(),
@@ -4008,6 +4178,8 @@ mod moved_tests {
             id: "drop".to_string(),
             content: "second".to_string(),
             created_at: 2.0,
+            client_sent_at_ms: None,
+            request_received_at_ms: None,
             permission_mode: "ask".to_string(),
             plan_mode: false,
             images: Vec::new(),
@@ -4183,6 +4355,8 @@ mod moved_tests {
             crate::permission::PermissionMode::Ask,
             true,
             Some("mock".to_string()),
+            None,
+            None,
             None,
             None,
             None,

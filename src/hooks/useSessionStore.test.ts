@@ -6,6 +6,8 @@ import {
 	getSessionPage,
 	legacyToParts,
 	planAgentChatEviction,
+	sendAgentMessage,
+	sendWorkflowApprovalChatMessage,
 } from "./useSessionStore";
 
 function makeLegacyMsg(
@@ -17,6 +19,28 @@ function makeLegacyMsg(
 		content: "",
 		timestamp: 1000,
 		...overrides,
+	};
+}
+
+function makeRawSendMessageResponse() {
+	return {
+		session: {
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [],
+			state: "active",
+			createdAt: 1,
+			updatedAt: 1,
+			permissionMode: "edit",
+		},
+		humanMessage: {
+			id: "h1",
+			role: "human",
+			content: "approve",
+			timestamp: 2,
+		},
+		agentMessage: null,
+		sessions: [],
 	};
 }
 
@@ -268,5 +292,61 @@ describe("session paging", () => {
 			request,
 		});
 		expect(response).toBe(plan);
+	});
+
+	it("sendWorkflowApprovalChatMessage forwards clientSentAtMs", async () => {
+		vi.mocked(invoke).mockResolvedValueOnce(makeRawSendMessageResponse());
+		const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_700_000);
+
+		try {
+			await sendWorkflowApprovalChatMessage("run-1", "approve", "edit", false);
+		} finally {
+			nowSpy.mockRestore();
+		}
+
+		expect(invoke).toHaveBeenCalledWith("send_workflow_approval_chat_message", {
+			runId: "run-1",
+			content: "approve",
+			permissionMode: "edit",
+			planMode: false,
+			images: undefined,
+			mentions: undefined,
+			clientSentAtMs: 1_700_000,
+		});
+	});
+
+	it("sendAgentMessage forwards clientSentAtMs", async () => {
+		vi.mocked(invoke).mockResolvedValueOnce(makeRawSendMessageResponse());
+		const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_700_123);
+
+		try {
+			await sendAgentMessage(
+				"s1",
+				"/repo",
+				"hello",
+				"edit",
+				false,
+				"claude",
+				[],
+				[],
+				undefined,
+				"claude-sonnet-4-6",
+			);
+		} finally {
+			nowSpy.mockRestore();
+		}
+
+		expect(invoke).toHaveBeenCalledWith("send_agent_message", {
+			chatSessionId: "s1",
+			worktreePath: "/repo",
+			content: "hello",
+			permissionMode: "edit",
+			planMode: false,
+			backendId: "claude",
+			modelId: "claude-sonnet-4-6",
+			images: undefined,
+			mentions: undefined,
+			clientSentAtMs: 1_700_123,
+		});
 	});
 });

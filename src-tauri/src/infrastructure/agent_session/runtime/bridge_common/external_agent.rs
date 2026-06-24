@@ -159,6 +159,7 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
         pgid,
         streaming_message_id: None,
         active_turn_token: None,
+        turn_latency: None,
         post_turn_message_token: None,
         streaming_parts: Vec::new(),
         turn_event_log: TurnEventLog::default(),

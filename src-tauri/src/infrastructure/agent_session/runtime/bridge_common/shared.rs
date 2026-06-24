@@ -542,6 +542,8 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
             id: id.to_string(),
             content: content.to_string(),
             created_at,
+            client_sent_at_ms: None,
+            request_received_at_ms: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             images: Vec::new(),
@@ -828,8 +830,13 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
         chat_session_id: &str,
         events: &mut Vec<RecordedEmit>,
     ) -> bool {
-        let effect =
-            run_permission_request_transition_locked(proc, chat_session_id, recording_emit(events));
+        let effect = run_permission_request_transition_locked(
+            proc,
+            chat_session_id,
+            None,
+            Instant::now(),
+            recording_emit(events),
+        );
         if effect.did_transition {
             events.push(RecordedEmit::StateChanged {
                 phase: TurnPhase::WaitingPermission,
@@ -1070,6 +1077,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
             pgid: None,
             streaming_message_id: None,
             active_turn_token: None,
+            turn_latency: None,
             post_turn_message_token: None,
             streaming_parts: Vec::new(),
             turn_event_log: TurnEventLog::default(),
@@ -1274,6 +1282,8 @@ mod moved_tests {
                 id: "queued-1".to_string(),
                 content: "next".to_string(),
                 created_at: 1.0,
+                client_sent_at_ms: None,
+                request_received_at_ms: None,
                 permission_mode: "edit".to_string(),
                 plan_mode: false,
                 images: Vec::new(),
@@ -1304,6 +1314,8 @@ mod moved_tests {
             id: "queued-1".to_string(),
             content: "next".to_string(),
             created_at: 1.0,
+            client_sent_at_ms: None,
+            request_received_at_ms: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             images: Vec::new(),

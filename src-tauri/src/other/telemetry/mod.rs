@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use attributes::{
-    usage_event_allowed, HotPathMetric, OpStatus, PayloadChannel, StartupMetric, KEY_CHANNEL,
-    KEY_OPERATION, KEY_OUTCOME, KEY_STATUS, KEY_USAGE_EVENT,
+    usage_event_allowed, AgentTurnMetric, HotPathMetric, OpStatus, PayloadChannel, StartupMetric,
+    TurnDimensions, KEY_CHANNEL, KEY_OPERATION, KEY_OUTCOME, KEY_STATUS, KEY_USAGE_EVENT,
 };
 use opentelemetry::global;
 use opentelemetry::metrics::{Counter, Histogram, ObservableGauge};
@@ -18,7 +18,10 @@ use opentelemetry::KeyValue;
 use resource::ProcessResourceObserver;
 
 pub(crate) use attributes::HotPathMetric as HotPath;
-pub(crate) use attributes::{PayloadChannel as Payload, StartupMetric as Startup};
+pub(crate) use attributes::{
+    AgentTurnMetric as AgentTurn, ModelFamily, PayloadChannel as Payload, PermissionModeDim,
+    StartupMetric as Startup, TurnContext, TurnDimensions as AgentTurnDimensions, WarmPath,
+};
 
 #[cfg(not(test))]
 static PERFORMANCE_CONFIGURED: AtomicBool = AtomicBool::new(false);
@@ -54,6 +57,11 @@ thread_local! {
 }
 
 #[cfg(test)]
+fn test_telemetry_recording_enabled() -> bool {
+    TEST_TELEMETRY_RECORDING_ENABLED.with(|enabled| enabled.get())
+}
+
+#[cfg(test)]
 pub(crate) struct TestTelemetryGuard {
     _guard: std::sync::MutexGuard<'static, ()>,
 }
@@ -66,6 +74,7 @@ impl Drop for TestTelemetryGuard {
 }
 
 struct Metrics {
+    agent_turn_duration: Histogram<f64>,
     hot_path_duration: Histogram<f64>,
     startup_duration: Histogram<f64>,
     stream_payload_bytes: Histogram<f64>,
@@ -206,6 +215,10 @@ pub(crate) fn install_metrics() {
     let cpu_observer = Arc::clone(&process_observer);
 
     let metrics = Metrics {
+        agent_turn_duration: meter
+            .f64_histogram("releash.agent.turn.duration_ms")
+            .with_unit("ms")
+            .build(),
         hot_path_duration: meter
             .f64_histogram("releash.hot_path.duration_ms")
             .with_unit("ms")
@@ -292,6 +305,10 @@ pub(crate) fn record_startup_from_origin(metric: StartupMetric) {
 
 pub(crate) fn record_first_repo_snapshot_ready() {
     if !is_performance_active() {
+        return;
+    }
+    #[cfg(test)]
+    if !test_telemetry_recording_enabled() {
         return;
     }
     let Some(elapsed) = startup_elapsed() else {
@@ -408,6 +425,29 @@ pub(crate) fn record_hot_path_duration(metric: HotPathMetric, status: OpStatus, 
         .hot_path_duration
         .record(elapsed.as_secs_f64() * 1000.0, &attrs);
     metrics.operation_status.add(1, &attrs);
+}
+
+pub(crate) fn record_agent_turn_duration(
+    metric: AgentTurnMetric,
+    dims: &TurnDimensions,
+    elapsed: Duration,
+) {
+    if !is_performance_active() {
+        return;
+    }
+    let attrs = dims.to_metric_attrs(metric.operation());
+    #[cfg(test)]
+    record_test_metric(
+        "releash.agent.turn.duration_ms",
+        elapsed.as_secs_f64() * 1000.0,
+        &attrs,
+    );
+    let Some(metrics) = METRICS.get() else {
+        return;
+    };
+    metrics
+        .agent_turn_duration
+        .record(elapsed.as_secs_f64() * 1000.0, &attrs);
 }
 
 pub(crate) fn record_session_save_bytes<F>(metric: HotPathMetric, bytes: F)
@@ -641,6 +681,20 @@ mod tests {
         reset_test_metrics();
         set_active(true);
 
+        let turn_dims = TurnDimensions {
+            resume: true,
+            has_session: true,
+            permission_mode: PermissionModeDim::Edit,
+            model: ModelFamily::Sonnet,
+            context: TurnContext::Chat,
+            channel: PayloadChannel::TauriEvent,
+            warm_path: WarmPath::QueryDirect,
+        };
+        record_agent_turn_duration(
+            AgentTurnMetric::FirstAssistantEvent,
+            &turn_dims,
+            Duration::from_millis(42),
+        );
         record_payload_size(PayloadChannel::TauriEvent, || 128);
         record_session_save_bytes(HotPathMetric::SessionAppend, || 256);
         record_emit_interval(Duration::from_millis(33));
@@ -649,6 +703,18 @@ mod tests {
         record_usage_event("settings_saved");
 
         let records = test_metric_records();
+        assert!(records.iter().any(|record| {
+            record.name == "releash.agent.turn.duration_ms"
+                && record.value == 42.0
+                && has_attr(record, KEY_OPERATION, "agent.turn.first_assistant_event")
+                && has_attr(record, attributes::KEY_AGENT_RESUME, "true")
+                && has_attr(record, attributes::KEY_AGENT_HAS_SESSION, "true")
+                && has_attr(record, attributes::KEY_AGENT_PERMISSION_MODE, "edit")
+                && has_attr(record, attributes::KEY_AGENT_MODEL, "sonnet")
+                && has_attr(record, attributes::KEY_AGENT_CONTEXT, "chat")
+                && has_attr(record, KEY_CHANNEL, "tauri_event")
+                && has_attr(record, attributes::KEY_AGENT_WARM_PATH, "query_direct")
+        }));
         assert!(records.iter().any(|record| {
             record.name == "releash.agent_stream.payload_bytes"
                 && record.value == 128.0
@@ -757,6 +823,20 @@ mod tests {
         reset_test_metrics();
         set_active(false);
 
+        let turn_dims = TurnDimensions {
+            resume: false,
+            has_session: false,
+            permission_mode: PermissionModeDim::Ask,
+            model: ModelFamily::Other,
+            context: TurnContext::Chat,
+            channel: PayloadChannel::TauriEvent,
+            warm_path: WarmPath::QueryDirect,
+        };
+        record_agent_turn_duration(
+            AgentTurnMetric::UiToStart,
+            &turn_dims,
+            Duration::from_millis(1),
+        );
         record_emit_interval(Duration::from_millis(33));
         increment_dropped_stream_frames();
         increment_ws_reconnects();

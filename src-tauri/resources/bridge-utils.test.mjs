@@ -5,6 +5,9 @@ import {
 	buildResultTurnCompletion,
 	buildSystemPromptOption,
 	buildTurnCompleteMessage,
+	consumeQueryInitTelemetryMessage,
+	createQueryInitTelemetryState,
+	markQueryInitTelemetryStarted,
 	rollbackResumeSessionIdAfterInterrupt,
 	shouldContinueBridgeLoopAfterQueryEnd,
 	shouldResolvePromptForCurrentQuery,
@@ -108,6 +111,60 @@ describe("shouldResolvePromptForCurrentQuery", () => {
 				completedResultForCurrentQuery: false,
 			}),
 		).toBe(false);
+	});
+});
+
+describe("query init telemetry helpers", () => {
+	it("measures from prompt yield turn start and excludes inter-turn idle", () => {
+		const state = createQueryInitTelemetryState();
+
+		markQueryInitTelemetryStarted(state, 5_000);
+
+		expect(consumeQueryInitTelemetryMessage(state, 5_125)).toEqual({
+			type: "telemetry",
+			metric: "query_init",
+			duration_ms: 125,
+		});
+		expect(consumeQueryInitTelemetryMessage(state, 5_250)).toBeNull();
+	});
+
+	it("excludes initial and inter-turn prompt wait idle before prompt yield", () => {
+		const state = createQueryInitTelemetryState();
+		const initialQueryCreatedAtMs = 1_000;
+		const initialPromptYieldedAtMs = initialQueryCreatedAtMs + 4_000;
+
+		markQueryInitTelemetryStarted(state, initialPromptYieldedAtMs);
+
+		expect(
+			consumeQueryInitTelemetryMessage(state, initialPromptYieldedAtMs + 125),
+		).toEqual({
+			type: "telemetry",
+			metric: "query_init",
+			duration_ms: 125,
+		});
+
+		const nextQueryCreatedAtMs = 8_000;
+		const nextPromptYieldedAtMs = nextQueryCreatedAtMs + 12_000;
+
+		markQueryInitTelemetryStarted(state, nextPromptYieldedAtMs);
+
+		expect(
+			consumeQueryInitTelemetryMessage(state, nextPromptYieldedAtMs + 80),
+		).toEqual({
+			type: "telemetry",
+			metric: "query_init",
+			duration_ms: 80,
+		});
+	});
+
+	it("falls back to zero duration when the prompt yield timestamp is missing", () => {
+		const state = createQueryInitTelemetryState();
+
+		expect(consumeQueryInitTelemetryMessage(state, 9_000)).toEqual({
+			type: "telemetry",
+			metric: "query_init",
+			duration_ms: 0,
+		});
 	});
 });
 
@@ -247,5 +304,38 @@ describe("claude bridge permission requests", () => {
 		expect(source).toMatch(
 			/emit\(\s*withTurnToken\(\s*\{\s*type: "permission_request"[\s\S]*?\},\s*currentTurnToken,\s*\),\s*\);/,
 		);
+	});
+});
+
+describe("claude bridge query init telemetry", () => {
+	it("emits query_init telemetry with the current turn token", () => {
+		const bridgeSource = readFileSync(
+			join(process.cwd(), "src-tauri/resources/claude-sdk-bridge.mjs"),
+			"utf8",
+		);
+		const utilsSource = readFileSync(
+			join(process.cwd(), "src-tauri/resources/bridge-utils.mjs"),
+			"utf8",
+		);
+
+		const telemetryFactory = utilsSource.match(
+			/return\s*\{\s*type: "telemetry",\s*metric: "query_init",\s*duration_ms: Math\.max\([\s\S]*?\),\s*\};/,
+		)?.[0];
+		expect(telemetryFactory).toBeTruthy();
+		expect(telemetryFactory).toContain('type: "telemetry"');
+		expect(telemetryFactory).toContain('metric: "query_init"');
+		expect(telemetryFactory).toContain("duration_ms");
+		expect(telemetryFactory).not.toMatch(/\b(prompt|content)\b/);
+
+		expect(bridgeSource).toMatch(
+			/for await \(const message of currentQuery\) \{[\s\S]*?const queryInitTelemetry = consumeQueryInitTelemetryMessage\([\s\S]*?\);[\s\S]*?if \(queryInitTelemetry\) \{[\s\S]*?emit\(\s*withTurnToken\(\s*queryInitTelemetry,\s*currentTurnToken,\s*\),\s*\);/,
+		);
+		const emitCall = bridgeSource.match(
+			/emit\(\s*withTurnToken\(\s*queryInitTelemetry,\s*currentTurnToken,\s*\),\s*\);/,
+		)?.[0];
+		expect(emitCall).toBeTruthy();
+		expect(emitCall).toContain("currentTurnToken");
+		expect(utilsSource).toMatch(/turn_token: turnToken/);
+		expect(emitCall).not.toMatch(/\b(prompt|content|body)\b/);
 	});
 });

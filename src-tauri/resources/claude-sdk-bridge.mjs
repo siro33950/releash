@@ -1,9 +1,13 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import crypto from "node:crypto";
+import { performance } from "node:perf_hooks";
 import {
 	buildResultTurnCompletion,
 	buildSystemPromptOption,
 	buildTurnCompleteMessage,
+	consumeQueryInitTelemetryMessage,
+	createQueryInitTelemetryState,
+	markQueryInitTelemetryStarted,
 	rollbackResumeSessionIdAfterInterrupt,
 	shouldContinueBridgeLoopAfterQueryEnd,
 	shouldResolvePromptForCurrentQuery,
@@ -40,6 +44,7 @@ async function* promptGenerator(promptState) {
 		if (messageQueue.length > 0) {
 			const queued = messageQueue.shift();
 			currentTurnToken = queued.turnToken;
+			markQueryInitTelemetryStarted(promptState.queryInitTelemetry, performance.now());
 			yield queued.message;
 			continue;
 		}
@@ -53,6 +58,7 @@ async function* promptGenerator(promptState) {
 			return;
 		}
 		currentTurnToken = queued.turnToken;
+		markQueryInitTelemetryStarted(promptState.queryInitTelemetry, performance.now());
 		yield queued.message;
 	}
 }
@@ -288,7 +294,10 @@ async function handleInit(cmd) {
 		}
 
 		messageResolve = null;
-		const promptState = { completedResult: false };
+		const promptState = {
+			completedResult: false,
+			queryInitTelemetry: createQueryInitTelemetryState(),
+		};
 		currentQueryPromptState = promptState;
 		const generator = promptGenerator(promptState);
 		currentQuery = query({ prompt: generator, options });
@@ -314,6 +323,18 @@ async function handleInit(cmd) {
 		let turnExitCode = null;
 		try {
 			for await (const message of currentQuery) {
+				const queryInitTelemetry = consumeQueryInitTelemetryMessage(
+					promptState.queryInitTelemetry,
+					performance.now(),
+				);
+				if (queryInitTelemetry) {
+					emit(
+						withTurnToken(
+							queryInitTelemetry,
+							currentTurnToken,
+						),
+					);
+				}
 				if (message.session_id && message.session_id !== currentSessionId) {
 					currentSessionId = message.session_id;
 					emit(

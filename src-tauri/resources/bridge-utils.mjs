@@ -45,6 +45,32 @@ export function shouldResolvePromptForCurrentQuery(state) {
 	);
 }
 
+export function createQueryInitTelemetryState() {
+	return {
+		startedAtMs: null,
+		emitted: false,
+	};
+}
+
+export function markQueryInitTelemetryStarted(state, nowMs) {
+	state.startedAtMs = Number.isFinite(nowMs) ? nowMs : null;
+	state.emitted = false;
+}
+
+export function consumeQueryInitTelemetryMessage(state, nowMs) {
+	if (state.emitted) return null;
+	state.emitted = true;
+	const endedAtMs = Number.isFinite(nowMs) ? nowMs : state.startedAtMs;
+	const startedAtMs = Number.isFinite(state.startedAtMs)
+		? state.startedAtMs
+		: endedAtMs;
+	return {
+		type: "telemetry",
+		metric: "query_init",
+		duration_ms: Math.max(0, endedAtMs - startedAtMs),
+	};
+}
+
 /**
  * Build a bridge turn completion message. The interrupted flag is explicit so
  * Rust does not need to infer user interrupts from exit codes.
