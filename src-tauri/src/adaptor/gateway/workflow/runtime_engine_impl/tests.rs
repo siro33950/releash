@@ -6085,6 +6085,9 @@ mod dispatch_boundary_tests {
                 repo_paths_usecase,
                 code_usecase,
                 review_usecase,
+                agent_session_usecase: Arc::new(
+                    crate::adaptor::controller::wiring::build_agent_session_usecase_for_tests(),
+                ),
                 workflow_usecase,
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

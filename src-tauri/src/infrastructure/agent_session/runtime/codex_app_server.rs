@@ -11,6 +11,7 @@ use tokio::time::{timeout, Duration};
 use crate::infrastructure::agent_session::runtime::permission_flags::{
     codex_approval_policy_from_mode, codex_sandbox_mode_from_mode,
 };
+use crate::infrastructure::agent_session::runtime::wait_for_startup_orphan_cleanup;
 use crate::infrastructure::agent_session::runtime::{AgentEditorContext, ImageAttachment};
 use crate::permission::PermissionMode;
 
@@ -149,7 +150,7 @@ fn app_server_args() -> [&'static str; 3] {
     ["app-server", "--listen", "stdio://"]
 }
 
-pub(crate) fn spawn_app_server_process_parts(
+fn spawn_app_server_process_parts_raw(
     cli_path: &str,
     cwd: Option<&str>,
     envs: &[(String, String)],
@@ -198,6 +199,16 @@ pub(crate) fn spawn_app_server_process_parts(
         #[cfg(unix)]
         pgid,
     })
+}
+
+pub(crate) async fn spawn_app_server_process_parts<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    cli_path: &str,
+    cwd: Option<&str>,
+    envs: &[(String, String)],
+) -> Result<CodexAppServerProcessParts, String> {
+    wait_for_startup_orphan_cleanup(app).await;
+    spawn_app_server_process_parts_raw(cli_path, cwd, envs)
 }
 
 pub(crate) fn encode_jsonl(message: &Value) -> Result<Vec<u8>, String> {
@@ -1137,8 +1148,11 @@ pub(crate) fn app_server_message_to_bridge_messages(
 }
 
 impl CodexAppServerProcess {
-    pub(crate) fn spawn(cli_path: &str) -> Result<Self, String> {
-        let parts = spawn_app_server_process_parts(cli_path, None, &[])?;
+    pub(crate) async fn spawn<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        cli_path: &str,
+    ) -> Result<Self, String> {
+        let parts = spawn_app_server_process_parts(app, cli_path, None, &[]).await?;
         Ok(Self {
             child: parts.child,
             stdin: parts.stdin,
@@ -1865,12 +1879,60 @@ mod tests {
         std::fs::set_permissions(&script, perms).unwrap();
 
         let envs = vec![("RELEASH_SESSION_ID".to_string(), "sid-xyz".to_string())];
-        let mut parts = spawn_app_server_process_parts(script.to_str().unwrap(), None, &envs)
+        let mut parts = spawn_app_server_process_parts_raw(script.to_str().unwrap(), None, &envs)
             .expect("spawn fake cli");
         parts.child.wait().await.expect("wait fake cli");
 
         let contents = std::fs::read_to_string(&out).expect("read env out");
         assert_eq!(contents.trim(), "sid-xyz");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_app_server_process_parts_waits_for_startup_orphan_cleanup_gate() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::Arc;
+
+        use crate::infrastructure::agent_session::runtime::CleanupGate;
+
+        let gate = Arc::new(CleanupGate::new(false));
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&gate))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let app_handle = app.handle().clone();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("spawned.out");
+        let script = dir.path().join("fake-cli.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf spawned > \"{}\"\n", out.display()),
+        )
+        .expect("write script");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        let cli_path = script.to_str().unwrap().to_string();
+
+        let task = tokio::spawn(async move {
+            spawn_app_server_process_parts(&app_handle, &cli_path, None, &[]).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!task.is_finished());
+        assert!(!out.exists());
+
+        gate.open();
+
+        let mut parts = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        parts.child.wait().await.expect("wait fake cli");
+        let contents = std::fs::read_to_string(&out).expect("read spawn out");
+        assert_eq!(contents, "spawned");
     }
 
     #[test]

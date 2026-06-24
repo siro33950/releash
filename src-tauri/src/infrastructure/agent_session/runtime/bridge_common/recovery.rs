@@ -16,8 +16,8 @@ use super::session_persistence::{
 };
 use super::shared::{
     backend_runtime_config, build_init_cmd, compose_system_prompt, notify_status_transition,
-    resolve_bridge_script, session_specific_env_overrides, write_bridge_command_for_captured_turn,
-    BridgeInitOptions, GENERATION_COUNTER,
+    resolve_bridge_script, resolve_effective_base_branch_from_port, session_specific_env_overrides,
+    write_bridge_command_for_captured_turn, BridgeInitOptions, GENERATION_COUNTER,
 };
 use super::stream_emit::{emit_session_state_changed, emit_streaming_parts, enqueue_pending_delta};
 use crate::app_data_dir::resolve_data_dir;
@@ -41,7 +41,7 @@ use std::time::Instant;
 use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 pub(super) const BRIDGE_EOF_ERROR_MESSAGE: &str = "Bridge process exited unexpectedly.";
 pub(super) const STALE_EXIT_CODE: i64 = 124;
@@ -91,6 +91,62 @@ pub(super) fn evaluate_turn_liveness(
         }
         TurnPhase::Idle | TurnPhase::WaitingPermission => None,
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct CleanupGate {
+    tx: watch::Sender<bool>,
+}
+
+impl CleanupGate {
+    pub(crate) fn new(initially_open: bool) -> Self {
+        let (tx, _) = watch::channel(initially_open);
+        Self { tx }
+    }
+
+    pub(crate) fn open(&self) {
+        self.tx.send_replace(true);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_open(&self) -> bool {
+        *self.tx.borrow()
+    }
+
+    pub(crate) async fn wait_until_open(&self) {
+        if *self.tx.borrow() {
+            return;
+        }
+
+        let mut rx = self.tx.subscribe();
+        if *rx.borrow_and_update() {
+            return;
+        }
+
+        if rx.wait_for(|open| *open).await.is_err() {
+            log::warn!("startup orphan cleanup gate closed before opening; continuing spawn");
+        }
+    }
+}
+
+pub(crate) async fn wait_for_startup_orphan_cleanup<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(gate) = app
+        .try_state::<Arc<CleanupGate>>()
+        .map(|state| state.inner().clone())
+    else {
+        log::warn!("startup orphan cleanup gate state is not registered; continuing spawn");
+        return;
+    };
+    gate.wait_until_open().await;
+}
+
+#[cfg(unix)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct OrphanCleanupReport {
+    pub(crate) scanned: usize,
+    pub(crate) processed: usize,
+    pub(crate) skipped: usize,
+    pub(crate) failures: usize,
 }
 
 pub(super) fn pids_dir(app_data_dir: &Path) -> PathBuf {
@@ -236,22 +292,38 @@ pub(super) fn remove_pgid(app_data_dir: &Path, chat_session_id: &str) {
 }
 
 #[cfg(unix)]
-pub fn cleanup_orphan_processes(app_data_dir: &Path) {
+pub fn cleanup_orphan_processes(app_data_dir: &Path) -> OrphanCleanupReport {
+    let mut report = OrphanCleanupReport::default();
     let dir = pids_dir(app_data_dir);
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
-        Err(_) => return, // No pids dir — nothing to clean up
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return report,
+        Err(e) => {
+            report.failures += 1;
+            log::warn!("Failed to read startup orphan cleanup PID directory: {e}");
+            return report;
+        }
     };
 
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                report.failures += 1;
+                log::warn!("Failed to read startup orphan cleanup PID directory entry: {e}");
+                continue;
+            }
+        };
         let path = entry.path();
         if path.extension().is_none_or(|ext| ext != "pid") {
             continue;
         }
+        report.scanned += 1;
         let contents = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) => {
-                log::warn!("Failed to read PID file {}: {e}", path.display());
+                report.failures += 1;
+                log::warn!("Failed to read startup orphan PID file; counting failure: {e}");
                 continue;
             }
         };
@@ -261,21 +333,23 @@ pub fn cleanup_orphan_processes(app_data_dir: &Path) {
             Err(_) => {
                 // Legacy or unknown format. Conservatively skip — touching it
                 // could destroy a live owner's bookkeeping (issue #1024).
-                log::warn!(
-                    "PID file {} is not in PidFileV1 format; skipping cleanup",
-                    path.display()
-                );
+                log::warn!("Startup orphan cleanup skipped PID file with unsupported format");
+                report.skipped += 1;
                 continue;
             }
         };
 
         if parsed.pgid <= 1 {
-            log::warn!(
-                "Invalid PGID {} in {}, removing file",
-                parsed.pgid,
-                path.display()
-            );
-            let _ = std::fs::remove_file(&path);
+            log::warn!("Startup orphan cleanup removed PID file with invalid process group");
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    report.processed += 1;
+                }
+                Err(e) => {
+                    report.failures += 1;
+                    log::warn!("Failed to remove invalid startup orphan PID file: {e}");
+                }
+            }
             continue;
         }
 
@@ -286,29 +360,23 @@ pub fn cleanup_orphan_processes(app_data_dir: &Path) {
         if owner_alive {
             match get_process_start_time(parsed.owner_app_pid) {
                 Ok(current_start_time) if current_start_time == parsed.owner_start_time => {
-                    log::info!(
-                        "PID file {} is owned by live instance (pid={}); skipping cleanup",
-                        path.display(),
-                        parsed.owner_app_pid
-                    );
+                    log::info!("Startup orphan cleanup skipped PID file owned by a live instance");
+                    report.skipped += 1;
                     continue;
                 }
                 Ok(_) => {
                     log::info!(
-                        "PID file {} owner pid {} appears to have been reused; proceeding with cleanup",
-                        path.display(),
-                        parsed.owner_app_pid
+                        "Startup orphan cleanup found reused owner identity; proceeding with cleanup"
                     );
                 }
-                Err(e) => {
+                Err(_) => {
                     // live owner だが start_time を検証できない: 保守的に skip
                     // する（unsupported プラットフォームや一時的 I/O 失敗で他
                     // インスタンスの bridge を誤殺しないため: issue #1024）。
                     log::warn!(
-                        "Failed to read start_time for owner pid {} of {}: {e}; skipping cleanup",
-                        parsed.owner_app_pid,
-                        path.display()
+                        "Startup orphan cleanup skipped PID file because owner identity could not be verified"
                     );
+                    report.skipped += 1;
                     continue;
                 }
             }
@@ -318,10 +386,7 @@ pub fn cleanup_orphan_processes(app_data_dir: &Path) {
         let pgid = parsed.pgid;
         let alive = unsafe { libc::killpg(pgid, 0) } == 0;
         if alive {
-            log::info!(
-                "Cleaning up orphan process group {pgid} from {}",
-                path.display()
-            );
+            log::info!("Startup orphan cleanup is terminating an orphan process group");
             unsafe {
                 libc::killpg(pgid, libc::SIGTERM);
             }
@@ -329,14 +394,31 @@ pub fn cleanup_orphan_processes(app_data_dir: &Path) {
             std::thread::sleep(std::time::Duration::from_secs(2));
             let still_alive = unsafe { libc::killpg(pgid, 0) } == 0;
             if still_alive {
-                log::warn!("Orphan process group {pgid} did not exit, sending SIGKILL");
+                log::warn!(
+                    "Startup orphan cleanup orphan process group did not exit; sending SIGKILL"
+                );
                 unsafe {
                     libc::killpg(pgid, libc::SIGKILL);
                 }
             }
+            report.processed += 1;
+            if let Err(e) = std::fs::remove_file(&path) {
+                report.failures += 1;
+                log::warn!("Failed to remove orphan PID file after process cleanup: {e}");
+            }
+        } else {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    report.processed += 1;
+                }
+                Err(e) => {
+                    report.failures += 1;
+                    log::warn!("Failed to remove stale startup orphan PID file: {e}");
+                }
+            }
         }
-        let _ = std::fs::remove_file(&path);
     }
+    report
 }
 
 #[derive(Debug, Default)]
@@ -826,14 +908,9 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
     // spec issues-1022 "Agent process environment contract": agent process 自身が
     // 自分の chat_session_id を env 経由で参照できるよう、session 固有 env を
     // pure helper 経由で組み立てて設置する。
-    // 周辺入口（agent bridge）は gateway 実装へ直接依存せず、composition root が AppState へ
-    // 配線した code usecase を取得して base 名を解決する。エラーは移行前と同じく None に倒す。
-    let base_branch = app
-        .state::<crate::adaptor::controller::state::AppState>()
-        .code_usecase
-        .resolve_effective_base_branch_name(cwd)
-        .ok()
-        .flatten();
+    // 周辺入口（agent bridge）は code usecase へ直接依存せず、composition root が注入した
+    // narrow port 経由で base 名を解決する。エラーは移行前と同じく None に倒す。
+    let base_branch = resolve_effective_base_branch_from_port(app, cwd);
     for (k, v) in session_specific_env_overrides(chat_session_id, base_branch.as_deref()) {
         cmd.env(k, v);
     }
@@ -852,6 +929,7 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
         });
     }
 
+    wait_for_startup_orphan_cleanup(app).await;
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn node process: {e}"))?;
@@ -1465,6 +1543,115 @@ pub(super) fn spawn_turn_watchdog<R: tauri::Runtime>(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod cleanup_gate_tests {
+    use super::{wait_for_startup_orphan_cleanup, CleanupGate};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn cleanup_gate_waits_until_open_and_releases_all_waiters() {
+        let gate = Arc::new(CleanupGate::new(false));
+        let waiter_a = {
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move {
+                gate.wait_until_open().await;
+            })
+        };
+        let waiter_b = {
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move {
+                gate.wait_until_open().await;
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!waiter_a.is_finished());
+        assert!(!waiter_b.is_finished());
+
+        gate.open();
+
+        tokio::time::timeout(Duration::from_secs(1), waiter_a)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), waiter_b)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(gate.is_open());
+    }
+
+    #[tokio::test]
+    async fn cleanup_gate_open_state_returns_immediately() {
+        let gate = CleanupGate::new(true);
+
+        tokio::time::timeout(Duration::from_millis(20), gate.wait_until_open())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cleanup_gate_open_without_waiters_is_durable() {
+        let gate = CleanupGate::new(false);
+
+        gate.open();
+
+        assert!(gate.is_open());
+        tokio::time::timeout(Duration::from_millis(20), gate.wait_until_open())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn closed_managed_cleanup_gate_blocks_spawn_closure_until_open() {
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+        let gate = Arc::new(CleanupGate::new(false));
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&gate))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let spawn_called = Arc::new(AtomicBool::new(false));
+        let spawn_called_for_task = Arc::clone(&spawn_called);
+        let app_handle = app.handle().clone();
+
+        let task = tokio::spawn(async move {
+            wait_for_startup_orphan_cleanup(&app_handle).await;
+            spawn_called_for_task.store(true, AtomicOrdering::SeqCst);
+            "spawned"
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!task.is_finished());
+        assert!(!spawn_called.load(AtomicOrdering::SeqCst));
+
+        gate.open();
+
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, "spawned");
+        assert!(spawn_called.load(AtomicOrdering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn unregistered_cleanup_gate_returns_immediately() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let app_handle = app.handle().clone();
+
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            wait_for_startup_orphan_cleanup(&app_handle),
+        )
+        .await
+        .expect("unregistered cleanup gate must not block spawn");
+    }
 }
 
 #[cfg(test)]
@@ -2279,7 +2466,7 @@ mod moved_tests {
         use super::super::super::shared::{CLAUDE_BACKEND_ID, CODEX_BACKEND_ID};
         use super::super::{
             cleanup_orphan_processes, get_process_start_time, pids_dir, remove_pgid, save_pgid,
-            PidFileV1,
+            wait_for_startup_orphan_cleanup, CleanupGate, OrphanCleanupReport, PidFileV1,
         };
         use crate::infrastructure::agent_session::runtime::{AgentBackendRegistry, ModelInfo};
         use crate::usecase::agent_session::event_log::TurnEventLog;
@@ -2288,7 +2475,7 @@ mod moved_tests {
         use std::os::unix::process::CommandExt as _;
         use std::path::Path;
         use std::sync::Arc;
-        use std::time::Instant;
+        use std::time::{Duration, Instant};
         use tokio::sync::Mutex;
 
         /// PID belonging to a process guaranteed not to exist. PIDs on Linux
@@ -2299,6 +2486,23 @@ mod moved_tests {
         /// Helper: serialize a PidFileV1 payload to the given path.
         fn write_pid_file_v1(path: &Path, payload: &PidFileV1) {
             std::fs::write(path, serde_json::to_string(payload).unwrap()).unwrap();
+        }
+
+        #[test]
+        fn cleanup_orphan_process_logs_do_not_format_pid_file_paths_or_process_ids() {
+            let source = include_str!("recovery.rs");
+            let (_, after_start) = source
+                .split_once("pub fn cleanup_orphan_processes")
+                .expect("cleanup function source should be present");
+            let (cleanup_source, _) = after_start
+                .split_once("\npub(super) struct BridgeEofCrashTransition")
+                .expect("cleanup function end marker should be present");
+
+            assert!(!cleanup_source.contains("path.display()"));
+            assert!(!cleanup_source.contains("pid={}"));
+            assert!(!cleanup_source.contains("owner pid"));
+            assert!(!cleanup_source.contains("{pgid}"));
+            assert!(!cleanup_source.contains("Invalid PGID {}"));
         }
 
         #[test]
@@ -2372,10 +2576,19 @@ mod moved_tests {
             );
             assert!(pid_file.exists());
 
-            cleanup_orphan_processes(app_data_dir);
+            let report = cleanup_orphan_processes(app_data_dir);
 
             // PID file should be removed
             assert!(!pid_file.exists());
+            assert_eq!(
+                report,
+                OrphanCleanupReport {
+                    scanned: 1,
+                    processed: 1,
+                    skipped: 0,
+                    failures: 0
+                }
+            );
         }
 
         #[test]
@@ -2385,7 +2598,8 @@ mod moved_tests {
             let dir = pids_dir(app_data_dir);
             std::fs::create_dir_all(&dir).unwrap();
 
-            cleanup_orphan_processes(app_data_dir);
+            let report = cleanup_orphan_processes(app_data_dir);
+            assert_eq!(report, OrphanCleanupReport::default());
         }
 
         #[test]
@@ -2393,7 +2607,8 @@ mod moved_tests {
             let tmp = tempfile::tempdir().unwrap();
             let app_data_dir = tmp.path().join("nonexistent");
 
-            cleanup_orphan_processes(&app_data_dir);
+            let report = cleanup_orphan_processes(&app_data_dir);
+            assert_eq!(report, OrphanCleanupReport::default());
         }
 
         #[test]
@@ -2406,9 +2621,29 @@ mod moved_tests {
             let other_file = dir.join("notes.txt");
             std::fs::write(&other_file, "not a pid").unwrap();
 
-            cleanup_orphan_processes(app_data_dir);
+            let report = cleanup_orphan_processes(app_data_dir);
 
             assert!(other_file.exists());
+            assert_eq!(report, OrphanCleanupReport::default());
+        }
+
+        #[test]
+        fn cleanup_orphan_processes_counts_read_failure_for_pid_directory() {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+            let dir = pids_dir(app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir(dir.join("unreadable.pid")).unwrap();
+
+            let report = cleanup_orphan_processes(app_data_dir);
+
+            assert_eq!(report.scanned, 1);
+            assert_eq!(report.processed, 0);
+            assert_eq!(report.skipped, 0);
+            assert!(
+                report.failures > 0,
+                "read_to_string failure for a .pid directory must be counted"
+            );
         }
 
         /// Spawn a process in a new process group via setsid(), verify it
@@ -2521,6 +2756,82 @@ mod moved_tests {
             (child, pgid)
         }
 
+        #[tokio::test]
+        async fn cleanup_gate_blocks_new_child_until_cleanup_finishes_and_self_owned_child_survives(
+        ) {
+            use tokio::sync::oneshot;
+            use tokio::sync::oneshot::error::TryRecvError;
+
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path().to_path_buf();
+            let dir = pids_dir(&app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            write_pid_file_v1(
+                &dir.join("stale-before-spawn.pid"),
+                &PidFileV1 {
+                    version: 1,
+                    pgid: 999_999_999,
+                    owner_app_pid: DEAD_OWNER_PID,
+                    owner_start_time: 0,
+                },
+            );
+
+            let gate = Arc::new(CleanupGate::new(false));
+            let app = tauri::test::mock_builder()
+                .manage(Arc::clone(&gate))
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .unwrap();
+            let app_handle = app.handle().clone();
+            let (waiting_tx, waiting_rx) = oneshot::channel();
+            let (spawned_tx, mut spawned_rx) = oneshot::channel();
+            let app_data_dir_for_spawn = app_data_dir.clone();
+
+            let task = tokio::spawn(async move {
+                let _ = waiting_tx.send(());
+                wait_for_startup_orphan_cleanup(&app_handle).await;
+                let (child, pgid) = spawn_setsid_sleep();
+                save_pgid(&app_data_dir_for_spawn, "new-child", pgid as u32).unwrap();
+                let _ = spawned_tx.send((child, pgid));
+            });
+
+            waiting_rx.await.unwrap();
+            assert!(matches!(spawned_rx.try_recv(), Err(TryRecvError::Empty)));
+            assert!(!pids_dir(&app_data_dir).join("new-child.pid").exists());
+
+            let cleanup_before_spawn = cleanup_orphan_processes(&app_data_dir);
+            assert_eq!(cleanup_before_spawn.scanned, 1);
+            assert_eq!(cleanup_before_spawn.processed, 1);
+            assert_eq!(cleanup_before_spawn.failures, 0);
+
+            gate.open();
+            let (mut child, pgid) = tokio::time::timeout(Duration::from_secs(1), spawned_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            task.await.unwrap();
+
+            let cleanup_after_spawn = cleanup_orphan_processes(&app_data_dir);
+            assert_eq!(
+                cleanup_after_spawn,
+                OrphanCleanupReport {
+                    scanned: 1,
+                    processed: 0,
+                    skipped: 1,
+                    failures: 0,
+                }
+            );
+            assert_eq!(
+                unsafe { libc::killpg(pgid, 0) },
+                0,
+                "self-owned child spawned after gate open must survive cleanup"
+            );
+
+            unsafe {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+            let _ = child.wait();
+        }
+
         #[test]
         fn cleanup_orphan_processes_kills_alive_process_group() {
             let tmp = tempfile::tempdir().unwrap();
@@ -2549,7 +2860,7 @@ mod moved_tests {
                 "process group should be alive before cleanup"
             );
 
-            cleanup_orphan_processes(app_data_dir);
+            let report = cleanup_orphan_processes(app_data_dir);
 
             // Reap the child to clear zombie state from process table.
             // cleanup_orphan_processes sends SIGTERM/SIGKILL via killpg, but without
@@ -2562,6 +2873,15 @@ mod moved_tests {
                 "process group should be terminated after cleanup"
             );
             assert!(!pid_file.exists());
+            assert_eq!(
+                report,
+                OrphanCleanupReport {
+                    scanned: 1,
+                    processed: 1,
+                    skipped: 0,
+                    failures: 0
+                }
+            );
         }
 
         #[test]
@@ -2594,7 +2914,7 @@ mod moved_tests {
                 },
             );
 
-            cleanup_orphan_processes(app_data_dir);
+            let report = cleanup_orphan_processes(app_data_dir);
 
             assert!(
                 pid_file.exists(),
@@ -2604,6 +2924,15 @@ mod moved_tests {
                 unsafe { libc::killpg(pgid, 0) },
                 0,
                 "bridge process group of a live instance must not be killed"
+            );
+            assert_eq!(
+                report,
+                OrphanCleanupReport {
+                    scanned: 1,
+                    processed: 0,
+                    skipped: 1,
+                    failures: 0
+                }
             );
 
             // Tear down the helper process so it doesn't outlive the test run.
@@ -2636,7 +2965,7 @@ mod moved_tests {
                 },
             );
 
-            cleanup_orphan_processes(app_data_dir);
+            let report = cleanup_orphan_processes(app_data_dir);
             let _ = child.wait();
 
             assert!(!pid_file.exists());
@@ -2644,6 +2973,15 @@ mod moved_tests {
                 unsafe { libc::killpg(pgid, 0) },
                 0,
                 "stale-owner bridge group should be terminated"
+            );
+            assert_eq!(
+                report,
+                OrphanCleanupReport {
+                    scanned: 1,
+                    processed: 1,
+                    skipped: 0,
+                    failures: 0
+                }
             );
         }
 
@@ -2661,9 +2999,18 @@ mod moved_tests {
             let pid_file = dir.join("legacy.pid");
             std::fs::write(&pid_file, "999999999").unwrap();
 
-            cleanup_orphan_processes(app_data_dir);
+            let report = cleanup_orphan_processes(app_data_dir);
 
             assert!(pid_file.exists());
+            assert_eq!(
+                report,
+                OrphanCleanupReport {
+                    scanned: 1,
+                    processed: 0,
+                    skipped: 1,
+                    failures: 0
+                }
+            );
         }
 
         #[test]
@@ -2685,9 +3032,18 @@ mod moved_tests {
                 },
             );
 
-            cleanup_orphan_processes(app_data_dir);
+            let report = cleanup_orphan_processes(app_data_dir);
 
             assert!(!pid_file.exists());
+            assert_eq!(
+                report,
+                OrphanCleanupReport {
+                    scanned: 1,
+                    processed: 1,
+                    skipped: 0,
+                    failures: 0
+                }
+            );
         }
 
         #[test]
@@ -2709,9 +3065,18 @@ mod moved_tests {
                 },
             );
 
-            cleanup_orphan_processes(app_data_dir);
+            let report = cleanup_orphan_processes(app_data_dir);
 
             assert!(!pid_file.exists());
+            assert_eq!(
+                report,
+                OrphanCleanupReport {
+                    scanned: 1,
+                    processed: 1,
+                    skipped: 0,
+                    failures: 0
+                }
+            );
         }
 
         #[test]
@@ -2732,9 +3097,18 @@ mod moved_tests {
                 },
             );
 
-            cleanup_orphan_processes(app_data_dir);
+            let report = cleanup_orphan_processes(app_data_dir);
 
             assert!(!pid_file.exists());
+            assert_eq!(
+                report,
+                OrphanCleanupReport {
+                    scanned: 1,
+                    processed: 1,
+                    skipped: 0,
+                    failures: 0
+                }
+            );
         }
 
         fn make_dummy_agent_process(

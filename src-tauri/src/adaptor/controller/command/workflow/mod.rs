@@ -2405,6 +2405,9 @@ mod tests {
             repo_paths_usecase,
             code_usecase,
             review_usecase,
+            agent_session_usecase: Arc::new(
+                crate::adaptor::controller::wiring::build_agent_session_usecase(app.handle().clone()),
+            ),
             workflow_usecase: Arc::new(
                 crate::adaptor::controller::wiring::build_workflow_usecase_with_repository_worktrees(
                     data_dir.clone(),

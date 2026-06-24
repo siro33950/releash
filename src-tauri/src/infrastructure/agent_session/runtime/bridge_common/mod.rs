@@ -24,7 +24,9 @@ pub(crate) use process_registry::make_test_agent_process;
 pub(crate) use process_registry::{AgentProcessMap, TurnPhase};
 #[cfg(test)]
 pub(crate) use process_registry::{BridgeState, PendingMessage};
-pub(crate) use recovery::cleanup_orphan_processes;
+#[cfg(unix)]
+pub(crate) use recovery::{cleanup_orphan_processes, OrphanCleanupReport};
+pub(crate) use recovery::{wait_for_startup_orphan_cleanup, CleanupGate};
 pub(crate) use sdk_message::handle_external_bridge_message;
 pub(crate) use session_lifecycle::{
     cancel_agent_queued_turn_internal, close_agent_session_internal, close_all_agent_sessions,
@@ -42,6 +44,5 @@ pub(crate) use shared::{
     DEFER_AGENT_SESSION_ID_PERSIST_ON_READY,
 };
 pub(crate) use skills::{
-    filter_agent_skills_for_query, prepare_image_attachment, prepare_image_attachments_from_paths,
-    scan_agent_skills, SkillEntry,
+    prepare_image_attachment, prepare_image_attachments_from_paths, scan_agent_skills_inner,
 };

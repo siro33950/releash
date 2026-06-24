@@ -1,8 +1,7 @@
 use super::shared::{CLAUDE_BACKEND_ID, CODEX_BACKEND_ID};
+use crate::domain::agent_session::SkillEntry;
 use crate::infrastructure::agent_session::runtime::ImageAttachment;
 use crate::usecase::agent_session::session::validate_image_bytes;
-use serde::Deserialize;
-use serde::Serialize;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -57,14 +56,6 @@ pub(super) fn supported_commands_from_bridge_message(
             })
         })
         .collect()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillEntry {
-    pub name: String,
-    pub description: String,
-    pub scope: String,
 }
 
 /// Parse SKILL.md frontmatter (delimited by `---`) and extract `name` / `description` fields.
@@ -125,7 +116,7 @@ pub(super) fn agent_skill_dirs_for_backend(
     dirs
 }
 
-pub(super) fn scan_agent_skills_inner(
+pub(crate) fn scan_agent_skills_inner(
     cwd: &Path,
     backend_id: Option<&str>,
     home: Option<PathBuf>,
@@ -153,38 +144,6 @@ pub(super) fn scan_agent_skills_inner(
         }
     }
     skills
-}
-
-pub(crate) fn filter_agent_skills_for_query(
-    skills: Vec<SkillEntry>,
-    query: Option<&str>,
-    limit: Option<usize>,
-) -> Vec<SkillEntry> {
-    let needle = query.unwrap_or_default().trim().to_lowercase();
-    let max_results = limit.unwrap_or(usize::MAX);
-    skills
-        .into_iter()
-        .filter(|skill| {
-            needle.is_empty()
-                || skill.name.to_lowercase().contains(&needle)
-                || skill.description.to_lowercase().contains(&needle)
-        })
-        .take(max_results)
-        .collect()
-}
-
-pub async fn scan_agent_skills(
-    cwd: String,
-    backend_id: Option<String>,
-    query: Option<String>,
-    limit: Option<usize>,
-) -> Result<Vec<SkillEntry>, String> {
-    let home = dirs::home_dir();
-    Ok(filter_agent_skills_for_query(
-        scan_agent_skills_inner(&PathBuf::from(cwd), backend_id.as_deref(), home),
-        query.as_deref(),
-        limit,
-    ))
 }
 
 // --- Image attachment support ---
@@ -337,59 +296,6 @@ mod moved_tests {
         assert_eq!(matches[0].scope, "personal");
         assert_eq!(matches[1].description, "Repo review");
         assert_eq!(matches[1].scope, "project");
-    }
-
-    #[tokio::test]
-    async fn scan_agent_skills_returns_project_skills() {
-        let tmp = tempfile::tempdir().unwrap();
-        let skill_dir = tmp.path().join(".claude").join("skills").join("reviewer");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: reviewer\ndescription: Review focused changes\n---\nBody",
-        )
-        .unwrap();
-
-        let result = scan_agent_skills(tmp.path().to_string_lossy().to_string(), None, None, None)
-            .await
-            .unwrap();
-
-        let skill = result.iter().find(|skill| skill.name == "reviewer");
-        assert!(skill.is_some(), "project skill should be included");
-        let skill = skill.unwrap();
-        assert_eq!(skill.description, "Review focused changes");
-        assert_eq!(skill.scope, "project");
-    }
-
-    #[test]
-    fn scan_agent_skills_filters_by_query_and_limit_in_rust() {
-        let skills = vec![
-            SkillEntry {
-                name: "review".to_string(),
-                description: "Review code changes".to_string(),
-                scope: "project".to_string(),
-            },
-            SkillEntry {
-                name: "docs".to_string(),
-                description: "Write documentation".to_string(),
-                scope: "personal".to_string(),
-            },
-            SkillEntry {
-                name: "diagram".to_string(),
-                description: "Document architecture diagrams".to_string(),
-                scope: "project".to_string(),
-            },
-        ];
-
-        let result = filter_agent_skills_for_query(skills.clone(), Some("doc"), Some(1));
-
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].name, "docs");
-
-        let result = filter_agent_skills_for_query(skills, Some("review"), Some(20));
-
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].name, "review");
     }
 
     #[test]

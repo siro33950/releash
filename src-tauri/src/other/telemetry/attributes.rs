@@ -1,5 +1,6 @@
 pub(crate) const KEY_OPERATION: &str = "releash.operation";
 pub(crate) const KEY_STATUS: &str = "releash.status";
+pub(crate) const KEY_OUTCOME: &str = "releash.outcome";
 pub(crate) const KEY_CHANNEL: &str = "releash.channel";
 pub(crate) const KEY_USAGE_EVENT: &str = "releash.usage_event";
 
