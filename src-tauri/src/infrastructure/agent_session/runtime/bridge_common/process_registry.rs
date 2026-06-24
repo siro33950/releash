@@ -1,3 +1,4 @@
+use crate::infrastructure::agent_session::runtime::turn_latency::TurnLatencyState;
 use crate::infrastructure::agent_session::runtime::AgentEditorContext;
 use crate::infrastructure::agent_session::runtime::ImageAttachment;
 use crate::infrastructure::agent_session::runtime::ModelInfo;
@@ -41,6 +42,8 @@ pub struct PendingMessage {
     pub id: String,
     pub content: String,
     pub created_at: f64,
+    pub client_sent_at_ms: Option<f64>,
+    pub request_received_at_ms: Option<f64>,
     pub permission_mode: String,
     pub plan_mode: bool,
     pub images: Vec<ImageAttachment>,
@@ -67,6 +70,7 @@ pub struct AgentProcess {
     /// Rust-issued per-turn token echoed by the Claude bridge. Uses the agent
     /// message id so stale bridge events cannot complete or mutate a later turn.
     pub active_turn_token: Option<String>,
+    pub(crate) turn_latency: Option<TurnLatencyState>,
     /// Token for the most recent normally completed turn. Kept only while
     /// `last_message_id` can accept post-turn background task updates.
     pub(crate) post_turn_message_token: Option<String>,
@@ -155,6 +159,7 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         pgid: None,
         streaming_message_id: None,
         active_turn_token: None,
+        turn_latency: None,
         post_turn_message_token: None,
         streaming_parts: Vec::new(),
         turn_event_log: TurnEventLog::default(),

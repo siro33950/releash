@@ -401,6 +401,7 @@ export async function sendAgentMessage(
 		images?: ImageAttachment[];
 		mentions?: MentionReference[];
 		editorContext?: AgentEditorContext;
+		clientSentAtMs: number;
 	} = {
 		chatSessionId,
 		worktreePath,
@@ -411,6 +412,7 @@ export async function sendAgentMessage(
 		modelId: modelId ?? null,
 		images: images && images.length > 0 ? images : undefined,
 		mentions: mentions && mentions.length > 0 ? mentions : undefined,
+		clientSentAtMs: Date.now(),
 	};
 	if (editorContext) {
 		args.editorContext = editorContext;
@@ -446,6 +448,7 @@ export async function sendWorkflowApprovalChatMessage(
 			planMode,
 			images: images && images.length > 0 ? images : undefined,
 			mentions: mentions && mentions.length > 0 ? mentions : undefined,
+			clientSentAtMs: Date.now(),
 		},
 	);
 	return {

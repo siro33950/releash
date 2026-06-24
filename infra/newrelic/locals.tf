@@ -2,6 +2,7 @@ locals {
   service_name = "releash"
 
   metrics = {
+    agent_turn     = "releash.agent.turn.duration_ms"
     startup        = "releash.startup.duration_ms"
     hot_path       = "releash.hot_path.duration_ms"
     session_bytes  = "releash.session.save_bytes"
@@ -18,10 +19,16 @@ locals {
   }
 
   attr = {
-    operation   = "releash.operation"
-    status      = "releash.status"
-    channel     = "releash.channel"
-    usage_event = "releash.usage_event"
+    operation             = "releash.operation"
+    status                = "releash.status"
+    channel               = "releash.channel"
+    usage_event           = "releash.usage_event"
+    agent_resume          = "releash.agent.resume"
+    agent_has_session     = "releash.agent.has_session"
+    agent_permission_mode = "releash.agent.permission_mode"
+    agent_model           = "releash.agent.model"
+    agent_context         = "releash.agent.context"
+    agent_warm_path       = "releash.agent.warm_path"
   }
 
   allowed_resource_attrs = [
@@ -54,6 +61,16 @@ locals {
     "session.append",
     "session.persist_parts",
     "session.save_full",
+  ]
+
+  agent_turn_operations = [
+    "agent.turn.ui_to_start",
+    "agent.turn.bridge_spawn",
+    "agent.turn.query_init",
+    "agent.turn.first_sdk_event",
+    "agent.turn.first_assistant_event",
+    "agent.turn.permission_wait",
+    "agent.turn.complete",
   ]
 
   stream_channels = [
@@ -91,6 +108,7 @@ locals {
     repo_snapshot = "`${local.attr.operation}` IN (${join(", ", [for op in local.repo_snapshot_operations : "'${op}'"])})"
     diff_open     = "`${local.attr.operation}` IN (${join(", ", [for op in local.diff_open_operations : "'${op}'"])})"
     session_io    = "`${local.attr.operation}` IN (${join(", ", [for op in local.session_io_operations : "'${op}'"])})"
+    agent_turn    = "`${local.attr.operation}` IN (${join(", ", [for op in local.agent_turn_operations : "'${op}'"])})"
   }
 
   pii_attribute_keys = [

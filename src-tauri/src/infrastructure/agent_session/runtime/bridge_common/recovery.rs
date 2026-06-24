@@ -611,28 +611,37 @@ pub(super) fn take_runtime_requiring_spawn_locked(
     map: &mut AgentProcessMap,
     chat_session_id: &str,
 ) -> RuntimeSpawnDecision {
-    let Some(proc) = map.get_mut(chat_session_id) else {
+    if !runtime_requires_spawn_locked(map, chat_session_id) {
+        return RuntimeSpawnDecision::Reuse;
+    }
+
+    if !map.contains_key(chat_session_id) {
         return RuntimeSpawnDecision::Missing;
+    }
+
+    RuntimeSpawnDecision::Replace(Box::new(
+        map.remove(chat_session_id)
+            .expect("runtime existed when replacement was requested"),
+    ))
+}
+
+pub(super) fn runtime_requires_spawn_locked(
+    map: &mut AgentProcessMap,
+    chat_session_id: &str,
+) -> bool {
+    let Some(proc) = map.get_mut(chat_session_id) else {
+        return true;
     };
 
-    let should_replace = if proc.state == BridgeState::Crashed {
-        true
-    } else if ready_idle_child_exited(proc, chat_session_id) {
+    if proc.state == BridgeState::Crashed {
+        return true;
+    }
+    if ready_idle_child_exited(proc, chat_session_id) {
         proc.state = BridgeState::Crashed;
         proc.turn_phase = TurnPhase::Idle;
-        true
-    } else {
-        false
-    };
-
-    if should_replace {
-        RuntimeSpawnDecision::Replace(Box::new(
-            map.remove(chat_session_id)
-                .expect("runtime existed when replacement was requested"),
-        ))
-    } else {
-        RuntimeSpawnDecision::Reuse
+        return true;
     }
+    false
 }
 
 pub(super) const CLOSE_TIMEOUT_SECS: u64 = 5;
@@ -1024,6 +1033,7 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
                 pgid,
                 streaming_message_id: None,
                 active_turn_token: None,
+                turn_latency: None,
                 post_turn_message_token: None,
                 streaming_parts: Vec::new(),
                 turn_event_log: TurnEventLog::default(),
@@ -1958,6 +1968,8 @@ mod moved_tests {
             id: "queued-before-crash".to_string(),
             content: "continue after reinject".to_string(),
             created_at: 1.0,
+            client_sent_at_ms: None,
+            request_received_at_ms: None,
             permission_mode: "edit".to_string(),
             plan_mode: false,
             images: Vec::new(),
@@ -3128,6 +3140,7 @@ mod moved_tests {
                 pgid,
                 streaming_message_id: None,
                 active_turn_token: None,
+                turn_latency: None,
                 post_turn_message_token: None,
                 streaming_parts: Vec::new(),
                 turn_event_log: TurnEventLog::default(),

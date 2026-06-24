@@ -34,6 +34,7 @@ use super::turn_event_log::{
 };
 use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
+use crate::infrastructure::agent_session::runtime::turn_latency;
 use crate::usecase::agent_session::event_log::InterruptReason;
 use crate::usecase::agent_session::event_log::PromptInput;
 use crate::usecase::agent_session::event_log::TurnEventLog;
@@ -1283,6 +1284,17 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             };
             let _ = app.emit("agent-supported-commands-updated", &payload);
         }
+        "telemetry" => {
+            let mut map = handles.lock().await;
+            if let Some(proc) = map.get_mut(chat_session_id) {
+                turn_latency::record_bridge_telemetry_message(
+                    &mut proc.turn_latency,
+                    proc.active_turn_token.as_deref(),
+                    bridge_message_turn_token(&msg),
+                    &msg,
+                );
+            }
+        }
         "session_ready" => {
             let (context_carry_on_ready, resume_mismatch, stale_event) = {
                 let mut map = handles.lock().await;
@@ -1290,6 +1302,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                     if bridge_message_is_stale_for_active_turn(proc, &msg) {
                         (None, false, true)
                     } else {
+                        turn_latency::record_sdk_message(&mut proc.turn_latency, &msg);
                         if proc.state == BridgeState::Initializing {
                             proc.state = BridgeState::Ready;
                         }
@@ -1356,6 +1369,12 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             };
             if stale_event {
                 return;
+            }
+            {
+                let mut map = handles.lock().await;
+                if let Some(proc) = map.get_mut(chat_session_id) {
+                    turn_latency::record_sdk_message(&mut proc.turn_latency, &msg);
+                }
             }
             if let Some(token_usage) = token_usage_from_result_message(&msg) {
                 let mut map = handles.lock().await;
@@ -1514,6 +1533,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                     if bridge_message_is_stale_for_active_turn(proc, &msg) {
                         (None, true)
                     } else {
+                        turn_latency::record_sdk_message(&mut proc.turn_latency, &msg);
                         (
                             Some(run_bridge_error_transition_locked(
                                 proc,
@@ -1632,10 +1652,20 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             }
         }
         _ => {
-            let stale_event = {
-                let map = handles.lock().await;
-                map.get(chat_session_id)
-                    .is_some_and(|proc| bridge_message_is_stale_for_active_turn(proc, &msg))
+            let (stale_event, permission_request_received_at) = {
+                let mut map = handles.lock().await;
+                if let Some(proc) = map.get_mut(chat_session_id) {
+                    if bridge_message_is_stale_for_active_turn(proc, &msg) {
+                        (true, None)
+                    } else {
+                        let permission_request_received_at =
+                            (msg_type == "permission_request").then(Instant::now);
+                        turn_latency::record_sdk_message(&mut proc.turn_latency, &msg);
+                        (false, permission_request_received_at)
+                    }
+                } else {
+                    (false, (msg_type == "permission_request").then(Instant::now))
+                }
             };
             if stale_event {
                 return;
@@ -1691,11 +1721,19 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             }
 
             let permission_transition = if msg_type == "permission_request" {
+                let request_id = msg.get("request_id").and_then(|v| v.as_str());
                 let mut map = handles.lock().await;
                 if let Some(proc) = map.get_mut(chat_session_id) {
-                    run_permission_request_transition_locked(proc, chat_session_id, |mid, parts| {
-                        emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
-                    })
+                    run_permission_request_transition_locked(
+                        proc,
+                        chat_session_id,
+                        request_id,
+                        permission_request_received_at
+                            .expect("permission_request receive time captured after stale check"),
+                        |mid, parts| {
+                            emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
+                        },
+                    )
                 } else {
                     PermissionRequestTransition::default()
                 }

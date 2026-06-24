@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::Mutex;
 
@@ -1243,7 +1244,12 @@ pub async fn send_agent_message(
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
     editor_context: Option<crate::infrastructure::agent_session::runtime::AgentEditorContext>,
+    client_sent_at_ms: Option<f64>,
 ) -> Result<crate::infrastructure::agent_session::runtime::SendMessageResponse, String> {
+    let request_received_at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs_f64() * 1000.0);
     let permission_mode = validate_invoke_permission_mode(permission_mode)?;
     let mentions = mentions.map(crate::adaptor::protocol::mention::into_domain_vec);
     let response = dispatch_agent_message(
@@ -1266,6 +1272,8 @@ pub async fn send_agent_message(
             images,
             mentions,
             editor_context,
+            client_sent_at_ms,
+            request_received_at_ms,
         },
     )
     .await?;

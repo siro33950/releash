@@ -1,4 +1,4 @@
-use super::process_registry::{AgentProcess, AgentProcessMap, TurnPhase};
+use super::process_registry::{AgentProcess, AgentProcessMap, BridgeState, TurnPhase};
 use super::shared::{
     bridge_permission_fields, notify_status_transition, write_bridge_command, CODEX_BACKEND_ID,
 };
@@ -10,11 +10,13 @@ use super::turn_event_log::{
     projected_session_state_for_current_turn, record_permission_resolution_for_current_turn,
 };
 use crate::app_data_dir::resolve_data_dir;
+use crate::infrastructure::agent_session::runtime::turn_latency;
 use crate::usecase::agent_session::session::MessagePart;
 use crate::usecase::agent_session::session::SessionState;
 use crate::usecase::agent_session::session::SessionStore;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
@@ -187,11 +189,22 @@ pub(super) struct PermissionRequestTransition {
 pub(super) fn run_permission_request_transition_locked<F>(
     proc: &mut AgentProcess,
     chat_session_id: &str,
+    request_id: Option<&str>,
+    request_received_at: Instant,
     emit_stream: F,
 ) -> PermissionRequestTransition
 where
     F: FnMut(&str, &[MessagePart]) -> (bool, bool),
 {
+    if proc.state == BridgeState::Streaming {
+        if let Some(request_id) = request_id {
+            turn_latency::begin_permission_wait_latency(
+                &mut proc.turn_latency,
+                request_id,
+                request_received_at,
+            );
+        }
+    }
     let turn_completed = flush_streaming_before_transition(proc, chat_session_id, emit_stream);
     if turn_completed {
         proc.turn_phase = TurnPhase::WaitingPermission;
@@ -232,6 +245,7 @@ where
     F: FnMut(&str, &[MessagePart]) -> (bool, bool),
 {
     let did_transition = proc.turn_phase == TurnPhase::WaitingPermission;
+    turn_latency::record_permission_wait_latency(&mut proc.turn_latency, request_id);
     if did_transition {
         proc.turn_phase = TurnPhase::Streaming;
         proc.mark_turn_phase_since_now();

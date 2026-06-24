@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::adaptor::controller::command::workflow::{
     parse_workflow_approval_permission_mode, parse_workflow_start_permission_mode, validate_run_id,
@@ -160,7 +161,12 @@ pub async fn send_workflow_approval_chat_message(
     plan_mode: Option<bool>,
     images: Option<Vec<AgentImageAttachment>>,
     mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
+    client_sent_at_ms: Option<f64>,
 ) -> Result<AgentSendMessageResponse, String> {
+    let request_received_at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs_f64() * 1000.0);
     // Spec issues-1011 line 121: 起動以外の workflow 操作 API は run_id を主語に取る。
     // chat_session_id / worktree_path は run_id から workflow runtime usecase が解決する。
     validate_run_id(&run_id)?;
@@ -188,6 +194,8 @@ pub async fn send_workflow_approval_chat_message(
             images,
             mentions,
             editor_context: None,
+            client_sent_at_ms,
+            request_received_at_ms,
         },
     )
     .await?;
