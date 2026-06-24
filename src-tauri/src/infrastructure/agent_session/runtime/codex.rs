@@ -13,7 +13,7 @@ use crate::infrastructure::agent_session::runtime::bridge_common::{
     handle_external_bridge_message, persist_context_carry_failed_after_init_error,
     persist_context_carry_state, prepare_external_pending_message_turn,
     register_external_agent_process, session_specific_env_overrides,
-    start_external_agent_turn_state, write_bridge_command, AgentProcessMap,
+    start_external_agent_turn_state, write_bridge_command, AgentProcessMap, ExternalAgentTurnStart,
     ExternalBridgeMessageState, CODEX_BACKEND_ID, DEFER_AGENT_SESSION_ID_PERSIST_ON_READY,
 };
 use crate::infrastructure::agent_session::runtime::codex_app_server::{
@@ -691,8 +691,12 @@ impl AppServerCodexRuntime {
             &self.session_store,
             &self.handles,
             turn.chat_session_id,
-            turn.permission_mode,
-            turn.streaming_message_id,
+            ExternalAgentTurnStart {
+                permission_mode: turn.permission_mode,
+                streaming_message_id: turn.streaming_message_id,
+                prompt: turn.prompt,
+                images: turn.images,
+            },
         )
         .await?;
         let id = Self::next_request_id(turn.state).await;
@@ -785,8 +789,12 @@ async fn start_next_app_server_pending_turn(
             session_store,
             handles,
             chat_session_id,
-            &pending.permission_mode,
-            &pending.agent_message_id,
+            ExternalAgentTurnStart {
+                permission_mode: &pending.permission_mode,
+                streaming_message_id: &pending.agent_message_id,
+                prompt: &pending.prompt,
+                images: &pending.images,
+            },
         )
         .await?;
         let id = AppServerCodexRuntime::next_request_id(&state).await;
@@ -1226,6 +1234,7 @@ impl AgentBackend for CodexBackend {
 mod tests {
     use super::*;
     use crate::domain::agent_session::{AgentSessionReader, AgentSessionStorageTypes};
+    use crate::usecase::agent_session::event_log::AgentSessionEvent;
     use crate::usecase::agent_session::session::{
         ChatMessage, ChatSession, MessagePart, PageCursor, SessionAttachment, SessionPage,
         SessionState, SESSION_BODY_FORMAT_VERSION,
@@ -1245,6 +1254,7 @@ mod tests {
         type Message = ChatMessage;
         type MessagePart = MessagePart;
         type Attachment = SessionAttachment;
+        type Event = AgentSessionEvent;
     }
 
     impl AgentSessionReader for CountingRestoreStorage {
@@ -1277,6 +1287,15 @@ mod tests {
             Ok(Some(self.meta.to_session(Vec::new())))
         }
 
+        fn load_previous_human_message_before_agent(
+            &self,
+            _app_data_dir: &Path,
+            _session_id: &str,
+            _agent_message_id: &str,
+        ) -> Result<Option<Self::Message>, String> {
+            Ok(None)
+        }
+
         fn get_session_page(
             &self,
             _app_data_dir: &Path,
@@ -1294,6 +1313,14 @@ mod tests {
             _attachment_id: &str,
         ) -> Result<Option<Self::Attachment>, String> {
             Ok(None)
+        }
+
+        fn load_session_events(
+            &self,
+            _app_data_dir: &Path,
+            _session_id: &str,
+        ) -> Result<Vec<Self::Event>, String> {
+            Ok(Vec::new())
         }
     }
 

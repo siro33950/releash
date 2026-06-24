@@ -10,8 +10,8 @@ use super::layout::{
 use super::FileSessionStorage;
 use crate::usecase::agent_session::session::{
     first_message_preview, now_timestamp, parts_to_legacy, ChatMessage, ChatSession,
-    MessageIndexEntry, MessagePageMetadata, MessagePart, PageCursor, SessionMeta, SessionPage,
-    MAX_SESSION_PAGE_LIMIT, SESSION_BODY_FORMAT_VERSION,
+    MessageIndexEntry, MessagePageMetadata, MessagePart, MessageRole, PageCursor, SessionMeta,
+    SessionPage, MAX_SESSION_PAGE_LIMIT, SESSION_BODY_FORMAT_VERSION,
 };
 
 fn measure_save_result<T, F, S>(
@@ -49,6 +49,45 @@ impl FileSessionStorage {
                 self.ensure_session_layout(app_data_dir, session_id)?;
                 self.load_full_session_from_layout(app_data_dir, session_id)
                     .map(Some)
+            },
+        )
+    }
+
+    pub fn load_previous_human_message_before_agent(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        agent_message_id: &str,
+    ) -> Result<Option<ChatMessage>, String> {
+        crate::other::telemetry::measure_result(
+            crate::other::telemetry::HotPath::SessionGetPage,
+            || {
+                self.ensure_loaded(app_data_dir)?;
+                if let Some(err) = self.invalid_sessions.read().get(session_id) {
+                    return Err(err.clone());
+                }
+                if !self.cache.read().contains_key(session_id) {
+                    return Ok(None);
+                }
+                self.ensure_session_layout(app_data_dir, session_id)?;
+                let dir = session_dir(app_data_dir, session_id)?;
+                let index = self.read_consistent_index_from_dir(&dir, session_id)?;
+                let Some(agent_entry) = index
+                    .iter()
+                    .find(|entry| entry.id == agent_message_id && entry.role == MessageRole::Agent)
+                else {
+                    return Ok(None);
+                };
+                let Some(human_entry) = index
+                    .iter()
+                    .rev()
+                    .find(|entry| entry.seq < agent_entry.seq && entry.role == MessageRole::Human)
+                else {
+                    return Ok(None);
+                };
+                let message =
+                    self.read_message_file(&message_file_in_dir(&dir, human_entry.seq))?;
+                self.hydrate_message_attachments(&dir, message).map(Some)
             },
         )
     }

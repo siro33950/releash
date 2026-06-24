@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use super::{ChatSession, RestoreSessionResponse, SessionState, SessionStore};
+use crate::usecase::agent_session::event_log::{AgentSessionEvent, TurnEventLog};
+
+use super::{now_timestamp, ChatSession, RestoreSessionResponse, SessionState, SessionStore};
 
 pub struct SessionLifecycleController<'a> {
     pub session_store: &'a Arc<SessionStore>,
@@ -10,18 +12,40 @@ pub struct SessionLifecycleController<'a> {
 impl<'a> SessionLifecycleController<'a> {
     pub fn close_session_state(&self, session_id: &str) -> Result<(), String> {
         self.session_store
-            .set_session_state(self.data_dir, session_id, SessionState::Closed)
+            .append_session_event_and_project_state(
+                self.data_dir,
+                session_id,
+                AgentSessionEvent::SessionClosed {
+                    at: now_timestamp(),
+                },
+            )
+            .map(|_| ())
     }
 
     pub fn restore_session_state(
         &self,
         session: ChatSession,
     ) -> Result<RestoreSessionResponse, String> {
+        let projected_state = self.project_session_state(&session.id)?;
+        if projected_state != session.state {
+            self.session_store
+                .set_session_state(self.data_dir, &session.id, projected_state)?;
+        }
         self.session_store
             .set_session_state(self.data_dir, &session.id, SessionState::Idle)?;
         Ok(RestoreSessionResponse {
             restored_workflow_step: false,
         })
+    }
+
+    fn project_session_state(&self, session_id: &str) -> Result<SessionState, String> {
+        let events = self
+            .session_store
+            .load_session_events(self.data_dir, session_id)?;
+        Ok(TurnEventLog::from_events(events)
+            .project()
+            .status
+            .session_state)
     }
 }
 
@@ -52,6 +76,54 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(loaded.state, SessionState::Closed);
+
+        let events = store.load_session_events(temp.path(), &session.id).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::SessionClosed { .. })));
+        let projected_state = TurnEventLog::from_events(events)
+            .project()
+            .status
+            .session_state;
+        assert_eq!(projected_state, SessionState::Closed);
+    }
+
+    #[test]
+    fn close_session_state_persists_closed_projection_for_fresh_store_restore() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(Arc::new(
+            crate::adaptor::gateway::agent_session::FileSessionStorage::default(),
+        )));
+        let session = super::super::create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+
+        let controller = SessionLifecycleController {
+            session_store: &store,
+            data_dir: temp.path(),
+        };
+        controller.close_session_state(&session.id).unwrap();
+
+        let fresh_store = SessionStore::new(Arc::new(
+            crate::adaptor::gateway::agent_session::FileSessionStorage::default(),
+        ));
+        let loaded = fresh_store
+            .load_full_session_for_restore(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.state, SessionState::Closed);
+        let events = fresh_store
+            .load_session_events(temp.path(), &session.id)
+            .unwrap();
+        let projected_state = TurnEventLog::from_events(events)
+            .project()
+            .status
+            .session_state;
+        assert_eq!(projected_state, SessionState::Closed);
     }
 
     #[test]
@@ -94,6 +166,59 @@ mod tests {
         assert_eq!(loaded.context_carry, None);
         assert_eq!(loaded.messages.len(), 1);
         assert_eq!(loaded.messages[0].content, "remember alpha");
+    }
+
+    #[test]
+    fn restore_session_state_recovers_closed_from_event_projection_before_idle() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let session = super::super::create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+
+        let controller = SessionLifecycleController {
+            session_store: &store,
+            data_dir: temp.path(),
+        };
+        controller.close_session_state(&session.id).unwrap();
+        store
+            .set_session_state(temp.path(), &session.id, SessionState::Active)
+            .unwrap();
+        let session = store
+            .load_full_session_for_restore(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.state, SessionState::Active);
+        let session_id = session.id.clone();
+
+        let projected_state =
+            TurnEventLog::from_events(store.load_session_events(temp.path(), &session_id).unwrap())
+                .project()
+                .status
+                .session_state;
+        assert_eq!(projected_state, SessionState::Closed);
+
+        let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let captured_for_listener = captured.clone();
+        store.register_state_change_listener(Arc::new(move |_, _, state| {
+            captured_for_listener.lock().push(state.clone());
+        }));
+
+        controller.restore_session_state(session).unwrap();
+
+        let loaded = store
+            .load_full_session_for_restore(temp.path(), &session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.state, SessionState::Idle);
+        assert_eq!(
+            captured.lock().as_slice(),
+            [SessionState::Closed, SessionState::Idle]
+        );
     }
 
     #[test]

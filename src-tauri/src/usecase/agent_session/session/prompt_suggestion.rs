@@ -202,6 +202,7 @@ pub(crate) fn build_agent_prompt_suggestion_with_git(
 mod tests {
     use super::*;
     use crate::domain::agent_session::{AgentSessionReader, AgentSessionStorageTypes};
+    use crate::usecase::agent_session::event_log::AgentSessionEvent;
     use crate::usecase::agent_session::session::{
         ChatSession, ContextCarryState, MessagePageMetadata, PageCursor, SessionAttachment,
         SessionMeta, SessionPage, SessionState, SESSION_BODY_FORMAT_VERSION,
@@ -217,6 +218,7 @@ mod tests {
         type Message = ChatMessage;
         type MessagePart = MessagePart;
         type Attachment = SessionAttachment;
+        type Event = AgentSessionEvent;
     }
 
     impl AgentSessionReader for PromptSuggestionStorage {
@@ -266,6 +268,15 @@ mod tests {
             panic!("prompt suggestion must not full-load session body")
         }
 
+        fn load_previous_human_message_before_agent(
+            &self,
+            _app_data_dir: &Path,
+            _session_id: &str,
+            _agent_message_id: &str,
+        ) -> Result<Option<Self::Message>, String> {
+            panic!("prompt suggestion must not load prompt message")
+        }
+
         fn get_session_page(
             &self,
             _app_data_dir: &Path,
@@ -294,6 +305,14 @@ mod tests {
             _attachment_id: &str,
         ) -> Result<Option<Self::Attachment>, String> {
             Ok(None)
+        }
+
+        fn load_session_events(
+            &self,
+            _app_data_dir: &Path,
+            _session_id: &str,
+        ) -> Result<Vec<Self::Event>, String> {
+            Ok(Vec::new())
         }
     }
 
