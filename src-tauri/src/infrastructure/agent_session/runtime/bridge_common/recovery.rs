@@ -2821,6 +2821,66 @@ mod moved_tests {
         }
 
         #[tokio::test]
+        async fn set_active_process_model_skips_selected_model_when_process_is_replaced_after_io() {
+            let mut old_cmd = tokio::process::Command::new("cat");
+            old_cmd
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let mut old_child = old_cmd.spawn().unwrap();
+            let old_stdin = old_child.stdin.take().unwrap();
+
+            let mut new_cmd = tokio::process::Command::new("cat");
+            new_cmd
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let mut new_child = new_cmd.spawn().unwrap();
+            let new_stdin = new_child.stdin.take().unwrap();
+
+            let handles = Arc::new(Mutex::new(HashMap::new()));
+            let mut old_proc = make_dummy_agent_process(old_child, old_stdin, None);
+            old_proc.generation_id = 1;
+            let old_writer = Arc::clone(&old_proc.stdin);
+            let old_writer_guard = old_writer.lock().await;
+
+            let mut map_guard = handles.lock().await;
+            map_guard.insert("session-1".to_string(), old_proc);
+            let update_task = {
+                let handles = Arc::clone(&handles);
+                tokio::spawn(async move {
+                    set_active_process_model(&handles, "session-1", "new-model".to_string()).await
+                })
+            };
+            tokio::task::yield_now().await;
+            drop(map_guard);
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+
+            let mut replacement = make_dummy_agent_process(new_child, new_stdin, None);
+            replacement.generation_id = 2;
+            replacement.selected_model = Some("replacement-model".to_string());
+            let mut old_proc = handles
+                .lock()
+                .await
+                .insert("session-1".to_string(), replacement)
+                .expect("old process should be replaced");
+
+            drop(old_writer_guard);
+            update_task.await.unwrap().unwrap();
+
+            {
+                let map = handles.lock().await;
+                let proc = map.get("session-1").unwrap();
+                assert_eq!(proc.selected_model.as_deref(), Some("replacement-model"));
+            }
+
+            let _ = old_proc.child.kill().await;
+            let mut map = handles.lock().await;
+            force_kill_all_sessions(&mut map).await;
+        }
+
+        #[tokio::test]
         async fn set_active_process_model_inactive_session_is_ok() {
             let handles = Arc::new(Mutex::new(HashMap::new()));
 

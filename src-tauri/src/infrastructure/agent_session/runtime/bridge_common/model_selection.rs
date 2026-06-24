@@ -122,19 +122,29 @@ pub(super) async fn set_active_process_model(
     model_id: String,
 ) -> Result<(), String> {
     let data = build_set_model_command(&model_id);
-    let mut map = handles.lock().await;
-    if let Some(proc) = map.get_mut(chat_session_id) {
-        let mut stdin = proc.stdin.lock().await;
-        stdin
+    let stdin = {
+        let map = handles.lock().await;
+        map.get(chat_session_id)
+            .map(|proc| (Arc::clone(&proc.stdin), proc.generation_id))
+    };
+    if let Some((stdin, generation_id)) = stdin {
+        let mut writer = stdin.lock().await;
+        writer
             .write_all(data.as_bytes())
             .await
             .map_err(|e| format!("Failed to write setModel: {e}"))?;
-        stdin
+        writer
             .flush()
             .await
             .map_err(|e| format!("Failed to flush setModel: {e}"))?;
-        drop(stdin);
-        proc.selected_model = Some(model_id);
+        drop(writer);
+
+        let mut map = handles.lock().await;
+        if let Some(proc) = map.get_mut(chat_session_id) {
+            if proc.generation_id == generation_id && Arc::ptr_eq(&proc.stdin, &stdin) {
+                proc.selected_model = Some(model_id);
+            }
+        }
     }
     Ok(())
 }
