@@ -6,7 +6,9 @@ use super::session_lifecycle::{
     prepare_pending_turn_messages, prompt_input_for_started_turn, start_pending_message_turn,
     sweep_process_group, take_pending_message,
 };
-use super::shared::{notify_status_transition, GENERATION_COUNTER};
+use super::shared::{
+    notify_status_transition, resolve_mentions_or_fallback_from_port, GENERATION_COUNTER,
+};
 use super::stream_emit::{emit_session_state_changed, spawn_streaming_timer};
 use super::turn_event_log::{begin_turn_event_log, projected_session_state_for_current_turn};
 use crate::app_data_dir::resolve_data_dir;
@@ -319,10 +321,12 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
         );
     }
 
-    let prompt = app
-        .state::<crate::adaptor::controller::state::AppState>()
-        .code_usecase
-        .resolve_mentions_or_fallback(&pending.worktree_path, &pending.content, &pending.mentions);
+    let prompt = resolve_mentions_or_fallback_from_port(
+        app,
+        &pending.worktree_path,
+        &pending.content,
+        &pending.mentions,
+    );
 
     Ok(Some(ExternalPendingTurn {
         queued_turn_id: pending.id,

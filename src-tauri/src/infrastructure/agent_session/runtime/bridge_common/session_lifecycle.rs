@@ -14,7 +14,8 @@ use super::session_persistence::{
 };
 use super::shared::{
     build_message_cmd, consolidate_parts_from_slice, fallback_prompt_message_id,
-    notify_status_transition, write_bridge_command, CLAUDE_BACKEND_ID, CODEX_BACKEND_ID,
+    notify_status_transition, resolve_mentions_or_fallback_from_port, write_bridge_command,
+    CLAUDE_BACKEND_ID, CODEX_BACKEND_ID,
 };
 use super::stream_emit::{
     emit_session_state_changed, flush_streaming_before_transition,
@@ -26,6 +27,7 @@ use super::turn_event_log::{
     projected_session_state_for_current_turn,
 };
 use crate::app_data_dir::resolve_data_dir;
+use crate::infrastructure::agent_session::resolver_ports::MentionResolverPort;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_spawn_session_guard;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::clear_pending_turn_starting;
@@ -1388,10 +1390,12 @@ pub(super) async fn start_pending_message_turn<R: tauri::Runtime>(
         );
     }
 
-    let resolved_prompt = app
-        .state::<crate::adaptor::controller::state::AppState>()
-        .code_usecase
-        .resolve_mentions_or_fallback(&pending.worktree_path, &pending.content, &pending.mentions);
+    let resolved_prompt = resolve_mentions_or_fallback_from_port(
+        app,
+        &pending.worktree_path,
+        &pending.content,
+        &pending.mentions,
+    );
 
     if let Err(_e) = start_agent_turn(
         app,
@@ -1665,7 +1669,7 @@ pub(super) enum PreparedAgentRuntimeInput {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn prepare_send_agent_message_internal(
-    code_usecase: &crate::usecase::code_usecase::CodeUsecase,
+    mention_resolver: &dyn MentionResolverPort,
     session_store: &Arc<SessionStore>,
     registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -1812,7 +1816,7 @@ pub(super) async fn prepare_send_agent_message_internal(
                 human_parts.clone(),
                 human_mentions.clone(),
             )?;
-            let resolved_prompt = code_usecase.resolve_mentions_or_fallback(
+            let resolved_prompt = mention_resolver.resolve_mentions_or_fallback(
                 &session_worktree_path,
                 &content,
                 &mentions,
@@ -1894,8 +1898,11 @@ pub(super) async fn prepare_send_agent_message_internal(
             None,
             None,
         )?;
-        let resolved_prompt =
-            code_usecase.resolve_mentions_or_fallback(&session_worktree_path, &content, &mentions);
+        let resolved_prompt = mention_resolver.resolve_mentions_or_fallback(
+            &session_worktree_path,
+            &content,
+            &mentions,
+        );
         let turn = PreparedAgentTurn {
             session_id: sid.clone(),
             backend_id: session
@@ -2039,14 +2046,14 @@ pub async fn send_agent_message_internal(
         .map(str::to_string)
         .unwrap_or_else(|| format!("new-session:{worktree_path}"));
     let data_dir = resolve_data_dir(app)?;
-    let code_usecase = Arc::clone(
-        &app.state::<crate::adaptor::controller::state::AppState>()
-            .code_usecase,
-    );
+    let mention_resolver = app
+        .try_state::<Arc<dyn MentionResolverPort>>()
+        .map(|state| state.inner().clone())
+        .ok_or_else(|| "MentionResolverPort is not registered".to_string())?;
     let (response, prepared_input) = {
         let _send_guard = acquire_session_runtime_lock(&lock_key).await;
         prepare_send_agent_message_internal(
-            &code_usecase,
+            mention_resolver.as_ref(),
             session_store,
             registry,
             handles,

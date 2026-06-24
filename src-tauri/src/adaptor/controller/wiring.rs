@@ -38,9 +38,15 @@ use crate::adaptor::gateway::workflow::{
     WorkflowRunArchiveFileRepository, WorkflowRunFileRepository, WorkflowSecretSourceConfigGateway,
     WorkflowStateProjectionLogRepository, WorkflowStepDetailProjectionLogRepository,
 };
+#[cfg(test)]
+use crate::domain::agent_session::SkillEntry;
 use crate::domain::app_config::{ConfigRepository, ConfigSecretRepository};
+#[cfg(test)]
+use crate::domain::code::CodeError;
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
+use crate::infrastructure::agent_session::codex_fuzzy_file_search_gateway::TauriCodexFuzzyFileSearchGateway;
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::infrastructure::agent_session::skill_catalog_gateway::TauriCodexSkillCatalogGateway;
 use crate::infrastructure::agent_session::thread_lifecycle_gateway::{
     CodexThreadLifecycleAppServerGateway, TauriAgentSessionRuntimeCloser,
 };
@@ -48,7 +54,10 @@ use crate::usecase::agent_session::session::{
     AgentPromptSuggestionUsecase, OpenTabRegistry, SessionReaderPort, SessionStore,
     StoredSessionLifecycleUsecase,
 };
-use crate::usecase::code_query_service::CodeQueryService;
+#[cfg(test)]
+use crate::usecase::agent_session::skill_catalog::CodexSkillCatalogGateway;
+use crate::usecase::agent_session::AgentSessionUsecase;
+use crate::usecase::code_query_service::{CodeQueryService, CodexFuzzyFileSearchGateway};
 use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::repository_query_service::RepositoryQueryService;
 use crate::usecase::repository_usecase::RepositoryUsecase;
@@ -79,19 +88,88 @@ pub(crate) fn build_repository_usecase() -> RepositoryUsecase {
 /// staging（書き込み）は Command 側 Usecase が、ファイル内容参照・diff バッファ計算・
 /// branch diff・mention 候補列挙（読み取り）は `CodeQueryService` が各 gateway へ委譲する。
 /// いずれの gateway もステートレスのため、起動時に 1 度だけ組み立てて Arc 共有する。
-pub(crate) fn build_code_usecase() -> CodeUsecase {
+#[cfg(test)]
+struct UnavailableCodexFuzzyFileSearchGateway;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl CodexFuzzyFileSearchGateway for UnavailableCodexFuzzyFileSearchGateway {
+    async fn search_files(
+        &self,
+        _worktree_path: &str,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<String>, CodeError> {
+        Err(CodeError::External(
+            "Codex fuzzy file search gateway is not configured".to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
+struct UnavailableCodexSkillCatalogGateway;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl CodexSkillCatalogGateway for UnavailableCodexSkillCatalogGateway {
+    async fn list_app_server_skills(
+        &self,
+        _cwd: &str,
+        _query: Option<&str>,
+        _limit: Option<usize>,
+    ) -> Result<Vec<SkillEntry>, String> {
+        Err("Codex skill catalog gateway is not configured".to_string())
+    }
+
+    async fn scan_local_skills(
+        &self,
+        _cwd: &str,
+        _backend_id: Option<&str>,
+        _query: Option<&str>,
+        _limit: Option<usize>,
+    ) -> Result<Vec<SkillEntry>, String> {
+        Err("Codex skill catalog gateway is not configured".to_string())
+    }
+}
+
+fn build_code_usecase_with_fuzzy_gateway(
+    codex_fuzzy_file_search: Arc<dyn CodexFuzzyFileSearchGateway>,
+) -> CodeUsecase {
     let query = CodeQueryService::new(
         Arc::new(FileContentGateway),
         Arc::new(DiffComputerGateway),
         Arc::new(BranchDiffGateway),
         Arc::new(MentionGateway),
         Arc::new(BranchBaseResolverGateway::new(Arc::new(GitConfigGateway))),
+        codex_fuzzy_file_search,
     );
     CodeUsecase::new(
         Arc::new(StagingGateway),
         query,
         Arc::new(ReviewBlobUrlGateway),
     )
+}
+
+#[cfg(test)]
+pub(crate) fn build_code_usecase() -> CodeUsecase {
+    build_code_usecase_with_fuzzy_gateway(Arc::new(UnavailableCodexFuzzyFileSearchGateway))
+}
+
+pub(crate) fn build_code_usecase_with_app<R: tauri::Runtime + 'static>(
+    app: tauri::AppHandle<R>,
+) -> CodeUsecase {
+    build_code_usecase_with_fuzzy_gateway(Arc::new(TauriCodexFuzzyFileSearchGateway::new(app)))
+}
+
+pub(crate) fn build_agent_session_usecase<R: tauri::Runtime + 'static>(
+    app: tauri::AppHandle<R>,
+) -> AgentSessionUsecase {
+    AgentSessionUsecase::new(Arc::new(TauriCodexSkillCatalogGateway::new(app)))
+}
+
+#[cfg(test)]
+pub(crate) fn build_agent_session_usecase_for_tests() -> AgentSessionUsecase {
+    AgentSessionUsecase::new(Arc::new(UnavailableCodexSkillCatalogGateway))
 }
 
 pub(crate) fn build_session_store() -> SessionStore {

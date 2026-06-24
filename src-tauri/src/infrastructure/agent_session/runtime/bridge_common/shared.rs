@@ -1,4 +1,7 @@
 use super::process_registry::{AgentProcessMap, BridgeState, TurnPhase};
+use crate::infrastructure::agent_session::resolver_ports::{
+    BaseBranchResolverPort, MentionResolverPort,
+};
 use crate::infrastructure::agent_session::runtime::context_restore::RestoreContextPayload;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::is_pending_turn_starting;
 use crate::infrastructure::agent_session::runtime::BackendRuntimeConfig;
@@ -373,6 +376,36 @@ pub(crate) fn session_specific_env_overrides(
         env.push(("RELEASH_BASE_BRANCH", b.to_string()));
     }
     env
+}
+
+pub(super) fn resolve_effective_base_branch_from_port<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    cwd: &str,
+) -> Option<String> {
+    let Some(resolver) = app
+        .try_state::<Arc<dyn BaseBranchResolverPort>>()
+        .map(|state| state.inner().clone())
+    else {
+        log::warn!("base branch resolver port is not registered; continuing without base branch");
+        return None;
+    };
+    resolver.resolve_effective_base_branch_name(cwd)
+}
+
+pub(super) fn resolve_mentions_or_fallback_from_port<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    worktree_path: &str,
+    content: &str,
+    mentions: &[crate::domain::code::MentionReference],
+) -> String {
+    let Some(resolver) = app
+        .try_state::<Arc<dyn MentionResolverPort>>()
+        .map(|state| state.inner().clone())
+    else {
+        log::warn!("mention resolver port is not registered; continuing without resolved mentions");
+        return content.to_string();
+    };
+    resolver.resolve_mentions_or_fallback(worktree_path, content, mentions)
 }
 
 /// ユーザー指定の system_prompt に Releash CLI の long help を append する。

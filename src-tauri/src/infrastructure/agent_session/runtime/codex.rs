@@ -8,6 +8,7 @@ use tokio::time::{sleep, Duration};
 
 use crate::app_data_dir::resolve_data_dir;
 use crate::domain::agent_session::CODEX_FIXED_MODELS;
+use crate::infrastructure::agent_session::resolver_ports::BaseBranchResolverPort;
 use crate::infrastructure::agent_session::runtime::bridge_common::{
     close_external_agent_process, finish_external_pending_message_turn_start,
     handle_external_bridge_message, persist_context_carry_failed_after_init_error,
@@ -355,11 +356,18 @@ impl AppServerCodexRuntime {
         .map_err(|e| format!("failed to prepare alias child env for codex app-server: {e}"))?;
         let base_branch = self
             .app
-            .state::<crate::adaptor::controller::state::AppState>()
-            .code_usecase
-            .resolve_effective_base_branch_name(&config.cwd)
-            .ok()
-            .flatten();
+            .try_state::<Arc<dyn BaseBranchResolverPort>>()
+            .map(|state| {
+                state
+                    .inner()
+                    .resolve_effective_base_branch_name(&config.cwd)
+            })
+            .unwrap_or_else(|| {
+                log::warn!(
+                    "base branch resolver port is not registered; continuing without base branch"
+                );
+                None
+            });
         for (key, value) in
             session_specific_env_overrides(&config.chat_session_id, base_branch.as_deref())
         {
@@ -413,7 +421,13 @@ impl AppServerCodexRuntime {
             .filter(|value| !value.is_empty())
             .map(ToString::to_string);
 
-        let parts = spawn_app_server_process_parts(&self.cli_path, Some(&config.cwd), &child_envs)?;
+        let parts = spawn_app_server_process_parts(
+            &self.app,
+            &self.cli_path,
+            Some(&config.cwd),
+            &child_envs,
+        )
+        .await?;
         register_external_agent_process(
             &self.app,
             &self.session_store,

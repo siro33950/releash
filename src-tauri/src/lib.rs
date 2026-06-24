@@ -36,6 +36,82 @@ use domain::app_config::{
 use tauri::Manager;
 use tokio::sync::Mutex;
 
+#[cfg(all(unix, test))]
+static STARTUP_ORPHAN_CLEANUP_TELEMETRY_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(all(unix, test))]
+static STARTUP_ORPHAN_CLEANUP_SUCCESS_TELEMETRY_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(unix)]
+fn record_startup_orphan_cleanup(
+    report: &infrastructure::agent_session::runtime::OrphanCleanupReport,
+    failed: bool,
+) {
+    other::telemetry::record_orphan_cleanup_counts(
+        report.scanned,
+        report.processed,
+        report.skipped,
+        report.failures,
+        failed,
+    );
+    #[cfg(test)]
+    {
+        let status = other::telemetry::orphan_cleanup_status(report.failures, failed);
+        STARTUP_ORPHAN_CLEANUP_TELEMETRY_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if status == other::telemetry::orphan_cleanup_status(0, false) {
+            STARTUP_ORPHAN_CLEANUP_SUCCESS_TELEMETRY_CALLS
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn spawn_startup_orphan_cleanup<F>(
+    data_dir: std::path::PathBuf,
+    cleanup_gate: Arc<infrastructure::agent_session::runtime::CleanupGate>,
+    cleanup_fn: F,
+) where
+    F: FnOnce(&std::path::Path) -> infrastructure::agent_session::runtime::OrphanCleanupReport
+        + Send
+        + 'static,
+{
+    let thread_gate = Arc::clone(&cleanup_gate);
+    let spawn_result = std::thread::Builder::new()
+        .name("releash-startup-orphan-cleanup".to_string())
+        .spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cleanup_fn(&data_dir)
+            }));
+            let (report, failed) = match result {
+                Ok(report) => (report, false),
+                Err(_) => {
+                    log::warn!("startup orphan cleanup panicked");
+                    (
+                        infrastructure::agent_session::runtime::OrphanCleanupReport::default(),
+                        true,
+                    )
+                }
+            };
+            let status = other::telemetry::orphan_cleanup_status(report.failures, failed).as_str();
+            log::info!(
+                "startup orphan cleanup finished status={status} scanned={} processed={} skipped={} failures={}",
+                report.scanned,
+                report.processed,
+                report.skipped,
+                report.failures
+            );
+            record_startup_orphan_cleanup(&report, failed);
+            thread_gate.open();
+        });
+    if let Err(e) = spawn_result {
+        let report = infrastructure::agent_session::runtime::OrphanCleanupReport::default();
+        log::warn!("failed to start startup orphan cleanup thread: {e}");
+        record_startup_orphan_cleanup(&report, true);
+        cleanup_gate.open();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let startup_started = Instant::now();
@@ -66,6 +142,11 @@ pub fn run() {
     let prompt_suggestion_usecase = Arc::new(
         adaptor::controller::wiring::build_agent_prompt_suggestion_usecase(session_storage),
     );
+    let cleanup_gate = Arc::new(infrastructure::agent_session::runtime::CleanupGate::new(
+        !cfg!(unix),
+    ));
+    #[cfg(unix)]
+    let cleanup_gate_for_setup = Arc::clone(&cleanup_gate);
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -93,6 +174,7 @@ pub fn run() {
         .manage(ws_server::WsServerHandle::default())
         .manage(Arc::new(git_host::PrCache::new()))
         .manage(Arc::new(git_host::IssueCache::new()))
+        .manage(cleanup_gate)
         .manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
             parking_lot::RwLock::new(Vec::new()),
         ))
@@ -190,7 +272,20 @@ pub fn run() {
                 ));
 
                 // code ドメインの DI 配線（gateway 実装はステートレス）。
-                let code_usecase = Arc::new(adaptor::controller::wiring::build_code_usecase());
+                let code_usecase = Arc::new(
+                    adaptor::controller::wiring::build_code_usecase_with_app(app.handle().clone()),
+                );
+                let base_branch_resolver: Arc<
+                    dyn infrastructure::agent_session::resolver_ports::BaseBranchResolverPort,
+                > = code_usecase.clone();
+                let mention_resolver: Arc<
+                    dyn infrastructure::agent_session::resolver_ports::MentionResolverPort,
+                > = code_usecase.clone();
+                app.manage(base_branch_resolver);
+                app.manage(mention_resolver);
+                let agent_session_usecase = Arc::new(
+                    adaptor::controller::wiring::build_agent_session_usecase(app.handle().clone()),
+                );
                 let repository_state =
                     Arc::new(usecase::repository_state::RepositoryStateService::new(
                         repository_usecase.clone(),
@@ -232,6 +327,7 @@ pub fn run() {
                     repo_paths_usecase,
                     code_usecase,
                     review_usecase,
+                    agent_session_usecase,
                     workflow_usecase,
                 });
             }
@@ -433,17 +529,15 @@ pub fn run() {
                 }
             }
 
-            // Clean up orphan agent processes from previous crashes.
-            // Must complete before init_agent_sessions() to prevent killing newly spawned processes.
+            // Clean up orphan agent processes from previous crashes in the background.
+            // Agent process spawn paths wait on cleanup_gate just before OS spawn.
             #[cfg(unix)]
             {
-                let data_dir_clone = data_dir.clone();
-                let _ = std::thread::spawn(move || {
-                    infrastructure::agent_session::runtime::cleanup_orphan_processes(
-                        &data_dir_clone,
-                    );
-                })
-                .join();
+                spawn_startup_orphan_cleanup(
+                    data_dir.clone(),
+                    Arc::clone(&cleanup_gate_for_setup),
+                    infrastructure::agent_session::runtime::cleanup_orphan_processes,
+                );
             }
 
             other::telemetry::record_startup_from_origin(other::telemetry::Startup::AppStartup);
@@ -505,5 +599,69 @@ mod tests {
         let handle = tokio::spawn(async { 42 });
         let result = runtime.block_on(handle).unwrap();
         assert_eq!(result, 42);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_startup_orphan_cleanup_is_non_blocking_and_records_after_completion() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let gate = Arc::new(crate::infrastructure::agent_session::runtime::CleanupGate::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (returned_tx, returned_rx) = mpsc::channel();
+        let calls_for_cleanup = Arc::clone(&calls);
+        let gate_for_spawn = Arc::clone(&gate);
+        let data_dir_for_spawn = data_dir.path().to_path_buf();
+        let telemetry_calls_before =
+            super::STARTUP_ORPHAN_CLEANUP_TELEMETRY_CALLS.load(Ordering::SeqCst);
+        let success_calls_before =
+            super::STARTUP_ORPHAN_CLEANUP_SUCCESS_TELEMETRY_CALLS.load(Ordering::SeqCst);
+
+        std::thread::spawn(move || {
+            super::spawn_startup_orphan_cleanup(data_dir_for_spawn, gate_for_spawn, move |_| {
+                calls_for_cleanup.fetch_add(1, Ordering::SeqCst);
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                crate::infrastructure::agent_session::runtime::OrphanCleanupReport {
+                    scanned: 1,
+                    processed: 0,
+                    skipped: 0,
+                    failures: 0,
+                }
+            });
+            returned_tx.send(()).unwrap();
+        });
+
+        returned_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("startup cleanup launcher must return before cleanup finishes");
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("fake cleanup should start exactly once");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!gate.is_open());
+
+        release_tx.send(()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(1), gate.wait_until_open()).await
+            })
+            .expect("cleanup completion must open the gate");
+
+        assert_eq!(
+            super::STARTUP_ORPHAN_CLEANUP_TELEMETRY_CALLS.load(Ordering::SeqCst),
+            telemetry_calls_before + 1
+        );
+        assert_eq!(
+            super::STARTUP_ORPHAN_CLEANUP_SUCCESS_TELEMETRY_CALLS.load(Ordering::SeqCst),
+            success_calls_before + 1
+        );
     }
 }

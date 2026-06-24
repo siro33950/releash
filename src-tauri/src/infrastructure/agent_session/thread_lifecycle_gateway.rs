@@ -32,24 +32,25 @@ impl CodexThreadLifecycleAppServerGateway {
 #[async_trait::async_trait]
 impl CodexThreadLifecycleGateway for CodexThreadLifecycleAppServerGateway {
     async fn archive_thread(&self, thread_id: &str) -> Result<(), String> {
-        send_codex_thread_archive_request(&self.cli_path(), thread_id, true).await
+        send_codex_thread_archive_request(&self.app, &self.cli_path(), thread_id, true).await
     }
 
     async fn unarchive_thread(&self, thread_id: &str) -> Result<(), String> {
-        send_codex_thread_archive_request(&self.cli_path(), thread_id, false).await
+        send_codex_thread_archive_request(&self.app, &self.cli_path(), thread_id, false).await
     }
 
     async fn fork_thread(&self, request: CodexThreadForkRequest) -> Result<String, String> {
-        fork_codex_thread(&self.cli_path(), request).await
+        fork_codex_thread(&self.app, &self.cli_path(), request).await
     }
 }
 
 async fn send_codex_thread_archive_request(
+    app: &tauri::AppHandle,
     cli_path: &str,
     thread_id: &str,
     archive: bool,
 ) -> Result<(), String> {
-    let mut process = CodexAppServerProcess::spawn(cli_path)?;
+    let mut process = CodexAppServerProcess::spawn(app, cli_path).await?;
     let result = async {
         process.initialize(env!("CARGO_PKG_VERSION")).await?;
         let id = process.next_request_id();
@@ -68,10 +69,11 @@ async fn send_codex_thread_archive_request(
 }
 
 async fn fork_codex_thread(
+    app: &tauri::AppHandle,
     cli_path: &str,
     request: CodexThreadForkRequest,
 ) -> Result<String, String> {
-    let mut process = CodexAppServerProcess::spawn(cli_path)?;
+    let mut process = CodexAppServerProcess::spawn(app, cli_path).await?;
     let result = async {
         process.initialize(env!("CARGO_PKG_VERSION")).await?;
         let id = process.next_request_id();

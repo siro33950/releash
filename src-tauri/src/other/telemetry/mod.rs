@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use attributes::{
     usage_event_allowed, HotPathMetric, OpStatus, PayloadChannel, StartupMetric, KEY_CHANNEL,
-    KEY_OPERATION, KEY_STATUS, KEY_USAGE_EVENT,
+    KEY_OPERATION, KEY_OUTCOME, KEY_STATUS, KEY_USAGE_EVENT,
 };
 use opentelemetry::global;
 use opentelemetry::metrics::{Counter, Histogram, ObservableGauge};
@@ -72,6 +72,7 @@ struct Metrics {
     stream_emit_interval_ms: Histogram<f64>,
     session_save_bytes: Histogram<f64>,
     operation_status: Counter<u64>,
+    orphan_cleanup: Counter<u64>,
     dropped_stream_frames: Counter<u64>,
     ws_reconnects: Counter<u64>,
     usage_events: Counter<u64>,
@@ -226,6 +227,7 @@ pub(crate) fn install_metrics() {
             .with_unit("By")
             .build(),
         operation_status: meter.u64_counter("releash.operation.status").build(),
+        orphan_cleanup: meter.u64_counter("releash.startup.orphan_cleanup").build(),
         dropped_stream_frames: meter
             .u64_counter("releash.agent_stream.dropped_frames")
             .build(),
@@ -501,6 +503,54 @@ pub(crate) fn record_startup(metric: StartupMetric, elapsed: Duration) {
         .record(elapsed.as_secs_f64() * 1000.0, &attrs);
 }
 
+pub(crate) fn orphan_cleanup_status(failures: usize, failed: bool) -> OpStatus {
+    if failed || failures > 0 {
+        OpStatus::Failure
+    } else {
+        OpStatus::Success
+    }
+}
+
+pub(crate) fn record_orphan_cleanup_counts(
+    scanned: usize,
+    processed: usize,
+    skipped: usize,
+    failures: usize,
+    failed: bool,
+) {
+    if !is_performance_active() {
+        return;
+    }
+    let status = orphan_cleanup_status(failures, failed);
+    let status_attrs = [
+        KeyValue::new(KEY_OPERATION, "startup.orphan_cleanup"),
+        KeyValue::new(KEY_STATUS, status.as_str()),
+    ];
+    #[cfg(test)]
+    record_test_metric("releash.operation.status", 1.0, &status_attrs);
+    if let Some(metrics) = METRICS.get() {
+        metrics.operation_status.add(1, &status_attrs);
+    }
+
+    for (outcome, count) in [
+        ("scanned", scanned),
+        ("processed", processed),
+        ("skipped", skipped),
+        ("failures", failures),
+    ] {
+        let attrs = [
+            KeyValue::new(KEY_OPERATION, "startup.orphan_cleanup"),
+            KeyValue::new(KEY_STATUS, status.as_str()),
+            KeyValue::new(KEY_OUTCOME, outcome),
+        ];
+        #[cfg(test)]
+        record_test_metric("releash.startup.orphan_cleanup", count as f64, &attrs);
+        if let Some(metrics) = METRICS.get() {
+            metrics.orphan_cleanup.add(count as u64, &attrs);
+        }
+    }
+}
+
 pub(crate) fn record_usage_event(name: &str) {
     if !is_performance_active() || !usage_event_allowed(name) {
         return;
@@ -623,6 +673,82 @@ mod tests {
                 && has_attr(record, KEY_USAGE_EVENT, "settings_saved")
         }));
         reset_test_metrics();
+    }
+
+    #[test]
+    fn record_orphan_cleanup_captures_safe_counts_and_status() {
+        let _guard = lock_test_telemetry();
+        reset_test_metrics();
+        set_active(true);
+
+        record_orphan_cleanup_counts(3, 2, 1, 0, false);
+
+        let status_records = records_named("releash.operation.status");
+        assert!(status_records.iter().any(|record| {
+            has_attr(record, KEY_OPERATION, "startup.orphan_cleanup")
+                && has_attr(record, KEY_STATUS, "success")
+        }));
+
+        let cleanup_records = records_named("releash.startup.orphan_cleanup");
+        assert_eq!(cleanup_records.len(), 4);
+        assert!(cleanup_records.iter().any(|record| {
+            record.value == 3.0
+                && has_attr(record, KEY_OUTCOME, "scanned")
+                && has_attr(record, KEY_STATUS, "success")
+        }));
+        assert!(cleanup_records.iter().any(|record| {
+            record.value == 2.0
+                && has_attr(record, KEY_OUTCOME, "processed")
+                && has_attr(record, KEY_STATUS, "success")
+        }));
+        assert!(cleanup_records.iter().any(|record| {
+            record.value == 1.0
+                && has_attr(record, KEY_OUTCOME, "skipped")
+                && has_attr(record, KEY_STATUS, "success")
+        }));
+        assert!(cleanup_records.iter().any(|record| {
+            record.value == 0.0
+                && has_attr(record, KEY_OUTCOME, "failures")
+                && has_attr(record, KEY_STATUS, "success")
+        }));
+        for record in cleanup_records {
+            let keys: Vec<_> = record
+                .attributes
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect();
+            assert_eq!(
+                keys,
+                vec![KEY_OPERATION, KEY_STATUS, KEY_OUTCOME],
+                "orphan cleanup telemetry must contain only safe metadata"
+            );
+        }
+        reset_test_metrics();
+    }
+
+    #[test]
+    fn record_orphan_cleanup_marks_failure_on_failures_or_panic_flag() {
+        let _guard = lock_test_telemetry();
+        reset_test_metrics();
+        set_active(true);
+
+        record_orphan_cleanup_counts(1, 0, 0, 1, false);
+        record_orphan_cleanup_counts(0, 0, 0, 0, true);
+
+        let status_records = records_named("releash.operation.status");
+        assert_eq!(status_records.len(), 2);
+        assert!(status_records.iter().all(|record| {
+            has_attr(record, KEY_OPERATION, "startup.orphan_cleanup")
+                && has_attr(record, KEY_STATUS, "failure")
+        }));
+        reset_test_metrics();
+    }
+
+    #[test]
+    fn orphan_cleanup_status_marks_failures_and_success() {
+        assert_eq!(orphan_cleanup_status(1, false), OpStatus::Failure);
+        assert_eq!(orphan_cleanup_status(0, true), OpStatus::Failure);
+        assert_eq!(orphan_cleanup_status(0, false), OpStatus::Success);
     }
 
     #[test]
