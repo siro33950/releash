@@ -1,7 +1,9 @@
 pub(crate) mod attributes;
 mod resource;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(not(test))]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -18,12 +20,16 @@ use resource::ProcessResourceObserver;
 pub(crate) use attributes::HotPathMetric as HotPath;
 pub(crate) use attributes::{PayloadChannel as Payload, StartupMetric as Startup};
 
+#[cfg(not(test))]
 static PERFORMANCE_CONFIGURED: AtomicBool = AtomicBool::new(false);
+#[cfg(not(test))]
 static PERFORMANCE_ENABLED: AtomicBool = AtomicBool::new(true);
 static MOUNTED_XTERM_COUNT: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_PTY_COUNT: AtomicU64 = AtomicU64::new(0);
 static METRICS: OnceLock<Metrics> = OnceLock::new();
+#[cfg(not(test))]
 static STARTUP_ORIGIN: Mutex<Option<Instant>> = Mutex::new(None);
+#[cfg(not(test))]
 static FIRST_REPO_SNAPSHOT_RECORDED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
@@ -40,6 +46,10 @@ static TEST_METRIC_RECORDS: Mutex<Vec<TestMetricRecord>> = Mutex::new(Vec::new()
 static TEST_TELEMETRY_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 thread_local! {
+    static PERFORMANCE_CONFIGURED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PERFORMANCE_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    static STARTUP_ORIGIN: std::cell::RefCell<Option<Instant>> = const { std::cell::RefCell::new(None) };
+    static FIRST_REPO_SNAPSHOT_RECORDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_TELEMETRY_RECORDING_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -71,21 +81,113 @@ struct Metrics {
     _pty_gauge: ObservableGauge<u64>,
 }
 
-pub(crate) fn set_performance_configured(configured: bool) {
+#[cfg(not(test))]
+fn store_performance_configured(configured: bool) {
     PERFORMANCE_CONFIGURED.store(configured, Ordering::Relaxed);
 }
 
-pub(crate) fn set_performance_enabled(enabled: bool) {
+#[cfg(test)]
+fn store_performance_configured(configured: bool) {
+    PERFORMANCE_CONFIGURED.with(|value| value.set(configured));
+}
+
+#[cfg(not(test))]
+fn store_performance_enabled(enabled: bool) {
     PERFORMANCE_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-pub(crate) fn set_startup_origin(origin: Instant) {
-    *STARTUP_ORIGIN.lock().unwrap_or_else(|e| e.into_inner()) = Some(origin);
+#[cfg(test)]
+fn store_performance_enabled(enabled: bool) {
+    PERFORMANCE_ENABLED.with(|value| value.set(enabled));
+}
+
+#[cfg(not(test))]
+fn load_performance_configured() -> bool {
+    PERFORMANCE_CONFIGURED.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn load_performance_configured() -> bool {
+    PERFORMANCE_CONFIGURED.with(|value| value.get())
+}
+
+#[cfg(not(test))]
+fn load_performance_enabled() -> bool {
+    PERFORMANCE_ENABLED.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn load_performance_enabled() -> bool {
+    PERFORMANCE_ENABLED.with(|value| value.get())
+}
+
+#[cfg(not(test))]
+fn store_startup_origin(origin: Option<Instant>) {
+    *STARTUP_ORIGIN.lock().unwrap_or_else(|e| e.into_inner()) = origin;
+}
+
+#[cfg(test)]
+fn store_startup_origin(origin: Option<Instant>) {
+    STARTUP_ORIGIN.with(|value| *value.borrow_mut() = origin);
+}
+
+#[cfg(not(test))]
+fn load_startup_elapsed() -> Option<Duration> {
+    STARTUP_ORIGIN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .map(|origin| origin.elapsed())
+}
+
+#[cfg(test)]
+fn load_startup_elapsed() -> Option<Duration> {
+    STARTUP_ORIGIN.with(|value| value.borrow().map(|origin| origin.elapsed()))
+}
+
+#[cfg(not(test))]
+fn reset_first_repo_snapshot_recorded() {
     FIRST_REPO_SNAPSHOT_RECORDED.store(false, Ordering::Relaxed);
 }
 
+#[cfg(test)]
+fn reset_first_repo_snapshot_recorded() {
+    FIRST_REPO_SNAPSHOT_RECORDED.with(|value| value.set(false));
+}
+
+#[cfg(not(test))]
+fn mark_first_repo_snapshot_recorded() -> bool {
+    FIRST_REPO_SNAPSHOT_RECORDED.swap(true, Ordering::AcqRel)
+}
+
+#[cfg(test)]
+fn mark_first_repo_snapshot_recorded() -> bool {
+    FIRST_REPO_SNAPSHOT_RECORDED.with(|value| {
+        let already_recorded = value.get();
+        value.set(true);
+        already_recorded
+    })
+}
+
+#[cfg(test)]
+fn first_repo_snapshot_recorded() -> bool {
+    FIRST_REPO_SNAPSHOT_RECORDED.with(|value| value.get())
+}
+
+pub(crate) fn set_performance_configured(configured: bool) {
+    store_performance_configured(configured);
+}
+
+pub(crate) fn set_performance_enabled(enabled: bool) {
+    store_performance_enabled(enabled);
+}
+
+pub(crate) fn set_startup_origin(origin: Instant) {
+    store_startup_origin(Some(origin));
+    reset_first_repo_snapshot_recorded();
+}
+
 pub(crate) fn is_performance_active() -> bool {
-    PERFORMANCE_CONFIGURED.load(Ordering::Relaxed) && PERFORMANCE_ENABLED.load(Ordering::Relaxed)
+    load_performance_configured() && load_performance_enabled()
 }
 
 pub(crate) fn set_mounted_xterm_count(count: u64) {
@@ -177,10 +279,7 @@ pub(crate) fn install_metrics() {
 }
 
 fn startup_elapsed() -> Option<Duration> {
-    STARTUP_ORIGIN
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .map(|origin| origin.elapsed())
+    load_startup_elapsed()
 }
 
 pub(crate) fn record_startup_from_origin(metric: StartupMetric) {
@@ -196,7 +295,7 @@ pub(crate) fn record_first_repo_snapshot_ready() {
     let Some(elapsed) = startup_elapsed() else {
         return;
     };
-    if FIRST_REPO_SNAPSHOT_RECORDED.swap(true, Ordering::AcqRel) {
+    if mark_first_repo_snapshot_recorded() {
         return;
     }
     record_startup(StartupMetric::FirstRepoSnapshotReady, elapsed);
@@ -226,8 +325,8 @@ pub(crate) fn reset_test_metrics() {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
-    *STARTUP_ORIGIN.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    FIRST_REPO_SNAPSHOT_RECORDED.store(false, Ordering::Relaxed);
+    store_startup_origin(None);
+    reset_first_repo_snapshot_recorded();
     set_performance_configured(false);
     set_performance_enabled(true);
 }
@@ -242,7 +341,7 @@ pub(crate) fn test_metric_records() -> Vec<TestMetricRecord> {
 
 #[cfg(test)]
 pub(crate) fn first_repo_snapshot_recorded_for_tests() -> bool {
-    FIRST_REPO_SNAPSHOT_RECORDED.load(Ordering::Acquire)
+    first_repo_snapshot_recorded()
 }
 
 #[cfg(test)]
