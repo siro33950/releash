@@ -111,6 +111,50 @@ impl DiffTreeNodeInput {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSnapshotInput {
+    pub worktree_path: String,
+    pub base: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewFileViewInput {
+    pub worktree_path: String,
+    pub target: ReviewTargetInput,
+    pub section: String,
+    pub base: String,
+    #[serde(default)]
+    pub snapshot_version: Option<u64>,
+    pub viewport: Option<ViewportInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "by", content = "value")]
+pub enum ReviewTargetInput {
+    FileId(String),
+    Path(String),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewportInput {
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewGroupActionInput {
+    pub worktree_path: String,
+    pub path: String,
+    pub section: String,
+    pub base: String,
+    pub group_index: u32,
+    pub snapshot_version: u64,
+}
+
 #[cfg(test)]
 mod protocol_code_tests {
     //! フロント境界（Tauri コマンド引数）の deserialize 表現と `into_domain()` 変換を固定する。
@@ -188,5 +232,57 @@ mod protocol_code_tests {
         assert_eq!(d.children[0].status, Some("modified".to_string()));
         assert_eq!(d.children[0].additions, Some(1));
         assert_eq!(d.children[0].deletions, Some(2));
+    }
+
+    #[test]
+    fn test_review_file_view_inputはtarget_file_idとviewportを受理する() {
+        let json = r#"{
+            "worktreePath": "/repo",
+            "target": {"by": "fileId", "value": "src/main.rs"},
+            "section": "changes",
+            "base": "head",
+            "snapshotVersion": 12,
+            "viewport": {"startLine": 3, "endLine": 8}
+        }"#;
+
+        let input: ReviewFileViewInput = serde_json::from_str(json).unwrap();
+
+        assert_eq!(input.worktree_path, "/repo");
+        match input.target {
+            ReviewTargetInput::FileId(value) => assert_eq!(value, "src/main.rs"),
+            ReviewTargetInput::Path(_) => panic!("expected fileId target"),
+        }
+        assert_eq!(input.snapshot_version, Some(12));
+        assert_eq!(input.viewport.unwrap().start_line, 3);
+    }
+
+    #[test]
+    fn test_review_group_action_inputはcamelcaseを受理する() {
+        let json = r#"{
+            "worktreePath": "/repo",
+            "path": "src/main.rs",
+            "section": "changes",
+            "base": "head",
+            "groupIndex": 2,
+            "snapshotVersion": 12
+        }"#;
+
+        let input: ReviewGroupActionInput = serde_json::from_str(json).unwrap();
+
+        assert_eq!(input.worktree_path, "/repo");
+        assert_eq!(input.path, "src/main.rs");
+        assert_eq!(input.section, "changes");
+        assert_eq!(input.base, "head");
+        assert_eq!(input.group_index, 2);
+        assert_eq!(input.snapshot_version, 12);
+    }
+
+    #[test]
+    fn test_review_snapshot_inputはcamelcaseを受理する() {
+        let input: ReviewSnapshotInput =
+            serde_json::from_str(r#"{"worktreePath":"/repo","base":"branch-base"}"#).unwrap();
+
+        assert_eq!(input.worktree_path, "/repo");
+        assert_eq!(input.base, "branch-base");
     }
 }

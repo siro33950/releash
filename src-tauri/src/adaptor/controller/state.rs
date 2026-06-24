@@ -9,6 +9,7 @@ use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::repo_paths_usecase::RepoPathsUsecase;
 use crate::usecase::repository_state::RepositoryStateService;
 use crate::usecase::repository_usecase::RepositoryUsecase;
+use crate::usecase::review_usecase::ReviewUsecase;
 use crate::usecase::workflow::WorkflowUsecase;
 
 pub struct AppState {
@@ -16,5 +17,6 @@ pub struct AppState {
     pub repository_state: Arc<RepositoryStateService>,
     pub repo_paths_usecase: Arc<RepoPathsUsecase>,
     pub code_usecase: Arc<CodeUsecase>,
+    pub review_usecase: Arc<ReviewUsecase>,
     pub workflow_usecase: Arc<WorkflowUsecase>,
 }

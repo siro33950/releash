@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
-import type { DiffTreeNode } from "@/hooks/useDiffFileTree";
+import type { DiffTreeNode } from "@/types/review";
 
 export interface FileNavigationResult {
 	current_index: number;

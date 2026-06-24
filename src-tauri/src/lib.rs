@@ -212,6 +212,10 @@ pub fn run() {
                         Arc::new(adaptor::gateway::repository::state::FsWorktreePathNormalizer),
                     ));
                 app.manage(repository_state.clone());
+                let review_usecase = Arc::new(usecase::review_usecase::ReviewUsecase::new(
+                    repository_state.clone(),
+                    code_usecase.clone(),
+                ));
                 let workflow_usecase = Arc::new(
                     adaptor::controller::wiring::build_workflow_usecase_with_repository_worktrees(
                         data_dir.clone(),
@@ -227,6 +231,7 @@ pub fn run() {
                     repository_state,
                     repo_paths_usecase,
                     code_usecase,
+                    review_usecase,
                     workflow_usecase,
                 });
             }
@@ -445,6 +450,8 @@ pub fn run() {
 
             Ok(())
         });
+    let builder =
+        adaptor::controller::command::code::review_blob::register_review_blob_protocol(builder);
 
     let builder = adaptor::controller::command::register_all(builder);
     builder

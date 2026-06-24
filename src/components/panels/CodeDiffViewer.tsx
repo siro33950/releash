@@ -1,13 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
 import type { ReviewDiscussionThread } from "@/types/diffComment";
 import type { DiffMode } from "@/types/settings";
 import { ShikiDiffViewer } from "./ShikiDiffViewer";
-
-interface DiffHunksResult {
-	hunks: Hunk[];
-}
 
 export interface CodeDiffViewerProps {
 	originalContent: string;
@@ -16,6 +12,7 @@ export interface CodeDiffViewerProps {
 	diffOnlyMode?: boolean;
 	language?: string;
 	filePath?: string;
+	hunks: Hunk[];
 	changeGroups?: ChangeGroup[];
 	onStageGroup?: (groupIndex: number) => void;
 	groupActionLabel?: string;
@@ -45,6 +42,7 @@ export function CodeDiffViewer({
 	diffOnlyMode,
 	language,
 	filePath,
+	hunks: providedHunks,
 	changeGroups,
 	onStageGroup,
 	groupActionLabel,
@@ -59,48 +57,32 @@ export function CodeDiffViewer({
 	onLineRangeSelected,
 }: CodeDiffViewerProps) {
 	const [detectedLanguage, setDetectedLanguage] = useState("plaintext");
-	const [hunks, setHunks] = useState<Hunk[] | null>(null);
-	const requestIdRef = useRef(0);
-	const prevFilePathRef = useRef(filePath);
 
 	useEffect(() => {
-		const id = ++requestIdRef.current;
-		if (prevFilePathRef.current !== filePath) {
-			setHunks(null);
-			prevFilePathRef.current = filePath;
+		if (language) {
+			setDetectedLanguage(language);
+			return;
 		}
-		if (!language) setDetectedLanguage("plaintext");
+		if (!filePath) {
+			setDetectedLanguage("plaintext");
+			return;
+		}
 
-		const langPromise =
-			!language && filePath
-				? invoke<string>("get_language_from_path", { filePath }).catch(
-						() => "plaintext",
-					)
-				: Promise.resolve(language ?? "plaintext");
-
-		const hunksPromise = invoke<DiffHunksResult>("compute_diff_hunks", {
-			original: originalContent,
-			modified: modifiedContent,
-			filePath: filePath ?? null,
-		});
-
-		Promise.all([langPromise, hunksPromise])
-			.then(([detectedLang, hunksResult]) => {
-				if (requestIdRef.current !== id) return;
-				setDetectedLanguage(detectedLang);
-				setHunks(hunksResult.hunks);
+		let cancelled = false;
+		setDetectedLanguage("plaintext");
+		invoke<string>("get_language_from_path", { filePath })
+			.then((detectedLang) => {
+				if (!cancelled) setDetectedLanguage(detectedLang);
 			})
 			.catch(() => {
-				if (requestIdRef.current !== id) return;
-				setHunks([]);
+				if (!cancelled) setDetectedLanguage("plaintext");
 			});
-	}, [originalContent, modifiedContent, filePath, language]);
+		return () => {
+			cancelled = true;
+		};
+	}, [filePath, language]);
 
 	const resolvedLanguage = language ?? detectedLanguage;
-
-	if (hunks === null) {
-		return null;
-	}
 
 	return (
 		<ShikiDiffViewer
@@ -109,7 +91,7 @@ export function CodeDiffViewer({
 			diffMode={diffMode}
 			diffOnlyMode={diffOnlyMode}
 			language={resolvedLanguage}
-			hunks={hunks}
+			hunks={providedHunks}
 			filePath={filePath}
 			changeGroups={changeGroups}
 			onStageGroup={onStageGroup}

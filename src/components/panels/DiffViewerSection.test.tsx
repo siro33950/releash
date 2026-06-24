@@ -22,6 +22,8 @@ const baseProps = {
 	originalContent: "original",
 	modifiedContent: "modified",
 	diffMode: "inline" as const,
+	hunks: [],
+	changeGroups: [],
 };
 
 describe("DiffViewerSection", () => {
@@ -42,6 +44,45 @@ describe("DiffViewerSection", () => {
 		expect(screen.getByTestId("code-diff-viewer")).toBeDefined();
 	});
 
+	it("renders fallback notice when review file view is limited", () => {
+		render(
+			<DiffViewerSection
+				{...baseProps}
+				fallbackView={{
+					kind: "fallback",
+					version: 3,
+					stale: false,
+					fileId: "large.txt",
+					path: "large.txt",
+					reason: "fileSize",
+					totalLines: null,
+					sizeBytes: 1_048_577,
+					hunkCount: null,
+					limited: true,
+				}}
+			/>,
+		);
+
+		expect(screen.getByText("File is too large to preview")).toBeDefined();
+		expect(screen.queryByTestId("code-diff-viewer")).toBeNull();
+	});
+
+	it("renders an error notice instead of loading when review file view fails", () => {
+		render(
+			<DiffViewerSection
+				{...baseProps}
+				hunks={null}
+				error="Failed to load diff: review target is not in snapshot"
+			/>,
+		);
+
+		expect(
+			screen.getByText("Failed to load diff: review target is not in snapshot"),
+		).toBeDefined();
+		expect(screen.queryByText("Loading diff")).toBeNull();
+		expect(screen.queryByTestId("code-diff-viewer")).toBeNull();
+	});
+
 	it("renders CodeDiffViewer when isMarkdown is true but showPreview is false", () => {
 		render(
 			<DiffViewerSection
@@ -51,5 +92,11 @@ describe("DiffViewerSection", () => {
 			/>,
 		);
 		expect(screen.getByTestId("code-diff-viewer")).toBeDefined();
+	});
+
+	it("does not render CodeDiffViewer before Rust hunks are available", () => {
+		render(<DiffViewerSection {...baseProps} hunks={null} />);
+		expect(screen.queryByTestId("code-diff-viewer")).toBeNull();
+		expect(screen.getByText("Loading diff")).toBeDefined();
 	});
 });

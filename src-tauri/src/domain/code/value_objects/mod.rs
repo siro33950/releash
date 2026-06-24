@@ -14,8 +14,12 @@ pub mod diff_tree;
 pub mod hunk;
 pub mod mention_reference;
 pub mod range;
+pub mod review;
 
 pub use diff_tree::{DiffFileEntry, DiffTreeNode, FileNavigationResult};
 pub use hunk::{ChangeGroup, Hunk};
 pub use mention_reference::MentionReference;
 pub use range::{HiddenRange, VisibleBlock};
+pub use review::{
+    ReviewBase, ReviewBlobContentType, ReviewLimitReason, ReviewSection, ReviewThresholds,
+};

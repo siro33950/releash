@@ -17,6 +17,7 @@ use crate::adaptor::gateway::code::branch_diff::BranchDiffGateway;
 use crate::adaptor::gateway::code::diff_compute::DiffComputerGateway;
 use crate::adaptor::gateway::code::file_content::FileContentGateway;
 use crate::adaptor::gateway::code::mention::MentionGateway;
+use crate::adaptor::gateway::code::review_blob_url::ReviewBlobUrlGateway;
 use crate::adaptor::gateway::code::staging::StagingGateway;
 use crate::adaptor::gateway::repository::branch::BranchGateway;
 use crate::adaptor::gateway::repository::branch_card::BranchCardGateway;
@@ -86,7 +87,11 @@ pub(crate) fn build_code_usecase() -> CodeUsecase {
         Arc::new(MentionGateway),
         Arc::new(BranchBaseResolverGateway::new(Arc::new(GitConfigGateway))),
     );
-    CodeUsecase::new(Arc::new(StagingGateway), query)
+    CodeUsecase::new(
+        Arc::new(StagingGateway),
+        query,
+        Arc::new(ReviewBlobUrlGateway),
+    )
 }
 
 pub(crate) fn build_session_store() -> SessionStore {

@@ -10,6 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffStatsDto {
     pub additions: u32,
@@ -35,7 +37,7 @@ pub struct BranchDiffSummaryDto {
 // ── hunk / patch / range（Query が domain サービスの算出結果を詰め替えて返す） ──
 
 /// 単一の diff hunk の転送表現。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HunkDto {
     pub index: u32,
@@ -47,7 +49,7 @@ pub struct HunkDto {
 }
 
 /// hunk 内の変更ブロック（Approve 単位）の転送表現。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangeGroupDto {
     pub group_index: u32,
@@ -110,6 +112,125 @@ pub struct FileNavigationResultDto {
     pub total: usize,
     pub prev_file: Option<String>,
     pub next_file: Option<String>,
+}
+
+/// review ファイル一覧 read model。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSnapshotDto {
+    pub version: u64,
+    pub stale: bool,
+    pub loading: bool,
+    pub limited: bool,
+    pub base: String,
+    pub files: Vec<ReviewFileEntryDto>,
+    pub status: Vec<FileStatusDto>,
+    pub diff_stats: Vec<FileDiffStatDto>,
+    pub tree: Vec<DiffTreeNodeDto>,
+    pub staged_tree: Vec<DiffTreeNodeDto>,
+    pub changes_tree: Vec<DiffTreeNodeDto>,
+    pub staged_file_count: usize,
+    pub changes_file_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewFileEntryDto {
+    pub file_id: String,
+    pub path: String,
+    pub index_status: String,
+    pub worktree_status: String,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewportDto {
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ReviewFileViewDto {
+    TextDiff(ReviewTextDiffDto),
+    Image(ReviewImageDto),
+    Binary(ReviewBinaryDto),
+    Fallback(ReviewFallbackDto),
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewTextDiffDto {
+    pub version: u64,
+    pub stale: bool,
+    pub file_id: String,
+    pub path: String,
+    pub original: String,
+    pub modified: String,
+    pub source: ReviewTextSource,
+    pub hunks: Vec<HunkDto>,
+    pub change_groups: Vec<ChangeGroupDto>,
+    pub limited: bool,
+    pub viewport: Option<ViewportDto>,
+    pub total_lines: u32,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ReviewTextSource {
+    Diff,
+    Added,
+    Deleted,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewImageDto {
+    pub version: u64,
+    pub stale: bool,
+    pub file_id: String,
+    pub path: String,
+    pub original_url: Option<String>,
+    pub modified_url: Option<String>,
+    pub mime: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewBinaryDto {
+    pub version: u64,
+    pub stale: bool,
+    pub file_id: String,
+    pub path: String,
+    pub original_url: Option<String>,
+    pub modified_url: Option<String>,
+    pub original_size: Option<u64>,
+    pub modified_size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewFallbackDto {
+    pub version: u64,
+    pub stale: bool,
+    pub file_id: String,
+    pub path: String,
+    pub reason: ReviewLimitReasonDto,
+    pub total_lines: Option<u32>,
+    pub size_bytes: Option<u64>,
+    pub hunk_count: Option<u32>,
+    pub limited: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ReviewLimitReasonDto {
+    FileSize,
+    LineCount,
+    HunkCount,
+    Tokenization,
 }
 
 #[cfg(test)]
@@ -287,5 +408,115 @@ mod code_dto_serialize_tests {
         assert_eq!(v["changed_files"][0]["old_path"], json!("g.rs"));
         assert_eq!(v["changed_files"][0]["stats"]["additions"], json!(1));
         assert_eq!(v["changed_files"][0]["binary"], json!(false));
+    }
+
+    #[test]
+    fn test_review_file_view_dtoはkindタグでcamelcase出力する() {
+        let dto = ReviewFileViewDto::TextDiff(ReviewTextDiffDto {
+            version: 4,
+            stale: false,
+            file_id: "src/main.rs".to_string(),
+            path: "src/main.rs".to_string(),
+            original: "old".to_string(),
+            modified: "new".to_string(),
+            source: ReviewTextSource::Diff,
+            hunks: vec![HunkDto {
+                index: 0,
+                old_start: 1,
+                old_lines: 1,
+                new_start: 1,
+                new_lines: 1,
+                lines: vec!["-old".to_string(), "+new".to_string()],
+            }],
+            change_groups: vec![ChangeGroupDto {
+                group_index: 0,
+                hunk_index: 0,
+                new_start: 1,
+                new_end: 1,
+                line_offset_start: 0,
+                line_offset_end: 1,
+                is_staged: None,
+            }],
+            limited: false,
+            viewport: Some(ViewportDto {
+                start_line: 1,
+                end_line: 2,
+            }),
+            total_lines: 2,
+        });
+
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap(),
+            json!({
+                "kind": "textDiff",
+                "version": 4,
+                "stale": false,
+                "fileId": "src/main.rs",
+                "path": "src/main.rs",
+                "original": "old",
+                "modified": "new",
+                "source": "diff",
+                "hunks": [{
+                    "index": 0,
+                    "oldStart": 1,
+                    "oldLines": 1,
+                    "newStart": 1,
+                    "newLines": 1,
+                    "lines": ["-old", "+new"]
+                }],
+                "changeGroups": [{
+                    "groupIndex": 0,
+                    "hunkIndex": 0,
+                    "newStart": 1,
+                    "newEnd": 1,
+                    "lineOffsetStart": 0,
+                    "lineOffsetEnd": 1
+                }],
+                "limited": false,
+                "viewport": {"startLine": 1, "endLine": 2},
+                "totalLines": 2
+            })
+        );
+    }
+
+    #[test]
+    fn test_review_snapshot_dtoはcamelcaseと既存tree_snakecaseを混在保持する() {
+        let dto = ReviewSnapshotDto {
+            version: 4,
+            stale: false,
+            loading: false,
+            limited: false,
+            base: "head".to_string(),
+            files: vec![ReviewFileEntryDto {
+                file_id: "a.rs".to_string(),
+                path: "a.rs".to_string(),
+                index_status: "modified".to_string(),
+                worktree_status: "none".to_string(),
+                additions: 1,
+                deletions: 2,
+            }],
+            status: Vec::new(),
+            diff_stats: Vec::new(),
+            tree: vec![DiffTreeNodeDto {
+                id: "a.rs".to_string(),
+                name: "a.rs".to_string(),
+                path: "a.rs".to_string(),
+                node_type: "file".to_string(),
+                status: Some("modified".to_string()),
+                additions: Some(1),
+                deletions: Some(2),
+                children: Vec::new(),
+            }],
+            staged_tree: Vec::new(),
+            changes_tree: Vec::new(),
+            staged_file_count: 1,
+            changes_file_count: 0,
+        };
+        let v = serde_json::to_value(&dto).unwrap();
+
+        assert_eq!(v["fileId"], json!(null));
+        assert_eq!(v["files"][0]["fileId"], json!("a.rs"));
+        assert_eq!(v["stagedTree"], json!([]));
+        assert_eq!(v["tree"][0]["node_type"], json!("file"));
     }
 }

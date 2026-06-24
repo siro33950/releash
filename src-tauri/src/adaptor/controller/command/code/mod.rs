@@ -9,6 +9,8 @@ pub(crate) mod file_content;
 pub(crate) mod hunk;
 pub(crate) mod language;
 pub(crate) mod mention;
+pub(crate) mod review;
+pub(crate) mod review_blob;
 pub(crate) mod staging;
 
 use crate::other::AppError;

@@ -1,19 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback } from "react";
-import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
-
-interface DiffHunksResult {
-	hunks: Hunk[];
-	changeGroups: ChangeGroup[];
-}
+import type { DiffBase, DiffSection } from "@/types/settings";
 
 export interface UseDiffOperationsParams {
-	filePath: string;
 	rootPath: string | null;
-	originalContent: string;
-	modifiedContent: string;
-	onStageHunk?: (rootPath: string, patch: string) => Promise<void>;
-	onUnstageHunk?: (rootPath: string, patch: string) => Promise<void>;
+	filePath: string | null;
+	section: DiffSection;
+	base: DiffBase;
+	snapshotVersion: number | null;
 	onGitChanged?: () => void;
 }
 
@@ -23,64 +17,46 @@ export interface UseDiffOperationsResult {
 }
 
 export function useDiffOperations({
-	filePath,
 	rootPath,
-	originalContent,
-	modifiedContent,
-	onStageHunk,
-	onUnstageHunk,
+	filePath,
+	section,
+	base,
+	snapshotVersion,
 	onGitChanged,
 }: UseDiffOperationsParams): UseDiffOperationsResult {
 	const applyGroupAction = useCallback(
-		async (
-			groupIndex: number,
-			action: ((rootPath: string, patch: string) => Promise<void>) | undefined,
-		) => {
-			if (!rootPath || !action) return;
+		async (command: string, groupIndex: number) => {
+			if (!rootPath || !filePath || snapshotVersion == null) return;
 
 			try {
-				const relativePath = await invoke<string | null>("get_relative_path", {
-					rootPath,
-					filePath,
+				await invoke(command, {
+					input: {
+						worktreePath: rootPath,
+						path: filePath,
+						section,
+						base,
+						groupIndex,
+						snapshotVersion,
+					},
 				});
-				if (!relativePath) return;
-
-				const result = await invoke<DiffHunksResult>("compute_diff_hunks", {
-					original: originalContent,
-					modified: modifiedContent,
-					filePath: relativePath,
-				});
-				const group = result.changeGroups.find(
-					(g) => g.groupIndex === groupIndex,
-				);
-				if (!group) return;
-				const hunk = result.hunks.find((h) => h.index === group.hunkIndex);
-				if (!hunk) return;
-
-				const patch = await invoke<string>("generate_group_patch", {
-					filePath: relativePath,
-					hunk,
-					group,
-				});
-				if (patch) {
-					await action(rootPath, patch);
-					onGitChanged?.();
-				}
+				onGitChanged?.();
 			} catch (e) {
 				console.error("Group action failed:", e);
 			}
 		},
-		[rootPath, filePath, originalContent, modifiedContent, onGitChanged],
+		[rootPath, filePath, section, base, snapshotVersion, onGitChanged],
 	);
 
 	const handleStageGroup = useCallback(
-		(groupIndex: number) => applyGroupAction(groupIndex, onStageHunk),
-		[applyGroupAction, onStageHunk],
+		(groupIndex: number) =>
+			applyGroupAction("git_stage_review_group", groupIndex),
+		[applyGroupAction],
 	);
 
 	const handleUnstageGroup = useCallback(
-		(groupIndex: number) => applyGroupAction(groupIndex, onUnstageHunk),
-		[applyGroupAction, onUnstageHunk],
+		(groupIndex: number) =>
+			applyGroupAction("git_unstage_review_group", groupIndex),
+		[applyGroupAction],
 	);
 
 	return {

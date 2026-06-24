@@ -21,18 +21,13 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useBranchDiffFiles } from "@/hooks/useBranchDiffFiles";
 import { useDiffComments } from "@/hooks/useDiffComments";
-import { useDiffFileTree } from "@/hooks/useDiffFileTree";
-import { useFileDiffContent } from "@/hooks/useFileDiffContent";
 import { useFileNavigation } from "@/hooks/useFileNavigation";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitEventRefresh } from "@/hooks/useGitEventRefresh";
-import { useGitStatus } from "@/hooks/useGitStatus";
-import { useHunks } from "@/hooks/useHunks";
-import { useImageDiff } from "@/hooks/useImageDiff";
+import { useReviewFileView } from "@/hooks/useReviewFileView";
 import { useReviewPanel } from "@/hooks/useReviewPanel";
-import { isImageFile } from "@/lib/imageUtils";
+import { useReviewSnapshot } from "@/hooks/useReviewSnapshot";
 import { isMarkdownFile } from "@/lib/markdownUtils";
 import { cn } from "@/lib/utils";
 import type { ThreadNavigationTarget } from "@/types/diffComment";
@@ -47,7 +42,6 @@ import { useDiffOperations } from "./useDiffOperations";
 
 interface ReviewPanelProps {
 	rootPath: string;
-	baseBranch: string | null;
 	defaultDiffBase?: DiffBase;
 	defaultDiffMode?: DiffMode;
 	diffOnlyMode: boolean;
@@ -125,7 +119,6 @@ function DiffBaseToggle({
 
 export function ReviewPanel({
 	rootPath,
-	baseBranch,
 	defaultDiffBase,
 	defaultDiffMode,
 	diffOnlyMode,
@@ -181,35 +174,19 @@ export function ReviewPanel({
 	}, []);
 	useGitEventRefresh(rootPath, handleGitEventRefresh);
 
-	// File lists
-	const { files: branchDiffFiles } = useBranchDiffFiles(
-		rootPath,
-		diffBase === "branch-base",
-		baseBranch,
-	);
+	// Review file list read model
 	const {
 		stagedFiles,
 		changedFiles,
-		version: gitStatusVersion,
-		refresh: refreshGitStatus,
-	} = useGitStatus(rootPath, gitRefreshKey);
-
-	// Tree
-	const {
 		stagedTree,
 		changesTree,
 		stagedFileCount,
 		changesFileCount,
 		branchBaseTree,
 		branchBaseFileCount,
-	} = useDiffFileTree(
-		diffBase,
-		branchDiffFiles,
-		stagedFiles,
-		changedFiles,
-		rootPath,
-		gitStatusVersion,
-	);
+		version: reviewSnapshotVersion,
+		refresh: refreshReviewSnapshot,
+	} = useReviewSnapshot(rootPath, diffBase, gitRefreshKey);
 
 	const totalFileCount =
 		diffBase === "branch-base"
@@ -298,30 +275,32 @@ export function ReviewPanel({
 
 	// File diff content
 	const selectedFilePath = selectedFile ? `${rootPath}/${selectedFile}` : null;
-	const { originalContent, modifiedContent } = useFileDiffContent(
-		selectedFilePath,
-		diffBase,
-		selectedSection,
-		gitRefreshKey,
-	);
-
-	// Hunks
-	const { changeGroups } = useHunks(
+	const {
+		view: reviewFileView,
 		originalContent,
 		modifiedContent,
-		selectedFile ?? undefined,
-	);
-
-	// Image / Markdown detection
-	const isImage = selectedFile ? isImageFile(selectedFile) : false;
-	const isMarkdown = selectedFile ? isMarkdownFile(selectedFile) : false;
-	const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
-	const imageDiff = useImageDiff(
-		isImage ? selectedFilePath : null,
+		hunks,
+		changeGroups,
+		imageDiff,
+		error: reviewFileViewError,
+	} = useReviewFileView(
+		rootPath,
+		selectedFile,
 		diffBase,
 		selectedSection,
 		gitRefreshKey,
+		reviewSnapshotVersion,
 	);
+	const fallbackView =
+		reviewFileView?.kind === "fallback" ? reviewFileView : null;
+	const binaryView = reviewFileView?.kind === "binary" ? reviewFileView : null;
+	const isTextDiff = reviewFileView?.kind === "textDiff";
+
+	// Image / Markdown detection
+	const isImage = reviewFileView?.kind === "image";
+	const isMarkdown =
+		isTextDiff && selectedFile ? isMarkdownFile(selectedFile) : false;
+	const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
 
 	// Diff comments
 	const worktreeName = rootPath;
@@ -412,24 +391,26 @@ export function ReviewPanel({
 	);
 
 	// Stage/Unstage actions
-	const { stage, unstage, stageHunk, unstageHunk } = useGitActions();
+	const { stage, unstage } = useGitActions();
 
 	const refreshAfterAction = useCallback(() => {
 		setGitRefreshKey((k) => k + 1);
-		refreshGitStatus();
-	}, [refreshGitStatus]);
+		refreshReviewSnapshot();
+	}, [refreshReviewSnapshot]);
 
 	// Determine action label and handler based on section
 	const isBranchBase = diffBase === "branch-base";
 	const groupActionLabel = selectedSection === "staged" ? "Unstage" : "Stage";
 
 	const diffOps = useDiffOperations({
-		filePath: selectedFilePath ?? "",
 		rootPath,
-		originalContent,
-		modifiedContent,
-		onStageHunk: stageHunk,
-		onUnstageHunk: unstageHunk,
+		filePath: selectedFile,
+		section: selectedSection,
+		base: diffBase,
+		snapshotVersion:
+			reviewFileView?.kind === "textDiff" && !reviewFileView.stale
+				? reviewFileView.version
+				: null,
 		onGitChanged: refreshAfterAction,
 	});
 
@@ -437,6 +418,10 @@ export function ReviewPanel({
 		selectedSection === "staged"
 			? diffOps.handleUnstageGroup
 			: diffOps.handleStageGroup;
+	const canUseGroupActions =
+		!isBranchBase &&
+		reviewFileView?.kind === "textDiff" &&
+		!reviewFileView.stale;
 
 	const handleStageFile = useCallback(
 		async (path: string) => {
@@ -745,17 +730,25 @@ export function ReviewPanel({
 											isMarkdown={isMarkdown}
 											showPreview={isMarkdown && showMarkdownPreview}
 											imageDiff={imageDiff}
+											binaryView={binaryView}
+											fallbackView={fallbackView}
+											error={reviewFileViewError}
 											originalContent={originalContent}
 											modifiedContent={modifiedContent}
 											diffMode={diffMode}
 											diffOnlyMode={diffOnlyMode}
 											filePath={selectedFile}
-											changeGroups={isBranchBase ? undefined : changeGroups}
+											hunks={isTextDiff ? hunks : null}
+											changeGroups={
+												canUseGroupActions
+													? (changeGroups ?? undefined)
+													: undefined
+											}
 											onStageGroup={
-												isBranchBase ? undefined : handleGroupAction
+												canUseGroupActions ? handleGroupAction : undefined
 											}
 											groupActionLabel={
-												isBranchBase ? undefined : groupActionLabel
+												canUseGroupActions ? groupActionLabel : undefined
 											}
 											comments={lineComments}
 											onAddComment={handleAddLineComment}
