@@ -19,6 +19,15 @@ use super::repository_error::UsecaseError;
 /// 中間 Entity を介さず直接組み立てる。
 pub trait BranchCardQuery: Send + Sync {
     fn list_branch_cards(&self, repo_path: &str) -> Result<Vec<BranchCardDto>, RepositoryError>;
+
+    fn list_branch_cards_for_scan(
+        &self,
+        repo_path: &str,
+        current_dirty_count: usize,
+    ) -> Result<Vec<BranchCardDto>, RepositoryError> {
+        let _ = current_dirty_count;
+        self.list_branch_cards(repo_path)
+    }
 }
 
 /// read model（`BranchCardDto`）を構築する読み取りクエリサービス。
@@ -33,11 +42,24 @@ impl RepositoryQueryService {
         Self { branch_card_query }
     }
 
+    #[cfg(test)]
     pub fn list_branches_with_status(
         &self,
         repo_path: &str,
     ) -> Result<Vec<BranchCardDto>, UsecaseError> {
         let mut cards = self.branch_card_query.list_branch_cards(repo_path)?;
+        cards.sort_by_key(|card| !card.is_main_worktree);
+        Ok(cards)
+    }
+
+    pub fn list_branches_with_status_for_scan(
+        &self,
+        repo_path: &str,
+        current_dirty_count: usize,
+    ) -> Result<Vec<BranchCardDto>, UsecaseError> {
+        let mut cards = self
+            .branch_card_query
+            .list_branch_cards_for_scan(repo_path, current_dirty_count)?;
         cards.sort_by_key(|card| !card.is_main_worktree);
         Ok(cards)
     }

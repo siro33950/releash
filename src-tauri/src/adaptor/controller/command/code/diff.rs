@@ -7,6 +7,7 @@ use crate::adaptor::controller::state::AppState;
 use crate::adaptor::protocol::code::{DiffFileEntryInput, DiffTreeNodeInput};
 use crate::other::AppError;
 use crate::usecase::code_dto::{BranchDiffSummaryDto, DiffTreeNodeDto, FileNavigationResultDto};
+use crate::usecase::repository_state::snapshot::RepositoryHeadDiffFileTreeSnapshotDto;
 
 #[tauri::command]
 pub async fn build_diff_file_tree(
@@ -20,6 +21,18 @@ pub async fn build_diff_file_tree(
             .map(DiffFileEntryInput::into_domain)
             .collect();
         Ok(uc.build_diff_file_tree(entries))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_head_diff_file_tree_snapshot(
+    state: State<'_, AppState>,
+    repo_path: String,
+) -> Result<RepositoryHeadDiffFileTreeSnapshotDto, AppError> {
+    let service = state.repository_state.clone();
+    super::super::repository::run_repository_state(move || {
+        service.get_head_diff_file_tree_snapshot(&repo_path)
     })
     .await
 }

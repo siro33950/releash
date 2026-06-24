@@ -15,8 +15,19 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 function gitStatusCallCount(): number {
-	return mockInvoke.mock.calls.filter((call) => call[0] === "get_git_status")
-		.length;
+	return mockInvoke.mock.calls.filter(
+		(call) => call[0] === "get_git_status_snapshot",
+	).length;
+}
+
+function statusSnapshot(status: GitFileStatus[], version = 1) {
+	return {
+		version,
+		stale: false,
+		loading: false,
+		limited: false,
+		status,
+	};
 }
 
 describe("useGitStatus", () => {
@@ -49,7 +60,8 @@ describe("useGitStatus", () => {
 			{ path: "staged.txt", index_status: "new", worktree_status: "none" },
 		];
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve(mockEntries);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot(mockEntries));
 			if (cmd === "start_watching") return Promise.resolve(1);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);
@@ -78,7 +90,8 @@ describe("useGitStatus", () => {
 			{ path: "deleted.txt", index_status: "none", worktree_status: "deleted" },
 		];
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve(mockEntries);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot(mockEntries));
 			if (cmd === "start_watching") return Promise.resolve(1);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);
@@ -114,7 +127,8 @@ describe("useGitStatus", () => {
 			},
 		];
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve(mockEntries);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot(mockEntries));
 			if (cmd === "start_watching") return Promise.resolve(1);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);
@@ -151,7 +165,8 @@ describe("useGitStatus", () => {
 			},
 		];
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve(mockEntries);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot(mockEntries));
 			if (cmd === "start_watching") return Promise.resolve(1);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);
@@ -175,7 +190,7 @@ describe("useGitStatus", () => {
 
 	it("should handle invoke error gracefully", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status")
+			if (cmd === "get_git_status_snapshot")
 				return Promise.reject(new Error("not a git repo"));
 			if (cmd === "start_watching") return Promise.resolve(1);
 			if (cmd === "stop_watching") return Promise.resolve();
@@ -198,7 +213,8 @@ describe("useGitStatus", () => {
 
 		const WATCHER_ID = 42;
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve([]);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot([]));
 			if (cmd === "start_watching") return Promise.resolve(WATCHER_ID);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);
@@ -256,7 +272,8 @@ describe("useGitStatus", () => {
 
 		const WATCHER_ID = 42;
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve([]);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot([]));
 			if (cmd === "start_watching") return Promise.resolve(WATCHER_ID);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);
@@ -311,7 +328,8 @@ describe("useGitStatus", () => {
 			},
 		];
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve(mockEntries);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot(mockEntries));
 			if (cmd === "start_watching") return Promise.resolve(WATCHER_ID);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);
@@ -367,7 +385,8 @@ describe("useGitStatus", () => {
 
 	it("should re-fetch when refresh is called", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve([]);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot([]));
 			if (cmd === "start_watching") return Promise.resolve(1);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);
@@ -388,7 +407,7 @@ describe("useGitStatus", () => {
 		});
 	});
 
-	it("should skip state update when entries are identical to previous fetch", async () => {
+	it("should update state when version increases even if entries are identical", async () => {
 		const mockEntries: GitFileStatus[] = [
 			{
 				path: "src/main.ts",
@@ -396,8 +415,10 @@ describe("useGitStatus", () => {
 				worktree_status: "modified",
 			},
 		];
+		let version = 0;
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve(mockEntries);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot(mockEntries, ++version));
 			if (cmd === "start_watching") return Promise.resolve(1);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);
@@ -408,9 +429,61 @@ describe("useGitStatus", () => {
 		await waitFor(() => {
 			expect(result.current.statusMap.size).toBe(1);
 		});
+		expect(result.current.version).toBe(1);
 
 		const firstStatusMap = result.current.statusMap;
+		const firstStagedFiles = result.current.stagedFiles;
 		const firstChangedFiles = result.current.changedFiles;
+
+		act(() => {
+			result.current.refresh();
+		});
+
+		await waitFor(() => {
+			expect(result.current.version).toBe(2);
+		});
+
+		expect(gitStatusCallCount()).toBe(2);
+		expect(result.current.statusMap).not.toBe(firstStatusMap);
+		expect(result.current.stagedFiles).not.toBe(firstStagedFiles);
+		expect(result.current.changedFiles).not.toBe(firstChangedFiles);
+		expect(result.current.statusMap.size).toBe(1);
+	});
+
+	it("should ignore snapshots whose version does not increase", async () => {
+		const initialEntries: GitFileStatus[] = [
+			{
+				path: "src/main.ts",
+				index_status: "none",
+				worktree_status: "modified",
+			},
+		];
+		let nextSnapshot = statusSnapshot(initialEntries, 3);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(nextSnapshot);
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
+
+		const { result } = renderHook(() => useGitStatus("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.version).toBe(3);
+		});
+
+		const firstStatusMap = result.current.statusMap;
+		nextSnapshot = statusSnapshot(
+			[
+				{
+					path: "src/older.ts",
+					index_status: "none",
+					worktree_status: "new",
+				},
+			],
+			2,
+		);
 
 		act(() => {
 			result.current.refresh();
@@ -419,9 +492,13 @@ describe("useGitStatus", () => {
 		await waitFor(() => {
 			expect(gitStatusCallCount()).toBe(2);
 		});
+		await act(async () => {
+			await Promise.resolve();
+		});
 
+		expect(result.current.version).toBe(3);
 		expect(result.current.statusMap).toBe(firstStatusMap);
-		expect(result.current.changedFiles).toBe(firstChangedFiles);
+		expect(result.current.statusMap.has("/test/repo/src/older.ts")).toBe(false);
 	});
 
 	it("should update state when entries change between fetches", async () => {
@@ -432,8 +509,10 @@ describe("useGitStatus", () => {
 				worktree_status: "modified",
 			},
 		];
+		let version = 0;
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve(initialEntries);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot(initialEntries, ++version));
 			if (cmd === "start_watching") return Promise.resolve(1);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);
@@ -460,7 +539,8 @@ describe("useGitStatus", () => {
 			},
 		];
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve(updatedEntries);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot(updatedEntries, ++version));
 			if (cmd === "start_watching") return Promise.resolve(1);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);
@@ -480,7 +560,8 @@ describe("useGitStatus", () => {
 	it("should debounce refresh on git-status-changed events", async () => {
 		vi.useFakeTimers();
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve([]);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot([]));
 			if (cmd === "start_watching") return Promise.resolve(1);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);
@@ -523,7 +604,8 @@ describe("useGitStatus", () => {
 	it("should ignore git-status-changed events from different repo_path", async () => {
 		vi.useFakeTimers();
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_git_status") return Promise.resolve([]);
+			if (cmd === "get_git_status_snapshot")
+				return Promise.resolve(statusSnapshot([]));
 			if (cmd === "start_watching") return Promise.resolve(1);
 			if (cmd === "stop_watching") return Promise.resolve();
 			return Promise.resolve([]);

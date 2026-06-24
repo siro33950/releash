@@ -6,7 +6,7 @@ pub mod error;
 pub mod repository;
 pub mod value_objects;
 
-pub use entities::{Branch, Commit, FileDiffStat, FileStatus, Worktree};
+pub use entities::{Branch, Commit, FileDiffStat, FileStatus, RepositoryStatusScan, Worktree};
 pub use error::RepositoryError;
 pub use repository::{
     BranchRepository, GitConfigRepository, LogRepository, RepoLocator, RepoPathsNotifier,

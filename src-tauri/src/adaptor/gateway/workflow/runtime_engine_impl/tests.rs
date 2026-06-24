@@ -6051,6 +6051,20 @@ mod dispatch_boundary_tests {
                 repo_paths_notifier,
             ));
         let code_usecase = Arc::new(crate::adaptor::controller::wiring::build_code_usecase());
+        let repository_state = Arc::new(
+            crate::usecase::repository_state::RepositoryStateService::new(
+                repository_usecase.clone(),
+                code_usecase.clone(),
+                Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateNotifier),
+                Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateWatcher),
+                Arc::new(
+                    crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime,
+                ),
+                Arc::new(
+                    crate::usecase::repository_state::runtime::tests_support::IdentityWorktreePathNormalizer,
+                ),
+            ),
+        );
         let workflow_usecase = Arc::new(
             crate::adaptor::controller::wiring::build_workflow_usecase(data_dir.clone()),
         );
@@ -6063,6 +6077,7 @@ mod dispatch_boundary_tests {
             .manage(registry)
             .manage(crate::adaptor::controller::state::AppState {
                 repository_usecase,
+                repository_state,
                 repo_paths_usecase,
                 code_usecase,
                 workflow_usecase,

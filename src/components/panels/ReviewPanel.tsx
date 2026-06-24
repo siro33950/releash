@@ -190,6 +190,7 @@ export function ReviewPanel({
 	const {
 		stagedFiles,
 		changedFiles,
+		version: gitStatusVersion,
 		refresh: refreshGitStatus,
 	} = useGitStatus(rootPath, gitRefreshKey);
 
@@ -207,6 +208,7 @@ export function ReviewPanel({
 		stagedFiles,
 		changedFiles,
 		rootPath,
+		gitStatusVersion,
 	);
 
 	const totalFileCount =

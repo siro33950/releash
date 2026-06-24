@@ -4,6 +4,14 @@ import type { FileStatus } from "@/types/file-tree";
 import type { GitFileStatus } from "@/types/git";
 import { useGitEventRefresh } from "./useGitEventRefresh";
 
+interface GitStatusSnapshot {
+	version: number;
+	stale: boolean;
+	loading: boolean;
+	limited: boolean;
+	status: GitFileStatus[];
+}
+
 function toFileStatus(entry: GitFileStatus): FileStatus {
 	if (entry.worktree_status === "ignored") return "ignored";
 	if (entry.worktree_status === "new") return "untracked";
@@ -25,24 +33,33 @@ export function useGitStatus(
 	);
 	const [stagedFiles, setStagedFiles] = useState<GitFileStatus[]>([]);
 	const [changedFiles, setChangedFiles] = useState<GitFileStatus[]>([]);
-	const prevEntriesRef = useRef<string>("");
+	const [version, setVersion] = useState(0);
+	const acceptedVersionRef = useRef<number | null>(null);
 
 	const fetchStatus = useCallback(async () => {
 		if (!rootPath) {
 			setStatusMap(new Map());
 			setStagedFiles([]);
 			setChangedFiles([]);
-			prevEntriesRef.current = "";
+			setVersion(0);
+			acceptedVersionRef.current = null;
 			return;
 		}
 		try {
-			const entries = await invoke<GitFileStatus[]>("get_git_status", {
-				repoPath: rootPath,
-			});
-
-			const serialized = JSON.stringify(entries);
-			if (serialized === prevEntriesRef.current) return;
-			prevEntriesRef.current = serialized;
+			const snapshot = await invoke<GitStatusSnapshot>(
+				"get_git_status_snapshot",
+				{
+					repoPath: rootPath,
+				},
+			);
+			if (
+				acceptedVersionRef.current != null &&
+				snapshot.version <= acceptedVersionRef.current
+			) {
+				return;
+			}
+			acceptedVersionRef.current = snapshot.version;
+			const entries = snapshot.status;
 
 			const map = new Map<string, FileStatus>();
 			const staged: GitFileStatus[] = [];
@@ -62,11 +79,13 @@ export function useGitStatus(
 			setStatusMap(map);
 			setStagedFiles(staged);
 			setChangedFiles(changed);
+			setVersion(snapshot.version);
 		} catch {
 			setStatusMap(new Map());
 			setStagedFiles([]);
 			setChangedFiles([]);
-			prevEntriesRef.current = "";
+			setVersion(0);
+			acceptedVersionRef.current = null;
 		}
 	}, [rootPath]);
 
@@ -86,5 +105,5 @@ export function useGitStatus(
 
 	useGitEventRefresh(rootPath, fetchStatus);
 
-	return { statusMap, stagedFiles, changedFiles, refresh };
+	return { statusMap, stagedFiles, changedFiles, version, refresh };
 }

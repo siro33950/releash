@@ -15,3 +15,11 @@ pub struct FileDiffStat {
     pub wt_additions: u32,
     pub wt_deletions: u32,
 }
+
+/// 1 scan サイクル内で同一 repository handle から導出した status 系 read model。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryStatusScan {
+    pub status: Vec<FileStatus>,
+    pub diff_stats: Vec<FileDiffStat>,
+    pub dirty_count: usize,
+}

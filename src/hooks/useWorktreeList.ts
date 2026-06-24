@@ -7,6 +7,14 @@ import type { WorkspaceStatus } from "@/types/session";
 
 const POLL_INTERVAL = 120_000;
 
+interface BranchCardsSnapshot {
+	version: number;
+	stale: boolean;
+	loading: boolean;
+	limited: boolean;
+	branches: WorktreeBranch[];
+}
+
 export function useWorktreeList(repoPath: string) {
 	const [branches, setBranches] = useState<WorktreeBranch[]>([]);
 	const [loading, setLoading] = useState(true);
@@ -49,12 +57,13 @@ export function useWorktreeList(repoPath: string) {
 			const seq = ++refreshSeqRef.current;
 			if (!options?.silent) setLoading(true);
 			try {
-				const cards = await invoke<WorktreeBranch[]>(
-					"list_branches_with_status",
+				const snapshot = await invoke<BranchCardsSnapshot>(
+					"list_branches_with_status_snapshot",
 					{
 						repoPath,
 					},
 				);
+				const cards = snapshot.branches;
 				const enriched = await enrichWithPrStatus(cards);
 				// list_workspace_statuses の失敗では既存 ref を保持し、
 				// 全 agent_state を失わないようにする（一時的な invoke 失敗で UI が

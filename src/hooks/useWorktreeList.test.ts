@@ -36,7 +36,14 @@ function setupMockInvoke(branches: WorktreeBranch[]) {
 	mockInvoke.mockImplementation((cmd: string) => {
 		if (cmd === "start_git_dir_watching") return Promise.resolve(42);
 		if (cmd === "stop_watching") return Promise.resolve();
-		if (cmd === "list_branches_with_status") return Promise.resolve(branches);
+		if (cmd === "list_branches_with_status_snapshot")
+			return Promise.resolve({
+				version: 1,
+				stale: false,
+				loading: false,
+				limited: false,
+				branches,
+			});
 		if (cmd === "list_workspace_statuses") return Promise.resolve([]);
 		if (cmd === "get_cached_pr_status")
 			return Promise.resolve({ open_prs: {}, merged_branches: [] });
@@ -94,7 +101,14 @@ describe("useWorktreeList", () => {
 			if (cmd === "start_git_dir_watching")
 				return Promise.resolve(nextWatcherId);
 			if (cmd === "stop_watching") return Promise.resolve();
-			if (cmd === "list_branches_with_status") return Promise.resolve([]);
+			if (cmd === "list_branches_with_status_snapshot")
+				return Promise.resolve({
+					version: 1,
+					stale: false,
+					loading: false,
+					limited: false,
+					branches: [],
+				});
 			if (cmd === "get_cached_pr_status")
 				return Promise.resolve({ open_prs: {}, merged_branches: [] });
 			if (cmd === "list_workspace_statuses") return Promise.resolve([]);
@@ -120,7 +134,14 @@ describe("useWorktreeList", () => {
 		mockInvoke.mockImplementation((cmd: string) => {
 			if (cmd === "start_git_dir_watching")
 				return Promise.reject(new Error("repo not found"));
-			if (cmd === "list_branches_with_status") return Promise.resolve([]);
+			if (cmd === "list_branches_with_status_snapshot")
+				return Promise.resolve({
+					version: 1,
+					stale: false,
+					loading: false,
+					limited: false,
+					branches: [],
+				});
 			if (cmd === "get_cached_pr_status")
 				return Promise.resolve({ open_prs: {}, merged_branches: [] });
 			if (cmd === "list_workspace_statuses") return Promise.resolve([]);
@@ -148,14 +169,17 @@ describe("useWorktreeList", () => {
 
 		await act(async () => {
 			await vi.waitFor(() => {
-				expect(mockInvoke).toHaveBeenCalledWith("list_branches_with_status", {
-					repoPath: "/test/repo",
-				});
+				expect(mockInvoke).toHaveBeenCalledWith(
+					"list_branches_with_status_snapshot",
+					{
+						repoPath: "/test/repo",
+					},
+				);
 			});
 		});
 
 		const callCountBefore = mockInvoke.mock.calls.filter(
-			(c) => c[0] === "list_branches_with_status",
+			(c) => c[0] === "list_branches_with_status_snapshot",
 		).length;
 
 		await act(async () => {
@@ -163,7 +187,7 @@ describe("useWorktreeList", () => {
 		});
 
 		const callCountAfter30s = mockInvoke.mock.calls.filter(
-			(c) => c[0] === "list_branches_with_status",
+			(c) => c[0] === "list_branches_with_status_snapshot",
 		).length;
 		expect(callCountAfter30s).toBe(callCountBefore);
 
@@ -172,7 +196,7 @@ describe("useWorktreeList", () => {
 		});
 
 		const callCountAfter120s = mockInvoke.mock.calls.filter(
-			(c) => c[0] === "list_branches_with_status",
+			(c) => c[0] === "list_branches_with_status_snapshot",
 		).length;
 		expect(callCountAfter120s).toBe(callCountBefore + 1);
 
@@ -188,7 +212,14 @@ describe("useWorktreeList", () => {
 				});
 			}
 			if (cmd === "stop_watching") return Promise.resolve();
-			if (cmd === "list_branches_with_status") return Promise.resolve([]);
+			if (cmd === "list_branches_with_status_snapshot")
+				return Promise.resolve({
+					version: 1,
+					stale: false,
+					loading: false,
+					limited: false,
+					branches: [],
+				});
 			if (cmd === "get_cached_pr_status")
 				return Promise.resolve({ open_prs: {}, merged_branches: [] });
 			if (cmd === "list_workspace_statuses") return Promise.resolve([]);

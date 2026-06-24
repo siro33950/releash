@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use crate::domain::repository::{
-    Branch, BranchRepository, Commit, FileDiffStat, FileStatus, GitConfigRepository, LogRepository,
-    RepoLocator, StatusRepository, WorktreeRepository,
+    Branch, BranchRepository, Commit, FileStatus, GitConfigRepository, LogRepository, RepoLocator,
+    RepositoryStatusScan, StatusRepository, WorktreeRepository,
 };
 
 use super::repository_dto::{BranchCardDto, WorktreeEntryDto};
@@ -136,25 +136,24 @@ impl RepositoryUsecase {
 
     // ── status（読み取り） ──
 
-    pub fn get_git_status(&self, repo_path: &str) -> Result<Vec<FileStatus>, UsecaseError> {
-        Ok(self.status.status(repo_path)?)
-    }
-
-    pub fn get_status_diff_stats(
+    pub fn get_git_status_include_ignored(
         &self,
         repo_path: &str,
-    ) -> Result<Vec<FileDiffStat>, UsecaseError> {
-        Ok(self.status.diff_stats(repo_path)?)
+    ) -> Result<Vec<FileStatus>, UsecaseError> {
+        Ok(self.status.status_with_options(repo_path, true)?)
+    }
+
+    pub fn get_repository_status_scan(
+        &self,
+        repo_path: &str,
+    ) -> Result<RepositoryStatusScan, UsecaseError> {
+        Ok(self.status.status_scan(repo_path)?)
     }
 
     // ── worktree（読み取り） ──
 
     pub fn get_main_repo_path(&self, any_path: &str) -> Result<String, UsecaseError> {
         Ok(self.worktree.main_repo_path(any_path)?)
-    }
-
-    pub fn get_worktree_dirty_count(&self, worktree_path: &str) -> Result<u32, UsecaseError> {
-        Ok(self.worktree.dirty_count(worktree_path)?)
     }
 
     /// worktree 一覧の read model を組み立てる。worktree 識別情報（worktree 集約）に
@@ -181,20 +180,6 @@ impl RepositoryUsecase {
             });
         }
         Ok(entries)
-    }
-
-    /// worktree のパス一覧のみを返す軽量読み取り。存在判定など、表示用の
-    /// `dirty_count`（status 全走査）/ `base_branch`（git_config 読み）を必要としない
-    /// 用途のために、worktree 集約の slim な一覧だけを取得する（[`list_worktrees`] の
-    /// 重い合成を避ける）。
-    #[allow(dead_code)]
-    pub fn list_worktree_paths(&self, repo_path: &str) -> Result<Vec<String>, UsecaseError> {
-        Ok(self
-            .worktree
-            .list(repo_path)?
-            .into_iter()
-            .map(|wt| wt.path)
-            .collect())
     }
 
     // ── worktree（書き込み） ──
@@ -304,26 +289,32 @@ impl RepositoryUsecase {
         Ok(self.locator.git_dir(file_path)?)
     }
 
-    // ── read model（read + GC のオーケストレーション） ──
-
-    /// ブランチカード一覧を取得する。read model（DTO）の構築は読み取りクエリサービスへ
-    /// 委譲し、取得後に現存しないブランチの `releash-base` を GC する（read + write の
-    /// オーケストレーションは usecase の責務）。
-    pub fn list_branches_with_status(
+    /// ブランチカード read model を副作用なしで取得する。
+    ///
+    /// snapshot scanner は watcher invalidate から実行される read model 更新経路なので、
+    /// config GC のような書き込みを伴う [`list_branches_with_status`] ではなくこちらを使う。
+    #[cfg(test)]
+    pub fn list_branches_with_status_read_only(
         &self,
         repo_path: &str,
     ) -> Result<Vec<BranchCardDto>, UsecaseError> {
-        let cards = self.query.list_branches_with_status(repo_path)?;
-        let names: Vec<String> = cards.iter().map(|c| c.name.clone()).collect();
-        self.prune_stale_branch_bases(repo_path, &names)?;
-        Ok(cards)
+        self.query.list_branches_with_status(repo_path)
+    }
+
+    pub fn list_branches_with_status_for_scan(
+        &self,
+        repo_path: &str,
+        current_dirty_count: usize,
+    ) -> Result<Vec<BranchCardDto>, UsecaseError> {
+        self.query
+            .list_branches_with_status_for_scan(repo_path, current_dirty_count)
     }
 }
 
 #[cfg(test)]
 mod repository_usecase_tests {
     use super::*;
-    use crate::domain::repository::{RepositoryError, Worktree};
+    use crate::domain::repository::{RepositoryError, RepositoryStatusScan, Worktree};
     use crate::usecase::repository_query_service::BranchCardQuery;
     use parking_lot::Mutex;
 
@@ -381,11 +372,20 @@ mod repository_usecase_tests {
     }
 
     impl StatusRepository for FakeRepo {
-        fn status(&self, _repo_path: &str) -> Result<Vec<FileStatus>, RepositoryError> {
+        fn status_with_options(
+            &self,
+            _repo_path: &str,
+            include_ignored: bool,
+        ) -> Result<Vec<FileStatus>, RepositoryError> {
+            let _ = include_ignored;
             Ok(Vec::new())
         }
-        fn diff_stats(&self, _repo_path: &str) -> Result<Vec<FileDiffStat>, RepositoryError> {
-            Ok(Vec::new())
+        fn status_scan(&self, _repo_path: &str) -> Result<RepositoryStatusScan, RepositoryError> {
+            Ok(RepositoryStatusScan {
+                status: Vec::new(),
+                diff_stats: Vec::new(),
+                dirty_count: 0,
+            })
         }
     }
 
@@ -608,18 +608,6 @@ mod repository_usecase_tests {
     }
 
     #[test]
-    fn test_worktreeパス一覧はパスのみを返す() {
-        // 軽量読み取りは worktree 集約の path のみを返し、dirty_count（status）/
-        // base_branch（git_config）の合成を行わない。
-        let fake = Arc::new(FakeRepo {
-            worktrees: vec![wt("/wt-main", "main", true), wt("/wt-feat", "feat", false)],
-            ..<FakeRepo as Default>::default()
-        });
-        let paths = usecase(fake).list_worktree_paths("/r").unwrap();
-        assert_eq!(paths, vec!["/wt-main".to_string(), "/wt-feat".to_string()]);
-    }
-
-    #[test]
     fn test_worktree作成エラーをusecaseエラーへ変換する() {
         let fake = Arc::new(FakeRepo {
             fail_create_worktree: true,
@@ -741,12 +729,11 @@ mod repository_usecase_tests {
     }
 
     #[test]
-    fn test_ブランチカード一覧取得後にgcする() {
+    fn test_read_onlyブランチカード一覧取得ではgcしない() {
         let fake = Arc::new(<FakeRepo as Default>::default());
         usecase(fake.clone())
-            .list_branches_with_status("/r")
+            .list_branches_with_status_read_only("/r")
             .unwrap();
-        // read model は空でも、取得後に現存ブランチ名（空）で GC が走る
-        assert_eq!(*fake.prune_calls.lock(), vec![Vec::<String>::new()]);
+        assert!(fake.prune_calls.lock().is_empty());
     }
 }

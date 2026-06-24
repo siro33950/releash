@@ -7,7 +7,7 @@
 //! （`spawn_blocking`）は controller 層で被せる方針のため、各 trait の
 //! メソッドは同期シグネチャで定義する。
 
-use super::entities::{Branch, Commit, FileDiffStat, FileStatus, Worktree};
+use super::entities::{Branch, Commit, FileStatus, RepositoryStatusScan, Worktree};
 use super::error::RepositoryError;
 
 /// ブランチの参照・作成・削除。
@@ -28,8 +28,12 @@ pub trait LogRepository: Send + Sync {
 
 /// 作業ツリー状態の読み取り。
 pub trait StatusRepository: Send + Sync {
-    fn status(&self, repo_path: &str) -> Result<Vec<FileStatus>, RepositoryError>;
-    fn diff_stats(&self, repo_path: &str) -> Result<Vec<FileDiffStat>, RepositoryError>;
+    fn status_with_options(
+        &self,
+        repo_path: &str,
+        include_ignored: bool,
+    ) -> Result<Vec<FileStatus>, RepositoryError>;
+    fn status_scan(&self, repo_path: &str) -> Result<RepositoryStatusScan, RepositoryError>;
 }
 
 /// ワークツリーの参照・作成・削除。

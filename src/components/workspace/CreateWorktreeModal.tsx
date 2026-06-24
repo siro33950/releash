@@ -66,6 +66,14 @@ function notionTaskToBranchName(title: string): string {
 
 type CreateMode = "plain" | "branch" | "issue" | "notion";
 
+interface BranchCardsSnapshot {
+	version: number;
+	stale: boolean;
+	loading: boolean;
+	limited: boolean;
+	branches: WorktreeBranch[];
+}
+
 interface CreateWorktreeModalProps {
 	open: boolean;
 	repoPaths: string[];
@@ -132,11 +140,11 @@ export function CreateWorktreeModal({
 				setLocalBranches([]);
 				setBaseBranch("HEAD");
 			});
-		invoke<WorktreeBranch[]>("list_branches_with_status", {
+		invoke<BranchCardsSnapshot>("list_branches_with_status_snapshot", {
 			repoPath: selectedRepoPath,
 		})
 			.then((result) => {
-				if (alive) setAllBranches(result);
+				if (alive) setAllBranches(result.branches);
 			})
 			.catch(() => {
 				if (alive) setAllBranches([]);

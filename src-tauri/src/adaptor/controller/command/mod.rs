@@ -76,6 +76,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::code::file_content::get_review_image_diff,
             crate::adaptor::controller::command::code::diff::get_branch_diff_summary,
             crate::adaptor::controller::command::code::diff::build_diff_file_tree,
+            crate::adaptor::controller::command::code::diff::get_head_diff_file_tree_snapshot,
             crate::adaptor::controller::command::code::diff::get_file_navigation,
             // Git: hunk/patch（code ドメイン）
             crate::adaptor::controller::command::code::hunk::compute_diff_hunks,
@@ -93,7 +94,9 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::repository::branch::delete_branch,
             // Git: ステータス（repository ドメイン）
             crate::adaptor::controller::command::repository::status::get_git_status,
+            crate::adaptor::controller::command::repository::status::get_git_status_snapshot,
             crate::adaptor::controller::command::repository::status::get_status_diff_stats,
+            crate::adaptor::controller::command::repository::status::get_status_diff_stats_snapshot,
             crate::adaptor::controller::command::repository::log::get_git_log,
             // Git: ステージング（code ドメイン）
             crate::adaptor::controller::command::code::staging::git_stage,
@@ -105,6 +108,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::repository::worktree::get_worktree_dirty_count,
             crate::adaptor::controller::command::repository::worktree::list_worktrees,
             crate::adaptor::controller::command::repository::worktree::list_branches_with_status,
+            crate::adaptor::controller::command::repository::worktree::list_branches_with_status_snapshot,
             crate::adaptor::controller::command::repository::worktree::create_worktree,
             crate::adaptor::controller::command::repository::worktree::remove_worktree,
             // Git: 設定・ユーティリティ（repository ドメイン）

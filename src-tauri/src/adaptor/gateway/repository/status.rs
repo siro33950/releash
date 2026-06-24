@@ -1,9 +1,26 @@
 //! status 責務の gateway 実装。git2 による作業ツリー状態取得を封じ込める。
 
-use crate::domain::repository::{FileDiffStat, FileStatus, RepositoryError, StatusRepository};
+use crate::domain::repository::{
+    FileDiffStat, FileStatus, RepositoryError, RepositoryStatusScan, StatusRepository,
+};
 use crate::infrastructure::git::client;
-use git2::{ErrorCode, StatusOptions};
+use git2::{ErrorCode, Repository, StatusOptions};
 use std::collections::HashMap;
+
+#[cfg(test)]
+thread_local! {
+    static STATUS_WALK_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_status_walk_count_for_tests() {
+    STATUS_WALK_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn status_walk_count_for_tests() -> usize {
+    STATUS_WALK_COUNT.with(|count| count.get())
+}
 
 fn index_status_from_flags(status: git2::Status) -> &'static str {
     if status.contains(git2::Status::CONFLICTED) {
@@ -43,10 +60,18 @@ fn worktree_status_from_flags(status: git2::Status) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn get_git_status(repo_path: &str) -> Result<Vec<FileStatus>, RepositoryError> {
+    get_git_status_with_options(repo_path, false)
+}
+
+pub(crate) fn get_git_status_with_options(
+    repo_path: &str,
+    include_ignored: bool,
+) -> Result<Vec<FileStatus>, RepositoryError> {
     let result = crate::other::telemetry::measure_result(
         crate::other::telemetry::HotPath::GitStatusScan,
-        || get_git_status_inner(repo_path),
+        || get_git_status_inner(repo_path, include_ignored),
     );
     if result.is_ok() {
         crate::other::telemetry::record_first_repo_snapshot_ready();
@@ -54,14 +79,26 @@ pub(crate) fn get_git_status(repo_path: &str) -> Result<Vec<FileStatus>, Reposit
     result
 }
 
-fn get_git_status_inner(repo_path: &str) -> Result<Vec<FileStatus>, RepositoryError> {
+fn get_git_status_inner(
+    repo_path: &str,
+    include_ignored: bool,
+) -> Result<Vec<FileStatus>, RepositoryError> {
     let repo = client::open(repo_path)?;
+    collect_git_status(&repo, include_ignored)
+}
 
+fn collect_git_status(
+    repo: &Repository,
+    include_ignored: bool,
+) -> Result<Vec<FileStatus>, RepositoryError> {
     let mut opts = StatusOptions::new();
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .include_ignored(true);
+    opts.include_untracked(true).recurse_untracked_dirs(true);
+    if include_ignored {
+        opts.include_ignored(true);
+    }
 
+    #[cfg(test)]
+    STATUS_WALK_COUNT.with(|count| count.set(count.get() + 1));
     let statuses = repo.statuses(Some(&mut opts))?;
 
     let result: Vec<FileStatus> = statuses
@@ -133,15 +170,20 @@ fn collect_diff_stats(diff: &git2::Diff) -> HashMap<String, (u32, u32)> {
     map
 }
 
+#[cfg(test)]
 pub(crate) fn get_status_diff_stats(repo_path: &str) -> Result<Vec<FileDiffStat>, RepositoryError> {
     crate::other::telemetry::measure_result(crate::other::telemetry::HotPath::DiffStats, || {
         get_status_diff_stats_inner(repo_path)
     })
 }
 
+#[cfg(test)]
 fn get_status_diff_stats_inner(repo_path: &str) -> Result<Vec<FileDiffStat>, RepositoryError> {
     let repo = client::open(repo_path)?;
+    collect_status_diff_stats(&repo)
+}
 
+fn collect_status_diff_stats(repo: &Repository) -> Result<Vec<FileDiffStat>, RepositoryError> {
     // HEAD tree (may not exist for unborn branch)
     let head_tree = match repo.head() {
         Ok(head) => Some(head.peel_to_tree()?),
@@ -189,15 +231,53 @@ fn get_status_diff_stats_inner(repo_path: &str) -> Result<Vec<FileDiffStat>, Rep
     Ok(result)
 }
 
+pub(crate) fn get_repository_status_scan(
+    repo_path: &str,
+) -> Result<RepositoryStatusScan, RepositoryError> {
+    let result = crate::other::telemetry::measure_result(
+        crate::other::telemetry::HotPath::GitStatusScan,
+        || get_repository_status_scan_inner(repo_path),
+    );
+    if result.is_ok() {
+        crate::other::telemetry::record_first_repo_snapshot_ready();
+    }
+    result
+}
+
+fn get_repository_status_scan_inner(
+    repo_path: &str,
+) -> Result<RepositoryStatusScan, RepositoryError> {
+    let repo = client::open(repo_path)?;
+    let status = collect_git_status(&repo, false)?;
+    let dirty_count = status
+        .iter()
+        .filter(|entry| entry.worktree_status != "ignored")
+        .count();
+    let diff_stats = crate::other::telemetry::measure_result(
+        crate::other::telemetry::HotPath::DiffStats,
+        || collect_status_diff_stats(&repo),
+    )?;
+
+    Ok(RepositoryStatusScan {
+        status,
+        diff_stats,
+        dirty_count,
+    })
+}
+
 /// `StatusRepository` の git2 実装。
 pub struct StatusGateway;
 
 impl StatusRepository for StatusGateway {
-    fn status(&self, repo_path: &str) -> Result<Vec<FileStatus>, RepositoryError> {
-        get_git_status(repo_path)
+    fn status_with_options(
+        &self,
+        repo_path: &str,
+        include_ignored: bool,
+    ) -> Result<Vec<FileStatus>, RepositoryError> {
+        get_git_status_with_options(repo_path, include_ignored)
     }
-    fn diff_stats(&self, repo_path: &str) -> Result<Vec<FileDiffStat>, RepositoryError> {
-        get_status_diff_stats(repo_path)
+    fn status_scan(&self, repo_path: &str) -> Result<RepositoryStatusScan, RepositoryError> {
+        get_repository_status_scan(repo_path)
     }
 }
 
@@ -294,7 +374,7 @@ mod status_gateway_tests {
     }
 
     #[test]
-    fn test_状態取得_無視ファイル() {
+    fn test_状態取得_無視ファイルはdefaultで除外する() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
 
@@ -315,6 +395,36 @@ mod status_gateway_tests {
 
         let result = get_git_status(dir.path().to_str().unwrap()).unwrap();
 
+        assert!(
+            result.iter().all(|e| e.worktree_status != "ignored"),
+            "ignored entries should not appear in default status"
+        );
+        assert!(result.iter().all(|e| e.path != "ignored.txt"));
+        assert!(result.iter().all(|e| e.path != "build"));
+    }
+
+    #[test]
+    fn test_状態取得_無視ファイルはopt_inで含める() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        fs::write(dir.path().join(".gitignore"), "ignored.txt\nbuild/\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(".gitignore")).unwrap();
+        index.write().unwrap();
+        let sig = git2::Signature::now("Test User", "test@example.com").unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add gitignore", &tree, &[&parent])
+            .unwrap();
+
+        fs::write(dir.path().join("ignored.txt"), "should be ignored").unwrap();
+        fs::create_dir(dir.path().join("build")).unwrap();
+        fs::write(dir.path().join("build").join("output.js"), "built").unwrap();
+
+        let result = get_git_status_with_options(dir.path().to_str().unwrap(), true).unwrap();
+
         let ignored_file = result.iter().find(|e| e.path == "ignored.txt");
         assert!(
             ignored_file.is_some(),
@@ -326,6 +436,56 @@ mod status_gateway_tests {
         let ignored_dir = result.iter().find(|e| e.path == "build");
         assert!(ignored_dir.is_some(), "build dir should appear in status");
         assert_eq!(ignored_dir.unwrap().worktree_status, "ignored");
+    }
+
+    #[test]
+    fn status_gateway_status_with_options_include_ignored_returns_ignored_entries() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        fs::write(dir.path().join(".gitignore"), "ignored.txt\n").unwrap();
+        fs::write(dir.path().join("ignored.txt"), "should be ignored").unwrap();
+
+        let gateway = StatusGateway;
+        let result = <StatusGateway as StatusRepository>::status_with_options(
+            &gateway,
+            dir.path().to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+
+        assert!(result
+            .iter()
+            .any(|entry| entry.path == "ignored.txt" && entry.worktree_status == "ignored"));
+    }
+
+    #[test]
+    fn repository_status_scan_matches_legacy_status_and_diff_stats_with_one_status_walk() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "staged.txt", "before\n", "add staged");
+        add_and_commit(&repo, "changed.txt", "before\n", "add changed");
+
+        fs::write(dir.path().join("staged.txt"), "before\nafter\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("staged.txt")).unwrap();
+            index.write().unwrap();
+        }
+        fs::write(dir.path().join("changed.txt"), "changed\n").unwrap();
+        fs::write(dir.path().join("untracked.txt"), "new\n").unwrap();
+
+        let repo_path = dir.path().to_str().unwrap();
+        let expected_status = get_git_status(repo_path).unwrap();
+        let expected_diff_stats = get_status_diff_stats(repo_path).unwrap();
+
+        reset_status_walk_count_for_tests();
+        let scan = get_repository_status_scan(repo_path).unwrap();
+
+        assert_eq!(scan.status, expected_status);
+        assert_eq!(scan.diff_stats, expected_diff_stats);
+        assert_eq!(scan.dirty_count, expected_status.len());
+        assert_eq!(status_walk_count_for_tests(), 1);
     }
 
     #[test]

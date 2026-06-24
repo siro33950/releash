@@ -5,5 +5,5 @@ pub mod worktree;
 
 pub use branch::Branch;
 pub use commit::Commit;
-pub use file_status::{FileDiffStat, FileStatus};
+pub use file_status::{FileDiffStat, FileStatus, RepositoryStatusScan};
 pub use worktree::Worktree;

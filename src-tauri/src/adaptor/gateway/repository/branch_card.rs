@@ -5,7 +5,7 @@
 //! Command 側（`WorktreeRepository` 等の単一集約 I/O）とはファイルを分離する（CQRS）。
 
 use super::util::resolve_branch_base;
-use super::worktree::{each_worktree, get_dirty_count_for_path};
+use super::worktree::each_worktree;
 use crate::domain::repository::RepositoryError;
 use crate::infrastructure::git::client;
 use crate::infrastructure::git::helpers::{detect_default_branch, get_branch_name_for_repo};
@@ -14,6 +14,53 @@ use crate::usecase::repository_query_service::BranchCardQuery;
 use git2::{BranchType, Oid, Repository};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+#[cfg(test)]
+thread_local! {
+    static DIRTY_WORKTREE_SCAN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn normalize_worktree_path(path: &str) -> String {
+    path.trim_end_matches('/').to_string()
+}
+
+struct DirtyCountSnapshot {
+    counts_by_path: HashMap<String, usize>,
+}
+
+impl DirtyCountSnapshot {
+    fn empty() -> Self {
+        Self {
+            counts_by_path: HashMap::new(),
+        }
+    }
+
+    fn with_current(current_workdir: Option<&str>, current_dirty_count: usize) -> Self {
+        let mut snapshot = Self::empty();
+        if let Some(path) = current_workdir {
+            snapshot
+                .counts_by_path
+                .insert(normalize_worktree_path(path), current_dirty_count);
+        }
+        snapshot
+    }
+
+    fn dirty_count_for_path(&mut self, path: &str) -> usize {
+        let key = normalize_worktree_path(path);
+        if let Some(count) = self.counts_by_path.get(&key) {
+            return *count;
+        }
+        let count = calculate_dirty_count_for_path(Path::new(path)) as usize;
+        self.counts_by_path.insert(key, count);
+        count
+    }
+}
+
+fn calculate_dirty_count_for_path(path: &Path) -> u32 {
+    #[cfg(test)]
+    DIRTY_WORKTREE_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+    super::worktree::get_dirty_count_for_path(path)
+}
 
 fn is_on_first_parent_line(repo: &Repository, ancestor_oid: Oid, descendant_oid: Oid) -> bool {
     let mut current = descendant_oid;
@@ -100,18 +147,23 @@ fn resolve_base_target_oid(
 
 /// ローカルブランチ 1 件分のカードを構築する（worktree マッチ・dirty・is_merged・
 /// ahead/behind・base_ahead・main_worktree 判定）。
+struct BranchCardBuildContext<'a> {
+    repo: &'a Repository,
+    wt_map: &'a HashMap<String, String>,
+    config: Option<&'a git2::Config>,
+    base_target_oid: Option<Oid>,
+    main_workdir: Option<&'a str>,
+}
+
 fn build_branch_card(
-    repo: &Repository,
     branch: &git2::Branch,
     name: String,
-    wt_map: &HashMap<String, String>,
-    config: Option<&git2::Config>,
-    base_target_oid: Option<Oid>,
-    main_workdir: Option<&str>,
+    context: &BranchCardBuildContext,
+    dirty_counts: &mut DirtyCountSnapshot,
 ) -> BranchCardDto {
-    let (worktree_path, dirty_count) = match wt_map.get(&name) {
+    let (worktree_path, dirty_count) = match context.wt_map.get(&name) {
         Some(path) => {
-            let dirty = get_dirty_count_for_path(Path::new(path)) as usize;
+            let dirty = dirty_counts.dirty_count_for_path(path);
             (Some(path.clone()), dirty)
         }
         None => (None, 0),
@@ -120,7 +172,7 @@ fn build_branch_card(
     let is_merged = branch
         .get()
         .target()
-        .map(|oid| compute_is_merged(repo, oid, base_target_oid))
+        .map(|oid| compute_is_merged(context.repo, oid, context.base_target_oid))
         .unwrap_or(false);
 
     let upstream = branch.upstream().ok();
@@ -129,7 +181,7 @@ fn build_branch_card(
         .and_then(|u| {
             let local_oid = branch.get().target()?;
             let remote_oid = u.get().target()?;
-            repo.graph_ahead_behind(local_oid, remote_oid).ok()
+            context.repo.graph_ahead_behind(local_oid, remote_oid).ok()
         })
         .unwrap_or((0, 0));
 
@@ -137,19 +189,22 @@ fn build_branch_card(
         .get()
         .target()
         .and_then(|branch_oid| {
-            let base_name = resolve_branch_base(repo, config, &name)?;
-            let base_oid = repo
+            let base_name = resolve_branch_base(context.repo, context.config, &name)?;
+            let base_oid = context
+                .repo
                 .find_branch(&base_name, BranchType::Local)
                 .ok()?
                 .get()
                 .target()?;
-            repo.graph_ahead_behind(branch_oid, base_oid)
+            context
+                .repo
+                .graph_ahead_behind(branch_oid, base_oid)
                 .ok()
                 .map(|(a, _)| a)
         })
         .unwrap_or(0);
 
-    let is_main_wt = worktree_path.as_deref() == main_workdir;
+    let is_main_wt = worktree_path.as_deref() == context.main_workdir;
     BranchCardDto {
         name,
         is_main_worktree: is_main_wt,
@@ -168,8 +223,9 @@ fn build_unmatched_worktree_card(
     wt_branch_name: &str,
     wt_path: &str,
     main_workdir: Option<&str>,
+    dirty_counts: &mut DirtyCountSnapshot,
 ) -> BranchCardDto {
-    let dirty_count = get_dirty_count_for_path(Path::new(wt_path)) as usize;
+    let dirty_count = dirty_counts.dirty_count_for_path(wt_path);
     let is_main_wt = main_workdir == Some(wt_path);
     BranchCardDto {
         name: wt_branch_name.to_string(),
@@ -188,7 +244,29 @@ pub(crate) fn list_branches_with_status(
     repo_path: &str,
 ) -> Result<Vec<BranchCardDto>, RepositoryError> {
     let repo = client::open(repo_path)?;
-    let default_branch = detect_default_branch(&repo);
+    list_branches_with_status_for_repo(&repo, DirtyCountSnapshot::empty())
+}
+
+pub(crate) fn list_branches_with_status_for_scan(
+    repo_path: &str,
+    current_dirty_count: usize,
+) -> Result<Vec<BranchCardDto>, RepositoryError> {
+    let repo = client::open(repo_path)?;
+    let current_workdir = repo
+        .workdir()
+        .and_then(|path| path.to_str())
+        .map(normalize_worktree_path);
+    list_branches_with_status_for_repo(
+        &repo,
+        DirtyCountSnapshot::with_current(current_workdir.as_deref(), current_dirty_count),
+    )
+}
+
+fn list_branches_with_status_for_repo(
+    repo: &Repository,
+    mut dirty_counts: DirtyCountSnapshot,
+) -> Result<Vec<BranchCardDto>, RepositoryError> {
+    let default_branch = detect_default_branch(repo);
 
     let default_oid = default_branch.as_ref().and_then(|name| {
         repo.find_branch(name, BranchType::Local)
@@ -197,11 +275,18 @@ pub(crate) fn list_branches_with_status(
             .target()
     });
 
-    let (wt_map, main_workdir) = build_worktree_map(&repo);
+    let (wt_map, main_workdir) = build_worktree_map(repo);
 
     let local_branches = repo.branches(Some(BranchType::Local))?;
     let config = repo.config().ok();
-    let base_target_oid = resolve_base_target_oid(&repo, config.as_ref(), default_oid);
+    let base_target_oid = resolve_base_target_oid(repo, config.as_ref(), default_oid);
+    let context = BranchCardBuildContext {
+        repo,
+        wt_map: &wt_map,
+        config: config.as_ref(),
+        base_target_oid,
+        main_workdir: main_workdir.as_deref(),
+    };
 
     let mut cards = Vec::new();
     let mut matched_wt_keys: HashSet<String> = HashSet::new();
@@ -217,13 +302,10 @@ pub(crate) fn list_branches_with_status(
         }
 
         cards.push(build_branch_card(
-            &repo,
             &branch,
             name,
-            &wt_map,
-            config.as_ref(),
-            base_target_oid,
-            main_workdir.as_deref(),
+            &context,
+            &mut dirty_counts,
         ));
     }
 
@@ -237,6 +319,7 @@ pub(crate) fn list_branches_with_status(
             wt_branch_name,
             wt_path,
             main_workdir.as_deref(),
+            &mut dirty_counts,
         ));
     }
 
@@ -249,6 +332,14 @@ pub struct BranchCardGateway;
 impl BranchCardQuery for BranchCardGateway {
     fn list_branch_cards(&self, repo_path: &str) -> Result<Vec<BranchCardDto>, RepositoryError> {
         list_branches_with_status(repo_path)
+    }
+
+    fn list_branch_cards_for_scan(
+        &self,
+        repo_path: &str,
+        current_dirty_count: usize,
+    ) -> Result<Vec<BranchCardDto>, RepositoryError> {
+        list_branches_with_status_for_scan(repo_path, current_dirty_count)
     }
 }
 
@@ -295,6 +386,14 @@ mod branch_card_gateway_tests {
         p.to_str().unwrap().to_string()
     }
 
+    fn reset_dirty_scan_count() {
+        DIRTY_WORKTREE_SCAN_COUNT.with(|count| count.set(0));
+    }
+
+    fn dirty_scan_count() -> usize {
+        DIRTY_WORKTREE_SCAN_COUNT.with(|count| count.get())
+    }
+
     #[test]
     fn test_ブランチカード一覧_既定を含む() {
         let (dir, repo) = create_test_repo();
@@ -337,6 +436,25 @@ mod branch_card_gateway_tests {
         let feat_card = cards.iter().find(|c| c.name == "feat-wt").unwrap();
         assert!(feat_card.worktree_path.is_some());
         assert_eq!(feat_card.dirty_count, 1);
+    }
+
+    #[test]
+    fn list_branches_for_scan_reuses_current_dirty_and_scans_each_linked_worktree_once() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        fs::write(repo_dir.join("main-dirty.txt"), "dirty").unwrap();
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-feat", "feat-wt");
+        fs::write(wt_path.join("linked-dirty.txt"), "dirty").unwrap();
+
+        reset_dirty_scan_count();
+        let cards = list_branches_with_status_for_scan(repo_dir.to_str().unwrap(), 1).unwrap();
+
+        let main_card = cards.iter().find(|card| card.is_main_worktree).unwrap();
+        let linked_card = cards.iter().find(|card| card.name == "feat-wt").unwrap();
+        assert_eq!(main_card.dirty_count, 1);
+        assert_eq!(linked_card.dirty_count, 1);
+        assert_eq!(dirty_scan_count(), 1);
     }
 
     #[test]

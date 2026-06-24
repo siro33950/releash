@@ -14,6 +14,7 @@ pub(crate) mod worktree;
 
 use crate::other::AppError;
 use crate::usecase::repository_error::UsecaseError;
+use crate::usecase::repository_state::RepositoryStateError;
 
 /// ユースケースエラー → アプリエラーの集約変換（adaptor 層が担う）。
 /// `#[error(transparent)]` な `UsecaseError` の `Display` を保持するため、
@@ -24,12 +25,29 @@ impl From<UsecaseError> for AppError {
     }
 }
 
+impl From<RepositoryStateError> for AppError {
+    fn from(e: RepositoryStateError) -> Self {
+        AppError::Internal(e.to_string())
+    }
+}
+
 /// ユースケース呼び出しを `spawn_blocking` 上で実行し、結果を `AppError`
 /// に集約する共通ヘルパー。join 失敗時のメッセージは移行前と等価に保つ。
 pub(super) async fn run_blocking<T, F>(f: F) -> Result<T, AppError>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, UsecaseError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| AppError::new(format!("task join error: {e}")))?
+        .map_err(AppError::from)
+}
+
+pub(super) async fn run_repository_state<T, F>(f: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, RepositoryStateError> + Send + 'static,
 {
     tokio::task::spawn_blocking(f)
         .await

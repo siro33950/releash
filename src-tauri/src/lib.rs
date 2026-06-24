@@ -182,6 +182,27 @@ pub fn run() {
 
                 // code ドメインの DI 配線（gateway 実装はステートレス）。
                 let code_usecase = Arc::new(adaptor::controller::wiring::build_code_usecase());
+                let repository_state =
+                    Arc::new(usecase::repository_state::RepositoryStateService::new(
+                        repository_usecase.clone(),
+                        code_usecase.clone(),
+                        Arc::new(
+                            adaptor::gateway::repository::state::TauriRepositoryStateNotifier::new(
+                                app.handle().clone(),
+                                ws_broadcaster.clone(),
+                            ),
+                        ),
+                        Arc::new(
+                            adaptor::gateway::repository::state::NotifyRepositoryStateWatcher::new(
+                                repository_usecase.clone(),
+                            ),
+                        ),
+                        Arc::new(
+                            adaptor::gateway::repository::state::TokioRepositoryStateWorkerRuntime,
+                        ),
+                        Arc::new(adaptor::gateway::repository::state::FsWorktreePathNormalizer),
+                    ));
+                app.manage(repository_state.clone());
                 let workflow_usecase = Arc::new(
                     adaptor::controller::wiring::build_workflow_usecase_with_repository_worktrees(
                         data_dir.clone(),
@@ -194,6 +215,7 @@ pub fn run() {
 
                 app.manage(AppState {
                     repository_usecase: repository_usecase.clone(),
+                    repository_state,
                     repo_paths_usecase,
                     code_usecase,
                     workflow_usecase,
