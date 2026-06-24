@@ -65,6 +65,24 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				return;
 			}
 
+			// list_branches_with_status_snapshot は明示ハンドラが無い場合、
+			// list_branches_with_status の配列を BranchCardsSnapshot 形に
+			// ラップして返す（既存フィクスチャの override をそのまま活かす）。
+			if (
+				cmd === "list_branches_with_status_snapshot" &&
+				!(cmd in cfg.ipcHandler) &&
+				"list_branches_with_status" in cfg.ipcHandler
+			) {
+				const branches = cfg.ipcHandler.list_branches_with_status;
+				return {
+					version: 1,
+					stale: false,
+					loading: false,
+					limited: false,
+					branches: Array.isArray(branches) ? branches : [],
+				};
+			}
+
 			// ユーザー定義コマンド
 			if (cmd in cfg.ipcHandler) {
 				const value = cfg.ipcHandler[cmd];
