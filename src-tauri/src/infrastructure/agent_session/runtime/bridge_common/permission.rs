@@ -155,11 +155,12 @@ pub(super) async fn sync_pre_turn_settings(
     permission_mode: &str,
 ) -> Result<(), String> {
     let mode_data = build_set_mode_command_for_backend(permission_mode, &proc.backend_id)?;
-    proc.stdin
+    let mut stdin = proc.stdin.lock().await;
+    stdin
         .write_all(mode_data.as_bytes())
         .await
         .map_err(|e| format!("Failed to write setMode: {e}"))?;
-    proc.stdin
+    stdin
         .flush()
         .await
         .map_err(|e| format!("Failed to flush setMode: {e}"))?;
@@ -317,14 +318,16 @@ pub(super) async fn set_agent_permission_mode_internal(
         let mut map = handles.lock().await;
         if let Some(proc) = map.get_mut(chat_session_id) {
             let data = build_set_mode_command_for_mode(pm, &proc.backend_id);
-            proc.stdin
+            let mut stdin = proc.stdin.lock().await;
+            stdin
                 .write_all(data.as_bytes())
                 .await
                 .map_err(|e| format!("Failed to write setMode: {e}"))?;
-            proc.stdin
+            stdin
                 .flush()
                 .await
                 .map_err(|e| format!("Failed to flush setMode: {e}"))?;
+            drop(stdin);
             proc.current_permission_mode = pm.as_str().to_string();
         }
         // If no process exists, silently ignore (process not yet started)
@@ -383,20 +386,8 @@ pub async fn respond_agent_permission_internal(
     if let Some(msg) = &message {
         result["message"] = serde_json::Value::String(msg.clone());
     }
-    let answers_value = if let Some(input_json) = &updated_input {
-        match serde_json::from_str::<serde_json::Value>(input_json) {
-            Ok(parsed) => {
-                result["updatedInput"] = parsed.clone();
-                parsed.get("answers").cloned()
-            }
-            Err(e) => {
-                log::warn!("Failed to parse updated_input JSON: {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let answers_value =
+        apply_updated_input_to_permission_result(&mut result, updated_input.as_deref())?;
     let payload = serde_json::json!({
         "type": "permission_response",
         "request_id": request_id,
@@ -436,14 +427,16 @@ pub async fn respond_agent_permission_internal(
         let mut map = handles.lock().await;
         if let Some(proc) = map.get_mut(&chat_session_id) {
             if backend_id != CODEX_BACKEND_ID {
-                proc.stdin
+                let mut stdin = proc.stdin.lock().await;
+                stdin
                     .write_all(data.as_bytes())
                     .await
                     .map_err(|e| format!("Failed to write permission response: {e}"))?;
-                proc.stdin
+                stdin
                     .flush()
                     .await
                     .map_err(|e| format!("Failed to flush: {e}"))?;
+                drop(stdin);
             }
 
             // Apply the synchronous part of the permission response
@@ -487,6 +480,20 @@ pub async fn respond_agent_permission_internal(
     }
 
     Ok(())
+}
+
+fn apply_updated_input_to_permission_result(
+    result: &mut serde_json::Value,
+    updated_input: Option<&str>,
+) -> Result<Option<serde_json::Value>, String> {
+    if let Some(input_json) = updated_input {
+        let parsed = serde_json::from_str::<serde_json::Value>(input_json)
+            .map_err(|e| format!("Invalid updated_input JSON: {e}"))?;
+        result["updatedInput"] = parsed.clone();
+        Ok(parsed.get("answers").cloned())
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
@@ -679,6 +686,17 @@ mod moved_tests {
         assert_eq!(payload["result"]["behavior"], "allow");
         assert_eq!(payload["result"]["updatedInput"]["answers"]["Q"], "A");
         assert!(payload["result"].get("message").is_none());
+    }
+
+    #[test]
+    fn permission_response_rejects_invalid_updated_input_json() {
+        let mut result = serde_json::json!({ "behavior": "allow" });
+
+        let err =
+            apply_updated_input_to_permission_result(&mut result, Some("{not json")).unwrap_err();
+
+        assert!(err.contains("Invalid updated_input JSON"));
+        assert!(result.get("updatedInput").is_none());
     }
 
     #[test]

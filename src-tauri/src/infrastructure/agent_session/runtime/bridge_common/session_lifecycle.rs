@@ -1091,14 +1091,16 @@ where
                 streaming_message_id,
                 now_timestamp(),
             );
-            proc.stdin
+            let mut stdin = proc.stdin.lock().await;
+            stdin
                 .write_all(data.as_bytes())
                 .await
                 .map_err(|e| format!("Failed to write message: {e}"))?;
-            proc.stdin
+            stdin
                 .flush()
                 .await
                 .map_err(|e| format!("Failed to flush message: {e}"))?;
+            drop(stdin);
             if let Some(app) = app {
                 spawn_streaming_timer(app, handles, chat_session_id, proc);
                 if let Some(session_store) = session_store {
@@ -1469,16 +1471,19 @@ pub(crate) async fn close_agent_session_internal<R: tauri::Runtime>(
     mark_session_closing(chat_session_id).await;
     {
         let mut map = handles.lock().await;
-        if let Some(mut proc) = map.remove(chat_session_id) {
+        if let Some(proc) = map.remove(chat_session_id) {
             #[cfg(unix)]
             {
                 pgid = proc.pgid;
             }
-            if let Err(e) = proc.stdin.write_all(b"{\"type\":\"close\"}\n").await {
-                log::warn!("Failed to send close command for session {chat_session_id}: {e}");
-            }
-            if let Err(e) = proc.stdin.flush().await {
-                log::warn!("Failed to flush close command for session {chat_session_id}: {e}");
+            {
+                let mut stdin = proc.stdin.lock().await;
+                if let Err(e) = stdin.write_all(b"{\"type\":\"close\"}\n").await {
+                    log::warn!("Failed to send close command for session {chat_session_id}: {e}");
+                }
+                if let Err(e) = stdin.flush().await {
+                    log::warn!("Failed to flush close command for session {chat_session_id}: {e}");
+                }
             }
             child_to_kill = Some(proc.child);
         } else {
@@ -1591,8 +1596,9 @@ pub async fn close_all_agent_sessions(
         let ids: Vec<String> = map.keys().cloned().collect();
         for csid in &ids {
             if let Some(proc) = map.get_mut(csid) {
-                let _ = proc.stdin.write_all(b"{\"type\":\"close\"}\n").await;
-                let _ = proc.stdin.flush().await;
+                let mut stdin = proc.stdin.lock().await;
+                let _ = stdin.write_all(b"{\"type\":\"close\"}\n").await;
+                let _ = stdin.flush().await;
             }
         }
     }
@@ -3656,7 +3662,8 @@ mod moved_tests {
         }));
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
-        let mut child = tokio::process::Command::new("cat")
+        let mut command = test_echo_command();
+        let mut child = command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .spawn()
@@ -3665,7 +3672,7 @@ mod moved_tests {
         handles.lock().await.insert(
             session.id.clone(),
             AgentProcess {
-                stdin,
+                stdin: Arc::new(Mutex::new(stdin)),
                 backend_id: "mock-a".to_string(),
                 state: BridgeState::Ready,
                 turn_phase: TurnPhase::Idle,

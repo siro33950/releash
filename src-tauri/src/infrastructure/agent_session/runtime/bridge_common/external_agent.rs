@@ -144,48 +144,64 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
     }
 
     let gen_id = GENERATION_COUNTER.fetch_add(1, Ordering::SeqCst);
-    {
+    let new_process = AgentProcess {
+        stdin: Arc::new(Mutex::new(stdin)),
+        backend_id,
+        state: BridgeState::Initializing,
+        turn_phase: TurnPhase::Idle,
+        sdk_session_id,
+        context_carry_on_ready,
+        child,
+        generation_id: gen_id,
+        #[cfg(unix)]
+        pgid,
+        streaming_message_id: None,
+        active_turn_token: None,
+        post_turn_message_token: None,
+        streaming_parts: Vec::new(),
+        turn_event_log: TurnEventLog::default(),
+        last_message_id: None,
+        post_turn_base_untrusted_message_id: None,
+        task_id_map: HashMap::new(),
+        pending_messages: VecDeque::new(),
+        current_permission_mode: permission_mode,
+        available_models: Vec::new(),
+        selected_model,
+        last_result_token_usage: None,
+        latest_token_usage: None,
+        pending_stream_part_count: 0,
+        pending_stream_bytes: 0,
+        last_stream_emit_at: None,
+        streaming_timer_active: false,
+        last_progress_at: None,
+        turn_phase_since: Instant::now(),
+        turn_seq: 0,
+        turn_watchdog_active: false,
+    };
+    let replaced = {
         let mut map = handles.lock().await;
-        map.insert(
-            chat_session_id.to_string(),
-            AgentProcess {
-                stdin,
-                backend_id,
-                state: BridgeState::Initializing,
-                turn_phase: TurnPhase::Idle,
-                sdk_session_id,
-                context_carry_on_ready,
-                child,
-                generation_id: gen_id,
-                #[cfg(unix)]
-                pgid,
-                streaming_message_id: None,
-                active_turn_token: None,
-                post_turn_message_token: None,
-                streaming_parts: Vec::new(),
-                turn_event_log: TurnEventLog::default(),
-                last_message_id: None,
-                post_turn_base_untrusted_message_id: None,
-                task_id_map: HashMap::new(),
-                pending_messages: VecDeque::new(),
-                current_permission_mode: permission_mode,
-                available_models: Vec::new(),
-                selected_model,
-                last_result_token_usage: None,
-                latest_token_usage: None,
-                pending_stream_part_count: 0,
-                pending_stream_bytes: 0,
-                last_stream_emit_at: None,
-                streaming_timer_active: false,
-                last_progress_at: None,
-                turn_phase_since: Instant::now(),
-                turn_seq: 0,
-                turn_watchdog_active: false,
-            },
-        );
+        map.remove(chat_session_id)
+    };
+    if let Some(replaced) = replaced {
+        cleanup_replaced_agent_process(chat_session_id, replaced).await;
     }
+    handles
+        .lock()
+        .await
+        .insert(chat_session_id.to_string(), new_process);
     notify_status_transition(app, session_store, chat_session_id, TurnPhase::Idle, None);
     Ok(gen_id)
+}
+
+async fn cleanup_replaced_agent_process(chat_session_id: &str, mut proc: AgentProcess) {
+    #[cfg(unix)]
+    if let Some(pg) = proc.pgid {
+        sweep_process_group(pg).await;
+    }
+    if let Err(e) = proc.child.kill().await {
+        log::warn!("Failed to kill replaced agent process {chat_session_id}: {e}");
+    }
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), proc.child.wait()).await;
 }
 
 pub(super) async fn cleanup_unregistered_agent_process(
@@ -267,6 +283,7 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
     let data_dir = match resolve_data_dir(app) {
         Ok(data_dir) => data_dir,
         Err(e) => {
+            requeue_pending_message(handles, chat_session_id, pending).await;
             clear_pending_turn_starting(chat_session_id).await;
             return Err(format!("failed to resolve data dir: {e}"));
         }
@@ -275,13 +292,19 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
         match prepare_pending_turn_messages(session_store, &data_dir, chat_session_id, &pending) {
             Ok(messages) => messages,
             Err(e) => {
+                requeue_pending_message(handles, chat_session_id, pending).await;
                 clear_pending_turn_starting(chat_session_id).await;
                 return Err(format!("failed to prepare pending messages: {e}"));
             }
         };
-    let permission_profile_id = session_store
-        .get_session_meta(&data_dir, chat_session_id)?
-        .and_then(|meta| meta.permission_profile_id);
+    let permission_profile_id = match session_store.get_session_meta(&data_dir, chat_session_id) {
+        Ok(meta) => meta.and_then(|meta| meta.permission_profile_id),
+        Err(e) => {
+            requeue_pending_message(handles, chat_session_id, pending).await;
+            clear_pending_turn_starting(chat_session_id).await;
+            return Err(e.to_string());
+        }
+    };
 
     if emit_consumed_messages {
         use tauri::Emitter;
@@ -312,6 +335,17 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
         images: pending.images,
         editor_context: pending.editor_context,
     }))
+}
+
+async fn requeue_pending_message(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    pending: PendingMessage,
+) {
+    let mut map = handles.lock().await;
+    if let Some(proc) = map.get_mut(chat_session_id) {
+        proc.pending_messages.push_front(pending);
+    }
 }
 
 #[allow(dead_code)]
@@ -772,6 +806,48 @@ mod moved_tests {
         );
         let mut proc = handles.lock().await.remove(&session.id).unwrap();
         assert!(proc.streaming_parts.is_empty());
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn prepare_external_pending_message_turn_requeues_pending_on_prepare_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "missing-session";
+        let mut proc = make_test_agent_process();
+        proc.pending_messages
+            .push_back(test_pending_message("queued-1", "hello"));
+        handles.lock().await.insert(session_id.to_string(), proc);
+
+        let err = match prepare_external_pending_message_turn(
+            &app.handle(),
+            &handles,
+            &store,
+            session_id,
+        )
+        .await
+        {
+            Ok(_) => panic!("prepare must fail for a missing session"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("failed to prepare pending messages"));
+        assert!(
+            !crate::infrastructure::agent_session::runtime::runtime_coordinator::is_pending_turn_starting(session_id).await,
+            "pending turn starting marker must be cleared on failure"
+        );
+        {
+            let map = handles.lock().await;
+            let proc = map.get(session_id).unwrap();
+            assert_eq!(proc.pending_messages.len(), 1);
+            assert_eq!(proc.pending_messages.front().unwrap().id, "queued-1");
+        }
+        let mut proc = handles.lock().await.remove(session_id).unwrap();
         let _ = proc.child.kill().await;
     }
 }

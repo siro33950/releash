@@ -93,7 +93,16 @@ pub(super) fn load_post_turn_base_parts_from_store<R: tauri::Runtime>(
         );
         return None;
     };
-    Some(message.parts.clone().unwrap_or_default())
+    if let Some(parts) = message.parts.clone() {
+        return Some(parts);
+    }
+    if !message.content.is_empty() {
+        return Some(vec![MessagePart::Text {
+            content: message.content.clone(),
+            parent_tool_use_id: None,
+        }]);
+    }
+    Some(Vec::new())
 }
 
 pub(super) struct PersistedSpawnInfo {
@@ -732,6 +741,57 @@ mod moved_tests {
     }
 
     #[test]
+    fn load_post_turn_base_parts_preserves_legacy_content_without_parts() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = crate::test_support::build_session_store();
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let message = add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "legacy body",
+            None,
+            None,
+        )
+        .unwrap();
+        let mut loaded = store
+            .load_full_session_for_restore(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        let stored_message = loaded
+            .messages
+            .iter_mut()
+            .find(|stored| stored.id == message.id)
+            .expect("message must be present");
+        stored_message.parts = None;
+        stored_message.content = "legacy body".to_string();
+        store
+            .save_full_session_for_migration_or_restore(temp.path(), &loaded)
+            .unwrap();
+
+        let parts =
+            load_post_turn_base_parts_from_store(&store, &app.handle(), &session.id, &message.id)
+                .unwrap();
+
+        assert_eq!(parts.len(), 1);
+        assert!(matches!(
+            &parts[0],
+            MessagePart::Text { content, parent_tool_use_id: None } if content == "legacy body"
+        ));
+    }
+
+    #[test]
     fn save_session_context_carry_returns_update_payload_when_state_changes() {
         let temp = tempfile::tempdir().unwrap();
         let store = crate::test_support::build_session_store();
@@ -1243,6 +1303,34 @@ mod moved_tests {
             assert!(
                 proc.streaming_parts.is_empty(),
                 "old token stream must not append to the new turn"
+            );
+            assert_eq!(
+                proc.active_turn_token.as_deref(),
+                Some(agent_msg.id.as_str())
+            );
+        }
+
+        handle_external_bridge_message(
+            &app.handle(),
+            &store,
+            &handles,
+            &session.id,
+            serde_json::json!({
+                "type": "error",
+                "turn_token": old_turn_token,
+                "message": "stale error"
+            }),
+            &mut state,
+        )
+        .await;
+        {
+            let map = handles.lock().await;
+            let proc = map.get(&session.id).unwrap();
+            assert_eq!(proc.state, BridgeState::Streaming);
+            assert_eq!(proc.turn_phase, TurnPhase::Streaming);
+            assert!(
+                proc.streaming_parts.is_empty(),
+                "old token error must not append to or complete the new turn"
             );
             assert_eq!(
                 proc.active_turn_token.as_deref(),

@@ -291,15 +291,18 @@ pub(crate) async fn write_bridge_command(
     payload: serde_json::Value,
 ) -> Result<(), String> {
     let data = format!("{payload}\n");
-    let mut map = handles.lock().await;
-    let proc = map
-        .get_mut(chat_session_id)
-        .ok_or_else(|| format!("No active agent process for session {chat_session_id}"))?;
-    proc.stdin
+    let stdin = {
+        let map = handles.lock().await;
+        map.get(chat_session_id)
+            .map(|proc| Arc::clone(&proc.stdin))
+            .ok_or_else(|| format!("No active agent process for session {chat_session_id}"))?
+    };
+    let mut stdin = stdin.lock().await;
+    stdin
         .write_all(data.as_bytes())
         .await
         .map_err(|e| format!("Failed to write bridge command: {e}"))?;
-    proc.stdin
+    stdin
         .flush()
         .await
         .map_err(|e| format!("Failed to flush bridge command: {e}"))?;
@@ -314,18 +317,22 @@ pub(super) async fn write_bridge_command_for_captured_turn(
     payload: serde_json::Value,
 ) -> Result<bool, String> {
     let data = format!("{payload}\n");
-    let mut map = handles.lock().await;
-    let Some(proc) = map.get_mut(chat_session_id) else {
-        return Ok(false);
+    let stdin = {
+        let map = handles.lock().await;
+        let Some(proc) = map.get(chat_session_id) else {
+            return Ok(false);
+        };
+        if proc.generation_id != captured_gen_id || proc.turn_seq != captured_turn_seq {
+            return Ok(false);
+        }
+        Arc::clone(&proc.stdin)
     };
-    if proc.generation_id != captured_gen_id || proc.turn_seq != captured_turn_seq {
-        return Ok(false);
-    }
-    proc.stdin
+    let mut stdin = stdin.lock().await;
+    stdin
         .write_all(data.as_bytes())
         .await
         .map_err(|e| format!("Failed to write bridge command: {e}"))?;
-    proc.stdin
+    stdin
         .flush()
         .await
         .map_err(|e| format!("Failed to flush bridge command: {e}"))?;
@@ -482,6 +489,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
     use std::collections::{HashMap, VecDeque};
     use std::sync::Arc;
     use std::time::Instant;
+    use tokio::sync::Mutex;
 
     pub(in crate::infrastructure::agent_session::runtime::bridge_common) fn approved_fix_policy_output(
         policy: &str,
@@ -1007,16 +1015,17 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
     pub(in crate::infrastructure::agent_session::runtime::bridge_common) fn make_test_agent_process_with_stdout(
     ) -> (AgentProcess, tokio::process::ChildStdout) {
         use std::process::Stdio;
-        let mut child = tokio::process::Command::new("cat")
+        let mut command = test_echo_command();
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("spawn cat test process");
+            .expect("spawn test echo process");
         let stdin = child.stdin.take().expect("stdin");
         let stdout = child.stdout.take().expect("stdout");
         let proc = AgentProcess {
-            stdin,
+            stdin: Arc::new(Mutex::new(stdin)),
             backend_id: "mock".to_string(),
             state: BridgeState::Ready,
             turn_phase: TurnPhase::Idle,

@@ -162,19 +162,22 @@ pub(super) fn todo_update_log(
 pub(super) fn push_todo_snapshot(
     parts: &mut Vec<MessagePart>,
     items: Vec<crate::usecase::agent_session::session::TodoListItem>,
-) {
+) -> Option<MessagePart> {
     parts.push(MessagePart::Text {
         content: todo_update_log(&items),
         parent_tool_use_id: None,
     });
+    let snapshot = MessagePart::TodoListSnapshot { items };
     if let Some(existing) = parts
         .iter_mut()
         .rev()
         .find(|part| matches!(part, MessagePart::TodoListSnapshot { .. }))
     {
-        *existing = MessagePart::TodoListSnapshot { items };
+        *existing = snapshot.clone();
+        Some(snapshot)
     } else {
-        parts.push(MessagePart::TodoListSnapshot { items });
+        parts.push(snapshot);
+        None
     }
 }
 
@@ -443,7 +446,9 @@ pub(super) fn accumulate_sdk_message(
                                 .to_string();
                             if tool == "TodoWrite" {
                                 if let Some(items) = extract_todo_items(&input) {
-                                    push_todo_snapshot(parts, items);
+                                    if let Some(updated) = push_todo_snapshot(parts, items) {
+                                        updated_parts.push(updated);
+                                    }
                                 }
                                 continue;
                             }
@@ -505,8 +510,8 @@ pub(super) fn accumulate_sdk_message(
         }
         "todo_list_snapshot" => {
             if let Some(items) = extract_todo_items(msg) {
-                push_todo_snapshot(parts, items);
-                return (true, None);
+                let updated = push_todo_snapshot(parts, items);
+                return (true, updated.map(|part| vec![part]));
             }
             (true, None)
         }
@@ -1502,15 +1507,32 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             }
         }
         "error" => {
-            let transition = {
+            let (transition, stale_event) = {
                 let _runtime_guard = acquire_session_runtime_lock(chat_session_id).await;
                 let mut map = handles.lock().await;
-                map.get_mut(chat_session_id).map(|proc| {
-                    run_bridge_error_transition_locked(proc, chat_session_id, &msg, |mid, parts| {
-                        emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
-                    })
-                })
+                if let Some(proc) = map.get_mut(chat_session_id) {
+                    if bridge_message_is_stale_for_active_turn(proc, &msg) {
+                        (None, true)
+                    } else {
+                        (
+                            Some(run_bridge_error_transition_locked(
+                                proc,
+                                chat_session_id,
+                                &msg,
+                                |mid, parts| {
+                                    emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
+                                },
+                            )),
+                            false,
+                        )
+                    }
+                } else {
+                    (None, false)
+                }
             };
+            if stale_event {
+                return;
+            }
             let _ = app.emit("agent-sdk-message", &msg);
 
             let transition = transition.unwrap_or_default();
@@ -1948,7 +1970,12 @@ mod moved_tests {
         let (handled, updated) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
 
         assert!(handled);
-        assert!(updated.is_none());
+        let updated_parts = updated.expect("existing snapshot update must be returned as delta");
+        assert_eq!(updated_parts.len(), 1);
+        assert!(matches!(
+            &updated_parts[0],
+            MessagePart::TodoListSnapshot { items } if items.is_empty()
+        ));
         let snapshot = parts
             .iter()
             .find_map(|part| match part {
@@ -1957,6 +1984,27 @@ mod moved_tests {
             })
             .expect("snapshot should be present");
         assert!(snapshot.is_empty());
+    }
+
+    #[test]
+    fn test_accumulate_todo_snapshot_initial_addition_uses_new_parts_delta() {
+        let msg = serde_json::json!({
+            "type": "todo_list_snapshot",
+            "items": [{ "text": "new todo", "completed": false }]
+        });
+        let mut parts = vec![];
+
+        let (handled, updated) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+
+        assert!(handled);
+        assert!(updated.is_none());
+        assert_eq!(parts.len(), 2);
+        assert!(matches!(&parts[0], MessagePart::Text { .. }));
+        assert!(matches!(
+            &parts[1],
+            MessagePart::TodoListSnapshot { items }
+                if items.len() == 1 && items[0].text == "new todo"
+        ));
     }
 
     #[test]

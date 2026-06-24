@@ -124,14 +124,16 @@ pub(super) async fn set_active_process_model(
     let data = build_set_model_command(&model_id);
     let mut map = handles.lock().await;
     if let Some(proc) = map.get_mut(chat_session_id) {
-        proc.stdin
+        let mut stdin = proc.stdin.lock().await;
+        stdin
             .write_all(data.as_bytes())
             .await
             .map_err(|e| format!("Failed to write setModel: {e}"))?;
-        proc.stdin
+        stdin
             .flush()
             .await
             .map_err(|e| format!("Failed to flush setModel: {e}"))?;
+        drop(stdin);
         proc.selected_model = Some(model_id);
     }
     Ok(())
@@ -230,7 +232,7 @@ pub(super) async fn set_agent_model_internal_with_data_dir(
         }
     }
 
-    // 1. Send setModel command to Bridge + update process state when the process is active.
+    // 1. Resolve the config-owned model list before mutating any runtime state.
     //    proc.available_models は config 単一 owner に追従させるため、active process が
     //    存在する場合も config 由来の最新値で同期する。
     //    infrastructure 故障時は Err を伝播し、proc キャッシュを空一覧で上書きしない。
@@ -240,8 +242,6 @@ pub(super) async fn set_agent_model_internal_with_data_dir(
         );
         format!("バックエンド '{target_backend_id}' のモデル一覧を取得できません: {e}")
     })?;
-    sync_active_process_available_models(handles, chat_session_id, &models_from_config).await;
-    set_active_process_model(handles, chat_session_id, target_model_id.clone()).await?;
 
     // 2. Persist metadata without loading message body.
     session_store.update_backend_selection(
@@ -251,7 +251,11 @@ pub(super) async fn set_agent_model_internal_with_data_dir(
         Some(target_model_id.clone()),
     )?;
 
-    // 3. Always emit event to keep frontend in sync.
+    // 3. Send setModel command to Bridge + update process state only after persistence succeeds.
+    sync_active_process_available_models(handles, chat_session_id, &models_from_config).await;
+    set_active_process_model(handles, chat_session_id, target_model_id.clone()).await?;
+
+    // 4. Always emit event to keep frontend in sync.
     //    供給元は常に config.toml（registry 経由）に統一する。
     if let Some(app) = app {
         use tauri::Emitter;

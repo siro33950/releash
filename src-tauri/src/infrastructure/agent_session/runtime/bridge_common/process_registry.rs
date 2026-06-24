@@ -8,9 +8,13 @@ use crate::usecase::agent_session::session::TokenUsage;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::process::Child;
 use tokio::process::ChildStdin;
+use tokio::sync::Mutex;
+
+pub type AgentStdin = Arc<Mutex<ChildStdin>>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BridgeState {
@@ -48,7 +52,7 @@ pub struct PendingMessage {
 }
 
 pub struct AgentProcess {
-    pub stdin: ChildStdin,
+    pub stdin: AgentStdin,
     pub backend_id: String,
     pub state: BridgeState,
     pub turn_phase: TurnPhase,
@@ -130,15 +134,16 @@ pub struct AgentProcess {
 
 #[cfg(test)]
 pub(crate) fn make_test_agent_process() -> AgentProcess {
-    let mut child = tokio::process::Command::new("cat")
+    let mut command = test_echo_command();
+    let mut child = command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .expect("spawn cat test process");
+        .expect("spawn test echo process");
     let stdin = child.stdin.take().expect("stdin");
     AgentProcess {
-        stdin,
+        stdin: Arc::new(Mutex::new(stdin)),
         backend_id: "mock".to_string(),
         state: BridgeState::Ready,
         turn_phase: TurnPhase::Idle,
@@ -171,6 +176,18 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         turn_seq: 0,
         turn_watchdog_active: false,
     }
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn test_echo_command() -> tokio::process::Command {
+    tokio::process::Command::new("cat")
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn test_echo_command() -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("cmd");
+    command.args(["/C", "more"]);
+    command
 }
 
 /// Per-session agent process map: chat_session_id -> AgentProcess

@@ -252,15 +252,19 @@ pub(crate) async fn emit_workflow_runtime_projection<R: tauri::Runtime>(
 pub(crate) async fn interrupt_agent(handles: &Arc<Mutex<AgentProcessMap>>, session_id: &str) {
     use tokio::io::AsyncWriteExt;
 
-    let mut map = handles.lock().await;
-    if let Some(proc) = map.get_mut(session_id) {
-        if let Err(e) = proc.stdin.write_all(b"{\"type\":\"interrupt\"}\n").await {
+    let stdin = {
+        let map = handles.lock().await;
+        map.get(session_id).map(|proc| Arc::clone(&proc.stdin))
+    };
+    if let Some(stdin) = stdin {
+        let mut stdin = stdin.lock().await;
+        if let Err(e) = stdin.write_all(b"{\"type\":\"interrupt\"}\n").await {
             log::warn!(
                 "Failed to write interrupt for session '{}': {e}",
                 session_id
             );
         }
-        if let Err(e) = proc.stdin.flush().await {
+        if let Err(e) = stdin.flush().await {
             log::warn!(
                 "Failed to flush interrupt for session '{}': {e}",
                 session_id

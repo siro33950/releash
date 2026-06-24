@@ -934,7 +934,7 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
         map.insert(
             chat_session_id.to_string(),
             AgentProcess {
-                stdin,
+                stdin: Arc::new(tokio::sync::Mutex::new(stdin)),
                 backend_id,
                 state: BridgeState::Initializing,
                 turn_phase: TurnPhase::Idle,
@@ -2743,7 +2743,7 @@ mod moved_tests {
             pgid: Option<u32>,
         ) -> AgentProcess {
             AgentProcess {
-                stdin,
+                stdin: Arc::new(tokio::sync::Mutex::new(stdin)),
                 backend_id: CLAUDE_BACKEND_ID.to_string(),
                 state: BridgeState::Initializing,
                 turn_phase: TurnPhase::Idle,

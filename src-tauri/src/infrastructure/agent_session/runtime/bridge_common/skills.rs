@@ -76,9 +76,11 @@ pub(super) fn parse_skill_frontmatter(content: &str) -> Option<(String, String)>
     }
     let mut name: Option<String> = None;
     let mut description: Option<String> = None;
+    let mut closed = false;
     for line in lines {
         let trimmed = line.trim();
         if trimmed == "---" {
+            closed = true;
             break;
         }
         if let Some(val) = trimmed.strip_prefix("name:") {
@@ -86,6 +88,9 @@ pub(super) fn parse_skill_frontmatter(content: &str) -> Option<(String, String)>
         } else if let Some(val) = trimmed.strip_prefix("description:") {
             description = Some(val.trim().to_string());
         }
+    }
+    if !closed {
+        return None;
     }
     Some((name.unwrap_or_default(), description.unwrap_or_default()))
 }
@@ -254,6 +259,12 @@ mod moved_tests {
     #[test]
     fn parse_skill_frontmatter_no_opening_delimiter() {
         let content = "name: review\n---\n";
+        assert!(parse_skill_frontmatter(content).is_none());
+    }
+
+    #[test]
+    fn parse_skill_frontmatter_no_closing_delimiter() {
+        let content = "---\nname: review\ndescription: missing close\nBody here";
         assert!(parse_skill_frontmatter(content).is_none());
     }
 
