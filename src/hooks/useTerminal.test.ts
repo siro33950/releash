@@ -168,6 +168,59 @@ describe("useTerminal", () => {
 		});
 	});
 
+	it("listen 解決前にアンマウントしても後続登録された listener を解除する", async () => {
+		type MockUnlisten = ReturnType<typeof vi.fn>;
+		let resolveOutput!: (value: MockUnlisten) => void;
+		let resolveExit!: (value: MockUnlisten) => void;
+		let resolveEvicted!: (value: MockUnlisten) => void;
+		mockListen.mockReset();
+		mockListen.mockImplementation((eventName: string) => {
+			return new Promise<MockUnlisten>((resolve) => {
+				if (eventName === "pty-output") {
+					resolveOutput = resolve;
+				} else if (eventName === "pty-exit") {
+					resolveExit = resolve;
+				} else if (eventName === "pty-evicted") {
+					resolveEvicted = resolve;
+				}
+			});
+		});
+
+		const { unmount } = renderHook(() => useTerminal(containerRef));
+
+		await waitFor(() => {
+			expect(mockListen).toHaveBeenCalledWith(
+				"pty-output",
+				expect.any(Function),
+			);
+		});
+		unmount();
+		expect(mockUnlistenOutput).not.toHaveBeenCalled();
+
+		resolveOutput(mockUnlistenOutput);
+		await waitFor(() => {
+			expect(mockListen).toHaveBeenCalledWith("pty-exit", expect.any(Function));
+		});
+		resolveExit(mockUnlistenExit);
+		await waitFor(() => {
+			expect(mockListen).toHaveBeenCalledWith(
+				"pty-evicted",
+				expect.any(Function),
+			);
+		});
+		resolveEvicted(mockUnlistenEvicted);
+
+		await waitFor(() => {
+			expect(mockUnlistenOutput).toHaveBeenCalledTimes(1);
+			expect(mockUnlistenExit).toHaveBeenCalledTimes(1);
+			expect(mockUnlistenEvicted).toHaveBeenCalledTimes(1);
+		});
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"get_or_spawn_pty",
+			expect.any(Object),
+		);
+	});
+
 	it("PTY ready state is synced as active while mounted and cleared on unmount", async () => {
 		const { unmount } = renderHook(() => useTerminal(containerRef, "/repo"));
 
@@ -320,6 +373,9 @@ describe("useTerminal", () => {
 			activeToken: expect.any(String),
 		});
 		expect(mockInvoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
+		expect(mockUnlistenOutput).toHaveBeenCalledTimes(1);
+		expect(mockUnlistenExit).toHaveBeenCalledTimes(1);
+		expect(mockUnlistenEvicted).toHaveBeenCalledTimes(1);
 	});
 
 	it("pending kill callback kills a late managed PTY instead of reporting ready", async () => {
@@ -1024,6 +1080,16 @@ describe("useTerminal", () => {
 		expect(mockTerminalInstance.write).toHaveBeenCalledWith(
 			`backend replay ${MAX_INITIAL_REFETCH}`,
 		);
+		const writtenOutput = mockTerminalInstance.write.mock.calls.map(
+			([data]) => data as string,
+		);
+		const resyncWarningIndex = writtenOutput.findIndex((data) =>
+			data.includes("Terminal output may be incomplete"),
+		);
+		expect(resyncWarningIndex).toBeGreaterThanOrEqual(0);
+		expect(resyncWarningIndex).toBeLessThan(
+			writtenOutput.indexOf(`backend replay ${MAX_INITIAL_REFETCH}`),
+		);
 
 		mockOnDataCallback("after init");
 
@@ -1110,6 +1176,11 @@ describe("useTerminal", () => {
 		expect(mockTerminalInstance.write).toHaveBeenCalledWith(
 			"backend replay after drop",
 		);
+		expect(
+			mockTerminalInstance.write.mock.calls.some(([data]) =>
+				(data as string).includes("Terminal output may be incomplete"),
+			),
+		).toBe(false);
 	});
 
 	it("新規セッション（is_new: true）のとき起動コマンドが送信される", async () => {

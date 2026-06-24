@@ -55,6 +55,8 @@ export const QUEUED_INITIAL_OUTPUT_MAX_BYTES = 64 * 1024;
 export const MAX_INITIAL_REFETCH = 5;
 
 const TERMINAL_CAP_REACHED_CODE = "CAP_REACHED";
+const INITIAL_OUTPUT_RESYNC_FAILED_MESSAGE =
+	"\r\n\x1b[33m[Terminal output may be incomplete: unable to resynchronize buffered output]\x1b[0m\r\n";
 const textEncoder = new TextEncoder();
 
 const sessionKeyCache = new Map<string, string>();
@@ -331,6 +333,15 @@ export function useTerminal(
 		let initializingPtyId: number | null = null;
 		const queuedInitialOutput = createBoundedPtyOutputQueue();
 
+		const cleanupPtyListeners = () => {
+			unlistenOutput?.();
+			unlistenOutput = null;
+			unlistenExit?.();
+			unlistenExit = null;
+			unlistenEvicted?.();
+			unlistenEvicted = null;
+		};
+
 		const initPty = async () => {
 			// 1. Register listeners first and queue output until the PTY id is known.
 			unlistenOutput = await listen<PtyOutput>("pty-output", (event) => {
@@ -373,6 +384,7 @@ export function useTerminal(
 			});
 
 			if (!isMounted) {
+				cleanupPtyListeners();
 				isInitializingPty = false;
 				queuedInitialOutput.clear();
 				return;
@@ -419,6 +431,7 @@ export function useTerminal(
 					result.session_key,
 					activeToken,
 				);
+				cleanupPtyListeners();
 				isInitializingPty = false;
 				queuedInitialOutput.clear();
 				return;
@@ -454,6 +467,10 @@ export function useTerminal(
 				isExited = refreshed.is_exited;
 				exitCode = refreshed.exit_code;
 				attempts += 1;
+			}
+
+			if (attempts >= MAX_INITIAL_REFETCH && queuedInitialOutput.hasDropped()) {
+				terminal.write(INITIAL_OUTPUT_RESYNC_FAILED_MESSAGE);
 			}
 
 			// 3. Replay buffered output
@@ -604,9 +621,7 @@ export function useTerminal(
 				clearTimeout(resizeTimer);
 			}
 			resizeObserver.disconnect();
-			unlistenOutput?.();
-			unlistenExit?.();
-			unlistenEvicted?.();
+			cleanupPtyListeners();
 			if (killOnUnmountRef.current && ptyIdRef.current !== null) {
 				invoke("kill_pty", { ptyId: ptyIdRef.current }).catch(() => {});
 			}
