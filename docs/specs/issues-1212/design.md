@@ -208,7 +208,7 @@ pub struct ReviewGroupActionInput {
 
 ### 回帰
 
-- 死コード削除後に `pnpm build` / `cargo clippy -D warnings` が通る（未使用警告も含む）。
+- 死コード削除後に `pnpm build` / `cargo clippy -- -D warnings` が通る（未使用警告も含む）。
 - 既存の group 単位 stage / unstage の振る舞い（changes で stage / staged で unstage / 粒度は change group）が id ベースで維持される（D3）。
 
 CI と同一コマンド（`pnpm lint` / `pnpm test` / `pnpm build`、`cargo fmt --check` / `cargo clippy -- -D warnings` / `cargo test`）で検証する。
