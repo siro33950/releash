@@ -48,10 +48,19 @@ async function* promptGenerator(promptState) {
 			yield queued.message;
 			continue;
 		}
+		let myResolve;
 		const queued = await new Promise((resolve) => {
 			messageResolve = resolve;
+			myResolve = resolve;
 		});
-		messageResolve = null;
+		// Only clear the shared resolver if it is still ours. After a hard
+		// interrupt the next query's generator may have already installed its
+		// own resolver before this (old) generator's await settles; clearing it
+		// unconditionally here would strand the follow-up message in the queue
+		// (issues-1284).
+		if (messageResolve === myResolve) {
+			messageResolve = null;
+		}
 		if (queued === null) return;
 		if (promptState.completedResult) {
 			messageQueue.unshift(queued);
