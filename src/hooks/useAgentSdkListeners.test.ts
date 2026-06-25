@@ -380,6 +380,79 @@ describe("agent-streaming-delta event", () => {
 		});
 	});
 
+	it("logs resync failures and retries on a later delta", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		setViewable(refs, "session-1");
+		refs.hasMessage.mockReturnValue(true);
+		refs.getLastStreamingSeq.mockReturnValue(1);
+		const error = new Error("resync failed");
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+		vi.mocked(sessionStore.resyncStreamingMessage)
+			.mockReset()
+			.mockRejectedValueOnce(error)
+			.mockResolvedValueOnce({
+				session_id: "session-1",
+				message_id: "msg-001",
+				seq: 3,
+				parts: [{ type: "text", content: "resynced" }],
+			});
+
+		try {
+			renderHook(() => useAgentSdkListeners(refs));
+			for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+			const cb = listenCallbacks.get("agent-streaming-delta");
+			expect(cb).toBeDefined();
+
+			const first = cb?.({
+				payload: {
+					chat_session_id: "session-1",
+					message_id: "msg-001",
+					seq: 3,
+					parts: [{ type: "text", content: "late" }],
+				},
+			}) as Promise<void>;
+			await expect(first).resolves.toBeUndefined();
+			expect(consoleError).toHaveBeenCalledWith(
+				"Failed to resync streaming message:",
+				error,
+			);
+
+			await cb?.({
+				payload: {
+					chat_session_id: "session-1",
+					message_id: "msg-001",
+					seq: 3,
+					parts: [{ type: "text", content: "late retry" }],
+				},
+			});
+
+			expect(sessionStore.resyncStreamingMessage).toHaveBeenCalledTimes(2);
+			expect(sessionStore.resyncStreamingMessage).toHaveBeenNthCalledWith(
+				2,
+				"session-1",
+				"msg-001",
+				1,
+			);
+			expect(refs.dispatch).toHaveBeenCalledWith({
+				type: "SET_STREAMING_MESSAGE",
+				sessionId: "session-1",
+				messageId: "msg-001",
+				seq: 3,
+				parts: [{ type: "text", content: "resynced" }],
+			});
+		} finally {
+			consoleError.mockRestore();
+			vi.mocked(sessionStore.resyncStreamingMessage)
+				.mockReset()
+				.mockResolvedValue(null);
+		}
+	});
+
 	it("applies the next delta after a resync snapshot before React state ref reflects the snapshot seq", async () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
@@ -429,6 +502,67 @@ describe("agent-streaming-delta event", () => {
 			seq: 4,
 			parts: [{ type: "text", content: "next" }],
 		});
+	});
+
+	it("logs hydration failures and retries hydration on a later delta", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		setViewable(refs, "session-1");
+		refs.hasMessage.mockReturnValue(false);
+		refs.getLastStreamingSeq.mockReturnValue(0);
+		const error = new Error("hydrate failed");
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+		vi.mocked(sessionStore.resyncStreamingMessage)
+			.mockReset()
+			.mockResolvedValue(null);
+		vi.mocked(sessionStore.getSession)
+			.mockReset()
+			.mockRejectedValueOnce(error)
+			.mockResolvedValueOnce(null);
+
+		try {
+			renderHook(() => useAgentSdkListeners(refs));
+			for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+			const cb = listenCallbacks.get("agent-streaming-delta");
+			expect(cb).toBeDefined();
+
+			const first = cb?.({
+				payload: {
+					chat_session_id: "session-1",
+					message_id: "msg-001",
+					seq: 1,
+					parts: [{ type: "text", content: "late" }],
+				},
+			}) as Promise<void>;
+			await expect(first).resolves.toBeUndefined();
+			expect(consoleError).toHaveBeenCalledWith(
+				"Failed to hydrate streaming message:",
+				error,
+			);
+
+			await cb?.({
+				payload: {
+					chat_session_id: "session-1",
+					message_id: "msg-001",
+					seq: 1,
+					parts: [{ type: "text", content: "late retry" }],
+				},
+			});
+
+			expect(sessionStore.getSession).toHaveBeenCalledTimes(2);
+			expect(sessionStore.getSession).toHaveBeenNthCalledWith(2, "session-1");
+			expect(sessionStore.resyncStreamingMessage).toHaveBeenCalledTimes(2);
+		} finally {
+			consoleError.mockRestore();
+			vi.mocked(sessionStore.getSession).mockReset().mockResolvedValue(null);
+			vi.mocked(sessionStore.resyncStreamingMessage)
+				.mockReset()
+				.mockResolvedValue(null);
+		}
 	});
 
 	it("hydrates missing messages per session and leaves seq retryable while uncached", async () => {

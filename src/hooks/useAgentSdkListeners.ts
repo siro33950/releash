@@ -447,6 +447,8 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				if (response && !cancelled) {
 					dispatch({ type: "UPSERT_SESSION", session: response.session });
 				}
+			} catch (error) {
+				console.error("Failed to hydrate streaming message:", error);
 			} finally {
 				refreshInFlightBySession.delete(chatSessionId);
 			}
@@ -496,6 +498,8 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 					}
 					nextSinceSeq = snapshot.seq;
 				}
+			} catch (error) {
+				console.error("Failed to resync streaming message:", error);
 			} finally {
 				resyncInFlight.delete(key);
 			}
