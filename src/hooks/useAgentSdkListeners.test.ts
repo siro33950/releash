@@ -415,7 +415,7 @@ describe("agent-streaming-delta event", () => {
 					seq: 3,
 					parts: [{ type: "text", content: "late" }],
 				},
-			}) as Promise<void>;
+			}) as Promise<void> | undefined;
 			await expect(first).resolves.toBeUndefined();
 			expect(consoleError).toHaveBeenCalledWith(
 				"Failed to resync streaming message:",
@@ -537,7 +537,7 @@ describe("agent-streaming-delta event", () => {
 					seq: 1,
 					parts: [{ type: "text", content: "late" }],
 				},
-			}) as Promise<void>;
+			}) as Promise<void> | undefined;
 			await expect(first).resolves.toBeUndefined();
 			expect(consoleError).toHaveBeenCalledWith(
 				"Failed to hydrate streaming message:",
