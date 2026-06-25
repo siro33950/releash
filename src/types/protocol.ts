@@ -70,7 +70,21 @@ export interface AgentSessionContextCarryUpdated {
 export interface AgentStreamSync {
 	session_id: string;
 	message_id: string;
+	seq: number;
 	parts: MessagePart[];
+}
+
+export interface AgentStreamDelta {
+	session_id: string;
+	message_id: string;
+	seq: number;
+	parts: MessagePart[];
+}
+
+export interface ResyncStreamReq {
+	session_id: string;
+	message_id: string;
+	since_seq: number;
 }
 
 export interface WorkflowStateSync {
@@ -195,4 +209,6 @@ export type WsMessage =
 	| { type: "agent_state_sync"; payload: AgentStateSync }
 	| { type: "workflow_state_sync"; payload: WorkflowStateSync }
 	| { type: "agent_stream_sync"; payload: AgentStreamSync }
+	| { type: "agent_stream_delta"; payload: AgentStreamDelta }
+	| { type: "resync_stream"; payload: ResyncStreamReq }
 	| { type: "error"; payload: ErrorMsg };

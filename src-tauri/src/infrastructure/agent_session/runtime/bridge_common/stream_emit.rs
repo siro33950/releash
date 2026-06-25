@@ -1,5 +1,10 @@
-use super::process_registry::{AgentProcess, AgentProcessMap, BridgeState, TurnPhase};
-use super::shared::consolidate_parts_from_slice;
+use super::process_registry::{
+    AgentProcess, AgentProcessMap, BridgeState, PendingStreamDelta, StreamPartRollback, TurnPhase,
+};
+use super::shared::{
+    append_display_delta_parts, apply_stream_delta_to_parts, canonical_stream_parts_from_slice,
+    pending_delta_parts, StreamDeltaApplyResult,
+};
 use crate::usecase::agent_session::session::now_timestamp;
 use crate::usecase::agent_session::session::MessagePart;
 use std::sync::Arc;
@@ -21,7 +26,10 @@ pub(super) const STREAMING_PENDING_BYTE_LIMIT: usize = 256 * 1024;
 
 pub(super) fn release_completed_turn_streaming_buffer(proc: &mut AgentProcess) -> Vec<MessagePart> {
     let released_parts = std::mem::take(&mut proc.streaming_parts);
-    proc.pending_stream_part_count = 0;
+    proc.confirmed_stream_part_len = 0;
+    proc.pending_stream_parts.clear();
+    proc.pending_stream_part_rollbacks.clear();
+    proc.retry_stream_delta = None;
     proc.pending_stream_bytes = 0;
     proc.last_stream_emit_at = None;
     released_parts
@@ -48,128 +56,27 @@ pub(super) fn emit_session_state_changed<R: tauri::Runtime>(
     );
 }
 
-pub(super) fn to_agent_stream_part_msg(part: MessagePart) -> crate::protocol::AgentStreamPartMsg {
-    match part {
-        MessagePart::Thinking {
-            content,
-            parent_tool_use_id,
-        } => crate::protocol::AgentStreamPartMsg::Thinking {
-            content,
-            parent_tool_use_id,
-        },
-        MessagePart::Text {
-            content,
-            parent_tool_use_id,
-        } => crate::protocol::AgentStreamPartMsg::Text {
-            content,
-            parent_tool_use_id,
-        },
-        MessagePart::ToolUse {
-            tool,
-            input,
-            id,
-            parent_tool_use_id,
-        } => crate::protocol::AgentStreamPartMsg::ToolUse {
-            tool,
-            input,
-            id,
-            parent_tool_use_id,
-        },
-        MessagePart::ToolResult {
-            content,
-            is_error,
-            tool_use_id,
-            parent_tool_use_id,
-        } => crate::protocol::AgentStreamPartMsg::ToolResult {
-            content,
-            is_error,
-            tool_use_id,
-            parent_tool_use_id,
-        },
-        MessagePart::Error {
-            content,
-            parent_tool_use_id,
-        } => crate::protocol::AgentStreamPartMsg::Error {
-            content,
-            parent_tool_use_id,
-        },
-        MessagePart::Permission {
-            request,
-            status,
-            answers,
-            parent_tool_use_id,
-        } => crate::protocol::AgentStreamPartMsg::Permission {
-            request,
-            status,
-            answers,
-            parent_tool_use_id,
-        },
-        MessagePart::TaskStatus {
-            task_tool_use_id,
-            status,
-            description,
-            summary,
-        } => crate::protocol::AgentStreamPartMsg::TaskStatus {
-            task_tool_use_id,
-            status,
-            description,
-            summary,
-        },
-        MessagePart::TodoListSnapshot { items } => {
-            crate::protocol::AgentStreamPartMsg::TodoListSnapshot {
-                items: items
-                    .into_iter()
-                    .map(|item| crate::protocol::AgentTodoListItemMsg {
-                        text: item.text,
-                        completed: item.completed,
-                    })
-                    .collect(),
-            }
-        }
-        MessagePart::SystemNotification {
-            notification_type,
-            status,
-            label,
-            detail,
-            hook_id,
-        } => crate::protocol::AgentStreamPartMsg::SystemNotification {
-            notification_type: notification_type.as_str().to_string(),
-            status,
-            label,
-            detail,
-            hook_id,
-        },
-        MessagePart::Image { data, media_type } => {
-            crate::protocol::AgentStreamPartMsg::Image { data, media_type }
-        }
-        MessagePart::ImageRef { attachment } => crate::protocol::AgentStreamPartMsg::ImageRef {
-            attachment: crate::protocol::AgentStreamAttachmentRefMsg {
-                id: attachment.id,
-                media_type: attachment.media_type,
-                byte_size: attachment.byte_size,
-            },
-        },
-    }
-}
-
 /// Returns `(tauri_ok, ws_ok)`. `tauri_ok` reflects whether the Tauri event
-/// dispatcher accepted the payload. `ws_ok` is always `true` on the
-/// production broadcaster path: `WsBroadcaster::send_stream_sync` is a
-/// best-effort enqueue (slot writes cannot fail and downstream WS transport
-/// failure is recovered by the next flush re-sending the cumulative
-/// `streaming_parts`). Treating the WS channel as always-true here matches
-/// that contract; callers that need to simulate a WS-side failure (unit
-/// tests) drive `apply_streaming_emit_result` directly.
-pub(super) fn emit_streaming_parts<R: tauri::Runtime>(
+/// dispatcher accepted the delta payload. `ws_ok` is always `true` on the
+/// production broadcaster path because enqueueing is best effort; unit tests
+/// that need a WS-side failure drive `apply_streaming_emit_result` directly.
+pub(super) fn emit_streaming_delta<R, F>(
     app: &tauri::AppHandle<R>,
     chat_session_id: &str,
     message_id: &str,
+    seq: u64,
     parts: Vec<MessagePart>,
-) -> (bool, bool) {
+    snapshot_parts: F,
+) -> (bool, bool)
+where
+    R: tauri::Runtime,
+    F: FnOnce() -> Vec<MessagePart>,
+{
     use tauri::{Emitter, Manager};
     let payload = serde_json::json!({
         "chat_session_id": chat_session_id,
         "message_id": message_id,
+        "seq": seq,
         "parts": parts,
     });
     crate::other::telemetry::record_payload_size(
@@ -180,15 +87,33 @@ pub(super) fn emit_streaming_parts<R: tauri::Runtime>(
                 .unwrap_or(0)
         },
     );
-    let tauri_ok = app.emit("agent-streaming-updated", &payload).is_ok();
+    let tauri_ok = app.emit("agent-streaming-delta", &payload).is_ok();
     if let Some(broadcaster) = app.try_state::<Arc<crate::ws_bridge::WsBroadcaster>>() {
-        broadcaster.send_stream_sync(crate::protocol::AgentStreamSync {
-            session_id: chat_session_id.to_string(),
-            message_id: message_id.to_string(),
-            parts: parts.into_iter().map(to_agent_stream_part_msg).collect(),
-        });
+        let session_id = chat_session_id.to_string();
+        let message_id = message_id.to_string();
+        broadcaster.send_stream_delta(
+            crate::protocol::AgentStreamDeltaMsg {
+                session_id: session_id.clone(),
+                message_id: message_id.clone(),
+                seq,
+                parts: parts.into_iter().map(to_agent_stream_part_msg).collect(),
+            },
+            || crate::protocol::AgentStreamSync {
+                session_id,
+                message_id,
+                seq,
+                parts: snapshot_parts()
+                    .into_iter()
+                    .map(to_agent_stream_part_msg)
+                    .collect(),
+            },
+        );
     }
     (tauri_ok, true)
+}
+
+fn to_agent_stream_part_msg(part: MessagePart) -> crate::protocol::AgentStreamPartMsg {
+    part.into()
 }
 
 /// Estimate the wire byte size contributed by one delta part. Used to decide
@@ -252,23 +177,35 @@ pub(super) fn part_byte_size(part: &MessagePart) -> usize {
 }
 
 /// Record that delta parts have been queued for the next coalescing flush.
-/// We only track the count and total byte size — the actual delta entries
-/// remain in `streaming_parts` (cumulative), so storing them twice would
-/// just inflate memory for no benefit. The count is the dirty signal; bytes
-/// drives the byte-cap flush trigger.
+/// `pending_stream_parts` owns the concrete delta payload until a successful
+/// emit; its length is the pending count and dirty signal. `pending_stream_bytes`
+/// is tracked separately for the byte-cap flush trigger.
 pub(super) fn enqueue_pending_delta(proc: &mut AgentProcess, delta: &[MessagePart]) {
+    enqueue_pending_delta_with_rollbacks(proc, delta, Vec::new());
+}
+
+pub(super) fn enqueue_pending_delta_with_rollbacks(
+    proc: &mut AgentProcess,
+    delta: &[MessagePart],
+    rollbacks: Vec<StreamPartRollback>,
+) {
     for p in delta {
         proc.pending_stream_bytes = proc.pending_stream_bytes.saturating_add(part_byte_size(p));
     }
-    proc.pending_stream_part_count = proc.pending_stream_part_count.saturating_add(delta.len());
+    proc.pending_stream_parts.extend_from_slice(delta);
+    proc.pending_stream_part_rollbacks.extend(rollbacks);
 }
 
 /// True when the pending buffer has crossed either the count or byte threshold.
 /// While delivery is succeeding this triggers an immediate flush; while
 /// delivery is failing the buffer continues to grow past these thresholds.
 pub(super) fn pending_exceeds_threshold(proc: &AgentProcess) -> bool {
-    proc.pending_stream_part_count >= STREAMING_PENDING_PART_LIMIT
+    proc.pending_stream_parts.len() >= STREAMING_PENDING_PART_LIMIT
         || proc.pending_stream_bytes >= STREAMING_PENDING_BYTE_LIMIT
+}
+
+pub(super) fn has_pending_stream_flush(proc: &AgentProcess) -> bool {
+    !proc.pending_stream_parts.is_empty() || proc.retry_stream_delta.is_some()
 }
 
 /// True when enough time has elapsed since the last successful emit for the
@@ -286,31 +223,114 @@ pub(super) fn streaming_interval_elapsed(proc: &AgentProcess) -> bool {
 /// process state, and is the source of `apply_streaming_emit_result`.
 #[derive(Debug, Clone)]
 pub(super) struct StreamingFlushSnapshot {
+    pub(crate) seq: u64,
     pub(crate) parts: Vec<MessagePart>,
     pub(crate) part_count: usize,
     pub(crate) buffer_len: usize,
     pub(crate) pending_bytes: usize,
+    rollbacks: Vec<StreamPartRollback>,
+    confirmed_stream_part_len_after_success: usize,
+    source: StreamingFlushSource,
 }
 
-/// Prepare a streaming flush: snapshot the consolidated cumulative parts and
-/// the buffer metadata. Returns `None` when the pending buffer is empty so
-/// callers can short-circuit the emit (idle-tick / double-flush no-op).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamingFlushSource {
+    Pending,
+    Retry,
+    OneShot,
+}
+
+/// Prepare a streaming flush: snapshot the pending delta payload and buffer
+/// metadata after passing the update through the Rust canonical stream apply
+/// rules. Append-only deltas are emitted directly; in-place updates that cannot
+/// be represented by frontend append/merge are sent as an intentional seq gap
+/// so the existing resync read model supplies the canonical snapshot.
 pub(super) fn prepare_streaming_flush(proc: &AgentProcess) -> Option<StreamingFlushSnapshot> {
-    if proc.pending_stream_part_count == 0 {
+    if let Some(retry) = &proc.retry_stream_delta {
+        return Some(StreamingFlushSnapshot {
+            seq: retry.seq,
+            part_count: retry.part_count,
+            buffer_len: retry.part_count,
+            pending_bytes: retry.pending_bytes,
+            parts: retry.parts.clone(),
+            rollbacks: retry.rollbacks.clone(),
+            confirmed_stream_part_len_after_success: retry.confirmed_stream_part_len_after_success,
+            source: StreamingFlushSource::Retry,
+        });
+    }
+    if proc.pending_stream_parts.is_empty() {
         return None;
     }
-    let parts = consolidate_parts_from_slice(&proc.streaming_parts);
+    let next_seq = proc.streaming_delta_seq.saturating_add(1);
+    let mut canonical_parts = confirmed_streaming_parts(proc);
+    let mut canonical_seq = proc.streaming_delta_seq;
+    let apply_result = apply_stream_delta_to_parts(
+        &mut canonical_parts,
+        &mut canonical_seq,
+        next_seq,
+        &proc.pending_stream_parts,
+    );
+    debug_assert_eq!(apply_result, StreamDeltaApplyResult::Applied);
+
+    let parts = pending_delta_parts(&proc.pending_stream_parts, proc.pending_stream_parts.len());
+    let mut display_projected_parts = confirmed_streaming_parts(proc);
+    append_display_delta_parts(&mut display_projected_parts, &parts);
+    let append_only_delta = display_projected_parts == canonical_parts;
+    let seq = if append_only_delta {
+        next_seq
+    } else {
+        next_seq.saturating_add(1)
+    };
+    let parts = if append_only_delta { parts } else { Vec::new() };
     Some(StreamingFlushSnapshot {
+        seq,
         part_count: parts.len(),
-        buffer_len: proc.pending_stream_part_count,
+        buffer_len: proc.pending_stream_parts.len(),
         pending_bytes: proc.pending_stream_bytes,
         parts,
+        rollbacks: proc.pending_stream_part_rollbacks.clone(),
+        confirmed_stream_part_len_after_success: proc.streaming_parts.len(),
+        source: StreamingFlushSource::Pending,
     })
 }
 
+fn apply_rollbacks(parts: &mut [MessagePart], rollbacks: &[StreamPartRollback]) {
+    for rollback in rollbacks.iter().rev() {
+        if let Some(part) = parts.get_mut(rollback.index) {
+            *part = rollback.previous.clone();
+        }
+    }
+}
+
+pub(super) fn confirmed_streaming_parts(proc: &AgentProcess) -> Vec<MessagePart> {
+    let mut parts = proc.streaming_parts.clone();
+    apply_rollbacks(&mut parts, &proc.pending_stream_part_rollbacks);
+    if let Some(retry) = &proc.retry_stream_delta {
+        apply_rollbacks(&mut parts, &retry.rollbacks);
+    }
+    parts.truncate(proc.confirmed_stream_part_len.min(parts.len()));
+    canonical_stream_parts_from_slice(&parts)
+}
+
+fn snapshot_parts_after_success(
+    proc: &AgentProcess,
+    snapshot: &StreamingFlushSnapshot,
+) -> Vec<MessagePart> {
+    let mut parts = proc.streaming_parts.clone();
+    if snapshot.source == StreamingFlushSource::Retry {
+        apply_rollbacks(&mut parts, &proc.pending_stream_part_rollbacks);
+    }
+    parts.truncate(
+        snapshot
+            .confirmed_stream_part_len_after_success
+            .min(parts.len()),
+    );
+    canonical_stream_parts_from_slice(&parts)
+}
+
 /// Apply the emit result to the coalescing state. On success clears the
-/// pending buffer and bumps `last_stream_emit_at`; on failure retains both
-/// (so the next flush retries the cumulative payload) and emits a warning
+/// pending buffer, commits the delta seq, and bumps `last_stream_emit_at`; on
+/// failure retains both (so the next flush retries the same delta seq) and emits a warning
 /// log containing only non-body metadata. Returns whether the emit succeeded.
 pub(super) fn apply_streaming_emit_result(
     proc: &mut AgentProcess,
@@ -321,19 +341,37 @@ pub(super) fn apply_streaming_emit_result(
     ws_ok: bool,
 ) -> bool {
     if tauri_ok && ws_ok {
-        proc.pending_stream_part_count = 0;
-        proc.pending_stream_bytes = 0;
-        let now = Instant::now();
-        if let Some(previous) = proc.last_stream_emit_at {
-            crate::other::telemetry::record_emit_interval(now.duration_since(previous));
+        match snapshot.source {
+            StreamingFlushSource::Pending => {
+                proc.pending_stream_parts.clear();
+                proc.pending_stream_part_rollbacks.clear();
+                proc.pending_stream_bytes = 0;
+            }
+            StreamingFlushSource::Retry => {
+                proc.retry_stream_delta = None;
+            }
+            StreamingFlushSource::OneShot => {}
         }
-        proc.last_stream_emit_at = Some(now);
+        proc.streaming_delta_seq_by_message
+            .insert(message_id.to_string(), snapshot.seq);
+        let targets_live_counter = snapshot.source != StreamingFlushSource::OneShot
+            || proc.streaming_message_id.as_deref() == Some(message_id)
+            || proc.last_message_id.as_deref() == Some(message_id);
+        if targets_live_counter {
+            proc.streaming_delta_seq = snapshot.seq;
+            proc.confirmed_stream_part_len = snapshot.confirmed_stream_part_len_after_success;
+            let now = Instant::now();
+            if let Some(previous) = proc.last_stream_emit_at {
+                crate::other::telemetry::record_emit_interval(now.duration_since(previous));
+            }
+            proc.last_stream_emit_at = Some(now);
+        }
         true
     } else {
         // NB: deliberately exclude payload content / tool I/O / mentions —
         // those are external user data and must not appear in logs.
         log::warn!(
-            "agent-streaming-updated emit failure: chat_session={} message_id={} \
+            "agent-streaming-delta emit failure: chat_session={} message_id={} \
              part_count={} buffer_len={} pending_bytes={} tauri_ok={} ws_ok={}",
             chat_session_id,
             message_id,
@@ -343,6 +381,20 @@ pub(super) fn apply_streaming_emit_result(
             tauri_ok,
             ws_ok
         );
+        if snapshot.source == StreamingFlushSource::Pending && proc.retry_stream_delta.is_none() {
+            proc.retry_stream_delta = Some(PendingStreamDelta {
+                seq: snapshot.seq,
+                parts: snapshot.parts.clone(),
+                part_count: snapshot.part_count,
+                pending_bytes: snapshot.pending_bytes,
+                rollbacks: snapshot.rollbacks.clone(),
+                confirmed_stream_part_len_after_success: snapshot
+                    .confirmed_stream_part_len_after_success,
+            });
+            proc.pending_stream_parts.clear();
+            proc.pending_stream_part_rollbacks.clear();
+            proc.pending_stream_bytes = 0;
+        }
         false
     }
 }
@@ -352,8 +404,10 @@ pub(super) fn apply_streaming_emit_result(
 /// pipeline with a recording emit closure, instead of mirroring the prepare
 /// / apply calls inline (which used to drift from the production path).
 ///
-/// The closure receives the cumulative `MessagePart` slice destined for the
-/// frontend and returns `(tauri_ok, ws_ok)` matching `emit_streaming_parts`.
+/// The closure receives the delta seq and `MessagePart` slice destined for the
+/// frontend, plus a lazy cumulative snapshot factory for WS overflow fallback,
+/// and returns `(tauri_ok, ws_ok)` matching
+/// `emit_streaming_delta`.
 pub(super) fn force_flush_pending_streaming<F>(
     proc: &mut AgentProcess,
     chat_session_id: &str,
@@ -361,12 +415,47 @@ pub(super) fn force_flush_pending_streaming<F>(
     mut emit: F,
 ) -> bool
 where
-    F: FnMut(&[MessagePart]) -> (bool, bool),
+    F: FnMut(u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     let Some(snapshot) = prepare_streaming_flush(proc) else {
         return true;
     };
-    let (tauri_ok, ws_ok) = emit(&snapshot.parts);
+    let overflow_snapshot_parts = || snapshot_parts_after_success(proc, &snapshot);
+    let (tauri_ok, ws_ok) = emit(snapshot.seq, &snapshot.parts, &overflow_snapshot_parts);
+    apply_streaming_emit_result(
+        proc,
+        chat_session_id,
+        message_id,
+        &snapshot,
+        tauri_ok,
+        ws_ok,
+    )
+}
+
+pub(super) fn emit_one_shot_streaming_delta<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    message_id: &str,
+    seq: u64,
+    parts: Vec<MessagePart>,
+    snapshot_parts: Vec<MessagePart>,
+    mut emit: F,
+) -> bool
+where
+    F: FnMut(u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+{
+    let snapshot = StreamingFlushSnapshot {
+        seq,
+        part_count: parts.len(),
+        buffer_len: parts.len(),
+        pending_bytes: parts.iter().map(part_byte_size).sum(),
+        parts,
+        rollbacks: Vec::new(),
+        confirmed_stream_part_len_after_success: proc.confirmed_stream_part_len,
+        source: StreamingFlushSource::OneShot,
+    };
+    let overflow_snapshot_parts = || snapshot_parts.clone();
+    let (tauri_ok, ws_ok) = emit(snapshot.seq, &snapshot.parts, &overflow_snapshot_parts);
     apply_streaming_emit_result(
         proc,
         chat_session_id,
@@ -384,9 +473,10 @@ where
 /// lock. The flush runs FIRST so the frontend never observes a state
 /// transition ahead of the tail content for the current message.
 ///
-/// The emit closure mirrors `emit_streaming_parts`: it receives the message
-/// id and the consolidated cumulative parts and returns `(tauri_ok, ws_ok)`.
-/// Production callers pass a closure that delegates to `emit_streaming_parts`;
+/// The emit closure mirrors `emit_streaming_delta`: it receives the message
+/// id, seq, delta parts, and lazy snapshot fallback parts and returns
+/// `(tauri_ok, ws_ok)`.
+/// Production callers pass a closure that delegates to `emit_streaming_delta`;
 /// unit tests pass a recording closure to verify the ordering invariant.
 pub(super) fn flush_streaming_before_transition<F>(
     proc: &mut AgentProcess,
@@ -394,15 +484,16 @@ pub(super) fn flush_streaming_before_transition<F>(
     mut emit_stream: F,
 ) -> bool
 where
-    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     let turn_completed = proc.state == BridgeState::Streaming;
     let Some(mid) = proc.streaming_message_id.clone() else {
         return turn_completed;
     };
-    let _ = force_flush_pending_streaming(proc, chat_session_id, &mid, |parts| {
-        emit_stream(&mid, parts)
-    });
+    let _ =
+        force_flush_pending_streaming(proc, chat_session_id, &mid, |seq, parts, snapshot_parts| {
+            emit_stream(&mid, seq, parts, snapshot_parts)
+        });
     turn_completed
 }
 
@@ -439,9 +530,9 @@ pub(super) fn run_streaming_timer_tick<F>(
     mut emit: F,
 ) -> StreamingTimerTickEffect
 where
-    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
-    let pending = proc.pending_stream_part_count > 0;
+    let pending = has_pending_stream_flush(proc);
     let streaming = proc.state == BridgeState::Streaming;
     if !pending && !streaming {
         // Turn ended and the buffer is empty — timer has nothing left to do.
@@ -467,8 +558,14 @@ where
         };
     };
     let flushed =
-        force_flush_pending_streaming(proc, chat_session_id, &mid, |parts| emit(&mid, parts));
-    if !streaming && flushed && proc.pending_stream_part_count == 0 {
+        force_flush_pending_streaming(proc, chat_session_id, &mid, |seq, parts, snapshot_parts| {
+            emit(&mid, seq, parts, snapshot_parts)
+        });
+    if !streaming
+        && flushed
+        && proc.pending_stream_parts.is_empty()
+        && proc.retry_stream_delta.is_none()
+    {
         return StreamingTimerTickEffect {
             keep_running: false,
             released_streaming_parts: release_completed_turn_streaming_buffer(proc),
@@ -571,9 +668,20 @@ pub(super) fn spawn_streaming_timer<R: tauri::Runtime>(
                     }
                     TimerDecision::Continue => {}
                 }
-                let tick_effect = run_streaming_timer_tick(proc, &csid_timer, |mid, parts| {
-                    emit_streaming_parts(&app_timer, &csid_timer, mid, parts.to_vec())
-                });
+                let tick_effect = run_streaming_timer_tick(
+                    proc,
+                    &csid_timer,
+                    |mid, seq, parts, snapshot_parts| {
+                        emit_streaming_delta(
+                            &app_timer,
+                            &csid_timer,
+                            mid,
+                            seq,
+                            parts.to_vec(),
+                            snapshot_parts,
+                        )
+                    },
+                );
                 if !tick_effect.keep_running {
                     proc.streaming_timer_active = false;
                 }
@@ -637,6 +745,33 @@ mod moved_tests {
     use std::time::{Duration, Instant};
 
     use tokio::sync::Mutex;
+
+    fn stream_task_status(
+        task_tool_use_id: &str,
+        status: &str,
+        summary: Option<&str>,
+    ) -> MessagePart {
+        MessagePart::TaskStatus {
+            task_tool_use_id: task_tool_use_id.to_string(),
+            status: status.to_string(),
+            description: Some(status.to_string()),
+            summary: summary.map(str::to_string),
+        }
+    }
+
+    fn stream_permission(request_id: &str, tool_use_id: &str, status: &str) -> MessagePart {
+        MessagePart::Permission {
+            request: serde_json::json!({
+                "request_id": request_id,
+                "tool_use_id": tool_use_id,
+                "tool_name": "Bash",
+                "input": {},
+            }),
+            status: status.to_string(),
+            answers: None,
+            parent_tool_use_id: None,
+        }
+    }
 
     #[tokio::test]
     async fn permission_request_token_fence_rejects_stale_and_accepts_active_turn() {
@@ -753,7 +888,7 @@ mod moved_tests {
             },
         ];
         enqueue_pending_delta(&mut proc, &delta);
-        assert_eq!(proc.pending_stream_part_count, 2);
+        assert_eq!(proc.pending_stream_parts.len(), 2);
         assert_eq!(proc.pending_stream_bytes, "abcde".len() + "fg".len());
     }
 
@@ -803,7 +938,10 @@ mod moved_tests {
     async fn pending_exceeds_threshold_returns_false_when_below_both_caps() {
         let mut proc = make_streaming_test_process();
         proc.pending_stream_bytes = STREAMING_PENDING_BYTE_LIMIT - 1;
-        proc.pending_stream_part_count = 1;
+        proc.pending_stream_parts.push(MessagePart::Text {
+            content: "x".to_string(),
+            parent_tool_use_id: None,
+        });
         assert!(!pending_exceeds_threshold(&proc));
     }
 
@@ -823,7 +961,7 @@ mod moved_tests {
     }
 
     #[tokio::test]
-    async fn prepare_streaming_flush_consolidates_cumulative_parts() {
+    async fn prepare_streaming_flush_returns_pending_delta_parts() {
         let mut proc = make_streaming_test_process();
         proc.streaming_parts.push(MessagePart::Text {
             content: "Hel".to_string(),
@@ -841,13 +979,119 @@ mod moved_tests {
             }],
         );
         let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+        assert_eq!(snapshot.seq, 1);
         assert_eq!(snapshot.parts.len(), 1);
         match &snapshot.parts[0] {
-            MessagePart::Text { content, .. } => assert_eq!(content, "Hello"),
-            _ => panic!("expected consolidated Text part"),
+            MessagePart::Text { content, .. } => assert_eq!(content, "lo"),
+            _ => panic!("expected pending Text delta part"),
         }
         assert_eq!(snapshot.buffer_len, 1);
         assert_eq!(snapshot.pending_bytes, "lo".len());
+    }
+
+    #[tokio::test]
+    async fn prepare_streaming_flush_uses_actual_pending_update_parts() {
+        let mut proc = make_streaming_test_process();
+        proc.streaming_parts = vec![
+            MessagePart::TaskStatus {
+                task_tool_use_id: "tool-1".to_string(),
+                status: "completed".to_string(),
+                description: Some("done".to_string()),
+                summary: None,
+            },
+            MessagePart::Text {
+                content: "tail".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        let updated = MessagePart::TaskStatus {
+            task_tool_use_id: "tool-1".to_string(),
+            status: "completed".to_string(),
+            description: Some("done".to_string()),
+            summary: Some("summary".to_string()),
+        };
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&updated));
+
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+
+        assert_eq!(snapshot.parts, vec![updated]);
+    }
+
+    #[tokio::test]
+    async fn prepare_streaming_flush_routes_non_appendable_update_through_resync_gap() {
+        let mut proc = make_streaming_test_process();
+        let previous = MessagePart::TaskStatus {
+            task_tool_use_id: "tool-1".to_string(),
+            status: "started".to_string(),
+            description: Some("old".to_string()),
+            summary: None,
+        };
+        let updated = MessagePart::TaskStatus {
+            task_tool_use_id: "tool-1".to_string(),
+            status: "completed".to_string(),
+            description: Some("done".to_string()),
+            summary: Some("summary".to_string()),
+        };
+        let tail = MessagePart::Text {
+            content: "tail".to_string(),
+            parent_tool_use_id: None,
+        };
+        proc.streaming_delta_seq = 1;
+        proc.streaming_parts = vec![updated.clone(), tail.clone()];
+        proc.confirmed_stream_part_len = 2;
+        enqueue_pending_delta_with_rollbacks(
+            &mut proc,
+            std::slice::from_ref(&updated),
+            vec![StreamPartRollback { index: 0, previous }],
+        );
+
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+
+        assert_eq!(snapshot.seq, 3);
+        assert!(
+            snapshot.parts.is_empty(),
+            "non-tail replacement must trigger resync instead of append-only delta"
+        );
+        assert_eq!(
+            snapshot_parts_after_success(&proc, &snapshot),
+            vec![updated, tail]
+        );
+    }
+
+    #[tokio::test]
+    async fn success_snapshot_and_confirmed_view_canonicalize_appended_identity_parts() {
+        let mut proc = make_streaming_test_process();
+        let old_status = stream_task_status("tool-1", "started", None);
+        let old_permission = stream_permission("req-1", "tool-1", "pending");
+        let updated_status = stream_task_status("tool-1", "completed", Some("done"));
+        let updated_permission = stream_permission("req-1", "tool-1", "allowed");
+        proc.streaming_delta_seq = 1;
+        proc.confirmed_stream_part_len = 2;
+        proc.streaming_parts = vec![
+            old_status,
+            old_permission,
+            updated_status.clone(),
+            updated_permission.clone(),
+        ];
+        enqueue_pending_delta(
+            &mut proc,
+            &[updated_status.clone(), updated_permission.clone()],
+        );
+
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+
+        assert_eq!(snapshot.seq, 3);
+        assert!(
+            snapshot.parts.is_empty(),
+            "appended identity replacements must force resync instead of duplicate append"
+        );
+        let expected = vec![updated_status.clone(), updated_permission.clone()];
+        assert_eq!(snapshot_parts_after_success(&proc, &snapshot), expected);
+
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
+
+        assert!(ok);
+        assert_eq!(confirmed_streaming_parts(&proc), expected);
     }
 
     #[tokio::test]
@@ -863,9 +1107,39 @@ mod moved_tests {
         let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
         let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
         assert!(ok);
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         assert_eq!(proc.pending_stream_bytes, 0);
         assert!(proc.last_stream_emit_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn apply_streaming_emit_result_updates_confirmed_snapshot_on_success() {
+        let mut proc = make_streaming_test_process();
+        let previous = MessagePart::TaskStatus {
+            task_tool_use_id: "tool-1".to_string(),
+            status: "started".to_string(),
+            description: None,
+            summary: None,
+        };
+        let updated = MessagePart::TaskStatus {
+            task_tool_use_id: "tool-1".to_string(),
+            status: "completed".to_string(),
+            description: None,
+            summary: Some("done".to_string()),
+        };
+        proc.streaming_parts = vec![updated.clone()];
+        proc.confirmed_stream_part_len = 1;
+        enqueue_pending_delta_with_rollbacks(
+            &mut proc,
+            std::slice::from_ref(&updated),
+            vec![StreamPartRollback { index: 0, previous }],
+        );
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
+
+        assert!(ok);
+        assert_eq!(confirmed_streaming_parts(&proc), vec![updated]);
     }
 
     #[tokio::test]
@@ -934,8 +1208,11 @@ mod moved_tests {
         // Tauri failed / WS ok
         let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, false, true);
         assert!(!ok);
-        assert_eq!(proc.pending_stream_part_count, 1);
-        assert_eq!(proc.pending_stream_bytes, "abc".len());
+        assert_eq!(proc.pending_stream_parts.len(), 0);
+        assert_eq!(proc.pending_stream_bytes, 0);
+        let retry = proc.retry_stream_delta.as_ref().expect("retry delta");
+        assert_eq!(retry.seq, 1);
+        assert_eq!(retry.pending_bytes, "abc".len());
         assert!(
             proc.last_stream_emit_at.is_none(),
             "last_emit_at must not advance on failure"
@@ -983,14 +1260,15 @@ mod moved_tests {
         let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
         let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, false, false);
         assert!(!ok);
-        assert_eq!(proc.pending_stream_part_count, 1);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
+        assert!(proc.retry_stream_delta.is_some());
         assert!(proc.last_stream_emit_at.is_none());
     }
 
     #[tokio::test]
-    async fn next_flush_after_partial_failure_re_sends_full_cumulative_parts() {
-        // チャネルの片方だけが失敗した場合、次 flush は累積 streaming_parts 全体を
-        // 両チャネル向けに同一ペイロードで再送する（spec: 累積置換型）。
+    async fn next_flush_after_partial_failure_re_sends_same_seq_same_payload() {
+        // 片方の transport だけに seq=1 が届いた後に新規 delta が来ても、
+        // seq=1 retry payload は拡大せず、新規 delta は seq=2 に回す。
         let mut proc = make_streaming_test_process();
         proc.streaming_parts.push(MessagePart::Text {
             content: "Hel".to_string(),
@@ -1019,10 +1297,19 @@ mod moved_tests {
             }],
         );
         let second = prepare_streaming_flush(&proc).expect("second snapshot");
+        assert_eq!(second.seq, 1);
         assert_eq!(second.parts.len(), 1);
         match &second.parts[0] {
-            MessagePart::Text { content, .. } => assert_eq!(content, "Hello"),
+            MessagePart::Text { content, .. } => assert_eq!(content, "Hel"),
             _ => panic!("expected consolidated Text"),
+        }
+
+        apply_streaming_emit_result(&mut proc, "csid", "mid", &second, true, true);
+        let third = prepare_streaming_flush(&proc).expect("new pending delta");
+        assert_eq!(third.seq, 2);
+        match &third.parts[0] {
+            MessagePart::Text { content, .. } => assert_eq!(content, "lo"),
+            _ => panic!("expected Text"),
         }
     }
 
@@ -1045,7 +1332,6 @@ mod moved_tests {
         let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
         apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, false, true);
 
-        let before = proc.pending_stream_part_count;
         enqueue_pending_delta(
             &mut proc,
             &[MessagePart::Text {
@@ -1053,7 +1339,8 @@ mod moved_tests {
                 parent_tool_use_id: None,
             }],
         );
-        assert_eq!(proc.pending_stream_part_count, before + 1);
+        assert!(proc.retry_stream_delta.is_some());
+        assert_eq!(proc.pending_stream_parts.len(), 1);
     }
 
     #[tokio::test]
@@ -1065,7 +1352,29 @@ mod moved_tests {
             content: "old".to_string(),
             parent_tool_use_id: None,
         });
-        proc.pending_stream_part_count = 1;
+        proc.confirmed_stream_part_len = 1;
+        proc.pending_stream_parts.push(MessagePart::Text {
+            content: "pending".to_string(),
+            parent_tool_use_id: None,
+        });
+        proc.pending_stream_part_rollbacks.push(StreamPartRollback {
+            index: 0,
+            previous: MessagePart::Text {
+                content: "old".to_string(),
+                parent_tool_use_id: None,
+            },
+        });
+        proc.retry_stream_delta = Some(PendingStreamDelta {
+            seq: 1,
+            parts: vec![MessagePart::Text {
+                content: "retry".to_string(),
+                parent_tool_use_id: None,
+            }],
+            part_count: 1,
+            pending_bytes: "retry".len(),
+            rollbacks: Vec::new(),
+            confirmed_stream_part_len_after_success: 1,
+        });
         proc.pending_stream_bytes = 32;
         proc.last_stream_emit_at = Some(Instant::now());
         proc.last_message_id = Some("old".to_string());
@@ -1076,7 +1385,11 @@ mod moved_tests {
         proc.reset_streaming_state_for_new_turn();
 
         assert!(proc.streaming_parts.is_empty());
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.confirmed_stream_part_len, 0);
+        assert!(proc.pending_stream_parts.is_empty());
+        assert!(proc.pending_stream_part_rollbacks.is_empty());
+        assert!(proc.retry_stream_delta.is_none());
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         assert_eq!(proc.pending_stream_bytes, 0);
         assert!(proc.last_stream_emit_at.is_none());
         assert!(proc.last_message_id.is_none());
@@ -1126,8 +1439,9 @@ mod moved_tests {
         let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
         // 失敗を返してもパニックしない（= 状態遷移を続行できる）。
         let _ = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, false, false);
-        // pending は保持され、次の契機で再試行可能。
-        assert!(proc.pending_stream_part_count > 0);
+        // retry payload は保持され、次の契機で再試行可能。
+        assert_eq!(proc.pending_stream_parts.len(), 0);
+        assert!(proc.retry_stream_delta.is_some());
     }
 
     #[tokio::test]
@@ -1146,7 +1460,7 @@ mod moved_tests {
         let snapshot = prepare_streaming_flush(&proc).expect("first emit must flush");
         apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
 
-        assert!(proc.pending_stream_part_count == 0);
+        assert!(proc.pending_stream_parts.len() == 0);
         assert!(proc.last_stream_emit_at.is_some());
     }
 
@@ -1165,7 +1479,7 @@ mod moved_tests {
 
         assert!(!should_flush_per_delta(&proc, &delta, false));
         // pending は保持されたまま（次の契機まで蓄積される）。
-        assert_eq!(proc.pending_stream_part_count, 1);
+        assert_eq!(proc.pending_stream_parts.len(), 1);
     }
 
     #[tokio::test]
@@ -1198,7 +1512,7 @@ mod moved_tests {
             _ => panic!("expected consolidated Text"),
         }
         apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
-        assert!(proc.pending_stream_part_count == 0);
+        assert!(proc.pending_stream_parts.len() == 0);
     }
 
     #[tokio::test]
@@ -1249,7 +1563,7 @@ mod moved_tests {
         }
         let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
         assert!(ok);
-        assert!(proc.pending_stream_part_count == 0);
+        assert!(proc.pending_stream_parts.len() == 0);
         assert_eq!(proc.pending_stream_bytes, 0);
     }
 
@@ -1298,7 +1612,7 @@ mod moved_tests {
         }
         let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
         assert!(ok);
-        assert!(proc.pending_stream_part_count == 0);
+        assert!(proc.pending_stream_parts.len() == 0);
         assert_eq!(proc.pending_stream_bytes, 0);
     }
 
@@ -1332,7 +1646,7 @@ mod moved_tests {
         //  Examples ツール実行の開始 / 終了):
         //   未配信 text が pending に積まれている状態で ToolUse / ToolResult
         //   delta が到着すると、interval 未経過でも force flush され、
-        //   pending text + tool event が同一の cumulative payload として
+        //   pending text + tool event が同一の delta payload として
         //   emit され、emit 成功で pending が clear される。
         //
         // 本テストは production 経路 (enqueue_pending_delta →
@@ -1349,7 +1663,7 @@ mod moved_tests {
         proc.streaming_parts.push(pending_text.clone());
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&pending_text));
         assert!(!streaming_interval_elapsed(&proc));
-        assert_eq!(proc.pending_stream_part_count, 1);
+        assert_eq!(proc.pending_stream_parts.len(), 1);
 
         // 2) ToolUse delta が到着 → production と同じ手順で enqueue。
         let tool_use_delta = vec![MessagePart::ToolUse {
@@ -1367,22 +1681,23 @@ mod moved_tests {
 
         // 3) prepare → emit (success) → apply で pending が clear される。
         let snapshot = prepare_streaming_flush(&proc).expect("tool start must produce snapshot");
-        // cumulative payload には pending text + ToolUse が同一 emit で含まれる。
+        assert_eq!(snapshot.seq, 1);
+        // delta payload には pending text + ToolUse が同一 emit で含まれる。
         assert_eq!(snapshot.parts.len(), 2);
         match &snapshot.parts[0] {
             MessagePart::Text { content, .. } => assert_eq!(content, "before-tool"),
-            other => panic!("first cumulative part must be pending Text, got {other:?}"),
+            other => panic!("first delta part must be pending Text, got {other:?}"),
         }
         match &snapshot.parts[1] {
             MessagePart::ToolUse { id, tool, .. } => {
                 assert_eq!(id, "tool-1");
                 assert_eq!(tool, "Bash");
             }
-            other => panic!("second cumulative part must be ToolUse, got {other:?}"),
+            other => panic!("second delta part must be ToolUse, got {other:?}"),
         }
         let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
         assert!(ok, "tool start emit must succeed → pending cleared");
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         assert_eq!(proc.pending_stream_bytes, 0);
 
         // 4) 続いて ToolResult delta が到着 → 同じく force flush。
@@ -1400,15 +1715,16 @@ mod moved_tests {
         assert!(should_flush_per_delta(&proc, &tool_result_delta, false));
 
         let snapshot2 = prepare_streaming_flush(&proc).expect("tool end must produce snapshot");
-        // 累積 payload は text + ToolUse + ToolResult の 3 件を含む。
-        assert_eq!(snapshot2.parts.len(), 3);
+        assert_eq!(snapshot2.seq, 2);
+        // 2 回目の payload は、新しく pending になった ToolResult delta のみ。
+        assert_eq!(snapshot2.parts.len(), 1);
         assert!(matches!(
             snapshot2.parts.last(),
             Some(MessagePart::ToolResult { content, .. }) if content == "ok"
         ));
         let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot2, true, true);
         assert!(ok, "tool end emit must succeed → pending cleared");
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         assert_eq!(proc.pending_stream_bytes, 0);
     }
 
@@ -1428,10 +1744,11 @@ mod moved_tests {
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
 
         let mut emitted = Vec::new();
-        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |mid, parts| {
-            emitted.push((mid.to_string(), parts.to_vec()));
-            (true, true)
-        });
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |mid, _seq, parts, _snapshot_parts| {
+                emitted.push((mid.to_string(), parts.to_vec()));
+                (true, true)
+            });
 
         assert!(
             tick_effect.keep_running,
@@ -1442,7 +1759,8 @@ mod moved_tests {
         assert_eq!(emitted[0].0, "m1");
         assert_eq!(emitted[0].1.len(), 1);
         assert_eq!(
-            proc.pending_stream_part_count, 0,
+            proc.pending_stream_parts.len(),
+            0,
             "pending cleared on success"
         );
         assert!(
@@ -1463,14 +1781,15 @@ mod moved_tests {
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
 
         let mut emitted = false;
-        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| {
-            emitted = true;
-            (true, true)
-        });
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |_mid, _seq, _parts, _snapshot_parts| {
+                emitted = true;
+                (true, true)
+            });
         assert!(tick_effect.keep_running);
         assert!(tick_effect.released_streaming_parts.is_empty());
         assert!(!emitted, "interval not elapsed → timer must not flush");
-        assert_eq!(proc.pending_stream_part_count, 1);
+        assert_eq!(proc.pending_stream_parts.len(), 1);
     }
 
     #[tokio::test]
@@ -1479,13 +1798,14 @@ mod moved_tests {
         proc.last_stream_emit_at =
             Some(Instant::now() - Duration::from_millis(STREAMING_EMIT_INTERVAL_MS + 5));
         assert!(streaming_interval_elapsed(&proc));
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
 
         let mut emitted = false;
-        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| {
-            emitted = true;
-            (true, true)
-        });
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |_mid, _seq, _parts, _snapshot_parts| {
+                emitted = true;
+                (true, true)
+            });
         // pending=0 & still Streaming → continue running but no flush this tick.
         assert!(tick_effect.keep_running);
         assert!(tick_effect.released_streaming_parts.is_empty());
@@ -1500,9 +1820,12 @@ mod moved_tests {
         proc.state = BridgeState::Ready;
         proc.last_stream_emit_at =
             Some(Instant::now() - Duration::from_millis(STREAMING_EMIT_INTERVAL_MS + 5));
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
 
-        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| (true, true));
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |_mid, _seq, _parts, _snapshot_parts| {
+                (true, true)
+            });
         assert!(
             !tick_effect.keep_running,
             "turn ended (state != Streaming) and buffer empty → timer must exit"
@@ -1526,17 +1849,18 @@ mod moved_tests {
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
 
         let mut emitted = 0usize;
-        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| {
-            emitted += 1;
-            (true, true)
-        });
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |_mid, _seq, _parts, _snapshot_parts| {
+                emitted += 1;
+                (true, true)
+            });
         assert!(
             !tick_effect.keep_running,
             "turn ended and pending drained → timer exits immediately"
         );
         assert_eq!(tick_effect.released_streaming_parts, vec![part]);
         assert_eq!(emitted, 1, "tail content flushed before exit");
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         assert!(proc.streaming_parts.is_empty());
     }
 
@@ -1616,7 +1940,7 @@ mod moved_tests {
             ok,
             "forced flush succeeded → pending cleared before state emit"
         );
-        assert!(proc.pending_stream_part_count == 0);
+        assert!(proc.pending_stream_parts.len() == 0);
 
         // この時点で呼び出し元が emit_session_state_changed を発火する。pending は
         // 既にクリアされているので、状態通知より前にストリーム emit が完了している。
@@ -1663,8 +1987,9 @@ mod moved_tests {
         let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, false, false);
         assert!(!ok);
         // 呼び出し元はここから後続 (emit_session_state_changed 等) に進める。
-        // pending と last_stream_emit_at は次の契機での再試行のため保持される。
-        assert_eq!(proc.pending_stream_part_count, 1);
+        // retry payload と last_stream_emit_at は次の契機での再試行のため保持される。
+        assert_eq!(proc.pending_stream_parts.len(), 0);
+        assert!(proc.retry_stream_delta.is_some());
         assert!(proc.last_stream_emit_at.is_none());
     }
 
@@ -1752,7 +2077,7 @@ mod moved_tests {
                 exit_code: None,
             }
         );
-        assert!(proc.pending_stream_part_count == 0);
+        assert!(proc.pending_stream_parts.len() == 0);
         assert_eq!(proc.turn_phase, TurnPhase::WaitingPermission);
     }
 
@@ -1812,7 +2137,7 @@ mod moved_tests {
                 exit_code: Some(0),
             }
         );
-        assert!(proc.pending_stream_part_count == 0);
+        assert!(proc.pending_stream_parts.len() == 0);
         assert_eq!(proc.turn_phase, TurnPhase::Idle);
         assert_eq!(proc.state, BridgeState::Ready);
     }
@@ -1909,8 +2234,12 @@ mod moved_tests {
         proc.streaming_parts.extend(raw_parts.clone());
         enqueue_pending_delta(&mut proc, &raw_parts);
 
-        let effect =
-            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+        let effect = run_turn_complete_transition_locked(
+            &mut proc,
+            "csid",
+            0,
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
+        );
 
         assert!(effect.turn_completed);
         assert_eq!(effect.final_msg_id.as_deref(), Some("m1"));
@@ -1930,7 +2259,7 @@ mod moved_tests {
             Some("tool-1")
         );
         assert!(proc.streaming_parts.is_empty());
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         assert_eq!(proc.pending_stream_bytes, 0);
         assert!(proc.last_stream_emit_at.is_none());
         let _ = proc.child.kill().await;
@@ -1959,7 +2288,7 @@ mod moved_tests {
             "csid",
             None,
             Instant::now(),
-            |_mid, _parts| (true, true),
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
         );
 
         assert!(effect.did_transition);
@@ -1990,8 +2319,12 @@ mod moved_tests {
         proc.streaming_parts.extend(fresh_parts.clone());
         enqueue_pending_delta(&mut proc, &fresh_parts);
 
-        let complete_effect =
-            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+        let complete_effect = run_turn_complete_transition_locked(
+            &mut proc,
+            "csid",
+            0,
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
+        );
 
         assert_eq!(complete_effect.final_msg_id.as_deref(), Some("m1"));
         assert_eq!(
@@ -2021,7 +2354,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _parts| {
+            |_mid, _seq, _parts, _snapshot_parts| {
                 emitted = true;
                 (true, true)
             },
@@ -2052,8 +2385,12 @@ mod moved_tests {
         proc.streaming_parts.extend(raw_parts.clone());
         enqueue_pending_delta(&mut proc, &raw_parts);
 
-        let effect =
-            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (false, true));
+        let effect = run_turn_complete_transition_locked(
+            &mut proc,
+            "csid",
+            0,
+            |_mid, _seq, _parts, _snapshot_parts| (false, true),
+        );
 
         assert!(effect.turn_completed);
         assert_eq!(effect.final_msg_id.as_deref(), Some("m1"));
@@ -2061,7 +2398,8 @@ mod moved_tests {
         assert!(effect.released_streaming_parts.is_empty());
         assert_eq!(proc.state, BridgeState::Ready);
         assert_eq!(proc.last_message_id.as_deref(), Some("m1"));
-        assert_eq!(proc.pending_stream_part_count, 1);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
+        assert!(proc.retry_stream_delta.is_some());
         assert_eq!(proc.streaming_parts, raw_parts);
         assert!(
             proc.last_stream_emit_at.is_none(),
@@ -2069,10 +2407,11 @@ mod moved_tests {
         );
 
         let mut emitted: Vec<(String, Vec<MessagePart>)> = Vec::new();
-        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |mid, parts| {
-            emitted.push((mid.to_string(), parts.to_vec()));
-            (true, true)
-        });
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |mid, _seq, parts, _snapshot_parts| {
+                emitted.push((mid.to_string(), parts.to_vec()));
+                (true, true)
+            });
 
         assert!(!tick_effect.keep_running);
         assert_eq!(tick_effect.released_streaming_parts, raw_parts.clone());
@@ -2080,7 +2419,7 @@ mod moved_tests {
         assert_eq!(emitted[0].0, "m1");
         assert_eq!(emitted[0].1, consolidate_parts_from_slice(&raw_parts));
         assert!(proc.streaming_parts.is_empty());
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         assert_eq!(proc.pending_stream_bytes, 0);
         let _ = proc.child.kill().await;
     }
@@ -2097,10 +2436,15 @@ mod moved_tests {
         enqueue_pending_delta(&mut proc, &raw_parts);
         let mut emit_attempts = 0usize;
 
-        let effect = run_turn_complete_transition_locked(&mut proc, "csid", 1, |_mid, _parts| {
-            emit_attempts += 1;
-            (false, true)
-        });
+        let effect = run_turn_complete_transition_locked(
+            &mut proc,
+            "csid",
+            1,
+            |_mid, _seq, _parts, _snapshot_parts| {
+                emit_attempts += 1;
+                (false, true)
+            },
+        );
 
         assert!(effect.turn_completed);
         assert_eq!(effect.final_msg_id.as_deref(), Some("m1"));
@@ -2111,7 +2455,7 @@ mod moved_tests {
         assert_eq!(proc.turn_phase, TurnPhase::Idle);
         assert_eq!(proc.last_message_id.as_deref(), Some("m1"));
         assert!(proc.streaming_parts.is_empty());
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         assert_eq!(proc.pending_stream_bytes, 0);
         let _ = proc.child.kill().await;
     }
@@ -2133,7 +2477,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _parts| {
+            |_mid, _seq, _parts, _snapshot_parts| {
                 emitted = true;
                 (true, true)
             },
@@ -2147,7 +2491,7 @@ mod moved_tests {
         assert!(effect.persist_parts.is_empty());
         assert!(!emitted);
         assert!(proc.streaming_parts.is_empty());
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         assert!(should_forward_sdk_message(effect.accumulated, "system"));
         let _ = proc.child.kill().await;
     }
@@ -2172,7 +2516,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _parts| {
+            |_mid, _seq, _parts, _snapshot_parts| {
                 emitted = true;
                 (true, true)
             },
@@ -2186,7 +2530,7 @@ mod moved_tests {
         assert!(effect.persist_parts.is_empty());
         assert!(!emitted);
         assert!(proc.streaming_parts.is_empty());
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         let _ = proc.child.kill().await;
     }
 
@@ -2214,11 +2558,12 @@ mod moved_tests {
             tool_use_id: Some("tool-1".to_string()),
             parent_tool_use_id: None,
         };
+        let expected_delta_parts = vec![delta_part.clone()];
         let expected_parts = consolidate_parts_from_slice(
             &base_parts
                 .iter()
                 .cloned()
-                .chain(std::iter::once(delta_part))
+                .chain(std::iter::once(delta_part.clone()))
                 .collect::<Vec<_>>(),
         );
         let msg = post_turn_tool_result_message("tool-1", "done");
@@ -2229,7 +2574,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, parts| {
+            |_mid, _seq, parts, _snapshot_parts| {
                 emitted.push(parts.to_vec());
                 (true, true)
             },
@@ -2241,9 +2586,9 @@ mod moved_tests {
         assert!(effect.should_persist);
         assert_eq!(effect.persist_parts, expected_parts);
         assert_eq!(effect.released_streaming_parts, expected_parts.clone());
-        assert_eq!(emitted, vec![expected_parts]);
+        assert_eq!(emitted, vec![expected_delta_parts]);
         assert!(proc.streaming_parts.is_empty());
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         assert_eq!(proc.pending_stream_bytes, 0);
         let _ = proc.child.kill().await;
     }
@@ -2273,11 +2618,12 @@ mod moved_tests {
             tool_use_id: Some("tool-1".to_string()),
             parent_tool_use_id: None,
         };
+        let expected_delta_parts = vec![delta_part.clone()];
         let expected_parts = consolidate_parts_from_slice(
             &base_parts
                 .iter()
                 .cloned()
-                .chain(std::iter::once(delta_part))
+                .chain(std::iter::once(delta_part.clone()))
                 .collect::<Vec<_>>(),
         );
         let msg = post_turn_tool_result_message("tool-1", "done");
@@ -2288,9 +2634,9 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, parts| {
+            |_mid, _seq, parts, _snapshot_parts| {
                 emitted_attempts += 1;
-                assert_eq!(parts, expected_parts.as_slice());
+                assert_eq!(parts, expected_delta_parts.as_slice());
                 (false, true)
             },
             Some(("m1".to_string(), base_parts)),
@@ -2303,7 +2649,8 @@ mod moved_tests {
         assert!(effect.start_streaming_timer);
         assert!(effect.released_streaming_parts.is_empty());
         assert_eq!(emitted_attempts, 1);
-        assert_eq!(proc.pending_stream_part_count, 1);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
+        assert!(proc.retry_stream_delta.is_some());
         assert!(!proc.streaming_parts.is_empty());
         assert!(
             proc.last_stream_emit_at.is_none(),
@@ -2311,16 +2658,20 @@ mod moved_tests {
         );
 
         let mut retry_payloads: Vec<(String, Vec<MessagePart>)> = Vec::new();
-        let tick_effect = run_streaming_timer_tick(&mut proc, "csid", |mid, parts| {
-            retry_payloads.push((mid.to_string(), parts.to_vec()));
-            (true, true)
-        });
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |mid, _seq, parts, _snapshot_parts| {
+                retry_payloads.push((mid.to_string(), parts.to_vec()));
+                (true, true)
+            });
 
         assert!(!tick_effect.keep_running);
         assert_eq!(tick_effect.released_streaming_parts, expected_parts.clone());
-        assert_eq!(retry_payloads, vec![("m1".to_string(), expected_parts)]);
+        assert_eq!(
+            retry_payloads,
+            vec![("m1".to_string(), expected_delta_parts)]
+        );
         assert!(proc.streaming_parts.is_empty());
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         assert_eq!(proc.pending_stream_bytes, 0);
         let _ = proc.child.kill().await;
     }
@@ -2331,15 +2682,20 @@ mod moved_tests {
         proc.state = BridgeState::Ready;
         proc.turn_phase = TurnPhase::Idle;
         proc.last_message_id = Some("old-message".to_string());
+        proc.streaming_delta_seq = 4;
+        proc.streaming_delta_seq_by_message
+            .insert("old-message".to_string(), 4);
         let msg = post_turn_tool_result_message("tool-1", "late");
-        let mut emitted: Vec<(String, Vec<MessagePart>)> = Vec::new();
+        let mut emitted: Vec<(String, u64, Vec<MessagePart>)> = Vec::new();
 
         let first_effect = accumulate_stream_or_post_turn_message_locked(
             &mut proc,
             "csid",
             &msg,
             0,
-            |_mid, _parts| panic!("first pass must request a store reseed before emitting"),
+            |_mid, _seq, _parts, _snapshot_parts| {
+                panic!("first pass must request a store reseed before emitting")
+            },
             None,
         );
 
@@ -2382,16 +2738,17 @@ mod moved_tests {
                 parent_tool_use_id: None,
             },
         ];
+        let expected_delta_parts = vec![MessagePart::ToolResult {
+            content: "late".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+        }];
         let expected_parts = consolidate_parts_from_slice(
             &stale_base_parts
                 .iter()
                 .cloned()
-                .chain(std::iter::once(MessagePart::ToolResult {
-                    content: "late".to_string(),
-                    is_error: false,
-                    tool_use_id: Some("tool-1".to_string()),
-                    parent_tool_use_id: None,
-                }))
+                .chain(expected_delta_parts.iter().cloned())
                 .collect::<Vec<_>>(),
         );
         let second_effect = accumulate_stream_or_post_turn_message_locked(
@@ -2399,8 +2756,8 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |mid, parts| {
-                emitted.push((mid.to_string(), parts.to_vec()));
+            |mid, seq, parts, _snapshot_parts| {
+                emitted.push((mid.to_string(), seq, parts.to_vec()));
                 (true, true)
             },
             Some(("old-message".to_string(), stale_base_parts)),
@@ -2413,16 +2770,21 @@ mod moved_tests {
         assert!(!second_effect.start_streaming_timer);
         assert_eq!(
             emitted,
-            vec![(
-                "old-message".to_string(),
-                second_effect.persist_parts.clone()
-            )]
+            vec![("old-message".to_string(), 5, expected_delta_parts)]
         );
         assert_eq!(proc.state, BridgeState::Streaming);
         assert_eq!(proc.streaming_message_id.as_deref(), Some("new-message"));
         assert!(proc.last_message_id.is_none());
+        assert_eq!(
+            proc.streaming_delta_seq, 0,
+            "stale old-message delta must not advance the active new-message seq"
+        );
+        assert_eq!(
+            proc.streaming_delta_seq_by_message.get("old-message"),
+            Some(&5)
+        );
         assert_eq!(proc.streaming_parts, new_turn_parts);
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         assert_eq!(
             proc.task_id_map.get("new-task").map(String::as_str),
             Some("new-tool")
@@ -2490,6 +2852,12 @@ mod moved_tests {
                 parent_tool_use_id: None,
             },
         ];
+        let expected_delta_parts = vec![MessagePart::ToolResult {
+            content: "done".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+        }];
         let mut emitted = Vec::new();
 
         let effect = accumulate_stream_or_post_turn_message_locked(
@@ -2497,7 +2865,7 @@ mod moved_tests {
             "csid",
             &post_turn_tool_result_message("tool-1", "done"),
             0,
-            |mid, parts| {
+            |mid, _seq, parts, _snapshot_parts| {
                 emitted.push((mid.to_string(), parts.to_vec()));
                 (true, true)
             },
@@ -2521,7 +2889,7 @@ mod moved_tests {
         );
         assert_eq!(
             emitted,
-            vec![("old-message".to_string(), effect.persist_parts.clone())]
+            vec![("old-message".to_string(), expected_delta_parts)]
         );
         assert!(
             proc.turn_event_log
@@ -2574,7 +2942,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _parts| (true, true),
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
             Some(("old-message".to_string(), base_parts.clone())),
         );
 
@@ -2652,6 +3020,7 @@ mod moved_tests {
             thinking,
             activities,
             parts: Some(base_parts.clone()),
+            streaming_final_seq: 0,
             timestamp: 10.0,
             mentions: None,
         });
@@ -2676,7 +3045,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |mid, parts| {
+            |mid, _seq, parts, _snapshot_parts| {
                 emitted.push((mid.to_string(), parts.to_vec()));
                 (true, true)
             },
@@ -2690,19 +3059,21 @@ mod moved_tests {
             &session.id,
             message_id,
             &effect.persist_parts,
+            0,
             None,
         );
         assert!(persisted);
 
+        let expected_delta_parts = vec![MessagePart::ToolResult {
+            content: "late".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+        }];
         let expected_parts = vec![
             base_parts[0].clone(),
             base_parts[1].clone(),
-            MessagePart::ToolResult {
-                content: "late".to_string(),
-                is_error: false,
-                tool_use_id: Some("tool-1".to_string()),
-                parent_tool_use_id: None,
-            },
+            expected_delta_parts[0].clone(),
         ];
         let loaded = store
             .load_full_session_for_restore(temp.path(), &session.id)
@@ -2719,7 +3090,10 @@ mod moved_tests {
         );
         assert_eq!(proc.streaming_message_id.as_deref(), Some("new-message"));
         assert_eq!(proc.streaming_parts, new_turn_parts);
-        assert_eq!(emitted, vec![(message_id.to_string(), expected_parts)]);
+        assert_eq!(
+            emitted,
+            vec![(message_id.to_string(), expected_delta_parts)]
+        );
         let _ = proc.child.kill().await;
     }
 
@@ -2737,7 +3111,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _parts| {
+            |_mid, _seq, _parts, _snapshot_parts| {
                 emitted = true;
                 (true, true)
             },
@@ -2751,7 +3125,7 @@ mod moved_tests {
         assert!(effect.persist_parts.is_empty());
         assert!(!emitted);
         assert!(proc.streaming_parts.is_empty());
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
         let _ = proc.child.kill().await;
     }
 
@@ -2836,6 +3210,7 @@ mod moved_tests {
             thinking,
             activities,
             parts: Some(empty_parts),
+            streaming_final_seq: 0,
             timestamp: 10.0,
             mentions: None,
         });
@@ -3030,7 +3405,7 @@ mod moved_tests {
         );
         assert_eq!(proc.state, BridgeState::Crashed);
         assert_eq!(proc.turn_phase, TurnPhase::Idle);
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_parts.len(), 0);
     }
 
     #[tokio::test]
@@ -3051,7 +3426,7 @@ mod moved_tests {
             "csid",
             &text_delta,
             0,
-            |_mid, _parts| (true, true),
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
             None,
         );
 
@@ -3080,7 +3455,7 @@ mod moved_tests {
             "csid",
             &tool_use,
             0,
-            |_mid, _parts| (true, true),
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
             None,
         );
 
@@ -3107,7 +3482,7 @@ mod moved_tests {
             "csid",
             &retried_tool_use,
             0,
-            |_mid, _parts| (true, true),
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
             None,
         );
 
@@ -3174,8 +3549,12 @@ mod moved_tests {
         proc.streaming_parts.push(final_text.clone());
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&final_text));
 
-        let effect =
-            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+        let effect = run_turn_complete_transition_locked(
+            &mut proc,
+            "csid",
+            0,
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
+        );
 
         assert!(effect.turn_completed);
         assert_eq!(effect.final_parts, vec![final_text]);
@@ -3210,8 +3589,12 @@ mod moved_tests {
         proc.streaming_parts.push(final_text.clone());
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&final_text));
 
-        let effect =
-            run_turn_complete_transition_locked(&mut proc, "csid", 7, |_mid, _parts| (true, true));
+        let effect = run_turn_complete_transition_locked(
+            &mut proc,
+            "csid",
+            7,
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
+        );
         let projected = proc.turn_event_log.project();
 
         assert!(effect.turn_completed);
@@ -3256,8 +3639,12 @@ mod moved_tests {
             .extend([todo_text.clone(), todo_snapshot.clone()]);
         enqueue_pending_delta(&mut proc, &[todo_text, todo_snapshot]);
 
-        let effect =
-            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+        let effect = run_turn_complete_transition_locked(
+            &mut proc,
+            "csid",
+            0,
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
+        );
 
         assert_eq!(
             effect
@@ -3310,8 +3697,12 @@ mod moved_tests {
         proc.streaming_parts = final_parts.clone();
         enqueue_pending_delta(&mut proc, &final_parts);
 
-        let effect =
-            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+        let effect = run_turn_complete_transition_locked(
+            &mut proc,
+            "csid",
+            0,
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
+        );
         let projected_parts = proc.turn_event_log.project().agent_parts_for_message("m1");
 
         assert_eq!(effect.final_parts, final_parts);
@@ -3333,8 +3724,12 @@ mod moved_tests {
         proc.streaming_parts = vec![tool_use.clone()];
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&tool_use));
 
-        let effect =
-            run_turn_complete_transition_locked(&mut proc, "csid", 0, |_mid, _parts| (true, true));
+        let effect = run_turn_complete_transition_locked(
+            &mut proc,
+            "csid",
+            0,
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
+        );
         let projected_parts = proc.turn_event_log.project().agent_parts_for_message("m1");
 
         assert_eq!(effect.final_parts, vec![tool_use.clone()]);
@@ -3361,7 +3756,7 @@ mod moved_tests {
             "csid",
             &text_delta,
             PERSIST_INTERVAL_MS,
-            |_mid, _parts| (true, true),
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
             None,
         );
         assert!(effect.accumulated);
@@ -3394,7 +3789,7 @@ mod moved_tests {
             "csid",
             &tool_use,
             PERSIST_INTERVAL_MS,
-            |_mid, _parts| (true, true),
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
             None,
         );
 
@@ -3442,7 +3837,7 @@ mod moved_tests {
             &mut proc,
             "csid",
             &serde_json::json!({"type": "error", "message": "bridge failed"}),
-            |_mid, _parts| (true, true),
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
         );
         let projected = proc.turn_event_log.project();
         let projected_parts = projected.agent_parts_for_message("m1");

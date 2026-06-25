@@ -249,6 +249,7 @@ impl FileSessionStorage {
         session_id: &str,
         message_id: &str,
         parts: &[MessagePart],
+        streaming_final_seq: u64,
         completed_at: Option<f64>,
     ) -> Result<(), String> {
         measure_save_result(
@@ -281,6 +282,7 @@ impl FileSessionStorage {
                 message.thinking = thinking;
                 message.activities = activities;
                 message.parts = Some(parts.to_vec());
+                message.streaming_final_seq = streaming_final_seq;
                 let updated_at = completed_at.unwrap_or_else(now_timestamp);
                 if let Some(completed_at) = completed_at {
                     message.timestamp = completed_at;

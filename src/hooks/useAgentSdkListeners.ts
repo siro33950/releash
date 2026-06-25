@@ -16,7 +16,11 @@ import {
 	type TurnPhase,
 } from "@/types/session";
 import type { AgentChatAction } from "./agentChatReducer";
-import { getSession, updateSessionState } from "./useSessionStore";
+import {
+	getSession,
+	resyncStreamingMessage,
+	updateSessionState,
+} from "./useSessionStore";
 
 interface PermissionRequestMessage {
 	type: "permission_request";
@@ -53,6 +57,7 @@ interface SessionStateChanged {
 interface StreamingMessageUpdated {
 	chat_session_id: string;
 	message_id: string;
+	seq: number;
 	parts: MessagePart[];
 }
 
@@ -104,6 +109,7 @@ export interface AgentSdkListenerRefs {
 	 * snapshot で上書きして消すレースが起きる。
 	 */
 	hasMessage: (sessionId: string, messageId: string) => boolean;
+	getLastStreamingSeq: (sessionId: string, messageId: string) => number;
 }
 
 function isViewable(
@@ -264,7 +270,13 @@ function handleResultTokenUsage(
 }
 
 export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
-	const { dispatch, viewableRegistry, refreshSessions, hasMessage } = refs;
+	const {
+		dispatch,
+		viewableRegistry,
+		refreshSessions,
+		hasMessage,
+		getLastStreamingSeq,
+	} = refs;
 
 	// Listen to SDK messages for meta events (permissions, system messages)
 	useEffect(() => {
@@ -390,52 +402,138 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		};
 	}, [dispatch, viewableRegistry]);
 
-	// Listen to agent-streaming-updated from Rust backend
+	// Listen to agent-streaming-delta from Rust backend
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;
 		let cancelled = false;
-		let refreshInFlight = false;
+		const refreshInFlightBySession = new Set<string>();
+		const resyncInFlight = new Map<string, number>();
+		const optimisticLastSeqByMessage = new Map<string, number>();
 
-		listen<StreamingMessageUpdated>(
-			"agent-streaming-updated",
-			async (event) => {
-				const { chat_session_id, message_id, parts } = event.payload;
+		function streamingSeqKey(chatSessionId: string, messageId: string): string {
+			return `${chatSessionId}:${messageId}`;
+		}
 
-				// viewable でない session の streaming 更新は他のハンドラと同様にスキップ。
-				// SET_STREAMING_MESSAGE のみガード外にあると非表示 session の streaming が
-				// sessionsById に反映される非対称が生じるため、ここで早期 return する。
-				if (!isViewable(chat_session_id, viewableRegistry)) {
-					return;
+		function getEffectiveLastSeq(
+			chatSessionId: string,
+			messageId: string,
+		): number {
+			const key = streamingSeqKey(chatSessionId, messageId);
+			return Math.max(
+				getLastStreamingSeq(chatSessionId, messageId),
+				optimisticLastSeqByMessage.get(key) ?? 0,
+			);
+		}
+
+		function advanceOptimisticLastSeq(key: string, seq: number): void {
+			if (seq > (optimisticLastSeqByMessage.get(key) ?? 0)) {
+				optimisticLastSeqByMessage.set(key, seq);
+			}
+		}
+
+		async function hydrateMessageIfMissing(
+			chatSessionId: string,
+			messageId: string,
+		): Promise<void> {
+			if (
+				hasMessage(chatSessionId, messageId) ||
+				refreshInFlightBySession.has(chatSessionId)
+			) {
+				return;
+			}
+			refreshInFlightBySession.add(chatSessionId);
+			try {
+				const response = await getSession(chatSessionId);
+				if (response && !cancelled) {
+					dispatch({ type: "UPSERT_SESSION", session: response.session });
 				}
+			} catch (error) {
+				console.error("Failed to hydrate streaming message:", error);
+			} finally {
+				refreshInFlightBySession.delete(chatSessionId);
+			}
+		}
 
-				// Cache miss: SET_STREAMING_MESSAGE は session.messages 内に message_id が
-				// 存在しない場合 no-op になる。viewable な session で message_id が
-				// 未確認の場合のみ getSession で fetch → UPSERT_SESSION で sessionsById を
-				// 更新し、後続の SET_STREAMING_MESSAGE が反映できる状態に揃える。
-				//
-				// 重要: message_id が既に存在する場合に毎回 getSession→UPSERT_SESSION
-				// すると、drain 直後に楽観追加したメッセージを「投入前の古い snapshot」で
-				// 上書きして一瞬で消すレースが起きる。必ず未存在時に限定する。
-				if (!hasMessage(chat_session_id, message_id) && !refreshInFlight) {
-					refreshInFlight = true;
-					try {
-						const response = await getSession(chat_session_id);
-						if (response && !cancelled) {
-							dispatch({ type: "UPSERT_SESSION", session: response.session });
-						}
-					} finally {
-						refreshInFlight = false;
+		async function dispatchResyncSnapshot(
+			chatSessionId: string,
+			messageId: string,
+			sinceSeq: number,
+			observedSeq: number,
+		): Promise<void> {
+			const key = streamingSeqKey(chatSessionId, messageId);
+			const existingObservedSeq = resyncInFlight.get(key);
+			if (existingObservedSeq !== undefined) {
+				resyncInFlight.set(key, Math.max(existingObservedSeq, observedSeq));
+				return;
+			}
+			let nextSinceSeq = sinceSeq;
+			resyncInFlight.set(key, observedSeq);
+			try {
+				while (!cancelled) {
+					const snapshot = await resyncStreamingMessage(
+						chatSessionId,
+						messageId,
+						nextSinceSeq,
+					);
+					if (cancelled) return;
+					if (!snapshot) {
+						await hydrateMessageIfMissing(chatSessionId, messageId);
+						return;
 					}
+					await hydrateMessageIfMissing(chatSessionId, messageId);
+					if (!hasMessage(chatSessionId, messageId)) {
+						return;
+					}
+					advanceOptimisticLastSeq(key, snapshot.seq);
+					dispatch({
+						type: "SET_STREAMING_MESSAGE",
+						sessionId: chatSessionId,
+						messageId,
+						seq: snapshot.seq,
+						parts: snapshot.parts,
+					});
+					const maxObservedSeq = resyncInFlight.get(key) ?? observedSeq;
+					if (snapshot.seq >= maxObservedSeq || snapshot.seq <= nextSinceSeq) {
+						return;
+					}
+					nextSinceSeq = snapshot.seq;
 				}
+			} catch (error) {
+				console.error("Failed to resync streaming message:", error);
+			} finally {
+				resyncInFlight.delete(key);
+			}
+		}
 
-				dispatch({
-					type: "SET_STREAMING_MESSAGE",
-					sessionId: chat_session_id,
-					messageId: message_id,
-					parts,
-				});
-			},
-		).then((fn) => {
+		listen<StreamingMessageUpdated>("agent-streaming-delta", async (event) => {
+			const { chat_session_id, message_id, seq, parts } = event.payload;
+
+			// viewable でない session の streaming 更新は他のハンドラと同様にスキップ。
+			// SET_STREAMING_MESSAGE のみガード外にあると非表示 session の streaming が
+			// sessionsById に反映される非対称が生じるため、ここで早期 return する。
+			if (!isViewable(chat_session_id, viewableRegistry)) {
+				return;
+			}
+
+			const key = streamingSeqKey(chat_session_id, message_id);
+			const lastSeq = getEffectiveLastSeq(chat_session_id, message_id);
+			if (seq <= lastSeq) {
+				return;
+			}
+			if (!hasMessage(chat_session_id, message_id) || seq !== lastSeq + 1) {
+				await dispatchResyncSnapshot(chat_session_id, message_id, lastSeq, seq);
+				return;
+			}
+
+			advanceOptimisticLastSeq(key, seq);
+			dispatch({
+				type: "APPLY_STREAMING_DELTA",
+				sessionId: chat_session_id,
+				messageId: message_id,
+				seq,
+				parts,
+			});
+		}).then((fn) => {
 			if (cancelled) {
 				fn();
 			} else {
@@ -447,7 +545,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, viewableRegistry, hasMessage]);
+	}, [dispatch, viewableRegistry, hasMessage, getLastStreamingSeq]);
 
 	// Listen to agent-session-state-changed (unified state event from Rust)
 	useEffect(() => {

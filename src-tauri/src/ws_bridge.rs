@@ -1,33 +1,57 @@
-use crate::protocol::{AgentStreamSync, WsMessage};
-use std::collections::HashMap;
+use crate::protocol::AgentStreamSync;
+use crate::protocol::{AgentStreamDeltaMsg, AgentStreamPartMsg, WsMessage};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, Notify};
 
 pub type WsSender = mpsc::UnboundedSender<WsMessage>;
 pub type WsReceiver = mpsc::UnboundedReceiver<WsMessage>;
 
+const STREAM_DELTA_QUEUE_LIMIT: usize = 1024;
+const STREAM_DELTA_QUEUE_BYTE_LIMIT: usize = 512 * 1024;
+
+#[derive(Debug, Clone)]
+enum StreamOutbound {
+    Delta(AgentStreamDeltaMsg),
+    Snapshot(AgentStreamSync),
+}
+
+impl StreamOutbound {
+    fn key(&self) -> (String, String) {
+        match self {
+            Self::Delta(msg) => (msg.session_id.clone(), msg.message_id.clone()),
+            Self::Snapshot(msg) => (msg.session_id.clone(), msg.message_id.clone()),
+        }
+    }
+
+    fn estimated_bytes(&self) -> usize {
+        match self {
+            Self::Delta(msg) => estimate_stream_parts_bytes(&msg.parts),
+            Self::Snapshot(msg) => estimate_stream_parts_bytes(&msg.parts),
+        }
+    }
+}
+
 pub struct WsBroadcaster {
     sender: Mutex<Option<WsSender>>,
-    /// Latest cumulative `AgentStreamSync` snapshot per
-    /// `(chat_session_id, message_id)`. The producer writes a fresh snapshot
-    /// here on every flush; the consumer drains the slot when woken. This
-    /// keeps the WS queue from accumulating O(N) cumulative payloads when
-    /// the receiver is slow — only the most recent snapshot is retained per
-    /// message, so memory is bounded by (number of live streaming messages
-    /// × one snapshot).
-    latest_stream_sync: Mutex<HashMap<(String, String), AgentStreamSync>>,
-    /// Wakeup for the consumer to drain `latest_stream_sync`. `Notify`
+    /// Ordered delta/snapshot queue for stream messages. Normal operation
+    /// appends `AgentStreamDelta`; when the queue exceeds its cap for a slow
+    /// consumer, queued entries for that message collapse to a cumulative
+    /// snapshot at the same seq so the receiver converges without another
+    /// resync round trip.
+    stream_queue: Mutex<VecDeque<StreamOutbound>>,
+    /// Wakeup for the consumer to drain `stream_queue`. `Notify`
     /// collapses multiple producer signals into a single permit, so a burst
     /// of producer updates yields at most one drain pass.
-    stream_sync_notify: Arc<Notify>,
+    stream_notify: Arc<Notify>,
 }
 
 impl Default for WsBroadcaster {
     fn default() -> Self {
         Self {
             sender: Mutex::new(None),
-            latest_stream_sync: Mutex::new(HashMap::new()),
-            stream_sync_notify: Arc::new(Notify::new()),
+            stream_queue: Mutex::new(VecDeque::new()),
+            stream_notify: Arc::new(Notify::new()),
         }
     }
 }
@@ -53,69 +77,63 @@ impl WsBroadcaster {
         }
     }
 
-    /// Best-effort enqueue of an `AgentStreamSync` cumulative snapshot.
-    ///
-    /// The new snapshot replaces any prior unsent snapshot for the same
-    /// `(chat_session_id, message_id)` so a slow WS receiver cannot
-    /// accumulate stacks of full-content payloads in the channel — only the
-    /// most recent cumulative is retained per message. When no sender is
-    /// registered the snapshot is simply dropped (no client to satisfy);
-    /// reconnect must refetch fresh state via the agent session query path
-    /// rather than replay stale slot data.
-    ///
-    /// No return value: the slot write itself cannot fail, and downstream
-    /// transport failure (WS receiver gone) is recovered by the next flush
-    /// re-sending the cumulative `streaming_parts` — which is what the
-    /// producer's coalescer relies on. Reporting a "ws_ok" boolean here
-    /// would be misleading because there is no production path that can
-    /// observe it as `false`.
-    pub fn send_stream_sync(&self, msg: AgentStreamSync) {
+    /// Best-effort enqueue of a normal streaming delta.
+    pub fn send_stream_delta<F>(&self, msg: AgentStreamDeltaMsg, overflow_snapshot: F)
+    where
+        F: FnOnce() -> AgentStreamSync,
+    {
         // Hold the sender lock for the entire critical section so a concurrent
-        // `set_sender(None)` cannot clear `latest_stream_sync` between our
+        // `set_sender(None)` cannot clear stream buffers between our
         // sender-present check and the slot insert (which would leave a stale
-        // snapshot in the slot after disconnect). Lock order is sender → slot,
-        // matching `set_sender`.
+        // message in the queue after disconnect).
         let sender_guard = self.sender.lock().unwrap_or_else(|e| e.into_inner());
         if sender_guard.is_none() {
             return;
         }
-        {
-            let mut slot = self
-                .latest_stream_sync
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if slot
-                .insert((msg.session_id.clone(), msg.message_id.clone()), msg)
-                .is_some()
-            {
-                crate::other::telemetry::increment_dropped_stream_frames();
-            }
+        let mut queue = self.stream_queue.lock().unwrap_or_else(|e| e.into_inner());
+        queue.push_back(StreamOutbound::Delta(msg));
+        if stream_queue_exceeds_limit(&queue) {
+            let overflow_snapshot = overflow_snapshot();
+            let key = (
+                overflow_snapshot.session_id.clone(),
+                overflow_snapshot.message_id.clone(),
+            );
+            collapse_stream_queue_to_snapshot(&mut queue, key, overflow_snapshot);
         }
         drop(sender_guard);
-        self.stream_sync_notify.notify_one();
+        self.stream_notify.notify_one();
     }
 
-    /// Drain every queued `AgentStreamSync` snapshot and reset the slot to
-    /// empty. The returned vector contains at most one cumulative snapshot
-    /// per `(chat_session_id, message_id)` (latest write wins) — order
-    /// across distinct messages is not preserved, which is safe because each
-    /// snapshot is itself a complete replacement payload that the receiver
-    /// applies independently per message.
-    ///
-    /// Called by the WS forward task on each `stream_sync_notify` wakeup.
-    pub fn drain_stream_sync(&self) -> Vec<AgentStreamSync> {
-        let mut slot = self
-            .latest_stream_sync
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        slot.drain().map(|(_, v)| v).collect()
+    /// Best-effort enqueue of a resync snapshot.
+    pub fn send_stream_snapshot(&self, msg: AgentStreamSync) {
+        let sender_guard = self.sender.lock().unwrap_or_else(|e| e.into_inner());
+        if sender_guard.is_none() {
+            return;
+        }
+        let key = (msg.session_id.clone(), msg.message_id.clone());
+        let mut queue = self.stream_queue.lock().unwrap_or_else(|e| e.into_inner());
+        collapse_stream_queue_to_snapshot(&mut queue, key, msg);
+        drop(sender_guard);
+        self.stream_notify.notify_one();
+    }
+
+    /// Drain every queued stream delta/snapshot in send order.
+    pub fn drain_stream_messages(&self) -> Vec<WsMessage> {
+        let mut queue = self.stream_queue.lock().unwrap_or_else(|e| e.into_inner());
+        queue
+            .drain(..)
+            .map(|item| match item {
+                StreamOutbound::Delta(delta) => WsMessage::AgentStreamDelta(delta),
+                StreamOutbound::Snapshot(snapshot) => WsMessage::AgentStreamSync(snapshot),
+            })
+            .collect()
     }
 
     /// Notify handle for the WS forward task. The task `select!`s on this
     /// alongside the regular `WsReceiver` and, on wakeup, calls
-    /// `drain_stream_sync` to forward queued snapshots to the WS client.
+    /// `drain_stream_messages` to forward queued stream messages to the WS client.
     pub fn stream_sync_notify(&self) -> Arc<Notify> {
-        Arc::clone(&self.stream_sync_notify)
+        Arc::clone(&self.stream_notify)
     }
 
     pub fn set_sender(&self, sender: Option<WsSender>) {
@@ -126,10 +144,9 @@ impl WsBroadcaster {
         }
         *guard = sender;
         if cleared {
-            // No active WS session — drop the queued cumulative snapshots so
-            // a future session does not start by receiving a snapshot the
-            // prior client was the intended recipient of.
-            self.latest_stream_sync
+            // No active WS session — drop queued stream messages so a future
+            // session does not receive data intended for the prior client.
+            self.stream_queue
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clear();
@@ -146,6 +163,87 @@ impl WsBroadcaster {
     pub fn create_channel() -> (WsSender, WsReceiver) {
         mpsc::unbounded_channel()
     }
+}
+
+fn stream_queue_exceeds_limit(queue: &VecDeque<StreamOutbound>) -> bool {
+    queue.len() > STREAM_DELTA_QUEUE_LIMIT
+        || queue
+            .iter()
+            .map(StreamOutbound::estimated_bytes)
+            .sum::<usize>()
+            > STREAM_DELTA_QUEUE_BYTE_LIMIT
+}
+
+fn collapse_stream_queue_to_snapshot(
+    queue: &mut VecDeque<StreamOutbound>,
+    key: (String, String),
+    snapshot: AgentStreamSync,
+) {
+    let before = queue.len();
+    queue.retain(|item| item.key() != key);
+    if before != queue.len() {
+        crate::other::telemetry::increment_dropped_stream_frames();
+    }
+    queue.push_back(StreamOutbound::Snapshot(snapshot));
+}
+
+fn estimate_stream_parts_bytes(parts: &[AgentStreamPartMsg]) -> usize {
+    parts
+        .iter()
+        .map(|part| match part {
+            AgentStreamPartMsg::Thinking { content, .. }
+            | AgentStreamPartMsg::Text { content, .. }
+            | AgentStreamPartMsg::ToolResult { content, .. }
+            | AgentStreamPartMsg::Error { content, .. } => content.len(),
+            AgentStreamPartMsg::ToolUse {
+                tool, input, id, ..
+            } => tool.len() + id.len() + serde_json::to_string(input).map_or(0, |s| s.len()),
+            AgentStreamPartMsg::Permission {
+                request,
+                status,
+                answers,
+                ..
+            } => {
+                status.len()
+                    + serde_json::to_string(request).map_or(0, |s| s.len())
+                    + answers
+                        .as_ref()
+                        .and_then(|value| serde_json::to_string(value).ok())
+                        .map_or(0, |s| s.len())
+            }
+            AgentStreamPartMsg::TaskStatus {
+                task_tool_use_id,
+                status,
+                description,
+                summary,
+            } => {
+                task_tool_use_id.len()
+                    + status.len()
+                    + description.as_ref().map_or(0, String::len)
+                    + summary.as_ref().map_or(0, String::len)
+            }
+            AgentStreamPartMsg::TodoListSnapshot { items } => {
+                items.iter().map(|item| item.text.len() + 1).sum()
+            }
+            AgentStreamPartMsg::SystemNotification {
+                notification_type,
+                status,
+                label,
+                detail,
+                hook_id,
+            } => {
+                notification_type.len()
+                    + status.len()
+                    + label.len()
+                    + detail.as_ref().map_or(0, String::len)
+                    + hook_id.as_ref().map_or(0, String::len)
+            }
+            AgentStreamPartMsg::Image { data, media_type } => data.len() + media_type.len(),
+            AgentStreamPartMsg::ImageRef { attachment } => {
+                attachment.id.len() + attachment.media_type.len() + std::mem::size_of::<u64>()
+            }
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -256,10 +354,11 @@ mod tests {
         );
     }
 
-    fn dummy_stream_sync(session: &str, message: &str, n: usize) -> AgentStreamSync {
+    fn dummy_stream_sync(session: &str, message: &str, seq: u64, n: usize) -> AgentStreamSync {
         AgentStreamSync {
             session_id: session.to_string(),
             message_id: message.to_string(),
+            seq,
             parts: (0..n)
                 .map(|i| crate::protocol::AgentStreamPartMsg::Text {
                     content: format!("p{i}"),
@@ -269,75 +368,157 @@ mod tests {
         }
     }
 
+    fn dummy_stream_delta(
+        session: &str,
+        message: &str,
+        seq: u64,
+        content: &str,
+    ) -> AgentStreamDeltaMsg {
+        AgentStreamDeltaMsg {
+            session_id: session.to_string(),
+            message_id: message.to_string(),
+            seq,
+            parts: vec![crate::protocol::AgentStreamPartMsg::Text {
+                content: content.to_string(),
+                parent_tool_use_id: None,
+            }],
+        }
+    }
+
+    fn queue_stream_delta(broadcaster: &WsBroadcaster, delta: AgentStreamDeltaMsg) {
+        let snapshot = AgentStreamSync {
+            session_id: delta.session_id.clone(),
+            message_id: delta.message_id.clone(),
+            seq: delta.seq,
+            parts: delta.parts.clone(),
+        };
+        broadcaster.send_stream_delta(delta, || snapshot);
+    }
+
     #[test]
-    fn send_stream_sync_replaces_prior_snapshot_for_same_message() {
-        // Slow consumer scenario: producer pushes many cumulative snapshots
-        // before the consumer drains. Only the newest snapshot must remain.
+    fn send_stream_delta_queues_ordered_deltas() {
         let broadcaster = WsBroadcaster::default();
         let (tx, _rx) = WsBroadcaster::create_channel();
         broadcaster.set_sender(Some(tx));
 
-        for n in 1..=10 {
-            broadcaster.send_stream_sync(dummy_stream_sync("S", "M", n));
+        queue_stream_delta(&broadcaster, dummy_stream_delta("S", "M", 1, "a"));
+        queue_stream_delta(&broadcaster, dummy_stream_delta("S", "M", 2, "b"));
+
+        let drained = broadcaster.drain_stream_messages();
+        assert_eq!(drained.len(), 2);
+        assert!(matches!(
+            &drained[0],
+            WsMessage::AgentStreamDelta(msg) if msg.seq == 1
+        ));
+        assert!(matches!(
+            &drained[1],
+            WsMessage::AgentStreamDelta(msg) if msg.seq == 2
+        ));
+        assert!(broadcaster.drain_stream_messages().is_empty());
+    }
+
+    #[test]
+    fn send_stream_delta_does_not_build_snapshot_under_queue_limits() {
+        let broadcaster = WsBroadcaster::default();
+        let (tx, _rx) = WsBroadcaster::create_channel();
+        broadcaster.set_sender(Some(tx));
+
+        let mut snapshot_built = false;
+        broadcaster.send_stream_delta(dummy_stream_delta("S", "M", 1, "x"), || {
+            snapshot_built = true;
+            dummy_stream_sync("S", "M", 1, 2)
+        });
+
+        assert!(
+            !snapshot_built,
+            "normal delta enqueue must not build the overflow snapshot"
+        );
+        assert_eq!(broadcaster.drain_stream_messages().len(), 1);
+    }
+
+    #[test]
+    fn send_stream_snapshot_replaces_queued_deltas_for_same_message() {
+        let broadcaster = WsBroadcaster::default();
+        let (tx, _rx) = WsBroadcaster::create_channel();
+        broadcaster.set_sender(Some(tx));
+
+        queue_stream_delta(&broadcaster, dummy_stream_delta("S", "M", 1, "a"));
+        queue_stream_delta(&broadcaster, dummy_stream_delta("S", "M-other", 1, "x"));
+        broadcaster.send_stream_snapshot(dummy_stream_sync("S", "M", 2, 2));
+
+        let drained = broadcaster.drain_stream_messages();
+        assert_eq!(drained.len(), 2);
+        assert!(matches!(
+            &drained[0],
+            WsMessage::AgentStreamDelta(msg) if msg.message_id == "M-other"
+        ));
+        assert!(matches!(
+            &drained[1],
+            WsMessage::AgentStreamSync(msg) if msg.message_id == "M" && msg.seq == 2
+        ));
+    }
+
+    #[test]
+    fn send_stream_delta_collapses_to_snapshot_when_queue_is_over_limit() {
+        let broadcaster = WsBroadcaster::default();
+        let (tx, _rx) = WsBroadcaster::create_channel();
+        broadcaster.set_sender(Some(tx));
+
+        for seq in 1..=(STREAM_DELTA_QUEUE_LIMIT as u64 + 1) {
+            broadcaster.send_stream_delta(dummy_stream_delta("S", "M", seq, "x"), || {
+                dummy_stream_sync("S", "M", seq, 2)
+            });
         }
 
-        let drained = broadcaster.drain_stream_sync();
-        assert_eq!(drained.len(), 1, "only the latest snapshot is retained");
-        assert_eq!(drained[0].parts.len(), 10);
-
-        // After drain, the slot is empty.
-        assert!(broadcaster.drain_stream_sync().is_empty());
+        let drained = broadcaster.drain_stream_messages();
+        assert_eq!(drained.len(), 1);
+        match &drained[0] {
+            WsMessage::AgentStreamSync(msg) => {
+                assert_eq!(msg.seq, STREAM_DELTA_QUEUE_LIMIT as u64 + 1);
+                assert_eq!(msg.parts.len(), 2);
+                match &msg.parts[0] {
+                    AgentStreamPartMsg::Text { content, .. } => {
+                        assert_eq!(content, "p0");
+                    }
+                    other => panic!("expected text delta, got {other:?}"),
+                }
+            }
+            other => panic!("expected snapshot collapse, got {other:?}"),
+        }
     }
 
     #[test]
-    fn send_stream_sync_keeps_distinct_messages_separately() {
+    fn send_stream_delta_drops_when_no_sender() {
+        // Desktop-only / no WS client: the delta is dropped on the floor
+        // so the producer's coalescing buffer cannot grow waiting for a
+        // non-existent receiver.
+        let broadcaster = WsBroadcaster::default();
+        queue_stream_delta(&broadcaster, dummy_stream_delta("S", "M", 1, "x"));
+        assert!(broadcaster.drain_stream_messages().is_empty());
+    }
+
+    #[test]
+    fn set_sender_none_clears_queued_stream_messages() {
+        // Disconnect must drop stale stream messages so reconnect doesn't see them.
         let broadcaster = WsBroadcaster::default();
         let (tx, _rx) = WsBroadcaster::create_channel();
         broadcaster.set_sender(Some(tx));
-
-        broadcaster.send_stream_sync(dummy_stream_sync("S", "M1", 1));
-        broadcaster.send_stream_sync(dummy_stream_sync("S", "M2", 2));
-
-        let mut drained = broadcaster.drain_stream_sync();
-        drained.sort_by(|a, b| a.message_id.cmp(&b.message_id));
-        assert_eq!(drained.len(), 2);
-        assert_eq!(drained[0].message_id, "M1");
-        assert_eq!(drained[1].message_id, "M2");
-    }
-
-    #[test]
-    fn send_stream_sync_drops_snapshot_when_no_sender() {
-        // Desktop-only / no WS client: the snapshot is dropped on the floor
-        // (no slot retention) so the producer's coalescing buffer cannot grow
-        // unbounded waiting for a non-existent receiver.
-        let broadcaster = WsBroadcaster::default();
-        broadcaster.send_stream_sync(dummy_stream_sync("S", "M", 1));
-        // No client → no snapshot retained.
-        assert!(broadcaster.drain_stream_sync().is_empty());
-    }
-
-    #[test]
-    fn set_sender_none_clears_queued_stream_sync_snapshots() {
-        // Disconnect must drop stale snapshots so reconnect doesn't see them.
-        let broadcaster = WsBroadcaster::default();
-        let (tx, _rx) = WsBroadcaster::create_channel();
-        broadcaster.set_sender(Some(tx));
-        broadcaster.send_stream_sync(dummy_stream_sync("S", "M", 1));
+        queue_stream_delta(&broadcaster, dummy_stream_delta("S", "M", 1, "x"));
         broadcaster.set_sender(None);
-        assert!(broadcaster.drain_stream_sync().is_empty());
+        assert!(broadcaster.drain_stream_messages().is_empty());
     }
 
     #[test]
-    fn send_stream_sync_does_not_resurrect_slot_after_concurrent_disconnect() {
+    fn send_stream_delta_does_not_resurrect_queue_after_concurrent_disconnect() {
         // Regression: prior implementation released the sender lock before
-        // inserting into `latest_stream_sync`, so a `set_sender(None)` racing
-        // between the sender check and the slot insert could leave a stale
-        // snapshot in the slot. With the sender lock held across the whole
+        // inserting into the stream buffer, so a `set_sender(None)` racing
+        // between the sender check and insert could leave a stale
+        // message in the queue. With the sender lock held across the whole
         // critical section, the two operations are serialised: either the
-        // disconnect wins (insert observes `sender_guard.is_none()` and
-        // returns early) or the send wins (slot has the snapshot and is
+        // disconnect wins (enqueue observes `sender_guard.is_none()` and
+        // returns early) or the send wins (queue has the message and is
         // cleared by the subsequent disconnect). Either ordering must leave
-        // the slot empty after disconnect.
+        // the queue empty after disconnect.
         for _ in 0..200 {
             let broadcaster = Arc::new(WsBroadcaster::default());
             let (tx, _rx) = WsBroadcaster::create_channel();
@@ -346,7 +527,7 @@ mod tests {
             let producer = {
                 let broadcaster = Arc::clone(&broadcaster);
                 std::thread::spawn(move || {
-                    broadcaster.send_stream_sync(dummy_stream_sync("S", "M", 1));
+                    queue_stream_delta(&broadcaster, dummy_stream_delta("S", "M", 1, "x"));
                 })
             };
             let disconnector = {
@@ -359,16 +540,16 @@ mod tests {
             disconnector.join().unwrap();
 
             assert!(
-                broadcaster.drain_stream_sync().is_empty(),
-                "slot must not retain a snapshot after disconnect"
+                broadcaster.drain_stream_messages().is_empty(),
+                "queue must not retain a stream message after disconnect"
             );
         }
     }
 
     #[tokio::test]
-    async fn send_stream_sync_notifies_waiter() {
+    async fn send_stream_delta_notifies_waiter() {
         // Consumer waits on `stream_sync_notify`; producer sends; consumer is
-        // woken and drains the slot. Ensures the notify pipeline is connected.
+        // woken and drains the queue. Ensures the notify pipeline is connected.
         let broadcaster = Arc::new(WsBroadcaster::default());
         let (tx, _rx) = WsBroadcaster::create_channel();
         broadcaster.set_sender(Some(tx));
@@ -377,12 +558,15 @@ mod tests {
             let broadcaster = Arc::clone(&broadcaster);
             tokio::spawn(async move {
                 notify.notified().await;
-                broadcaster.drain_stream_sync()
+                broadcaster.drain_stream_messages()
             })
         };
-        broadcaster.send_stream_sync(dummy_stream_sync("S", "M", 3));
+        queue_stream_delta(&broadcaster, dummy_stream_delta("S", "M", 3, "x"));
         let drained = consumer.await.unwrap();
         assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].parts.len(), 3);
+        assert!(matches!(
+            &drained[0],
+            WsMessage::AgentStreamDelta(msg) if msg.seq == 3
+        ));
     }
 }

@@ -108,6 +108,7 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         session_id: &str,
         message_id: &str,
         parts: &[Self::MessagePart],
+        streaming_final_seq: u64,
         completed_at: Option<f64>,
     ) -> Result<(), String>;
 

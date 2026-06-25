@@ -27,6 +27,7 @@ pub(super) fn persist_streaming_parts<R: tauri::Runtime>(
     chat_session_id: &str,
     message_id: &str,
     parts: &[MessagePart],
+    streaming_final_seq: u64,
     completed_at: Option<f64>,
 ) -> bool {
     let data_dir = match resolve_data_dir(app) {
@@ -43,6 +44,7 @@ pub(super) fn persist_streaming_parts<R: tauri::Runtime>(
         chat_session_id,
         message_id,
         parts,
+        streaming_final_seq,
         completed_at,
     ) {
         Ok(()) => true,
@@ -1230,10 +1232,12 @@ mod moved_tests {
         let (final_parts, workflow_turn_complete) = {
             let mut map = handles.lock().await;
             let proc = map.get_mut(&session.id).unwrap();
-            let effect =
-                run_turn_complete_transition_locked(proc, &session.id, 0, |_mid, _parts| {
-                    (true, true)
-                });
+            let effect = run_turn_complete_transition_locked(
+                proc,
+                &session.id,
+                0,
+                |_mid, _seq, _parts, _snapshot_parts| (true, true),
+            );
             proc.sdk_session_id = Some("previous-good-session".to_string());
             proc.post_turn_message_token = None;
             assert!(effect.turn_completed);
@@ -1507,6 +1511,7 @@ mod moved_tests {
                 thinking: None,
                 activities: None,
                 parts: None,
+                streaming_final_seq: 0,
                 timestamp: 1.0,
                 mentions: None,
             },
@@ -1517,6 +1522,7 @@ mod moved_tests {
                 thinking: None,
                 activities: None,
                 parts: None,
+                streaming_final_seq: 0,
                 timestamp: 2.0,
                 mentions: None,
             },
@@ -1527,6 +1533,7 @@ mod moved_tests {
                 thinking: None,
                 activities: None,
                 parts: None,
+                streaming_final_seq: 0,
                 timestamp: 3.0,
                 mentions: None,
             },
@@ -1537,6 +1544,7 @@ mod moved_tests {
                 thinking: None,
                 activities: None,
                 parts: None,
+                streaming_final_seq: 0,
                 timestamp: 4.0,
                 mentions: None,
             },
@@ -1700,7 +1708,7 @@ mod moved_tests {
                 generation_matches,
                 proc,
                 &session.id,
-                |_mid, _parts| (true, true),
+                |_mid, _seq, _parts, _snapshot_parts| (true, true),
             );
             (
                 transition.was_initializing,
@@ -1766,7 +1774,7 @@ mod moved_tests {
                 generation_matches,
                 proc,
                 &session.id,
-                |_mid, _parts| (true, true),
+                |_mid, _seq, _parts, _snapshot_parts| (true, true),
             );
             assert!(transition.was_initializing);
             transition.context_restore_failed_on_init

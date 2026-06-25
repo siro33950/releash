@@ -183,6 +183,7 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         session_id: &str,
         message_id: &str,
         parts: &[Self::MessagePart],
+        streaming_final_seq: u64,
         completed_at: Option<f64>,
     ) -> Result<(), String> {
         FileSessionStorage::persist_message_parts(
@@ -191,6 +192,7 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
             session_id,
             message_id,
             parts,
+            streaming_final_seq,
             completed_at,
         )
     }

@@ -742,6 +742,7 @@ impl SessionStore {
         session_id: &str,
         message_id: &str,
         parts: &[MessagePart],
+        streaming_final_seq: u64,
         completed_at: Option<f64>,
     ) -> Result<(), String> {
         self.storage.persist_message_parts(
@@ -749,6 +750,7 @@ impl SessionStore {
             session_id,
             message_id,
             parts,
+            streaming_final_seq,
             completed_at,
         )
     }

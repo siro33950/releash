@@ -208,6 +208,16 @@ pub fn run() {
                     >>()
                     .inner()
                     .clone();
+                let stream_resync_read_model: Arc<
+                    dyn usecase::agent_session::session::AgentStreamResyncReadModel,
+                > = Arc::new(
+                    infrastructure::agent_session::runtime_gateway::AgentStreamResyncRuntimeReadModel::new(
+                        session_store_state.clone(),
+                        handles_state.clone(),
+                        data_dir.clone(),
+                    ),
+                );
+                app.manage(stream_resync_read_model);
                 app.manage(Arc::new(
                     adaptor::controller::wiring::build_stored_session_lifecycle_usecase(
                         app.handle().clone(),
