@@ -9,12 +9,14 @@ export interface DiffLine {
 	newLineNumber: number | null;
 	tokens: TokenizedLine["tokens"];
 	content: string;
+	hunkIndex?: number;
+	hunkLineOffset?: number;
 }
 
 export interface DiffBlock {
 	type: "change" | "context";
 	lines: DiffLine[];
-	changeGroupIndex?: number;
+	changeGroupId?: string;
 }
 
 function splitContentToLines(content: string): string[] {
@@ -99,7 +101,12 @@ export function computeDiffBlocks(
 		}
 
 		const changeLines: DiffLine[] = [];
-		for (const rawLine of hunk.lines) {
+		for (
+			let hunkLineOffset = 0;
+			hunkLineOffset < hunk.lines.length;
+			hunkLineOffset++
+		) {
+			const rawLine = hunk.lines[hunkLineOffset];
 			const prefix = rawLine[0];
 			const content = rawLine.slice(1);
 
@@ -113,6 +120,8 @@ export function computeDiffBlocks(
 					newLineNumber: null,
 					tokens: getTokensForLine(originalTokens, oldIdx, content),
 					content,
+					hunkIndex: hunk.index,
+					hunkLineOffset,
 				});
 				currentOldLine++;
 			} else if (prefix === "+") {
@@ -123,6 +132,8 @@ export function computeDiffBlocks(
 					newLineNumber: currentNewLine,
 					tokens: getTokensForLine(modifiedTokens, newIdx, content),
 					content,
+					hunkIndex: hunk.index,
+					hunkLineOffset,
 				});
 				currentNewLine++;
 			} else {
@@ -133,6 +144,8 @@ export function computeDiffBlocks(
 					newLineNumber: currentNewLine,
 					tokens: getTokensForLine(modifiedTokens, newIdx, content),
 					content,
+					hunkIndex: hunk.index,
+					hunkLineOffset,
 				});
 				currentOldLine++;
 				currentNewLine++;
@@ -169,37 +182,64 @@ export function computeDiffBlocks(
 
 export function assignChangeGroupsToBlocks(
 	blocks: DiffBlock[],
-	changeGroups: { groupIndex: number; newStart: number; newEnd: number }[],
+	changeGroups: {
+		groupIndex: number;
+		groupId: string;
+		hunkIndex: number;
+		newStart: number;
+		newEnd: number;
+		lineOffsetStart: number;
+		lineOffsetEnd: number;
+	}[],
 ): DiffBlock[] {
 	if (changeGroups.length === 0) return blocks;
 
-	return blocks.map((block) => {
+	return blocks.flatMap((block) => {
 		if (block.type !== "change") return block;
 
-		const firstNewLine = block.lines.find(
-			(l) => l.newLineNumber != null,
-		)?.newLineNumber;
-		const lastNewLine = [...block.lines]
-			.reverse()
-			.find((l) => l.newLineNumber != null)?.newLineNumber;
-		const firstOldLine = block.lines.find(
-			(l) => l.oldLineNumber != null,
-		)?.oldLineNumber;
+		const lineGroups = block.lines.map((line) =>
+			changeGroups.find(
+				(cg) =>
+					line.hunkIndex === cg.hunkIndex &&
+					line.hunkLineOffset != null &&
+					line.hunkLineOffset >= cg.lineOffsetStart &&
+					line.hunkLineOffset <= cg.lineOffsetEnd,
+			),
+		);
 
-		for (const cg of changeGroups) {
-			if (firstNewLine != null && lastNewLine != null) {
-				if (cg.newStart >= firstNewLine && cg.newEnd <= lastNewLine) {
-					return { ...block, changeGroupIndex: cg.groupIndex };
+		if (lineGroups.some((group) => group != null)) {
+			const result: DiffBlock[] = [];
+			let currentLines: DiffLine[] = [];
+			let currentGroup = lineGroups[0];
+			const flush = () => {
+				if (currentLines.length === 0) return;
+				if (currentGroup != null) {
+					result.push({
+						type: "change",
+						lines: currentLines,
+						changeGroupId: currentGroup.groupId,
+					});
+				} else {
+					result.push({
+						type: currentLines.some((line) => line.type !== "context")
+							? "change"
+							: "context",
+						lines: currentLines,
+					});
 				}
-				if (firstNewLine >= cg.newStart && firstNewLine <= cg.newEnd) {
-					return { ...block, changeGroupIndex: cg.groupIndex };
+				currentLines = [];
+			};
+
+			for (let i = 0; i < block.lines.length; i++) {
+				const group = lineGroups[i];
+				if (group?.groupId !== currentGroup?.groupId) {
+					flush();
+					currentGroup = group;
 				}
+				currentLines.push(block.lines[i]);
 			}
-			if (firstNewLine == null && firstOldLine != null) {
-				if (cg.newStart <= (firstOldLine ?? 0)) {
-					return { ...block, changeGroupIndex: cg.groupIndex };
-				}
-			}
+			flush();
+			return result;
 		}
 
 		return block;

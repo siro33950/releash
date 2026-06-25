@@ -28,6 +28,7 @@ describe("computeDiffBlocks", () => {
 		const hunks = [
 			{
 				index: 0,
+				hunkId: "h:added:0",
 				oldStart: 1,
 				oldLines: 2,
 				newStart: 1,
@@ -57,6 +58,7 @@ describe("computeDiffBlocks", () => {
 		const hunks = [
 			{
 				index: 0,
+				hunkId: "h:deleted:0",
 				oldStart: 1,
 				oldLines: 3,
 				newStart: 1,
@@ -105,6 +107,7 @@ describe("computeDiffBlocks", () => {
 		const hunks = [
 			{
 				index: 0,
+				hunkId: "h:file-deleted:0",
 				oldStart: 1,
 				oldLines: 1,
 				newStart: 0,
@@ -127,6 +130,7 @@ describe("computeDiffBlocks", () => {
 		const hunks = [
 			{
 				index: 0,
+				hunkId: "h:no-newline:0",
 				oldStart: 1,
 				oldLines: 1,
 				newStart: 1,
@@ -164,7 +168,7 @@ describe("assignChangeGroupsToBlocks", () => {
 		expect(result).toEqual(blocks);
 	});
 
-	it("assigns change group index to matching change block", () => {
+	it("assigns change group id to matching change block by hunk offset", () => {
 		const blocks = [
 			{
 				type: "change" as const,
@@ -175,13 +179,88 @@ describe("assignChangeGroupsToBlocks", () => {
 						newLineNumber: 5,
 						tokens: [],
 						content: "new line",
+						hunkIndex: 0,
+						hunkLineOffset: 0,
 					},
 				],
 			},
 		];
-		const changeGroups = [{ groupIndex: 0, newStart: 5, newEnd: 5 }];
+		const changeGroups = [
+			{
+				groupIndex: 0,
+				groupId: "g:matching:0",
+				hunkIndex: 0,
+				newStart: 5,
+				newEnd: 5,
+				lineOffsetStart: 0,
+				lineOffsetEnd: 0,
+			},
+		];
 		const result = assignChangeGroupsToBlocks(blocks, changeGroups);
-		expect(result[0].changeGroupIndex).toBe(0);
+		expect(result[0].changeGroupId).toBe("g:matching:0");
+	});
+
+	it("splits one hunk change block into all matching change groups", () => {
+		const hunks = [
+			{
+				index: 0,
+				hunkId: "h:multi:0",
+				oldStart: 1,
+				oldLines: 5,
+				newStart: 1,
+				newLines: 5,
+				lines: [
+					" ctx1",
+					"-old a",
+					"+new a",
+					" ctx2",
+					"-old b",
+					"+new b",
+					" ctx3",
+				],
+			},
+		];
+		const { blocks } = computeDiffBlocks(
+			hunks,
+			null,
+			null,
+			"ctx1\nold a\nctx2\nold b\nctx3\n",
+			"ctx1\nnew a\nctx2\nnew b\nctx3\n",
+		);
+
+		const result = assignChangeGroupsToBlocks(blocks, [
+			{
+				groupIndex: 0,
+				groupId: "g:first",
+				hunkIndex: 0,
+				newStart: 2,
+				newEnd: 2,
+				lineOffsetStart: 1,
+				lineOffsetEnd: 2,
+			},
+			{
+				groupIndex: 1,
+				groupId: "g:second",
+				hunkIndex: 0,
+				newStart: 4,
+				newEnd: 4,
+				lineOffsetStart: 4,
+				lineOffsetEnd: 5,
+			},
+		]);
+
+		const changeBlocks = result.filter((block) => block.type === "change");
+		expect(changeBlocks).toHaveLength(2);
+		expect(changeBlocks.map((block) => block.changeGroupId)).toEqual([
+			"g:first",
+			"g:second",
+		]);
+		expect(
+			changeBlocks.map((block) => block.lines.map((line) => line.content)),
+		).toEqual([
+			["old a", "new a"],
+			["old b", "new b"],
+		]);
 	});
 });
 
@@ -219,6 +298,7 @@ describe("progressive rendering fallback", () => {
 		const hunks = [
 			{
 				index: 0,
+				hunkId: "h:fallback:0",
 				oldStart: 1,
 				oldLines: 1,
 				newStart: 1,

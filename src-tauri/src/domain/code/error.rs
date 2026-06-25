@@ -16,6 +16,8 @@ pub enum CodeError {
     Rule(String),
     /// review-blob URI が参照する snapshot version が現在の snapshot と一致しない。
     StaleReviewBlobVersion { requested: u64, current: u64 },
+    /// review group action の stable id が現在の snapshot 上で解決できない。
+    StaleReviewGroupTarget { group_id: String },
 }
 
 impl std::fmt::Display for CodeError {
@@ -26,6 +28,9 @@ impl std::fmt::Display for CodeError {
                 f,
                 "stale review blob version: requested {requested}, current {current}"
             ),
+            Self::StaleReviewGroupTarget { group_id } => {
+                write!(f, "review group target stale: {group_id}")
+            }
         }
     }
 }

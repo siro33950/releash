@@ -1,5 +1,6 @@
 export interface Hunk {
 	index: number;
+	hunkId: string;
 	oldStart: number;
 	oldLines: number;
 	newStart: number;
@@ -9,6 +10,7 @@ export interface Hunk {
 
 export interface ChangeGroup {
 	groupIndex: number;
+	groupId: string;
 	hunkIndex: number;
 	newStart: number;
 	newEnd: number;

@@ -284,6 +284,7 @@ impl CodeQueryService {
         let hunks = self
             .diff_computer
             .diff_buffers(original, modified, file_path);
+        let hunks = services::hunk::assign_hunk_ids(&hunks);
         let change_groups = services::hunk::compute_change_groups(&hunks);
         DiffHunksResultDto {
             hunks: hunks.iter().map(hunk_to_dto).collect(),
@@ -390,6 +391,7 @@ impl CodeQueryService {
 fn hunk_to_dto(h: &Hunk) -> HunkDto {
     HunkDto {
         index: h.index,
+        hunk_id: h.hunk_id.clone(),
         old_start: h.old_start,
         old_lines: h.old_lines,
         new_start: h.new_start,
@@ -401,6 +403,7 @@ fn hunk_to_dto(h: &Hunk) -> HunkDto {
 fn change_group_to_dto(g: &ChangeGroup) -> ChangeGroupDto {
     ChangeGroupDto {
         group_index: g.group_index,
+        group_id: g.group_id.clone(),
         hunk_index: g.hunk_index,
         new_start: g.new_start,
         new_end: g.new_end,
@@ -545,6 +548,7 @@ mod code_query_service_tests {
         ) -> Vec<Hunk> {
             vec![Hunk {
                 index: 0,
+                hunk_id: String::new(),
                 old_start: 1,
                 old_lines: 1,
                 new_start: 1,

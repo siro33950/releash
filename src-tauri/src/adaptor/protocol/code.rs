@@ -6,13 +6,15 @@
 
 use serde::Deserialize;
 
-use crate::domain::code::{ChangeGroup, DiffFileEntry, DiffTreeNode, Hunk};
+use crate::domain::code::{DiffFileEntry, DiffTreeNode, Hunk};
 
-/// `generate_group_patch` / `compute_hidden_ranges` のコマンド引数として受け取る hunk。
+/// `compute_hidden_ranges` のコマンド引数として受け取る hunk。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HunkInput {
     pub index: u32,
+    #[serde(default)]
+    pub hunk_id: String,
     pub old_start: u32,
     pub old_lines: u32,
     pub new_start: u32,
@@ -24,39 +26,12 @@ impl HunkInput {
     pub fn into_domain(self) -> Hunk {
         Hunk {
             index: self.index,
+            hunk_id: self.hunk_id,
             old_start: self.old_start,
             old_lines: self.old_lines,
             new_start: self.new_start,
             new_lines: self.new_lines,
             lines: self.lines,
-        }
-    }
-}
-
-/// `generate_group_patch` のコマンド引数として受け取る change group。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChangeGroupInput {
-    pub group_index: u32,
-    pub hunk_index: u32,
-    pub new_start: u32,
-    pub new_end: u32,
-    pub line_offset_start: u32,
-    pub line_offset_end: u32,
-    #[serde(default)]
-    pub is_staged: Option<bool>,
-}
-
-impl ChangeGroupInput {
-    pub fn into_domain(self) -> ChangeGroup {
-        ChangeGroup {
-            group_index: self.group_index,
-            hunk_index: self.hunk_index,
-            new_start: self.new_start,
-            new_end: self.new_end,
-            line_offset_start: self.line_offset_start,
-            line_offset_end: self.line_offset_end,
-            is_staged: self.is_staged,
         }
     }
 }
@@ -151,8 +126,7 @@ pub struct ReviewGroupActionInput {
     pub path: String,
     pub section: String,
     pub base: String,
-    pub group_index: u32,
-    pub snapshot_version: u64,
+    pub group_id: String,
 }
 
 #[cfg(test)]
@@ -168,38 +142,12 @@ mod protocol_code_tests {
         let input: HunkInput = serde_json::from_str(json).unwrap();
         let h = input.into_domain();
         assert_eq!(h.index, 0);
+        assert_eq!(h.hunk_id, "");
         assert_eq!(h.old_start, 1);
         assert_eq!(h.old_lines, 2);
         assert_eq!(h.new_start, 3);
         assert_eq!(h.new_lines, 4);
         assert_eq!(h.lines, vec!["-a".to_string(), "+b".to_string()]);
-    }
-
-    #[test]
-    fn test_change_group_input_is_stagedの省略_null_true_false() {
-        let base = r#""groupIndex":0,"hunkIndex":1,"newStart":2,"newEnd":3,"lineOffsetStart":4,"lineOffsetEnd":5"#;
-
-        // 省略時は #[serde(default)] により None。
-        let omitted = format!("{{{base}}}");
-        let i: ChangeGroupInput = serde_json::from_str(&omitted).unwrap();
-        assert_eq!(i.into_domain().is_staged, None);
-
-        // 明示 null も None。
-        let null = format!("{{{base},\"isStaged\":null}}");
-        let i: ChangeGroupInput = serde_json::from_str(&null).unwrap();
-        assert_eq!(i.into_domain().is_staged, None);
-
-        // true / false はそのまま。
-        let t = format!("{{{base},\"isStaged\":true}}");
-        let i: ChangeGroupInput = serde_json::from_str(&t).unwrap();
-        let d = i.into_domain();
-        assert_eq!(d.is_staged, Some(true));
-        assert_eq!(d.group_index, 0);
-        assert_eq!(d.line_offset_end, 5);
-
-        let f = format!("{{{base},\"isStaged\":false}}");
-        let i: ChangeGroupInput = serde_json::from_str(&f).unwrap();
-        assert_eq!(i.into_domain().is_staged, Some(false));
     }
 
     #[test]
@@ -263,8 +211,7 @@ mod protocol_code_tests {
             "path": "src/main.rs",
             "section": "changes",
             "base": "head",
-            "groupIndex": 2,
-            "snapshotVersion": 12
+            "groupId": "g:abc:0"
         }"#;
 
         let input: ReviewGroupActionInput = serde_json::from_str(json).unwrap();
@@ -273,8 +220,7 @@ mod protocol_code_tests {
         assert_eq!(input.path, "src/main.rs");
         assert_eq!(input.section, "changes");
         assert_eq!(input.base, "head");
-        assert_eq!(input.group_index, 2);
-        assert_eq!(input.snapshot_version, 12);
+        assert_eq!(input.group_id, "g:abc:0");
     }
 
     #[test]

@@ -13,15 +13,25 @@ pub(crate) mod review;
 pub(crate) mod review_blob;
 pub(crate) mod staging;
 
+use crate::domain::code::CodeError;
 use crate::other::AppError;
 use crate::usecase::code_error::CodeUsecaseError;
 
+const STALE_REVIEW_GROUP_TARGET_ERROR_CODE: &str = "STALE_REVIEW_GROUP_TARGET";
+
 /// ユースケースエラー → アプリエラーの集約変換（adaptor 層が担う）。
 /// `#[error(transparent)]` な `CodeUsecaseError` の `Display` を保持するため、
-/// serialize 表現は移行前（`GitError` のプレーン文字列）と等価に保たれる。
+/// 通常エラーの serialize 表現は移行前（`GitError` のプレーン文字列）と等価に保たれる。
+/// frontend が回復判断を必要とする stale review group だけ機械可読 code を付ける。
 impl From<CodeUsecaseError> for AppError {
     fn from(e: CodeUsecaseError) -> Self {
-        AppError::Internal(e.to_string())
+        let message = e.to_string();
+        match &e {
+            CodeUsecaseError::Code(CodeError::StaleReviewGroupTarget { .. }) => {
+                AppError::coded(STALE_REVIEW_GROUP_TARGET_ERROR_CODE, message)
+            }
+            _ => AppError::Internal(message),
+        }
     }
 }
 
@@ -62,5 +72,22 @@ mod tests {
         let app_err = AppError::from(usecase_err);
         assert_eq!(app_err.to_string(), "git2 boom");
         assert_eq!(serde_json::to_string(&app_err).unwrap(), "\"git2 boom\"");
+    }
+
+    #[test]
+    fn stale_review_group_targetは機械可読codeを持つerrorとして返す() {
+        let usecase_err = CodeUsecaseError::Code(CodeError::StaleReviewGroupTarget {
+            group_id: "g:old:0".to_string(),
+        });
+        let app_err = AppError::from(usecase_err);
+
+        assert_eq!(app_err.to_string(), "review group target stale: g:old:0");
+        assert_eq!(
+            serde_json::to_value(&app_err).unwrap(),
+            serde_json::json!({
+                "code": STALE_REVIEW_GROUP_TARGET_ERROR_CODE,
+                "message": "review group target stale: g:old:0"
+            })
+        );
     }
 }

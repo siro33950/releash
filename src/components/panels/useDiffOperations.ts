@@ -7,13 +7,22 @@ export interface UseDiffOperationsParams {
 	filePath: string | null;
 	section: DiffSection;
 	base: DiffBase;
-	snapshotVersion: number | null;
 	onGitChanged?: () => void;
 }
 
 export interface UseDiffOperationsResult {
-	handleStageGroup: (groupIndex: number) => Promise<void>;
-	handleUnstageGroup: (groupIndex: number) => Promise<void>;
+	handleStageGroup: (groupId: string) => Promise<void>;
+	handleUnstageGroup: (groupId: string) => Promise<void>;
+}
+
+const STALE_REVIEW_GROUP_TARGET_CODE = "STALE_REVIEW_GROUP_TARGET";
+
+function isObject(error: unknown): error is Record<string, unknown> {
+	return typeof error === "object" && error !== null;
+}
+
+function isStaleReviewGroupTarget(error: unknown): boolean {
+	return isObject(error) && error.code === STALE_REVIEW_GROUP_TARGET_CODE;
 }
 
 export function useDiffOperations({
@@ -21,12 +30,11 @@ export function useDiffOperations({
 	filePath,
 	section,
 	base,
-	snapshotVersion,
 	onGitChanged,
 }: UseDiffOperationsParams): UseDiffOperationsResult {
 	const applyGroupAction = useCallback(
-		async (command: string, groupIndex: number) => {
-			if (!rootPath || !filePath || snapshotVersion == null) return;
+		async (command: string, groupId: string) => {
+			if (!rootPath || !filePath || !groupId) return;
 
 			try {
 				await invoke(command, {
@@ -35,27 +43,29 @@ export function useDiffOperations({
 						path: filePath,
 						section,
 						base,
-						groupIndex,
-						snapshotVersion,
+						groupId,
 					},
 				});
 				onGitChanged?.();
 			} catch (e) {
+				if (isStaleReviewGroupTarget(e)) {
+					console.warn("Review group target is stale; refreshing snapshot:", e);
+					onGitChanged?.();
+					return;
+				}
 				console.error("Group action failed:", e);
 			}
 		},
-		[rootPath, filePath, section, base, snapshotVersion, onGitChanged],
+		[rootPath, filePath, section, base, onGitChanged],
 	);
 
 	const handleStageGroup = useCallback(
-		(groupIndex: number) =>
-			applyGroupAction("git_stage_review_group", groupIndex),
+		(groupId: string) => applyGroupAction("git_stage_review_group", groupId),
 		[applyGroupAction],
 	);
 
 	const handleUnstageGroup = useCallback(
-		(groupIndex: number) =>
-			applyGroupAction("git_unstage_review_group", groupIndex),
+		(groupId: string) => applyGroupAction("git_unstage_review_group", groupId),
 		[applyGroupAction],
 	);
 

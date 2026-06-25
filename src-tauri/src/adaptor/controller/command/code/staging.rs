@@ -25,23 +25,3 @@ pub async fn git_unstage(
     let uc = state.code_usecase.clone();
     run_blocking(move || uc.git_unstage(&repo_path, paths)).await
 }
-
-#[tauri::command]
-pub async fn git_stage_hunk(
-    state: State<'_, AppState>,
-    repo_path: String,
-    patch: String,
-) -> Result<(), AppError> {
-    let uc = state.code_usecase.clone();
-    run_blocking(move || uc.git_stage_hunk(&repo_path, &patch)).await
-}
-
-#[tauri::command]
-pub async fn git_unstage_hunk(
-    state: State<'_, AppState>,
-    repo_path: String,
-    patch: String,
-) -> Result<(), AppError> {
-    let uc = state.code_usecase.clone();
-    run_blocking(move || uc.git_unstage_hunk(&repo_path, &patch)).await
-}

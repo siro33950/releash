@@ -24,13 +24,12 @@ describe("useDiffOperations", () => {
 				filePath: "relative/path.ts",
 				section: "changes",
 				base: "head",
-				snapshotVersion: 17,
 				onGitChanged,
 			}),
 		);
 
 		await act(async () => {
-			await result.current.handleStageGroup(2);
+			await result.current.handleStageGroup("g:stage:0");
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("git_stage_review_group", {
@@ -39,8 +38,7 @@ describe("useDiffOperations", () => {
 				path: "relative/path.ts",
 				section: "changes",
 				base: "head",
-				groupIndex: 2,
-				snapshotVersion: 17,
+				groupId: "g:stage:0",
 			},
 		});
 		expect(onGitChanged).toHaveBeenCalled();
@@ -56,13 +54,12 @@ describe("useDiffOperations", () => {
 				filePath: "relative/path.ts",
 				section: "staged",
 				base: "head",
-				snapshotVersion: 23,
 				onGitChanged,
 			}),
 		);
 
 		await act(async () => {
-			await result.current.handleUnstageGroup(0);
+			await result.current.handleUnstageGroup("g:unstage:0");
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("git_unstage_review_group", {
@@ -71,8 +68,7 @@ describe("useDiffOperations", () => {
 				path: "relative/path.ts",
 				section: "staged",
 				base: "head",
-				groupIndex: 0,
-				snapshotVersion: 23,
+				groupId: "g:unstage:0",
 			},
 		});
 		expect(onGitChanged).toHaveBeenCalled();
@@ -85,32 +81,54 @@ describe("useDiffOperations", () => {
 				filePath: null,
 				section: "changes",
 				base: "head",
-				snapshotVersion: 1,
 			}),
 		);
 
 		await act(async () => {
-			await result.current.handleStageGroup(0);
+			await result.current.handleStageGroup("g:0");
 		});
 
 		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
-	it("does nothing when snapshot version is missing", async () => {
+	it("does nothing when group id is missing", async () => {
 		const { result } = renderHook(() =>
 			useDiffOperations({
 				rootPath: "/repo",
 				filePath: "relative/path.ts",
 				section: "changes",
 				base: "head",
-				snapshotVersion: null,
 			}),
 		);
 
 		await act(async () => {
-			await result.current.handleStageGroup(0);
+			await result.current.handleStageGroup("");
 		});
 
 		expect(mockInvoke).not.toHaveBeenCalled();
+	});
+
+	it("refreshes when the Rust command reports a stale review group target", async () => {
+		const onGitChanged = vi.fn();
+		mockInvoke.mockRejectedValue({
+			code: "STALE_REVIEW_GROUP_TARGET",
+			message: "review group target stale: g:old:0",
+		});
+
+		const { result } = renderHook(() =>
+			useDiffOperations({
+				rootPath: "/repo",
+				filePath: "relative/path.ts",
+				section: "changes",
+				base: "head",
+				onGitChanged,
+			}),
+		);
+
+		await act(async () => {
+			await result.current.handleStageGroup("g:old:0");
+		});
+
+		expect(onGitChanged).toHaveBeenCalled();
 	});
 });

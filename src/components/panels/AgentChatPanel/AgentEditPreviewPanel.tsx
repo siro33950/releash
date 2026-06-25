@@ -143,6 +143,7 @@ function previewHunksToDiffHunks(hunks: AgentEditPreviewHunk[]): Hunk[] {
 
 		return {
 			index,
+			hunkId: `agent-preview:${index}`,
 			oldStart: hunk.oldStart,
 			oldLines,
 			newStart: hunk.newStart,

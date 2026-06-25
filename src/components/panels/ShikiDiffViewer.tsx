@@ -61,7 +61,7 @@ export interface ShikiDiffViewerProps {
 	hunks: Hunk[];
 	filePath?: string;
 	changeGroups?: ChangeGroup[];
-	onStageGroup?: (groupIndex: number) => void;
+	onStageGroup?: (groupId: string) => void;
 	groupActionLabel?: string;
 	comments?: ReviewDiscussionThread[];
 	onAddComment?: (lineNumber: number, content: string) => Promise<void>;
@@ -229,7 +229,7 @@ const DiffLineRow = React.memo(function DiffLineRow({
 
 interface GutterDiffLine extends DiffLine {
 	hasDeleteMarker?: boolean;
-	changeGroupIndex?: number;
+	changeGroupId?: string;
 	isGroupStart?: boolean;
 	_source?: DiffLine;
 }
@@ -255,7 +255,7 @@ function buildGutterLines(blocks: DiffBlock[]): GutterDiffLine[] {
 			} else {
 				const gutterLine: GutterDiffLine = {
 					...line,
-					changeGroupIndex: block.changeGroupIndex,
+					changeGroupId: block.changeGroupId,
 					_source: line,
 				};
 				if (pendingDeleteMarker) {
@@ -282,7 +282,7 @@ function buildGutterLines(blocks: DiffBlock[]): GutterDiffLine[] {
 				tokens: [],
 				content: "",
 				hasDeleteMarker: true,
-				changeGroupIndex: block.changeGroupIndex,
+				changeGroupId: block.changeGroupId,
 				isGroupStart: true,
 			});
 		}
@@ -400,7 +400,7 @@ type FlatInlineItem =
 			kind: "line";
 			line: DiffLine;
 			showStageButton: boolean;
-			changeGroupIndex?: number;
+			changeGroupId?: string;
 	  }
 	| { kind: "hidden"; range: HiddenRange }
 	| { kind: "comment"; comment: ReviewDiscussionThread }
@@ -410,7 +410,7 @@ interface FlatSplitRow {
 	left: DiffLine | null;
 	right: DiffLine | null;
 	showStageButton: boolean;
-	changeGroupIndex?: number;
+	changeGroupId?: string;
 }
 
 type FlatSplitItem =
@@ -439,7 +439,7 @@ interface CommentCallbacks {
 interface VirtualViewProps extends CommentCallbacks {
 	visibleBlocks: VisibleItem[];
 	changeGroups?: ChangeGroup[];
-	onStageGroup?: (groupIndex: number) => void;
+	onStageGroup?: (groupId: string) => void;
 	groupActionLabel?: string;
 	containerRef: React.RefObject<HTMLDivElement | null>;
 	scrollToLine?: number | null;
@@ -453,28 +453,37 @@ function flattenWithGroups(
 	changeGroups: ChangeGroup[],
 ): { blocksWithGroups: DiffBlock[]; blockOrder: VisibleItem[] } {
 	const diffBlocks: DiffBlock[] = [];
+	const blockOrder: VisibleItem[] = [];
 	for (const item of visibleBlocks) {
-		if (item.type !== "hidden") {
-			diffBlocks.push(item as DiffBlock);
+		if (item.type === "hidden") {
+			blockOrder.push(item);
+			continue;
+		}
+		const blocks = assignChangeGroupsToBlocks(
+			[item as DiffBlock],
+			changeGroups,
+		);
+		for (const block of blocks) {
+			diffBlocks.push(block);
+			blockOrder.push(block);
 		}
 	}
-	const blocksWithGroups = assignChangeGroupsToBlocks(diffBlocks, changeGroups);
-	return { blocksWithGroups, blockOrder: visibleBlocks };
+	return { blocksWithGroups: diffBlocks, blockOrder };
 }
 
 function useDelegatedClick(
-	onStageGroup: ((groupIndex: number) => void) | undefined,
+	onStageGroup: ((groupId: string) => void) | undefined,
 	onExpandRange: (range: HiddenRange) => void,
 ): (e: React.MouseEvent<HTMLDivElement>) => void {
 	return useCallback(
 		(e: React.MouseEvent<HTMLDivElement>) => {
 			const target = e.target as HTMLElement;
 
-			const stageBtn = target.closest<HTMLElement>("[data-group-index]");
+			const stageBtn = target.closest<HTMLElement>("[data-group-id]");
 			if (stageBtn && onStageGroup) {
-				const idx = Number(stageBtn.dataset.groupIndex);
-				if (!Number.isNaN(idx)) {
-					onStageGroup(idx);
+				const groupId = stageBtn.dataset.groupId;
+				if (groupId) {
+					onStageGroup(groupId);
 				}
 				return;
 			}
@@ -743,17 +752,17 @@ function HiddenBanner({ range }: { range: HiddenRange }) {
 }
 
 function GroupStageButton({
-	groupIndex,
+	groupId,
 	label,
 }: {
-	groupIndex: number;
+	groupId: string;
 	label: string;
 }) {
 	return (
 		<button
 			type="button"
 			className="hunk-seg-btn hunk-stage absolute right-2 top-0 z-10"
-			data-group-index={groupIndex}
+			data-group-id={groupId}
 		>
 			{label}
 		</button>
@@ -934,10 +943,10 @@ function GutterView({
 								}}
 							>
 								{item.line.isGroupStart &&
-									item.line.changeGroupIndex != null &&
+									item.line.changeGroupId != null &&
 									onStageGroup && (
 										<GroupStageButton
-											groupIndex={item.line.changeGroupIndex}
+											groupId={item.line.changeGroupId}
 											label={groupActionLabel ?? "Stage"}
 										/>
 									)}
@@ -1025,8 +1034,8 @@ function InlineView({
 					result.push({
 						kind: "line",
 						line,
-						showStageButton: isFirst && block.changeGroupIndex != null,
-						changeGroupIndex: block.changeGroupIndex,
+						showStageButton: isFirst && block.changeGroupId != null,
+						changeGroupId: block.changeGroupId,
 					});
 					isFirst = false;
 
@@ -1158,10 +1167,10 @@ function InlineView({
 								}}
 							>
 								{item.showStageButton &&
-									item.changeGroupIndex != null &&
+									item.changeGroupId != null &&
 									onStageGroup && (
 										<GroupStageButton
-											groupIndex={item.changeGroupIndex}
+											groupId={item.changeGroupId}
 											label={groupActionLabel ?? "Stage"}
 										/>
 									)}
@@ -1279,8 +1288,8 @@ function SplitView({
 							row: {
 								left: deleted[i] ?? null,
 								right: added[i] ?? null,
-								showStageButton: i === 0 && block.changeGroupIndex != null,
-								changeGroupIndex: block.changeGroupIndex,
+								showStageButton: i === 0 && block.changeGroupId != null,
+								changeGroupId: block.changeGroupId,
 							},
 						});
 						const rightLine = added[i];
@@ -1423,10 +1432,10 @@ function SplitView({
 								}}
 							>
 								{item.row.showStageButton &&
-									item.row.changeGroupIndex != null &&
+									item.row.changeGroupId != null &&
 									onStageGroup && (
 										<GroupStageButton
-											groupIndex={item.row.changeGroupIndex}
+											groupId={item.row.changeGroupId}
 											label={groupActionLabel ?? "Stage"}
 										/>
 									)}

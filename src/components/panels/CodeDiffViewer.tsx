@@ -14,7 +14,7 @@ export interface CodeDiffViewerProps {
 	filePath?: string;
 	hunks: Hunk[];
 	changeGroups?: ChangeGroup[];
-	onStageGroup?: (groupIndex: number) => void;
+	onStageGroup?: (groupId: string) => void;
 	groupActionLabel?: string;
 	comments?: ReviewDiscussionThread[];
 	onAddComment?: (lineNumber: number, content: string) => Promise<void>;

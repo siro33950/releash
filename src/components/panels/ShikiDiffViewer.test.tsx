@@ -48,6 +48,7 @@ const baseProps = {
 	hunks: [
 		{
 			index: 0,
+			hunkId: "h:base:0",
 			oldStart: 1,
 			oldLines: 3,
 			newStart: 1,
@@ -115,6 +116,7 @@ describe("ShikiDiffViewer", () => {
 				changeGroups={[
 					{
 						groupIndex: 0,
+						groupId: "g:stage:0",
 						hunkIndex: 0,
 						newStart: 2,
 						newEnd: 2,
@@ -139,6 +141,7 @@ describe("ShikiDiffViewer", () => {
 				changeGroups={[
 					{
 						groupIndex: 0,
+						groupId: "g:unstage:0",
 						hunkIndex: 0,
 						newStart: 2,
 						newEnd: 2,
@@ -187,6 +190,7 @@ describe("ShikiDiffViewer", () => {
 			hunks: [
 				{
 					index: 0,
+					hunkId: "h:delete-only:0",
 					oldStart: 1,
 					oldLines: 3,
 					newStart: 1,
@@ -210,6 +214,7 @@ describe("ShikiDiffViewer", () => {
 			hunks: [
 				{
 					index: 0,
+					hunkId: "h:delete:0",
 					oldStart: 1,
 					oldLines: 3,
 					newStart: 1,
@@ -255,6 +260,7 @@ describe("ShikiDiffViewer", () => {
 			hunks: [
 				{
 					index: 0,
+					hunkId: "h:delete-bar:0",
 					oldStart: 1,
 					oldLines: 3,
 					newStart: 1,
@@ -313,7 +319,7 @@ describe("ShikiDiffViewer", () => {
 		}
 	});
 
-	it("calls onStageGroup with correct groupIndex when stage button is clicked", () => {
+	it("calls onStageGroup with correct groupId when stage button is clicked", () => {
 		const onStage = vi.fn();
 		const { container } = render(
 			<ShikiDiffViewer
@@ -322,6 +328,7 @@ describe("ShikiDiffViewer", () => {
 				changeGroups={[
 					{
 						groupIndex: 2,
+						groupId: "g:click:0",
 						hunkIndex: 0,
 						newStart: 2,
 						newEnd: 2,
@@ -336,7 +343,72 @@ describe("ShikiDiffViewer", () => {
 		const stageButton = container.querySelector(".hunk-stage") as HTMLElement;
 		expect(stageButton).not.toBeNull();
 		fireEvent.click(stageButton);
-		expect(onStage).toHaveBeenCalledWith(2);
+		expect(onStage).toHaveBeenCalledWith("g:click:0");
+	});
+
+	it("renders one stage button per change group in a single hunk and delegates each groupId", () => {
+		const onStage = vi.fn();
+		const multiGroupProps = {
+			originalContent: "ctx1\nold a\nctx2\nold b\nctx3\n",
+			modifiedContent: "ctx1\nnew a\nctx2\nnew b\nctx3\n",
+			language: "typescript",
+			hunks: [
+				{
+					index: 0,
+					hunkId: "h:multi:0",
+					oldStart: 1,
+					oldLines: 5,
+					newStart: 1,
+					newLines: 5,
+					lines: [
+						" ctx1",
+						"-old a",
+						"+new a",
+						" ctx2",
+						"-old b",
+						"+new b",
+						" ctx3",
+					],
+				},
+			],
+		};
+
+		const { container } = render(
+			<ShikiDiffViewer
+				{...multiGroupProps}
+				diffMode="inline"
+				changeGroups={[
+					{
+						groupIndex: 0,
+						groupId: "g:first",
+						hunkIndex: 0,
+						newStart: 2,
+						newEnd: 2,
+						lineOffsetStart: 1,
+						lineOffsetEnd: 2,
+					},
+					{
+						groupIndex: 1,
+						groupId: "g:second",
+						hunkIndex: 0,
+						newStart: 4,
+						newEnd: 4,
+						lineOffsetStart: 4,
+						lineOffsetEnd: 5,
+					},
+				]}
+				onStageGroup={onStage}
+				groupActionLabel="Stage"
+			/>,
+		);
+		const stageButtons = container.querySelectorAll(".hunk-stage");
+		expect(stageButtons).toHaveLength(2);
+
+		fireEvent.click(stageButtons[1]);
+		fireEvent.click(stageButtons[0]);
+
+		expect(onStage).toHaveBeenNthCalledWith(1, "g:second");
+		expect(onStage).toHaveBeenNthCalledWith(2, "g:first");
 	});
 
 	it("shows hidden lines banner when diffOnlyMode is true", async () => {
@@ -347,6 +419,7 @@ describe("ShikiDiffViewer", () => {
 		const longHunks = [
 			{
 				index: 0,
+				hunkId: "h:hidden:0",
 				oldStart: 5,
 				oldLines: 1,
 				newStart: 5,
