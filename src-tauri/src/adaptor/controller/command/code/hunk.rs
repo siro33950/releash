@@ -4,37 +4,9 @@ use tauri::State;
 
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
-use crate::adaptor::protocol::code::{ChangeGroupInput, HunkInput};
+use crate::adaptor::protocol::code::HunkInput;
 use crate::other::AppError;
-use crate::usecase::code_dto::{DiffHunksResultDto, HiddenRangeDto, VisibleBlockDto};
-
-#[tauri::command]
-pub async fn compute_diff_hunks(
-    state: State<'_, AppState>,
-    original: String,
-    modified: String,
-    file_path: Option<String>,
-) -> Result<DiffHunksResultDto, AppError> {
-    let uc = state.code_usecase.clone();
-    run_blocking(move || Ok(uc.compute_diff_hunks(&original, &modified, file_path.as_deref())))
-        .await
-}
-
-#[tauri::command]
-pub async fn generate_group_patch(
-    state: State<'_, AppState>,
-    file_path: String,
-    hunk: HunkInput,
-    group: ChangeGroupInput,
-) -> Result<String, AppError> {
-    let uc = state.code_usecase.clone();
-    run_blocking(move || {
-        let hunk = hunk.into_domain();
-        let group = group.into_domain();
-        Ok(uc.generate_group_patch(&file_path, &hunk, &group))
-    })
-    .await
-}
+use crate::usecase::code_dto::{HiddenRangeDto, VisibleBlockDto};
 
 #[tauri::command]
 pub async fn compute_hidden_ranges(

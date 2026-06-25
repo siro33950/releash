@@ -136,20 +136,6 @@ beforeEach(() => {
 		if (command === "get_language_from_path") {
 			return Promise.resolve("typescript");
 		}
-		if (command === "compute_diff_hunks") {
-			return Promise.resolve({
-				hunks: [
-					{
-						index: 0,
-						oldStart: 1,
-						oldLines: 1,
-						newStart: 1,
-						newLines: 1,
-						lines: ["-old", "+new"],
-					},
-				],
-			});
-		}
 		if (command === "build_agent_edit_preview") {
 			const input = (
 				args as {
@@ -715,20 +701,6 @@ describe("ToolActivity", () => {
 				}
 				if (command === "get_language_from_path") {
 					return Promise.resolve("typescript");
-				}
-				if (command === "compute_diff_hunks") {
-					return Promise.resolve({
-						hunks: [
-							{
-								index: 0,
-								oldStart: 1,
-								oldLines: 1,
-								newStart: 1,
-								newLines: 1,
-								lines: ["-old", "+new"],
-							},
-						],
-					});
 				}
 				if (command !== "build_agent_edit_preview") {
 					return Promise.resolve(null);

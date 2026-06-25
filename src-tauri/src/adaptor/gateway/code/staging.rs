@@ -195,9 +195,36 @@ impl StagingRepository for StagingGateway {
 #[cfg(test)]
 mod staging_gateway_tests {
     use super::*;
+    use crate::adaptor::gateway::code::diff_compute;
     use crate::adaptor::gateway::repository::status::get_git_status;
+    use crate::domain::code::services::hunk as hunk_service;
+    use crate::domain::code::{ChangeGroup, Hunk};
     use crate::git::test_helpers::*;
     use std::fs;
+    use std::path::Path;
+
+    fn index_file_content(repo: &Repository, path: &str) -> String {
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        let entry = index.get_path(Path::new(path), 0).unwrap();
+        let blob = repo.find_blob(entry.id).unwrap();
+        std::str::from_utf8(blob.content()).unwrap().to_string()
+    }
+
+    fn diff_hunks_and_groups(original: &str, modified: &str) -> (Vec<Hunk>, Vec<ChangeGroup>) {
+        let raw_hunks = diff_compute::diff_buffers(original, modified, Some("file.txt"));
+        let hunks = hunk_service::assign_hunk_ids(&raw_hunks);
+        let groups = hunk_service::compute_change_groups(&hunks);
+        (hunks, groups)
+    }
+
+    fn group_patch(file_path: &str, hunks: &[Hunk], group: &ChangeGroup) -> String {
+        let hunk = hunks
+            .iter()
+            .find(|hunk| hunk.index == group.hunk_index)
+            .unwrap();
+        hunk_service::generate_group_patch(file_path, hunk, group)
+    }
 
     #[test]
     fn test_stage_特定ファイル() {
@@ -328,6 +355,40 @@ mod staging_gateway_tests {
 
         let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert!(statuses.iter().any(|s| s.index_status == "modified"));
+    }
+
+    #[test]
+    fn test_stage_hunk_連続適用はstaged内容で再計算したpatchなら成功する() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let original = "line1\nline2\nline3\nline4\n";
+        let modified = "line1\nchanged2\nline3\nchanged4\n";
+        add_and_commit(&repo, "file.txt", original, "add file");
+        fs::write(dir.path().join("file.txt"), modified).unwrap();
+
+        let (hunks, groups) =
+            diff_hunks_and_groups(&index_file_content(&repo, "file.txt"), modified);
+        assert_eq!(groups.len(), 2);
+        let first_group = groups[0].clone();
+        let second_group_id = groups[1].group_id.clone();
+
+        let first_patch = group_patch("file.txt", &hunks, &first_group);
+        git_stage_hunk(dir.path().to_str().unwrap(), &first_patch).unwrap();
+        assert_eq!(
+            index_file_content(&repo, "file.txt"),
+            "line1\nchanged2\nline3\nline4\n"
+        );
+
+        let staged = index_file_content(&repo, "file.txt");
+        let (hunks_after_stage, groups_after_stage) = diff_hunks_and_groups(&staged, modified);
+        let second_group = groups_after_stage
+            .iter()
+            .find(|group| group.group_id == second_group_id)
+            .unwrap();
+        let second_patch = group_patch("file.txt", &hunks_after_stage, second_group);
+        git_stage_hunk(dir.path().to_str().unwrap(), &second_patch).unwrap();
+
+        assert_eq!(index_file_content(&repo, "file.txt"), modified);
     }
 
     #[test]

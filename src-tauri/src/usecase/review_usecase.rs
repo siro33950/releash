@@ -7,6 +7,9 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use crate::domain::code::services::hunk::{
+    assign_stable_group_ids_for_side, assign_stable_hunk_ids_for_side, StableGroupIdSide,
+};
 use crate::domain::code::{
     ChangeGroup, CodeError, DiffFileEntry, Hunk, ReviewBase, ReviewBlobContentType, ReviewBlobSide,
     ReviewLimitReason, ReviewSection, ReviewSideBytes, ReviewSideMetadata, ReviewThresholds,
@@ -50,6 +53,13 @@ struct ReviewTextSides {
     original: String,
     modified: String,
     source: ReviewTextSource,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StableDiffSources<'a> {
+    original: &'a str,
+    modified: &'a str,
+    line_offset: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -326,6 +336,7 @@ impl ReviewUsecase {
             &relative_path,
             version,
             stale,
+            section,
             ReviewTextSides {
                 original,
                 modified,
@@ -341,17 +352,15 @@ impl ReviewUsecase {
         path: &str,
         section: &str,
         base: &str,
-        group_index: u32,
-        snapshot_version: u64,
+        group_id: &str,
     ) -> Result<(), CodeUsecaseError> {
         let snapshot = self.snapshot(worktree_path)?;
-        ensure_current_review_snapshot_version(snapshot.as_ref(), snapshot_version)?;
         let patch = self.generate_review_group_patch(
             worktree_path,
             path,
             section,
             base,
-            group_index,
+            group_id,
             snapshot.as_ref(),
         )?;
         self.code.git_stage_hunk(worktree_path, &patch)
@@ -363,17 +372,15 @@ impl ReviewUsecase {
         path: &str,
         section: &str,
         base: &str,
-        group_index: u32,
-        snapshot_version: u64,
+        group_id: &str,
     ) -> Result<(), CodeUsecaseError> {
         let snapshot = self.snapshot(worktree_path)?;
-        ensure_current_review_snapshot_version(snapshot.as_ref(), snapshot_version)?;
         let patch = self.generate_review_group_patch(
             worktree_path,
             path,
             section,
             base,
-            group_index,
+            group_id,
             snapshot.as_ref(),
         )?;
         self.code.git_unstage_hunk(worktree_path, &patch)
@@ -532,6 +539,7 @@ impl ReviewUsecase {
         relative_path: &str,
         version: u64,
         stale: bool,
+        section: ReviewSection,
         sides: ReviewTextSides,
         viewport: Option<ReviewViewport>,
     ) -> Result<ReviewFileViewDto, CodeUsecaseError> {
@@ -545,11 +553,23 @@ impl ReviewUsecase {
         let modified_lines = line_count(&modified);
         let total_lines = original_lines.max(modified_lines);
 
-        if viewport.is_some() {
-            let (original, modified, viewport) = apply_viewport(original, modified, viewport);
-            let hunks = self
-                .code
-                .compute_diff_hunks(&original, &modified, Some(relative_path));
+        if let Some(requested_viewport) = viewport {
+            let stable_original = original.clone();
+            let stable_modified = modified.clone();
+            let stable_line_offset = requested_viewport.start_line.max(1).saturating_sub(1);
+            let (original, modified, viewport) =
+                apply_viewport(original, modified, Some(requested_viewport));
+            let hunks = self.compute_review_diff_hunks_with_stable_sources(
+                &original,
+                &modified,
+                StableDiffSources {
+                    original: &stable_original,
+                    modified: &stable_modified,
+                    line_offset: stable_line_offset,
+                },
+                Some(relative_path),
+                section,
+            );
             return Ok(ReviewFileViewDto::TextDiff(ReviewTextDiffDto {
                 version,
                 stale,
@@ -578,9 +598,8 @@ impl ReviewUsecase {
             ));
         }
 
-        let hunks = self
-            .code
-            .compute_diff_hunks(&original, &modified, Some(relative_path));
+        let hunks =
+            self.compute_review_diff_hunks(&original, &modified, Some(relative_path), section);
         if let Some(reason) = thresholds.hunk_count_limit(hunks.hunks.len()) {
             return Ok(fallback_view(
                 relative_path,
@@ -668,13 +687,92 @@ impl ReviewUsecase {
         })
     }
 
+    fn compute_review_diff_hunks(
+        &self,
+        original: &str,
+        modified: &str,
+        file_path: Option<&str>,
+        section: ReviewSection,
+    ) -> DiffHunksResultDto {
+        self.compute_review_diff_hunks_with_stable_sources(
+            original,
+            modified,
+            StableDiffSources {
+                original,
+                modified,
+                line_offset: 0,
+            },
+            file_path,
+            section,
+        )
+    }
+
+    fn compute_review_diff_hunks_with_stable_sources(
+        &self,
+        original: &str,
+        modified: &str,
+        stable_sources: StableDiffSources<'_>,
+        file_path: Option<&str>,
+        section: ReviewSection,
+    ) -> DiffHunksResultDto {
+        let mut result = self.code.compute_diff_hunks(original, modified, file_path);
+        let hunks: Vec<Hunk> = result.hunks.iter().map(hunk_dto_to_domain).collect();
+        let groups: Vec<ChangeGroup> = result
+            .change_groups
+            .iter()
+            .map(change_group_dto_to_domain)
+            .collect();
+        let stable_source_hunks = if stable_sources.line_offset == 0 {
+            hunks.clone()
+        } else {
+            hunks
+                .iter()
+                .map(|hunk| offset_hunk_coordinates(hunk, stable_sources.line_offset))
+                .collect()
+        };
+        let stable_side = stable_group_id_side(section);
+        let stable_hunks = assign_stable_hunk_ids_for_side(
+            &stable_source_hunks,
+            stable_sources.original,
+            stable_sources.modified,
+            stable_side,
+        );
+        let hunk_ids: HashMap<u32, String> = stable_hunks
+            .iter()
+            .map(|hunk| (hunk.index, hunk.hunk_id.clone()))
+            .collect();
+        let display_hunks: Vec<Hunk> = hunks
+            .iter()
+            .map(|hunk| Hunk {
+                hunk_id: hunk_ids
+                    .get(&hunk.index)
+                    .cloned()
+                    .unwrap_or_else(|| hunk.hunk_id.clone()),
+                ..hunk.clone()
+            })
+            .collect();
+        let stable_groups = assign_stable_group_ids_for_side(
+            &stable_source_hunks,
+            &groups,
+            stable_sources.original,
+            stable_sources.modified,
+            stable_side,
+        );
+        result.hunks = display_hunks.iter().map(hunk_domain_to_dto).collect();
+        result.change_groups = stable_groups
+            .iter()
+            .map(change_group_domain_to_dto)
+            .collect();
+        result
+    }
+
     fn generate_review_group_patch(
         &self,
         worktree_path: &str,
         path: &str,
         section: &str,
         base: &str,
-        group_index: u32,
+        group_id: &str,
         snapshot: &RepositorySnapshot,
     ) -> Result<String, CodeUsecaseError> {
         let section = ReviewSection::parse(section)?;
@@ -689,7 +787,12 @@ impl ReviewUsecase {
         let review_snapshot = self.review_snapshot_from_snapshot(worktree_path, base, snapshot)?;
         let relative_path =
             resolve_review_target(worktree_path, &ReviewTarget::Path(path.to_string()))?;
-        ensure_review_target_in_snapshot(&review_snapshot, &relative_path, section, base)?;
+        if !review_snapshot_contains_target(&review_snapshot, &relative_path, section, base) {
+            return Err(CodeError::StaleReviewGroupTarget {
+                group_id: group_id.to_string(),
+            }
+            .into());
+        }
         let file_path = absolute_review_file_path(worktree_path, &relative_path)?;
         let original_source = self.code.select_review_side_source(
             &file_path,
@@ -713,15 +816,14 @@ impl ReviewUsecase {
                 .code
                 .read_review_source_bytes(&file_path, modified_source.source)?,
         )?;
-        let result = self
-            .code
-            .compute_diff_hunks(&original, &modified, Some(&relative_path));
+        let result =
+            self.compute_review_diff_hunks(&original, &modified, Some(&relative_path), section);
         let group = result
             .change_groups
             .iter()
-            .find(|group| group.group_index == group_index)
-            .ok_or_else(|| {
-                CodeError::Rule(format!("review change group not found: {group_index}"))
+            .find(|group| group.group_id == group_id)
+            .ok_or_else(|| CodeError::StaleReviewGroupTarget {
+                group_id: group_id.to_string(),
             })?;
         let hunk = result
             .hunks
@@ -737,27 +839,6 @@ impl ReviewUsecase {
             &change_group_dto_to_domain(group),
         ))
     }
-}
-
-fn ensure_current_review_snapshot_version(
-    snapshot: &RepositorySnapshot,
-    expected_version: u64,
-) -> Result<(), CodeUsecaseError> {
-    if snapshot.flags.stale {
-        return Err(CodeError::Rule(format!(
-            "stale review snapshot version: current {} is refreshing",
-            snapshot.version
-        ))
-        .into());
-    }
-    if expected_version != snapshot.version {
-        return Err(CodeError::Rule(format!(
-            "stale review snapshot version: requested {expected_version}, current {}",
-            snapshot.version
-        ))
-        .into());
-    }
-    Ok(())
 }
 
 fn ensure_current_review_blob_version(
@@ -970,6 +1051,7 @@ impl ReviewSideMetadata {
 fn hunk_dto_to_domain(h: &HunkDto) -> Hunk {
     Hunk {
         index: h.index,
+        hunk_id: h.hunk_id.clone(),
         old_start: h.old_start,
         old_lines: h.old_lines,
         new_start: h.new_start,
@@ -978,15 +1060,65 @@ fn hunk_dto_to_domain(h: &HunkDto) -> Hunk {
     }
 }
 
+fn hunk_domain_to_dto(h: &Hunk) -> HunkDto {
+    HunkDto {
+        index: h.index,
+        hunk_id: h.hunk_id.clone(),
+        old_start: h.old_start,
+        old_lines: h.old_lines,
+        new_start: h.new_start,
+        new_lines: h.new_lines,
+        lines: h.lines.clone(),
+    }
+}
+
+fn offset_hunk_coordinates(hunk: &Hunk, line_offset: u32) -> Hunk {
+    Hunk {
+        old_start: if hunk.old_start == 0 {
+            0
+        } else {
+            hunk.old_start.saturating_add(line_offset)
+        },
+        new_start: if hunk.new_start == 0 {
+            0
+        } else {
+            hunk.new_start.saturating_add(line_offset)
+        },
+        ..hunk.clone()
+    }
+}
+
 fn change_group_dto_to_domain(g: &ChangeGroupDto) -> ChangeGroup {
     ChangeGroup {
         group_index: g.group_index,
+        group_id: g.group_id.clone(),
         hunk_index: g.hunk_index,
         new_start: g.new_start,
         new_end: g.new_end,
         line_offset_start: g.line_offset_start,
         line_offset_end: g.line_offset_end,
         is_staged: g.is_staged,
+    }
+}
+
+fn change_group_domain_to_dto(g: &ChangeGroup) -> ChangeGroupDto {
+    ChangeGroupDto {
+        group_index: g.group_index,
+        group_id: g.group_id.clone(),
+        hunk_index: g.hunk_index,
+        new_start: g.new_start,
+        new_end: g.new_end,
+        line_offset_start: g.line_offset_start,
+        line_offset_end: g.line_offset_end,
+        is_staged: g.is_staged,
+    }
+}
+
+fn stable_group_id_side(section: ReviewSection) -> StableGroupIdSide {
+    if section.is_staged() {
+        StableGroupIdSide::Original
+    } else {
+        StableGroupIdSide::Modified
     }
 }
 
@@ -1260,10 +1392,12 @@ mod tests {
         branch_summary: BranchDiffSummaryDto,
         source_metadata: HashMap<(String, &'static str), ReviewSideMetadata>,
         source_bytes: HashMap<(String, &'static str), ReviewSideBytes>,
+        source_byte_sequences: Mutex<HashMap<(String, &'static str), VecDeque<ReviewSideBytes>>>,
         binary_attributes: HashMap<String, bool>,
         hunk_count_by_path: HashMap<String, usize>,
         hunk_indexes_by_path: HashMap<String, Vec<u32>>,
         change_groups_by_path: HashMap<String, Vec<ChangeGroupDto>>,
+        real_diff: bool,
     }
 
     impl FakeReviewCode {
@@ -1286,10 +1420,12 @@ mod tests {
                 },
                 source_metadata: HashMap::new(),
                 source_bytes: HashMap::new(),
+                source_byte_sequences: Mutex::new(HashMap::new()),
                 binary_attributes: HashMap::new(),
                 hunk_count_by_path: HashMap::new(),
                 hunk_indexes_by_path: HashMap::new(),
                 change_groups_by_path: HashMap::new(),
+                real_diff: false,
             }
         }
 
@@ -1305,6 +1441,19 @@ mod tests {
         ) -> Self {
             self.source_bytes
                 .insert((file_path.to_string(), review_source_key(source)), bytes);
+            self
+        }
+
+        fn with_source_byte_sequence(
+            mut self,
+            file_path: &str,
+            source: ReviewContentSource,
+            bytes: Vec<ReviewSideBytes>,
+        ) -> Self {
+            self.source_byte_sequences.get_mut().unwrap().insert(
+                (file_path.to_string(), review_source_key(source)),
+                bytes.into(),
+            );
             self
         }
 
@@ -1327,6 +1476,11 @@ mod tests {
         fn with_hunk_count(mut self, file_path: &str, hunk_count: usize) -> Self {
             self.hunk_count_by_path
                 .insert(file_path.to_string(), hunk_count);
+            self
+        }
+
+        fn with_real_diff(mut self) -> Self {
+            self.real_diff = true;
             self
         }
 
@@ -1357,6 +1511,20 @@ mod tests {
 
         fn metadata_for(&self, file_path: &str, source: ReviewContentSource) -> ReviewSideMetadata {
             let key = (file_path.to_string(), review_source_key(source));
+            if let Some(bytes) = self
+                .source_byte_sequences
+                .lock()
+                .unwrap()
+                .get(&key)
+                .and_then(|sequence| sequence.front())
+            {
+                return match bytes {
+                    ReviewSideBytes::Present(bytes) => ReviewSideMetadata::Present {
+                        size_bytes: bytes.len() as u64,
+                    },
+                    ReviewSideBytes::Missing => ReviewSideMetadata::Missing,
+                };
+            }
             self.source_metadata.get(&key).copied().unwrap_or_else(|| {
                 match self.source_bytes.get(&key) {
                     Some(ReviewSideBytes::Present(bytes)) => ReviewSideMetadata::Present {
@@ -1421,9 +1589,21 @@ mod tests {
             file_path: &str,
             source: ReviewContentSource,
         ) -> Result<ReviewSideBytes, CodeUsecaseError> {
+            let key = (file_path.to_string(), review_source_key(source));
+            {
+                let mut sequences = self.source_byte_sequences.lock().unwrap();
+                if let Some(sequence) = sequences.get_mut(&key) {
+                    if sequence.len() > 1 {
+                        return Ok(sequence.pop_front().unwrap());
+                    }
+                    if let Some(bytes) = sequence.front() {
+                        return Ok(bytes.clone());
+                    }
+                }
+            }
             Ok(self
                 .source_bytes
-                .get(&(file_path.to_string(), review_source_key(source)))
+                .get(&key)
                 .cloned()
                 .unwrap_or(ReviewSideBytes::Missing))
         }
@@ -1462,6 +1642,16 @@ mod tests {
             modified: &str,
             file_path: Option<&str>,
         ) -> DiffHunksResultDto {
+            let has_fixed_diff = file_path
+                .map(|path| {
+                    self.hunk_indexes_by_path.contains_key(path)
+                        || self.hunk_count_by_path.contains_key(path)
+                        || self.change_groups_by_path.contains_key(path)
+                })
+                .unwrap_or(false);
+            if self.real_diff && !has_fixed_diff {
+                return real_diff_hunks_result(original, modified, file_path);
+            }
             let hunk_indexes = file_path
                 .and_then(|path| self.hunk_indexes_by_path.get(path).cloned())
                 .unwrap_or_else(|| {
@@ -1478,6 +1668,7 @@ mod tests {
                     .into_iter()
                     .map(|index| HunkDto {
                         index,
+                        hunk_id: format!("h:{index}"),
                         old_start: 1,
                         old_lines: 1,
                         new_start: 1,
@@ -1601,12 +1792,52 @@ mod tests {
     fn change_group(group_index: u32, hunk_index: u32) -> ChangeGroupDto {
         ChangeGroupDto {
             group_index,
+            group_id: format!("g:{group_index}"),
             hunk_index,
             new_start: 1,
             new_end: 1,
             line_offset_start: 0,
             line_offset_end: 0,
             is_staged: None,
+        }
+    }
+
+    fn real_diff_hunks_result(
+        original: &str,
+        modified: &str,
+        file_path: Option<&str>,
+    ) -> DiffHunksResultDto {
+        let raw_hunks = crate::adaptor::gateway::code::diff_compute::diff_buffers(
+            original, modified, file_path,
+        );
+        let hunks = crate::domain::code::services::hunk::assign_hunk_ids(&raw_hunks);
+        let change_groups = crate::domain::code::services::hunk::compute_change_groups(&hunks);
+        DiffHunksResultDto {
+            hunks: hunks
+                .iter()
+                .map(|hunk| HunkDto {
+                    index: hunk.index,
+                    hunk_id: hunk.hunk_id.clone(),
+                    old_start: hunk.old_start,
+                    old_lines: hunk.old_lines,
+                    new_start: hunk.new_start,
+                    new_lines: hunk.new_lines,
+                    lines: hunk.lines.clone(),
+                })
+                .collect(),
+            change_groups: change_groups
+                .iter()
+                .map(|group| ChangeGroupDto {
+                    group_index: group.group_index,
+                    group_id: group.group_id.clone(),
+                    hunk_index: group.hunk_index,
+                    new_start: group.new_start,
+                    new_end: group.new_end,
+                    line_offset_start: group.line_offset_start,
+                    line_offset_end: group.line_offset_end,
+                    is_staged: group.is_staged,
+                })
+                .collect(),
         }
     }
 
@@ -1674,6 +1905,74 @@ mod tests {
                 .into_iter()
                 .collect(),
         )
+    }
+
+    fn group_action_section(action: &str) -> &'static str {
+        match action {
+            "stage" => "changes",
+            "unstage" => "staged",
+            _ => unreachable!("unknown group action"),
+        }
+    }
+
+    fn group_action_sources(
+        action: &str,
+    ) -> (
+        ReviewContentSource,
+        ReviewContentSource,
+        &'static str,
+        &'static str,
+    ) {
+        match action {
+            "stage" => (
+                ReviewContentSource::Staged,
+                ReviewContentSource::WorkingTree,
+                "none",
+                "modified",
+            ),
+            "unstage" => (
+                ReviewContentSource::Head,
+                ReviewContentSource::Staged,
+                "modified",
+                "none",
+            ),
+            _ => unreachable!("unknown group action"),
+        }
+    }
+
+    fn snapshot_for_group_action(version: u64, path: &str, action: &str) -> RepositorySnapshot {
+        let (_, _, index_status, worktree_status) = group_action_sources(action);
+        snapshot_with_single_status(version, path, index_status, worktree_status)
+    }
+
+    fn fake_code_for_group_action_content(
+        action: &str,
+        file_path: &str,
+        original: &str,
+        modified: &str,
+    ) -> FakeReviewCode {
+        let (original_source, modified_source, _, _) = group_action_sources(action);
+        FakeReviewCode::new()
+            .with_real_diff()
+            .with_source_bytes(file_path, original_source, present_text(original))
+            .with_source_bytes(file_path, modified_source, present_text(modified))
+    }
+
+    fn fake_code_for_group_action_content_sequence(
+        action: &str,
+        file_path: &str,
+        original: &str,
+        modified_reads: Vec<&str>,
+    ) -> FakeReviewCode {
+        let (original_source, modified_source, _, _) = group_action_sources(action);
+        FakeReviewCode::new()
+            .with_real_diff()
+            .with_source_bytes(file_path, original_source, present_text(original))
+            .with_source_byte_sequence(
+                file_path,
+                modified_source,
+                modified_reads.into_iter().map(present_text).collect(),
+            )
     }
 
     fn usecase_with_code(
@@ -1985,6 +2284,91 @@ mod tests {
             })
         );
         assert_eq!(view.total_lines, 4);
+    }
+
+    #[test]
+    fn review_file_view_viewport_stable_ids_use_full_file_occurrence_for_group_actions() {
+        let path = "/repo/file.txt";
+        let relative_path = "file.txt";
+        let original = concat!(
+            "c1\n", "c2\n", "c3\n", "a\n", "c4\n", "c5\n", "c6\n", "gap1\n", "gap2\n", "gap3\n",
+            "gap4\n", "gap5\n", "gap6\n", "gap7\n", "c1\n", "c2\n", "c3\n", "a\n", "c4\n", "c5\n",
+            "c6\n",
+        );
+        let working = concat!(
+            "c1\n", "c2\n", "c3\n", "A\n", "c4\n", "c5\n", "c6\n", "gap1\n", "gap2\n", "gap3\n",
+            "gap4\n", "gap5\n", "gap6\n", "gap7\n", "c1\n", "c2\n", "c3\n", "A\n", "c4\n", "c5\n",
+            "c6\n",
+        );
+        let code = Arc::new(
+            FakeReviewCode::new()
+                .with_real_diff()
+                .with_source_bytes(path, ReviewContentSource::Staged, present_text(original))
+                .with_source_bytes(
+                    path,
+                    ReviewContentSource::WorkingTree,
+                    present_text(working),
+                ),
+        );
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![
+                snapshot_for_group_action(1, relative_path, "stage"),
+                snapshot_for_group_action(2, relative_path, "stage"),
+                snapshot_for_group_action(3, relative_path, "stage"),
+            ])),
+            code.clone(),
+        );
+
+        let viewport_view = text_view(
+            usecase
+                .get_review_file_view(
+                    "/repo",
+                    ReviewTarget::Path(relative_path.to_string()),
+                    "changes",
+                    "head",
+                    Some(ReviewViewport {
+                        start_line: 15,
+                        end_line: 21,
+                    }),
+                    Some(1),
+                )
+                .unwrap(),
+        );
+        let full_view = text_view(
+            usecase
+                .get_review_file_view(
+                    "/repo",
+                    ReviewTarget::Path(relative_path.to_string()),
+                    "changes",
+                    "head",
+                    None,
+                    Some(2),
+                )
+                .unwrap(),
+        );
+
+        assert_eq!(viewport_view.hunks.len(), 1);
+        assert_eq!(viewport_view.change_groups.len(), 1);
+        assert_eq!(full_view.hunks.len(), 2);
+        assert_eq!(full_view.change_groups.len(), 2);
+        assert_eq!(viewport_view.hunks[0].hunk_id, full_view.hunks[1].hunk_id);
+        assert_eq!(
+            viewport_view.change_groups[0].group_id,
+            full_view.change_groups[1].group_id
+        );
+
+        let group_id = viewport_view.change_groups[0].group_id.clone();
+        usecase
+            .git_stage_review_group("/repo", relative_path, "changes", "head", &group_id)
+            .unwrap();
+
+        assert_eq!(
+            code.calls(),
+            vec![
+                "generate-patch:file.txt:1:1".to_string(),
+                "stage-hunk:/repo".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -2390,23 +2774,6 @@ mod tests {
     }
 
     #[test]
-    fn review_stage_group_rejects_stale_version_before_code_port() {
-        let provider = Arc::new(FakeSnapshotProvider::new(vec![repository_snapshot(
-            8, false,
-        )]));
-        let code = Arc::new(FakeReviewCode::new());
-        let usecase = ReviewUsecase::new_with_ports(provider, code.clone());
-
-        let err = usecase
-            .git_stage_review_group("/repo", "file.txt", "changes", "head", 0, 7)
-            .unwrap_err()
-            .to_string();
-
-        assert!(err.contains("stale review snapshot version: requested 7, current 8"));
-        assert!(code.calls().is_empty());
-    }
-
-    #[test]
     fn review_stage_group_generates_patch_and_delegates_for_head_diff() {
         let path = "/repo/file.txt";
         let code = Arc::new(
@@ -2422,12 +2789,26 @@ mod tests {
         let usecase = ReviewUsecase::new_with_ports(
             Arc::new(FakeSnapshotProvider::new(vec![
                 snapshot_with_single_status(1, "file.txt", "modified", "modified"),
+                snapshot_with_single_status(2, "file.txt", "modified", "modified"),
             ])),
             code.clone(),
         );
+        let view = text_view(
+            usecase
+                .get_review_file_view(
+                    "/repo",
+                    ReviewTarget::Path("file.txt".to_string()),
+                    "changes",
+                    "head",
+                    None,
+                    Some(1),
+                )
+                .unwrap(),
+        );
+        let group_id = view.change_groups[0].group_id.clone();
 
         usecase
-            .git_stage_review_group("/repo", "file.txt", "changes", "head", 0, 1)
+            .git_stage_review_group("/repo", "file.txt", "changes", "head", &group_id)
             .unwrap();
 
         assert_eq!(
@@ -2448,12 +2829,26 @@ mod tests {
         let usecase = ReviewUsecase::new_with_ports(
             Arc::new(FakeSnapshotProvider::new(vec![
                 snapshot_with_single_status(1, "file.txt", "modified", "none"),
+                snapshot_with_single_status(2, "file.txt", "modified", "none"),
             ])),
             code.clone(),
         );
+        let view = text_view(
+            usecase
+                .get_review_file_view(
+                    "/repo",
+                    ReviewTarget::Path("file.txt".to_string()),
+                    "staged",
+                    "head",
+                    None,
+                    Some(1),
+                )
+                .unwrap(),
+        );
+        let group_id = view.change_groups[0].group_id.clone();
 
         usecase
-            .git_unstage_review_group("/repo", "file.txt", "staged", "head", 0, 1)
+            .git_unstage_review_group("/repo", "file.txt", "staged", "head", &group_id)
             .unwrap();
 
         assert_eq!(
@@ -2479,16 +2874,14 @@ mod tests {
                     "file.txt",
                     "changes",
                     "branch-base",
-                    0,
-                    1,
+                    "g:0",
                 ),
                 "unstage" => usecase.git_unstage_review_group(
                     "/repo",
                     "file.txt",
                     "changes",
                     "branch-base",
-                    0,
-                    1,
+                    "g:0",
                 ),
                 _ => unreachable!(),
             }
@@ -2524,20 +2917,386 @@ mod tests {
             );
 
             let err = match action {
-                "stage" => {
-                    usecase.git_stage_review_group("/repo", "file.txt", "changes", "head", 7, 1)
-                }
-                "unstage" => {
-                    usecase.git_unstage_review_group("/repo", "file.txt", "changes", "head", 7, 1)
-                }
+                "stage" => usecase.git_stage_review_group(
+                    "/repo",
+                    "file.txt",
+                    "changes",
+                    "head",
+                    "missing-group",
+                ),
+                "unstage" => usecase.git_unstage_review_group(
+                    "/repo",
+                    "file.txt",
+                    "changes",
+                    "head",
+                    "missing-group",
+                ),
                 _ => unreachable!(),
             }
             .unwrap_err()
             .to_string();
 
             assert!(
-                err.contains("review change group not found: 7"),
+                err.contains("review group target stale: missing-group"),
                 "unexpected {action} error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_group_action_missing_group_uses_typed_stale_target_error() {
+        let path = "/repo/file.txt";
+        let code = Arc::new(
+            FakeReviewCode::new()
+                .with_source_bytes(path, ReviewContentSource::Staged, present_text("old\n"))
+                .with_source_bytes(
+                    path,
+                    ReviewContentSource::WorkingTree,
+                    present_text("new\n"),
+                ),
+        );
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![
+                snapshot_with_single_status(1, "file.txt", "modified", "modified"),
+            ])),
+            code,
+        );
+
+        let err = usecase
+            .git_stage_review_group("/repo", "file.txt", "changes", "head", "missing-group")
+            .unwrap_err();
+
+        match err {
+            CodeUsecaseError::Code(CodeError::StaleReviewGroupTarget { group_id }) => {
+                assert_eq!(group_id, "missing-group");
+            }
+            other => panic!("expected stale review group target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn review_group_actions_report_missing_snapshot_target_as_typed_stale_target_error() {
+        for action in ["stage", "unstage"] {
+            let path = "/repo/file.txt";
+            let relative_path = "file.txt";
+            let code = Arc::new(fake_code_for_group_action_content(
+                action,
+                path,
+                "old\nsame\n",
+                "new\nsame\n",
+            ));
+            let usecase = ReviewUsecase::new_with_ports(
+                Arc::new(FakeSnapshotProvider::new(vec![
+                    snapshot_for_group_action(1, relative_path, action),
+                    repository_snapshot(2, false),
+                ])),
+                code.clone(),
+            );
+            let section = group_action_section(action);
+            let view = text_view(
+                usecase
+                    .get_review_file_view(
+                        "/repo",
+                        ReviewTarget::Path(relative_path.to_string()),
+                        section,
+                        "head",
+                        None,
+                        Some(1),
+                    )
+                    .unwrap(),
+            );
+            let group_id = view.change_groups[0].group_id.clone();
+
+            let err = match action {
+                "stage" => usecase.git_stage_review_group(
+                    "/repo",
+                    relative_path,
+                    section,
+                    "head",
+                    &group_id,
+                ),
+                "unstage" => usecase.git_unstage_review_group(
+                    "/repo",
+                    relative_path,
+                    section,
+                    "head",
+                    &group_id,
+                ),
+                _ => unreachable!(),
+            }
+            .unwrap_err();
+
+            match err {
+                CodeUsecaseError::Code(CodeError::StaleReviewGroupTarget { group_id: stale }) => {
+                    assert_eq!(stale, group_id);
+                }
+                other => panic!("expected stale review group target, got {other:?}"),
+            }
+            assert!(
+                code.calls().is_empty(),
+                "{action} should stop before patch generation and index mutation"
+            );
+        }
+    }
+
+    #[test]
+    fn review_group_actions_accept_previous_group_id_after_snapshot_refresh_when_content_matches() {
+        for action in ["stage", "unstage"] {
+            let path = "/repo/file.txt";
+            let relative_path = "file.txt";
+            let code = Arc::new(fake_code_for_group_action_content(
+                action,
+                path,
+                "old\nsame\n",
+                "new\nsame\n",
+            ));
+            let usecase = ReviewUsecase::new_with_ports(
+                Arc::new(FakeSnapshotProvider::new(vec![
+                    snapshot_for_group_action(1, relative_path, action),
+                    snapshot_for_group_action(2, relative_path, action),
+                ])),
+                code.clone(),
+            );
+            let section = group_action_section(action);
+            let view = text_view(
+                usecase
+                    .get_review_file_view(
+                        "/repo",
+                        ReviewTarget::Path(relative_path.to_string()),
+                        section,
+                        "head",
+                        None,
+                        Some(1),
+                    )
+                    .unwrap(),
+            );
+            let group_id = view.change_groups[0].group_id.clone();
+
+            match action {
+                "stage" => usecase.git_stage_review_group(
+                    "/repo",
+                    relative_path,
+                    section,
+                    "head",
+                    &group_id,
+                ),
+                "unstage" => usecase.git_unstage_review_group(
+                    "/repo",
+                    relative_path,
+                    section,
+                    "head",
+                    &group_id,
+                ),
+                _ => unreachable!(),
+            }
+            .unwrap();
+
+            let apply_call = match action {
+                "stage" => "stage-hunk:/repo",
+                "unstage" => "unstage-hunk:/repo",
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                code.calls(),
+                vec![
+                    "generate-patch:file.txt:0:0".to_string(),
+                    apply_call.to_string(),
+                ],
+                "unexpected calls for {action}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_group_action_accepts_later_duplicate_group_id_after_earlier_duplicate_disappears() {
+        let path = "/repo/file.txt";
+        let relative_path = "file.txt";
+        let original = "x\na\ny\nx\na\ny\n";
+        let staged_after_first = "x\nA\ny\nx\na\ny\n";
+        let working = "x\nA\ny\nx\nA\ny\n";
+        let code = Arc::new(
+            FakeReviewCode::new()
+                .with_real_diff()
+                .with_source_byte_sequence(
+                    path,
+                    ReviewContentSource::Staged,
+                    vec![present_text(original), present_text(staged_after_first)],
+                )
+                .with_source_bytes(
+                    path,
+                    ReviewContentSource::WorkingTree,
+                    present_text(working),
+                ),
+        );
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![
+                snapshot_for_group_action(1, relative_path, "stage"),
+                snapshot_for_group_action(2, relative_path, "stage"),
+            ])),
+            code.clone(),
+        );
+        let view = text_view(
+            usecase
+                .get_review_file_view(
+                    "/repo",
+                    ReviewTarget::Path(relative_path.to_string()),
+                    "changes",
+                    "head",
+                    None,
+                    Some(1),
+                )
+                .unwrap(),
+        );
+        assert_eq!(view.change_groups.len(), 2);
+        let later_group_id = view.change_groups[1].group_id.clone();
+
+        usecase
+            .git_stage_review_group("/repo", relative_path, "changes", "head", &later_group_id)
+            .unwrap();
+
+        assert_eq!(
+            code.calls(),
+            vec![
+                "generate-patch:file.txt:0:0".to_string(),
+                "stage-hunk:/repo".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn review_file_view_keeps_later_duplicate_hunk_id_after_earlier_duplicate_disappears() {
+        let path = "/repo/file.txt";
+        let relative_path = "file.txt";
+        let original = concat!(
+            "c1\n", "c2\n", "c3\n", "a\n", "c4\n", "c5\n", "c6\n", "gap1\n", "gap2\n", "gap3\n",
+            "gap4\n", "gap5\n", "gap6\n", "gap7\n", "c1\n", "c2\n", "c3\n", "a\n", "c4\n", "c5\n",
+            "c6\n",
+        );
+        let staged_after_first = concat!(
+            "c1\n", "c2\n", "c3\n", "A\n", "c4\n", "c5\n", "c6\n", "gap1\n", "gap2\n", "gap3\n",
+            "gap4\n", "gap5\n", "gap6\n", "gap7\n", "c1\n", "c2\n", "c3\n", "a\n", "c4\n", "c5\n",
+            "c6\n",
+        );
+        let working = concat!(
+            "c1\n", "c2\n", "c3\n", "A\n", "c4\n", "c5\n", "c6\n", "gap1\n", "gap2\n", "gap3\n",
+            "gap4\n", "gap5\n", "gap6\n", "gap7\n", "c1\n", "c2\n", "c3\n", "A\n", "c4\n", "c5\n",
+            "c6\n",
+        );
+        let code = Arc::new(
+            FakeReviewCode::new()
+                .with_real_diff()
+                .with_source_byte_sequence(
+                    path,
+                    ReviewContentSource::Staged,
+                    vec![present_text(original), present_text(staged_after_first)],
+                )
+                .with_source_bytes(
+                    path,
+                    ReviewContentSource::WorkingTree,
+                    present_text(working),
+                ),
+        );
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![
+                snapshot_for_group_action(1, relative_path, "stage"),
+                snapshot_for_group_action(2, relative_path, "stage"),
+            ])),
+            code,
+        );
+
+        let initial_view = text_view(
+            usecase
+                .get_review_file_view(
+                    "/repo",
+                    ReviewTarget::Path(relative_path.to_string()),
+                    "changes",
+                    "head",
+                    None,
+                    Some(1),
+                )
+                .unwrap(),
+        );
+        assert_eq!(initial_view.hunks.len(), 2);
+        let later_hunk_id = initial_view.hunks[1].hunk_id.clone();
+        let refreshed_view = text_view(
+            usecase
+                .get_review_file_view(
+                    "/repo",
+                    ReviewTarget::Path(relative_path.to_string()),
+                    "changes",
+                    "head",
+                    None,
+                    Some(2),
+                )
+                .unwrap(),
+        );
+
+        assert_eq!(refreshed_view.hunks.len(), 1);
+        assert_eq!(later_hunk_id, refreshed_view.hunks[0].hunk_id);
+    }
+
+    #[test]
+    fn review_group_actions_reject_previous_group_id_after_snapshot_refresh_when_target_disappears()
+    {
+        for action in ["stage", "unstage"] {
+            let path = "/repo/file.txt";
+            let relative_path = "file.txt";
+            let code = Arc::new(fake_code_for_group_action_content_sequence(
+                action,
+                path,
+                "old\nsame\n",
+                vec!["new\nsame\n", "old\nsame\n"],
+            ));
+            let usecase = ReviewUsecase::new_with_ports(
+                Arc::new(FakeSnapshotProvider::new(vec![
+                    snapshot_for_group_action(1, relative_path, action),
+                    snapshot_for_group_action(2, relative_path, action),
+                ])),
+                code.clone(),
+            );
+            let section = group_action_section(action);
+            let view = text_view(
+                usecase
+                    .get_review_file_view(
+                        "/repo",
+                        ReviewTarget::Path(relative_path.to_string()),
+                        section,
+                        "head",
+                        None,
+                        Some(1),
+                    )
+                    .unwrap(),
+            );
+            let group_id = view.change_groups[0].group_id.clone();
+
+            let err = match action {
+                "stage" => usecase.git_stage_review_group(
+                    "/repo",
+                    relative_path,
+                    section,
+                    "head",
+                    &group_id,
+                ),
+                "unstage" => usecase.git_unstage_review_group(
+                    "/repo",
+                    relative_path,
+                    section,
+                    "head",
+                    &group_id,
+                ),
+                _ => unreachable!(),
+            }
+            .unwrap_err();
+
+            match err {
+                CodeUsecaseError::Code(CodeError::StaleReviewGroupTarget { group_id: stale }) => {
+                    assert_eq!(stale, group_id);
+                }
+                other => panic!("expected stale review group target, got {other:?}"),
+            }
+            assert!(
+                code.calls().is_empty(),
+                "{action} should stop before patch generation and index mutation"
             );
         }
     }
@@ -2563,40 +3322,22 @@ mod tests {
                 code,
             );
 
-            let err = match action {
-                "stage" => {
-                    usecase.git_stage_review_group("/repo", "file.txt", "changes", "head", 0, 1)
+            let err =
+                match action {
+                    "stage" => usecase
+                        .git_stage_review_group("/repo", "file.txt", "changes", "head", "g:0"),
+                    "unstage" => usecase
+                        .git_unstage_review_group("/repo", "file.txt", "changes", "head", "g:0"),
+                    _ => unreachable!(),
                 }
-                "unstage" => {
-                    usecase.git_unstage_review_group("/repo", "file.txt", "changes", "head", 0, 1)
-                }
-                _ => unreachable!(),
-            }
-            .unwrap_err()
-            .to_string();
+                .unwrap_err()
+                .to_string();
 
             assert!(
                 err.contains("review hunk not found: 99"),
                 "unexpected {action} error: {err}"
             );
         }
-    }
-
-    #[test]
-    fn review_unstage_group_rejects_stale_version_before_code_port() {
-        let provider = Arc::new(FakeSnapshotProvider::new(vec![repository_snapshot(
-            8, false,
-        )]));
-        let code = Arc::new(FakeReviewCode::new());
-        let usecase = ReviewUsecase::new_with_ports(provider, code.clone());
-
-        let err = usecase
-            .git_unstage_review_group("/repo", "file.txt", "staged", "head", 0, 7)
-            .unwrap_err()
-            .to_string();
-
-        assert!(err.contains("stale review snapshot version: requested 7, current 8"));
-        assert!(code.calls().is_empty());
     }
 
     #[test]

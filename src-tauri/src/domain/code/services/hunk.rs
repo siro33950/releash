@@ -3,7 +3,393 @@
 //! diff バッファの計算（git2 依存）は `DiffComputer`（gateway）が担い、本サービスは
 //! 生成済みの `Hunk` を入力に純粋計算を行う。
 
+use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
+
 use crate::domain::code::value_objects::{ChangeGroup, HiddenRange, Hunk, VisibleBlock};
+use sha2::{Digest, Sha256};
+
+const GROUP_CONTEXT_RADIUS: usize = 1;
+
+/// ReviewBlobSide は review blob URL の content-source 選択軸であるのに対し、
+/// StableGroupIdSide は hunk の old/new 行射影軸を表すため別型として扱う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StableGroupIdSide {
+    Original,
+    Modified,
+}
+
+#[derive(Debug, Clone)]
+struct SideLine {
+    offset: usize,
+    line_number: usize,
+    content: String,
+    is_context: bool,
+}
+
+fn stable_lines_hash<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
+    let mut hasher = Sha256::new();
+    for line in lines {
+        hasher.update((line.len() as u64).to_be_bytes());
+        hasher.update(b":");
+        hasher.update(line.as_bytes());
+        hasher.update(b"\n");
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest.iter() {
+        write!(&mut hex, "{byte:02x}").expect("writing sha256 digest hex to string cannot fail");
+    }
+    hex
+}
+
+fn hunk_content_hash(hunk: &Hunk) -> String {
+    stable_lines_hash(hunk.lines.iter().map(String::as_str))
+}
+
+fn group_identity_hash(hunk: &Hunk, group: &ChangeGroup) -> String {
+    let start = group.line_offset_start as usize;
+    let end = (group.line_offset_end as usize + 1).min(hunk.lines.len());
+    let mut identity_lines = Vec::new();
+
+    // design.md A1: 境界 context は純削除/純挿入 group を stable side へ anchorable にするため identity に含める。
+    let mut before_context: Vec<&str> = hunk.lines[..start]
+        .iter()
+        .rev()
+        .filter_map(|line| {
+            line.as_bytes()
+                .first()
+                .copied()
+                .filter(|prefix| *prefix == b' ')
+                .map(|_| line.as_str())
+        })
+        .take(GROUP_CONTEXT_RADIUS)
+        .collect();
+    before_context.reverse();
+    for line in before_context {
+        identity_lines.push(format!("before:{line}"));
+    }
+
+    identity_lines.push("group:".to_string());
+    identity_lines.extend(
+        hunk.lines[start..end]
+            .iter()
+            .map(|line| format!("change:{line}")),
+    );
+
+    for line in hunk.lines[end..]
+        .iter()
+        .filter_map(|line| {
+            line.as_bytes()
+                .first()
+                .copied()
+                .filter(|prefix| *prefix == b' ')
+                .map(|_| line.as_str())
+        })
+        .take(GROUP_CONTEXT_RADIUS)
+    {
+        identity_lines.push(format!("after:{line}"));
+    }
+
+    stable_lines_hash(identity_lines.iter().map(String::as_str))
+}
+
+fn line_content(line: &str) -> &str {
+    line.get(1..).unwrap_or("")
+}
+
+fn hunk_side_lines(hunk: &Hunk, side: StableGroupIdSide) -> Vec<SideLine> {
+    let mut old_line = hunk.old_start as usize;
+    let mut new_line = hunk.new_start as usize;
+    let mut lines = Vec::new();
+
+    for (offset, line) in hunk.lines.iter().enumerate() {
+        let prefix = line.as_bytes().first().copied().unwrap_or(b' ');
+        match prefix {
+            b' ' => {
+                let line_number = match side {
+                    StableGroupIdSide::Original => old_line,
+                    StableGroupIdSide::Modified => new_line,
+                };
+                lines.push(SideLine {
+                    offset,
+                    line_number,
+                    content: line_content(line).to_string(),
+                    is_context: true,
+                });
+                old_line += 1;
+                new_line += 1;
+            }
+            b'-' => {
+                if side == StableGroupIdSide::Original {
+                    lines.push(SideLine {
+                        offset,
+                        line_number: old_line,
+                        content: line_content(line).to_string(),
+                        is_context: false,
+                    });
+                }
+                old_line += 1;
+            }
+            b'+' => {
+                if side == StableGroupIdSide::Modified {
+                    lines.push(SideLine {
+                        offset,
+                        line_number: new_line,
+                        content: line_content(line).to_string(),
+                        is_context: false,
+                    });
+                }
+                new_line += 1;
+            }
+            b'\\' => {}
+            _ => {
+                let line_number = match side {
+                    StableGroupIdSide::Original => old_line,
+                    StableGroupIdSide::Modified => new_line,
+                };
+                lines.push(SideLine {
+                    offset,
+                    line_number,
+                    content: line.to_string(),
+                    is_context: true,
+                });
+                old_line += 1;
+                new_line += 1;
+            }
+        }
+    }
+
+    lines
+}
+
+fn group_side_identity(
+    hunk: &Hunk,
+    group: &ChangeGroup,
+    side: StableGroupIdSide,
+) -> Option<(Vec<String>, usize)> {
+    let start = group.line_offset_start as usize;
+    let end = group.line_offset_end as usize;
+    let side_lines = hunk_side_lines(hunk, side);
+    let mut identity_lines = Vec::new();
+
+    let mut before_context: Vec<SideLine> = side_lines
+        .iter()
+        .rev()
+        .filter(|line| line.offset < start && line.is_context)
+        .take(GROUP_CONTEXT_RADIUS)
+        .cloned()
+        .collect();
+    before_context.reverse();
+    identity_lines.extend(before_context);
+
+    identity_lines.extend(
+        side_lines
+            .iter()
+            .filter(|line| line.offset >= start && line.offset <= end && !line.is_context)
+            .cloned(),
+    );
+
+    identity_lines.extend(
+        side_lines
+            .iter()
+            .filter(|line| line.offset > end && line.is_context)
+            .take(GROUP_CONTEXT_RADIUS)
+            .cloned(),
+    );
+
+    let first_line = identity_lines.first()?.line_number.saturating_sub(1);
+    Some((
+        identity_lines
+            .into_iter()
+            .map(|line| line.content)
+            .collect(),
+        first_line,
+    ))
+}
+
+fn side_occurrence(content: &str, identity_lines: &[String], expected_start: usize) -> Option<u32> {
+    if identity_lines.is_empty() {
+        return None;
+    }
+
+    let file_lines: Vec<&str> = content.lines().collect();
+    if identity_lines.len() > file_lines.len() {
+        return None;
+    }
+
+    let mut occurrence = 0;
+    for start in 0..=file_lines.len() - identity_lines.len() {
+        if file_lines[start..start + identity_lines.len()]
+            .iter()
+            .zip(identity_lines)
+            .all(|(actual, expected)| *actual == expected)
+        {
+            if start == expected_start {
+                return Some(occurrence);
+            }
+            occurrence += 1;
+        }
+    }
+
+    None
+}
+
+fn stable_side_occurrence(
+    hunk: &Hunk,
+    group: &ChangeGroup,
+    original: &str,
+    modified: &str,
+    side: StableGroupIdSide,
+) -> Option<u32> {
+    let (identity_lines, expected_start) = group_side_identity(hunk, group, side)?;
+    let content = match side {
+        StableGroupIdSide::Original => original,
+        StableGroupIdSide::Modified => modified,
+    };
+    side_occurrence(content, &identity_lines, expected_start)
+}
+
+fn hunk_side_identity(hunk: &Hunk, side: StableGroupIdSide) -> Option<(Vec<String>, usize)> {
+    let side_lines = hunk_side_lines(hunk, side);
+    let first_line = side_lines.first()?.line_number.saturating_sub(1);
+    Some((
+        side_lines.into_iter().map(|line| line.content).collect(),
+        first_line,
+    ))
+}
+
+fn stable_side_hunk_occurrence(
+    hunk: &Hunk,
+    original: &str,
+    modified: &str,
+    side: StableGroupIdSide,
+) -> Option<u32> {
+    let (identity_lines, expected_start) = hunk_side_identity(hunk, side)?;
+    let content = match side {
+        StableGroupIdSide::Original => original,
+        StableGroupIdSide::Modified => modified,
+    };
+    side_occurrence(content, &identity_lines, expected_start)
+}
+
+fn assign_stable_ids_for_side<T, Candidate, MakeId, AssignId>(
+    items: &[T],
+    mut candidate: Candidate,
+    mut make_id: MakeId,
+    mut assign_id: AssignId,
+) -> Vec<T>
+where
+    T: Clone,
+    Candidate: FnMut(&T) -> Option<(String, Option<u32>)>,
+    MakeId: FnMut(&T, u32) -> String,
+    AssignId: FnMut(&T, String) -> T,
+{
+    let mut fallback_occurrences: HashMap<String, u32> = HashMap::new();
+    let mut used_ids: HashSet<String> = HashSet::new();
+
+    items
+        .iter()
+        .map(|item| {
+            let Some((hash, stable_occurrence)) = candidate(item) else {
+                return item.clone();
+            };
+            let mut occurrence = stable_occurrence.unwrap_or_else(|| {
+                let occurrence = fallback_occurrences.entry(hash.clone()).or_insert(0);
+                let current = *occurrence;
+                *occurrence += 1;
+                current
+            });
+            let mut id = make_id(item, occurrence);
+            while used_ids.contains(&id) {
+                occurrence += 1;
+                id = make_id(item, occurrence);
+            }
+            used_ids.insert(id.clone());
+            assign_id(item, id)
+        })
+        .collect()
+}
+
+/// hunk の内容由来 stable id を算出する。
+pub fn compute_hunk_id(hunk: &Hunk, occurrence: u32) -> String {
+    format!("h:{}:{occurrence}", hunk_content_hash(hunk))
+}
+
+/// change group の内容由来 stable id を算出する。
+pub fn compute_group_id(hunk: &Hunk, group: &ChangeGroup, occurrence: u32) -> String {
+    format!("g:{}:{occurrence}", group_identity_hash(hunk, group))
+}
+
+/// review 操作で変化しない side の全文に対する出現順で group id を再付与する。
+pub fn assign_stable_group_ids_for_side(
+    hunks: &[Hunk],
+    groups: &[ChangeGroup],
+    original: &str,
+    modified: &str,
+    side: StableGroupIdSide,
+) -> Vec<ChangeGroup> {
+    assign_stable_ids_for_side(
+        groups,
+        |group| {
+            let hunk = hunks.iter().find(|hunk| hunk.index == group.hunk_index)?;
+            let hash = group_identity_hash(hunk, group);
+            let occurrence = stable_side_occurrence(hunk, group, original, modified, side);
+            Some((hash, occurrence))
+        },
+        |group, occurrence| {
+            let hunk = hunks
+                .iter()
+                .find(|hunk| hunk.index == group.hunk_index)
+                .expect("hunk resolved while building stable group id candidate");
+            compute_group_id(hunk, group, occurrence)
+        },
+        |group, group_id| ChangeGroup {
+            group_id,
+            ..group.clone()
+        },
+    )
+}
+
+/// review 操作で変化しない side の全文に対する出現順で hunk id を再付与する。
+pub fn assign_stable_hunk_ids_for_side(
+    hunks: &[Hunk],
+    original: &str,
+    modified: &str,
+    side: StableGroupIdSide,
+) -> Vec<Hunk> {
+    assign_stable_ids_for_side(
+        hunks,
+        |hunk| {
+            let hash = hunk_content_hash(hunk);
+            let occurrence = stable_side_hunk_occurrence(hunk, original, modified, side);
+            Some((hash, occurrence))
+        },
+        compute_hunk_id,
+        |hunk, hunk_id| Hunk {
+            hunk_id,
+            ..hunk.clone()
+        },
+    )
+}
+
+/// hunk 群へ内容由来 stable id を付与する。
+pub fn assign_hunk_ids(hunks: &[Hunk]) -> Vec<Hunk> {
+    let mut occurrences: HashMap<String, u32> = HashMap::new();
+    hunks
+        .iter()
+        .map(|hunk| {
+            let hash = hunk_content_hash(hunk);
+            let occurrence = occurrences.entry(hash).or_insert(0);
+            let hunk_id = compute_hunk_id(hunk, *occurrence);
+            *occurrence += 1;
+            Hunk {
+                hunk_id,
+                ..hunk.clone()
+            }
+        })
+        .collect()
+}
 
 /// hunk を連続する change group に分割する。
 ///
@@ -47,6 +433,7 @@ fn split_hunk_into_groups(hunk: &Hunk, start_group_index: u32) -> Vec<ChangeGrou
                 };
                 groups.push(ChangeGroup {
                     group_index: start_group_index + groups.len() as u32,
+                    group_id: String::new(),
                     hunk_index: hunk.index,
                     new_start: if has_plus {
                         group_new_start
@@ -72,6 +459,7 @@ fn split_hunk_into_groups(hunk: &Hunk, start_group_index: u32) -> Vec<ChangeGrou
         };
         groups.push(ChangeGroup {
             group_index: start_group_index + groups.len() as u32,
+            group_id: String::new(),
             hunk_index: hunk.index,
             new_start: if has_plus {
                 group_new_start
@@ -91,68 +479,20 @@ fn split_hunk_into_groups(hunk: &Hunk, start_group_index: u32) -> Vec<ChangeGrou
 /// hunk 群から change group 群を算出する。
 pub fn compute_change_groups(hunks: &[Hunk]) -> Vec<ChangeGroup> {
     let mut groups: Vec<ChangeGroup> = Vec::new();
+    let mut occurrences: HashMap<String, u32> = HashMap::new();
     for hunk in hunks {
-        groups.extend(split_hunk_into_groups(hunk, groups.len() as u32));
+        let hunk_groups = split_hunk_into_groups(hunk, groups.len() as u32)
+            .into_iter()
+            .map(|group| {
+                let hash = group_identity_hash(hunk, &group);
+                let occurrence = occurrences.entry(hash).or_insert(0);
+                let group_id = compute_group_id(hunk, &group, *occurrence);
+                *occurrence += 1;
+                ChangeGroup { group_id, ..group }
+            });
+        groups.extend(hunk_groups);
     }
     groups
-}
-
-/// change group に属する行を hunk から取り出す。
-#[allow(dead_code)]
-fn extract_group_lines(group: &ChangeGroup, hunks: &[Hunk]) -> Vec<String> {
-    let Some(hunk) = hunks.iter().find(|h| h.index == group.hunk_index) else {
-        return Vec::new();
-    };
-    let start = group.line_offset_start as usize;
-    let end = (group.line_offset_end as usize + 1).min(hunk.lines.len());
-    hunk.lines[start..end].to_vec()
-}
-
-/// change group の開始に対応する旧ファイルの行位置を得る。
-#[allow(dead_code)]
-fn get_group_old_position(group: &ChangeGroup, hunks: &[Hunk]) -> i64 {
-    let Some(hunk) = hunks.iter().find(|h| h.index == group.hunk_index) else {
-        return -1;
-    };
-    let mut old_line = hunk.old_start as i64;
-    for i in 0..group.line_offset_start as usize {
-        if let Some(line) = hunk.lines.get(i) {
-            let prefix = line.as_bytes().first().copied().unwrap_or(b' ');
-            if prefix == b'-' || prefix == b' ' {
-                old_line += 1;
-            }
-        }
-    }
-    old_line
-}
-
-/// staged 側の diff group と比較して change group の staged 状態を付与する。
-#[allow(dead_code)]
-pub fn mark_staged_groups(
-    groups: &[ChangeGroup],
-    staged_groups: &[ChangeGroup],
-    hunks: &[Hunk],
-    staged_hunks: &[Hunk],
-) -> Vec<ChangeGroup> {
-    let mut staged_keys = std::collections::HashSet::new();
-    for sg in staged_groups {
-        let lines = extract_group_lines(sg, staged_hunks);
-        let pos = get_group_old_position(sg, staged_hunks);
-        staged_keys.insert(format!("{pos}:{}", lines.join("\n")));
-    }
-
-    groups
-        .iter()
-        .map(|g| {
-            let lines = extract_group_lines(g, hunks);
-            let pos = get_group_old_position(g, hunks);
-            let key = format!("{pos}:{}", lines.join("\n"));
-            ChangeGroup {
-                is_staged: Some(staged_keys.contains(&key)),
-                ..g.clone()
-            }
-        })
-        .collect()
 }
 
 /// hunk 内の単一 change group に対する unified-diff patch を生成する。
@@ -204,32 +544,6 @@ pub fn generate_group_patch(file_path: &str, hunk: &Hunk, group: &ChangeGroup) -
     output.extend(result_lines);
 
     format!("{}\n", output.join("\n"))
-}
-
-/// 選択した hunk 群から unified-diff patch を生成する。
-#[allow(dead_code)]
-pub fn generate_patch(file_path: &str, hunks: &[Hunk], selected_indices: &[u32]) -> String {
-    let selected: Vec<&Hunk> = hunks
-        .iter()
-        .filter(|h| selected_indices.contains(&h.index))
-        .collect();
-    if selected.is_empty() {
-        return String::new();
-    }
-
-    let mut lines = Vec::new();
-    lines.push(format!("--- a/{file_path}"));
-    lines.push(format!("+++ b/{file_path}"));
-
-    for hunk in selected {
-        lines.push(format!(
-            "@@ -{},{} +{},{} @@",
-            hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
-        ));
-        lines.extend(hunk.lines.iter().cloned());
-    }
-
-    format!("{}\n", lines.join("\n"))
 }
 
 /// 各 hunk に context 行を付与して可視範囲を算出し、隣接範囲をマージする。
@@ -386,6 +700,7 @@ mod hunk_service_tests {
     ) -> Hunk {
         Hunk {
             index,
+            hunk_id: String::new(),
             old_start,
             old_lines,
             new_start,
@@ -403,6 +718,7 @@ mod hunk_service_tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].group_index, 0);
         assert_eq!(groups[0].hunk_index, 0);
+        assert!(groups[0].group_id.starts_with("g:"));
     }
 
     #[test]
@@ -415,33 +731,238 @@ mod hunk_service_tests {
         assert_eq!(groups[1].group_index, 1);
     }
 
-    // ── mark_staged_groups（hardcoded hunk 入力） ──
-
     #[test]
-    fn test_staged判定_キー一致でstaged() {
-        let h = hunk(0, 1, 3, 1, 3, &[" a", "-b", "+B", " c"]);
-        let hunks = std::slice::from_ref(&h);
-        let groups = compute_change_groups(hunks);
-        // staged 側に同一 group が存在 → is_staged: true
-        let result = mark_staged_groups(&groups, &groups, hunks, hunks);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].is_staged, Some(true));
+    fn test_hunk_idは同一内容なら位置に依存しない() {
+        let h0 = hunk(0, 1, 1, 1, 1, &["-a", "+A"]);
+        let h1 = hunk(0, 20, 1, 30, 1, &["-a", "+A"]);
+
+        let first = assign_hunk_ids(&[h0]);
+        let second = assign_hunk_ids(&[h1]);
+
+        assert_eq!(first[0].hunk_id, second[0].hunk_id);
     }
 
     #[test]
-    fn test_staged判定_staged無しでfalse() {
-        let h = hunk(0, 1, 3, 1, 3, &[" a", "-b", "+B", " c"]);
-        let hunks = std::slice::from_ref(&h);
-        let groups = compute_change_groups(hunks);
-        let result = mark_staged_groups(&groups, &[], hunks, &[]);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].is_staged, Some(false));
+    fn test_group_idは同一内容なら位置に依存しない() {
+        let h0 = hunk(0, 1, 1, 1, 1, &["-a", "+A"]);
+        let h1 = hunk(0, 20, 1, 30, 1, &["-a", "+A"]);
+
+        let first = compute_change_groups(&[h0]);
+        let second = compute_change_groups(&[h1]);
+
+        assert_eq!(first[0].group_id, second[0].group_id);
     }
 
     #[test]
-    fn test_staged判定_空入力は空() {
-        let result = mark_staged_groups(&[], &[], &[], &[]);
-        assert!(result.is_empty());
+    fn test_group_idは異なる内容なら異なる() {
+        let h0 = hunk(0, 1, 1, 1, 1, &["-a", "+A"]);
+        let h1 = hunk(0, 1, 1, 1, 1, &["-b", "+B"]);
+
+        let first = compute_change_groups(&[h0]);
+        let second = compute_change_groups(&[h1]);
+
+        assert_ne!(first[0].group_id, second[0].group_id);
+    }
+
+    #[test]
+    fn test_hunk_idは同一内容の複数出現をordinalで区別する() {
+        let h0 = hunk(0, 1, 1, 1, 1, &["-a", "+A"]);
+        let h1 = hunk(1, 10, 1, 10, 1, &["-a", "+A"]);
+
+        let hunks = assign_hunk_ids(&[h0, h1]);
+
+        assert_ne!(hunks[0].hunk_id, hunks[1].hunk_id);
+        assert!(hunks[0].hunk_id.ends_with(":0"));
+        assert!(hunks[1].hunk_id.ends_with(":1"));
+    }
+
+    #[test]
+    fn test_stable_side_hunk_idは前方の同一hunkが消えても後続hunkで変わらない() {
+        let original = "x\na\ny\nmid\nx\na\ny\n";
+        let working = "x\nA\ny\nmid\nx\nA\ny\n";
+        let staged_after_first = "x\nA\ny\nmid\nx\na\ny\n";
+        let first = hunk(0, 1, 3, 1, 3, &[" x", "-a", "+A", " y"]);
+        let second = hunk(1, 5, 3, 5, 3, &[" x", "-a", "+A", " y"]);
+        let refreshed_second = hunk(0, 5, 3, 5, 3, &[" x", "-a", "+A", " y"]);
+
+        let initial_hunks = assign_stable_hunk_ids_for_side(
+            &[first, second],
+            original,
+            working,
+            StableGroupIdSide::Modified,
+        );
+        let refreshed_hunks = assign_stable_hunk_ids_for_side(
+            &[refreshed_second],
+            staged_after_first,
+            working,
+            StableGroupIdSide::Modified,
+        );
+
+        assert_ne!(initial_hunks[0].hunk_id, initial_hunks[1].hunk_id);
+        assert_eq!(initial_hunks[1].hunk_id, refreshed_hunks[0].hunk_id);
+    }
+
+    #[test]
+    fn test_original_side_hunk_idはunstageで前方同一hunkが消えても後続hunkで変わらない() {
+        let head = "x\na\ny\nmid\nx\na\ny\n";
+        let staged = "x\nA\ny\nmid\nx\nA\ny\n";
+        let staged_after_first_unstage = "x\na\ny\nmid\nx\nA\ny\n";
+        let first = hunk(0, 1, 3, 1, 3, &[" x", "-a", "+A", " y"]);
+        let second = hunk(1, 5, 3, 5, 3, &[" x", "-a", "+A", " y"]);
+        let refreshed_second = hunk(0, 5, 3, 5, 3, &[" x", "-a", "+A", " y"]);
+
+        let initial_hunks = assign_stable_hunk_ids_for_side(
+            &[first, second],
+            head,
+            staged,
+            StableGroupIdSide::Original,
+        );
+        let refreshed_hunks = assign_stable_hunk_ids_for_side(
+            &[refreshed_second],
+            head,
+            staged_after_first_unstage,
+            StableGroupIdSide::Original,
+        );
+
+        assert_ne!(initial_hunks[0].hunk_id, initial_hunks[1].hunk_id);
+        assert_eq!(initial_hunks[1].hunk_id, refreshed_hunks[0].hunk_id);
+    }
+
+    #[test]
+    fn test_group_idは隣接contextで同一内容の複数出現を区別する() {
+        let h = hunk(
+            0,
+            1,
+            7,
+            1,
+            7,
+            &[" alpha", "-a", "+A", " beta", "-a", "+A", " gamma"],
+        );
+
+        let groups = compute_change_groups(&[h]);
+
+        assert_eq!(groups.len(), 2);
+        assert_ne!(groups[0].group_id, groups[1].group_id);
+    }
+
+    #[test]
+    fn test_group_idは同一hunk内の同じ局所patternをordinalで区別する() {
+        let h = hunk(
+            0,
+            1,
+            8,
+            1,
+            8,
+            &[" x", "-a", "+A", " y", " x", "-a", "+A", " y"],
+        );
+
+        let groups = compute_change_groups(&[h]);
+
+        assert_eq!(groups.len(), 2);
+        assert_ne!(groups[0].group_id, groups[1].group_id);
+        assert!(groups[0].group_id.ends_with(":0"));
+        assert!(groups[1].group_id.ends_with(":1"));
+    }
+
+    #[test]
+    fn test_group_idは前方の同一内容groupが消えても後続groupで変わらない() {
+        let initial = hunk(
+            0,
+            1,
+            7,
+            1,
+            7,
+            &[" alpha", "-a", "+A", " beta", "-a", "+A", " gamma"],
+        );
+        let refreshed = hunk(
+            0,
+            1,
+            6,
+            1,
+            6,
+            &[" alpha", " A", " beta", "-a", "+A", " gamma"],
+        );
+
+        let initial_groups = compute_change_groups(&[initial]);
+        let refreshed_groups = compute_change_groups(&[refreshed]);
+
+        assert_eq!(initial_groups.len(), 2);
+        assert_eq!(refreshed_groups.len(), 1);
+        assert_eq!(initial_groups[1].group_id, refreshed_groups[0].group_id);
+    }
+
+    #[test]
+    fn test_stable_side_group_idは前方の同一局所patternが消えても後続groupで変わらない() {
+        let original = "x\na\ny\nx\na\ny\n";
+        let working = "x\nA\ny\nx\nA\ny\n";
+        let staged_after_first = "x\nA\ny\nx\na\ny\n";
+        let initial = hunk(
+            0,
+            1,
+            6,
+            1,
+            6,
+            &[" x", "-a", "+A", " y", " x", "-a", "+A", " y"],
+        );
+        let refreshed = hunk(0, 1, 6, 1, 6, &[" x", " A", " y", " x", "-a", "+A", " y"]);
+
+        let initial_groups = compute_change_groups(std::slice::from_ref(&initial));
+        let refreshed_groups = compute_change_groups(std::slice::from_ref(&refreshed));
+        let initial_groups = assign_stable_group_ids_for_side(
+            &[initial],
+            &initial_groups,
+            original,
+            working,
+            StableGroupIdSide::Modified,
+        );
+        let refreshed_groups = assign_stable_group_ids_for_side(
+            &[refreshed],
+            &refreshed_groups,
+            staged_after_first,
+            working,
+            StableGroupIdSide::Modified,
+        );
+
+        assert_eq!(initial_groups.len(), 2);
+        assert_eq!(refreshed_groups.len(), 1);
+        assert_eq!(initial_groups[1].group_id, refreshed_groups[0].group_id);
+    }
+
+    #[test]
+    fn test_original_side_group_idはunstageで前方同一patternが消えても後続groupで変わらない() {
+        let head = "x\na\ny\nx\na\ny\n";
+        let staged = "x\nA\ny\nx\nA\ny\n";
+        let staged_after_first_unstage = "x\na\ny\nx\nA\ny\n";
+        let initial = hunk(
+            0,
+            1,
+            6,
+            1,
+            6,
+            &[" x", "-a", "+A", " y", " x", "-a", "+A", " y"],
+        );
+        let refreshed = hunk(0, 1, 6, 1, 6, &[" x", " a", " y", " x", "-a", "+A", " y"]);
+
+        let initial_groups = compute_change_groups(std::slice::from_ref(&initial));
+        let refreshed_groups = compute_change_groups(std::slice::from_ref(&refreshed));
+        let initial_groups = assign_stable_group_ids_for_side(
+            &[initial],
+            &initial_groups,
+            head,
+            staged,
+            StableGroupIdSide::Original,
+        );
+        let refreshed_groups = assign_stable_group_ids_for_side(
+            &[refreshed],
+            &refreshed_groups,
+            head,
+            staged_after_first_unstage,
+            StableGroupIdSide::Original,
+        );
+
+        assert_eq!(initial_groups.len(), 2);
+        assert_eq!(refreshed_groups.len(), 1);
+        assert_eq!(initial_groups[1].group_id, refreshed_groups[0].group_id);
     }
 
     // ── generate_group_patch ──
@@ -458,6 +979,7 @@ mod hunk_service_tests {
         );
         let group = ChangeGroup {
             group_index: 0,
+            group_id: "g:test:0".to_string(),
             hunk_index: 0,
             new_start: 2,
             new_end: 2,
@@ -472,75 +994,6 @@ mod hunk_service_tests {
         assert!(patch.contains("-original"));
         assert!(patch.contains("+modified"));
         assert!(patch.ends_with('\n'));
-    }
-
-    // ── generate_patch ──
-
-    #[test]
-    fn test_patch生成_単一hunk選択() {
-        let hunks = vec![
-            hunk(
-                0,
-                1,
-                3,
-                1,
-                3,
-                &[" line1", "-original", "+modified", " line3"],
-            ),
-            hunk(
-                1,
-                8,
-                3,
-                8,
-                4,
-                &[" line8", "-old9", "+new9", "+new10", " line11"],
-            ),
-        ];
-
-        let patch = generate_patch("src/file.ts", &hunks, &[0]);
-        assert!(patch.contains("--- a/src/file.ts"));
-        assert!(patch.contains("+++ b/src/file.ts"));
-        assert!(patch.contains("@@ -1,3 +1,3 @@"));
-        assert!(patch.contains("+modified"));
-        assert!(!patch.contains("+new9"));
-    }
-
-    #[test]
-    fn test_patch生成_複数hunk選択() {
-        let hunks = vec![
-            hunk(
-                0,
-                1,
-                3,
-                1,
-                3,
-                &[" line1", "-original", "+modified", " line3"],
-            ),
-            hunk(
-                1,
-                8,
-                3,
-                8,
-                4,
-                &[" line8", "-old9", "+new9", "+new10", " line11"],
-            ),
-        ];
-
-        let patch = generate_patch("src/file.ts", &hunks, &[0, 1]);
-        assert!(patch.contains("@@ -1,3 +1,3 @@"));
-        assert!(patch.contains("@@ -8,3 +8,4 @@"));
-    }
-
-    #[test]
-    fn test_patch生成_空選択() {
-        let hunks = vec![hunk(0, 1, 1, 1, 1, &["-a", "+b"])];
-        assert_eq!(generate_patch("f.ts", &hunks, &[]), "");
-    }
-
-    #[test]
-    fn test_patch生成_無効インデックス() {
-        let hunks = vec![hunk(0, 1, 1, 1, 1, &["-a", "+b"])];
-        assert_eq!(generate_patch("f.ts", &hunks, &[99]), "");
     }
 
     // ── compute_hidden_ranges ──

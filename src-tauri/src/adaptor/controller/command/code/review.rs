@@ -57,8 +57,7 @@ pub async fn git_stage_review_group(
             &input.path,
             &input.section,
             &input.base,
-            input.group_index,
-            input.snapshot_version,
+            &input.group_id,
         )
     })
     .await
@@ -76,8 +75,7 @@ pub async fn git_unstage_review_group(
             &input.path,
             &input.section,
             &input.base,
-            input.group_index,
-            input.snapshot_version,
+            &input.group_id,
         )
     })
     .await

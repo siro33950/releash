@@ -21,6 +21,7 @@ describe("CodeDiffViewer", () => {
 		const hunks: Hunk[] = [
 			{
 				index: 3,
+				hunkId: "h:provided:0",
 				oldStart: 1,
 				oldLines: 1,
 				newStart: 1,

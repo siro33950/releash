@@ -407,10 +407,6 @@ export function ReviewPanel({
 		filePath: selectedFile,
 		section: selectedSection,
 		base: diffBase,
-		snapshotVersion:
-			reviewFileView?.kind === "textDiff" && !reviewFileView.stale
-				? reviewFileView.version
-				: null,
 		onGitChanged: refreshAfterAction,
 	});
 

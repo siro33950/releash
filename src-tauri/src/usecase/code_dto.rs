@@ -41,6 +41,7 @@ pub struct BranchDiffSummaryDto {
 #[serde(rename_all = "camelCase")]
 pub struct HunkDto {
     pub index: u32,
+    pub hunk_id: String,
     pub old_start: u32,
     pub old_lines: u32,
     pub new_start: u32,
@@ -53,6 +54,7 @@ pub struct HunkDto {
 #[serde(rename_all = "camelCase")]
 pub struct ChangeGroupDto {
     pub group_index: u32,
+    pub group_id: String,
     pub hunk_index: u32,
     pub new_start: u32,
     pub new_end: u32,
@@ -244,6 +246,7 @@ mod code_dto_serialize_tests {
     fn test_hunk_dtoはcamelcaseで出力する() {
         let dto = HunkDto {
             index: 0,
+            hunk_id: "h:abc:0".to_string(),
             old_start: 1,
             old_lines: 2,
             new_start: 3,
@@ -254,6 +257,7 @@ mod code_dto_serialize_tests {
             serde_json::to_value(&dto).unwrap(),
             json!({
                 "index": 0,
+                "hunkId": "h:abc:0",
                 "oldStart": 1,
                 "oldLines": 2,
                 "newStart": 3,
@@ -267,6 +271,7 @@ mod code_dto_serialize_tests {
     fn test_change_group_dto_is_staged_noneは省略する() {
         let dto = ChangeGroupDto {
             group_index: 0,
+            group_id: "g:abc:0".to_string(),
             hunk_index: 1,
             new_start: 2,
             new_end: 3,
@@ -279,6 +284,7 @@ mod code_dto_serialize_tests {
             v,
             json!({
                 "groupIndex": 0,
+                "groupId": "g:abc:0",
                 "hunkIndex": 1,
                 "newStart": 2,
                 "newEnd": 3,
@@ -293,6 +299,7 @@ mod code_dto_serialize_tests {
     fn test_change_group_dto_is_staged_someは出力する() {
         let dto = ChangeGroupDto {
             group_index: 0,
+            group_id: "g:abc:0".to_string(),
             hunk_index: 1,
             new_start: 2,
             new_end: 3,
@@ -422,6 +429,7 @@ mod code_dto_serialize_tests {
             source: ReviewTextSource::Diff,
             hunks: vec![HunkDto {
                 index: 0,
+                hunk_id: "h:old-new:0".to_string(),
                 old_start: 1,
                 old_lines: 1,
                 new_start: 1,
@@ -430,6 +438,7 @@ mod code_dto_serialize_tests {
             }],
             change_groups: vec![ChangeGroupDto {
                 group_index: 0,
+                group_id: "g:old-new:0".to_string(),
                 hunk_index: 0,
                 new_start: 1,
                 new_end: 1,
@@ -458,6 +467,7 @@ mod code_dto_serialize_tests {
                 "source": "diff",
                 "hunks": [{
                     "index": 0,
+                    "hunkId": "h:old-new:0",
                     "oldStart": 1,
                     "oldLines": 1,
                     "newStart": 1,
@@ -466,6 +476,7 @@ mod code_dto_serialize_tests {
                 }],
                 "changeGroups": [{
                     "groupIndex": 0,
+                    "groupId": "g:old-new:0",
                     "hunkIndex": 0,
                     "newStart": 1,
                     "newEnd": 1,

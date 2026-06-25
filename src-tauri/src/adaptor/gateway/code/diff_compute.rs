@@ -49,6 +49,7 @@ pub(crate) fn diff_buffers(original: &str, modified: &str, file_path: Option<&st
 
             hunks.push(Hunk {
                 index: hunk_idx as u32,
+                hunk_id: String::new(),
                 old_start: hdr.old_start(),
                 old_lines: hdr.old_lines(),
                 new_start: hdr.new_start(),
@@ -75,7 +76,6 @@ mod diff_compute_gateway_tests {
     use super::*;
     use crate::domain::code::services::hunk::{
         compute_change_groups, compute_hidden_ranges, compute_visible_markdown_blocks,
-        mark_staged_groups,
     };
 
     // ── diff_buffers（git2 diff） ──
@@ -167,55 +167,6 @@ mod diff_compute_gateway_tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].group_index, 0);
         assert_eq!(groups[1].group_index, 1);
-    }
-
-    // ── mark_staged_groups（実 diff から hunk を生成） ──
-
-    #[test]
-    fn test_staged判定_部分staged() {
-        let head = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
-        let working = head.replace("b\n", "B\n").replace("r\n", "R\n");
-        let staged = head.replace("b\n", "B\n");
-
-        let wt_hunks = diff_buffers(head, &working, None);
-        let wt_cg = compute_change_groups(&wt_hunks);
-        let st_hunks = diff_buffers(head, &staged, None);
-        let st_cg = compute_change_groups(&st_hunks);
-
-        let result = mark_staged_groups(&wt_cg, &st_cg, &wt_hunks, &st_hunks);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].is_staged, Some(true));
-        assert_eq!(result[1].is_staged, Some(false));
-    }
-
-    #[test]
-    fn test_staged判定_全staged() {
-        let head = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
-        let working = head.replace("b\n", "B\n");
-
-        let wt_hunks = diff_buffers(head, &working, None);
-        let wt_cg = compute_change_groups(&wt_hunks);
-        let st_hunks = diff_buffers(head, &working, None);
-        let st_cg = compute_change_groups(&st_hunks);
-
-        let result = mark_staged_groups(&wt_cg, &st_cg, &wt_hunks, &st_hunks);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].is_staged, Some(true));
-    }
-
-    #[test]
-    fn test_staged判定_全unstaged() {
-        let head = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
-        let working = head.replace("b\n", "B\n");
-
-        let wt_hunks = diff_buffers(head, &working, None);
-        let wt_cg = compute_change_groups(&wt_hunks);
-        let st_hunks = diff_buffers(head, head, None);
-        let st_cg = compute_change_groups(&st_hunks);
-
-        let result = mark_staged_groups(&wt_cg, &st_cg, &wt_hunks, &st_hunks);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].is_staged, Some(false));
     }
 
     // ── hidden ranges from content（diff_buffers + 純粋算出） ──

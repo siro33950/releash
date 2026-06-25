@@ -113,24 +113,6 @@ function mockPermissionPresentation(command: string, args: unknown) {
 	if (command === "get_language_from_path") {
 		return resolvedInvoke("typescript");
 	}
-	if (command === "compute_diff_hunks") {
-		const { original, modified } = args as {
-			original: string;
-			modified: string;
-		};
-		return resolvedInvoke({
-			hunks: [
-				{
-					index: 0,
-					oldStart: 1,
-					oldLines: original ? 1 : 0,
-					newStart: 1,
-					newLines: modified ? 1 : 0,
-					lines: original ? [`-${original}`, `+${modified}`] : [`+${modified}`],
-				},
-			],
-		});
-	}
 	return null;
 }
 

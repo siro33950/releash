@@ -83,11 +83,9 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::code::diff::get_head_diff_file_tree_snapshot,
             crate::adaptor::controller::command::code::diff::get_file_navigation,
             // Git: hunk/patch（code ドメイン）
-            crate::adaptor::controller::command::code::hunk::compute_diff_hunks,
             crate::adaptor::controller::command::code::hunk::compute_hidden_ranges,
             crate::adaptor::controller::command::code::hunk::compute_hidden_ranges_from_content,
             crate::adaptor::controller::command::code::hunk::compute_visible_markdown_blocks,
-            crate::adaptor::controller::command::code::hunk::generate_group_patch,
             crate::adaptor::controller::command::code::language::get_language_from_path,
             crate::adaptor::controller::command::code::diff::get_relative_path,
             // Git: ブランチ（repository ドメイン）
@@ -105,8 +103,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             // Git: ステージング（code ドメイン）
             crate::adaptor::controller::command::code::staging::git_stage,
             crate::adaptor::controller::command::code::staging::git_unstage,
-            crate::adaptor::controller::command::code::staging::git_stage_hunk,
-            crate::adaptor::controller::command::code::staging::git_unstage_hunk,
             // Git: ワークツリー（repository ドメイン）
             crate::adaptor::controller::command::repository::worktree::get_main_repo_path,
             crate::adaptor::controller::command::repository::worktree::get_worktree_dirty_count,
