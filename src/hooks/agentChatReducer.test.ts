@@ -48,6 +48,7 @@ describe("agentChatReducer", () => {
 			sessionPlanModes: {},
 			pendingPermissions: {},
 			pendingQueues: {},
+			lastStreamingSeqByMessage: {},
 			latestTokenUsage: {},
 			runtimeSlashCommands: {},
 			availableModels: [],
@@ -806,10 +807,7 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("SET_STREAMING_MESSAGE", () => {
-		it("replaces existing parts with the cumulative payload in sessionsById", () => {
-			// Rust sends the full cumulative `streaming_parts` on every flush, so the
-			// reducer replaces the message's parts wholesale. A redelivery (same or
-			// extended cumulative payload) must converge without double-application.
+		it("replaces existing parts with a resync snapshot in sessionsById", () => {
 			const msg = makeMessage({
 				id: "m1",
 				role: "agent",
@@ -827,12 +825,14 @@ describe("agentChatReducer", () => {
 				type: "SET_STREAMING_MESSAGE",
 				sessionId: "s1",
 				messageId: "m1",
+				seq: 5,
 				parts: cumulativeParts,
 			});
 			expect(next.sessionsById.s1.messages[0].parts).toEqual(cumulativeParts);
+			expect(next.lastStreamingSeqByMessage["s1:m1"]).toBe(5);
 		});
 
-		it("converges on re-delivery of the same cumulative payload", () => {
+		it("converges on re-delivery of the same snapshot payload", () => {
 			const msg = makeMessage({
 				id: "m1",
 				role: "agent",
@@ -899,6 +899,186 @@ describe("agentChatReducer", () => {
 				messageId: "nonexistent",
 				parts: [{ type: "text", content: "hello" }],
 			});
+			expect(next).toBe(state);
+		});
+	});
+
+	describe("APPLY_STREAMING_DELTA", () => {
+		it("appends in-sequence delta parts and merges adjacent text", () => {
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [{ type: "text", content: "Hel" }],
+			});
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
+				lastStreamingSeqByMessage: { "s1:m1": 1 },
+			};
+
+			const next = reducer(state, {
+				type: "APPLY_STREAMING_DELTA",
+				sessionId: "s1",
+				messageId: "m1",
+				seq: 2,
+				parts: [{ type: "text", content: "lo" }],
+			});
+
+			expect(next.sessionsById.s1.messages[0].parts).toEqual([
+				{ type: "text", content: "Hello" },
+			]);
+			expect(next.lastStreamingSeqByMessage["s1:m1"]).toBe(2);
+		});
+
+		it("appends non-text delta parts without identity convergence", () => {
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [
+					{
+						type: "tool_use",
+						tool: "Task",
+						input: { description: "old" },
+						id: "toolu_001",
+					},
+				],
+			});
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
+				lastStreamingSeqByMessage: { "s1:m1": 1 },
+			};
+
+			const next = reducer(state, {
+				type: "APPLY_STREAMING_DELTA",
+				sessionId: "s1",
+				messageId: "m1",
+				seq: 2,
+				parts: [
+					{
+						type: "task_status",
+						taskToolUseId: "toolu_001",
+						status: "completed",
+						description: "new",
+						summary: "done",
+					},
+					{
+						type: "todo_list_snapshot",
+						items: [{ text: "todo", completed: true }],
+					},
+					{
+						type: "system_notification",
+						notificationType: "compaction",
+						status: "completed",
+						label: "Compacted",
+						detail: "ok",
+					},
+				],
+			});
+
+			expect(next.sessionsById.s1.messages[0].parts).toEqual([
+				{
+					type: "tool_use",
+					tool: "Task",
+					input: { description: "old" },
+					id: "toolu_001",
+				},
+				{
+					type: "task_status",
+					taskToolUseId: "toolu_001",
+					status: "completed",
+					description: "new",
+					summary: "done",
+				},
+				{
+					type: "todo_list_snapshot",
+					items: [{ text: "todo", completed: true }],
+				},
+				{
+					type: "system_notification",
+					notificationType: "compaction",
+					status: "completed",
+					label: "Compacted",
+					detail: "ok",
+				},
+			]);
+		});
+
+		it("merges adjacent thinking deltas into the snapshot-equivalent final part", () => {
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [{ type: "thinking", content: "think" }],
+			});
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
+				lastStreamingSeqByMessage: { "s1:m1": 1 },
+			};
+
+			const afterFirst = reducer(state, {
+				type: "APPLY_STREAMING_DELTA",
+				sessionId: "s1",
+				messageId: "m1",
+				seq: 2,
+				parts: [{ type: "thinking", content: " more" }],
+			});
+			const afterSecond = reducer(afterFirst, {
+				type: "APPLY_STREAMING_DELTA",
+				sessionId: "s1",
+				messageId: "m1",
+				seq: 3,
+				parts: [{ type: "thinking", content: " now" }],
+			});
+
+			expect(afterSecond.sessionsById.s1.messages[0].parts).toEqual([
+				{ type: "thinking", content: "think more now" },
+			]);
+		});
+
+		it("ignores duplicate delta seqs", () => {
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [{ type: "text", content: "Hello" }],
+			});
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
+				lastStreamingSeqByMessage: { "s1:m1": 2 },
+			};
+
+			const next = reducer(state, {
+				type: "APPLY_STREAMING_DELTA",
+				sessionId: "s1",
+				messageId: "m1",
+				seq: 2,
+				parts: [{ type: "text", content: "lo" }],
+			});
+
+			expect(next).toBe(state);
+		});
+
+		it("does not apply out-of-sequence delta gaps", () => {
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [{ type: "text", content: "Hello" }],
+			});
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
+				lastStreamingSeqByMessage: { "s1:m1": 1 },
+			};
+
+			const next = reducer(state, {
+				type: "APPLY_STREAMING_DELTA",
+				sessionId: "s1",
+				messageId: "m1",
+				seq: 3,
+				parts: [{ type: "text", content: " skipped" }],
+			});
+
 			expect(next).toBe(state);
 		});
 	});

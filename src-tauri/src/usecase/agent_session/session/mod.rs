@@ -6,6 +6,7 @@ mod open_tabs;
 mod prompt_suggestion;
 mod store;
 mod stored_lifecycle;
+mod stream_resync;
 
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +28,9 @@ pub use store::{SessionReaderPort, SessionStore};
 pub(crate) use stored_lifecycle::{
     AgentSessionRuntimeCloser, CodexThreadForkRequest, CodexThreadLifecycleGateway,
     StoredSessionLifecycleUsecase,
+};
+pub(crate) use stream_resync::{
+    resync_streaming_message, AgentStreamResyncReadModel, StreamResyncSnapshot,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -313,6 +317,10 @@ pub struct ChatMessage {
     pub activities: Option<Vec<ActivityEntry>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub parts: Option<Vec<MessagePart>>,
+    /// Final streaming delta seq that produced the persisted parts for this
+    /// message. Older sessions omit the field and deserialize to 0.
+    #[serde(default)]
+    pub streaming_final_seq: u64,
     pub timestamp: f64,
     /// usecase 内の保存・転送用値型。serialize 表現（camelCase・行範囲省略）は
     /// controller protocol 境界の入力型と等価に保つ。
@@ -1001,6 +1009,7 @@ pub fn add_message_internal(
         thinking: None,
         activities: None,
         parts,
+        streaming_final_seq: 0,
         timestamp: now,
         mentions: mentions_for_persist,
     };
@@ -1224,6 +1233,7 @@ mod tests {
             thinking: None,
             activities: None,
             parts: None,
+            streaming_final_seq: 0,
             timestamp: 1.0,
             mentions: Some(vec![
                 MessageMention {
@@ -1316,6 +1326,7 @@ mod tests {
                 thinking: None,
                 activities: None,
                 parts: None,
+                streaming_final_seq: 0,
                 timestamp: 1000.0,
                 mentions: None,
             }],
@@ -1353,6 +1364,7 @@ mod tests {
                 thinking: None,
                 activities: None,
                 parts: None,
+                streaming_final_seq: 0,
                 timestamp: 1000.0,
                 mentions: None,
             }],
@@ -1388,6 +1400,7 @@ mod tests {
                 thinking: None,
                 activities: None,
                 parts: None,
+                streaming_final_seq: 0,
                 timestamp: 1000.0,
                 mentions: None,
             }],
@@ -1501,6 +1514,7 @@ mod tests {
                 thinking: None,
                 activities: None,
                 parts: None,
+                streaming_final_seq: 0,
                 timestamp: 1000.0,
                 mentions: None,
             }],
@@ -1555,6 +1569,7 @@ mod tests {
                     thinking: None,
                     activities: None,
                     parts: None,
+                    streaming_final_seq: 0,
                     timestamp: 1000.0,
                     mentions: None,
                 },
@@ -1565,6 +1580,7 @@ mod tests {
                     thinking: None,
                     activities: None,
                     parts: None,
+                    streaming_final_seq: 0,
                     timestamp: 1001.0,
                     mentions: None,
                 },
@@ -1661,6 +1677,7 @@ mod tests {
             thinking: Some("deep thought".to_string()),
             activities: None,
             parts: None,
+            streaming_final_seq: 0,
             timestamp: 1000.0,
             mentions: None,
         };
@@ -1676,6 +1693,7 @@ mod tests {
             thinking: None,
             activities: None,
             parts: None,
+            streaming_final_seq: 0,
             timestamp: 1000.0,
             mentions: None,
         };
@@ -1705,6 +1723,7 @@ mod tests {
                     thinking: None,
                     activities: None,
                     parts: None,
+                    streaming_final_seq: 0,
                     timestamp: 1000.0,
                     mentions: None,
                 },
@@ -1715,6 +1734,7 @@ mod tests {
                     thinking: None,
                     activities: None,
                     parts: None,
+                    streaming_final_seq: 0,
                     timestamp: 1001.0,
                     mentions: None,
                 },
@@ -1856,6 +1876,7 @@ mod tests {
                 },
             ]),
             parts: None,
+            streaming_final_seq: 0,
             timestamp: 1000.0,
             mentions: None,
         };
@@ -1936,12 +1957,14 @@ mod tests {
                     parent_tool_use_id: None,
                 },
             ]),
+            streaming_final_seq: 12,
             timestamp: 1000.0,
             mentions: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: ChatMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back.parts.as_ref().unwrap().len(), 2);
+        assert_eq!(back.streaming_final_seq, 12);
     }
 
     #[test]
@@ -1949,6 +1972,7 @@ mod tests {
         let json = r#"{"id":"m1","role":"agent","content":"hello","timestamp":1000.0}"#;
         let msg: ChatMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg.parts, None);
+        assert_eq!(msg.streaming_final_seq, 0);
     }
 
     #[test]
@@ -2155,6 +2179,7 @@ mod tests {
                     media_type: "image/jpeg".to_string(),
                 },
             ]),
+            streaming_final_seq: 0,
             timestamp: 1000.0,
             mentions: None,
         };
@@ -2461,6 +2486,7 @@ mod tests {
                 thinking: None,
                 activities: None,
                 parts: None,
+                streaming_final_seq: 0,
                 timestamp: 1000.0,
                 mentions: None,
             }],

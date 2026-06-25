@@ -332,6 +332,7 @@ mod tests {
             thinking: None,
             activities: None,
             parts: None,
+            streaming_final_seq: 0,
             timestamp: 1.0,
             mentions: None,
         }

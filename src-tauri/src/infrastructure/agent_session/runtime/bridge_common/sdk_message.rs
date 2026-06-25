@@ -5,7 +5,9 @@ use super::permission::{
     handle_sdk_permission_mode_notification, run_permission_request_transition_locked,
     PermissionRequestTransition,
 };
-use super::process_registry::{AgentProcess, AgentProcessMap, BridgeState, TurnPhase};
+use super::process_registry::{
+    AgentProcess, AgentProcessMap, BridgeState, StreamPartRollback, TurnPhase,
+};
 use super::recovery::run_bridge_error_transition_locked;
 use super::session_lifecycle::{
     crash_agent_process_for_context_reinject, run_turn_complete_transition_locked_with_interrupt,
@@ -24,9 +26,9 @@ use super::shared::{
 };
 use super::skills::supported_commands_from_bridge_message;
 use super::stream_emit::{
-    emit_session_state_changed, emit_streaming_parts, enqueue_pending_delta,
-    force_flush_pending_streaming, release_completed_turn_streaming_buffer, should_flush_per_delta,
-    spawn_streaming_timer,
+    emit_one_shot_streaming_delta, emit_session_state_changed, emit_streaming_delta,
+    enqueue_pending_delta_with_rollbacks, force_flush_pending_streaming, has_pending_stream_flush,
+    release_completed_turn_streaming_buffer, should_flush_per_delta, spawn_streaming_timer,
 };
 use super::turn_event_log::{
     append_parts_to_event_log_in_order, clear_post_turn_store_base_untrusted_for_message,
@@ -326,6 +328,30 @@ pub(super) fn accumulate_sdk_message_with_liveness(
         updated_parts,
         liveness,
     }
+}
+
+fn sdk_message_can_update_existing_parts(msg: &serde_json::Value) -> bool {
+    match msg.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+        "assistant" | "user" | "todo_list_snapshot" => true,
+        "system" => matches!(
+            msg.get("subtype").and_then(|v| v.as_str()).unwrap_or(""),
+            "task_updated" | "compact_boundary"
+        ),
+        _ => false,
+    }
+}
+
+fn stream_part_rollbacks(before: &[MessagePart], after: &[MessagePart]) -> Vec<StreamPartRollback> {
+    before
+        .iter()
+        .zip(after.iter())
+        .enumerate()
+        .filter(|(_, (previous, current))| previous != current)
+        .map(|(index, (previous, _))| StreamPartRollback {
+            index,
+            previous: previous.clone(),
+        })
+        .collect()
 }
 
 /// Extract background task ID from tool_result content.
@@ -920,7 +946,7 @@ pub(super) fn accumulate_loaded_post_turn_base_without_streaming_state<F>(
     emit_stream: &mut F,
 ) -> AccumulateStreamMessageEffect
 where
-    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     let old_turn_id = 1;
     let mut old_message_log = TurnEventLog::default();
@@ -955,7 +981,29 @@ where
 
     append_parts_to_event_log_in_order(&mut old_message_log, old_turn_id, &base_mid, &delta);
     let persist_parts = old_message_log.project().agent_parts_for_message(&base_mid);
-    let _ = emit_stream(&base_mid, &persist_parts);
+    let base_seq = proc
+        .streaming_delta_seq_by_message
+        .get(&base_mid)
+        .copied()
+        .unwrap_or_else(|| {
+            let targets_current = proc.streaming_message_id.as_deref() == Some(base_mid.as_str());
+            let targets_last = proc.last_message_id.as_deref() == Some(base_mid.as_str());
+            if targets_current || targets_last {
+                proc.streaming_delta_seq
+            } else {
+                0
+            }
+        });
+    let next_seq = base_seq.saturating_add(1);
+    let emitted = emit_one_shot_streaming_delta(
+        proc,
+        chat_session_id,
+        &base_mid,
+        next_seq,
+        delta.clone(),
+        persist_parts.clone(),
+        |seq, parts, snapshot_parts| emit_stream(&base_mid, seq, parts, snapshot_parts),
+    );
 
     log::warn!(
         "Persisting stale post-turn streaming reseed into loaded base: \
@@ -967,8 +1015,8 @@ where
     AccumulateStreamMessageEffect {
         accumulated: true,
         emit_msg_id: Some(base_mid),
-        should_persist: true,
-        persist_parts,
+        should_persist: emitted,
+        persist_parts: if emitted { persist_parts } else { Vec::new() },
         ..AccumulateStreamMessageEffect::default()
     }
 }
@@ -982,7 +1030,7 @@ pub(super) fn accumulate_stream_or_post_turn_message_locked<F>(
     post_turn_base: Option<(String, Vec<MessagePart>)>,
 ) -> AccumulateStreamMessageEffect
 where
-    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     let in_streaming = proc.state == BridgeState::Streaming && proc.streaming_message_id.is_some();
     let post_turn = !in_streaming && proc.last_message_id.is_some();
@@ -1048,6 +1096,7 @@ where
         };
         match post_turn_base {
             Some((base_mid, base_parts)) if base_mid == mid.as_str() => {
+                proc.confirmed_stream_part_len = base_parts.len();
                 proc.streaming_parts = base_parts;
             }
             Some((base_mid, _)) => {
@@ -1069,6 +1118,8 @@ where
         }
     }
 
+    let rollback_source =
+        sdk_message_can_update_existing_parts(msg).then(|| proc.streaming_parts.clone());
     let prev_len = proc.streaming_parts.len();
     let accumulation =
         accumulate_sdk_message_with_liveness(msg, &mut proc.streaming_parts, &mut proc.task_id_map);
@@ -1077,7 +1128,7 @@ where
     if !acc {
         proc.streaming_parts.truncate(prev_len);
         if post_turn {
-            let start_streaming_timer = proc.pending_stream_part_count > 0;
+            let start_streaming_timer = has_pending_stream_flush(proc);
             let released_streaming_parts = if !start_streaming_timer {
                 release_completed_turn_streaming_buffer(proc)
             } else {
@@ -1102,10 +1153,14 @@ where
     if let Some(up) = updated_parts {
         delta.extend(up);
     }
+    let rollbacks = rollback_source
+        .as_deref()
+        .map(|before| stream_part_rollbacks(before, &proc.streaming_parts))
+        .unwrap_or_default();
 
     if delta.is_empty() {
         if post_turn {
-            let start_streaming_timer = proc.pending_stream_part_count > 0;
+            let start_streaming_timer = has_pending_stream_flush(proc);
             let released_streaming_parts = if !start_streaming_timer {
                 release_completed_turn_streaming_buffer(proc)
             } else {
@@ -1129,13 +1184,16 @@ where
     } else {
         false
     };
-    enqueue_pending_delta(proc, &delta);
+    enqueue_pending_delta_with_rollbacks(proc, &delta, rollbacks);
 
     if should_flush_per_delta(proc, &delta, post_turn) {
         if let Some(ref mid) = mid {
-            let _ = force_flush_pending_streaming(proc, chat_session_id, mid, |parts| {
-                emit_stream(mid, parts)
-            });
+            let _ = force_flush_pending_streaming(
+                proc,
+                chat_session_id,
+                mid,
+                |seq, parts, snapshot_parts| emit_stream(mid, seq, parts, snapshot_parts),
+            );
         }
     }
 
@@ -1167,7 +1225,7 @@ where
         }
     }
 
-    let start_streaming_timer = post_turn && proc.pending_stream_part_count > 0;
+    let start_streaming_timer = post_turn && has_pending_stream_flush(proc);
     let released_streaming_parts = if post_turn && !start_streaming_timer {
         release_completed_turn_streaming_buffer(proc)
     } else {
@@ -1204,7 +1262,16 @@ pub(super) async fn accumulate_stream_or_post_turn_message<R: tauri::Runtime>(
                     chat_session_id,
                     msg,
                     elapsed_persist_ms,
-                    |mid, parts| emit_streaming_parts(app, chat_session_id, mid, parts.to_vec()),
+                    |mid, seq, parts, snapshot_parts| {
+                        emit_streaming_delta(
+                            app,
+                            chat_session_id,
+                            mid,
+                            seq,
+                            parts.to_vec(),
+                            snapshot_parts,
+                        )
+                    },
                     post_turn_base.take(),
                 );
                 if effect.start_streaming_timer {
@@ -1238,6 +1305,17 @@ pub(super) async fn accumulate_stream_or_post_turn_message<R: tauri::Runtime>(
         accumulated: true,
         ..AccumulateStreamMessageEffect::default()
     }
+}
+
+async fn streaming_final_seq_for_message(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    message_id: &str,
+) -> u64 {
+    let map = handles.lock().await;
+    map.get(chat_session_id)
+        .and_then(|proc| proc.streaming_delta_seq_by_message.get(message_id).copied())
+        .unwrap_or(0)
 }
 
 /// agent process に session 固有 env を渡すための (key, value) 一覧を組み立てる。
@@ -1414,8 +1492,15 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                             exit_code,
                             interrupted.then_some(InterruptReason::Abort),
                             interrupted.then(|| "Turn interrupted by abort".to_string()),
-                            |mid, parts| {
-                                emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
+                            |mid, seq, parts, snapshot_parts| {
+                                emit_streaming_delta(
+                                    app,
+                                    chat_session_id,
+                                    mid,
+                                    seq,
+                                    parts.to_vec(),
+                                    snapshot_parts,
+                                )
                             },
                         );
                         if interrupted {
@@ -1442,6 +1527,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                 turn_completed,
                 final_msg_id,
                 final_parts,
+                final_streaming_seq,
                 workflow_turn_complete,
                 projected_session_state,
                 released_streaming_parts,
@@ -1460,6 +1546,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                             chat_session_id,
                             mid,
                             &final_parts,
+                            final_streaming_seq,
                             Some(now_timestamp()),
                         );
                         if persisted {
@@ -1539,8 +1626,15 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                                 proc,
                                 chat_session_id,
                                 &msg,
-                                |mid, parts| {
-                                    emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
+                                |mid, seq, parts, snapshot_parts| {
+                                    emit_streaming_delta(
+                                        app,
+                                        chat_session_id,
+                                        mid,
+                                        seq,
+                                        parts.to_vec(),
+                                        snapshot_parts,
+                                    )
                                 },
                             )),
                             false,
@@ -1566,6 +1660,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                             chat_session_id,
                             mid,
                             &effect.final_parts,
+                            effect.final_streaming_seq,
                             Some(now_timestamp()),
                         );
                         if persisted {
@@ -1690,6 +1785,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                         chat_session_id,
                         mid,
                         &effect.persist_parts,
+                        streaming_final_seq_for_message(handles, chat_session_id, mid).await,
                         None,
                     );
                     if persisted {
@@ -1730,8 +1826,15 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                         request_id,
                         permission_request_received_at
                             .expect("permission_request receive time captured after stale check"),
-                        |mid, parts| {
-                            emit_streaming_parts(app, chat_session_id, mid, parts.to_vec())
+                        |mid, seq, parts, snapshot_parts| {
+                            emit_streaming_delta(
+                                app,
+                                chat_session_id,
+                                mid,
+                                seq,
+                                parts.to_vec(),
+                                snapshot_parts,
+                            )
                         },
                     )
                 } else {
@@ -1766,6 +1869,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
 #[cfg(test)]
 mod moved_tests {
 
+    use super::super::process_registry::make_test_agent_process;
     use super::super::sdk_message::*;
 
     use crate::usecase::agent_session::session::{MessagePart, SystemNotificationType};
@@ -1796,6 +1900,89 @@ mod moved_tests {
         assert!(accumulation.handled);
         assert!(accumulation.liveness);
         assert_eq!(parts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn post_turn_reseed_emit_failure_does_not_persist_or_advance_seq() {
+        let mut proc = make_test_agent_process();
+        let base_mid = "agent-message-1".to_string();
+        proc.streaming_delta_seq_by_message
+            .insert(base_mid.clone(), 4);
+        let base_parts = vec![MessagePart::Text {
+            content: "base".to_string(),
+            parent_tool_use_id: None,
+        }];
+        let msg = serde_json::json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": " delta"}
+            }
+        });
+        let mut emitted = Vec::new();
+
+        let effect = accumulate_loaded_post_turn_base_without_streaming_state(
+            &mut proc,
+            "csid",
+            &msg,
+            base_mid.clone(),
+            base_parts,
+            &mut |mid, seq, parts, snapshot_parts| {
+                emitted.push((mid.to_string(), seq, parts.to_vec(), snapshot_parts()));
+                (false, true)
+            },
+        );
+
+        assert!(effect.accumulated);
+        assert_eq!(effect.emit_msg_id.as_deref(), Some(base_mid.as_str()));
+        assert!(!effect.should_persist);
+        assert!(effect.persist_parts.is_empty());
+        assert_eq!(proc.streaming_delta_seq_by_message.get(&base_mid), Some(&4));
+        assert_eq!(proc.streaming_delta_seq, 0);
+        assert!(proc.retry_stream_delta.is_none());
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].1, 5);
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn post_turn_reseed_emit_success_persists_parts_and_advances_seq() {
+        let mut proc = make_test_agent_process();
+        let base_mid = "agent-message-1".to_string();
+        proc.streaming_delta_seq_by_message
+            .insert(base_mid.clone(), 4);
+        let base_parts = vec![MessagePart::Text {
+            content: "base".to_string(),
+            parent_tool_use_id: None,
+        }];
+        let msg = serde_json::json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": " delta"}
+            }
+        });
+
+        let effect = accumulate_loaded_post_turn_base_without_streaming_state(
+            &mut proc,
+            "csid",
+            &msg,
+            base_mid.clone(),
+            base_parts,
+            &mut |_mid, _seq, _parts, _snapshot_parts| (true, true),
+        );
+
+        assert!(effect.accumulated);
+        assert!(effect.should_persist);
+        assert_eq!(proc.streaming_delta_seq_by_message.get(&base_mid), Some(&5));
+        assert_eq!(
+            effect.persist_parts,
+            vec![MessagePart::Text {
+                content: "base delta".to_string(),
+                parent_tool_use_id: None,
+            }]
+        );
+        let _ = proc.child.kill().await;
     }
 
     #[test]

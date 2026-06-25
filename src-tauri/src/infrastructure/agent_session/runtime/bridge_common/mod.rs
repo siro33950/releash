@@ -31,9 +31,10 @@ pub(crate) use sdk_message::handle_external_bridge_message;
 pub(crate) use session_lifecycle::{
     cancel_agent_queued_turn_internal, close_agent_session_internal, close_all_agent_sessions,
     get_session, get_session_page_internal_with_data_dir, init_agent_sessions,
-    interrupt_agent_query, send_agent_message_internal, set_session_backend,
-    start_agent_session_internal, start_agent_turn_internal_locked, CancelQueuedTurnResponse,
-    InitSessionsResponse, SendMessageResponse,
+    interrupt_agent_query, resync_streaming_message_internal_with_data_dir,
+    send_agent_message_internal, set_session_backend, start_agent_session_internal,
+    start_agent_turn_internal_locked, CancelQueuedTurnResponse, InitSessionsResponse,
+    SendMessageResponse,
 };
 pub(crate) use session_persistence::{
     persist_context_carry_failed_after_init_error, persist_context_carry_state,

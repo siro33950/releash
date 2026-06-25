@@ -1,9 +1,11 @@
-use super::process_registry::{AgentProcess, AgentProcessMap, BridgeState, TurnPhase};
+use super::process_registry::{
+    AgentProcess, AgentProcessMap, BridgeState, StreamPartRollback, TurnPhase,
+};
 use super::shared::{
     bridge_permission_fields, notify_status_transition, write_bridge_command, CODEX_BACKEND_ID,
 };
 use super::stream_emit::{
-    emit_session_state_changed, emit_streaming_parts, enqueue_pending_delta,
+    emit_session_state_changed, emit_streaming_delta, enqueue_pending_delta_with_rollbacks,
     flush_streaming_before_transition, force_flush_pending_streaming, spawn_streaming_timer,
 };
 use super::turn_event_log::{
@@ -194,7 +196,7 @@ pub(super) fn run_permission_request_transition_locked<F>(
     emit_stream: F,
 ) -> PermissionRequestTransition
 where
-    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     if proc.state == BridgeState::Streaming {
         if let Some(request_id) = request_id {
@@ -242,7 +244,7 @@ pub(super) fn apply_respond_permission_locked<F>(
     mut emit_stream: F,
 ) -> PermissionResponseTransition
 where
-    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     let did_transition = proc.turn_phase == TurnPhase::WaitingPermission;
     turn_latency::record_permission_wait_latency(&mut proc.turn_latency, request_id);
@@ -257,28 +259,33 @@ where
         "denied"
     };
     let mut found_part: Option<MessagePart> = None;
-    for part in &mut proc.streaming_parts {
-        if let MessagePart::Permission {
-            request,
-            status,
-            answers,
-            ..
-        } = part
-        {
-            if request.get("request_id").and_then(|v| v.as_str()) == Some(request_id) {
+    let mut rollbacks = Vec::new();
+    for index in 0..proc.streaming_parts.len() {
+        let matches_request = matches!(
+            &proc.streaming_parts[index],
+            MessagePart::Permission { request, .. }
+                if request.get("request_id").and_then(|v| v.as_str()) == Some(request_id)
+        );
+        if matches_request {
+            let previous = proc.streaming_parts[index].clone();
+            if let MessagePart::Permission {
+                status, answers, ..
+            } = &mut proc.streaming_parts[index]
+            {
+                rollbacks.push(StreamPartRollback { index, previous });
                 *status = new_status.to_string();
                 if let Some(av) = answers_value {
                     *answers = Some(av.clone());
                 }
-                found_part = Some(part.clone());
+                found_part = Some(proc.streaming_parts[index].clone());
             }
         }
     }
     let emit_msg_id = proc.streaming_message_id.clone();
     if let (Some(mid), Some(part)) = (emit_msg_id, found_part) {
-        enqueue_pending_delta(proc, std::slice::from_ref(&part));
-        force_flush_pending_streaming(proc, chat_session_id, &mid, |parts| {
-            emit_stream(&mid, parts)
+        enqueue_pending_delta_with_rollbacks(proc, std::slice::from_ref(&part), rollbacks);
+        force_flush_pending_streaming(proc, chat_session_id, &mid, |seq, parts, snapshot_parts| {
+            emit_stream(&mid, seq, parts, snapshot_parts)
         });
     }
     record_permission_resolution_for_current_turn(
@@ -464,7 +471,16 @@ pub async fn respond_agent_permission_internal(
                 &request_id,
                 &behavior,
                 answers_value.as_ref(),
-                |mid, parts| emit_streaming_parts(app, &chat_session_id, mid, parts.to_vec()),
+                |mid, seq, parts, snapshot_parts| {
+                    emit_streaming_delta(
+                        app,
+                        &chat_session_id,
+                        mid,
+                        seq,
+                        parts.to_vec(),
+                        snapshot_parts,
+                    )
+                },
             );
             permission_transition = effect;
 
@@ -563,7 +579,7 @@ mod moved_tests {
             }
         );
         assert_eq!(proc.turn_phase, TurnPhase::Streaming);
-        assert!(proc.pending_stream_part_count == 0);
+        assert!(proc.pending_stream_parts.len() == 0);
         // Permission part status was updated in place.
         let updated = proc
             .streaming_parts
@@ -598,7 +614,7 @@ mod moved_tests {
             "req-1",
             "allow",
             None,
-            |_mid, _parts| (true, true),
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
         );
 
         assert!(effect.did_transition);
@@ -645,15 +661,16 @@ mod moved_tests {
             "req-1",
             "allow",
             None,
-            |_mid, _parts| (false, false), // emit failure on both channels
+            |_mid, _seq, _parts, _snapshot_parts| (false, false), // emit failure on both channels
         );
         assert!(
             effect.did_transition,
             "transition must still be reported so caller emits state-change"
         );
         assert_eq!(proc.turn_phase, TurnPhase::Streaming);
-        // Pending is retained for next-flush retry (Spec L108-113).
-        assert!(proc.pending_stream_part_count >= 1);
+        // Retry payload is retained for the next flush.
+        assert_eq!(proc.pending_stream_parts.len(), 0);
+        assert!(proc.retry_stream_delta.is_some());
         assert!(proc.last_stream_emit_at.is_none());
     }
 

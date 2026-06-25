@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { AgentStreamSync } from "@/types/protocol";
 import {
 	type AgentEditorContext,
 	type BackendInfo,
@@ -285,6 +286,18 @@ export async function getSession(
 	});
 	if (!raw) return null;
 	return convertRawGetSessionResponse(raw);
+}
+
+export async function resyncStreamingMessage(
+	sessionId: string,
+	messageId: string,
+	sinceSeq: number,
+): Promise<AgentStreamSync | null> {
+	return invoke<AgentStreamSync | null>("resync_streaming_message", {
+		sessionId,
+		messageId,
+		sinceSeq,
+	});
 }
 
 export async function createSession(

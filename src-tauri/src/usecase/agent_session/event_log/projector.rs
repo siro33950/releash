@@ -436,6 +436,7 @@ impl TurnProjection {
             thinking: None,
             activities: None,
             parts: (!prompt_parts.is_empty()).then_some(prompt_parts),
+            streaming_final_seq: 0,
             timestamp: self.started_at,
             mentions: (!self.prompt.mentions.is_empty()).then_some(self.prompt.mentions.clone()),
         });
@@ -448,6 +449,7 @@ impl TurnProjection {
             thinking,
             activities,
             parts: (!self.assistant_parts.is_empty()).then_some(self.assistant_parts.clone()),
+            streaming_final_seq: 0,
             timestamp: self.started_at,
             mentions: None,
         });

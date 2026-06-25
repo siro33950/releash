@@ -194,6 +194,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::agent_session::stored_session::list_sessions,
             crate::adaptor::controller::command::agent_session::session::get_session,
             crate::adaptor::controller::command::agent_session::session::get_session_page,
+            crate::adaptor::controller::command::agent_session::session::resync_streaming_message,
             crate::adaptor::controller::command::agent_session::session::plan_agent_chat_eviction,
             crate::adaptor::controller::command::agent_session::session::get_session_attachment,
             crate::adaptor::controller::command::agent_session::stored_session::create_session,

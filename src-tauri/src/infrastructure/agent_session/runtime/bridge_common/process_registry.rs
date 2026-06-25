@@ -75,11 +75,15 @@ pub struct AgentProcess {
     /// `last_message_id` can accept post-turn background task updates.
     pub(crate) post_turn_message_token: Option<String>,
     pub streaming_parts: Vec<MessagePart>,
+    /// Number of entries in `streaming_parts` covered by the most recent
+    /// successfully emitted delta. This is metadata only; live resync derives
+    /// the confirmed view from `streaming_parts` plus pending rollback records.
+    pub(crate) confirmed_stream_part_len: usize,
     /// Per-turn durable event buffer. This is the fact stream used by projection;
     /// `streaming_parts` remains only as the existing cumulative live buffer.
     pub turn_event_log: TurnEventLog,
     /// Retained after turn_complete so post-turn background task events
-    /// can still be accumulated and emitted via `agent-streaming-updated`.
+    /// can still be accumulated and emitted via `agent-streaming-delta`.
     pub last_message_id: Option<String>,
     /// Message id whose store-backed parts cannot be trusted as a post-turn
     /// base because the latest full-message persist is pending or failed.
@@ -105,18 +109,32 @@ pub struct AgentProcess {
     pub last_result_token_usage: Option<(u64, u64)>,
     /// Token usage from the latest SDK result, retained for desktop status display.
     pub latest_token_usage: Option<TokenUsage>,
-    /// Count of streaming delta parts queued since the last successful emit.
-    /// Acts as the dirty signal for coalescing — `> 0` means a flush is owed.
-    /// The actual payload lives in `streaming_parts` (cumulative); this field
-    /// only tracks how many entries have been added since the last flush so we
-    /// can detect the count threshold and decide when there's work to do.
-    pub(crate) pending_stream_part_count: usize,
+    /// Concrete streaming delta parts queued since the last successful emit.
+    /// This is intentionally only the pending delta payload, not a cumulative
+    /// snapshot. It preserves in-place update deltas whose target part is not
+    /// the tail of `streaming_parts`.
+    pub(crate) pending_stream_parts: Vec<MessagePart>,
+    /// Previous values for in-place updates that are pending emit. This stays
+    /// bounded by the unconfirmed delta payload and lets resync avoid a second
+    /// cumulative parts buffer.
+    pub(crate) pending_stream_part_rollbacks: Vec<StreamPartRollback>,
+    /// Frozen retry payload for a delta whose previous emit attempt failed.
+    /// New deltas are accumulated in `pending_stream_parts` and receive the
+    /// next seq after this retry succeeds, so a delivered duplicate seq always
+    /// carries the identical payload.
+    pub(crate) retry_stream_delta: Option<PendingStreamDelta>,
     /// Accumulated payload bytes for parts queued since the last successful
     /// emit. Used to decide whether to flush early when the byte cap is
-    /// reached. Mirrors `pending_stream_part_count` semantically — count and
-    /// bytes are the only state we need; the delta entries themselves remain
-    /// in `streaming_parts`.
+    /// reached.
     pub(crate) pending_stream_bytes: usize,
+    /// Monotonic streaming delta sequence for the current agent message.
+    /// Reset only when a new turn starts; post-turn background updates keep
+    /// incrementing the completed turn's message sequence.
+    pub(crate) streaming_delta_seq: u64,
+    /// Last confirmed streaming delta seq per message. This is seq metadata
+    /// only, not a delta history buffer; it lets late post-turn updates keep
+    /// `(session_id, message_id)` sequence continuity after a new turn reset.
+    pub(crate) streaming_delta_seq_by_message: HashMap<String, u64>,
     /// Timestamp of the most recent successful streaming emit. `None` means
     /// the first emit for this turn — flush immediately.
     pub(crate) last_stream_emit_at: Option<Instant>,
@@ -134,6 +152,22 @@ pub struct AgentProcess {
     pub turn_seq: u64,
     /// True while a per-turn stale watchdog task is alive.
     pub(crate) turn_watchdog_active: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingStreamDelta {
+    pub(crate) seq: u64,
+    pub(crate) parts: Vec<MessagePart>,
+    pub(crate) part_count: usize,
+    pub(crate) pending_bytes: usize,
+    pub(crate) rollbacks: Vec<StreamPartRollback>,
+    pub(crate) confirmed_stream_part_len_after_success: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StreamPartRollback {
+    pub(crate) index: usize,
+    pub(crate) previous: MessagePart,
 }
 
 #[cfg(test)]
@@ -162,6 +196,7 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         turn_latency: None,
         post_turn_message_token: None,
         streaming_parts: Vec::new(),
+        confirmed_stream_part_len: 0,
         turn_event_log: TurnEventLog::default(),
         last_message_id: None,
         post_turn_base_untrusted_message_id: None,
@@ -172,8 +207,12 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         selected_model: None,
         last_result_token_usage: None,
         latest_token_usage: None,
-        pending_stream_part_count: 0,
+        pending_stream_parts: Vec::new(),
+        pending_stream_part_rollbacks: Vec::new(),
+        retry_stream_delta: None,
         pending_stream_bytes: 0,
+        streaming_delta_seq: 0,
+        streaming_delta_seq_by_message: HashMap::new(),
         last_stream_emit_at: None,
         streaming_timer_active: false,
         last_progress_at: None,
@@ -220,6 +259,7 @@ mod tests {
             content: "hello".to_string(),
             parent_tool_use_id: None,
         });
+        proc.confirmed_stream_part_len = 1;
         proc.turn_event_log.begin_turn(
             1,
             "human-1".to_string(),
@@ -227,8 +267,21 @@ mod tests {
             PromptInput::default(),
             1.0,
         );
-        proc.pending_stream_part_count = 3;
+        proc.pending_stream_parts = vec![MessagePart::Text {
+            content: "pending".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.pending_stream_part_rollbacks = vec![super::StreamPartRollback {
+            index: 0,
+            previous: MessagePart::Text {
+                content: "hello".to_string(),
+                parent_tool_use_id: None,
+            },
+        }];
         proc.pending_stream_bytes = 128;
+        proc.streaming_delta_seq = 9;
+        proc.streaming_delta_seq_by_message
+            .insert("agent-1".to_string(), 9);
         proc.last_stream_emit_at = Some(Instant::now());
         proc.last_message_id = Some("agent-1".to_string());
         proc.post_turn_message_token = Some("turn-token".to_string());
@@ -239,9 +292,14 @@ mod tests {
         proc.reset_streaming_state_for_new_turn();
 
         assert!(proc.streaming_parts.is_empty());
+        assert_eq!(proc.confirmed_stream_part_len, 0);
         assert_eq!(proc.turn_event_log.current_turn_id(), None);
-        assert_eq!(proc.pending_stream_part_count, 0);
+        assert!(proc.pending_stream_parts.is_empty());
+        assert!(proc.pending_stream_part_rollbacks.is_empty());
+        assert!(proc.retry_stream_delta.is_none());
         assert_eq!(proc.pending_stream_bytes, 0);
+        assert_eq!(proc.streaming_delta_seq, 0);
+        assert_eq!(proc.streaming_delta_seq_by_message.get("agent-1"), Some(&9));
         assert_eq!(proc.last_stream_emit_at, None);
         assert_eq!(proc.last_message_id, None);
         assert_eq!(proc.post_turn_message_token, None);
@@ -298,9 +356,13 @@ impl AgentProcess {
     /// would block the first emit of the new turn from firing immediately.
     pub(crate) fn reset_streaming_state_for_new_turn(&mut self) {
         self.streaming_parts.clear();
+        self.confirmed_stream_part_len = 0;
         self.turn_event_log.clear();
-        self.pending_stream_part_count = 0;
+        self.pending_stream_parts.clear();
+        self.pending_stream_part_rollbacks.clear();
+        self.retry_stream_delta = None;
         self.pending_stream_bytes = 0;
+        self.streaming_delta_seq = 0;
         self.last_stream_emit_at = None;
         self.last_message_id = None;
         self.post_turn_message_token = None;

@@ -18,8 +18,8 @@ use super::shared::{
     CLAUDE_BACKEND_ID, CODEX_BACKEND_ID,
 };
 use super::stream_emit::{
-    emit_session_state_changed, flush_streaming_before_transition,
-    release_completed_turn_streaming_buffer, spawn_streaming_timer,
+    confirmed_streaming_parts, emit_session_state_changed, flush_streaming_before_transition,
+    has_pending_stream_flush, release_completed_turn_streaming_buffer, spawn_streaming_timer,
 };
 use super::turn_event_log::{
     append_terminal_events_and_project, begin_turn_event_log,
@@ -60,6 +60,7 @@ use crate::usecase::agent_session::session::SessionPage;
 use crate::usecase::agent_session::session::SessionState;
 use crate::usecase::agent_session::session::SessionStore;
 use crate::usecase::agent_session::session::SessionSummary;
+use crate::usecase::agent_session::session::StreamResyncSnapshot;
 use crate::usecase::agent_session::session::TokenUsage;
 use crate::usecase::agent_session::session::INITIAL_SESSION_PAGE_LIMIT;
 use serde::Serialize;
@@ -152,6 +153,7 @@ pub(super) struct TurnCompleteTransition {
     pub(crate) turn_completed: bool,
     pub(crate) final_msg_id: Option<String>,
     pub(crate) final_parts: Vec<MessagePart>,
+    pub(crate) final_streaming_seq: u64,
     pub(crate) workflow_turn_complete: Option<WorkflowTurnCompleteInput>,
     pub(crate) projected_session_state: Option<SessionState>,
     pub(crate) released_streaming_parts: Vec<MessagePart>,
@@ -170,7 +172,7 @@ pub(super) fn run_turn_complete_transition_locked<F>(
     emit_stream: F,
 ) -> TurnCompleteTransition
 where
-    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     run_turn_complete_transition_locked_with_interrupt(
         proc,
@@ -191,7 +193,7 @@ pub(super) fn run_turn_complete_transition_locked_with_interrupt<F>(
     emit_stream: F,
 ) -> TurnCompleteTransition
 where
-    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     if proc.turn_phase == TurnPhase::Idle && proc.state != BridgeState::Initializing {
         return TurnCompleteTransition::default();
@@ -243,12 +245,16 @@ where
     if final_msg_id.is_some() {
         proc.last_message_id.clone_from(&final_msg_id);
     }
+    let final_streaming_seq = final_msg_id
+        .as_ref()
+        .and_then(|message_id| proc.streaming_delta_seq_by_message.get(message_id).copied())
+        .unwrap_or(proc.streaming_delta_seq);
     if turn_completed && !final_parts.is_empty() {
         if let Some(ref mid) = final_msg_id {
             mark_post_turn_store_base_untrusted(proc, mid);
         }
     }
-    let released_streaming_parts = if exit_code != 0 || proc.pending_stream_part_count == 0 {
+    let released_streaming_parts = if exit_code != 0 || !has_pending_stream_flush(proc) {
         release_completed_turn_streaming_buffer(proc)
     } else {
         Vec::new()
@@ -257,6 +263,7 @@ where
         turn_completed,
         final_msg_id,
         final_parts,
+        final_streaming_seq,
         workflow_turn_complete,
         projected_session_state,
         released_streaming_parts,
@@ -288,6 +295,7 @@ pub(super) async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
                 chat_session_id,
                 mid,
                 &effect.final_parts,
+                effect.final_streaming_seq,
                 Some(now_timestamp()),
             );
             if persisted {
@@ -535,6 +543,68 @@ pub(crate) async fn get_session_page_internal_with_data_dir(
         }
     }
     Ok(Some(page))
+}
+
+pub(crate) async fn resync_streaming_message_internal_with_data_dir(
+    session_store: &Arc<SessionStore>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    data_dir: &Path,
+    session_id: &str,
+    message_id: &str,
+    _since_seq: u64,
+) -> Result<Option<StreamResyncSnapshot>, String> {
+    let live_snapshot = {
+        let map = handles.lock().await;
+        map.get(session_id).and_then(|proc| {
+            let targets_current = proc.streaming_message_id.as_deref() == Some(message_id);
+            let targets_last = proc.last_message_id.as_deref() == Some(message_id);
+            let has_live_parts =
+                targets_current || (targets_last && !proc.streaming_parts.is_empty());
+            if !has_live_parts {
+                return None;
+            }
+            let seq = proc
+                .streaming_delta_seq_by_message
+                .get(message_id)
+                .copied()
+                .unwrap_or(proc.streaming_delta_seq);
+            Some(StreamResyncSnapshot {
+                session_id: session_id.to_string(),
+                message_id: message_id.to_string(),
+                seq,
+                parts: confirmed_streaming_parts(proc),
+            })
+        })
+    };
+    if let Some(snapshot) = live_snapshot {
+        return Ok(Some(snapshot));
+    }
+
+    let Some(session) = session_store.load_full_session_for_restore(data_dir, session_id)? else {
+        return Ok(None);
+    };
+    let Some(message) = session
+        .messages
+        .iter()
+        .find(|message| message.id == message_id)
+    else {
+        return Ok(None);
+    };
+    if message.role != MessageRole::Agent {
+        return Ok(None);
+    };
+    let process_seq = {
+        let map = handles.lock().await;
+        map.get(session_id)
+            .and_then(|proc| proc.streaming_delta_seq_by_message.get(message_id).copied())
+    };
+    let parts = message.parts.clone().unwrap_or_default();
+    Ok(Some(StreamResyncSnapshot {
+        session_id: session_id.to_string(),
+        message_id: message_id.to_string(),
+        seq: process_seq.unwrap_or(message.streaming_final_seq),
+        parts,
+    }))
 }
 
 pub(super) fn can_change_session_backend_from_meta(
@@ -1989,6 +2059,7 @@ pub(super) async fn prepare_send_agent_message_internal(
                 thinking: None,
                 activities: None,
                 parts: human_parts.clone(),
+                streaming_final_seq: 0,
                 timestamp: now_timestamp(),
                 mentions: None,
             };
@@ -2390,8 +2461,8 @@ mod moved_tests {
     use crate::usecase::agent_session::event_log::{PromptInput, TurnEventLog};
 
     use crate::usecase::agent_session::session::{
-        add_message_internal, create_session_internal, AttachmentRef, ChatMessage, ChatSession,
-        MessageMention, MessagePart, MessageRole, SessionStore,
+        add_message_internal, create_session_internal, ActivityEntry, AttachmentRef, ChatMessage,
+        ChatSession, MessageMention, MessagePart, MessageRole, SessionStore,
     };
 
     use std::collections::{HashMap, VecDeque};
@@ -2400,6 +2471,300 @@ mod moved_tests {
     use std::time::{Duration, Instant};
 
     use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn resync_streaming_message_uses_persisted_parts_when_live_buffer_was_released() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let mut session =
+            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
+        let message_id = "agent-message-1";
+        let persisted_parts = vec![MessagePart::Text {
+            content: "parts canonical".to_string(),
+            parent_tool_use_id: None,
+        }];
+        session.messages.push(ChatMessage {
+            id: message_id.to_string(),
+            role: MessageRole::Agent,
+            content: "legacy stale text".to_string(),
+            thinking: Some("legacy stale thinking".to_string()),
+            activities: Some(vec![ActivityEntry::ToolResult {
+                content: "legacy stale tool result".to_string(),
+                is_error: false,
+                tool_use_id: None,
+            }]),
+            parts: Some(persisted_parts),
+            streaming_final_seq: 6,
+            timestamp: 1.0,
+            mentions: None,
+        });
+        session_store
+            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
+            .unwrap();
+
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Ready;
+        proc.turn_phase = TurnPhase::Idle;
+        proc.last_message_id = Some(message_id.to_string());
+        proc.streaming_delta_seq_by_message
+            .insert(message_id.to_string(), 6);
+        let handles = Arc::new(Mutex::new(HashMap::from([(session.id.clone(), proc)])));
+
+        let snapshot = resync_streaming_message_internal_with_data_dir(
+            &session_store,
+            &handles,
+            data_dir.path(),
+            &session.id,
+            message_id,
+            3,
+        )
+        .await
+        .unwrap()
+        .expect("snapshot");
+
+        assert_eq!(snapshot.seq, 6);
+        assert_eq!(snapshot.parts.len(), 1);
+        assert!(matches!(
+            &snapshot.parts[0],
+            MessagePart::Text { content, .. }
+                if content == "parts canonical"
+        ));
+        assert!(!snapshot.parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Text { content, .. }
+            | MessagePart::Thinking { content, .. }
+            | MessagePart::ToolResult { content, .. }
+            | MessagePart::Error { content, .. }
+                if content.contains("legacy stale")
+        )));
+
+        let mut proc = {
+            let mut map = handles.lock().await;
+            map.remove(&session.id).unwrap()
+        };
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn resync_streaming_message_uses_persisted_final_seq_without_live_process() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let mut session =
+            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
+        let message_id = "agent-message-final-seq";
+        session.messages.push(ChatMessage {
+            id: message_id.to_string(),
+            role: MessageRole::Agent,
+            content: "legacy".to_string(),
+            thinking: None,
+            activities: None,
+            parts: Some(vec![MessagePart::Text {
+                content: "persisted final".to_string(),
+                parent_tool_use_id: None,
+            }]),
+            streaming_final_seq: 9,
+            timestamp: 1.0,
+            mentions: None,
+        });
+        session_store
+            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
+            .unwrap();
+        let handles = Arc::new(Mutex::new(HashMap::new()));
+
+        let snapshot = resync_streaming_message_internal_with_data_dir(
+            &session_store,
+            &handles,
+            data_dir.path(),
+            &session.id,
+            message_id,
+            123,
+        )
+        .await
+        .unwrap()
+        .expect("snapshot");
+
+        assert_eq!(snapshot.seq, 9);
+        assert_eq!(
+            snapshot.parts,
+            vec![MessagePart::Text {
+                content: "persisted final".to_string(),
+                parent_tool_use_id: None,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn resync_streaming_message_rejects_persisted_non_agent_messages() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let mut session =
+            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
+        session.messages.push(ChatMessage {
+            id: "human-image-message".to_string(),
+            role: MessageRole::Human,
+            content: "human prompt".to_string(),
+            thinking: None,
+            activities: None,
+            parts: Some(vec![
+                MessagePart::Text {
+                    content: "human prompt".to_string(),
+                    parent_tool_use_id: None,
+                },
+                MessagePart::Image {
+                    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=".to_string(),
+                    media_type: "image/png".to_string(),
+                },
+            ]),
+            streaming_final_seq: 4,
+            timestamp: 1.0,
+            mentions: None,
+        });
+        session.messages.push(ChatMessage {
+            id: "system-message".to_string(),
+            role: MessageRole::System,
+            content: "system text".to_string(),
+            thinking: None,
+            activities: None,
+            parts: Some(vec![MessagePart::Text {
+                content: "system text".to_string(),
+                parent_tool_use_id: None,
+            }]),
+            streaming_final_seq: 5,
+            timestamp: 2.0,
+            mentions: None,
+        });
+        session_store
+            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
+            .unwrap();
+        let handles = Arc::new(Mutex::new(HashMap::new()));
+
+        for message_id in ["human-image-message", "system-message"] {
+            let snapshot = resync_streaming_message_internal_with_data_dir(
+                &session_store,
+                &handles,
+                data_dir.path(),
+                &session.id,
+                message_id,
+                0,
+            )
+            .await
+            .unwrap();
+            assert!(snapshot.is_none(), "{message_id} must not expose parts");
+        }
+    }
+
+    #[tokio::test]
+    async fn resync_streaming_message_live_snapshot_excludes_unconfirmed_pending_delta() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let session =
+            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
+        let message_id = "agent-message-1";
+        let confirmed = MessagePart::Text {
+            content: "confirmed".to_string(),
+            parent_tool_use_id: None,
+        };
+        let pending = MessagePart::Text {
+            content: " pending".to_string(),
+            parent_tool_use_id: None,
+        };
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        proc.streaming_message_id = Some(message_id.to_string());
+        proc.streaming_parts = vec![confirmed.clone(), pending.clone()];
+        proc.confirmed_stream_part_len = 1;
+        proc.pending_stream_parts = vec![pending.clone()];
+        proc.pending_stream_bytes = " pending".len();
+        proc.streaming_delta_seq = 1;
+        proc.streaming_delta_seq_by_message
+            .insert(message_id.to_string(), 1);
+        let handles = Arc::new(Mutex::new(HashMap::from([(session.id.clone(), proc)])));
+
+        let snapshot = resync_streaming_message_internal_with_data_dir(
+            &session_store,
+            &handles,
+            data_dir.path(),
+            &session.id,
+            message_id,
+            0,
+        )
+        .await
+        .unwrap()
+        .expect("snapshot");
+
+        assert_eq!(snapshot.seq, 1);
+        assert_eq!(snapshot.parts.len(), 1);
+        assert!(matches!(
+            &snapshot.parts[0],
+            MessagePart::Text { content, .. }
+                if content == "confirmed"
+        ));
+
+        let mut proc = {
+            let mut map = handles.lock().await;
+            map.remove(&session.id).unwrap()
+        };
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn resync_streaming_message_live_snapshot_rolls_back_unconfirmed_in_place_update() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let session =
+            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
+        let message_id = "agent-message-1";
+        let previous = MessagePart::TaskStatus {
+            task_tool_use_id: "tool-1".to_string(),
+            status: "started".to_string(),
+            description: None,
+            summary: None,
+        };
+        let pending_update = MessagePart::TaskStatus {
+            task_tool_use_id: "tool-1".to_string(),
+            status: "completed".to_string(),
+            description: None,
+            summary: Some("done".to_string()),
+        };
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        proc.streaming_message_id = Some(message_id.to_string());
+        proc.streaming_parts = vec![pending_update.clone()];
+        proc.confirmed_stream_part_len = 1;
+        proc.pending_stream_parts = vec![pending_update];
+        proc.pending_stream_part_rollbacks = vec![StreamPartRollback { index: 0, previous }];
+        proc.streaming_delta_seq = 1;
+        proc.streaming_delta_seq_by_message
+            .insert(message_id.to_string(), 1);
+        let handles = Arc::new(Mutex::new(HashMap::from([(session.id.clone(), proc)])));
+
+        let snapshot = resync_streaming_message_internal_with_data_dir(
+            &session_store,
+            &handles,
+            data_dir.path(),
+            &session.id,
+            message_id,
+            0,
+        )
+        .await
+        .unwrap()
+        .expect("snapshot");
+
+        assert_eq!(snapshot.seq, 1);
+        assert!(matches!(
+            &snapshot.parts[..],
+            [MessagePart::TaskStatus { status, summary, .. }]
+                if status == "started" && summary.is_none()
+        ));
+
+        let mut proc = {
+            let mut map = handles.lock().await;
+            map.remove(&session.id).unwrap()
+        };
+        let _ = proc.child.kill().await;
+    }
 
     #[test]
     fn prompt_input_from_human_message_preserves_mentions_and_prompt_parts() {
@@ -2429,6 +2794,7 @@ mod moved_tests {
             thinking: None,
             activities: None,
             parts: Some(parts.clone()),
+            streaming_final_seq: 0,
             timestamp: 1.0,
             mentions: Some(mentions.clone()),
         };
@@ -2984,6 +3350,7 @@ mod moved_tests {
                 thinking: None,
                 activities: None,
                 parts: None,
+                streaming_final_seq: 0,
                 timestamp: 1000.0,
                 mentions: None,
             }],
@@ -3855,6 +4222,7 @@ mod moved_tests {
                 turn_latency: None,
                 post_turn_message_token: None,
                 streaming_parts: Vec::new(),
+                confirmed_stream_part_len: 0,
                 turn_event_log: TurnEventLog::default(),
                 last_message_id: None,
                 post_turn_base_untrusted_message_id: None,
@@ -3865,8 +4233,12 @@ mod moved_tests {
                 selected_model: None,
                 last_result_token_usage: None,
                 latest_token_usage: None,
-                pending_stream_part_count: 0,
+                pending_stream_parts: Vec::new(),
+                pending_stream_part_rollbacks: Vec::new(),
+                retry_stream_delta: None,
                 pending_stream_bytes: 0,
+                streaming_delta_seq: 0,
+                streaming_delta_seq_by_message: HashMap::new(),
                 last_stream_emit_at: None,
                 streaming_timer_active: false,
                 last_progress_at: None,
@@ -4461,6 +4833,7 @@ mod moved_tests {
                     thinking: None,
                     activities: None,
                     parts: None,
+                    streaming_final_seq: 0,
                     timestamp: 1000.0 + index as f64,
                     mentions: None,
                 })

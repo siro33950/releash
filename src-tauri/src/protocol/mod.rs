@@ -47,6 +47,10 @@ pub enum WsMessage {
     WorkflowStateSync(Box<WorkflowStateSync>),
     #[serde(rename = "agent_stream_sync")]
     AgentStreamSync(AgentStreamSync),
+    #[serde(rename = "agent_stream_delta")]
+    AgentStreamDelta(AgentStreamDeltaMsg),
+    #[serde(rename = "resync_stream")]
+    ResyncStream(ResyncStreamReq),
 
     // 制御
     #[serde(rename = "error")]
@@ -220,7 +224,19 @@ mod tests {
             WsMessage::AgentStreamSync(AgentStreamSync {
                 session_id: "sess-1".to_string(),
                 message_id: "a-1".to_string(),
+                seq: 7,
                 parts: vec![],
+            }),
+            WsMessage::AgentStreamDelta(AgentStreamDeltaMsg {
+                session_id: "sess-1".to_string(),
+                message_id: "a-1".to_string(),
+                seq: 8,
+                parts: vec![],
+            }),
+            WsMessage::ResyncStream(ResyncStreamReq {
+                session_id: "sess-1".to_string(),
+                message_id: "a-1".to_string(),
+                since_seq: 7,
             }),
             WsMessage::Error(ErrorMsg {
                 code: "E".to_string(),

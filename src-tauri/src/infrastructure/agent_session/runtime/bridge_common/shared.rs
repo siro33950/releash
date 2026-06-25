@@ -87,6 +87,612 @@ pub(super) fn consolidate_parts_from_slice(parts: &[MessagePart]) -> Vec<Message
     result
 }
 
+pub(super) fn pending_delta_parts(parts: &[MessagePart], pending_count: usize) -> Vec<MessagePart> {
+    let pending_count = pending_count.min(parts.len());
+    if pending_count == 0 {
+        return Vec::new();
+    }
+    consolidate_parts_from_slice(&parts[parts.len() - pending_count..])
+}
+
+/// Normalize a cumulative stream snapshot with the same identity convergence
+/// rules used for seq delta application.
+pub(super) fn canonical_stream_parts_from_slice(parts: &[MessagePart]) -> Vec<MessagePart> {
+    let mut result = Vec::with_capacity(parts.len());
+    append_stream_delta_parts(&mut result, parts);
+    result
+}
+
+pub(super) fn append_display_delta_parts(
+    current_parts: &mut Vec<MessagePart>,
+    delta_parts: &[MessagePart],
+) {
+    for part in delta_parts {
+        match part {
+            MessagePart::Text {
+                content,
+                parent_tool_use_id,
+            } => match current_parts.last_mut() {
+                Some(MessagePart::Text {
+                    content: last_content,
+                    parent_tool_use_id: last_pid,
+                }) if parent_tool_use_id == last_pid => {
+                    last_content.push_str(content);
+                }
+                _ => current_parts.push(part.clone()),
+            },
+            MessagePart::Thinking {
+                content,
+                parent_tool_use_id,
+            } => match current_parts.last_mut() {
+                Some(MessagePart::Thinking {
+                    content: last_content,
+                    parent_tool_use_id: last_pid,
+                }) if parent_tool_use_id == last_pid => {
+                    last_content.push_str(content);
+                }
+                _ => current_parts.push(part.clone()),
+            },
+            _ => current_parts.push(part.clone()),
+        }
+    }
+}
+
+pub(super) fn append_stream_delta_parts(
+    current_parts: &mut Vec<MessagePart>,
+    delta_parts: &[MessagePart],
+) {
+    for part in delta_parts {
+        match part {
+            MessagePart::Text {
+                content,
+                parent_tool_use_id,
+            } => match current_parts.last_mut() {
+                Some(MessagePart::Text {
+                    content: last_content,
+                    parent_tool_use_id: last_pid,
+                }) if parent_tool_use_id == last_pid => {
+                    last_content.push_str(content);
+                }
+                _ => current_parts.push(part.clone()),
+            },
+            MessagePart::Thinking {
+                content,
+                parent_tool_use_id,
+            } => match current_parts.last_mut() {
+                Some(MessagePart::Thinking {
+                    content: last_content,
+                    parent_tool_use_id: last_pid,
+                }) if parent_tool_use_id == last_pid => {
+                    last_content.push_str(content);
+                }
+                _ => current_parts.push(part.clone()),
+            },
+            MessagePart::ToolUse { id, .. } => {
+                if let Some(existing) = current_parts.iter_mut().rev().find(|existing| {
+                    matches!(existing, MessagePart::ToolUse { id: existing_id, .. } if existing_id == id)
+                }) {
+                    *existing = part.clone();
+                } else {
+                    current_parts.push(part.clone());
+                }
+            }
+            MessagePart::ToolResult {
+                content,
+                is_error,
+                tool_use_id: Some(tool_use_id),
+                parent_tool_use_id,
+            } => {
+                if let Some(existing) = current_parts.iter_mut().rev().find(|existing| {
+                    matches!(
+                        existing,
+                        MessagePart::ToolResult {
+                            tool_use_id: Some(existing_id),
+                            ..
+                        } if existing_id == tool_use_id
+                    )
+                }) {
+                    if let MessagePart::ToolResult {
+                        content: existing_content,
+                        is_error: existing_error,
+                        parent_tool_use_id: existing_parent,
+                        ..
+                    } = existing
+                    {
+                        if existing_parent.is_none() {
+                            *existing_parent = parent_tool_use_id.clone();
+                        }
+                        if *existing_error && !*is_error {
+                            *existing_content = content.clone();
+                            *existing_error = false;
+                        } else if content.contains(existing_content.as_str())
+                            || existing_content.is_empty()
+                        {
+                            *existing_content = content.clone();
+                        } else {
+                            existing_content.push_str(content);
+                        }
+                        *existing_error = *existing_error || *is_error;
+                    }
+                } else {
+                    current_parts.push(part.clone());
+                }
+            }
+            MessagePart::TaskStatus {
+                task_tool_use_id, ..
+            } => {
+                if let Some(existing) = current_parts.iter_mut().rev().find(|existing| {
+                    matches!(
+                        existing,
+                        MessagePart::TaskStatus {
+                            task_tool_use_id: existing_id,
+                            ..
+                        } if existing_id == task_tool_use_id
+                    )
+                }) {
+                    *existing = part.clone();
+                } else {
+                    current_parts.push(part.clone());
+                }
+            }
+            MessagePart::TodoListSnapshot { .. } => {
+                if let Some(existing) = current_parts
+                    .iter_mut()
+                    .rev()
+                    .find(|existing| matches!(existing, MessagePart::TodoListSnapshot { .. }))
+                {
+                    *existing = part.clone();
+                } else {
+                    current_parts.push(part.clone());
+                }
+            }
+            MessagePart::SystemNotification {
+                notification_type, ..
+            } => {
+                if let Some(existing) = current_parts.iter_mut().rev().find(|existing| {
+                    matches!(
+                        existing,
+                        MessagePart::SystemNotification {
+                            notification_type: existing_type,
+                            status,
+                            ..
+                        } if existing_type == notification_type && status == "in_progress"
+                    )
+                }) {
+                    *existing = part.clone();
+                } else {
+                    current_parts.push(part.clone());
+                }
+            }
+            MessagePart::Permission { request, .. } => {
+                let request_id = request.get("request_id").and_then(|value| value.as_str());
+                let tool_use_id = request.get("tool_use_id").and_then(|value| value.as_str());
+                if let Some(existing) = current_parts.iter_mut().rev().find(|existing| {
+                    let MessagePart::Permission {
+                        request: existing_request,
+                        ..
+                    } = existing
+                    else {
+                        return false;
+                    };
+                    let existing_request_id = existing_request
+                        .get("request_id")
+                        .and_then(|value| value.as_str());
+                    let existing_tool_use_id = existing_request
+                        .get("tool_use_id")
+                        .and_then(|value| value.as_str());
+                    request_id.is_some() && request_id == existing_request_id
+                        || tool_use_id.is_some() && tool_use_id == existing_tool_use_id
+                }) {
+                    *existing = part.clone();
+                } else {
+                    current_parts.push(part.clone());
+                }
+            }
+            _ => current_parts.push(part.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum StreamDeltaApplyResult {
+    Applied,
+    Duplicate,
+    Gap { expected: u64, actual: u64 },
+}
+
+pub(super) fn apply_stream_delta_to_parts(
+    current_parts: &mut Vec<MessagePart>,
+    last_seq: &mut u64,
+    seq: u64,
+    delta_parts: &[MessagePart],
+) -> StreamDeltaApplyResult {
+    if seq <= *last_seq {
+        return StreamDeltaApplyResult::Duplicate;
+    }
+    let expected = last_seq.saturating_add(1);
+    if seq != expected {
+        return StreamDeltaApplyResult::Gap {
+            expected,
+            actual: seq,
+        };
+    }
+    append_stream_delta_parts(current_parts, delta_parts);
+    *last_seq = seq;
+    StreamDeltaApplyResult::Applied
+}
+
+#[cfg(test)]
+pub(super) fn apply_stream_snapshot_to_parts(
+    current_parts: &mut Vec<MessagePart>,
+    last_seq: &mut u64,
+    seq: u64,
+    snapshot_parts: &[MessagePart],
+) {
+    current_parts.clear();
+    current_parts.extend_from_slice(snapshot_parts);
+    *last_seq = seq;
+}
+
+#[cfg(test)]
+mod stream_delta_tests {
+    use super::*;
+
+    fn text(content: &str) -> MessagePart {
+        MessagePart::Text {
+            content: content.to_string(),
+            parent_tool_use_id: None,
+        }
+    }
+
+    fn tool_use(id: &str, description: &str) -> MessagePart {
+        MessagePart::ToolUse {
+            tool: "Task".to_string(),
+            input: serde_json::json!({ "description": description }),
+            id: id.to_string(),
+            parent_tool_use_id: None,
+        }
+    }
+
+    fn tool_result(tool_use_id: &str, content: &str, is_error: bool) -> MessagePart {
+        MessagePart::ToolResult {
+            content: content.to_string(),
+            is_error,
+            tool_use_id: Some(tool_use_id.to_string()),
+            parent_tool_use_id: None,
+        }
+    }
+
+    fn task_status(task_tool_use_id: &str, status: &str, summary: Option<&str>) -> MessagePart {
+        MessagePart::TaskStatus {
+            task_tool_use_id: task_tool_use_id.to_string(),
+            status: status.to_string(),
+            description: Some(status.to_string()),
+            summary: summary.map(str::to_string),
+        }
+    }
+
+    fn todo_snapshot(completed: bool) -> MessagePart {
+        MessagePart::TodoListSnapshot {
+            items: vec![crate::usecase::agent_session::session::TodoListItem {
+                text: "ship".to_string(),
+                completed,
+            }],
+        }
+    }
+
+    fn system_notification(status: &str, label: &str) -> MessagePart {
+        MessagePart::SystemNotification {
+            notification_type:
+                crate::usecase::agent_session::session::SystemNotificationType::Compaction,
+            status: status.to_string(),
+            label: label.to_string(),
+            detail: None,
+            hook_id: None,
+        }
+    }
+
+    fn permission(request_id: &str, tool_use_id: &str, status: &str) -> MessagePart {
+        MessagePart::Permission {
+            request: serde_json::json!({
+                "request_id": request_id,
+                "tool_use_id": tool_use_id,
+                "tool_name": "Bash",
+                "input": {},
+            }),
+            status: status.to_string(),
+            answers: None,
+            parent_tool_use_id: None,
+        }
+    }
+
+    #[test]
+    fn pending_delta_parts_uses_only_pending_suffix() {
+        let parts = vec![text("old "), text("new")];
+
+        let delta = pending_delta_parts(&parts, 1);
+
+        assert_eq!(delta, vec![text("new")]);
+    }
+
+    #[test]
+    fn apply_stream_delta_is_idempotent_for_duplicate_seq() {
+        let mut parts = vec![text("Hel")];
+        let mut last_seq = 1;
+
+        assert_eq!(
+            apply_stream_delta_to_parts(&mut parts, &mut last_seq, 2, &[text("lo")]),
+            StreamDeltaApplyResult::Applied
+        );
+        assert_eq!(
+            apply_stream_delta_to_parts(&mut parts, &mut last_seq, 2, &[text("lo")]),
+            StreamDeltaApplyResult::Duplicate
+        );
+
+        assert_eq!(parts, vec![text("Hello")]);
+        assert_eq!(last_seq, 2);
+    }
+
+    #[test]
+    fn apply_stream_delta_detects_seq_gap_without_mutating_parts() {
+        let mut parts = vec![text("Hello")];
+        let mut last_seq = 1;
+
+        assert_eq!(
+            apply_stream_delta_to_parts(&mut parts, &mut last_seq, 3, &[text(" skipped")]),
+            StreamDeltaApplyResult::Gap {
+                expected: 2,
+                actual: 3,
+            }
+        );
+
+        assert_eq!(parts, vec![text("Hello")]);
+        assert_eq!(last_seq, 1);
+    }
+
+    #[test]
+    fn snapshot_application_converges_to_cumulative_state() {
+        let all_parts = vec![text("Hel"), text("lo"), text(" world")];
+        let snapshot = consolidate_parts_from_slice(&all_parts);
+        let mut applied = Vec::new();
+        let mut last_seq = 0;
+
+        assert_eq!(
+            apply_stream_delta_to_parts(&mut applied, &mut last_seq, 1, &[text("Hel")]),
+            StreamDeltaApplyResult::Applied
+        );
+        apply_stream_snapshot_to_parts(&mut applied, &mut last_seq, 3, &snapshot);
+
+        assert_eq!(applied, snapshot);
+        assert_eq!(last_seq, 3);
+    }
+
+    #[test]
+    fn seq_delta_application_converges_identity_updates_to_snapshot_state() {
+        let mut applied = vec![
+            tool_use("tool-1", "old"),
+            text("tail"),
+            tool_result("tool-1", "failed", true),
+            tool_result("tool-2", "partial", false),
+            tool_result("tool-3", "hello", false),
+            task_status("tool-1", "started", None),
+            todo_snapshot(false),
+            system_notification("in_progress", "Compacting"),
+            permission("req-1", "tool-1", "pending"),
+        ];
+        let mut last_seq = 0;
+
+        let first_delta = vec![
+            tool_use("tool-1", "new"),
+            MessagePart::ToolResult {
+                content: "success".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: Some("parent-1".to_string()),
+            },
+            tool_result("tool-2", "partial complete", false),
+            tool_result("tool-3", " world", false),
+        ];
+        let second_delta = vec![
+            task_status("tool-1", "completed", Some("done")),
+            todo_snapshot(true),
+            system_notification("completed", "Compacted"),
+            permission("req-1", "tool-1", "allowed"),
+        ];
+
+        assert_eq!(
+            apply_stream_delta_to_parts(&mut applied, &mut last_seq, 1, &first_delta),
+            StreamDeltaApplyResult::Applied
+        );
+        assert_eq!(
+            apply_stream_delta_to_parts(&mut applied, &mut last_seq, 2, &second_delta),
+            StreamDeltaApplyResult::Applied
+        );
+
+        assert_eq!(
+            applied,
+            vec![
+                tool_use("tool-1", "new"),
+                text("tail"),
+                MessagePart::ToolResult {
+                    content: "success".to_string(),
+                    is_error: false,
+                    tool_use_id: Some("tool-1".to_string()),
+                    parent_tool_use_id: Some("parent-1".to_string()),
+                },
+                tool_result("tool-2", "partial complete", false),
+                tool_result("tool-3", "hello world", false),
+                task_status("tool-1", "completed", Some("done")),
+                todo_snapshot(true),
+                system_notification("completed", "Compacted"),
+                permission("req-1", "tool-1", "allowed"),
+            ]
+        );
+        assert_eq!(last_seq, 2);
+    }
+
+    #[test]
+    fn seq_delta_application_matches_canonical_snapshot_with_identity_updates() {
+        let deltas = [
+            vec![
+                tool_use("tool-1", "old"),
+                tool_result("tool-1", "failed", true),
+                tool_result("tool-2", "partial", false),
+                tool_result("tool-3", "hello", false),
+                task_status("tool-1", "started", None),
+                todo_snapshot(false),
+                system_notification("in_progress", "Compacting"),
+                permission("req-1", "tool-1", "pending"),
+            ],
+            vec![
+                tool_use("tool-1", "new"),
+                MessagePart::ToolResult {
+                    content: "success".to_string(),
+                    is_error: false,
+                    tool_use_id: Some("tool-1".to_string()),
+                    parent_tool_use_id: Some("parent-1".to_string()),
+                },
+                tool_result("tool-2", "partial complete", false),
+                tool_result("tool-3", " world", false),
+            ],
+            vec![
+                task_status("tool-1", "completed", Some("done")),
+                todo_snapshot(true),
+                system_notification("completed", "Compacted"),
+                permission("req-1", "tool-1", "allowed"),
+            ],
+        ];
+        let mut applied = Vec::new();
+        let mut raw_snapshot_parts = Vec::new();
+        let mut last_seq = 0;
+
+        for (index, delta) in deltas.iter().enumerate() {
+            let seq = (index + 1) as u64;
+            raw_snapshot_parts.extend_from_slice(delta);
+            assert_eq!(
+                apply_stream_delta_to_parts(&mut applied, &mut last_seq, seq, delta),
+                StreamDeltaApplyResult::Applied
+            );
+        }
+
+        assert_eq!(
+            applied,
+            canonical_stream_parts_from_slice(&raw_snapshot_parts)
+        );
+        assert_eq!(
+            applied,
+            vec![
+                tool_use("tool-1", "new"),
+                MessagePart::ToolResult {
+                    content: "success".to_string(),
+                    is_error: false,
+                    tool_use_id: Some("tool-1".to_string()),
+                    parent_tool_use_id: Some("parent-1".to_string()),
+                },
+                tool_result("tool-2", "partial complete", false),
+                tool_result("tool-3", "hello world", false),
+                task_status("tool-1", "completed", Some("done")),
+                todo_snapshot(true),
+                system_notification("completed", "Compacted"),
+                permission("req-1", "tool-1", "allowed"),
+            ]
+        );
+        let before_duplicate = applied.clone();
+        assert_eq!(
+            apply_stream_delta_to_parts(&mut applied, &mut last_seq, 3, &deltas[2]),
+            StreamDeltaApplyResult::Duplicate
+        );
+        assert_eq!(applied, before_duplicate);
+    }
+
+    #[test]
+    fn append_stream_delta_parts_updates_existing_non_tail_parts() {
+        let mut parts = vec![
+            MessagePart::ToolUse {
+                tool: "Task".to_string(),
+                input: serde_json::json!({"description": "old"}),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            },
+            text("tail"),
+            MessagePart::TaskStatus {
+                task_tool_use_id: "tool-1".to_string(),
+                status: "started".to_string(),
+                description: Some("old".to_string()),
+                summary: None,
+            },
+            MessagePart::TodoListSnapshot {
+                items: vec![crate::usecase::agent_session::session::TodoListItem {
+                    text: "first".to_string(),
+                    completed: false,
+                }],
+            },
+            MessagePart::SystemNotification {
+                notification_type:
+                    crate::usecase::agent_session::session::SystemNotificationType::Compaction,
+                status: "in_progress".to_string(),
+                label: "Compacting".to_string(),
+                detail: None,
+                hook_id: None,
+            },
+        ];
+
+        append_stream_delta_parts(
+            &mut parts,
+            &[
+                MessagePart::ToolUse {
+                    tool: "Task".to_string(),
+                    input: serde_json::json!({"description": "new"}),
+                    id: "tool-1".to_string(),
+                    parent_tool_use_id: None,
+                },
+                MessagePart::TaskStatus {
+                    task_tool_use_id: "tool-1".to_string(),
+                    status: "completed".to_string(),
+                    description: Some("new".to_string()),
+                    summary: Some("done".to_string()),
+                },
+                MessagePart::TodoListSnapshot {
+                    items: vec![crate::usecase::agent_session::session::TodoListItem {
+                        text: "first".to_string(),
+                        completed: true,
+                    }],
+                },
+                MessagePart::SystemNotification {
+                    notification_type:
+                        crate::usecase::agent_session::session::SystemNotificationType::Compaction,
+                    status: "completed".to_string(),
+                    label: "Compacted".to_string(),
+                    detail: Some("ok".to_string()),
+                    hook_id: None,
+                },
+            ],
+        );
+
+        assert_eq!(parts.len(), 5);
+        assert!(matches!(
+            &parts[0],
+            MessagePart::ToolUse { input, .. }
+                if input.get("description").and_then(|value| value.as_str()) == Some("new")
+        ));
+        assert!(matches!(
+            &parts[2],
+            MessagePart::TaskStatus { status, summary, .. }
+                if status == "completed" && summary.as_deref() == Some("done")
+        ));
+        assert!(matches!(
+            &parts[3],
+            MessagePart::TodoListSnapshot { items }
+                if items.first().is_some_and(|item| item.completed)
+        ));
+        assert!(matches!(
+            &parts[4],
+            MessagePart::SystemNotification { status, label, .. }
+                if status == "completed" && label == "Compacted"
+        ));
+    }
+}
+
 /// 状態遷移時に AgentStatusCenter へ通知する統一エントリ。
 /// session_store から metadata だけを引いて worktree_path / SessionState を取得する。
 /// `session_state_override` を渡すと、ストア値より優先される（Bridge crash 時など）。
@@ -781,7 +1387,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
     }
 
     /// 呼び出し元経路で発火する 2 種類の emit を順序付きで記録するテスト用イベント。
-    /// 実コードの `emit_streaming_parts` と `emit_session_state_changed` は
+    /// 実コードの `emit_streaming_delta` と `emit_session_state_changed` は
     /// `tauri::AppHandle` 直叩きでユニットテストから直接観測できないため、
     /// 呼び出し元ロジックをミラーした下記ヘルパで両 emit を同じ Vec に
     /// 記録し、ストリーム emit が state emit より先に来ることを確認する。
@@ -798,14 +1404,15 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
     }
 
     /// Build a recording emit closure that pushes a `StreamingFlush` event
-    /// for each cumulative payload it observes. Shared by the
+    /// for each delta payload it observes. Shared by the
     /// `permission_request` / `turn_complete` order tests so they exercise
     /// the same `flush_streaming_before_transition` helper the production
     /// stdout reader uses, instead of mirroring the prepare/apply sequence.
     pub(in crate::infrastructure::agent_session::runtime::bridge_common) fn recording_emit<'a>(
         events: &'a mut Vec<RecordedEmit>,
-    ) -> impl FnMut(&str, &[MessagePart]) -> (bool, bool) + 'a {
-        |_mid, parts| {
+    ) -> impl FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool) + 'a
+    {
+        |_mid, _seq, parts, _snapshot_parts| {
             events.push(RecordedEmit::StreamingFlush {
                 parts_count: parts.len(),
                 tail_text: match parts.last() {
@@ -1080,6 +1687,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
             turn_latency: None,
             post_turn_message_token: None,
             streaming_parts: Vec::new(),
+            confirmed_stream_part_len: 0,
             turn_event_log: TurnEventLog::default(),
             last_message_id: None,
             post_turn_base_untrusted_message_id: None,
@@ -1090,8 +1698,12 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
             selected_model: None,
             last_result_token_usage: None,
             latest_token_usage: None,
-            pending_stream_part_count: 0,
+            pending_stream_parts: Vec::new(),
+            pending_stream_part_rollbacks: Vec::new(),
+            retry_stream_delta: None,
             pending_stream_bytes: 0,
+            streaming_delta_seq: 0,
+            streaming_delta_seq_by_message: HashMap::new(),
             last_stream_emit_at: None,
             streaming_timer_active: false,
             last_progress_at: None,

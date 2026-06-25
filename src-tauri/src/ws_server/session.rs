@@ -165,21 +165,18 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     let stream_sync_notify = state.broadcaster.stream_sync_notify();
     let broadcaster_for_forward = state.broadcaster.clone();
 
-    // PTY出力 + AgentStreamSync を WebSocket にフォワードするタスク。
+    // PTY出力 + Agent stream delta/snapshot を WebSocket にフォワードするタスク。
     // 通常の `WsMessage` は `rx` から受け取って即送信する。一方で
-    // `AgentStreamSync` は `WsBroadcaster::latest_stream_sync` slot に
-    // 最新累積のみを保持し、`stream_sync_notify` で起床して drain する。
-    // これにより遅い WS receiver に対しても累積 snapshot がキューに積み上がらず、
-    // メモリ消費は (live message × 1 snapshot) で頭打ちになる。
+    // Agent stream は `WsBroadcaster` 側の ordered queue に delta を保持し、
+    // slow consumer 時だけ message 単位の snapshot に畳む。
     let forward_task = tokio::spawn(async move {
         loop {
             tokio::select! {
                 biased;
                 _ = stream_sync_notify.notified() => {
-                    let drained = broadcaster_for_forward.drain_stream_sync();
+                    let drained = broadcaster_for_forward.drain_stream_messages();
                     let mut send_failed = false;
-                    for sync in drained {
-                        let msg = WsMessage::AgentStreamSync(sync);
+                    for msg in drained {
                         if let Ok(json) = serialize_message(&msg) {
                             crate::other::telemetry::record_payload_size(
                                 crate::other::telemetry::Payload::WebSocket,
@@ -239,7 +236,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                         continue;
                     }
                 };
-                if let Some(response) = route_message(&ws_msg).await {
+                if let Some(response) = route_message(&ws_msg, state).await {
                     state.broadcaster.try_send(response);
                 }
             }
@@ -289,6 +286,9 @@ mod tests {
     use crate::domain::app_config::{AppConfigError, ConfigRepository};
     use crate::domain::notification::{DesktopNotifyMode, NotifyConfig};
     use crate::protocol::{deserialize_message, serialize_message, AuthResponse, WsMessage};
+    use crate::usecase::agent_session::session::{
+        AgentStreamResyncReadModel, StreamResyncSnapshot,
+    };
     use crate::usecase::pty_session::dto::PtyReplayOutput;
     use crate::usecase::pty_session::query_service::PtySessionReplayReader;
 
@@ -361,6 +361,20 @@ mod tests {
         }
     }
 
+    struct EmptyStreamResyncReadModel;
+
+    #[async_trait::async_trait]
+    impl AgentStreamResyncReadModel for EmptyStreamResyncReadModel {
+        async fn resync_streaming_message(
+            &self,
+            _session_id: &str,
+            _message_id: &str,
+            _since_seq: u64,
+        ) -> Result<Option<StreamResyncSnapshot>, String> {
+            Ok(None)
+        }
+    }
+
     fn hmac_response(challenge: &str, token: &str) -> String {
         let mut mac = HmacSha256::new_from_slice(token.as_bytes()).unwrap();
         mac.update(challenge.as_bytes());
@@ -376,6 +390,7 @@ mod tests {
             broadcaster,
             Arc::new(MockReplayReader),
             Arc::new(MockConfigRepository),
+            Arc::new(EmptyStreamResyncReadModel),
             false,
         );
 
@@ -397,6 +412,7 @@ mod tests {
             Arc::new(WsBroadcaster::default()),
             Arc::new(MockReplayReader),
             Arc::new(MockConfigRepository),
+            Arc::new(EmptyStreamResyncReadModel),
             false,
         ));
         let (client_io, server_io) = tokio::io::duplex(4096);

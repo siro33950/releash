@@ -32,6 +32,7 @@ fn make_session(id: &str, worktree: &str) -> ChatSession {
             thinking: None,
             activities: None,
             parts: None,
+            streaming_final_seq: 0,
             timestamp: 1000.0,
             mentions: None,
         }],
@@ -58,6 +59,7 @@ fn message(id: &str, content: &str, timestamp: f64) -> ChatMessage {
         thinking: None,
         activities: None,
         parts: None,
+        streaming_final_seq: 0,
         timestamp,
         mentions: None,
     }
@@ -141,6 +143,7 @@ fn append_message_writes_only_new_chunk_and_updates_meta() {
         thinking: None,
         activities: None,
         parts: None,
+        streaming_final_seq: 0,
         timestamp: 1001.0,
         mentions: None,
     };
@@ -454,6 +457,7 @@ fn get_session_page_returns_latest_page_and_previous_cursor() {
             thinking: None,
             activities: None,
             parts: None,
+            streaming_final_seq: 0,
             timestamp: 1000.0 + f64::from(i),
             mentions: None,
         });
@@ -603,6 +607,7 @@ fn persist_message_parts_missing_target_returns_error() {
                 content: "updated".to_string(),
                 parent_tool_use_id: None,
             }],
+            0,
             Some(2000.0),
         )
         .unwrap_err();
@@ -648,6 +653,7 @@ fn persist_message_parts_updates_only_target_chunk_index_and_meta() {
                 content: "updated second".to_string(),
                 parent_tool_use_id: None,
             }],
+            7,
             Some(2002.0),
         )
         .unwrap();
@@ -681,6 +687,7 @@ fn persist_message_parts_updates_only_target_chunk_index_and_meta() {
             .collect::<Vec<_>>(),
         vec!["first", "updated second", "third"]
     );
+    assert_eq!(page.messages[1].streaming_final_seq, 7);
     assert_eq!(page.total_count, 3);
 }
 
@@ -736,6 +743,7 @@ fn get_session_page_repairs_missing_index_entries() {
         thinking: None,
         activities: None,
         parts: None,
+        streaming_final_seq: 0,
         timestamp: 1001.0,
         mentions: None,
     });
@@ -777,6 +785,7 @@ fn get_session_page_repairs_orphan_message_chunks_missing_from_index() {
         thinking: None,
         activities: None,
         parts: None,
+        streaming_final_seq: 0,
         timestamp: 1001.0,
         mentions: None,
     };
@@ -895,6 +904,7 @@ fn load_full_session_for_restore_repairs_orphan_message_chunks_missing_from_inde
         thinking: None,
         activities: None,
         parts: None,
+        streaming_final_seq: 0,
         timestamp: 1001.0,
         mentions: None,
     };
@@ -1269,6 +1279,7 @@ fn save_overwrites_existing_session() {
         thinking: None,
         activities: None,
         parts: None,
+        streaming_final_seq: 0,
         timestamp: 1001.0,
         mentions: None,
     });
@@ -1296,6 +1307,7 @@ fn save_session_removes_chunks_for_deleted_messages() {
         thinking: None,
         activities: None,
         parts: None,
+        streaming_final_seq: 0,
         timestamp: 1001.0,
         mentions: None,
     });
@@ -1622,6 +1634,7 @@ fn fork_session_creates_detached_copy() {
         thinking: None,
         activities: None,
         parts: None,
+        streaming_final_seq: 0,
         timestamp: 1001.0,
         mentions: None,
     });

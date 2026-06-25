@@ -546,6 +546,26 @@ pub async fn get_session_page(
 }
 
 #[tauri::command]
+pub async fn resync_streaming_message(
+    read_model: tauri::State<
+        '_,
+        Arc<dyn crate::usecase::agent_session::session::AgentStreamResyncReadModel>,
+    >,
+    session_id: String,
+    message_id: String,
+    since_seq: u64,
+) -> Result<Option<crate::protocol::AgentStreamSync>, String> {
+    crate::usecase::agent_session::session::resync_streaming_message(
+        read_model.inner().as_ref(),
+        &session_id,
+        &message_id,
+        since_seq,
+    )
+    .await
+    .map(|snapshot| snapshot.map(Into::into))
+}
+
+#[tauri::command]
 pub fn plan_agent_chat_eviction(
     request: crate::usecase::agent_session::session::AgentChatEvictionPlanRequest,
 ) -> Result<crate::usecase::agent_session::session::AgentChatEvictionPlan, String> {
@@ -844,6 +864,7 @@ mod tests {
             role: crate::usecase::agent_session::session::MessageRole::Human,
             content: content.to_string(),
             timestamp,
+            streaming_final_seq: 0,
             thinking: None,
             activities: None,
             parts: Some(vec![MessagePart::Text {
@@ -864,6 +885,7 @@ mod tests {
             role: crate::usecase::agent_session::session::MessageRole::Agent,
             content: content.to_string(),
             timestamp,
+            streaming_final_seq: 0,
             thinking: None,
             activities: None,
             parts: Some(vec![MessagePart::Text {
@@ -949,6 +971,7 @@ mod tests {
                         parent_tool_use_id: None,
                     },
                 ]),
+                streaming_final_seq: 0,
                 timestamp: 1.0,
                 mentions: None,
             }],
@@ -1022,6 +1045,7 @@ mod tests {
                 tool_use_id: Some("tool-1".to_string()),
                 parent_tool_use_id: None,
             }]),
+            streaming_final_seq: 0,
             timestamp: 1.0,
             mentions: None,
         }];
@@ -1113,6 +1137,7 @@ mod tests {
                 thinking: None,
                 activities: None,
                 parts: None,
+                streaming_final_seq: 0,
                 timestamp: 1.0,
                 mentions: None,
             }],
