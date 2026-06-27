@@ -1184,6 +1184,12 @@ pub(super) fn compose_system_prompt(user: Option<String>) -> Option<String> {
     Some(composed)
 }
 
+pub(super) fn runtime_system_prompt_fingerprint(system_prompt: Option<&str>) -> Option<String> {
+    system_prompt
+        .filter(|prompt| !prompt.trim().is_empty())
+        .map(crate::usecase::agent_session::context::stable_content_fingerprint)
+}
+
 #[allow(clippy::too_many_arguments)]
 #[derive(Default)]
 pub(super) struct BridgeInitOptions<'a> {
@@ -1535,6 +1541,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
             backend_id: Some("mock".to_string()),
             workflow_step_session: true,
             workflow_step_context: None,
+            context_epoch: None,
         }
     }
 
@@ -1805,6 +1812,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
             backend_id: Some("mock".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         }
     }
 
@@ -1829,6 +1837,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
             state: BridgeState::Ready,
             turn_phase: TurnPhase::Idle,
             sdk_session_id: None,
+            system_prompt_fingerprint: None,
             context_carry_on_ready: None,
             child,
             generation_id: 0,
@@ -1939,6 +1948,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
             backend_id: Some(backend_id.to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         }
     }
 }

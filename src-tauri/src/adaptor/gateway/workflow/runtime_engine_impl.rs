@@ -93,6 +93,7 @@ use crate::domain::workflow::{
 };
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::permission::PermissionMode;
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::SessionStore;
 use crate::usecase::agent_session::status::current_timestamp;
 
@@ -201,6 +202,7 @@ pub struct WorkflowRuntimeService {
     run_store: Arc<RunStore>,
     workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
     worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     #[cfg(test)]
     fail_next_required_event_append: AtomicBool,
     #[cfg(test)]
@@ -367,6 +369,7 @@ impl WorkflowRuntimeService {
     pub(crate) fn new(
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
+        branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     ) -> Self {
         Self {
             executions: Mutex::new(HashMap::new()),
@@ -374,6 +377,7 @@ impl WorkflowRuntimeService {
             run_store: Arc::new(RunStore::new()),
             workflow_resolver,
             worktree_resolver,
+            branch_diff_context,
             #[cfg(test)]
             fail_next_required_event_append: AtomicBool::new(false),
             #[cfg(test)]
@@ -386,6 +390,7 @@ impl WorkflowRuntimeService {
         Self::new(
             Arc::new(TestWorkflowDefinitionResolver),
             Arc::new(PassthroughManagedWorktreeResolver),
+            None,
         )
     }
 
@@ -2929,12 +2934,15 @@ impl WorkflowRuntimeService {
         let start_result =
             crate::infrastructure::agent_session::runtime::start_agent_turn_internal_locked(
                 app,
+                self.branch_diff_context.clone(),
                 handles,
                 session_store,
                 session_id,
                 worktree_path,
                 &session.permission_mode,
                 &prompt,
+                None,
+                Vec::new(),
             )
             .await;
         if let Err(err) = start_result {
@@ -3492,6 +3500,7 @@ impl WorkflowRuntimeService {
     ) -> Result<(), WorkflowEngineError> {
         let deps = RealStepSessionDeps {
             app,
+            branch_diff_context: self.branch_diff_context.clone(),
             handles,
             session_store,
         };
@@ -3577,7 +3586,13 @@ impl WorkflowRuntimeService {
             &workflow_variables_clone,
             &workflow_declared_variables_clone,
         )?;
-
+        let workflow_instruction = workflow_prompt::render_step_workflow_instruction(
+            &step_clone,
+            &run_id_for_ref,
+            worktree_path,
+            task_clone.as_deref(),
+            &workflow_declared_variables_clone,
+        );
         // ステップ設定の解決 → セッション生成（workflow_defaults を継承元に注入）
         let step_session = deps
             .create_step_session(
@@ -3610,8 +3625,14 @@ impl WorkflowRuntimeService {
             .await;
 
         // 合成済み system_prompt を AgentSession 起動経路へ受け渡す。
-        deps.dispatch_session_start(&step_session_id, worktree_path, None, system_prompt)
-            .await?;
+        deps.dispatch_session_start(
+            &step_session_id,
+            worktree_path,
+            None,
+            system_prompt.clone(),
+            workflow_instruction.clone(),
+        )
+        .await?;
         deps.mark_step_tab_open(&step_session_id).await;
 
         // ステップセッションIDをワークフロー実行に紐付け
@@ -3631,8 +3652,15 @@ impl WorkflowRuntimeService {
         }
 
         // プロンプト送信（ステップ用セッションIDを使用）
-        deps.start_agent_turn_locked(&step_session_id, worktree_path, &permission_mode, &prompt)
-            .await
+        deps.start_agent_turn_locked(
+            &step_session_id,
+            worktree_path,
+            &permission_mode,
+            &prompt,
+            system_prompt,
+            workflow_instruction,
+        )
+        .await
     }
 
     /// `build_step_prompt` で合成した `system_prompt` を `dispatch_session_start` 経由で
@@ -3674,6 +3702,7 @@ impl WorkflowRuntimeService {
             worktree_path,
             permission_mode,
             system_prompt,
+            None,
         )
         .await?;
         Ok(prompt)
@@ -4226,6 +4255,7 @@ impl WorkflowRuntimeService {
         };
         workflow_runtime_session::activate_parallel_child_sessions(
             app,
+            self.branch_diff_context.clone(),
             session_store,
             handles,
             &self.executions,

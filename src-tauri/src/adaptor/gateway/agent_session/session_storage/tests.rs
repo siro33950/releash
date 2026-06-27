@@ -1,10 +1,13 @@
 use super::layout::{
     attachment_file_in_dir, attachments_dir_in_dir, content_hash, index_file_in_dir,
-    legacy_meta_file, message_file_in_dir, meta_file_in_dir, session_dir, session_file,
-    sessions_dir, tool_output_file_in_dir, tool_outputs_dir_in_dir, write_json_pretty_atomic,
+    legacy_meta_file, message_file_in_dir, meta_file_in_dir, private_context_file_in_dir,
+    session_dir, session_file, sessions_dir, tool_output_file_in_dir, tool_outputs_dir_in_dir,
+    write_json_pretty_atomic,
 };
 use super::*;
 use crate::domain::agent_session::services::MAX_IMAGE_BYTES;
+use crate::domain::agent_session::ContextSourceKind;
+use crate::usecase::agent_session::context_meta::{ContextEpochMeta, ContextSourceRevisionMeta};
 use crate::usecase::agent_session::session::{
     AttachmentRef, ChatMessage, ContextCarryState, MessagePart, MessageRole, SessionState,
     SESSION_BODY_FORMAT_VERSION, TOOL_OUTPUT_PREVIEW_BYTES,
@@ -48,6 +51,22 @@ fn make_session(id: &str, worktree: &str) -> ChatSession {
         backend_id: None,
         workflow_step_session: false,
         workflow_step_context: None,
+        context_epoch: None,
+    }
+}
+
+fn context_epoch_meta_with_payload(payload: &str) -> ContextEpochMeta {
+    ContextEpochMeta {
+        epoch_id: 1,
+        backend_id: Some("claude".to_string()),
+        model_id: Some("sonnet".to_string()),
+        worktree_path: "/repo".to_string(),
+        source_revisions: vec![ContextSourceRevisionMeta {
+            kind: "repo_summary".to_string(),
+            revision: 2,
+            fingerprint: Some("repo-fingerprint".to_string()),
+            payload: Some(payload.to_string()),
+        }],
     }
 }
 
@@ -131,6 +150,194 @@ fn save_session_writes_split_layout() {
     let saved_message = std::fs::read_to_string(message_file_in_dir(&dir, 1)).unwrap();
     let expected = serde_json::to_string_pretty(&session.messages[0]).unwrap();
     assert_eq!(saved_message, expected);
+}
+
+#[test]
+fn session_meta_keeps_workflow_instructions_in_private_context_not_meta() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let session = make_session(UUID1, "/repo");
+
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    store
+        .update_session_meta(tmp.path(), UUID1, &mut |meta| {
+            meta.workflow_instructions = vec!["private workflow instruction".to_string()];
+            Ok(())
+        })
+        .unwrap();
+
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let meta_json = std::fs::read_to_string(meta_file_in_dir(&dir)).unwrap();
+    let private_json = std::fs::read_to_string(private_context_file_in_dir(&dir)).unwrap();
+    let loaded_meta = store
+        .get_session_meta(tmp.path(), UUID1)
+        .unwrap()
+        .expect("loaded meta");
+
+    assert!(!meta_json.contains("workflowInstruction"));
+    assert!(!meta_json.contains("workflowInstructions"));
+    assert!(private_json.contains("workflowInstructions"));
+    assert_eq!(
+        loaded_meta.workflow_instructions,
+        vec!["private workflow instruction".to_string()]
+    );
+}
+
+#[test]
+fn save_session_keeps_context_epoch_payload_in_private_context_not_meta() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.context_epoch = Some(context_epoch_meta_with_payload("repo payload"));
+
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let meta_json = std::fs::read_to_string(meta_file_in_dir(&dir)).unwrap();
+    let private_json = std::fs::read_to_string(private_context_file_in_dir(&dir)).unwrap();
+    let loaded = store
+        .load_full_session_for_restore(tmp.path(), UUID1)
+        .unwrap()
+        .expect("loaded session");
+
+    assert!(meta_json.contains("contextEpoch"));
+    assert!(!meta_json.contains("repo payload"));
+    assert!(private_json.contains("contextEpochPayloads"));
+    assert!(private_json.contains("repo payload"));
+    assert_eq!(
+        loaded
+            .context_epoch
+            .as_ref()
+            .and_then(|meta| meta.payload_for(ContextSourceKind::RepoSummary)),
+        Some("repo payload")
+    );
+}
+
+#[test]
+fn legacy_backend_system_prompt_payload_hydrates_backend_model_identity() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.context_epoch = Some(ContextEpochMeta {
+        epoch_id: 1,
+        backend_id: Some("claude".to_string()),
+        model_id: Some("sonnet".to_string()),
+        worktree_path: "/repo".to_string(),
+        source_revisions: vec![ContextSourceRevisionMeta {
+            kind: "backend_system_prompt".to_string(),
+            revision: 2,
+            fingerprint: Some("identity-fingerprint".to_string()),
+            payload: Some("backend_id: claude\nmodel_id: sonnet".to_string()),
+        }],
+    });
+
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+
+    let loaded = FileSessionStorage::default()
+        .load_full_session_for_restore(tmp.path(), UUID1)
+        .unwrap()
+        .expect("loaded session");
+    let context_epoch = loaded.context_epoch.expect("context epoch");
+
+    assert_eq!(
+        context_epoch.payload_for(ContextSourceKind::BackendModelIdentity),
+        Some("backend_id: claude\nmodel_id: sonnet")
+    );
+    assert_eq!(
+        context_epoch.fingerprint_for(ContextSourceKind::BackendModelIdentity),
+        Some("identity-fingerprint")
+    );
+}
+
+#[test]
+fn append_agent_read_paths_updates_private_context_cache_not_meta() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let session = make_session(UUID1, "/repo");
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+
+    let agent_message = ChatMessage {
+        id: "agent-1".to_string(),
+        role: MessageRole::Agent,
+        content: String::new(),
+        thinking: None,
+        activities: None,
+        parts: Some(vec![MessagePart::ToolUse {
+            tool: "Read".to_string(),
+            input: serde_json::json!({"file_path": "src/local/file.rs"}),
+            id: "tool-1".to_string(),
+            parent_tool_use_id: None,
+        }]),
+        streaming_final_seq: 0,
+        timestamp: 1001.0,
+        mentions: None,
+    };
+    store
+        .append_message(tmp.path(), UUID1, &agent_message)
+        .unwrap();
+
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let meta_json = std::fs::read_to_string(meta_file_in_dir(&dir)).unwrap();
+    let private_json = std::fs::read_to_string(private_context_file_in_dir(&dir)).unwrap();
+    let fresh_store = FileSessionStorage::default();
+    let meta = fresh_store
+        .get_session_meta(tmp.path(), UUID1)
+        .unwrap()
+        .expect("meta");
+
+    assert!(!meta_json.contains("agentReadPaths"));
+    assert!(private_json.contains("agentReadPaths"));
+    assert_eq!(
+        meta.agent_read_paths,
+        Some(vec![std::path::PathBuf::from("src/local/file.rs")])
+    );
+}
+
+#[test]
+fn meta_rmw_update_keeps_context_epoch_payload_cache_for_later_message_updates() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let session = make_session(UUID1, "/repo");
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+
+    store
+        .update_session_meta(tmp.path(), UUID1, &mut |meta| {
+            meta.context_epoch = Some(context_epoch_meta_with_payload("repo payload"));
+            Ok(())
+        })
+        .unwrap();
+
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let meta_json = std::fs::read_to_string(meta_file_in_dir(&dir)).unwrap();
+    let private_json = std::fs::read_to_string(private_context_file_in_dir(&dir)).unwrap();
+    assert!(!meta_json.contains("repo payload"));
+    assert!(private_json.contains("repo payload"));
+
+    let fresh_store = FileSessionStorage::default();
+    fresh_store
+        .append_message(tmp.path(), UUID1, &message("m2", "second", 1001.0))
+        .unwrap();
+    let meta = fresh_store
+        .get_session_meta(tmp.path(), UUID1)
+        .unwrap()
+        .expect("meta");
+
+    assert_eq!(
+        meta.context_epoch
+            .as_ref()
+            .and_then(|meta| meta.payload_for(ContextSourceKind::RepoSummary)),
+        Some("repo payload")
+    );
 }
 
 #[test]
@@ -1919,6 +2126,9 @@ fn list_sessions_ignores_legacy_flat_json_and_sidecar() {
         backend_id: Some("codex".to_string()),
         workflow_step_session: false,
         workflow_step_context: None,
+        workflow_instructions: Vec::new(),
+        agent_read_paths: None,
+        context_epoch: None,
         first_message_preview: "Hello legacy".to_string(),
         message_count: 1,
         body_format_version: SESSION_BODY_FORMAT_VERSION,
@@ -2461,6 +2671,36 @@ fn fork_session_creates_detached_copy() {
         .load_full_session_for_restore(tmp.path(), &forked.id)
         .unwrap()
         .is_some());
+}
+
+#[test]
+fn fork_session_persists_context_epoch_payload_for_fresh_load() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.context_epoch = Some(context_epoch_meta_with_payload("repo payload"));
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+
+    let forked = make_session_store()
+        .fork_session(tmp.path(), UUID1)
+        .unwrap();
+    let fork_dir = session_dir(tmp.path(), &forked.id).unwrap();
+    assert!(private_context_file_in_dir(&fork_dir).exists());
+
+    let loaded = make_session_store()
+        .load_full_session_for_restore(tmp.path(), &forked.id)
+        .unwrap()
+        .expect("freshly loaded fork");
+
+    assert_eq!(
+        loaded
+            .context_epoch
+            .as_ref()
+            .and_then(|meta| meta.payload_for(ContextSourceKind::RepoSummary)),
+        Some("repo payload")
+    );
 }
 
 #[test]

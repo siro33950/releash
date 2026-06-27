@@ -382,9 +382,6 @@ fn compose_from_parts(
             ));
         }
     }
-    if let Some(ref content) = resolved.instruction {
-        user_parts.push(content.clone());
-    }
     ComposedPrompt {
         system_prompt,
         user_message: user_parts.join("\n\n"),
@@ -784,8 +781,8 @@ mod tests {
     }
 
     #[test]
-    fn compose_user_message_from_knowledge_and_instruction() {
-        // Scenario: knowledgeとinstructionを指定したステップから user_message が合成される
+    fn compose_user_message_from_knowledge_and_keeps_instruction_for_context() {
+        // instruction は Agent system context の dedup 経路へ渡すため user_message へ直結しない。
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
@@ -794,7 +791,11 @@ mod tests {
         let result = compose_facets(&node);
 
         assert!(result.user_message.contains("The system uses Tauri."));
-        assert!(result.user_message.contains("Implement the feature."));
+        assert!(!result.user_message.contains("Implement the feature."));
+        assert_eq!(
+            node.resolved_facets.instruction.as_deref(),
+            Some("Implement the feature.")
+        );
     }
 
     #[test]
@@ -828,7 +829,7 @@ mod tests {
         assert!(sys.contains("Follow best practices."));
         assert!(sys.contains("Output as markdown."));
         assert!(result.user_message.contains("The system uses Tauri."));
-        assert!(result.user_message.contains("Implement the feature."));
+        assert!(!result.user_message.contains("Implement the feature."));
     }
 
     /// 解決経路における欠損 facet は load 時 (`resolve_refs`) で NotFound として
@@ -900,9 +901,21 @@ mod tests {
             .map(|s| prompt_rendering::render_facet_variables(&s, worktree_path, task));
         let rendered_user =
             prompt_rendering::render_facet_variables(&composed.user_message, worktree_path, task);
+        let rendered_instruction = prompt_rendering::render_step_workflow_instruction(
+            &node,
+            "run-1",
+            worktree_path,
+            task,
+            &std::collections::HashMap::new(),
+        )
+        .expect("workflow instruction");
 
         assert_eq!(rendered_system.unwrap(), "Coding rules for my-project.");
-        assert_eq!(rendered_user, "Task: Fix the bug\nProject: my-project");
+        assert_eq!(rendered_user, "");
+        assert_eq!(
+            rendered_instruction,
+            "Task: Fix the bug\nProject: my-project"
+        );
     }
 
     // --- extract_description ---

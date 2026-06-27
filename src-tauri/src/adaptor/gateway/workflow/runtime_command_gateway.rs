@@ -12,6 +12,7 @@ use crate::domain::workflow::{
 };
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::permission::PermissionMode;
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::{MessagePart, SessionStore};
 use crate::usecase::agent_session::status::current_timestamp;
 use crate::usecase::repository_usecase::RepositoryUsecase;
@@ -65,6 +66,7 @@ impl TauriWorkflowRuntimeCommandGateway {
         app_config: Arc<dyn ConfigRepository>,
         session_store: Arc<SessionStore>,
         handles: Arc<Mutex<AgentProcessMap>>,
+        branch_diff_context: Arc<dyn BranchDiffContextPort>,
         data_dir: Option<PathBuf>,
     ) -> Self {
         let engine = new_workflow_runtime_engine(
@@ -73,6 +75,7 @@ impl TauriWorkflowRuntimeCommandGateway {
                 repository_usecase,
                 app_config,
             )),
+            Some(branch_diff_context),
         );
         if let Some(data_dir) = data_dir {
             let engine_for_init = engine.clone();

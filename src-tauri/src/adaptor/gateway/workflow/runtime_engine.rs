@@ -17,6 +17,7 @@ use crate::adaptor::gateway::workflow::state::WorkflowState;
 use crate::domain::workflow::services::transition::SessionFailureSignal;
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::permission::PermissionMode;
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::{MessagePart, SessionStore};
 
 #[allow(clippy::too_many_arguments)]
@@ -102,10 +103,12 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
 pub(crate) fn new_workflow_runtime_engine(
     workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
     worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
 ) -> Arc<dyn WorkflowRuntimeEngine> {
     Arc::new(WorkflowRuntimeService::new(
         workflow_resolver,
         worktree_resolver,
+        branch_diff_context,
     ))
 }
 

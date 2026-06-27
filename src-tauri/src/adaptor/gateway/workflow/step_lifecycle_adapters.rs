@@ -480,6 +480,7 @@ mod tests {
             ),
             workflow_step_session: true,
             workflow_step_context: None,
+            context_epoch: None,
         }
     }
 

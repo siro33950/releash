@@ -6,6 +6,7 @@ use super::layout::{
     invalid_session_error_message_with_id, legacy_meta_file, meta_file_in_dir, session_dir,
     session_file, sessions_dir, validate_meta, write_json_pretty_atomic, UUID_RE,
 };
+use super::private_context::{hydrate_meta_private_context, write_private_context_to_dir};
 use super::FileSessionStorage;
 use crate::usecase::agent_session::session::{SessionMeta, SessionReviewContext};
 
@@ -17,8 +18,9 @@ impl FileSessionStorage {
     ) -> Result<SessionMeta, String> {
         let file = std::fs::File::open(meta_file_in_dir(dir))
             .map_err(|_| invalid_session_error_message_with_id(expected_id))?;
-        let meta: SessionMeta = serde_json::from_reader(BufReader::new(file))
+        let mut meta: SessionMeta = serde_json::from_reader(BufReader::new(file))
             .map_err(|_| invalid_session_error_message_with_id(expected_id))?;
+        hydrate_meta_private_context(dir, &mut meta);
         validate_meta(meta, expected_id)
     }
 
@@ -114,6 +116,7 @@ impl FileSessionStorage {
         let mut meta = self.read_meta_from_dir(&dir, session_id)?;
         update(&mut meta)?;
         let meta = validate_meta(meta, session_id)?;
+        write_private_context_to_dir(&dir, &meta)?;
         write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
         self.cache.write().insert(meta.id.clone(), meta.clone());
         Ok(meta)

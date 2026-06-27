@@ -50,6 +50,10 @@ pub(super) fn index_file_in_dir(session_dir: &Path) -> PathBuf {
     session_dir.join("index.json")
 }
 
+pub(super) fn private_context_file_in_dir(session_dir: &Path) -> PathBuf {
+    session_dir.join("private_context.json")
+}
+
 pub(super) fn event_log_file_in_dir(session_dir: &Path) -> PathBuf {
     session_dir.join("events.json")
 }

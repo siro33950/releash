@@ -1664,6 +1664,7 @@ pub(crate) fn build_turn_start_request_with_permission(
     permission_mode: Option<&str>,
     plan_mode: bool,
     permission_profile_id: Option<&str>,
+    system_prompt: Option<&str>,
 ) -> Result<Value, String> {
     let mut value = build_turn_start_request(
         id,
@@ -1683,6 +1684,12 @@ pub(crate) fn build_turn_start_request_with_permission(
     }
     if plan_mode {
         apply_plan_mode(&mut value["params"]);
+    }
+    if let Some(system_prompt) = system_prompt
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        value["params"]["developerInstructions"] = Value::String(system_prompt.to_string());
     }
     Ok(value)
 }
@@ -2742,6 +2749,7 @@ mod tests {
             Some("edit"),
             false,
             None,
+            None,
         )
         .expect("request");
 
@@ -2767,12 +2775,36 @@ mod tests {
             Some("full"),
             false,
             Some(":read-only"),
+            None,
         )
         .expect("request");
 
         assert_eq!(value["params"]["permissions"], ":read-only");
         assert!(value["params"].get("approvalPolicy").is_none());
         assert!(value["params"].get("sandboxPolicy").is_none());
+    }
+
+    #[test]
+    fn turn_start_can_include_developer_instructions() {
+        let value = build_turn_start_request_with_permission(
+            3,
+            "thr_123",
+            "/repo",
+            "Continue with fresh context.",
+            &[],
+            None,
+            None,
+            Some("edit"),
+            false,
+            None,
+            Some("Use the current repo context."),
+        )
+        .expect("request");
+
+        assert_eq!(
+            value["params"]["developerInstructions"],
+            "Use the current repo context."
+        );
     }
 
     #[test]

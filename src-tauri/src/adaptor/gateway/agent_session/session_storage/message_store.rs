@@ -7,9 +7,11 @@ use super::layout::{
     messages_dir_in_dir, meta_file_in_dir, session_dir, session_file, sessions_dir,
     tool_outputs_dir_in_dir, write_json_pretty_atomic,
 };
+use super::private_context::write_private_context_to_dir;
 use super::FileSessionStorage;
 use crate::usecase::agent_session::session::{
-    first_message_preview, now_timestamp, parts_to_legacy, ChatMessage, ChatSession,
+    agent_read_paths_from_message, agent_read_paths_from_parts, first_message_preview,
+    merge_agent_read_paths, now_timestamp, parts_to_legacy, ChatMessage, ChatSession,
     MessageIndexEntry, MessagePageMetadata, MessagePart, MessageRole, PageCursor, SessionMeta,
     SessionPage, MAX_SESSION_PAGE_LIMIT, SESSION_BODY_FORMAT_VERSION,
 };
@@ -232,7 +234,14 @@ impl FileSessionStorage {
                     meta.first_message_preview =
                         first_message_preview(std::slice::from_ref(&stored_message));
                 }
+                if stored_message.role == MessageRole::Agent {
+                    merge_agent_read_paths(
+                        &mut meta.agent_read_paths,
+                        agent_read_paths_from_message(&stored_message),
+                    );
+                }
 
+                write_private_context_to_dir(&dir, &meta)?;
                 write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
                 write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
                 self.cache.write().insert(session_id.to_string(), meta);
@@ -300,6 +309,13 @@ impl FileSessionStorage {
                         first_message_preview(std::slice::from_ref(&message));
                 }
                 let persisted_parts = message.parts.clone().unwrap_or_default();
+                if message.role == MessageRole::Agent {
+                    merge_agent_read_paths(
+                        &mut meta.agent_read_paths,
+                        agent_read_paths_from_parts(parts),
+                    );
+                }
+                write_private_context_to_dir(&dir, &meta)?;
                 write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
                 write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
                 self.cache.write().insert(session_id.to_string(), meta);
@@ -444,6 +460,7 @@ impl FileSessionStorage {
         let mut meta = self.read_meta_from_dir(dir, session_id)?;
         meta.message_count = index.len();
         meta.first_message_preview = self.first_indexed_message_preview(dir, &index)?;
+        write_private_context_to_dir(dir, &meta)?;
         write_json_pretty_atomic(&index_file_in_dir(dir), &index, "session index")?;
         write_json_pretty_atomic(&meta_file_in_dir(dir), &meta, "session meta")?;
         self.cache
@@ -663,6 +680,7 @@ impl FileSessionStorage {
         index.sort_by_key(|entry| entry.seq);
         let mut meta = SessionMeta::from_session(session);
         meta.body_format_version = SESSION_BODY_FORMAT_VERSION;
+        write_private_context_to_dir(dir, &meta)?;
         write_json_pretty_atomic(&meta_file_in_dir(dir), &meta, "session meta")?;
         write_json_pretty_atomic(&index_file_in_dir(dir), &index, "session index")?;
         self.remove_stale_message_chunks(dir, &used_seq)

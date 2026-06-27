@@ -16,7 +16,8 @@ use super::session_persistence::{
 };
 use super::shared::{
     backend_runtime_config, build_init_cmd, compose_system_prompt, notify_status_transition,
-    resolve_bridge_script, resolve_effective_base_branch_from_port, session_specific_env_overrides,
+    resolve_bridge_script, resolve_effective_base_branch_from_port,
+    runtime_system_prompt_fingerprint, session_specific_env_overrides,
     write_bridge_command_for_captured_turn, BridgeInitOptions, GENERATION_COUNTER,
 };
 use super::stream_emit::{emit_session_state_changed, emit_streaming_delta, enqueue_pending_delta};
@@ -26,6 +27,7 @@ use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_
 use crate::infrastructure::agent_session::runtime::timeouts::{
     default_stale_timeout, MAX_STALE_TIMEOUT_SECS,
 };
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::event_log::InterruptReason;
 use crate::usecase::agent_session::event_log::TurnEventLog;
 use crate::usecase::agent_session::session::ContextCarryState;
@@ -664,6 +666,7 @@ enum RecoveryBridgeMessageAction {
 
 async fn spawn_pending_message_turn_if_ready<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
@@ -672,13 +675,22 @@ async fn spawn_pending_message_turn_if_ready<R: tauri::Runtime>(
         return;
     };
     let app_p = app.clone();
+    let branch_diff_context_p = branch_diff_context;
     let ss_p = Arc::clone(session_store);
     let h_p = Arc::clone(handles);
     let csid_p = chat_session_id.to_string();
     let handle = tokio::runtime::Handle::current();
     std::thread::spawn(move || {
         handle.block_on(async move {
-            start_pending_message_turn(&app_p, &h_p, &ss_p, &csid_p, pending).await;
+            start_pending_message_turn(
+                &app_p,
+                branch_diff_context_p,
+                &h_p,
+                &ss_p,
+                &csid_p,
+                pending,
+            )
+            .await;
         });
     });
 }
@@ -697,6 +709,7 @@ async fn session_ready_will_transition_from_initializing(
 
 async fn handle_session_ready_resume_mismatch<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
@@ -744,13 +757,21 @@ async fn handle_session_ready_resume_mismatch<R: tauri::Runtime>(
     if requeued_streaming_turn {
         emit_session_state_changed(app, chat_session_id, TurnPhase::Idle, None, false);
         notify_status_transition(app, session_store, chat_session_id, TurnPhase::Idle, None);
-        spawn_pending_message_turn_if_ready(app, session_store, handles, chat_session_id).await;
+        spawn_pending_message_turn_if_ready(
+            app,
+            branch_diff_context,
+            session_store,
+            handles,
+            chat_session_id,
+        )
+        .await;
     }
     true
 }
 
 async fn handle_stdout_bridge_error<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
@@ -794,6 +815,7 @@ async fn handle_stdout_bridge_error<R: tauri::Runtime>(
     let turn_complete = transition.turn_complete;
     complete_streaming_turn_post_lock(
         app,
+        branch_diff_context,
         session_store,
         handles,
         chat_session_id,
@@ -843,6 +865,7 @@ async fn handle_stdout_bridge_error<R: tauri::Runtime>(
 
 async fn handle_recovery_bridge_message<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
@@ -852,6 +875,7 @@ async fn handle_recovery_bridge_message<R: tauri::Runtime>(
         "session_ready" => {
             if handle_session_ready_resume_mismatch(
                 app,
+                branch_diff_context,
                 session_store,
                 handles,
                 chat_session_id,
@@ -865,7 +889,15 @@ async fn handle_recovery_bridge_message<R: tauri::Runtime>(
             }
         }
         "error" => {
-            handle_stdout_bridge_error(app, session_store, handles, chat_session_id, msg).await;
+            handle_stdout_bridge_error(
+                app,
+                branch_diff_context,
+                session_store,
+                handles,
+                chat_session_id,
+                msg,
+            )
+            .await;
             RecoveryBridgeMessageAction::Handled
         }
         _ => RecoveryBridgeMessageAction::Delegate,
@@ -886,6 +918,7 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
     selected_model: Option<String>,
     system_prompt: Option<String>,
     restore_context: Option<RestoreContextPayload>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
 ) -> Result<(), String> {
     let bridge_path = resolve_bridge_script(app, &backend_id)?;
     if !bridge_path.exists() {
@@ -1001,6 +1034,7 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
     // initial_permission_mode は spawn 前に検証済み（上方参照）。
     // spec issues-1022 "Agent process environment contract": ユーザー指定の
     // system_prompt に Releash CLI の long help を append したものを Agent に渡す。
+    let system_prompt_fingerprint = runtime_system_prompt_fingerprint(system_prompt.as_deref());
     let composed_system_prompt = compose_system_prompt(system_prompt);
     let mut init_cmd = build_init_cmd(
         cwd,
@@ -1052,6 +1086,7 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
                 state: BridgeState::Initializing,
                 turn_phase: TurnPhase::Idle,
                 sdk_session_id: session_id,
+                system_prompt_fingerprint,
                 context_carry_on_ready,
                 child,
                 generation_id: gen_id,
@@ -1101,11 +1136,12 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
     let app_stdout = app.clone();
     let csid_stdout = chat_session_id.to_string();
     let captured_gen_id = gen_id;
+    let branch_diff_context_stdout = branch_diff_context;
     tokio::spawn(async move {
         use tauri::Emitter;
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
-        let mut message_state = ExternalBridgeMessageState::default();
+        let mut message_state = ExternalBridgeMessageState::new(branch_diff_context_stdout.clone());
         while let Ok(Some(line)) = lines.next_line().await {
             if line.is_empty() {
                 continue;
@@ -1124,6 +1160,7 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
                 if matches!(
                     handle_recovery_bridge_message(
                         &app_stdout,
+                        branch_diff_context_stdout.clone(),
                         &session_store_clone,
                         &handles_stdout,
                         &csid_stdout,
@@ -1146,6 +1183,7 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
                 if should_start_pending_after_ready {
                     spawn_pending_message_turn_if_ready(
                         &app_stdout,
+                        branch_diff_context_stdout.clone(),
                         &session_store_clone,
                         &handles_stdout,
                         &csid_stdout,
@@ -1217,6 +1255,7 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
         if effect.turn_completed {
             complete_streaming_turn_post_lock(
                 &app_stdout,
+                branch_diff_context_stdout.clone(),
                 &session_store_clone,
                 &handles_stdout,
                 &csid_stdout,
@@ -1360,6 +1399,7 @@ where
 
 pub(super) async fn finalize_timed_out_turn<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -1414,6 +1454,7 @@ pub(super) async fn finalize_timed_out_turn<R: tauri::Runtime>(
 
     complete_streaming_turn_post_lock(
         app,
+        branch_diff_context,
         session_store,
         handles,
         chat_session_id,
@@ -1532,6 +1573,7 @@ pub(super) fn mark_timed_out_bridge_for_recovery_locked(
 
 pub(super) fn spawn_turn_watchdog<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -1543,6 +1585,7 @@ pub(super) fn spawn_turn_watchdog<R: tauri::Runtime>(
     let app_watchdog = app.clone();
     let handles_watchdog = Arc::clone(handles);
     let session_store_watchdog = Arc::clone(session_store);
+    let branch_diff_context_watchdog = branch_diff_context;
     let csid_watchdog = chat_session_id.to_string();
     let captured_gen_id = proc.generation_id;
     let captured_turn_seq = proc.turn_seq;
@@ -1577,6 +1620,7 @@ pub(super) fn spawn_turn_watchdog<R: tauri::Runtime>(
                 TurnWatchdogDecision::Timeout(_) => {
                     let outcome = finalize_timed_out_turn(
                         &app_watchdog,
+                        branch_diff_context_watchdog.clone(),
                         &handles_watchdog,
                         &session_store_watchdog,
                         &csid_watchdog,
@@ -3318,6 +3362,7 @@ mod moved_tests {
                 state: BridgeState::Initializing,
                 turn_phase: TurnPhase::Idle,
                 sdk_session_id: None,
+                system_prompt_fingerprint: None,
                 context_carry_on_ready: None,
                 child,
                 generation_id: 1,

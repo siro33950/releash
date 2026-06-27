@@ -1637,6 +1637,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                 // これが無いと Codex の turn 完了が engine に届かずワークフローが進まない。
                 spawn_workflow_turn_complete_notification(
                     app.clone(),
+                    state.branch_diff_context.clone(),
                     Arc::clone(session_store),
                     Arc::clone(handles),
                     chat_session_id.to_string(),
@@ -1754,6 +1755,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                 };
                 spawn_workflow_turn_complete_notification(
                     app.clone(),
+                    state.branch_diff_context.clone(),
                     Arc::clone(session_store),
                     Arc::clone(handles),
                     chat_session_id.to_string(),

@@ -15,20 +15,23 @@ use super::session_persistence::{
 use super::shared::{
     build_message_cmd, consolidate_parts_from_slice, fallback_prompt_message_id,
     notify_status_transition, parts_have_tool_output_ref, resolve_mentions_or_fallback_from_port,
-    write_bridge_command, CLAUDE_BACKEND_ID, CODEX_BACKEND_ID,
+    runtime_system_prompt_fingerprint, write_bridge_command, CLAUDE_BACKEND_ID, CODEX_BACKEND_ID,
 };
 use super::stream_emit::{
     confirmed_streaming_parts, emit_persisted_tool_output_resync, emit_session_state_changed,
     flush_streaming_before_transition, has_pending_stream_flush,
     release_completed_turn_streaming_buffer, spawn_streaming_timer,
 };
+use super::system_context_rendering::compose_system_prompt;
 use super::turn_event_log::{
     append_terminal_events_and_project, begin_turn_event_log,
     clear_post_turn_store_base_untrusted_for_message, mark_post_turn_store_base_untrusted,
     projected_session_state_for_current_turn,
 };
 use crate::app_data_dir::resolve_data_dir;
-use crate::infrastructure::agent_session::resolver_ports::MentionResolverPort;
+use crate::infrastructure::agent_session::resolver_ports::{
+    FileSystemInstructionSourcePort, MentionResolverPort,
+};
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_spawn_session_guard;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::clear_pending_turn_starting;
@@ -44,6 +47,7 @@ use crate::infrastructure::agent_session::runtime::AgentMessage;
 use crate::infrastructure::agent_session::runtime::ImageAttachment;
 use crate::infrastructure::agent_session::runtime::SessionConfig;
 use crate::infrastructure::agent_session::runtime::SessionHandle;
+use crate::usecase::agent_session::context::{BranchDiffContextPort, SystemContextEditorInput};
 use crate::usecase::agent_session::event_log::human_parts_from_content_images;
 use crate::usecase::agent_session::event_log::InterruptReason;
 use crate::usecase::agent_session::event_log::PromptInput;
@@ -65,6 +69,10 @@ use crate::usecase::agent_session::session::SessionSummary;
 use crate::usecase::agent_session::session::StreamResyncSnapshot;
 use crate::usecase::agent_session::session::TokenUsage;
 use crate::usecase::agent_session::session::INITIAL_SESSION_PAGE_LIMIT;
+use crate::usecase::agent_session::system_prompt::{
+    build_session_system_prompt as build_session_system_prompt_context,
+    persist_session_system_prompt_build, SessionSystemPromptBuildRequest,
+};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -86,6 +94,103 @@ pub(super) fn pending_human_parts(pending: &PendingMessage) -> Option<Vec<Messag
             .map(|image| (image.data.clone(), image.media_type.clone())),
     );
     (!parts.is_empty()).then_some(parts)
+}
+
+fn system_context_editor_input(
+    editor_context: Option<&AgentEditorContext>,
+) -> Option<SystemContextEditorInput> {
+    editor_context.map(|context| SystemContextEditorInput {
+        active_editor_path: context.active_editor_path.clone(),
+        open_editor_paths: context.open_editor_paths.clone(),
+        selection_file_path: context
+            .selection
+            .as_ref()
+            .map(|selection| selection.file_path.clone()),
+        payload: serde_json::to_string(context).ok(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_and_persist_session_system_prompt(
+    branch_diff_context: Option<&dyn BranchDiffContextPort>,
+    session_store: &SessionStore,
+    data_dir: &Path,
+    session: &ChatSession,
+    backend_id: &str,
+    model_id: Option<&str>,
+    base_system_prompt: Option<String>,
+    mentions: &[crate::domain::code::MentionReference],
+    editor_context: Option<&AgentEditorContext>,
+) -> Result<Option<String>, String> {
+    build_and_persist_session_system_prompt_with_workflow_instructions(
+        branch_diff_context,
+        session_store,
+        data_dir,
+        session,
+        backend_id,
+        model_id,
+        base_system_prompt,
+        mentions,
+        editor_context,
+        Vec::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_and_persist_session_system_prompt_with_workflow_instructions(
+    branch_diff_context: Option<&dyn BranchDiffContextPort>,
+    session_store: &SessionStore,
+    data_dir: &Path,
+    session: &ChatSession,
+    backend_id: &str,
+    model_id: Option<&str>,
+    base_system_prompt: Option<String>,
+    mentions: &[crate::domain::code::MentionReference],
+    editor_context: Option<&AgentEditorContext>,
+    workflow_instructions: Vec<String>,
+) -> Result<Option<String>, String> {
+    let source = FileSystemInstructionSourcePort;
+    let built = build_session_system_prompt_context(SessionSystemPromptBuildRequest {
+        session_store,
+        data_dir,
+        session,
+        branch_diff_context,
+        instruction_source: &source,
+        backend_id,
+        model_id,
+        mentions,
+        editor_context: system_context_editor_input(editor_context),
+        workflow_instructions,
+    })?;
+    let system_prompt = compose_system_prompt(base_system_prompt, &built.system_context);
+    persist_session_system_prompt_build(session_store, data_dir, &session.id, &built)?;
+    Ok(system_prompt)
+}
+
+fn build_internal_turn_system_prompt(
+    branch_diff_context: Option<&dyn BranchDiffContextPort>,
+    session_store: &SessionStore,
+    data_dir: &Path,
+    chat_session_id: &str,
+    base_system_prompt: Option<String>,
+    workflow_instructions: Vec<String>,
+) -> Result<Option<String>, String> {
+    let session = session_store
+        .get_session_shell(data_dir, chat_session_id)?
+        .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
+    let backend_id = session.backend_id.as_deref().unwrap_or(CLAUDE_BACKEND_ID);
+    build_and_persist_session_system_prompt_with_workflow_instructions(
+        branch_diff_context,
+        session_store,
+        data_dir,
+        &session,
+        backend_id,
+        session.selected_model.as_deref(),
+        base_system_prompt,
+        &[],
+        None,
+        workflow_instructions,
+    )
 }
 
 pub(super) struct StartedTurnPrompt {
@@ -274,6 +379,7 @@ where
 
 pub(super) async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
@@ -338,6 +444,7 @@ pub(super) async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
     };
     spawn_workflow_turn_complete_notification(
         app.clone(),
+        branch_diff_context,
         Arc::clone(session_store),
         Arc::clone(handles),
         chat_session_id.to_string(),
@@ -800,6 +907,7 @@ pub async fn get_session(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -807,6 +915,7 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
     permission_mode: Option<String>,
     plan_mode: bool,
     system_prompt: Option<String>,
+    workflow_instructions: Vec<String>,
 ) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
     // 抽象パーミッションモードを境界で解決・検証する。
     // - Some: その場で検証（Tauri/WS 境界が既に弾いている想定だが内部経路でも二重防御）。
@@ -848,6 +957,23 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
     }
 
     let spawn_info = get_persisted_spawn_info(app, session_store, chat_session_id)?;
+    let context_data_dir = resolve_data_dir(app)?;
+    let selected_model_for_context = spawn_info.selected_model.clone();
+    let system_prompt = match session_store.get_session_shell(&context_data_dir, chat_session_id)? {
+        Some(session) => build_and_persist_session_system_prompt_with_workflow_instructions(
+            branch_diff_context.as_deref(),
+            session_store,
+            &context_data_dir,
+            &session,
+            &spawn_info.backend_id,
+            selected_model_for_context.as_deref(),
+            system_prompt,
+            &[],
+            None,
+            workflow_instructions,
+        )?,
+        None => system_prompt,
+    };
 
     if spawn_info.backend_id == CODEX_BACKEND_ID {
         let backend = codex_backend_from_app(app)?;
@@ -877,6 +1003,7 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
         spawn_info.selected_model,
         system_prompt,
         spawn_info.context_restore_plan.restore_context().cloned(),
+        branch_diff_context,
     )
     .await
     .map_err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other)
@@ -953,9 +1080,56 @@ fn maybe_record_bridge_spawn<T, E>(
     }
 }
 
+async fn replace_ready_runtime_if_system_prompt_changed<R: tauri::Runtime>(
+    app: Option<&tauri::AppHandle<R>>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    desired_fingerprint: Option<String>,
+) -> Result<VecDeque<PendingMessage>, String> {
+    let removed = {
+        let mut map = handles.lock().await;
+        let should_replace = map.get(chat_session_id).is_some_and(|proc| {
+            matches!(proc.state, BridgeState::Ready | BridgeState::Initializing)
+                && proc.turn_phase == TurnPhase::Idle
+                && proc.system_prompt_fingerprint != desired_fingerprint
+        });
+        if should_replace {
+            map.remove(chat_session_id)
+        } else {
+            None
+        }
+    };
+    let Some(mut proc) = removed else {
+        return Ok(VecDeque::new());
+    };
+    let preserved_pending_messages = std::mem::take(&mut proc.pending_messages);
+
+    #[cfg(unix)]
+    {
+        if let Some(pg) = proc.pgid {
+            sweep_process_group(pg).await;
+            if let Some(app) = app {
+                if let Ok(data_dir) = resolve_data_dir(app) {
+                    remove_pgid(&data_dir, chat_session_id);
+                }
+            }
+        } else if let Err(e) = proc.child.kill().await {
+            log::warn!("Failed to kill system-context-stale agent process {chat_session_id}: {e}");
+        }
+    }
+    #[cfg(not(unix))]
+    if let Err(e) = proc.child.kill().await {
+        log::warn!("Failed to kill system-context-stale agent process {chat_session_id}: {e}");
+    }
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), proc.child.wait()).await;
+    Ok(preserved_pending_messages)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn start_agent_turn<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -963,6 +1137,7 @@ pub(super) async fn start_agent_turn<R: tauri::Runtime>(
     permission_mode: &str,
     plan_mode: bool,
     prompt: &str,
+    system_prompt: Option<String>,
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
@@ -975,15 +1150,25 @@ pub(super) async fn start_agent_turn<R: tauri::Runtime>(
             permission_mode,
             plan_mode,
             prompt,
+            system_prompt,
             streaming_message_id,
             images,
         )
         .await;
     }
 
+    let preserved_pending_messages = replace_ready_runtime_if_system_prompt_changed(
+        Some(app),
+        handles,
+        chat_session_id,
+        runtime_system_prompt_fingerprint(system_prompt.as_deref()),
+    )
+    .await?;
+
     let projected_session_state = start_agent_turn_with_runtime_spawner(
         Some(app),
         Some(session_store),
+        branch_diff_context.clone(),
         handles,
         chat_session_id,
         permission_mode,
@@ -1020,8 +1205,9 @@ pub(super) async fn start_agent_turn<R: tauri::Runtime>(
                 permission_mode.to_string(),
                 plan_mode,
                 spawn_info.selected_model,
-                None,
+                system_prompt.clone(),
                 spawn_info.context_restore_plan.restore_context().cloned(),
+                branch_diff_context,
             )
             .await;
             maybe_record_bridge_spawn(&result, &spawn_dims, spawn_started.elapsed());
@@ -1029,6 +1215,7 @@ pub(super) async fn start_agent_turn<R: tauri::Runtime>(
         },
     )
     .await?;
+    prepend_pending_messages_to_runtime(handles, chat_session_id, preserved_pending_messages).await;
 
     // Emit state change so frontend can track turn phase
     emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None, false);
@@ -1046,6 +1233,7 @@ pub(super) async fn start_agent_turn<R: tauri::Runtime>(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn start_agent_turn_locked<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -1053,6 +1241,7 @@ pub(super) async fn start_agent_turn_locked<R: tauri::Runtime>(
     permission_mode: &str,
     plan_mode: bool,
     prompt: &str,
+    system_prompt: Option<String>,
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
@@ -1065,15 +1254,25 @@ pub(super) async fn start_agent_turn_locked<R: tauri::Runtime>(
             permission_mode,
             plan_mode,
             prompt,
+            system_prompt,
             streaming_message_id,
             images,
         )
         .await;
     }
 
+    let preserved_pending_messages = replace_ready_runtime_if_system_prompt_changed(
+        Some(app),
+        handles,
+        chat_session_id,
+        runtime_system_prompt_fingerprint(system_prompt.as_deref()),
+    )
+    .await?;
+
     let projected_session_state = start_agent_turn_with_runtime_spawner_locked(
         Some(app),
         Some(session_store),
+        branch_diff_context.clone(),
         handles,
         chat_session_id,
         permission_mode,
@@ -1109,8 +1308,9 @@ pub(super) async fn start_agent_turn_locked<R: tauri::Runtime>(
                 permission_mode.to_string(),
                 plan_mode,
                 spawn_info.selected_model,
-                None,
+                system_prompt.clone(),
                 spawn_info.context_restore_plan.restore_context().cloned(),
+                branch_diff_context,
             )
             .await;
             maybe_record_bridge_spawn(&result, &spawn_dims, spawn_started.elapsed());
@@ -1118,6 +1318,7 @@ pub(super) async fn start_agent_turn_locked<R: tauri::Runtime>(
         },
     )
     .await?;
+    prepend_pending_messages_to_runtime(handles, chat_session_id, preserved_pending_messages).await;
 
     // Emit state change so frontend can track turn phase
     emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None, false);
@@ -1143,12 +1344,14 @@ pub(super) fn codex_backend_from_app<R: tauri::Runtime>(
         .ok_or_else(|| format!("Agent backend not found: {CODEX_BACKEND_ID}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn start_codex_backend_turn<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     chat_session_id: &str,
     permission_mode: &str,
     plan_mode: bool,
     prompt: &str,
+    system_prompt: Option<String>,
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
@@ -1158,6 +1361,7 @@ pub(super) async fn start_codex_backend_turn<R: tauri::Runtime>(
         permission_mode,
         plan_mode,
         prompt,
+        system_prompt,
         streaming_message_id,
         images,
     )
@@ -1171,6 +1375,7 @@ pub(super) async fn start_codex_backend_turn_runtime<R: tauri::Runtime>(
     permission_mode: &str,
     plan_mode: bool,
     prompt: &str,
+    system_prompt: Option<String>,
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
@@ -1183,6 +1388,7 @@ pub(super) async fn start_codex_backend_turn_runtime<R: tauri::Runtime>(
             },
             AgentMessage {
                 content: prompt.to_string(),
+                system_prompt,
                 streaming_message_id: streaming_message_id.to_string(),
                 images: images.to_vec(),
                 permission_mode: permission_mode.to_string(),
@@ -1197,6 +1403,7 @@ pub(super) async fn start_codex_backend_turn_runtime<R: tauri::Runtime>(
 #[allow(clippy::too_many_arguments)]
 async fn start_agent_turn_locked_runtime<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -1204,6 +1411,7 @@ async fn start_agent_turn_locked_runtime<R: tauri::Runtime>(
     permission_mode: &str,
     plan_mode: bool,
     prompt: &str,
+    system_prompt: Option<String>,
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
@@ -1217,6 +1425,7 @@ async fn start_agent_turn_locked_runtime<R: tauri::Runtime>(
             permission_mode,
             plan_mode,
             prompt,
+            system_prompt,
             streaming_message_id,
             images,
         )
@@ -1225,6 +1434,7 @@ async fn start_agent_turn_locked_runtime<R: tauri::Runtime>(
 
     start_agent_turn_locked(
         app,
+        branch_diff_context,
         handles,
         session_store,
         chat_session_id,
@@ -1232,6 +1442,7 @@ async fn start_agent_turn_locked_runtime<R: tauri::Runtime>(
         permission_mode,
         plan_mode,
         prompt,
+        system_prompt,
         streaming_message_id,
         images,
     )
@@ -1243,6 +1454,7 @@ async fn start_agent_turn_locked_runtime<R: tauri::Runtime>(
 pub(super) async fn start_agent_turn_with_runtime_spawner<R: tauri::Runtime, F, Fut>(
     app: Option<&tauri::AppHandle<R>>,
     session_store: Option<&Arc<SessionStore>>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
     permission_mode: &str,
@@ -1260,6 +1472,7 @@ where
     start_agent_turn_with_runtime_spawner_locked(
         app,
         session_store,
+        branch_diff_context,
         handles,
         chat_session_id,
         permission_mode,
@@ -1322,6 +1535,7 @@ pub(super) fn prompt_input_for_started_turn<R: tauri::Runtime>(
 pub(super) async fn start_agent_turn_with_runtime_spawner_locked<R: tauri::Runtime, F, Fut>(
     app: Option<&tauri::AppHandle<R>>,
     session_store: Option<&Arc<SessionStore>>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
     permission_mode: &str,
@@ -1396,7 +1610,14 @@ where
             if let Some(app) = app {
                 spawn_streaming_timer(app, handles, chat_session_id, proc);
                 if let Some(session_store) = session_store {
-                    spawn_turn_watchdog(app, handles, session_store, chat_session_id, proc);
+                    spawn_turn_watchdog(
+                        app,
+                        branch_diff_context,
+                        handles,
+                        session_store,
+                        chat_session_id,
+                        proc,
+                    );
                 }
             }
             projected_session_state_for_current_turn(proc)
@@ -1482,6 +1703,16 @@ pub(super) async fn prepend_pending_messages_to_runtime(
         pending_messages.append(&mut existing);
         proc.pending_messages = pending_messages;
     }
+}
+
+pub(super) async fn requeue_pending_message_to_runtime(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    pending: PendingMessage,
+) {
+    let mut pending_messages = VecDeque::new();
+    pending_messages.push_back(pending);
+    prepend_pending_messages_to_runtime(handles, chat_session_id, pending_messages).await;
 }
 
 pub(super) async fn crash_agent_process_for_context_reinject<R: tauri::Runtime>(
@@ -1641,6 +1872,7 @@ pub(super) fn prepare_pending_turn_messages(
 /// otherwise tokio Mutex non-reentrancy will deadlock (see issues-929).
 pub(super) async fn start_pending_message_turn<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -1651,6 +1883,43 @@ pub(super) async fn start_pending_message_turn<R: tauri::Runtime>(
         Ok(d) => d,
         Err(e) => {
             log::error!("consume_pending_message: failed to resolve data dir: {e}");
+            requeue_pending_message_to_runtime(handles, chat_session_id, pending).await;
+            clear_pending_turn_starting(chat_session_id).await;
+            return;
+        }
+    };
+
+    let session = match session_store.get_session_shell(&data_dir, chat_session_id) {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            log::warn!("Session not found for pending system context: {chat_session_id}");
+            requeue_pending_message_to_runtime(handles, chat_session_id, pending).await;
+            clear_pending_turn_starting(chat_session_id).await;
+            return;
+        }
+        Err(e) => {
+            log::warn!("Failed to load session for pending system context: {e}");
+            requeue_pending_message_to_runtime(handles, chat_session_id, pending).await;
+            clear_pending_turn_starting(chat_session_id).await;
+            return;
+        }
+    };
+    let backend_id = session.backend_id.as_deref().unwrap_or(CLAUDE_BACKEND_ID);
+    let system_prompt = match build_and_persist_session_system_prompt(
+        branch_diff_context.as_deref(),
+        session_store,
+        &data_dir,
+        &session,
+        backend_id,
+        session.selected_model.as_deref(),
+        None,
+        &pending.mentions,
+        pending.editor_context.as_ref(),
+    ) {
+        Ok(system_prompt) => system_prompt,
+        Err(e) => {
+            log::warn!("Failed to build system context for pending turn: {e}");
+            requeue_pending_message_to_runtime(handles, chat_session_id, pending).await;
             clear_pending_turn_starting(chat_session_id).await;
             return;
         }
@@ -1661,6 +1930,7 @@ pub(super) async fn start_pending_message_turn<R: tauri::Runtime>(
             Ok(messages) => messages,
             Err(e) => {
                 log::error!("consume_pending_message: failed to prepare pending messages: {e}");
+                requeue_pending_message_to_runtime(handles, chat_session_id, pending).await;
                 clear_pending_turn_starting(chat_session_id).await;
                 return;
             }
@@ -1686,23 +1956,16 @@ pub(super) async fn start_pending_message_turn<R: tauri::Runtime>(
         &pending.content,
         &pending.mentions,
     );
-
-    match session_store.get_session_shell(&data_dir, chat_session_id) {
-        Ok(Some(session)) => {
-            let backend_id = session.backend_id.as_deref().unwrap_or(CLAUDE_BACKEND_ID);
-            let resume = if backend_id == CLAUDE_BACKEND_ID {
-                ui_to_start_resume_for_session(handles, chat_session_id, &session).await
-            } else {
-                false
-            };
-            record_ui_to_start_latency_for_pending_message(&session, &pending, resume);
-        }
-        Ok(None) => {}
-        Err(e) => log::warn!("Failed to load session for pending ui_to_start telemetry: {e}"),
-    }
+    let resume = if backend_id == CLAUDE_BACKEND_ID {
+        ui_to_start_resume_for_session(handles, chat_session_id, &session).await
+    } else {
+        false
+    };
+    record_ui_to_start_latency_for_pending_message(&session, &pending, resume);
 
     if let Err(_e) = start_agent_turn(
         app,
+        branch_diff_context,
         handles,
         session_store,
         chat_session_id,
@@ -1710,6 +1973,7 @@ pub(super) async fn start_pending_message_turn<R: tauri::Runtime>(
         &pending.permission_mode,
         pending.plan_mode,
         &resolved_prompt,
+        system_prompt,
         &agent_msg.id,
         &pending.images,
     )
@@ -1950,9 +2214,11 @@ pub(super) struct PreparedAgentTurn {
     pub(crate) permission_mode: String,
     pub(crate) plan_mode: bool,
     pub(crate) prompt: String,
+    pub(crate) system_prompt: Option<String>,
     pub(crate) agent_message_id: String,
     pub(crate) images: Vec<ImageAttachment>,
     pub(crate) editor_context: Option<AgentEditorContext>,
+    pub(crate) branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
 }
 
 pub(super) struct PreparedAgentSteer {
@@ -1973,7 +2239,9 @@ pub(super) enum PreparedAgentRuntimeInput {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn prepare_send_agent_message_internal(
+    _app: Option<&tauri::AppHandle>,
     mention_resolver: &dyn MentionResolverPort,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -2212,6 +2480,17 @@ pub(super) async fn prepare_send_agent_message_internal(
             &content,
             &mentions,
         );
+        let system_prompt = build_and_persist_session_system_prompt(
+            branch_diff_context.as_deref(),
+            session_store,
+            data_dir,
+            &session,
+            &session_backend_id,
+            session.selected_model.as_deref(),
+            None,
+            &mentions,
+            editor_context.as_ref(),
+        )?;
         let turn = PreparedAgentTurn {
             session_id: sid.clone(),
             backend_id: session
@@ -2222,9 +2501,11 @@ pub(super) async fn prepare_send_agent_message_internal(
             permission_mode: pm.clone(),
             plan_mode,
             prompt: resolved_prompt,
+            system_prompt,
             agent_message_id: agent_msg.id.clone(),
             images: images.clone(),
             editor_context,
+            branch_diff_context,
         };
         (
             human_message,
@@ -2279,6 +2560,7 @@ pub(super) async fn start_prepared_agent_turn(
                 },
                 crate::infrastructure::agent_session::runtime::AgentMessage {
                     content: turn.prompt,
+                    system_prompt: turn.system_prompt,
                     streaming_message_id: turn.agent_message_id,
                     images: turn.images,
                     permission_mode: turn.permission_mode,
@@ -2292,6 +2574,7 @@ pub(super) async fn start_prepared_agent_turn(
 
     start_agent_turn(
         app,
+        turn.branch_diff_context,
         handles,
         session_store,
         &turn.session_id,
@@ -2299,6 +2582,7 @@ pub(super) async fn start_prepared_agent_turn(
         &turn.permission_mode,
         turn.plan_mode,
         &turn.prompt,
+        turn.system_prompt,
         &turn.agent_message_id,
         &turn.images,
     )
@@ -2320,6 +2604,7 @@ pub(super) async fn steer_prepared_agent_turn(
             },
             crate::infrastructure::agent_session::runtime::AgentMessage {
                 content: steer.prompt,
+                system_prompt: None,
                 streaming_message_id: steer.steering_message_id,
                 images: steer.images,
                 permission_mode: steer.permission_mode,
@@ -2336,6 +2621,7 @@ pub(super) async fn steer_prepared_agent_turn(
 #[allow(clippy::too_many_arguments)]
 pub async fn send_agent_message_internal(
     app: &tauri::AppHandle,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -2364,7 +2650,9 @@ pub async fn send_agent_message_internal(
     let (response, prepared_input) = {
         let _send_guard = acquire_session_runtime_lock(&lock_key).await;
         prepare_send_agent_message_internal(
+            Some(app),
             mention_resolver.as_ref(),
+            branch_diff_context,
             session_store,
             registry,
             handles,
@@ -2511,12 +2799,15 @@ pub(super) async fn init_agent_sessions_internal<R: tauri::Runtime>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
     cwd: &str,
     permission_mode: &str,
     prompt: &str,
+    base_system_prompt: Option<String>,
+    workflow_instructions: Vec<String>,
 ) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
     let data_dir = resolve_data_dir(app)
         .map_err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other)?;
@@ -2545,8 +2836,19 @@ pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
     )
     .map_err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other)?;
 
+    let system_prompt = build_internal_turn_system_prompt(
+        branch_diff_context.as_deref(),
+        session_store,
+        &data_dir,
+        chat_session_id,
+        base_system_prompt,
+        workflow_instructions,
+    )
+    .map_err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other)?;
+
     start_agent_turn_locked_runtime(
         app,
+        branch_diff_context,
         handles,
         session_store,
         chat_session_id,
@@ -2554,6 +2856,7 @@ pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
         permission_mode,
         false,
         prompt,
+        system_prompt,
         &agent_msg.id,
         &[],
     )
@@ -2573,12 +2876,16 @@ mod moved_tests {
     use crate::adaptor::gateway::workflow::test_support::TestRuntimeKernel;
     use crate::infrastructure::agent_session::runtime::runtime_coordinator::clear_pending_turn_starting;
     use crate::infrastructure::agent_session::runtime::{AgentBackendRegistry, ModelInfo};
+    use crate::usecase::agent_session::context::{
+        BranchDiffContextChangedFile, BranchDiffContextPort, BranchDiffContextStats,
+        BranchDiffContextSummary,
+    };
     use crate::usecase::agent_session::event_log::{PromptInput, TurnEventLog};
 
     use crate::usecase::agent_session::session::{
         add_message_internal, create_session_internal, ActivityEntry, AttachmentRef, ChatMessage,
         ChatSession, MessageMention, MessagePart, MessageRole, SessionStore, ToolOutputRef,
-        ToolOutputSummary,
+        ToolOutputSummary, WorkflowStepContextDto,
     };
 
     use std::collections::{HashMap, VecDeque};
@@ -2587,6 +2894,166 @@ mod moved_tests {
     use std::time::{Duration, Instant};
 
     use tokio::sync::Mutex;
+
+    struct FakeBranchDiffContext;
+
+    impl BranchDiffContextPort for FakeBranchDiffContext {
+        fn get_branch_diff_context(
+            &self,
+            _worktree_path: &str,
+        ) -> Result<BranchDiffContextSummary, String> {
+            Ok(BranchDiffContextSummary {
+                base_branch: "main".to_string(),
+                changed_files: vec![BranchDiffContextChangedFile {
+                    path: "src/lib.rs".to_string(),
+                    status: "modified".to_string(),
+                    stats: BranchDiffContextStats {
+                        additions: 3,
+                        deletions: 1,
+                    },
+                }],
+            })
+        }
+    }
+
+    fn pending_message_for_test(id: &str) -> PendingMessage {
+        PendingMessage {
+            id: id.to_string(),
+            content: format!("pending {id}"),
+            created_at: 1.0,
+            client_sent_at_ms: None,
+            request_received_at_ms: None,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            images: Vec::new(),
+            worktree_path: "/repo".to_string(),
+            mentions: Vec::new(),
+            editor_context: None,
+            existing_human_message_id: None,
+            existing_agent_message_id: None,
+        }
+    }
+
+    #[test]
+    fn internal_turn_system_prompt_uses_session_shell_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let _app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let mut session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        session.workflow_step_session = true;
+        session.selected_model = Some("sonnet".to_string());
+        session.workflow_step_context = Some(WorkflowStepContextDto {
+            run_id: "run-1".to_string(),
+            workflow_name: "workflow".to_string(),
+            step_name: "step-a".to_string(),
+            run_index: 1,
+            parent_step_name: None,
+            parent_run_index: None,
+            order: 0,
+        });
+        store
+            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .unwrap();
+        store
+            .update_system_context_private_meta_if_changed(
+                temp.path(),
+                &session.id,
+                None,
+                vec!["private workflow instruction".to_string()],
+                None,
+            )
+            .unwrap();
+
+        let system_prompt = build_internal_turn_system_prompt(
+            None,
+            &store,
+            temp.path(),
+            &session.id,
+            Some("workflow policy prompt".to_string()),
+            Vec::new(),
+        )
+        .unwrap()
+        .expect("system prompt");
+
+        assert!(system_prompt.contains("workflow policy prompt"));
+        assert!(system_prompt.contains("private workflow instruction"));
+        assert!(system_prompt.contains("<releash_workflow_state>"));
+        assert!(system_prompt.contains("<releash_backend_model_identity>"));
+        assert!(system_prompt.contains("backend_id: claude"));
+        assert!(store
+            .get_session_meta(temp.path(), &session.id)
+            .unwrap()
+            .and_then(|meta| meta.context_epoch)
+            .is_some());
+    }
+
+    #[test]
+    fn saved_read_path_adds_file_neighbor_instruction_to_system_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let worktree = temp.path().join("worktree");
+        std::fs::create_dir_all(worktree.join("src/local")).unwrap();
+        std::fs::write(worktree.join("AGENTS.md"), "root instruction").unwrap();
+        std::fs::write(
+            worktree.join("src/local/AGENTS.md"),
+            "local file-neighbor instruction",
+        )
+        .unwrap();
+        std::fs::write(worktree.join("src/local/file.rs"), "fn main() {}").unwrap();
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            &worktree.to_string_lossy(),
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        add_message_internal(
+            &store,
+            temp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            Some(vec![MessagePart::ToolUse {
+                tool: "Read".to_string(),
+                input: serde_json::json!({"file_path": "src/local/file.rs"}),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: None,
+            }]),
+            None,
+        )
+        .unwrap();
+        let shell = store
+            .get_session_shell(temp.path(), &session.id)
+            .unwrap()
+            .expect("session shell");
+        assert!(shell.messages.is_empty());
+
+        let system_prompt = build_and_persist_session_system_prompt(
+            None,
+            &store,
+            temp.path(),
+            &shell,
+            CLAUDE_BACKEND_ID,
+            None,
+            None,
+            &[],
+            None,
+        )
+        .unwrap()
+        .expect("system prompt");
+
+        assert!(system_prompt.contains("<releash_project_instructions>"));
+        assert!(system_prompt.contains("local file-neighbor instruction"));
+    }
 
     #[tokio::test]
     async fn resync_streaming_message_uses_persisted_parts_when_live_buffer_was_released() {
@@ -3383,7 +3850,9 @@ mod moved_tests {
             .unwrap();
 
         let result = prepare_send_agent_message_internal(
+            None,
             &crate::adaptor::controller::wiring::build_code_usecase(),
+            None,
             &session_store,
             &registry,
             &handles,
@@ -3465,7 +3934,9 @@ mod moved_tests {
             .await;
 
         let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            None,
             &crate::adaptor::controller::wiring::build_code_usecase(),
+            None,
             &session_store,
             &registry,
             &handles,
@@ -3514,7 +3985,9 @@ mod moved_tests {
         let worktree_path = "/repo".to_string();
 
         let (response, prepared_turn) = prepare_send_agent_message_internal(
+            None,
             &crate::adaptor::controller::wiring::build_code_usecase(),
+            None,
             &session_store,
             &registry,
             &handles,
@@ -3584,6 +4057,7 @@ mod moved_tests {
             backend_id: Some("mock".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         session_store
             .save_full_session_for_migration_or_restore(data_dir.path(), &session)
@@ -3600,7 +4074,9 @@ mod moved_tests {
         .unwrap();
 
         let (response, prepared_turn) = prepare_send_agent_message_internal(
+            None,
             &crate::adaptor::controller::wiring::build_code_usecase(),
+            None,
             &session_store,
             &registry,
             &handles,
@@ -3651,7 +4127,9 @@ mod moved_tests {
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
 
         let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            None,
             &crate::adaptor::controller::wiring::build_code_usecase(),
+            None,
             &session_store,
             &registry,
             &handles,
@@ -3679,6 +4157,151 @@ mod moved_tests {
     }
 
     #[tokio::test]
+    async fn prepared_turn_carries_system_context_outside_user_prompt() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let registry = make_fixed_model_registry();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            None,
+            &crate::adaptor::controller::wiring::build_code_usecase(),
+            None,
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            None,
+            "/repo".to_string(),
+            "hello without stale context".to_string(),
+            crate::permission::PermissionMode::Edit,
+            false,
+            Some(CLAUDE_BACKEND_ID.to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let prepared_turn = prepared_turn.expect("new session should start a turn");
+        let prepared_turn = expect_prepared_turn(prepared_turn);
+        let system_prompt = prepared_turn.system_prompt.expect("system context prompt");
+
+        assert_eq!(prepared_turn.prompt, "hello without stale context");
+        assert!(!prepared_turn
+            .prompt
+            .contains("releash_backend_model_identity"));
+        assert!(system_prompt.contains("<releash_backend_model_identity>"));
+        assert!(system_prompt.contains("backend_id: claude"));
+        assert!(!system_prompt.contains("<releash_mentions>"));
+        assert!(!system_prompt.contains("<releash_open_editor_selection>"));
+    }
+
+    #[tokio::test]
+    async fn prepared_turn_carries_mentions_and_editor_context_in_system_prompt() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let registry = make_fixed_model_registry();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mentions = vec![crate::domain::code::MentionReference {
+            file_path: "src/mentioned.rs".to_string(),
+            start_line: Some(12),
+            end_line: Some(18),
+        }];
+        let editor_context = AgentEditorContext {
+            active_editor_path: Some("src/active.rs".to_string()),
+            open_editor_paths: vec!["src/active.rs".to_string(), "src/other.rs".to_string()],
+            selection: Some(
+                crate::infrastructure::agent_session::runtime::AgentEditorSelection {
+                    file_path: "src/editor.rs".to_string(),
+                    start_line: 3,
+                    end_line: 8,
+                },
+            ),
+        };
+
+        let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            None,
+            &crate::adaptor::controller::wiring::build_code_usecase(),
+            None,
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            None,
+            "/repo".to_string(),
+            "hello with context".to_string(),
+            crate::permission::PermissionMode::Edit,
+            false,
+            Some(CLAUDE_BACKEND_ID.to_string()),
+            None,
+            None,
+            Some(mentions),
+            Some(editor_context),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let prepared_turn = prepared_turn.expect("new session should start a turn");
+        let prepared_turn = expect_prepared_turn(prepared_turn);
+        let system_prompt = prepared_turn.system_prompt.expect("system context prompt");
+
+        assert!(system_prompt.contains("<releash_mentions>"));
+        assert!(system_prompt.contains("src/mentioned.rs:12-18"));
+        assert!(system_prompt.contains("<releash_open_editor_selection>"));
+        assert!(system_prompt.contains("src/active.rs"));
+        assert!(system_prompt.contains("src/other.rs"));
+        assert!(system_prompt.contains("src/editor.rs"));
+        assert!(system_prompt.contains("startLine"));
+        assert!(system_prompt.contains("endLine"));
+    }
+
+    #[tokio::test]
+    async fn prepared_turn_uses_injected_branch_diff_context_without_app_state() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let registry = make_fixed_model_registry();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let branch_diff_context: Arc<dyn BranchDiffContextPort> = Arc::new(FakeBranchDiffContext);
+
+        let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            None,
+            &crate::adaptor::controller::wiring::build_code_usecase(),
+            Some(branch_diff_context),
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            None,
+            "/repo".to_string(),
+            "review diff".to_string(),
+            crate::permission::PermissionMode::Edit,
+            false,
+            Some(CLAUDE_BACKEND_ID.to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let prepared_turn = expect_prepared_turn(prepared_turn.expect("prepared turn"));
+        let system_prompt = prepared_turn.system_prompt.expect("system context prompt");
+        assert!(system_prompt.contains("<releash_diff_review_snapshot>"));
+        assert!(system_prompt.contains("base_branch: main"));
+        assert!(system_prompt.contains("- modified src/lib.rs (+3 -1)"));
+    }
+
+    #[tokio::test]
     async fn initializing_idle_runtime_prepares_first_turn_instead_of_queueing() {
         let data_dir = tempfile::tempdir().unwrap();
         let session_store = Arc::new(crate::test_support::build_session_store());
@@ -3703,7 +4326,9 @@ mod moved_tests {
         handles.lock().await.insert(session.id.clone(), proc);
 
         let (response, prepared_input) = prepare_send_agent_message_internal(
+            None,
             &crate::adaptor::controller::wiring::build_code_usecase(),
+            None,
             &session_store,
             &registry,
             &handles,
@@ -3759,7 +4384,9 @@ mod moved_tests {
         handles.lock().await.insert(session.id.clone(), proc);
 
         let (response, prepared_input) = prepare_send_agent_message_internal(
+            None,
             &crate::adaptor::controller::wiring::build_code_usecase(),
+            None,
             &session_store,
             &registry,
             &handles,
@@ -3823,7 +4450,9 @@ mod moved_tests {
             .unwrap();
 
         let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            None,
             &crate::adaptor::controller::wiring::build_code_usecase(),
+            None,
             &session_store,
             &registry,
             &handles,
@@ -3869,6 +4498,7 @@ mod moved_tests {
 
         let err = start_agent_turn(
             app.handle(),
+            None,
             &handles,
             &session_store,
             "missing-turn",
@@ -3876,6 +4506,7 @@ mod moved_tests {
             "edit",
             false,
             "hello",
+            None,
             "agent-msg-1",
             &[],
         )
@@ -3885,6 +4516,7 @@ mod moved_tests {
 
         let err = start_agent_turn_locked(
             app.handle(),
+            None,
             &handles,
             &session_store,
             "missing-locked-turn",
@@ -3892,6 +4524,7 @@ mod moved_tests {
             "edit",
             false,
             "hello",
+            None,
             "agent-msg-2",
             &[],
         )
@@ -3911,6 +4544,7 @@ mod moved_tests {
 
         start_agent_turn_with_runtime_spawner(
             None::<&tauri::AppHandle>,
+            None,
             None,
             &handles,
             &session_id,
@@ -3950,6 +4584,7 @@ mod moved_tests {
 
         let projected_session_state = start_agent_turn_with_runtime_spawner(
             None::<&tauri::AppHandle>,
+            None,
             None,
             &handles,
             &session_id,
@@ -3995,6 +4630,7 @@ mod moved_tests {
         start_agent_turn_with_runtime_spawner(
             None::<&tauri::AppHandle>,
             None,
+            None,
             &handles,
             &session_id,
             "edit",
@@ -4017,6 +4653,131 @@ mod moved_tests {
     }
 
     #[tokio::test]
+    async fn stale_system_prompt_ready_runtime_is_removed_before_reuse() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "stale-system-prompt".to_string();
+        let mut proc = make_test_agent_process();
+        proc.system_prompt_fingerprint = runtime_system_prompt_fingerprint(Some("old context"));
+        handles.lock().await.insert(session_id.clone(), proc);
+
+        replace_ready_runtime_if_system_prompt_changed::<tauri::test::MockRuntime>(
+            None,
+            &handles,
+            &session_id,
+            runtime_system_prompt_fingerprint(Some("new context")),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            handles.lock().await.is_empty(),
+            "stale system prompt runtime must be removed so init carries current context"
+        );
+    }
+
+    #[tokio::test]
+    async fn matching_system_prompt_fingerprint_runtime_is_preserved() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "matching-system-prompt".to_string();
+        let fingerprint = runtime_system_prompt_fingerprint(Some("same context"));
+        let mut proc = make_test_agent_process();
+        proc.system_prompt_fingerprint = fingerprint.clone();
+        handles.lock().await.insert(session_id.clone(), proc);
+
+        let preserved_pending = replace_ready_runtime_if_system_prompt_changed::<
+            tauri::test::MockRuntime,
+        >(None, &handles, &session_id, fingerprint)
+        .await
+        .unwrap();
+
+        assert!(preserved_pending.is_empty());
+        let mut proc = handles.lock().await.remove(&session_id).unwrap();
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn in_flight_runtime_is_not_removed_for_system_prompt_change() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "in-flight-system-prompt".to_string();
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        proc.system_prompt_fingerprint = runtime_system_prompt_fingerprint(Some("old context"));
+        handles.lock().await.insert(session_id.clone(), proc);
+
+        let preserved_pending =
+            replace_ready_runtime_if_system_prompt_changed::<tauri::test::MockRuntime>(
+                None,
+                &handles,
+                &session_id,
+                runtime_system_prompt_fingerprint(Some("new context")),
+            )
+            .await
+            .unwrap();
+
+        assert!(preserved_pending.is_empty());
+        let mut proc = handles.lock().await.remove(&session_id).unwrap();
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn stale_initializing_idle_runtime_is_removed_before_first_turn() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "stale-initializing-system-prompt".to_string();
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Initializing;
+        proc.turn_phase = TurnPhase::Idle;
+        proc.system_prompt_fingerprint = runtime_system_prompt_fingerprint(Some("old context"));
+        handles.lock().await.insert(session_id.clone(), proc);
+
+        replace_ready_runtime_if_system_prompt_changed::<tauri::test::MockRuntime>(
+            None,
+            &handles,
+            &session_id,
+            runtime_system_prompt_fingerprint(Some("new context")),
+        )
+        .await
+        .unwrap();
+
+        assert!(handles.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_ready_idle_runtime_with_pending_preserves_queue_for_replacement() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "stale-system-prompt-with-pending".to_string();
+        let mut proc = make_test_agent_process();
+        proc.system_prompt_fingerprint = runtime_system_prompt_fingerprint(Some("old context"));
+        proc.pending_messages
+            .push_back(pending_message_for_test("queued-1"));
+        handles.lock().await.insert(session_id.clone(), proc);
+
+        let preserved_pending =
+            replace_ready_runtime_if_system_prompt_changed::<tauri::test::MockRuntime>(
+                None,
+                &handles,
+                &session_id,
+                runtime_system_prompt_fingerprint(Some("new context")),
+            )
+            .await
+            .unwrap();
+
+        assert!(handles.lock().await.is_empty());
+        assert_eq!(preserved_pending.len(), 1);
+        assert_eq!(preserved_pending[0].id, "queued-1");
+
+        handles
+            .lock()
+            .await
+            .insert(session_id.clone(), make_test_agent_process());
+        prepend_pending_messages_to_runtime(&handles, &session_id, preserved_pending).await;
+        let mut proc = handles.lock().await.remove(&session_id).unwrap();
+        assert_eq!(proc.pending_messages.len(), 1);
+        assert_eq!(proc.pending_messages.front().unwrap().id, "queued-1");
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
     async fn workflow_step_turn_start_holds_session_runtime_lock_until_message_write() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -4032,6 +4793,7 @@ mod moved_tests {
             tokio::spawn(async move {
                 start_agent_turn_with_runtime_spawner(
                     None::<&tauri::AppHandle>,
+                    None,
                     None,
                     &handles,
                     &session_id,
@@ -4089,6 +4851,7 @@ mod moved_tests {
                 start_agent_turn_with_runtime_spawner(
                     None::<&tauri::AppHandle>,
                     None,
+                    None,
                     &handles,
                     &session_id,
                     "edit",
@@ -4119,6 +4882,7 @@ mod moved_tests {
             async move {
                 start_agent_turn_with_runtime_spawner(
                     None::<&tauri::AppHandle>,
+                    None,
                     None,
                     &handles,
                     &session_id,
@@ -4430,6 +5194,7 @@ mod moved_tests {
                 state: BridgeState::Ready,
                 turn_phase: TurnPhase::Idle,
                 sdk_session_id: None,
+                system_prompt_fingerprint: None,
                 context_carry_on_ready: None,
                 child,
                 generation_id: 0,
@@ -4470,7 +5235,9 @@ mod moved_tests {
         );
 
         let (response, prepared_turn) = prepare_send_agent_message_internal(
+            None,
             &crate::adaptor::controller::wiring::build_code_usecase(),
+            None,
             &session_store,
             &registry,
             &handles,
@@ -4696,6 +5463,61 @@ mod moved_tests {
             })
         );
         assert!(handles.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pending_turn_requeues_when_system_context_persist_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let private_context_path = temp
+            .path()
+            .join("sessions")
+            .join(&session.id)
+            .join("private_context.json");
+        let _ = std::fs::remove_file(&private_context_path);
+        std::fs::create_dir_all(&private_context_path).unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        handles
+            .lock()
+            .await
+            .insert(session.id.clone(), make_test_agent_process());
+
+        start_pending_message_turn(
+            app.handle(),
+            None,
+            &handles,
+            &session_store,
+            &session.id,
+            pending_message_for_test("queued-context-error"),
+        )
+        .await;
+
+        let saved = session_store
+            .load_full_session_for_restore(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            saved.messages.is_empty(),
+            "pending turn messages must not be consumed when system context persist fails"
+        );
+        let mut proc = handles.lock().await.remove(&session.id).unwrap();
+        assert_eq!(proc.pending_messages.len(), 1);
+        assert_eq!(
+            proc.pending_messages.front().unwrap().id,
+            "queued-context-error"
+        );
+        let _ = proc.child.kill().await;
     }
 
     #[tokio::test]
@@ -4937,7 +5759,9 @@ mod moved_tests {
             .unwrap();
 
         let (response, _prepared_turn) = prepare_send_agent_message_internal(
+            None,
             &crate::adaptor::controller::wiring::build_code_usecase(),
+            None,
             &session_store,
             &registry,
             &handles,
@@ -5147,6 +5971,7 @@ mod moved_tests {
             backend_id: Some(CLAUDE_BACKEND_ID.to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         session_store
             .save_full_session_for_migration_or_restore(temp.path(), &session)

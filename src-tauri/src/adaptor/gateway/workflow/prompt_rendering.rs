@@ -39,6 +39,55 @@ pub(crate) fn render_namespaced_variables(
     variable_renderer::render_workflow_variables(&rendered_alias, workflow_declared_variables)
 }
 
+fn render_workflow_instruction(
+    instruction: &str,
+    run_id: &str,
+    step_name: &str,
+    worktree_path: &str,
+    task: Option<&str>,
+    workflow_declared_variables: &HashMap<String, String>,
+) -> Option<String> {
+    let rendered = render_facet_variables(instruction, worktree_path, task);
+    let rendered = render_submit_command_variables(&rendered, run_id, step_name);
+    let rendered = render_namespaced_variables(&rendered, workflow_declared_variables);
+    let rendered = rendered.trim().to_string();
+    (!rendered.is_empty()).then_some(rendered)
+}
+
+pub(crate) fn render_step_workflow_instruction(
+    step: &NodeDefinition,
+    run_id: &str,
+    worktree_path: &str,
+    task: Option<&str>,
+    workflow_declared_variables: &HashMap<String, String>,
+) -> Option<String> {
+    render_workflow_instruction(
+        step.resolved_facets.instruction.as_ref()?,
+        run_id,
+        &step.name,
+        worktree_path,
+        task,
+        workflow_declared_variables,
+    )
+}
+
+pub(crate) fn render_child_workflow_instruction(
+    step: &ChildNodeDefinition,
+    run_id: &str,
+    worktree_path: &str,
+    task: Option<&str>,
+    workflow_declared_variables: &HashMap<String, String>,
+) -> Option<String> {
+    render_workflow_instruction(
+        step.resolved_facets.instruction.as_ref()?,
+        run_id,
+        &step.name,
+        worktree_path,
+        task,
+        workflow_declared_variables,
+    )
+}
+
 /// ステップの出力をプロンプトにコンテキストブロックとして注入する。
 pub(crate) fn inject_step_outputs(
     prompt: &str,

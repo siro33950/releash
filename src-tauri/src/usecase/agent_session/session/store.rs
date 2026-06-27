@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -6,6 +7,7 @@ use parking_lot::RwLock;
 use crate::domain::agent_session::{
     AgentSessionReader, AgentSessionStorage, AgentSessionStorageTypes,
 };
+use crate::usecase::agent_session::context_meta::ContextEpochMeta;
 use crate::usecase::agent_session::event_log::{AgentSessionEvent, TurnEventLog};
 
 use super::{
@@ -734,6 +736,31 @@ impl SessionStore {
                 return Ok(false);
             }
             meta.context_carry = context_carry;
+            meta.updated_at = now_timestamp();
+            Ok(true)
+        })
+    }
+
+    pub fn update_system_context_private_meta_if_changed(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        context_epoch: Option<ContextEpochMeta>,
+        workflow_instructions: Vec<String>,
+        agent_read_paths: Option<Vec<PathBuf>>,
+    ) -> Result<Option<SessionMeta>, String> {
+        self.update_meta_if_changed(app_data_dir, session_id, |meta| {
+            if meta.context_epoch == context_epoch
+                && meta.workflow_instructions == workflow_instructions
+                && (agent_read_paths.is_none() || meta.agent_read_paths == agent_read_paths)
+            {
+                return Ok(false);
+            }
+            meta.context_epoch = context_epoch;
+            meta.workflow_instructions = workflow_instructions;
+            if agent_read_paths.is_some() {
+                meta.agent_read_paths = agent_read_paths.clone();
+            }
             meta.updated_at = now_timestamp();
             Ok(true)
         })

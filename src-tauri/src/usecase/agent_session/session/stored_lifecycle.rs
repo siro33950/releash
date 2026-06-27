@@ -250,6 +250,7 @@ mod tests {
             backend_id: Some(CODEX_BACKEND_ID.to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         }
     }
 

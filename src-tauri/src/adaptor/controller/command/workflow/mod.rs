@@ -594,6 +594,7 @@ mod tests {
         Arc::new(TestRuntimeKernel::new(
             Arc::new(StaticWorkflowResolver),
             Arc::new(TestWorktreeResolver),
+            None,
         ))
     }
 

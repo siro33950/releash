@@ -50,6 +50,7 @@ use crate::infrastructure::agent_session::skill_catalog_gateway::TauriCodexSkill
 use crate::infrastructure::agent_session::thread_lifecycle_gateway::{
     CodexThreadLifecycleAppServerGateway, TauriAgentSessionRuntimeCloser,
 };
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::{
     AgentPromptSuggestionUsecase, OpenTabRegistry, SessionReaderPort, SessionStore,
     StoredSessionLifecycleUsecase,
@@ -276,6 +277,7 @@ pub(crate) fn build_workflow_runtime_usecase(
     app_config: Arc<dyn ConfigRepository>,
     session_store: Arc<SessionStore>,
     handles: Arc<Mutex<AgentProcessMap>>,
+    branch_diff_context: Arc<dyn BranchDiffContextPort>,
     data_dir: Option<PathBuf>,
 ) -> WorkflowRuntimeUsecase {
     WorkflowRuntimeUsecase::new(Arc::new(
@@ -285,6 +287,7 @@ pub(crate) fn build_workflow_runtime_usecase(
             app_config,
             session_store,
             handles,
+            branch_diff_context,
             data_dir,
         ),
     ))

@@ -1322,6 +1322,7 @@ mod moved_tests {
         start_agent_turn_with_runtime_spawner(
             None::<&tauri::AppHandle>,
             None,
+            None,
             &handles,
             &session.id,
             &pending.permission_mode,

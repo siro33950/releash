@@ -3,11 +3,13 @@ use super::process_registry::{
 };
 use super::recovery::{remove_pgid, save_pgid, spawn_turn_watchdog};
 use super::session_lifecycle::{
-    prepare_pending_turn_messages, prompt_input_for_started_turn, start_pending_message_turn,
-    sweep_process_group, take_pending_message,
+    build_and_persist_session_system_prompt, prepare_pending_turn_messages,
+    prompt_input_for_started_turn, start_pending_message_turn, sweep_process_group,
+    take_pending_message,
 };
 use super::shared::{
-    notify_status_transition, resolve_mentions_or_fallback_from_port, GENERATION_COUNTER,
+    notify_status_transition, resolve_mentions_or_fallback_from_port, CODEX_BACKEND_ID,
+    GENERATION_COUNTER,
 };
 use super::stream_emit::{emit_session_state_changed, spawn_streaming_timer};
 use super::turn_event_log::{begin_turn_event_log, projected_session_state_for_current_turn};
@@ -18,6 +20,7 @@ use crate::infrastructure::agent_session::runtime::runtime_coordinator::mark_ses
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::prune_session_runtime_lock;
 use crate::infrastructure::agent_session::runtime::AgentEditorContext;
 use crate::infrastructure::agent_session::runtime::ImageAttachment;
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::event_log::TurnEventLog;
 use crate::usecase::agent_session::event_log::WorkflowTurnCompleteInput;
 use crate::usecase::agent_session::session::now_timestamp;
@@ -38,12 +41,20 @@ use tokio::sync::Mutex;
 #[allow(dead_code)]
 pub(crate) struct ExternalBridgeMessageState {
     pub(crate) last_persist_time: Instant,
+    pub(crate) branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
 }
 
 impl Default for ExternalBridgeMessageState {
     fn default() -> Self {
+        Self::new(None)
+    }
+}
+
+impl ExternalBridgeMessageState {
+    pub(crate) fn new(branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>) -> Self {
         Self {
             last_persist_time: Instant::now(),
+            branch_diff_context,
         }
     }
 }
@@ -56,6 +67,7 @@ pub(crate) struct ExternalAgentTurnStart<'a> {
 }
 pub(crate) async fn start_external_agent_turn_state<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
@@ -91,7 +103,14 @@ pub(crate) async fn start_external_agent_turn_state<R: tauri::Runtime>(
             now_timestamp(),
         );
         spawn_streaming_timer(app, handles, chat_session_id, proc);
-        spawn_turn_watchdog(app, handles, session_store, chat_session_id, proc);
+        spawn_turn_watchdog(
+            app,
+            branch_diff_context,
+            handles,
+            session_store,
+            chat_session_id,
+            proc,
+        );
         projected_session_state_for_current_turn(proc)
     };
     emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None, false);
@@ -154,6 +173,7 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
         state: BridgeState::Initializing,
         turn_phase: TurnPhase::Idle,
         sdk_session_id,
+        system_prompt_fingerprint: None,
         context_carry_on_ready,
         child,
         generation_id: gen_id,
@@ -280,11 +300,13 @@ pub(crate) struct ExternalPendingTurn {
     pub agent_message_id: String,
     pub images: Vec<ImageAttachment>,
     pub editor_context: Option<AgentEditorContext>,
+    pub system_prompt: Option<String>,
 }
 
 #[allow(dead_code)]
 pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -301,6 +323,38 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
             return Err(format!("failed to resolve data dir: {e}"));
         }
     };
+    let session = match session_store.get_session_shell(&data_dir, chat_session_id) {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            requeue_pending_message(handles, chat_session_id, pending).await;
+            clear_pending_turn_starting(chat_session_id).await;
+            return Err(format!("Session not found: {chat_session_id}"));
+        }
+        Err(e) => {
+            requeue_pending_message(handles, chat_session_id, pending).await;
+            clear_pending_turn_starting(chat_session_id).await;
+            return Err(e.to_string());
+        }
+    };
+    let backend_id = session.backend_id.as_deref().unwrap_or(CODEX_BACKEND_ID);
+    let system_prompt = match build_and_persist_session_system_prompt(
+        branch_diff_context.as_deref(),
+        session_store,
+        &data_dir,
+        &session,
+        backend_id,
+        session.selected_model.as_deref(),
+        None,
+        &pending.mentions,
+        pending.editor_context.as_ref(),
+    ) {
+        Ok(system_prompt) => system_prompt,
+        Err(e) => {
+            requeue_pending_message(handles, chat_session_id, pending).await;
+            clear_pending_turn_starting(chat_session_id).await;
+            return Err(format!("failed to build pending system context: {e}"));
+        }
+    };
     let (human_msg, agent_msg, emit_consumed_messages) =
         match prepare_pending_turn_messages(session_store, &data_dir, chat_session_id, &pending) {
             Ok(messages) => messages,
@@ -310,14 +364,7 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
                 return Err(format!("failed to prepare pending messages: {e}"));
             }
         };
-    let permission_profile_id = match session_store.get_session_meta(&data_dir, chat_session_id) {
-        Ok(meta) => meta.and_then(|meta| meta.permission_profile_id),
-        Err(e) => {
-            requeue_pending_message(handles, chat_session_id, pending).await;
-            clear_pending_turn_starting(chat_session_id).await;
-            return Err(e.to_string());
-        }
-    };
+    let permission_profile_id = session.permission_profile_id.clone();
 
     if emit_consumed_messages {
         use tauri::Emitter;
@@ -338,7 +385,6 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
         &pending.content,
         &pending.mentions,
     );
-
     Ok(Some(ExternalPendingTurn {
         queued_turn_id: pending.id,
         worktree_path: pending.worktree_path,
@@ -349,6 +395,7 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
         agent_message_id: agent_msg.id,
         images: pending.images,
         editor_context: pending.editor_context,
+        system_prompt,
     }))
 }
 
@@ -395,6 +442,7 @@ pub(super) fn workflow_final_text_parts(final_parts: &[MessagePart]) -> Vec<Stri
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_workflow_turn_complete_notification<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: Arc<SessionStore>,
     handles: Arc<Mutex<AgentProcessMap>>,
     chat_session_id: String,
@@ -437,6 +485,7 @@ pub(super) fn spawn_workflow_turn_complete_notification<R: tauri::Runtime>(
             if let Some(pending) = pending {
                 start_pending_message_turn(
                     &app,
+                    branch_diff_context,
                     &handles,
                     &session_store,
                     &chat_session_id,
@@ -526,6 +575,7 @@ mod moved_tests {
 
         start_external_agent_turn_state(
             &app.handle(),
+            None,
             &store,
             &handles,
             &session.id,
@@ -853,6 +903,7 @@ mod moved_tests {
 
         let err = match prepare_external_pending_message_turn(
             &app.handle(),
+            None,
             &handles,
             &store,
             session_id,
@@ -863,7 +914,7 @@ mod moved_tests {
             Err(err) => err,
         };
 
-        assert!(err.contains("failed to prepare pending messages"));
+        assert!(err.contains("Session not found"));
         assert!(
             !crate::infrastructure::agent_session::runtime::runtime_coordinator::is_pending_turn_starting(session_id).await,
             "pending turn starting marker must be cleared on failure"
@@ -875,6 +926,54 @@ mod moved_tests {
             assert_eq!(proc.pending_messages.front().unwrap().id, "queued-1");
         }
         let mut proc = handles.lock().await.remove(session_id).unwrap();
+        let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn prepare_external_pending_message_turn_builds_system_prompt_for_pending_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let worktree_path = temp.path().join("repo");
+        std::fs::create_dir_all(&worktree_path).unwrap();
+        std::fs::write(
+            worktree_path.join("AGENTS.md"),
+            "Use the pending repo context.",
+        )
+        .unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            worktree_path.to_str().unwrap(),
+            Some(CODEX_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        let mut pending = test_pending_message("queued-1", "hello");
+        pending.worktree_path = worktree_path.to_string_lossy().to_string();
+        proc.pending_messages.push_back(pending);
+        handles.lock().await.insert(session.id.clone(), proc);
+
+        let pending = prepare_external_pending_message_turn(
+            &app.handle(),
+            None,
+            &handles,
+            &store,
+            &session.id,
+        )
+        .await
+        .expect("prepare pending turn")
+        .expect("pending turn");
+
+        let system_prompt = pending.system_prompt.expect("system prompt");
+        assert!(system_prompt.contains("<releash_project_instructions>"));
+        assert!(system_prompt.contains("Use the pending repo context."));
+
+        let mut proc = handles.lock().await.remove(&session.id).unwrap();
         let _ = proc.child.kill().await;
     }
 }

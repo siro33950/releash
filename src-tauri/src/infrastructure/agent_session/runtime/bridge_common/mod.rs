@@ -9,6 +9,7 @@ mod session_persistence;
 mod shared;
 mod skills;
 mod stream_emit;
+mod system_context_rendering;
 mod turn_event_log;
 
 pub(crate) use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;

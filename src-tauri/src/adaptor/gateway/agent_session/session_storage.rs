@@ -16,6 +16,7 @@ mod fork_copier;
 mod layout;
 mod message_store;
 mod meta_repository;
+mod private_context;
 mod titles;
 mod tool_output_blob;
 

@@ -11,6 +11,7 @@ use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::{
     AgentBackendRegistry, AgentProcessMap, ImageAttachment, SessionConfig,
 };
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::errors::session_target_rejected;
 use crate::usecase::agent_session::session::{
     ChatMessage, ChatSession, MessagePart, PageCursor, SessionPage, SessionState, SessionStore,
@@ -737,6 +738,7 @@ pub async fn start_agent_session(
     >,
     session_store: tauri::State<'_, Arc<SessionStore>>,
     registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
+    branch_diff_context: tauri::State<'_, Arc<dyn BranchDiffContextPort>>,
     chat_session_id: String,
     cwd: String,
     permission_mode: Option<String>,
@@ -794,6 +796,7 @@ pub async fn start_agent_session(
 
     crate::infrastructure::agent_session::runtime::start_agent_session_internal(
         &app,
+        Some(branch_diff_context.inner().clone()),
         handles.inner(),
         session_store.inner(),
         &chat_session_id,
@@ -801,6 +804,7 @@ pub async fn start_agent_session(
         Some(validated_permission_mode_str),
         validated_plan_mode,
         None,
+        Vec::new(),
     )
     .await
     .map_err(|error| error.to_string())
@@ -831,6 +835,7 @@ mod tests {
             ),
             workflow_step_session,
             workflow_step_context: None,
+            context_epoch: None,
         }
     }
 
@@ -1003,6 +1008,7 @@ mod tests {
             ),
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         let mut workflow = regular.clone();
         workflow.id = uuid::Uuid::new_v4().to_string();
@@ -1110,6 +1116,7 @@ mod tests {
             ),
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         store
             .save_full_session_for_migration_or_restore(data_dir.path(), &session)
@@ -1171,6 +1178,7 @@ mod tests {
             ),
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
 
         let results = search_sessions(vec![archived], "parser", false, 10);
@@ -1202,6 +1210,7 @@ mod tests {
             ),
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         store
             .save_full_session_for_migration_or_restore(data_dir.path(), &session)
@@ -1274,6 +1283,7 @@ pub async fn send_agent_message(
     >,
     session_store: tauri::State<'_, Arc<SessionStore>>,
     registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
+    branch_diff_context: tauri::State<'_, Arc<dyn BranchDiffContextPort>>,
     open_tabs: tauri::State<'_, Arc<crate::usecase::agent_session::session::OpenTabRegistry>>,
     chat_session_id: Option<String>,
     worktree_path: String,
@@ -1297,6 +1307,7 @@ pub async fn send_agent_message(
         AgentMessageDispatchContext {
             gateway: crate::infrastructure::agent_session::runtime_gateway::AgentRuntimeGateway {
                 app: &app,
+                branch_diff_context: branch_diff_context.inner(),
                 session_store: session_store.inner(),
                 registry: registry.inner(),
                 handles: handles.inner(),

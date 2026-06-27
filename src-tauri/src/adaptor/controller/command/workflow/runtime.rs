@@ -11,6 +11,7 @@ use crate::adaptor::controller_support::{
 };
 use crate::adaptor::protocol::workflow::WorkflowStateView;
 use crate::agent_message_dispatcher::AgentMessageDispatchRequest;
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::workflow::command::{AbortRunCommand, ApprovalCommand, StartRunCommand};
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 use tauri::Manager;
@@ -154,6 +155,7 @@ pub async fn send_workflow_approval_chat_message(
     handles: tauri::State<'_, AgentProcessMapState>,
     session_store: tauri::State<'_, SessionStoreState>,
     registry: tauri::State<'_, AgentBackendRegistryState>,
+    branch_diff_context: tauri::State<'_, Arc<dyn BranchDiffContextPort>>,
     runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
     run_id: String,
     content: String,
@@ -180,6 +182,7 @@ pub async fn send_workflow_approval_chat_message(
 
     let response = dispatch_agent_message_with_runtime(
         &app,
+        branch_diff_context.inner(),
         session_store.inner(),
         registry.inner(),
         handles.inner(),

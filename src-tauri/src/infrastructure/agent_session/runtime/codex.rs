@@ -39,6 +39,7 @@ use crate::infrastructure::agent_session::runtime::{
     AgentBackend, AgentEditorContext, AgentMessage, AgentRuntimeError, ImageAttachment,
     PermissionResponse, SessionConfig, SessionHandle,
 };
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::{
     ContextCarryState, SessionMeta, SessionReaderPort, SessionStore,
 };
@@ -77,6 +78,7 @@ impl CodexBackend {
         app: AppHandle,
         handles: Arc<Mutex<AgentProcessMap>>,
         session_store: Arc<SessionStore>,
+        branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     ) -> Self {
         let cli_path = configured_cli_path(&app);
         let resolved_cli_path = cli_path.clone().unwrap_or_else(|| "codex".to_string());
@@ -85,6 +87,7 @@ impl CodexBackend {
                 app,
                 handles,
                 session_store,
+                branch_diff_context,
                 cli_path: resolved_cli_path,
                 sessions: Arc::new(Mutex::new(HashMap::new())),
             })),
@@ -158,10 +161,11 @@ impl AppServerSessionState {
     fn new(
         restore_context: Option<RestoreContextPayload>,
         context_carry_on_ready: Option<ContextCarryState>,
+        branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     ) -> Self {
         Self {
             bridge_state: AppServerBridgeState::default(),
-            external_message_state: ExternalBridgeMessageState::default(),
+            external_message_state: ExternalBridgeMessageState::new(branch_diff_context),
             restore_context,
             context_carry_on_ready,
             context_carry_on_turn_started: None,
@@ -304,6 +308,7 @@ struct AppServerCodexRuntime {
     app: AppHandle,
     handles: Arc<Mutex<AgentProcessMap>>,
     session_store: Arc<SessionStore>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     cli_path: String,
     sessions: AppServerSessionMap,
 }
@@ -316,6 +321,7 @@ struct AppServerTurnStart<'a> {
     plan_mode: bool,
     permission_profile_id: Option<&'a str>,
     prompt: &'a str,
+    system_prompt: Option<&'a str>,
     images: &'a [ImageAttachment],
     streaming_message_id: &'a str,
     editor_context: Option<&'a AgentEditorContext>,
@@ -528,6 +534,7 @@ impl AppServerCodexRuntime {
             let state = Arc::new(Mutex::new(AppServerSessionState::new(
                 restore_context.clone(),
                 context_carry_on_ready.clone(),
+                self.branch_diff_context.clone(),
             )));
             async {
                 self.spawn_session_attempt(
@@ -729,6 +736,7 @@ impl AppServerCodexRuntime {
         let app = self.app.clone();
         let session_store = Arc::clone(&self.session_store);
         let handles = Arc::clone(&self.handles);
+        let branch_diff_context = self.branch_diff_context.clone();
         let sessions = Arc::clone(&self.sessions);
         tokio::spawn(async move {
             while let Ok(Some(line)) = stdout.next_line().await {
@@ -825,6 +833,7 @@ impl AppServerCodexRuntime {
                 if is_turn_completed || is_session_ready {
                     if let Err(e) = start_next_app_server_pending_turn(
                         &app,
+                        branch_diff_context.clone(),
                         &session_store,
                         &handles,
                         &chat_session_id,
@@ -886,6 +895,7 @@ impl AppServerCodexRuntime {
         };
         start_external_agent_turn_state(
             &self.app,
+            self.branch_diff_context.clone(),
             &self.session_store,
             &self.handles,
             turn.chat_session_id,
@@ -913,6 +923,7 @@ impl AppServerCodexRuntime {
             Some(turn.permission_mode),
             turn.plan_mode,
             turn.permission_profile_id,
+            turn.system_prompt,
         ) {
             Ok(request) => request,
             Err(err) => {
@@ -955,13 +966,20 @@ impl AppServerCodexRuntime {
 
 async fn start_next_app_server_pending_turn(
     app: &AppHandle,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
     state: Arc<Mutex<AppServerSessionState>>,
 ) -> Result<(), String> {
-    let Some(pending) =
-        prepare_external_pending_message_turn(app, handles, session_store, chat_session_id).await?
+    let Some(pending) = prepare_external_pending_message_turn(
+        app,
+        branch_diff_context.clone(),
+        handles,
+        session_store,
+        chat_session_id,
+    )
+    .await?
     else {
         return Ok(());
     };
@@ -987,6 +1005,7 @@ async fn start_next_app_server_pending_turn(
             };
         start_external_agent_turn_state(
             app,
+            branch_diff_context.clone(),
             session_store,
             handles,
             chat_session_id,
@@ -1014,6 +1033,7 @@ async fn start_next_app_server_pending_turn(
             Some(&pending.permission_mode),
             pending.plan_mode,
             pending.permission_profile_id.as_deref(),
+            pending.system_prompt.as_deref(),
         ) {
             Ok(request) => request,
             Err(err) => {
@@ -1097,7 +1117,7 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
             permission_mode: Some(message.permission_mode.clone()),
             plan_mode: message.plan_mode,
             permission_profile_id: message.permission_profile_id.clone(),
-            system_prompt: None,
+            system_prompt: message.system_prompt.clone(),
         };
         let startup_timeout = codex_session_startup_timeout(Some(&stored_session));
         let state = self
@@ -1111,6 +1131,7 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
             plan_mode: message.plan_mode,
             permission_profile_id: message.permission_profile_id.as_deref(),
             prompt: &message.content,
+            system_prompt: message.system_prompt.as_deref(),
             images: &message.images,
             streaming_message_id: &message.streaming_message_id,
             editor_context: message.editor_context.as_ref(),
@@ -1673,6 +1694,9 @@ mod tests {
             backend_id: Some(CODEX_BACKEND_ID.to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
+            workflow_instructions: Vec::new(),
+            agent_read_paths: None,
+            context_epoch: None,
             first_message_preview: "Hello".to_string(),
             message_count: 100,
             body_format_version: SESSION_BODY_FORMAT_VERSION,
@@ -1682,8 +1706,8 @@ mod tests {
     #[tokio::test]
     async fn remove_session_state_only_removes_matching_generation() {
         let sessions = Arc::new(Mutex::new(HashMap::new()));
-        let stale = Arc::new(Mutex::new(AppServerSessionState::new(None, None)));
-        let current = Arc::new(Mutex::new(AppServerSessionState::new(None, None)));
+        let stale = Arc::new(Mutex::new(AppServerSessionState::new(None, None, None)));
+        let current = Arc::new(Mutex::new(AppServerSessionState::new(None, None, None)));
         sessions
             .lock()
             .await
@@ -1915,6 +1939,7 @@ mod tests {
                 prompt_prefix: "restored history".to_string(),
             }),
             None,
+            None,
         );
 
         let (first_prompt, first_had_context) =
@@ -1934,6 +1959,7 @@ mod tests {
             Some(RestoreContextPayload {
                 prompt_prefix: "  ".to_string(),
             }),
+            None,
             None,
         );
 
@@ -1986,6 +2012,7 @@ mod tests {
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
+            system_prompt: None,
             editor_context: None,
         };
 
