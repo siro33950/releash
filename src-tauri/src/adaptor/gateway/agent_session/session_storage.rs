@@ -7,13 +7,13 @@ use parking_lot::RwLock;
 use crate::usecase::agent_session::event_log::AgentSessionEvent;
 use crate::usecase::agent_session::session::{
     ChatMessage, ChatSession, MessagePart, PageCursor, SessionAttachment, SessionMeta, SessionPage,
+    SessionReviewContext, SessionReviewContextReader,
 };
 
 mod attachment_blob;
 mod event_store;
 mod fork_copier;
 mod layout;
-mod legacy;
 mod message_store;
 mod meta_repository;
 mod titles;
@@ -125,6 +125,16 @@ impl crate::domain::agent_session::AgentSessionReader for FileSessionStorage {
         session_id: &str,
     ) -> Result<Vec<Self::Event>, String> {
         FileSessionStorage::load_session_events(self, app_data_dir, session_id)
+    }
+}
+
+impl SessionReviewContextReader for FileSessionStorage {
+    fn get_session_review_context(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Option<SessionReviewContext>, String> {
+        FileSessionStorage::get_session_review_context(self, app_data_dir, session_id)
     }
 }
 

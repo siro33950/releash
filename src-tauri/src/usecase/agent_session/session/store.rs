@@ -10,7 +10,8 @@ use crate::usecase::agent_session::event_log::{AgentSessionEvent, TurnEventLog};
 
 use super::{
     now_timestamp, ChatMessage, ChatSession, ContextCarryState, MessagePart, PageCursor,
-    SessionAttachment, SessionMeta, SessionPage, SessionState, SessionSummary,
+    SessionAttachment, SessionMeta, SessionPage, SessionReviewContext, SessionState,
+    SessionSummary,
 };
 
 /// `SessionState` の遷移を観測する購読者向けコールバック。
@@ -18,7 +19,16 @@ use super::{
 pub type SessionStateChangeListener =
     Arc<dyn Fn(&str, &str, &SessionState) + Send + Sync + 'static>;
 
-pub type SessionStoragePort = dyn AgentSessionStorage<
+pub trait SessionReviewContextReader: Send + Sync {
+    fn get_session_review_context(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Option<SessionReviewContext>, String>;
+}
+
+pub trait SessionStoragePort:
+    AgentSessionStorage<
         Session = ChatSession,
         Meta = SessionMeta,
         PageCursor = PageCursor,
@@ -27,8 +37,27 @@ pub type SessionStoragePort = dyn AgentSessionStorage<
         MessagePart = MessagePart,
         Attachment = SessionAttachment,
         Event = AgentSessionEvent,
-    > + Send
-    + Sync;
+    > + SessionReviewContextReader
+    + Send
+    + Sync
+{
+}
+
+impl<T> SessionStoragePort for T where
+    T: AgentSessionStorage<
+            Session = ChatSession,
+            Meta = SessionMeta,
+            PageCursor = PageCursor,
+            Page = SessionPage,
+            Message = ChatMessage,
+            MessagePart = MessagePart,
+            Attachment = SessionAttachment,
+            Event = AgentSessionEvent,
+        > + SessionReviewContextReader
+        + Send
+        + Sync
+{
+}
 
 pub type SessionReaderPort = dyn AgentSessionReader<
         Session = ChatSession,
@@ -49,7 +78,7 @@ pub type SessionReaderPort = dyn AgentSessionReader<
 pub(crate) type SessionSaveHook = Arc<dyn Fn(&ChatSession) -> Result<(), String> + Send + Sync>;
 
 pub struct SessionStore {
-    storage: Arc<SessionStoragePort>,
+    storage: Arc<dyn SessionStoragePort>,
     state_change_listeners: RwLock<Vec<SessionStateChangeListener>>,
     #[cfg(test)]
     save_hook: RwLock<Option<SessionSaveHook>>,
@@ -148,7 +177,7 @@ impl AgentSessionReader for SessionStore {
 }
 
 impl SessionStore {
-    pub fn new(storage: Arc<SessionStoragePort>) -> Self {
+    pub fn new(storage: Arc<dyn SessionStoragePort>) -> Self {
         Self {
             storage,
             state_change_listeners: RwLock::new(Vec::new()),
@@ -345,6 +374,15 @@ impl SessionStore {
         session_id: &str,
     ) -> Result<Option<SessionMeta>, String> {
         self.storage.get_session_meta(app_data_dir, session_id)
+    }
+
+    pub fn get_session_review_context(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Option<SessionReviewContext>, String> {
+        self.storage
+            .get_session_review_context(app_data_dir, session_id)
     }
 
     pub fn load_full_session_for_restore(

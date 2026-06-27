@@ -1027,7 +1027,7 @@ fn fork_session_hardlinks_message_chunks() {
 }
 
 #[test]
-fn get_session_page_migrates_legacy_flat_json_without_data_loss() {
+fn get_session_page_and_restore_ignore_legacy_flat_json() {
     let tmp = TempDir::new().unwrap();
     let session = make_session(UUID1, "/repo");
     write_session_json(
@@ -1037,121 +1037,24 @@ fn get_session_page_migrates_legacy_flat_json_without_data_loss() {
     );
     let store = FileSessionStorage::default();
 
-    let page = store
-        .get_session_page(tmp.path(), UUID1, None, 10)
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(page.messages.len(), 1);
-    assert_eq!(page.messages[0].content, "Hello");
-    assert!(session_dir(tmp.path(), UUID1).unwrap().exists());
-    assert!(!session_file(tmp.path(), UUID1).unwrap().exists());
-    let loaded = store
+    let page = store.get_session_page(tmp.path(), UUID1, None, 10).unwrap();
+    let restored = store
         .load_full_session_for_restore(tmp.path(), UUID1)
-        .unwrap()
         .unwrap();
-    assert_eq!(loaded.messages.len(), session.messages.len());
-    assert_eq!(loaded.messages[0].id, session.messages[0].id);
-    assert_eq!(loaded.messages[0].content, session.messages[0].content);
+
+    assert!(page.is_none());
+    assert!(restored.is_none());
+    assert!(!session_dir(tmp.path(), UUID1).unwrap().exists());
+    assert!(session_file(tmp.path(), UUID1).unwrap().exists());
 }
 
 #[test]
-fn list_sessions_scans_legacy_flat_metadata_without_storing_all_messages() {
+fn list_sessions_ignores_legacy_flat_json_and_sidecar() {
     let tmp = TempDir::new().unwrap();
     write_session_json(
         tmp.path(),
         UUID1,
-        &format!(
-            r#"{{
-                    "id":"{UUID1}",
-                    "worktreePath":"/repo",
-                    "messages":[
-                        {{"id":"m1","role":"human","content":"Hello legacy","timestamp":1000.0}},
-                        {{"id":"m2","role":"agent","content":"Legacy reply","timestamp":1001.0}}
-                    ],
-                    "state":"active",
-                    "createdAt":1000.0,
-                    "updatedAt":1001.0,
-                    "agentSessionId":"agent-session",
-                    "contextCarry":"resumed",
-                    "permissionMode":"edit",
-                    "backendId":"claude",
-                    "workflowStepSession":false
-                }}"#
-        ),
-    );
-    let summaries = make_session_store()
-        .list_sessions(tmp.path(), "/repo")
-        .unwrap();
-
-    assert_eq!(summaries.len(), 1);
-    assert_eq!(summaries[0].id, UUID1);
-    assert_eq!(summaries[0].first_message, "Hello legacy");
-    assert_eq!(summaries[0].message_count, 2);
-    assert_eq!(
-        summaries[0].agent_session_id.as_deref(),
-        Some("agent-session")
-    );
-    assert_eq!(summaries[0].context_carry, Some(ContextCarryState::Resumed));
-    assert_eq!(summaries[0].backend_id.as_deref(), Some("claude"));
-    assert!(legacy_meta_file(tmp.path(), UUID1).unwrap().exists());
-}
-
-#[test]
-fn list_sessions_legacy_flat_skips_non_preview_message_body() {
-    let tmp = TempDir::new().unwrap();
-    write_session_json(
-        tmp.path(),
-        UUID1,
-        &format!(
-            r#"{{
-                    "id":"{UUID1}",
-                    "worktreePath":"/repo",
-                    "messages":[
-                        {{"id":"m1","role":"human","content":"Preview only","timestamp":1000.0}},
-                        {{
-                            "id":"m2",
-                            "role":"agent",
-                            "content":"",
-                            "parts":[{{"type":"image","data":["not","a","string"],"mediaType":"image/png"}}],
-                            "timestamp":1001.0
-                        }}
-                    ],
-                    "state":"active",
-                    "createdAt":1000.0,
-                    "updatedAt":1001.0,
-                    "permissionMode":"edit",
-                    "workflowStepSession":false
-                }}"#
-        ),
-    );
-    let summaries = make_session_store()
-        .list_sessions(tmp.path(), "/repo")
-        .unwrap();
-
-    assert_eq!(summaries.len(), 1);
-    assert_eq!(summaries[0].first_message, "Preview only");
-    assert_eq!(summaries[0].message_count, 2);
-}
-
-#[test]
-fn list_sessions_uses_legacy_flat_sidecar_when_available() {
-    let tmp = TempDir::new().unwrap();
-    write_session_json(
-        tmp.path(),
-        UUID1,
-        &format!(
-            r#"{{
-                    "id":"{UUID1}",
-                    "worktreePath":"/repo",
-                    "messages":[{{"id":"m1","role":"human","content":"Hello legacy","timestamp":1000.0}}],
-                    "state":"active",
-                    "createdAt":1000.0,
-                    "updatedAt":1001.0,
-                    "permissionMode":"edit",
-                    "workflowStepSession":false
-                }}"#
-        ),
+        &serde_json::to_string_pretty(&make_session(UUID1, "/repo")).unwrap(),
     );
     let sidecar = SessionMeta {
         id: UUID1.to_string(),
@@ -1163,9 +1066,9 @@ fn list_sessions_uses_legacy_flat_sidecar_when_available() {
         context_carry: Some(ContextCarryState::Resumed),
         permission_mode: "edit".to_string(),
         plan_mode: false,
-        selected_model: None,
+        selected_model: Some("gpt-5".to_string()),
         permission_profile_id: None,
-        backend_id: Some("claude".to_string()),
+        backend_id: Some("codex".to_string()),
         workflow_step_session: false,
         workflow_step_context: None,
         first_message_preview: "Hello legacy".to_string(),
@@ -1178,17 +1081,59 @@ fn list_sessions_uses_legacy_flat_sidecar_when_available() {
         "legacy session meta",
     )
     .unwrap();
+
     let summaries = make_session_store()
         .list_sessions(tmp.path(), "/repo")
         .unwrap();
 
-    assert_eq!(summaries.len(), 1);
-    assert_eq!(summaries[0].first_message, "Hello legacy");
-    assert_eq!(summaries[0].message_count, 1);
-    assert_eq!(
-        summaries[0].agent_session_id.as_deref(),
-        Some("agent-session")
+    assert!(summaries.is_empty());
+    assert!(legacy_meta_file(tmp.path(), UUID1).unwrap().exists());
+}
+
+#[test]
+fn get_session_review_context_ignores_legacy_flat_json_and_sidecar() {
+    let tmp = TempDir::new().unwrap();
+    write_session_json(
+        tmp.path(),
+        UUID1,
+        &serde_json::to_string_pretty(&make_session(UUID1, "/repo")).unwrap(),
     );
+    let sidecar = legacy_meta_file(tmp.path(), UUID1).unwrap();
+    std::fs::write(&sidecar, "{not-json").unwrap();
+
+    let context = FileSessionStorage::default()
+        .get_session_review_context(tmp.path(), UUID1)
+        .unwrap();
+
+    assert!(context.is_none());
+    assert!(sidecar.exists());
+}
+
+#[test]
+fn get_session_review_context_reads_only_target_split_meta_without_cache_warmup() {
+    let tmp = TempDir::new().unwrap();
+    let store_for_save = FileSessionStorage::default();
+    store_for_save
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+
+    let invalid_dir = session_dir(tmp.path(), UUID2).unwrap();
+    std::fs::create_dir_all(&invalid_dir).unwrap();
+    std::fs::write(meta_file_in_dir(&invalid_dir), "{not-json").unwrap();
+
+    let store = FileSessionStorage::default();
+    store.reset_message_read_count();
+    let context = store
+        .get_session_review_context(tmp.path(), UUID1)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(context.id, UUID1);
+    assert_eq!(context.worktree_path, "/repo");
+    assert!(!store.loaded.load(std::sync::atomic::Ordering::Acquire));
+    assert!(store.cache.read().is_empty());
+    assert!(store.invalid_sessions.read().is_empty());
+    assert_eq!(store.message_read_count(), 0);
 }
 
 #[test]
@@ -1805,23 +1750,29 @@ fn write_session_json(dir: &Path, session_id: &str, json: &str) {
     std::fs::write(&file, json).unwrap();
 }
 
-fn session_json_with_permission(session_id: &str, permission_field: Option<&str>) -> String {
+fn write_session_meta_json(dir: &Path, session_id: &str, json: &str) {
+    let dir = session_dir(dir, session_id).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(meta_file_in_dir(&dir), json).unwrap();
+}
+
+fn session_meta_json_with_permission(session_id: &str, permission_field: Option<&str>) -> String {
     let permission_segment = match permission_field {
         Some(value) => format!(",\"permissionMode\":\"{value}\""),
         None => String::new(),
     };
     format!(
-        r#"{{"id":"{session_id}","worktreePath":"/repo"{permission_segment},"messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0,"workflowStepSession":false}}"#
+        r#"{{"id":"{session_id}","worktreePath":"/repo","state":"active","createdAt":1000.0,"updatedAt":1000.0{permission_segment},"workflowStepSession":false,"firstMessagePreview":"","messageCount":0,"bodyFormatVersion":1}}"#
     )
 }
 
 #[test]
 fn ensure_loaded_rejects_missing_permission_mode() {
     let tmp = TempDir::new().unwrap();
-    write_session_json(
+    write_session_meta_json(
         tmp.path(),
         UUID1,
-        &session_json_with_permission(UUID1, None),
+        &session_meta_json_with_permission(UUID1, None),
     );
     let store = FileSessionStorage::default();
     let err = store
@@ -1844,10 +1795,10 @@ fn ensure_loaded_rejects_legacy_and_unknown_permission_modes() {
         "",
     ] {
         let tmp = TempDir::new().unwrap();
-        write_session_json(
+        write_session_meta_json(
             tmp.path(),
             UUID1,
-            &session_json_with_permission(UUID1, Some(invalid)),
+            &session_meta_json_with_permission(UUID1, Some(invalid)),
         );
         let store = FileSessionStorage::default();
         let err = store
@@ -1870,11 +1821,11 @@ fn invalid_session_is_ignored_by_list_but_rejected_by_targeted_operations() {
     store_for_save
         .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
-    // invalid session（旧語彙を含む生 JSON を直接書き込み）
-    write_session_json(
+    // invalid session（旧語彙を含む meta.json を直接書き込み）
+    write_session_meta_json(
         tmp.path(),
         UUID2,
-        &session_json_with_permission(UUID2, Some("acceptEdits")),
+        &session_meta_json_with_permission(UUID2, Some("acceptEdits")),
     );
 
     let store = make_session_store();
@@ -1914,10 +1865,10 @@ fn invalid_session_is_ignored_by_list_but_rejected_by_targeted_operations() {
 #[test]
 fn invalid_session_isolation_key_uses_file_session_id_for_permission_errors() {
     let tmp = TempDir::new().unwrap();
-    write_session_json(
+    write_session_meta_json(
         tmp.path(),
         UUID1,
-        &session_json_with_permission(UUID2, Some("acceptEdits")),
+        &session_meta_json_with_permission(UUID2, Some("acceptEdits")),
     );
     let store = FileSessionStorage::default();
 
@@ -1942,10 +1893,10 @@ fn invalid_session_isolation_key_uses_file_session_id_for_permission_errors() {
 #[test]
 fn save_session_removes_stale_invalid_marker_for_same_id() {
     let tmp = TempDir::new().unwrap();
-    write_session_json(
+    write_session_meta_json(
         tmp.path(),
         UUID1,
-        &session_json_with_permission(UUID1, Some("acceptEdits")),
+        &session_meta_json_with_permission(UUID1, Some("acceptEdits")),
     );
     let store = FileSessionStorage::default();
     let err = store
@@ -1978,17 +1929,17 @@ fn ensure_loaded_normalizes_legacy_and_accepts_valid_permission_modes() {
         ("full", "full"),
     ] {
         let tmp = TempDir::new().unwrap();
-        write_session_json(
+        write_session_meta_json(
             tmp.path(),
             UUID1,
-            &session_json_with_permission(UUID1, Some(input)),
+            &session_meta_json_with_permission(UUID1, Some(input)),
         );
         let store = FileSessionStorage::default();
-        let session = store
-            .load_full_session_for_restore(tmp.path(), UUID1)
+        let meta = store
+            .get_session_meta(tmp.path(), UUID1)
             .unwrap()
-            .expect("session loads with valid permission_mode");
-        assert_eq!(session.permission_mode, expected);
+            .expect("meta loads with valid permission_mode");
+        assert_eq!(meta.permission_mode, expected);
     }
 }
 

@@ -150,12 +150,3 @@ pub(super) fn validate_meta(
     }
     Ok(meta)
 }
-
-pub(super) fn file_timestamp_fallback(path: &Path) -> f64 {
-    std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs_f64())
-        .unwrap_or(0.0)
-}

@@ -1,6 +1,7 @@
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -439,6 +440,7 @@ impl From<ReviewError> for String {
 }
 
 pub struct ReviewPersistenceGateway {
+    /// Reads rely on atomic rename and stay lock-free; writes take this lock for in-process exclusion.
     file_lock: Mutex<()>,
 }
 
@@ -678,23 +680,22 @@ fn ensure_can_delete(actor: &ReviewActor) -> Result<(), ReviewError> {
     Ok(())
 }
 
-fn project_thread(
-    worktree_name: &str,
-    thread_id: &str,
-    events: &[ReviewEvent],
-) -> Option<ReviewThread> {
-    let mut author: Option<ReviewActor> = None;
-    let mut target: Option<ReviewTarget> = None;
-    let mut comments = Vec::new();
-    let mut resolve = None;
-    let mut created_at = 0.0;
-    let mut updated_at = 0.0;
-    let mut version = 0_u64;
-    let mut deleted = false;
+#[derive(Default)]
+struct ThreadAccumulator {
+    author: Option<ReviewActor>,
+    target: Option<ReviewTarget>,
+    comments: Vec<ReviewComment>,
+    resolve: Option<ReviewResolveInfo>,
+    created_at: f64,
+    updated_at: f64,
+    version: u64,
+    deleted: bool,
+}
 
-    for event in events.iter().filter(|e| e.thread_id() == thread_id) {
-        version += 1;
-        updated_at = event.at();
+impl ThreadAccumulator {
+    fn apply(&mut self, event: &ReviewEvent) {
+        self.version += 1;
+        self.updated_at = event.at();
         match event {
             ReviewEvent::ThreadCreated {
                 thread_id,
@@ -705,10 +706,10 @@ fn project_thread(
                 at,
                 ..
             } => {
-                author = Some(actor.clone());
-                target = Some(event_target.clone());
-                created_at = *at;
-                comments.push(ReviewComment {
+                self.author = Some(actor.clone());
+                self.target = Some(event_target.clone());
+                self.created_at = *at;
+                self.comments.push(ReviewComment {
                     id: comment_id.clone(),
                     thread_id: thread_id.clone(),
                     author: actor.redacted_for_public(),
@@ -723,7 +724,7 @@ fn project_thread(
                 content,
                 at,
                 ..
-            } => comments.push(ReviewComment {
+            } => self.comments.push(ReviewComment {
                 id: comment_id.clone(),
                 thread_id: thread_id.clone(),
                 author: actor.redacted_for_public(),
@@ -737,7 +738,7 @@ fn project_thread(
                 at,
                 ..
             } => {
-                resolve = Some(ReviewResolveInfo {
+                self.resolve = Some(ReviewResolveInfo {
                     actor: actor.redacted_for_public(),
                     outcome: outcome.clone(),
                     summary: summary.clone(),
@@ -745,52 +746,81 @@ fn project_thread(
                 });
             }
             ReviewEvent::ThreadDeleted { .. } => {
-                deleted = true;
+                self.deleted = true;
             }
         }
     }
 
-    if deleted {
-        return None;
+    fn finish(self, worktree_name: &str, thread_id: &str) -> Option<ReviewThread> {
+        if self.deleted {
+            return None;
+        }
+
+        let author = self.author?;
+        let target = self.target?;
+        let state = if self.resolve.is_some() {
+            ReviewThreadState::Resolved
+        } else {
+            ReviewThreadState::Open
+        };
+        let can_resolve = state == ReviewThreadState::Open;
+
+        Some(ReviewThread {
+            id: thread_id.to_string(),
+            worktree_name: worktree_name.to_string(),
+            author: author.redacted_for_public(),
+            target,
+            state,
+            comments: self.comments,
+            resolve: self.resolve,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            version: self.version,
+            can_resolve,
+        })
     }
-
-    let author = author?;
-    let target = target?;
-    let state = if resolve.is_some() {
-        ReviewThreadState::Resolved
-    } else {
-        ReviewThreadState::Open
-    };
-    let can_resolve = state == ReviewThreadState::Open;
-
-    Some(ReviewThread {
-        id: thread_id.to_string(),
-        worktree_name: worktree_name.to_string(),
-        author: author.redacted_for_public(),
-        target,
-        state,
-        comments,
-        resolve,
-        created_at,
-        updated_at,
-        version,
-        can_resolve,
-    })
 }
 
-fn project_threads(worktree_name: &str, events: &[ReviewEvent]) -> Vec<ReviewThread> {
-    let mut ids = Vec::<String>::new();
-    for event in events {
-        if matches!(event, ReviewEvent::ThreadCreated { .. }) {
-            ids.push(event.thread_id().to_string());
-        }
+fn project_thread(
+    worktree_name: &str,
+    thread_id: &str,
+    events: &[ReviewEvent],
+) -> Option<ReviewThread> {
+    let mut accumulator = ThreadAccumulator::default();
+    for event in events.iter().filter(|e| e.thread_id() == thread_id) {
+        accumulator.apply(event);
     }
-    let mut threads: Vec<_> = ids
-        .iter()
-        .filter_map(|id| project_thread(worktree_name, id, events))
+    accumulator.finish(worktree_name, thread_id)
+}
+
+fn project_threads_from_iter<'a>(
+    worktree_name: &str,
+    events: impl IntoIterator<Item = &'a ReviewEvent>,
+) -> Vec<ReviewThread> {
+    let mut order = Vec::<String>::new();
+    let mut ordered = HashSet::<String>::new();
+    let mut accumulators = HashMap::<String, ThreadAccumulator>::new();
+    for event in events {
+        let thread_id = event.thread_id().to_string();
+        if matches!(event, ReviewEvent::ThreadCreated { .. }) && ordered.insert(thread_id.clone()) {
+            order.push(thread_id.clone());
+        }
+        accumulators.entry(thread_id).or_default().apply(event);
+    }
+    let mut threads: Vec<_> = order
+        .into_iter()
+        .filter_map(|id| {
+            accumulators
+                .remove(&id)
+                .and_then(|accumulator| accumulator.finish(worktree_name, &id))
+        })
         .collect();
     threads.sort_by(|a, b| b.updated_at.total_cmp(&a.updated_at));
     threads
+}
+
+fn project_threads(worktree_name: &str, events: &[ReviewEvent]) -> Vec<ReviewThread> {
+    project_threads_from_iter(worktree_name, events.iter())
 }
 
 fn apply_filter(
@@ -946,8 +976,6 @@ impl ReviewCommentStore {
         viewer: ReviewActor,
     ) -> Result<Vec<ReviewThread>, ReviewError> {
         validate_filter(&filter)?;
-        let _guard = self.gateway.file_lock.lock();
-        let _process_guard = acquire_worktree_file_lock(app_data_dir, worktree_name)?;
         let events = self.load(app_data_dir, worktree_name)?;
         Ok(apply_filter(
             project_threads(worktree_name, &events),
@@ -962,8 +990,6 @@ impl ReviewCommentStore {
         worktree_name: &str,
         thread_id: &str,
     ) -> Result<ReviewThread, ReviewError> {
-        let _guard = self.gateway.file_lock.lock();
-        let _process_guard = acquire_worktree_file_lock(app_data_dir, worktree_name)?;
         let events = self.load(app_data_dir, worktree_name)?;
         project_thread(worktree_name, thread_id, &events)
             .ok_or_else(|| ReviewError::NotFound(format!("Review thread not found: {thread_id}")))
@@ -975,8 +1001,6 @@ impl ReviewCommentStore {
         worktree_name: &str,
         thread_id: &str,
     ) -> Result<Vec<ReviewHistoryEntry>, ReviewError> {
-        let _guard = self.gateway.file_lock.lock();
-        let _process_guard = acquire_worktree_file_lock(app_data_dir, worktree_name)?;
         Ok(self
             .history_events(app_data_dir, worktree_name, thread_id)?
             .iter()
@@ -1042,7 +1066,7 @@ impl ReviewCommentStore {
 
     /// Comment 追記を確定する。
     ///
-    /// 同一書き込み境界 (file lock + in-process mutex) 内で `CommentAppended` イベントを
+    /// 同一書き込み境界 (file lock + in-process write guard) 内で `CommentAppended` イベントを
     /// 1 件 append する。並行更新時もイベント列の確定順序が一意に決まる
     /// (spec design.md 並行操作)。
     pub fn append_comment(
@@ -1534,6 +1558,337 @@ mod tests {
     }
 
     #[test]
+    fn read_only_operations_do_not_wait_for_in_process_write_guard() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(ReviewCommentStore::default());
+        let thread = store
+            .create_thread(
+                dir.path(),
+                "wt",
+                ReviewActor::human(),
+                ReviewTarget {
+                    file_path: None,
+                    line_number: None,
+                    end_line: None,
+                },
+                "A".to_string(),
+            )
+            .unwrap();
+
+        let write_guard = store.gateway.file_lock.lock();
+        let store_for_thread = store.clone();
+        let app_data_dir = dir.path().to_path_buf();
+        let thread_id = thread.id.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let result = (|| -> Result<(usize, String, usize), ReviewError> {
+                let listed = store_for_thread.list_threads(
+                    &app_data_dir,
+                    "wt",
+                    None,
+                    ReviewActor::human(),
+                )?;
+                let got = store_for_thread.get_thread(&app_data_dir, "wt", &thread_id)?;
+                let history = store_for_thread.history(&app_data_dir, "wt", &thread_id)?;
+                Ok((listed.len(), got.id, history.len()))
+            })();
+            tx.send(result).unwrap();
+        });
+
+        let result = rx.recv_timeout(Duration::from_millis(500));
+        drop(write_guard);
+        handle.join().unwrap();
+
+        let (listed_len, got_id, history_len) = result
+            .expect("read-only operations should complete while a write guard is held")
+            .unwrap();
+        assert_eq!(listed_len, 1);
+        assert_eq!(got_id, thread.id);
+        assert_eq!(history_len, 1);
+    }
+
+    #[test]
+    fn read_only_operations_do_not_wait_for_process_file_lock() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(ReviewCommentStore::default());
+        let thread = store
+            .create_thread(
+                dir.path(),
+                "wt",
+                ReviewActor::human(),
+                ReviewTarget {
+                    file_path: None,
+                    line_number: None,
+                    end_line: None,
+                },
+                "A".to_string(),
+            )
+            .unwrap();
+
+        let lock = lock_file(dir.path(), "wt");
+        let lock_handle = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock)
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&lock_handle).unwrap();
+        let competing_lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock)
+            .unwrap();
+        let competing_err = fs2::FileExt::try_lock_exclusive(&competing_lock).unwrap_err();
+        assert_eq!(competing_err.kind(), ErrorKind::WouldBlock);
+
+        let store_for_thread = store.clone();
+        let app_data_dir = dir.path().to_path_buf();
+        let thread_id = thread.id.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let result = (|| -> Result<(usize, String, usize), ReviewError> {
+                let listed = store_for_thread.list_threads(
+                    &app_data_dir,
+                    "wt",
+                    None,
+                    ReviewActor::human(),
+                )?;
+                let got = store_for_thread.get_thread(&app_data_dir, "wt", &thread_id)?;
+                let history = store_for_thread.history(&app_data_dir, "wt", &thread_id)?;
+                Ok((listed.len(), got.id, history.len()))
+            })();
+            tx.send(result).unwrap();
+        });
+
+        let result = rx.recv_timeout(Duration::from_millis(500));
+        drop(lock_handle);
+        handle.join().unwrap();
+
+        let (listed_len, got_id, history_len) = result
+            .expect("read-only operations should complete while the process file lock is held")
+            .unwrap();
+        assert_eq!(listed_len, 1);
+        assert_eq!(got_id, thread.id);
+        assert_eq!(history_len, 1);
+    }
+
+    #[test]
+    fn project_threads_consumes_events_iterator_once() {
+        let actor = ReviewActor::human();
+        let events = vec![
+            ReviewEvent::ThreadCreated {
+                event_id: "e1".to_string(),
+                thread_id: "t1".to_string(),
+                comment_id: "c1".to_string(),
+                actor: actor.clone(),
+                target: ReviewTarget {
+                    file_path: None,
+                    line_number: None,
+                    end_line: None,
+                },
+                content: "A".to_string(),
+                at: 1.0,
+            },
+            ReviewEvent::ThreadCreated {
+                event_id: "e2".to_string(),
+                thread_id: "t2".to_string(),
+                comment_id: "c2".to_string(),
+                actor: actor.clone(),
+                target: ReviewTarget {
+                    file_path: Some("src/main.rs".to_string()),
+                    line_number: Some(1),
+                    end_line: None,
+                },
+                content: "B".to_string(),
+                at: 2.0,
+            },
+            ReviewEvent::CommentAppended {
+                event_id: "e3".to_string(),
+                thread_id: "t1".to_string(),
+                comment_id: "c3".to_string(),
+                actor: actor.clone(),
+                content: "A2".to_string(),
+                at: 3.0,
+            },
+            ReviewEvent::ThreadResolved {
+                event_id: "e4".to_string(),
+                thread_id: "t2".to_string(),
+                actor: actor.clone(),
+                outcome: "accepted".to_string(),
+                summary: "done".to_string(),
+                at: 4.0,
+            },
+            ReviewEvent::ThreadDeleted {
+                event_id: "e5".to_string(),
+                thread_id: "t1".to_string(),
+                actor,
+                at: 5.0,
+            },
+        ];
+        let visits = std::cell::Cell::new(0usize);
+
+        let threads = project_threads_from_iter(
+            "wt",
+            events.iter().inspect(|_| visits.set(visits.get() + 1)),
+        );
+
+        assert_eq!(visits.get(), events.len());
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].id, "t2");
+        assert_eq!(threads[0].state, ReviewThreadState::Resolved);
+        assert_eq!(threads[0].version, 2);
+    }
+
+    #[test]
+    fn project_threads_keeps_created_order_when_updated_at_ties() {
+        let actor = ReviewActor::human();
+        let target = ReviewTarget {
+            file_path: None,
+            line_number: None,
+            end_line: None,
+        };
+        let events = vec![
+            ReviewEvent::ThreadCreated {
+                event_id: "e1".to_string(),
+                thread_id: "t1".to_string(),
+                comment_id: "c1".to_string(),
+                actor: actor.clone(),
+                target: target.clone(),
+                content: "A".to_string(),
+                at: 1.0,
+            },
+            ReviewEvent::ThreadCreated {
+                event_id: "e2".to_string(),
+                thread_id: "t2".to_string(),
+                comment_id: "c2".to_string(),
+                actor,
+                target,
+                content: "B".to_string(),
+                at: 1.0,
+            },
+        ];
+
+        let ids = project_threads("wt", &events)
+            .into_iter()
+            .map(|thread| thread.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["t1", "t2"]);
+    }
+
+    #[test]
+    fn project_threads_sorts_updated_at_descending_and_filters_state_after_delete() {
+        let actor = ReviewActor::human();
+        let target = ReviewTarget {
+            file_path: None,
+            line_number: None,
+            end_line: None,
+        };
+        let events = vec![
+            ReviewEvent::ThreadCreated {
+                event_id: "e1".to_string(),
+                thread_id: "old-open".to_string(),
+                comment_id: "c1".to_string(),
+                actor: actor.clone(),
+                target: target.clone(),
+                content: "old".to_string(),
+                at: 1.0,
+            },
+            ReviewEvent::ThreadCreated {
+                event_id: "e2".to_string(),
+                thread_id: "new-open".to_string(),
+                comment_id: "c2".to_string(),
+                actor: actor.clone(),
+                target: target.clone(),
+                content: "new".to_string(),
+                at: 2.0,
+            },
+            ReviewEvent::ThreadCreated {
+                event_id: "e3".to_string(),
+                thread_id: "resolved".to_string(),
+                comment_id: "c3".to_string(),
+                actor: actor.clone(),
+                target: target.clone(),
+                content: "resolved".to_string(),
+                at: 3.0,
+            },
+            ReviewEvent::CommentAppended {
+                event_id: "e4".to_string(),
+                thread_id: "old-open".to_string(),
+                comment_id: "c4".to_string(),
+                actor: actor.clone(),
+                content: "old update".to_string(),
+                at: 4.0,
+            },
+            ReviewEvent::ThreadCreated {
+                event_id: "e5".to_string(),
+                thread_id: "deleted".to_string(),
+                comment_id: "c5".to_string(),
+                actor: actor.clone(),
+                target,
+                content: "deleted".to_string(),
+                at: 5.0,
+            },
+            ReviewEvent::ThreadResolved {
+                event_id: "e6".to_string(),
+                thread_id: "resolved".to_string(),
+                actor: actor.clone(),
+                outcome: "accepted".to_string(),
+                summary: "done".to_string(),
+                at: 6.0,
+            },
+            ReviewEvent::CommentAppended {
+                event_id: "e7".to_string(),
+                thread_id: "new-open".to_string(),
+                comment_id: "c7".to_string(),
+                actor: actor.clone(),
+                content: "new update".to_string(),
+                at: 7.0,
+            },
+            ReviewEvent::ThreadDeleted {
+                event_id: "e8".to_string(),
+                thread_id: "deleted".to_string(),
+                actor: actor.clone(),
+                at: 8.0,
+            },
+        ];
+
+        let threads = project_threads("wt", &events);
+        let ids = threads
+            .iter()
+            .map(|thread| thread.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["new-open", "resolved", "old-open"]);
+
+        let open_ids = apply_filter(
+            threads.clone(),
+            Some(ReviewThreadFilter {
+                state: Some(ReviewThreadState::Open),
+                ..Default::default()
+            }),
+            &actor,
+        )
+        .into_iter()
+        .map(|thread| thread.id)
+        .collect::<Vec<_>>();
+        assert_eq!(open_ids, vec!["new-open", "old-open"]);
+
+        let resolved_ids = apply_filter(
+            threads,
+            Some(ReviewThreadFilter {
+                state: Some(ReviewThreadState::Resolved),
+                ..Default::default()
+            }),
+            &actor,
+        )
+        .into_iter()
+        .map(|thread| thread.id)
+        .collect::<Vec<_>>();
+        assert_eq!(resolved_ids, vec!["resolved"]);
+    }
+
+    #[test]
     fn history_returns_thread_events_in_order() {
         let dir = TempDir::new().unwrap();
         let store = ReviewCommentStore::default();
@@ -1656,6 +2011,186 @@ mod tests {
             "again".to_string(),
         );
         assert!(matches!(second, Err(ReviewError::AlreadyResolved(_))));
+    }
+
+    #[test]
+    fn lockless_reads_do_not_observe_torn_json_during_concurrent_writes() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(ReviewCommentStore::default());
+        let thread = store
+            .create_thread(
+                dir.path(),
+                "wt",
+                ReviewActor::human(),
+                ReviewTarget {
+                    file_path: None,
+                    line_number: None,
+                    end_line: None,
+                },
+                "Claim".to_string(),
+            )
+            .unwrap();
+        let app_data_dir = dir.path().to_path_buf();
+        let thread_id = thread.id.clone();
+        let total_appends = 30usize;
+        let writer_count = 2usize;
+        let appends_per_writer = total_appends / writer_count;
+        let started = std::sync::Arc::new(std::sync::Barrier::new(writer_count + 2));
+        let appended = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let reader_store = store.clone();
+        let reader_dir = app_data_dir.clone();
+        let reader_thread_id = thread_id.clone();
+        let reader_started = started.clone();
+        let reader_done = done.clone();
+        let reader = std::thread::spawn(move || -> Result<(), String> {
+            reader_started.wait();
+            let mut last_list_comment_count = 1usize;
+            let mut last_get_comment_count = 1usize;
+            let mut saw_resolved = false;
+            loop {
+                let listed = reader_store
+                    .list_threads(&reader_dir, "wt", None, ReviewActor::human())
+                    .map_err(|err| err.to_string())?;
+                if listed.len() != 1 {
+                    return Err(format!("expected one visible thread, got {}", listed.len()));
+                }
+                let listed_thread = &listed[0];
+                if listed_thread.id != reader_thread_id {
+                    return Err(format!("unexpected listed thread {}", listed_thread.id));
+                }
+                let list_comment_count = listed_thread.comments.len();
+                if list_comment_count < last_list_comment_count {
+                    return Err(format!(
+                        "list comment count moved backward: {list_comment_count} < {last_list_comment_count}"
+                    ));
+                }
+                last_list_comment_count = list_comment_count;
+                let current = reader_store
+                    .get_thread(&reader_dir, "wt", &reader_thread_id)
+                    .map_err(|err| err.to_string())?;
+                let get_comment_count = current.comments.len();
+                if get_comment_count < last_get_comment_count {
+                    return Err(format!(
+                        "get comment count moved backward: {get_comment_count} < {last_get_comment_count}"
+                    ));
+                }
+                last_get_comment_count = get_comment_count;
+                saw_resolved |= listed_thread.state == ReviewThreadState::Resolved
+                    || current.state == ReviewThreadState::Resolved;
+                if reader_done.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            let final_listed = reader_store
+                .list_threads(&reader_dir, "wt", None, ReviewActor::human())
+                .map_err(|err| err.to_string())?;
+            if final_listed.len() != 1 {
+                return Err(format!(
+                    "expected one final visible thread, got {}",
+                    final_listed.len()
+                ));
+            }
+            let final_listed_thread = &final_listed[0];
+            if final_listed_thread.id != reader_thread_id {
+                return Err(format!(
+                    "unexpected final listed thread {}",
+                    final_listed_thread.id
+                ));
+            }
+            let final_list_comment_count = final_listed_thread.comments.len();
+            if final_list_comment_count < last_list_comment_count {
+                return Err(format!(
+                    "final list comment count moved backward: {final_list_comment_count} < {last_list_comment_count}"
+                ));
+            }
+            last_list_comment_count = final_list_comment_count;
+            let final_current = reader_store
+                .get_thread(&reader_dir, "wt", &reader_thread_id)
+                .map_err(|err| err.to_string())?;
+            let final_get_comment_count = final_current.comments.len();
+            if final_get_comment_count < last_get_comment_count {
+                return Err(format!(
+                    "final get comment count moved backward: {final_get_comment_count} < {last_get_comment_count}"
+                ));
+            }
+            last_get_comment_count = final_get_comment_count;
+            saw_resolved |= final_listed_thread.state == ReviewThreadState::Resolved
+                || final_current.state == ReviewThreadState::Resolved;
+            if last_list_comment_count != total_appends + 1
+                || last_get_comment_count != total_appends + 1
+            {
+                return Err(format!(
+                    "expected final comment count {}, got list={} get={}",
+                    total_appends + 1,
+                    last_list_comment_count,
+                    last_get_comment_count
+                ));
+            }
+            if !saw_resolved {
+                return Err("expected to observe resolved final state".to_string());
+            }
+            Ok(())
+        });
+
+        let mut writers = Vec::new();
+        for writer_index in 0..writer_count {
+            let writer_store = store.clone();
+            let writer_dir = app_data_dir.clone();
+            let writer_thread_id = thread_id.clone();
+            let writer_started = started.clone();
+            let writer_appended = appended.clone();
+            writers.push(std::thread::spawn(move || {
+                writer_started.wait();
+                for comment_index in 0..appends_per_writer {
+                    writer_store
+                        .append_comment(
+                            &writer_dir,
+                            "wt",
+                            agent_a(&format!("writer-{writer_index}")),
+                            &writer_thread_id,
+                            format!(
+                                "comment {writer_index}-{comment_index} {}",
+                                "x".repeat(2048)
+                            ),
+                        )
+                        .unwrap();
+                    writer_appended.fetch_add(1, std::sync::atomic::Ordering::Release);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }));
+        }
+
+        let resolver_store = store.clone();
+        let resolver_dir = app_data_dir;
+        let resolver_thread_id = thread_id;
+        let resolver_started = started;
+        let resolver_appended = appended;
+        let resolver = std::thread::spawn(move || {
+            resolver_started.wait();
+            while resolver_appended.load(std::sync::atomic::Ordering::Acquire) < total_appends {
+                std::thread::yield_now();
+            }
+            resolver_store
+                .resolve_thread(
+                    &resolver_dir,
+                    "wt",
+                    agent_a("resolver"),
+                    &resolver_thread_id,
+                    "accepted".to_string(),
+                    "done".to_string(),
+                )
+                .unwrap();
+        });
+
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        resolver.join().unwrap();
+        done.store(true, std::sync::atomic::Ordering::Release);
+        reader.join().unwrap().unwrap();
     }
 
     /// 5 軸 (file / state / author / unread / thread_id) を組み合わせて Thread 一覧を

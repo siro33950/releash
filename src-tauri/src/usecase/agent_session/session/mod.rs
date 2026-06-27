@@ -24,7 +24,7 @@ pub(crate) use prompt_suggestion::{
     AgentPromptGitStatusGateway, AgentPromptSuggestion, AgentPromptSuggestionUsecase,
     GitSuggestionContext,
 };
-pub use store::{SessionReaderPort, SessionStore};
+pub use store::{SessionReaderPort, SessionReviewContextReader, SessionStore};
 pub(crate) use stored_lifecycle::{
     AgentSessionRuntimeCloser, CodexThreadForkRequest, CodexThreadLifecycleGateway,
     StoredSessionLifecycleUsecase,
@@ -395,6 +395,30 @@ pub struct SessionMeta {
     pub first_message_preview: String,
     pub message_count: usize,
     pub body_format_version: u32,
+}
+
+/// review CLI が `--session-id` から actor / worktree を解決するための read model。
+///
+/// review 解決では preview/count を使わないため、dir 形式 meta から必要なフィールドだけを返す。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionReviewContext {
+    pub id: String,
+    pub worktree_path: String,
+    pub state: SessionState,
+    pub selected_model: Option<String>,
+    pub backend_id: Option<String>,
+}
+
+impl From<SessionMeta> for SessionReviewContext {
+    fn from(meta: SessionMeta) -> Self {
+        Self {
+            id: meta.id,
+            worktree_path: meta.worktree_path,
+            state: meta.state,
+            selected_model: meta.selected_model,
+            backend_id: meta.backend_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
