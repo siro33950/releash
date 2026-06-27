@@ -1,6 +1,8 @@
 use super::model_selection::resolve_selected_model;
 use super::process_registry::{AgentProcess, AgentProcessMap, BridgeState, PendingMessage};
-use super::shared::{CLAUDE_BACKEND_ID, DEFER_AGENT_SESSION_ID_PERSIST_ON_READY};
+use super::shared::{
+    parts_have_tool_output_ref, CLAUDE_BACKEND_ID, DEFER_AGENT_SESSION_ID_PERSIST_ON_READY,
+};
 use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::context_restore::context_restore_plan_for_session;
 use crate::infrastructure::agent_session::runtime::context_restore::context_restore_plan_for_session_before_turn;
@@ -21,6 +23,23 @@ use tauri::Manager;
 use tokio::sync::Mutex;
 
 pub(super) const PERSIST_INTERVAL_MS: u64 = 1000;
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct PersistedStreamingParts {
+    pub parts: Vec<MessagePart>,
+    pub has_tool_output_ref: bool,
+}
+
+impl PersistedStreamingParts {
+    fn from_parts(parts: Vec<MessagePart>) -> Self {
+        let has_tool_output_ref = parts_have_tool_output_ref(&parts);
+        Self {
+            parts,
+            has_tool_output_ref,
+        }
+    }
+}
+
 pub(super) fn persist_streaming_parts<R: tauri::Runtime>(
     session_store: &SessionStore,
     app: &tauri::AppHandle<R>,
@@ -29,14 +48,14 @@ pub(super) fn persist_streaming_parts<R: tauri::Runtime>(
     parts: &[MessagePart],
     streaming_final_seq: u64,
     completed_at: Option<f64>,
-) -> bool {
+) -> Option<PersistedStreamingParts> {
     let data_dir = match resolve_data_dir(app) {
         Ok(d) => d,
         Err(e) => {
             log::warn!(
                 "Failed to resolve data dir for streaming persist (session {chat_session_id}): {e}"
             );
-            return false;
+            return None;
         }
     };
     match session_store.persist_message_parts(
@@ -47,10 +66,10 @@ pub(super) fn persist_streaming_parts<R: tauri::Runtime>(
         streaming_final_seq,
         completed_at,
     ) {
-        Ok(()) => true,
+        Ok(parts) => Some(PersistedStreamingParts::from_parts(parts)),
         Err(e) => {
             log::warn!("Failed to persist streaming parts for session {chat_session_id}: {e}");
-            false
+            None
         }
     }
 }
@@ -933,6 +952,39 @@ mod moved_tests {
         assert!(!take_defer_agent_session_id_persist_on_ready(
             &mut msg_without_flag
         ));
+    }
+
+    #[test]
+    fn persisted_streaming_parts_reports_tool_output_ref_without_seq_policy() {
+        let ref_part = MessagePart::ToolResult {
+            content: "preview".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+            content_ref: Some(crate::usecase::agent_session::session::ToolOutputRef {
+                id: "a".repeat(64),
+                byte_size: 123,
+            }),
+            summary: Some(crate::usecase::agent_session::session::ToolOutputSummary {
+                line_count: 1,
+                byte_size: 123,
+                is_error: false,
+                truncated: true,
+            }),
+        };
+        let inline_part = MessagePart::ToolResult {
+            content: "inline".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-2".to_string()),
+            parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
+        };
+
+        let persisted = PersistedStreamingParts::from_parts(vec![ref_part]);
+        assert!(persisted.has_tool_output_ref);
+        let persisted = PersistedStreamingParts::from_parts(vec![inline_part]);
+        assert!(!persisted.has_tool_output_ref);
     }
 
     #[tokio::test]

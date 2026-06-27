@@ -1,12 +1,15 @@
 use super::process_registry::{
-    AgentProcess, AgentProcessMap, BridgeState, PendingStreamDelta, StreamPartRollback, TurnPhase,
+    AgentProcess, AgentProcessMap, BridgeState, PendingPersistedToolOutputResync,
+    PendingStreamDelta, StreamPartRollback, TurnPhase,
 };
+use super::session_persistence::PersistedStreamingParts;
 use super::shared::{
     append_display_delta_parts, apply_stream_delta_to_parts, canonical_stream_parts_from_slice,
     pending_delta_parts, StreamDeltaApplyResult,
 };
-use crate::usecase::agent_session::session::now_timestamp;
-use crate::usecase::agent_session::session::MessagePart;
+use crate::usecase::agent_session::session::{
+    now_timestamp, project_tool_output_parts_for_stream, MessagePart,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -30,6 +33,7 @@ pub(super) fn release_completed_turn_streaming_buffer(proc: &mut AgentProcess) -
     proc.pending_stream_parts.clear();
     proc.pending_stream_part_rollbacks.clear();
     proc.retry_stream_delta = None;
+    proc.pending_persisted_tool_output_resyncs.clear();
     proc.pending_stream_bytes = 0;
     proc.last_stream_emit_at = None;
     released_parts
@@ -73,6 +77,7 @@ where
     F: FnOnce() -> Vec<MessagePart>,
 {
     use tauri::{Emitter, Manager};
+    let parts = project_tool_output_parts_for_stream(&parts);
     let payload = serde_json::json!({
         "chat_session_id": chat_session_id,
         "message_id": message_id,
@@ -102,7 +107,7 @@ where
                 session_id,
                 message_id,
                 seq,
-                parts: snapshot_parts()
+                parts: project_tool_output_parts_for_stream(&snapshot_parts())
                     .into_iter()
                     .map(to_agent_stream_part_msg)
                     .collect(),
@@ -110,6 +115,119 @@ where
         );
     }
     (tauri_ok, true)
+}
+
+pub(super) fn persisted_tool_output_resync_seq(
+    streaming_final_seq: u64,
+    persisted: &PersistedStreamingParts,
+) -> Option<u64> {
+    persisted
+        .has_tool_output_ref
+        .then(|| streaming_final_seq.saturating_add(1))
+}
+
+fn targets_message_for_resync(proc: &AgentProcess, message_id: &str) -> bool {
+    proc.streaming_message_id.as_deref() == Some(message_id)
+        || proc.last_message_id.as_deref() == Some(message_id)
+}
+
+fn has_pending_retry_for_message(proc: &AgentProcess, message_id: &str) -> bool {
+    proc.retry_stream_delta.is_some() && targets_message_for_resync(proc, message_id)
+}
+
+pub(super) async fn emit_persisted_tool_output_resync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    message_id: &str,
+    streaming_final_seq: u64,
+    persisted: &PersistedStreamingParts,
+) {
+    let Some(seq) = persisted_tool_output_resync_seq(streaming_final_seq, persisted) else {
+        return;
+    };
+    {
+        let mut map = handles.lock().await;
+        if let Some(proc) = map.get_mut(chat_session_id) {
+            if has_pending_retry_for_message(proc, message_id) {
+                proc.pending_persisted_tool_output_resyncs.insert(
+                    message_id.to_string(),
+                    PendingPersistedToolOutputResync {
+                        parts: persisted.parts.clone(),
+                    },
+                );
+                return;
+            }
+            proc.streaming_delta_seq_by_message
+                .insert(message_id.to_string(), seq);
+            let targets_current = proc.streaming_message_id.as_deref() == Some(message_id);
+            let targets_last_without_current = proc.streaming_message_id.is_none()
+                && proc.last_message_id.as_deref() == Some(message_id);
+            if targets_current || targets_last_without_current {
+                proc.streaming_delta_seq = proc.streaming_delta_seq.max(seq);
+            }
+        }
+    }
+    let snapshot_parts = persisted.parts.clone();
+    let _ = emit_streaming_delta(
+        app,
+        chat_session_id,
+        message_id,
+        seq,
+        Vec::new(),
+        move || snapshot_parts.clone(),
+    );
+}
+
+fn pending_persisted_tool_output_resync_seq(proc: &AgentProcess, message_id: &str) -> Option<u64> {
+    proc.pending_persisted_tool_output_resyncs
+        .contains_key(message_id)
+        .then(|| {
+            proc.streaming_delta_seq_by_message
+                .get(message_id)
+                .copied()
+                .unwrap_or(proc.streaming_delta_seq)
+                .saturating_add(1)
+        })
+}
+
+fn flush_pending_persisted_tool_output_resync<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    message_id: &str,
+    emit: &mut F,
+) where
+    F: FnMut(u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+{
+    if has_pending_retry_for_message(proc, message_id) {
+        return;
+    }
+    let Some(seq) = pending_persisted_tool_output_resync_seq(proc, message_id) else {
+        return;
+    };
+    let Some(pending) = proc
+        .pending_persisted_tool_output_resyncs
+        .remove(message_id)
+    else {
+        return;
+    };
+    let snapshot_parts = pending.parts;
+    let retry_parts = snapshot_parts.clone();
+    let emitted = emit_one_shot_streaming_delta(
+        proc,
+        chat_session_id,
+        message_id,
+        seq,
+        Vec::new(),
+        snapshot_parts,
+        |seq, parts, snapshot_parts| emit(seq, parts, snapshot_parts),
+    );
+    if !emitted {
+        proc.pending_persisted_tool_output_resyncs.insert(
+            message_id.to_string(),
+            PendingPersistedToolOutputResync { parts: retry_parts },
+        );
+    }
 }
 
 fn to_agent_stream_part_msg(part: MessagePart) -> crate::protocol::AgentStreamPartMsg {
@@ -281,7 +399,11 @@ pub(super) fn prepare_streaming_flush(proc: &AgentProcess) -> Option<StreamingFl
     } else {
         next_seq.saturating_add(1)
     };
-    let parts = if append_only_delta { parts } else { Vec::new() };
+    let parts = if append_only_delta {
+        project_tool_output_parts_for_stream(&parts)
+    } else {
+        Vec::new()
+    };
     Some(StreamingFlushSnapshot {
         seq,
         part_count: parts.len(),
@@ -325,7 +447,7 @@ fn snapshot_parts_after_success(
             .confirmed_stream_part_len_after_success
             .min(parts.len()),
     );
-    canonical_stream_parts_from_slice(&parts)
+    project_tool_output_parts_for_stream(&canonical_stream_parts_from_slice(&parts))
 }
 
 /// Apply the emit result to the coalescing state. On success clears the
@@ -422,14 +544,18 @@ where
     };
     let overflow_snapshot_parts = || snapshot_parts_after_success(proc, &snapshot);
     let (tauri_ok, ws_ok) = emit(snapshot.seq, &snapshot.parts, &overflow_snapshot_parts);
-    apply_streaming_emit_result(
+    let emitted = apply_streaming_emit_result(
         proc,
         chat_session_id,
         message_id,
         &snapshot,
         tauri_ok,
         ws_ok,
-    )
+    );
+    if emitted {
+        flush_pending_persisted_tool_output_resync(proc, chat_session_id, message_id, &mut emit);
+    }
+    emitted
 }
 
 pub(super) fn emit_one_shot_streaming_delta<F>(
@@ -444,6 +570,8 @@ pub(super) fn emit_one_shot_streaming_delta<F>(
 where
     F: FnMut(u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
+    let parts = project_tool_output_parts_for_stream(&parts);
+    let snapshot_parts = project_tool_output_parts_for_stream(&snapshot_parts);
     let snapshot = StreamingFlushSnapshot {
         seq,
         part_count: parts.len(),
@@ -987,6 +1115,198 @@ mod moved_tests {
         }
         assert_eq!(snapshot.buffer_len, 1);
         assert_eq!(snapshot.pending_bytes, "lo".len());
+    }
+
+    #[tokio::test]
+    async fn prepare_streaming_flush_bounds_large_tool_result_payload() {
+        let mut proc = make_streaming_test_process();
+        let full_output = format!(
+            "{}STREAM_SECRET_TAIL",
+            "x".repeat(crate::usecase::agent_session::session::MAX_TOOL_OUTPUT_BYTES + 1)
+        );
+        let part = MessagePart::ToolResult {
+            content: full_output.clone(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
+        };
+        proc.streaming_parts.push(part.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
+
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+
+        let MessagePart::ToolResult {
+            content,
+            content_ref,
+            summary,
+            ..
+        } = &snapshot.parts[0]
+        else {
+            panic!("expected tool result");
+        };
+        assert!(!content.contains("STREAM_SECRET_TAIL"));
+        assert!(content.len() <= crate::usecase::agent_session::session::TOOL_OUTPUT_PREVIEW_BYTES);
+        assert!(content_ref.is_none());
+        assert_eq!(
+            summary.as_ref().map(|summary| summary.byte_size),
+            Some(full_output.len() as u64)
+        );
+        assert_eq!(
+            proc.streaming_parts,
+            vec![MessagePart::ToolResult {
+                content: full_output,
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn persisted_tool_output_resync_seq_is_next_delivery_without_gap() {
+        let persisted_with_ref = PersistedStreamingParts {
+            parts: vec![MessagePart::ToolResult {
+                content: "preview".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+                content_ref: Some(crate::usecase::agent_session::session::ToolOutputRef {
+                    id: "a".repeat(64),
+                    byte_size: 123,
+                }),
+                summary: Some(crate::usecase::agent_session::session::ToolOutputSummary {
+                    line_count: 1,
+                    byte_size: 123,
+                    is_error: false,
+                    truncated: true,
+                }),
+            }],
+            has_tool_output_ref: true,
+        };
+        let persisted_inline = PersistedStreamingParts {
+            parts: vec![MessagePart::ToolResult {
+                content: "inline".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-2".to_string()),
+                parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
+            }],
+            has_tool_output_ref: false,
+        };
+
+        assert_eq!(
+            persisted_tool_output_resync_seq(7, &persisted_with_ref),
+            Some(8)
+        );
+        assert_eq!(persisted_tool_output_resync_seq(7, &persisted_inline), None);
+    }
+
+    #[tokio::test]
+    async fn persisted_tool_output_resync_waits_for_pending_retry_and_flushes_after_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let chat_session_id = "session-1";
+        let message_id = "message-1";
+        let full_part = MessagePart::ToolResult {
+            content: "large output body".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
+        };
+        let full_part_len = "large output body".len() as u64;
+        let content_ref = crate::usecase::agent_session::session::ToolOutputRef {
+            id: "a".repeat(64),
+            byte_size: full_part_len,
+        };
+        let persisted_part = MessagePart::ToolResult {
+            content: "preview".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+            content_ref: Some(content_ref),
+            summary: Some(crate::usecase::agent_session::session::ToolOutputSummary {
+                line_count: 1,
+                byte_size: full_part_len,
+                is_error: false,
+                truncated: true,
+            }),
+        };
+        {
+            let mut proc = make_streaming_test_process();
+            proc.state = BridgeState::Streaming;
+            proc.turn_phase = TurnPhase::Streaming;
+            proc.streaming_message_id = Some(message_id.to_string());
+            proc.streaming_delta_seq = 7;
+            proc.streaming_delta_seq_by_message
+                .insert(message_id.to_string(), 7);
+            proc.streaming_parts = vec![full_part.clone()];
+            enqueue_pending_delta(&mut proc, std::slice::from_ref(&full_part));
+            let failed = force_flush_pending_streaming(
+                &mut proc,
+                chat_session_id,
+                message_id,
+                |_seq, _parts, _snapshot_parts| (false, true),
+            );
+            assert!(!failed);
+            assert!(proc.retry_stream_delta.is_some());
+            handles
+                .lock()
+                .await
+                .insert(chat_session_id.to_string(), proc);
+        }
+        let persisted = PersistedStreamingParts {
+            parts: vec![persisted_part.clone()],
+            has_tool_output_ref: true,
+        };
+
+        emit_persisted_tool_output_resync(
+            &app.handle(),
+            &handles,
+            chat_session_id,
+            message_id,
+            7,
+            &persisted,
+        )
+        .await;
+
+        let mut proc = handles.lock().await.remove(chat_session_id).unwrap();
+        assert_eq!(proc.streaming_delta_seq, 7);
+        assert!(proc.retry_stream_delta.is_some());
+        assert!(proc
+            .pending_persisted_tool_output_resyncs
+            .contains_key(message_id));
+        let mut emissions = Vec::new();
+        let flushed = force_flush_pending_streaming(
+            &mut proc,
+            chat_session_id,
+            message_id,
+            |seq, parts, snapshot_parts| {
+                emissions.push((seq, parts.to_vec(), snapshot_parts()));
+                (true, true)
+            },
+        );
+
+        assert!(flushed);
+        assert!(proc.retry_stream_delta.is_none());
+        assert!(proc.pending_persisted_tool_output_resyncs.is_empty());
+        assert_eq!(emissions.len(), 2);
+        assert_eq!(emissions[0].0, 8);
+        assert_eq!(emissions[0].1, vec![full_part]);
+        assert_eq!(emissions[1].0, 9);
+        assert!(emissions[1].1.is_empty());
+        assert_eq!(emissions[1].2, vec![persisted_part]);
+        assert_eq!(proc.streaming_delta_seq, 9);
     }
 
     #[tokio::test]
@@ -1636,6 +1956,8 @@ mod moved_tests {
             content: "ok".to_string(),
             is_error: false,
             parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
         }];
         assert!(should_flush_per_delta(&proc, &delta_tool_result, false));
     }
@@ -1707,6 +2029,8 @@ mod moved_tests {
             content: "ok".to_string(),
             is_error: false,
             parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
         }];
         proc.streaming_parts.extend(tool_result_delta.clone());
         enqueue_pending_delta(&mut proc, &tool_result_delta);
@@ -2557,6 +2881,8 @@ mod moved_tests {
             is_error: false,
             tool_use_id: Some("tool-1".to_string()),
             parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
         };
         let expected_delta_parts = vec![delta_part.clone()];
         let expected_parts = consolidate_parts_from_slice(
@@ -2617,6 +2943,8 @@ mod moved_tests {
             is_error: false,
             tool_use_id: Some("tool-1".to_string()),
             parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
         };
         let expected_delta_parts = vec![delta_part.clone()];
         let expected_parts = consolidate_parts_from_slice(
@@ -2743,6 +3071,8 @@ mod moved_tests {
             is_error: false,
             tool_use_id: Some("tool-1".to_string()),
             parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
         }];
         let expected_parts = consolidate_parts_from_slice(
             &stale_base_parts
@@ -2850,6 +3180,8 @@ mod moved_tests {
                 is_error: false,
                 tool_use_id: Some("tool-1".to_string()),
                 parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
             },
         ];
         let expected_delta_parts = vec![MessagePart::ToolResult {
@@ -2857,6 +3189,8 @@ mod moved_tests {
             is_error: false,
             tool_use_id: Some("tool-1".to_string()),
             parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
         }];
         let mut emitted = Vec::new();
 
@@ -2929,6 +3263,8 @@ mod moved_tests {
             is_error: false,
             tool_use_id: Some("old-tool".to_string()),
             parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
         }];
         let msg = serde_json::json!({
             "type": "system",
@@ -3053,7 +3389,7 @@ mod moved_tests {
         );
 
         assert!(effect.should_persist);
-        let persisted = persist_streaming_parts(
+        let persisted_parts = persist_streaming_parts(
             &store,
             &app.handle(),
             &session.id,
@@ -3062,13 +3398,15 @@ mod moved_tests {
             0,
             None,
         );
-        assert!(persisted);
+        assert!(persisted_parts.is_some());
 
         let expected_delta_parts = vec![MessagePart::ToolResult {
             content: "late".to_string(),
             is_error: false,
             tool_use_id: Some("tool-1".to_string()),
             parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
         }];
         let expected_parts = vec![
             base_parts[0].clone(),
@@ -3165,6 +3503,8 @@ mod moved_tests {
                 is_error: false,
                 tool_use_id: Some("tool-1".to_string()),
                 parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
             },
         ];
 
@@ -3889,6 +4229,8 @@ mod moved_tests {
             content: "ok".to_string(),
             is_error: false,
             parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
         }]));
         assert!(!delta_has_tool_event(&[MessagePart::Text {
             content: "plain".to_string(),

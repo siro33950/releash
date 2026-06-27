@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use super::layout::{
     attachments_dir_in_dir, content_hash, index_file_in_dir, legacy_meta_file, message_file_in_dir,
     messages_dir_in_dir, meta_file_in_dir, session_dir, session_file, sessions_dir,
-    write_json_pretty_atomic,
+    tool_outputs_dir_in_dir, write_json_pretty_atomic,
 };
 use super::FileSessionStorage;
 use crate::usecase::agent_session::session::{
@@ -206,6 +206,7 @@ impl FileSessionStorage {
                     .saturating_add(1);
                 let (stored_message, attachment_refs) =
                     self.externalize_message_attachments(&dir, message)?;
+                let stored_message = self.externalize_message_tool_outputs(&dir, stored_message)?;
                 let hash = content_hash(&stored_message)?;
                 write_json_pretty_atomic(
                     &message_file_in_dir(&dir, seq),
@@ -222,6 +223,7 @@ impl FileSessionStorage {
                     timestamp: stored_message.timestamp,
                     content_hash: hash,
                     attachment_refs,
+                    tool_output_refs: self.tool_output_refs_from_message(&stored_message),
                     token_meta: None,
                 });
                 meta.message_count = index.len();
@@ -247,7 +249,7 @@ impl FileSessionStorage {
         parts: &[MessagePart],
         streaming_final_seq: u64,
         completed_at: Option<f64>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<MessagePart>, String> {
         measure_save_result(
             crate::other::telemetry::HotPath::SessionPersistParts,
             || {
@@ -284,9 +286,11 @@ impl FileSessionStorage {
                 }
                 let (message, attachment_refs) =
                     self.externalize_message_attachments(&dir, &message)?;
+                let message = self.externalize_message_tool_outputs(&dir, message)?;
                 entry.timestamp = message.timestamp;
                 entry.content_hash = content_hash(&message)?;
                 entry.attachment_refs = attachment_refs;
+                entry.tool_output_refs = self.tool_output_refs_from_message(&message);
                 write_json_pretty_atomic(&path, &message, "message chunk")?;
 
                 let mut meta = self.read_meta_from_dir(&dir, session_id)?;
@@ -295,10 +299,11 @@ impl FileSessionStorage {
                     meta.first_message_preview =
                         first_message_preview(std::slice::from_ref(&message));
                 }
+                let persisted_parts = message.parts.clone().unwrap_or_default();
                 write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
                 write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
                 self.cache.write().insert(session_id.to_string(), meta);
-                Ok(())
+                Ok(persisted_parts)
             },
         )
     }
@@ -410,7 +415,7 @@ impl FileSessionStorage {
         Ok(stored_seqs == chunk_seqs)
     }
 
-    fn index_matches_message_chunks_full(
+    pub(super) fn index_matches_message_chunks_full(
         &self,
         dir: &Path,
         index: &[MessageIndexEntry],
@@ -426,6 +431,7 @@ impl FileSessionStorage {
                 && stored.timestamp == actual.timestamp
                 && stored.content_hash == actual.content_hash
                 && stored.attachment_refs == actual.attachment_refs
+                && stored.tool_output_refs == actual.tool_output_refs
         }))
     }
 
@@ -482,6 +488,7 @@ impl FileSessionStorage {
                 Ok(message) => {
                     if entry.content_hash != content_hash(&message)?
                         || entry.attachment_refs != self.attachment_refs_from_message(&message)
+                        || entry.tool_output_refs != self.tool_output_refs_from_message(&message)
                     {
                         needs_repair = true;
                     }
@@ -543,6 +550,7 @@ impl FileSessionStorage {
                 timestamp: message.timestamp,
                 content_hash: content_hash(&message)?,
                 attachment_refs: self.attachment_refs_from_message(&message),
+                tool_output_refs: self.tool_output_refs_from_message(&message),
                 token_meta: None,
             });
         }
@@ -595,6 +603,8 @@ impl FileSessionStorage {
             .map_err(|e| format!("Failed to create messages dir: {e}"))?;
         std::fs::create_dir_all(attachments_dir_in_dir(dir))
             .map_err(|e| format!("Failed to create attachments dir: {e}"))?;
+        std::fs::create_dir_all(tool_outputs_dir_in_dir(dir))
+            .map_err(|e| format!("Failed to create tool outputs dir: {e}"))?;
         let old_index = if reuse_existing_index {
             self.read_index_from_dir(dir).unwrap_or_default()
         } else {
@@ -615,6 +625,7 @@ impl FileSessionStorage {
         for message in &session.messages {
             let (stored_message, attachment_refs) =
                 self.externalize_message_attachments(dir, message)?;
+            let stored_message = self.externalize_message_tool_outputs(dir, stored_message)?;
             let old_entry = old_by_id.remove(&message.id);
             let mut seq = old_entry
                 .as_ref()
@@ -645,6 +656,7 @@ impl FileSessionStorage {
                 timestamp: message.timestamp,
                 content_hash: hash,
                 attachment_refs,
+                tool_output_refs: self.tool_output_refs_from_message(&stored_message),
                 token_meta: None,
             });
         }

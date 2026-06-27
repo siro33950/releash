@@ -1735,6 +1735,74 @@ describe("AgentChatPanel shimmer placeholder", () => {
 		expect(shimmer.children).toHaveLength(2);
 	});
 
+	it("renders multiple tool_results for one tool_use under the same activity", async () => {
+		mockUseAgentChat({
+			isStreaming: false,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [
+							{
+								type: "tool_use",
+								tool: "Bash",
+								input: { command: "ls" },
+								id: "t1",
+							},
+							{
+								type: "tool_result",
+								content: "preview only",
+								isError: false,
+								toolUseId: "t1",
+								contentRef: {
+									id: "a".repeat(64),
+									byteSize: 4096,
+								},
+							},
+							{
+								type: "tool_result",
+								content: "\nlate inline",
+								isError: false,
+								toolUseId: "t1",
+							},
+						],
+						timestamp: 1001,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		const tool = await screen.findByTestId("activity-tool-use-0");
+		expect(screen.queryByTestId("activity-tool-result-1")).toBeNull();
+		expect(screen.queryByTestId("activity-tool-result-2")).toBeNull();
+
+		fireEvent.click(tool);
+
+		expect(screen.getByText("preview only")).toBeInTheDocument();
+		expect(screen.getByText(/late inline/)).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Load full tool result" }),
+		).toBeInTheDocument();
+	});
+
 	it("hides shimmer when last part is permission", () => {
 		mockUseAgentChat({
 			isStreaming: true,

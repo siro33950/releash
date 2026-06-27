@@ -6,8 +6,8 @@ use super::layout::{
     attachment_file_in_dir, attachments_dir_in_dir, session_dir, write_binary_atomic,
 };
 use super::FileSessionStorage;
-use crate::usecase::agent_session::session::{
-    reject_oversized_base64_image, validate_image_bytes_for_media_type,
+use crate::domain::agent_session::services::{
+    AttachmentExternalizationPolicy, DefaultAttachmentExternalizationPolicy,
 };
 use crate::usecase::agent_session::session::{
     AttachmentRef, ChatMessage, MessagePart, SessionAttachment,
@@ -72,14 +72,15 @@ impl FileSessionStorage {
         };
         let mut refs = Vec::new();
         let mut externalized_parts = Vec::with_capacity(parts.len());
+        let policy = DefaultAttachmentExternalizationPolicy;
         for part in parts {
             match part {
                 MessagePart::Image { data, media_type } => {
-                    reject_oversized_base64_image(data)?;
+                    policy.reject_oversized_base64_image(data)?;
                     let bytes = BASE64_STANDARD
                         .decode(data)
                         .map_err(|e| format!("Failed to decode image attachment: {e}"))?;
-                    validate_image_bytes_for_media_type(&bytes, media_type)?;
+                    policy.validate_image_bytes_for_media_type(&bytes, media_type)?;
                     let attachment = AttachmentRef {
                         id: attachment_id(media_type, &bytes),
                         media_type: media_type.clone(),

@@ -8,6 +8,7 @@ pub trait AgentSessionStorageTypes: Send + Sync {
     type Message;
     type MessagePart;
     type Attachment;
+    type ToolOutput;
     type Event;
 }
 
@@ -53,6 +54,13 @@ pub trait AgentSessionReader: AgentSessionStorageTypes {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<Option<Self::Attachment>, String>;
+
+    fn get_session_tool_output(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        tool_output_id: &str,
+    ) -> Result<Option<Self::ToolOutput>, String>;
 
     fn load_session_events(
         &self,
@@ -110,7 +118,7 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         parts: &[Self::MessagePart],
         streaming_final_seq: u64,
         completed_at: Option<f64>,
-    ) -> Result<(), String>;
+    ) -> Result<Vec<Self::MessagePart>, String>;
 
     fn append_session_event(
         &self,

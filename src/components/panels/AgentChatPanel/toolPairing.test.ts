@@ -5,7 +5,7 @@ import { buildToolPairings } from "./toolPairing";
 describe("buildToolPairings", () => {
 	it("returns empty maps for no parts", () => {
 		const result = buildToolPairings([]);
-		expect(result.pairedResults.size).toBe(0);
+		expect(result.pairedResultGroups.size).toBe(0);
 		expect(result.skippedResultIndices.size).toBe(0);
 	});
 
@@ -15,7 +15,7 @@ describe("buildToolPairings", () => {
 			{ type: "text", content: "world" },
 		];
 		const result = buildToolPairings(parts);
-		expect(result.pairedResults.size).toBe(0);
+		expect(result.pairedResultGroups.size).toBe(0);
 		expect(result.skippedResultIndices.size).toBe(0);
 	});
 
@@ -26,8 +26,35 @@ describe("buildToolPairings", () => {
 			{ type: "tool_result", content: "ok", isError: false, toolUseId: "t1" },
 		];
 		const result = buildToolPairings(parts);
-		expect(result.pairedResults.size).toBe(1);
-		expect(result.pairedResults.get(0)?.content).toBe("ok");
+		expect(result.pairedResultGroups.size).toBe(1);
+		expect(result.pairedResultGroups.get(0)?.[0]?.content).toBe("ok");
+		expect(result.skippedResultIndices.has(2)).toBe(true);
+	});
+
+	it("keeps multiple ID-based tool_results for the same tool_use", () => {
+		const parts: MessagePart[] = [
+			{ type: "tool_use", tool: "Bash", input: { command: "ls" }, id: "t1" },
+			{
+				type: "tool_result",
+				content: "preview",
+				isError: false,
+				toolUseId: "t1",
+				contentRef: { id: "a".repeat(64), byteSize: 4096 },
+			},
+			{
+				type: "tool_result",
+				content: "\nlate inline",
+				isError: false,
+				toolUseId: "t1",
+			},
+		];
+		const result = buildToolPairings(parts);
+
+		expect(result.pairedResultGroups.get(0)?.[0]?.content).toBe("preview");
+		expect(
+			result.pairedResultGroups.get(0)?.map((part) => part.content),
+		).toEqual(["preview", "\nlate inline"]);
+		expect(result.skippedResultIndices.has(1)).toBe(true);
 		expect(result.skippedResultIndices.has(2)).toBe(true);
 	});
 
@@ -37,8 +64,8 @@ describe("buildToolPairings", () => {
 			{ type: "tool_result", content: "ok", isError: false },
 		];
 		const result = buildToolPairings(parts);
-		expect(result.pairedResults.size).toBe(1);
-		expect(result.pairedResults.get(0)?.content).toBe("ok");
+		expect(result.pairedResultGroups.size).toBe(1);
+		expect(result.pairedResultGroups.get(0)?.[0]?.content).toBe("ok");
 		expect(result.skippedResultIndices.has(1)).toBe(true);
 	});
 
@@ -54,7 +81,7 @@ describe("buildToolPairings", () => {
 			},
 		];
 		const result = buildToolPairings(parts);
-		expect(result.pairedResults.get(0)?.content).toBe("by-id");
+		expect(result.pairedResultGroups.get(0)?.[0]?.content).toBe("by-id");
 		expect(result.skippedResultIndices.has(2)).toBe(true);
 		expect(result.skippedResultIndices.has(1)).toBe(false);
 	});
@@ -67,9 +94,9 @@ describe("buildToolPairings", () => {
 			{ type: "tool_result", content: "r2", isError: false, toolUseId: "t2" },
 		];
 		const result = buildToolPairings(parts);
-		expect(result.pairedResults.size).toBe(2);
-		expect(result.pairedResults.get(0)?.content).toBe("r1");
-		expect(result.pairedResults.get(2)?.content).toBe("r2");
+		expect(result.pairedResultGroups.size).toBe(2);
+		expect(result.pairedResultGroups.get(0)?.[0]?.content).toBe("r1");
+		expect(result.pairedResultGroups.get(2)?.[0]?.content).toBe("r2");
 		expect(result.skippedResultIndices.size).toBe(2);
 	});
 
@@ -79,7 +106,7 @@ describe("buildToolPairings", () => {
 			{ type: "text", content: "no result yet" },
 		];
 		const result = buildToolPairings(parts);
-		expect(result.pairedResults.size).toBe(0);
+		expect(result.pairedResultGroups.size).toBe(0);
 		expect(result.skippedResultIndices.size).toBe(0);
 	});
 
@@ -96,9 +123,9 @@ describe("buildToolPairings", () => {
 		];
 		const result = buildToolPairings(parts);
 		// t2 is paired by ID
-		expect(result.pairedResults.get(1)?.content).toBe("for-t2");
+		expect(result.pairedResultGroups.get(1)?.[0]?.content).toBe("for-t2");
 		// t1 has no pair (adjacent is already taken by t2's ID match)
-		expect(result.pairedResults.has(0)).toBe(false);
+		expect(result.pairedResultGroups.has(0)).toBe(false);
 	});
 
 	it("returns empty taskGroups when no Task tool_use", () => {

@@ -62,12 +62,20 @@ pub(super) fn attachments_dir_in_dir(session_dir: &Path) -> PathBuf {
     session_dir.join("attachments")
 }
 
+pub(super) fn tool_outputs_dir_in_dir(session_dir: &Path) -> PathBuf {
+    session_dir.join("tool_outputs")
+}
+
 pub(super) fn message_file_in_dir(session_dir: &Path, seq: u64) -> PathBuf {
     messages_dir_in_dir(session_dir).join(format!("{seq}.json"))
 }
 
 pub(super) fn attachment_file_in_dir(session_dir: &Path, attachment_id: &str) -> PathBuf {
     attachments_dir_in_dir(session_dir).join(attachment_id)
+}
+
+pub(super) fn tool_output_file_in_dir(session_dir: &Path, tool_output_id: &str) -> PathBuf {
+    tool_outputs_dir_in_dir(session_dir).join(tool_output_id)
 }
 
 pub(super) fn invalid_session_error_message_with_id(session_id: &str) -> String {

@@ -418,6 +418,62 @@ mod tests {
     }
 
     #[test]
+    fn send_stream_delta_preserves_tool_result_ref_without_full_tail() {
+        let broadcaster = WsBroadcaster::default();
+        let (tx, _rx) = WsBroadcaster::create_channel();
+        broadcaster.set_sender(Some(tx));
+        let full_tail = "USER_SECRET_TAIL";
+        let output_id = "c".repeat(64);
+        let delta = AgentStreamDeltaMsg {
+            session_id: "S".to_string(),
+            message_id: "M".to_string(),
+            seq: 1,
+            parts: vec![AgentStreamPartMsg::ToolResult {
+                content: "preview only".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+                content_ref: Some(crate::protocol::AgentToolOutputRefMsg {
+                    id: output_id.clone(),
+                    byte_size: 4096,
+                }),
+                summary: Some(crate::protocol::AgentToolOutputSummaryMsg {
+                    line_count: 1200,
+                    byte_size: 4096,
+                    is_error: false,
+                    truncated: true,
+                }),
+            }],
+        };
+
+        broadcaster.send_stream_delta(delta, || panic!("snapshot should not be built"));
+
+        let drained = broadcaster.drain_stream_messages();
+        assert_eq!(drained.len(), 1);
+        let json = serde_json::to_string(&drained[0]).unwrap();
+        assert!(json.contains("\"contentRef\""));
+        assert!(json.contains(&output_id));
+        assert!(json.contains("preview only"));
+        assert!(!json.contains(full_tail));
+        match &drained[0] {
+            WsMessage::AgentStreamDelta(msg) => {
+                assert!(matches!(
+                    &msg.parts[0],
+                    AgentStreamPartMsg::ToolResult {
+                        content,
+                        content_ref: Some(content_ref),
+                        summary: Some(summary),
+                        ..
+                    } if content == "preview only"
+                        && content_ref.id == output_id
+                        && summary.truncated
+                ));
+            }
+            other => panic!("expected stream delta, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn send_stream_delta_does_not_build_snapshot_under_queue_limits() {
         let broadcaster = WsBroadcaster::default();
         let (tx, _rx) = WsBroadcaster::create_channel();

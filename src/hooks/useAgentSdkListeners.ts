@@ -520,6 +520,10 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			if (seq <= lastSeq) {
 				return;
 			}
+			if (parts.length === 0) {
+				await dispatchResyncSnapshot(chat_session_id, message_id, lastSeq, seq);
+				return;
+			}
 			if (!hasMessage(chat_session_id, message_id) || seq !== lastSeq + 1) {
 				await dispatchResyncSnapshot(chat_session_id, message_id, lastSeq, seq);
 				return;

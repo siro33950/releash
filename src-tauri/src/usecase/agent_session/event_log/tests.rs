@@ -3,6 +3,7 @@ use super::projector::{project, ProjectedStatus};
 use super::*;
 use crate::usecase::agent_session::session::{
     AttachmentRef, MessageMention, MessagePart, SessionState, SystemNotificationType, TodoListItem,
+    ToolOutputRef, ToolOutputSummary,
 };
 use crate::usecase::agent_session::status::TurnPhase;
 
@@ -36,6 +37,8 @@ fn append_events_project_message_page_and_workflow_input() {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             content: "contents".to_string(),
+            content_ref: None,
+            summary: None,
         },
         AgentSessionEvent::TextRecorded {
             turn_id: 1,
@@ -262,11 +265,15 @@ fn later_tool_success_replaces_interrupted_failure_content() {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             content: "bridge crash により中断".to_string(),
+            content_ref: None,
+            summary: None,
         },
         AgentSessionEvent::ToolCallSucceeded {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             content: "late result".to_string(),
+            content_ref: None,
+            summary: None,
         },
     ];
 
@@ -298,11 +305,15 @@ fn later_tool_success_replaces_content_when_new_content_contains_existing() {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             content: "partial".to_string(),
+            content_ref: None,
+            summary: None,
         },
         AgentSessionEvent::ToolCallSucceeded {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             content: "partial result".to_string(),
+            content_ref: None,
+            summary: None,
         },
     ];
 
@@ -334,11 +345,15 @@ fn later_tool_success_appends_content_when_new_content_does_not_contain_existing
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             content: "first".to_string(),
+            content_ref: None,
+            summary: None,
         },
         AgentSessionEvent::ToolCallSucceeded {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             content: " second".to_string(),
+            content_ref: None,
+            summary: None,
         },
     ];
 
@@ -370,6 +385,8 @@ fn tool_result_restores_parent_from_tool_call_started() {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             content: "done".to_string(),
+            content_ref: None,
+            summary: None,
         },
     ];
 
@@ -382,6 +399,7 @@ fn tool_result_restores_parent_from_tool_call_started() {
             is_error: false,
             tool_use_id: Some(id),
             parent_tool_use_id: Some(parent),
+            ..
         } if id == "tool-1" && parent == "parent-1" && content == "done"
     )));
 }
@@ -401,6 +419,8 @@ fn tool_result_without_tool_use_id_round_trips_through_part_events() {
         is_error: true,
         tool_use_id: None,
         parent_tool_use_id: Some("parent-1".to_string()),
+        content_ref: None,
+        summary: None,
     };
 
     let appended = log.append_part_events(
@@ -415,11 +435,239 @@ fn tool_result_without_tool_use_id_round_trips_through_part_events() {
 }
 
 #[test]
+fn externalized_tool_result_round_trips_through_part_events() {
+    let mut log = TurnEventLog::default();
+    log.begin_turn(
+        1,
+        "human-1".to_string(),
+        "agent-1".to_string(),
+        PromptInput::default(),
+        10.0,
+    );
+    let content_ref = ToolOutputRef {
+        id: "f".repeat(64),
+        byte_size: 4096,
+    };
+    let summary = ToolOutputSummary {
+        line_count: 200,
+        byte_size: 4096,
+        is_error: false,
+        truncated: true,
+    };
+    let tool_use = MessagePart::ToolUse {
+        tool: "Bash".to_string(),
+        input: serde_json::json!({"command": "pnpm test"}),
+        id: "tool-1".to_string(),
+        parent_tool_use_id: Some("parent-1".to_string()),
+    };
+    let part = MessagePart::ToolResult {
+        content: "preview".to_string(),
+        is_error: false,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: Some("parent-1".to_string()),
+        content_ref: Some(content_ref),
+        summary: Some(summary),
+    };
+
+    let appended = log.append_part_events(
+        1,
+        "agent-1",
+        &[tool_use.clone(), part.clone()],
+        PartEventMode::DurableOnly,
+    );
+
+    assert_eq!(appended, 2);
+    assert_eq!(
+        log.project().agent_parts_for_message("agent-1"),
+        vec![tool_use, part]
+    );
+}
+
+#[test]
+fn externalized_tool_result_keeps_ref_when_later_inline_delta_arrives() {
+    let content_ref = ToolOutputRef {
+        id: "a".repeat(64),
+        byte_size: 8192,
+    };
+    let summary = ToolOutputSummary {
+        line_count: 300,
+        byte_size: 8192,
+        is_error: false,
+        truncated: true,
+    };
+    let tool_use = MessagePart::ToolUse {
+        tool: "Bash".to_string(),
+        input: serde_json::json!({"command": "cargo test"}),
+        id: "tool-1".to_string(),
+        parent_tool_use_id: Some("parent-1".to_string()),
+    };
+    let events = vec![
+        start_event(),
+        AgentSessionEvent::ToolCallStarted {
+            turn_id: 1,
+            tool_use_id: "tool-1".to_string(),
+            tool: "Bash".to_string(),
+            input: serde_json::json!({"command": "cargo test"}),
+            parent_tool_use_id: Some("parent-1".to_string()),
+        },
+        AgentSessionEvent::ToolCallSucceeded {
+            turn_id: 1,
+            tool_use_id: "tool-1".to_string(),
+            content: "preview".to_string(),
+            content_ref: Some(content_ref.clone()),
+            summary: Some(summary.clone()),
+        },
+        AgentSessionEvent::ToolCallSucceeded {
+            turn_id: 1,
+            tool_use_id: "tool-1".to_string(),
+            content: "\nlate chunk".to_string(),
+            content_ref: None,
+            summary: None,
+        },
+    ];
+
+    let parts = project(&events).agent_parts_for_message("agent-1");
+
+    assert_eq!(
+        parts,
+        vec![
+            tool_use,
+            MessagePart::ToolResult {
+                content: "preview".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: Some("parent-1".to_string()),
+                content_ref: Some(content_ref),
+                summary: Some(summary),
+            },
+            MessagePart::ToolResult {
+                content: "\nlate chunk".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: Some("parent-1".to_string()),
+                content_ref: None,
+                summary: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn externalized_tool_result_ignores_empty_later_inline_delta() {
+    let content_ref = ToolOutputRef {
+        id: "a".repeat(64),
+        byte_size: 8192,
+    };
+    let summary = ToolOutputSummary {
+        line_count: 300,
+        byte_size: 8192,
+        is_error: false,
+        truncated: true,
+    };
+    let events = vec![
+        start_event(),
+        AgentSessionEvent::ToolCallSucceeded {
+            turn_id: 1,
+            tool_use_id: "tool-1".to_string(),
+            content: "preview".to_string(),
+            content_ref: Some(content_ref.clone()),
+            summary: Some(summary.clone()),
+        },
+        AgentSessionEvent::ToolCallSucceeded {
+            turn_id: 1,
+            tool_use_id: "tool-1".to_string(),
+            content: String::new(),
+            content_ref: None,
+            summary: None,
+        },
+    ];
+
+    let parts = project(&events).agent_parts_for_message("agent-1");
+
+    assert_eq!(
+        parts,
+        vec![MessagePart::ToolResult {
+            content: "preview".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+            content_ref: Some(content_ref),
+            summary: Some(summary),
+        }]
+    );
+}
+
+#[test]
+fn inline_tool_result_is_replaced_by_later_externalized_preview_ref() {
+    let sentinel = "INLINE_TO_REF_SECRET_TAIL";
+    let full_output = format!("full output\n{sentinel}");
+    let content_ref = ToolOutputRef {
+        id: "b".repeat(64),
+        byte_size: full_output.len() as u64,
+    };
+    let summary = ToolOutputSummary {
+        line_count: 2,
+        byte_size: full_output.len() as u64,
+        is_error: false,
+        truncated: true,
+    };
+    let events = vec![
+        start_event(),
+        AgentSessionEvent::ToolCallStarted {
+            turn_id: 1,
+            tool_use_id: "tool-1".to_string(),
+            tool: "Bash".to_string(),
+            input: serde_json::json!({"command": "cargo test"}),
+            parent_tool_use_id: Some("parent-1".to_string()),
+        },
+        AgentSessionEvent::ToolCallSucceeded {
+            turn_id: 1,
+            tool_use_id: "tool-1".to_string(),
+            content: full_output.clone(),
+            content_ref: None,
+            summary: None,
+        },
+        AgentSessionEvent::ToolCallSucceeded {
+            turn_id: 1,
+            tool_use_id: "tool-1".to_string(),
+            content: "preview only".to_string(),
+            content_ref: Some(content_ref.clone()),
+            summary: Some(summary.clone()),
+        },
+    ];
+
+    let parts = project(&events).agent_parts_for_message("agent-1");
+
+    assert_eq!(
+        parts,
+        vec![
+            MessagePart::ToolUse {
+                tool: "Bash".to_string(),
+                input: serde_json::json!({"command": "cargo test"}),
+                id: "tool-1".to_string(),
+                parent_tool_use_id: Some("parent-1".to_string()),
+            },
+            MessagePart::ToolResult {
+                content: "preview only".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: Some("parent-1".to_string()),
+                content_ref: Some(content_ref),
+                summary: Some(summary),
+            },
+        ]
+    );
+    assert!(!serde_json::to_string(&parts).unwrap().contains(sentinel));
+}
+
+#[test]
 fn orphan_turn_events_are_skipped_without_synthetic_messages() {
     let read_model = project(&[AgentSessionEvent::ToolCallSucceeded {
         turn_id: 99,
         tool_use_id: "tool-1".to_string(),
         content: "orphan".to_string(),
+        content_ref: None,
+        summary: None,
     }]);
 
     assert!(read_model.messages.is_empty());

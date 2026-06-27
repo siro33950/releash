@@ -85,6 +85,8 @@ struct Metrics {
     dropped_stream_frames: Counter<u64>,
     ws_reconnects: Counter<u64>,
     usage_events: Counter<u64>,
+    tool_output_truncated: Counter<u64>,
+    tool_output_bytes: Counter<u64>,
     _rss_gauge: ObservableGauge<u64>,
     _cpu_gauge: ObservableGauge<f64>,
     _xterm_gauge: ObservableGauge<u64>,
@@ -248,6 +250,13 @@ pub(crate) fn install_metrics() {
             .u64_counter("releash.agent_stream.ws_reconnects")
             .build(),
         usage_events: meter.u64_counter("releash.usage.events").build(),
+        tool_output_truncated: meter
+            .u64_counter("releash.tool_output.truncated_count")
+            .build(),
+        tool_output_bytes: meter
+            .u64_counter("releash.tool_output.full_output_bytes")
+            .with_unit("By")
+            .build(),
         _rss_gauge: meter
             .u64_observable_gauge("releash.process.rss_bytes")
             .with_unit("By")
@@ -482,6 +491,27 @@ where
         return;
     };
     metrics.stream_payload_bytes.record(bytes as f64, &attrs);
+}
+
+pub(crate) fn record_tool_output_externalized(byte_size: u64) {
+    if !is_performance_active() {
+        return;
+    }
+    let attrs = [KeyValue::new(KEY_OPERATION, "tool_output.externalize")];
+    #[cfg(test)]
+    {
+        record_test_metric("releash.tool_output.truncated_count", 1.0, &attrs);
+        record_test_metric(
+            "releash.tool_output.full_output_bytes",
+            byte_size as f64,
+            &attrs,
+        );
+    }
+    let Some(metrics) = METRICS.get() else {
+        return;
+    };
+    metrics.tool_output_truncated.add(1, &attrs);
+    metrics.tool_output_bytes.add(byte_size, &attrs);
 }
 
 pub(crate) fn record_emit_interval(elapsed: Duration) {

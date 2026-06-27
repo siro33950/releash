@@ -4,8 +4,8 @@ use super::events::{AgentSessionEvent, InterruptReason, PromptInput, TurnId, Tur
 use super::finalization::has_unresolved_permissions;
 use super::part_events::{permission_request_id, permission_tool_use_id};
 use crate::usecase::agent_session::session::{
-    parts_to_legacy, ChatMessage, MessagePart, MessageRole, SessionState, SystemNotificationType,
-    TodoListItem,
+    apply_tool_result_update, parts_to_legacy, ChatMessage, MessagePart, MessageRole, SessionState,
+    SystemNotificationType, TodoListItem, ToolOutputRef, ToolOutputSummary, ToolResultUpdate,
 };
 use crate::usecase::agent_session::status::TurnPhase;
 
@@ -148,6 +148,8 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                 turn_id,
                 tool_use_id,
                 content,
+                content_ref,
+                summary,
             } => {
                 if let Some(turn) = turn_mut(&mut turns, &turn_index, *turn_id) {
                     let parent_tool_use_id =
@@ -158,6 +160,8 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                         content,
                         false,
                         parent_tool_use_id,
+                        content_ref.clone(),
+                        summary.clone(),
                     );
                 }
             }
@@ -165,6 +169,8 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                 turn_id,
                 tool_use_id,
                 content,
+                content_ref,
+                summary,
             } => {
                 if let Some(turn) = turn_mut(&mut turns, &turn_index, *turn_id) {
                     let parent_tool_use_id =
@@ -175,6 +181,8 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                         content,
                         true,
                         parent_tool_use_id,
+                        content_ref.clone(),
+                        summary.clone(),
                     );
                 }
             }
@@ -183,6 +191,8 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                 message_id,
                 content,
                 is_error,
+                content_ref,
+                summary,
                 tool_use_id,
                 parent_tool_use_id,
             } => {
@@ -199,6 +209,8 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                                 content,
                                 *is_error,
                                 parent_tool_use_id,
+                                content_ref.clone(),
+                                summary.clone(),
                             );
                         }
                         None => {
@@ -207,6 +219,8 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                                 is_error: *is_error,
                                 tool_use_id: None,
                                 parent_tool_use_id: parent_tool_use_id.clone(),
+                                content_ref: content_ref.clone(),
+                                summary: summary.clone(),
                             });
                         }
                     }
@@ -597,45 +611,20 @@ fn push_or_update_tool_result(
     content: &str,
     is_error: bool,
     parent_tool_use_id: Option<String>,
+    content_ref: Option<ToolOutputRef>,
+    summary: Option<ToolOutputSummary>,
 ) {
-    if let Some(existing) = parts.iter_mut().rev().find(|part| {
-        matches!(
-            part,
-            MessagePart::ToolResult {
-                tool_use_id: Some(id),
-                ..
-            } if id == tool_use_id
-        )
-    }) {
-        let MessagePart::ToolResult {
-            content: existing_content,
-            is_error: existing_error,
-            parent_tool_use_id: existing_parent_tool_use_id,
-            ..
-        } = existing
-        else {
-            return;
-        };
-        if existing_parent_tool_use_id.is_none() {
-            *existing_parent_tool_use_id = parent_tool_use_id;
-        }
-        if *existing_error && !is_error {
-            *existing_content = content.to_string();
-            *existing_error = false;
-        } else if content.contains(existing_content.as_str()) || existing_content.is_empty() {
-            *existing_content = content.to_string();
-        } else {
-            existing_content.push_str(content);
-        }
-        *existing_error = *existing_error || is_error;
-        return;
-    }
-    parts.push(MessagePart::ToolResult {
-        content: content.to_string(),
-        is_error,
-        tool_use_id: Some(tool_use_id.to_string()),
-        parent_tool_use_id,
-    });
+    let _ = apply_tool_result_update(
+        parts,
+        ToolResultUpdate {
+            content: content.to_string(),
+            is_error,
+            tool_use_id: Some(tool_use_id.to_string()),
+            parent_tool_use_id,
+            content_ref,
+            summary,
+        },
+    );
 }
 
 fn parent_tool_use_id_for_tool(parts: &[MessagePart], tool_use_id: &str) -> Option<String> {

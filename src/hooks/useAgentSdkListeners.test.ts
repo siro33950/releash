@@ -380,6 +380,80 @@ describe("agent-streaming-delta event", () => {
 		});
 	});
 
+	it("requests focused resync for an empty in-sequence resync marker", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		setViewable(refs, "session-1");
+		refs.hasMessage.mockReturnValue(true);
+		refs.getLastStreamingSeq.mockReturnValue(7);
+		vi.mocked(sessionStore.resyncStreamingMessage).mockResolvedValueOnce({
+			session_id: "session-1",
+			message_id: "msg-001",
+			seq: 8,
+			parts: [
+				{
+					type: "tool_result",
+					content: "preview",
+					isError: false,
+					toolUseId: "tool-1",
+					contentRef: { id: "a".repeat(64), byteSize: 4096 },
+					summary: {
+						lineCount: 200,
+						byteSize: 4096,
+						isError: false,
+						truncated: true,
+					},
+				},
+			],
+		});
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-streaming-delta");
+		expect(cb).toBeDefined();
+
+		await cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				message_id: "msg-001",
+				seq: 8,
+				parts: [],
+			},
+		});
+
+		expect(sessionStore.resyncStreamingMessage).toHaveBeenCalledWith(
+			"session-1",
+			"msg-001",
+			7,
+		);
+		expect(refs.dispatch).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "APPLY_STREAMING_DELTA" }),
+		);
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_STREAMING_MESSAGE",
+			sessionId: "session-1",
+			messageId: "msg-001",
+			seq: 8,
+			parts: [
+				{
+					type: "tool_result",
+					content: "preview",
+					isError: false,
+					toolUseId: "tool-1",
+					contentRef: { id: "a".repeat(64), byteSize: 4096 },
+					summary: {
+						lineCount: 200,
+						byteSize: 4096,
+						isError: false,
+						truncated: true,
+					},
+				},
+			],
+		});
+	});
+
 	it("logs resync failures and retries on a later delta", async () => {
 		listenResolvers = [];
 		listenCallbacks.clear();

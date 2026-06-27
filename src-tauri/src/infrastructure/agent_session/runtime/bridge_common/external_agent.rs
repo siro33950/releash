@@ -179,6 +179,7 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
         pending_stream_bytes: 0,
         streaming_delta_seq: 0,
         streaming_delta_seq_by_message: HashMap::new(),
+        pending_persisted_tool_output_resyncs: HashMap::new(),
         last_stream_emit_at: None,
         streaming_timer_active: false,
         last_progress_at: None,
@@ -559,6 +560,8 @@ mod moved_tests {
                 is_error: false,
                 tool_use_id: Some("tool-1".to_string()),
                 parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
             },
             MessagePart::Text {
                 content: "two".to_string(),
@@ -766,6 +769,8 @@ mod moved_tests {
                 is_error: false,
                 tool_use_id: Some("tool-1".to_string()),
                 parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
             },
         ];
         let loaded = store
@@ -800,6 +805,8 @@ mod moved_tests {
                 is_error: false,
                 tool_use_id: Some("tool-1".to_string()),
                 parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
             },
         ];
         let loaded = store

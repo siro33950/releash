@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use crate::usecase::agent_session::event_log::AgentSessionEvent;
 use crate::usecase::agent_session::session::{
     ChatMessage, ChatSession, MessagePart, PageCursor, SessionAttachment, SessionMeta, SessionPage,
-    SessionReviewContext, SessionReviewContextReader,
+    SessionReviewContext, SessionReviewContextReader, SessionToolOutput,
 };
 
 mod attachment_blob;
@@ -17,6 +17,7 @@ mod layout;
 mod message_store;
 mod meta_repository;
 mod titles;
+mod tool_output_blob;
 
 #[cfg(test)]
 mod tests;
@@ -54,6 +55,7 @@ impl crate::domain::agent_session::AgentSessionStorageTypes for FileSessionStora
     type Message = ChatMessage;
     type MessagePart = MessagePart;
     type Attachment = SessionAttachment;
+    type ToolOutput = SessionToolOutput;
     type Event = AgentSessionEvent;
 }
 
@@ -117,6 +119,15 @@ impl crate::domain::agent_session::AgentSessionReader for FileSessionStorage {
         attachment_id: &str,
     ) -> Result<Option<Self::Attachment>, String> {
         FileSessionStorage::get_session_attachment(self, app_data_dir, session_id, attachment_id)
+    }
+
+    fn get_session_tool_output(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        tool_output_id: &str,
+    ) -> Result<Option<Self::ToolOutput>, String> {
+        FileSessionStorage::get_session_tool_output(self, app_data_dir, session_id, tool_output_id)
     }
 
     fn load_session_events(
@@ -195,7 +206,7 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         parts: &[Self::MessagePart],
         streaming_final_seq: u64,
         completed_at: Option<f64>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<Self::MessagePart>, String> {
         FileSessionStorage::persist_message_parts(
             self,
             app_data_dir,

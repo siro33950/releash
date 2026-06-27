@@ -368,6 +368,7 @@ function AgentMessageMeta({
 
 interface AgentMessagePartsProps {
 	msg: ChatMessage;
+	sessionId: string;
 	isLastAgentStreaming: boolean;
 	worktreePath: string;
 	showThinkingContent: boolean;
@@ -382,6 +383,7 @@ interface AgentMessagePartsProps {
 
 const AgentMessageParts = React.memo(function AgentMessageParts({
 	msg,
+	sessionId,
 	isLastAgentStreaming,
 	worktreePath,
 	showThinkingContent,
@@ -389,8 +391,12 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 	onOpenDiffFile,
 	respondPermission,
 }: AgentMessagePartsProps) {
-	const { pairedResults, skippedResultIndices, taskGroups, taskChildIndices } =
-		useMemo(() => buildToolPairings(msg.parts), [msg.parts]);
+	const {
+		pairedResultGroups,
+		skippedResultIndices,
+		taskGroups,
+		taskChildIndices,
+	} = useMemo(() => buildToolPairings(msg.parts), [msg.parts]);
 
 	const {
 		backgroundCompletionMap,
@@ -434,9 +440,10 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 								<TaskToolActivity
 									group={bgCompletedGroup}
 									parts={msg.parts}
-									pairedResults={pairedResults}
+									pairedResultGroups={pairedResultGroups}
 									isStreaming={isLastAgentStreaming}
 									basePath={worktreePath}
+									sessionId={sessionId}
 									onOpenDiffFile={onOpenDiffFile}
 								/>
 							</div>
@@ -454,9 +461,10 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 								<TaskToolActivity
 									group={taskGroup}
 									parts={msg.parts}
-									pairedResults={pairedResults}
+									pairedResultGroups={pairedResultGroups}
 									isStreaming={isLastAgentStreaming}
 									basePath={worktreePath}
+									sessionId={sessionId}
 									onOpenDiffFile={onOpenDiffFile}
 								/>
 							</div>
@@ -491,16 +499,18 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 							</div>
 						);
 					case "tool_use": {
-						const pairedResult = pairedResults.get(i);
-						const isExecuting = isLastAgentStreaming && !pairedResult;
+						const pairedResultGroup = pairedResultGroups.get(i);
+						const isExecuting =
+							isLastAgentStreaming && !pairedResultGroup?.length;
 						return (
 							<div key={key} className="px-5 py-0.5 text-xs">
 								<ToolActivity
 									entry={part}
-									result={pairedResult}
+									results={pairedResultGroup}
 									index={i}
 									isExecuting={isExecuting}
 									basePath={worktreePath}
+									sessionId={sessionId}
 									onOpenDiffFile={onOpenDiffFile}
 								/>
 							</div>
@@ -510,7 +520,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 						if (skippedResultIndices.has(i)) return null;
 						return (
 							<div key={key} className="px-5 py-0.5 text-xs">
-								<ActivityItem entry={part} index={i} />
+								<ActivityItem entry={part} index={i} sessionId={sessionId} />
 							</div>
 						);
 					}
@@ -552,9 +562,10 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 					<TaskToolActivity
 						group={group}
 						parts={msg.parts}
-						pairedResults={pairedResults}
+						pairedResultGroups={pairedResultGroups}
 						isStreaming={isLastAgentStreaming}
 						basePath={worktreePath}
+						sessionId={sessionId}
 						onOpenDiffFile={onOpenDiffFile}
 					/>
 				</div>
@@ -1419,6 +1430,7 @@ export function ChatSessionView({
 							>
 								<AgentMessageParts
 									msg={msg}
+									sessionId={session.id}
 									isLastAgentStreaming={isLastAgentStreaming}
 									worktreePath={worktreePath}
 									showThinkingContent={showThinkingContent}

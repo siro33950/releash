@@ -75,6 +75,8 @@ pub fn append_part_events(
                 content,
                 is_error,
                 tool_use_id: Some(tool_use_id),
+                content_ref,
+                summary,
                 ..
             } if mode == PartEventMode::DurableOnly => {
                 events.push(if *is_error {
@@ -82,12 +84,16 @@ pub fn append_part_events(
                         turn_id,
                         tool_use_id: tool_use_id.clone(),
                         content: content.clone(),
+                        content_ref: content_ref.clone(),
+                        summary: summary.clone(),
                     }
                 } else {
                     AgentSessionEvent::ToolCallSucceeded {
                         turn_id,
                         tool_use_id: tool_use_id.clone(),
                         content: content.clone(),
+                        content_ref: content_ref.clone(),
+                        summary: summary.clone(),
                     }
                 });
             }
@@ -96,12 +102,17 @@ pub fn append_part_events(
                 is_error,
                 tool_use_id: None,
                 parent_tool_use_id,
+                content_ref,
+                summary,
+                ..
             } if mode == PartEventMode::DurableOnly => {
                 events.push(AgentSessionEvent::ToolResultRecorded {
                     turn_id,
                     message_id: message_id.to_string(),
                     content: content.clone(),
                     is_error: *is_error,
+                    content_ref: content_ref.clone(),
+                    summary: summary.clone(),
                     tool_use_id: None,
                     parent_tool_use_id: parent_tool_use_id.clone(),
                 });

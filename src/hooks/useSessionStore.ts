@@ -17,6 +17,7 @@ import {
 	type QueuedAgentTurn,
 	type SessionState,
 	type SessionSummary,
+	type SessionToolOutput,
 	type TokenUsage,
 	type TurnPhase,
 } from "@/types/session";
@@ -297,6 +298,16 @@ export async function resyncStreamingMessage(
 		sessionId,
 		messageId,
 		sinceSeq,
+	});
+}
+
+export async function getSessionToolOutput(
+	sessionId: string,
+	toolOutputId: string,
+): Promise<SessionToolOutput | null> {
+	return invoke<SessionToolOutput | null>("get_session_tool_output", {
+		sessionId,
+		toolOutputId,
 	});
 }
 
