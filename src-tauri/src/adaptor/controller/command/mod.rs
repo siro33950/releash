@@ -1,6 +1,7 @@
 pub(crate) mod agent_session;
 pub(crate) mod app_config;
 pub(crate) mod code;
+pub(crate) mod comment;
 pub(crate) mod external_editor;
 pub(crate) mod hooks;
 pub(crate) mod notification;
@@ -142,15 +143,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::repository::repo_paths::get_repo_paths,
             crate::adaptor::controller::command::repository::repo_paths::add_repo_path,
             crate::adaptor::controller::command::repository::repo_paths::remove_repo_path,
-            // Review comments
-            crate::review_comments::list_review_threads,
-            crate::review_comments::get_review_thread,
-            crate::review_comments::create_review_thread,
-            crate::review_comments::append_review_comment,
-            crate::review_comments::resolve_review_thread,
-            crate::review_comments::delete_review_thread,
-            crate::review_comments::get_review_thread_history,
-            crate::review_comments::build_review_thread_handoff,
             // File Mention（code ドメイン）
             crate::adaptor::controller::command::code::mention::list_mentionable_files,
             crate::adaptor::controller::command::code::mention::read_codex_mentionable_files,
@@ -221,6 +213,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
         ]);
     let mut router = CommandRouter::new(app_handler);
     app_config::register(&mut router);
+    comment::register(&mut router);
     external_editor::register(&mut router);
     hooks::register(&mut router);
     notification::register(&mut router);

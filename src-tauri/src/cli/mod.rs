@@ -6,11 +6,13 @@
 //! command file を enqueue するところまでを CLI の責務に閉じる（spec [06] CLI 完了
 //! 基準境界）。
 
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
+use crate::adaptor::controller::wiring::build_review_comment_usecase;
 use crate::adaptor::gateway::app_config::read_config_if_exists;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
@@ -25,18 +27,19 @@ use crate::adaptor::gateway::workflow::{
 };
 use crate::adaptor::presenter::workflow::workflow_state_to_view;
 use crate::adaptor::protocol::workflow::WorkflowStateView;
+use crate::domain::comment::{
+    AuthorScope, ReviewActor, ReviewError, ReviewHistoryEntry, ReviewTarget, ReviewThread,
+    ReviewThreadFilter, ReviewThreadState,
+};
 use crate::domain::workflow::ApprovalInputError;
 use crate::domain::workflow::{
     approval_rules, contract, secret_masker, ContractValidationResult, FacetKind, FacetRepository,
     ManagedWorktreeGateway, RunId, RunListFilter, RunStatusFilter, WorkflowDefinitionRepository,
     WorkflowRunRepository, WorkflowRunSummary, WorkflowSummary,
 };
-use crate::review_comments::{
-    AuthorScope, ReviewActor, ReviewCommentStore, ReviewTarget, ReviewThreadFilter,
-    ReviewThreadState,
-};
 use crate::usecase::agent_session::session::SessionState;
 use crate::usecase::agent_session::status::current_timestamp;
+use crate::usecase::comment::{ReviewHistoryEntryDto, ReviewThreadDto};
 use crate::usecase::workflow::command::WorkflowPendingCommandUsecase;
 use crate::usecase::workflow::event_draft;
 use crate::usecase::workflow::ports::{
@@ -367,6 +370,10 @@ pub fn run() -> i32 {
             Err(e) => Err(e),
         },
     };
+    cli_result_exit_code(result)
+}
+
+fn cli_result_exit_code(result: Result<(), CliError>) -> i32 {
     match result {
         Ok(()) => 0,
         Err(CliError::NotFound(msg)) => {
@@ -785,25 +792,36 @@ fn parse_optional_unread(value: Option<String>) -> Result<Option<bool>, CliError
     }
 }
 
-fn review_error_to_cli_error(error: crate::review_comments::ReviewError) -> CliError {
+fn review_error_to_cli_error(error: ReviewError) -> CliError {
     match error {
-        crate::review_comments::ReviewError::InvalidInput(msg) => CliError::InvalidInput(msg),
-        crate::review_comments::ReviewError::NotFound(msg) => CliError::NotFound(msg),
-        crate::review_comments::ReviewError::AlreadyResolved(msg)
-        | crate::review_comments::ReviewError::PermissionDenied(msg) => CliError::InvalidInput(msg),
-        crate::review_comments::ReviewError::Io(e) => CliError::Other(e.to_string()),
-        crate::review_comments::ReviewError::Serialize(e) => CliError::Other(e.to_string()),
+        ReviewError::InvalidInput(msg) => CliError::InvalidInput(msg),
+        ReviewError::NotFound(msg) => CliError::NotFound(msg),
+        ReviewError::AlreadyResolved(msg) | ReviewError::PermissionDenied(msg) => {
+            CliError::InvalidInput(msg)
+        }
+        ReviewError::Io(e) => CliError::Other(e),
+        ReviewError::Serialize(e) => CliError::Other(e),
     }
 }
 
-fn print_review_thread(
-    thread: &crate::review_comments::ReviewThread,
+fn write_cli_error(error: io::Error) -> CliError {
+    CliError::Other(error.to_string())
+}
+
+fn print_review_thread(thread: &ReviewThread, json: bool) -> Result<(), CliError> {
+    let mut stdout = io::stdout().lock();
+    write_review_thread(&mut stdout, thread, json)
+}
+
+fn write_review_thread(
+    writer: &mut impl Write,
+    thread: &ReviewThread,
     json: bool,
 ) -> Result<(), CliError> {
     if json {
-        let text =
-            serde_json::to_string_pretty(thread).map_err(|e| format!("serialize thread: {e}"))?;
-        println!("{text}");
+        let text = serde_json::to_string_pretty(&ReviewThreadDto::from(thread))
+            .map_err(|e| format!("serialize thread: {e}"))?;
+        writeln!(writer, "{text}").map_err(write_cli_error)?;
         return Ok(());
     }
     let location = match (
@@ -816,7 +834,8 @@ fn print_review_thread(
         (Some(file), None, _) => file.to_string(),
         (None, _, _) => "(general)".to_string(),
     };
-    println!(
+    writeln!(
+        writer,
         "thread_id: {}\nstate:     {:?}\nauthor:    {}\nlocation:  {}\nupdated:   {}\ncomments:  {}",
         thread.id,
         thread.state,
@@ -824,18 +843,75 @@ fn print_review_thread(
         location,
         thread.updated_at,
         thread.comments.len()
-    );
+    )
+    .map_err(write_cli_error)?;
     if let Some(resolve) = &thread.resolve {
-        println!(
+        writeln!(
+            writer,
             "resolve:   {} by {} ({})",
             resolve.outcome, resolve.actor.display_name, resolve.summary
-        );
+        )
+        .map_err(write_cli_error)?;
+    }
+    Ok(())
+}
+
+fn write_review_thread_list(
+    writer: &mut impl Write,
+    threads: &[ReviewThread],
+    json: bool,
+) -> Result<(), CliError> {
+    if json {
+        let thread_dtos: Vec<_> = threads.iter().map(ReviewThreadDto::from).collect();
+        let text = serde_json::to_string_pretty(&thread_dtos)
+            .map_err(|e| format!("serialize threads: {e}"))?;
+        writeln!(writer, "{text}").map_err(write_cli_error)?;
+    } else if threads.is_empty() {
+        writeln!(writer, "(no review threads)").map_err(write_cli_error)?;
+    } else {
+        writeln!(
+            writer,
+            "{:<36}  {:<9}  {:<20}  UPDATED",
+            "THREAD_ID", "STATE", "AUTHOR"
+        )
+        .map_err(write_cli_error)?;
+        for thread in threads {
+            writeln!(
+                writer,
+                "{:<36}  {:<9}  {:<20}  {}",
+                thread.id,
+                format!("{:?}", thread.state).to_lowercase(),
+                truncate(&thread.author.display_name, 20),
+                thread.updated_at
+            )
+            .map_err(write_cli_error)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_review_history(
+    writer: &mut impl Write,
+    events: &[ReviewHistoryEntry],
+    json: bool,
+) -> Result<(), CliError> {
+    if json {
+        let event_dtos: Vec<_> = events.iter().map(ReviewHistoryEntryDto::from).collect();
+        let text = serde_json::to_string_pretty(&event_dtos)
+            .map_err(|e| format!("serialize history: {e}"))?;
+        writeln!(writer, "{text}").map_err(write_cli_error)?;
+    } else if events.is_empty() {
+        writeln!(writer, "(no review history)").map_err(write_cli_error)?;
+    } else {
+        for event in events {
+            writeln!(writer, "{:?}", event).map_err(write_cli_error)?;
+        }
     }
     Ok(())
 }
 
 fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError> {
-    let store = ReviewCommentStore::default();
+    let usecase = build_review_comment_usecase();
     match command {
         ReviewSubcommand::List {
             session_id,
@@ -854,30 +930,11 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
                 unread: parse_optional_unread(unread)?,
                 thread_id,
             };
-            let threads = store
+            let threads = usecase
                 .list_threads(data_dir, &review_worktree, Some(filter), actor)
                 .map_err(review_error_to_cli_error)?;
-            if json {
-                let text = serde_json::to_string_pretty(&threads)
-                    .map_err(|e| format!("serialize threads: {e}"))?;
-                println!("{text}");
-            } else if threads.is_empty() {
-                println!("(no review threads)");
-            } else {
-                println!(
-                    "{:<36}  {:<9}  {:<20}  UPDATED",
-                    "THREAD_ID", "STATE", "AUTHOR"
-                );
-                for thread in &threads {
-                    println!(
-                        "{:<36}  {:<9}  {:<20}  {}",
-                        thread.id,
-                        format!("{:?}", thread.state).to_lowercase(),
-                        truncate(&thread.author.display_name, 20),
-                        thread.updated_at
-                    );
-                }
-            }
+            let mut stdout = io::stdout().lock();
+            write_review_thread_list(&mut stdout, &threads, json)?;
             Ok(())
         }
         ReviewSubcommand::Get {
@@ -886,7 +943,7 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
             json,
         } => {
             let review_worktree = review_worktree_from_session(data_dir, &session_id)?;
-            let thread = store
+            let thread = usecase
                 .get_thread(data_dir, &review_worktree, &thread_id)
                 .map_err(review_error_to_cli_error)?;
             print_review_thread(&thread, json)
@@ -905,7 +962,7 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
                 line_number: line,
                 end_line,
             };
-            let thread = store
+            let thread = usecase
                 .create_thread(data_dir, &review_worktree, actor, target, content)
                 .map_err(review_error_to_cli_error)?;
             print_review_thread(&thread, json)
@@ -917,7 +974,7 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
             json,
         } => {
             let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
-            let thread = store
+            let thread = usecase
                 .append_comment(data_dir, &review_worktree, actor, &thread_id, content)
                 .map_err(review_error_to_cli_error)?;
             print_review_thread(&thread, json)
@@ -930,7 +987,7 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
             json,
         } => {
             let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
-            let thread = store
+            let thread = usecase
                 .resolve_thread(
                     data_dir,
                     &review_worktree,
@@ -948,20 +1005,11 @@ fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<(), CliError
             json,
         } => {
             let review_worktree = review_worktree_from_session(data_dir, &session_id)?;
-            let events = store
+            let events = usecase
                 .history(data_dir, &review_worktree, &thread_id)
                 .map_err(review_error_to_cli_error)?;
-            if json {
-                let text = serde_json::to_string_pretty(&events)
-                    .map_err(|e| format!("serialize history: {e}"))?;
-                println!("{text}");
-            } else if events.is_empty() {
-                println!("(no review history)");
-            } else {
-                for event in events {
-                    println!("{:?}", event);
-                }
-            }
+            let mut stdout = io::stdout().lock();
+            write_review_history(&mut stdout, &events, json)?;
             Ok(())
         }
     }
@@ -1438,6 +1486,7 @@ fn event_kind_display_name(kind: &str) -> &str {
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::run::{RunStatus, TriggerSource, WorkflowRun};
+    use crate::domain::comment::{ReviewComment, ReviewResolveInfo};
     use crate::domain::workflow::approval_rules::MAX_APPROVAL_COMMENT_CHARS;
     use std::fs;
     use tempfile::TempDir;
@@ -1519,6 +1568,165 @@ models = ["opus"]
 
     fn test_uuid(seed: u8) -> String {
         uuid::Uuid::from_bytes([seed; 16]).to_string()
+    }
+
+    fn review_cli_thread(state: ReviewThreadState) -> ReviewThread {
+        let thread_id = test_uuid(42);
+        let author = ReviewActor::agent("codex".to_string(), "gpt-5".to_string(), None)
+            .redacted_for_public();
+        let resolver = ReviewActor::human().redacted_for_public();
+        ReviewThread {
+            id: thread_id.clone(),
+            worktree_name: "/repo".to_string(),
+            author: author.clone(),
+            target: ReviewTarget {
+                file_path: Some("src/main.rs".to_string()),
+                line_number: Some(3),
+                end_line: Some(5),
+            },
+            state: state.clone(),
+            comments: vec![ReviewComment {
+                id: test_uuid(43),
+                thread_id,
+                author,
+                content: "Claim".to_string(),
+                created_at: 10.0,
+            }],
+            resolve: (state == ReviewThreadState::Resolved).then_some(ReviewResolveInfo {
+                actor: resolver,
+                outcome: "accepted".to_string(),
+                summary: "done".to_string(),
+                resolved_at: 20.0,
+            }),
+            created_at: 10.0,
+            updated_at: 20.0,
+            version: 2,
+            can_resolve: state == ReviewThreadState::Open,
+        }
+    }
+
+    fn review_history_entries() -> Vec<ReviewHistoryEntry> {
+        let thread = review_cli_thread(ReviewThreadState::Open);
+        vec![
+            ReviewHistoryEntry::ThreadCreated {
+                id: test_uuid(50),
+                thread_id: thread.id.clone(),
+                comment_id: test_uuid(51),
+                actor: thread.author.clone(),
+                target: thread.target.clone(),
+                content: "Claim".to_string(),
+                at: 10.0,
+            },
+            ReviewHistoryEntry::ThreadResolved {
+                id: test_uuid(52),
+                thread_id: thread.id,
+                actor: ReviewActor::human().redacted_for_public(),
+                outcome: "accepted".to_string(),
+                summary: "done".to_string(),
+                at: 20.0,
+            },
+        ]
+    }
+
+    #[test]
+    fn review_thread_json_formatter_preserves_field_shape() {
+        let thread = review_cli_thread(ReviewThreadState::Resolved);
+        let mut output = Vec::new();
+
+        write_review_thread(&mut output, &thread, true).unwrap();
+
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value["id"], thread.id);
+        assert_eq!(value["worktreeName"], "/repo");
+        assert_eq!(value["author"]["kind"], "agent");
+        assert_eq!(value["author"]["backendId"], "codex");
+        assert_eq!(value["author"]["model"], "gpt-5");
+        assert!(value["author"].get("sessionId").is_none());
+        assert_eq!(value["target"]["filePath"], "src/main.rs");
+        assert_eq!(value["target"]["lineNumber"], 3);
+        assert_eq!(value["target"]["endLine"], 5);
+        assert_eq!(value["state"], "resolved");
+        assert_eq!(value["comments"][0]["threadId"], thread.id);
+        assert_eq!(value["resolve"]["outcome"], "accepted");
+        assert_eq!(value["canResolve"], false);
+    }
+
+    #[test]
+    fn review_history_json_formatter_preserves_field_shape() {
+        let entries = review_history_entries();
+        let mut output = Vec::new();
+
+        write_review_history(&mut output, &entries, true).unwrap();
+
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value[0]["kind"], "thread_created");
+        assert_eq!(value[0]["threadId"], test_uuid(42));
+        assert_eq!(value[0]["commentId"], test_uuid(51));
+        assert_eq!(value[0]["actor"]["displayName"], "codex/gpt-5");
+        assert_eq!(value[0]["target"]["filePath"], "src/main.rs");
+        assert_eq!(value[1]["kind"], "thread_resolved");
+        assert_eq!(value[1]["outcome"], "accepted");
+        assert!(value[1]["actor"].get("sessionId").is_none());
+    }
+
+    #[test]
+    fn review_human_formatters_preserve_representative_output() {
+        let open = review_cli_thread(ReviewThreadState::Open);
+        let resolved = review_cli_thread(ReviewThreadState::Resolved);
+
+        let mut empty_list = Vec::new();
+        write_review_thread_list(&mut empty_list, &[], false).unwrap();
+        assert_eq!(
+            String::from_utf8(empty_list).unwrap(),
+            "(no review threads)\n"
+        );
+
+        let mut list = Vec::new();
+        write_review_thread_list(&mut list, std::slice::from_ref(&open), false).unwrap();
+        let list = String::from_utf8(list).unwrap();
+        assert!(list.contains("THREAD_ID"));
+        assert!(list.contains("STATE"));
+        assert!(list.contains("AUTHOR"));
+        assert!(list.contains("UPDATED"));
+        assert!(list.contains(&open.id));
+        assert!(list.contains("open"));
+
+        let mut detail = Vec::new();
+        write_review_thread(&mut detail, &resolved, false).unwrap();
+        let detail = String::from_utf8(detail).unwrap();
+        assert!(detail.contains("resolve:   accepted by Human (done)"));
+
+        let mut empty_history = Vec::new();
+        write_review_history(&mut empty_history, &[], false).unwrap();
+        assert_eq!(
+            String::from_utf8(empty_history).unwrap(),
+            "(no review history)\n"
+        );
+
+        let entries = review_history_entries();
+        let mut history = Vec::new();
+        write_review_history(&mut history, &entries, false).unwrap();
+        let history = String::from_utf8(history).unwrap();
+        assert!(history.contains("ThreadCreated"));
+        assert!(history.contains("ThreadResolved"));
+        assert!(history.contains("thread_id"));
+    }
+
+    #[test]
+    fn run_exit_code_mapping_is_stable() {
+        assert_eq!(cli_result_exit_code(Ok(())), 0);
+        assert_eq!(
+            cli_result_exit_code(Err(CliError::InvalidInput("bad".to_string()))),
+            2
+        );
+        assert_eq!(
+            cli_result_exit_code(Err(CliError::NotFound("missing".to_string()))),
+            4
+        );
+        assert_eq!(
+            cli_result_exit_code(Err(CliError::Other("io".to_string()))),
+            1
+        );
     }
 
     #[test]
@@ -1762,13 +1970,13 @@ models = ["opus"]
         )
         .unwrap();
 
-        let store = ReviewCommentStore::default();
-        let threads = store
+        let usecase = build_review_comment_usecase();
+        let threads = usecase
             .list_threads(tmp.path(), "/repo", None, ReviewActor::human())
             .unwrap();
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].worktree_name, "/repo");
-        let json = serde_json::to_string(&threads[0]).unwrap();
+        let json = serde_json::to_string(&ReviewThreadDto::from(&threads[0])).unwrap();
         assert!(!json.contains("sessionId"));
 
         cmd_review(
@@ -1816,8 +2024,8 @@ models = ["opus"]
             },
         )
         .unwrap();
-        let store = ReviewCommentStore::default();
-        let thread_id = store
+        let usecase = build_review_comment_usecase();
+        let thread_id = usecase
             .list_threads(tmp.path(), "/repo", None, ReviewActor::human())
             .unwrap()[0]
             .id

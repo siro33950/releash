@@ -4,6 +4,7 @@ pub(crate) mod code_dto;
 pub(crate) mod code_error;
 pub(crate) mod code_query_service;
 pub(crate) mod code_usecase;
+pub(crate) mod comment;
 pub(crate) mod external_editor;
 pub(crate) mod hooks;
 pub(crate) mod notification;
