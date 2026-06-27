@@ -15,7 +15,6 @@ mod notion;
 mod other;
 mod path_aliases;
 mod permission;
-mod review_comments;
 #[cfg(test)]
 mod test_support;
 mod tray;
@@ -138,6 +137,8 @@ pub fn run() {
     let session_store = Arc::new(usecase::agent_session::session::SessionStore::new(
         session_storage.clone(),
     ));
+    let review_comment_usecase =
+        Arc::new(adaptor::controller::wiring::build_review_comment_usecase());
     let prompt_suggestion_usecase = Arc::new(
         adaptor::controller::wiring::build_agent_prompt_suggestion_usecase(session_storage),
     );
@@ -157,7 +158,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
         ))
-        .manage(Arc::new(review_comments::ReviewCommentStore::default()))
+        .manage(review_comment_usecase)
         .manage(session_store)
         .manage(prompt_suggestion_usecase)
         .manage(Arc::clone(&pty_gateway))
@@ -520,7 +521,10 @@ pub fn run() {
                 // `review-comments-changed` を発火する。Tauri コマンド経由の
                 // `emit_changed` とは別系統の通知経路で、CLI / Agent / 外部編集
                 // 由来の書き込みも拾う。
-                review_comments::spawn_review_comments_watcher(app.handle().clone(), data_dir);
+                infrastructure::comment::watcher::spawn_review_comments_watcher(
+                    app.handle().clone(),
+                    data_dir,
+                );
             }
 
             menu::setup_menu(app)?;

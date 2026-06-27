@@ -58,7 +58,7 @@ pub fn spawn_review_comments_watcher<R: tauri::Runtime + 'static>(
     app: tauri::AppHandle<R>,
     app_data_dir: PathBuf,
 ) {
-    let dir = super::state_dir(&app_data_dir);
+    let dir = crate::adaptor::gateway::comment::state_dir(&app_data_dir);
 
     if let Err(e) = std::fs::create_dir_all(&dir) {
         log::error!(
@@ -190,7 +190,8 @@ mod tests {
         // watcher の watch 開始が反映されるまで少し待つ
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let target = super::super::state_dir(data_dir.path()).join("dummy.events.json");
+        let target =
+            crate::adaptor::gateway::comment::state_dir(data_dir.path()).join("dummy.events.json");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
         let mut attempt = 0usize;
         loop {
@@ -225,7 +226,8 @@ mod tests {
         spawn_review_comments_watcher(app.handle().clone(), data_dir.path().to_path_buf());
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let target = super::super::state_dir(data_dir.path()).join("dummy.events.lock");
+        let target =
+            crate::adaptor::gateway::comment::state_dir(data_dir.path()).join("dummy.events.lock");
         std::fs::write(&target, b"lock").unwrap();
 
         // debounce 後にも emit されないことを確認する。

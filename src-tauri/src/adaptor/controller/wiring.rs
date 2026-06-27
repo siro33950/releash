@@ -19,6 +19,9 @@ use crate::adaptor::gateway::code::file_content::FileContentGateway;
 use crate::adaptor::gateway::code::mention::MentionGateway;
 use crate::adaptor::gateway::code::review_blob_url::ReviewBlobUrlGateway;
 use crate::adaptor::gateway::code::staging::StagingGateway;
+use crate::adaptor::gateway::comment::{
+    FileReviewEventStore, SystemReviewClock, UuidReviewIdGenerator,
+};
 use crate::adaptor::gateway::repository::branch::BranchGateway;
 use crate::adaptor::gateway::repository::branch_card::BranchCardGateway;
 use crate::adaptor::gateway::repository::git_config::GitConfigGateway;
@@ -60,6 +63,9 @@ use crate::usecase::agent_session::skill_catalog::CodexSkillCatalogGateway;
 use crate::usecase::agent_session::AgentSessionUsecase;
 use crate::usecase::code_query_service::{CodeQueryService, CodexFuzzyFileSearchGateway};
 use crate::usecase::code_usecase::CodeUsecase;
+use crate::usecase::comment::{
+    ReviewClock, ReviewCommentUsecase, ReviewEventStore, ReviewIdGenerator,
+};
 use crate::usecase::repository_query_service::RepositoryQueryService;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
@@ -181,6 +187,13 @@ pub(crate) fn build_agent_prompt_suggestion_usecase(
     session_reader: Arc<SessionReaderPort>,
 ) -> AgentPromptSuggestionUsecase {
     AgentPromptSuggestionUsecase::new(session_reader, Arc::new(GitAgentPromptSuggestionGateway))
+}
+
+pub(crate) fn build_review_comment_usecase() -> ReviewCommentUsecase {
+    let store: Arc<dyn ReviewEventStore> = Arc::new(FileReviewEventStore::default());
+    let clock: Arc<dyn ReviewClock> = Arc::new(SystemReviewClock);
+    let id_generator: Arc<dyn ReviewIdGenerator> = Arc::new(UuidReviewIdGenerator);
+    ReviewCommentUsecase::new(store, clock, id_generator)
 }
 
 pub(crate) fn build_stored_session_lifecycle_usecase(
