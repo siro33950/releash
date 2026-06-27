@@ -78,8 +78,7 @@ Workspace
   │         └─ Attachment
   ├─ Command
   ├─ Thread
-  │    ├─ Comment
-  │    └─ CodeAnchor
+  │    └─ Comment
   └─ WorkspaceState
 ```
 
@@ -89,13 +88,15 @@ Workspace
 - Task / Artifact / NodeExecution は WorkflowExecution に属する。
 - Fanout は親 NodeExecution と子 NodeExecution 群を束ねる。
 - PermissionRequest は Turn に属する。
-- Thread は CodeAnchor に紐づくが、WorkflowExecution / NodeExecution には属さない。
+- Thread は CodeAnchor を参照できるが、CodeAnchor を所有しない。
+- Thread は WorkflowExecution / NodeExecution には属さない。
 
 ### Worktree / Repository / Code
 
 ```text
 Worktree
   ├─ Code
+  │    └─ CodeAnchor
   └─ Diff
 
 Repository
@@ -104,8 +105,10 @@ Repository
 
 - Worktree は Repository の特定 checkout / working tree。
 - Code は Worktree 内のファイル内容。
+- CodeAnchor は Code 上の位置への参照。
 - Diff は Worktree / Repository の状態から計算される。
 - Worktree / Repository / Code / Diff は Releash が所有する状態ではない。
+- CodeAnchor は Code 本体ではなく、Thread などから参照される位置情報。
 
 ### Operation Surface
 
