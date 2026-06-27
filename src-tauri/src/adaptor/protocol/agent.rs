@@ -364,7 +364,7 @@ impl From<crate::usecase::agent_session::session::StreamResyncSnapshot> for Agen
 }
 
 #[cfg(test)]
-mod tests {
+mod agent_tests {
     use super::*;
 
     #[test]

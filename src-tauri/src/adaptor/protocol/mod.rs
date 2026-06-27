@@ -75,7 +75,7 @@ pub(crate) fn deserialize_message(json: &str) -> Result<WsMessage, String> {
 }
 
 #[cfg(test)]
-mod tests {
+mod adaptor_protocol_tests {
     use super::*;
     use crate::adaptor::protocol::pty::{
         PtyEvictReasonMsg, PtyEvictedMsg, PtyExitMsg, PtyOutputMsg,
