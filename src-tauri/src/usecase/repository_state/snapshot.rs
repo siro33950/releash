@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use crate::usecase::code_dto::DiffTreeNodeDto;
 use crate::usecase::repository_dto::{BranchCardDto, FileDiffStatDto, FileStatusDto};
 
+use super::status_membership::{changed_statuses, staged_statuses};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SnapshotFlags {
     pub stale: bool,
@@ -169,16 +171,8 @@ pub struct RepositoryHeadDiffFileTreeSnapshotDto {
 
 impl RepositoryHeadDiffFileTreeSnapshotDto {
     pub fn from_snapshot(snapshot: &RepositorySnapshot) -> Self {
-        let staged_file_count = snapshot
-            .status
-            .iter()
-            .filter(|entry| entry.index_status != "none")
-            .count();
-        let changes_file_count = snapshot
-            .status
-            .iter()
-            .filter(|entry| entry.worktree_status != "none" && entry.worktree_status != "ignored")
-            .count();
+        let staged_file_count = staged_statuses(&snapshot.status).count();
+        let changes_file_count = changed_statuses(&snapshot.status).count();
         Self {
             version: snapshot.version,
             stale: snapshot.flags.stale,

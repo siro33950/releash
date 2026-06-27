@@ -5,13 +5,11 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 
-use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::repository_dto::{BranchCardDto, FileDiffStatDto, FileStatusDto};
-use crate::usecase::repository_usecase::RepositoryUsecase;
 
 use super::error::RepositoryStateError;
 use super::runtime::{RepositoryStateWorkerRuntime, WorktreePathNormalizer};
-use super::scanner::{DefaultRepositoryScanner, RepositoryScanner};
+use super::scanner::RepositoryScanner;
 use super::snapshot::{
     RepositoryBranchCardsSnapshotDto, RepositoryDiffStatsSnapshotDto,
     RepositoryHeadDiffFileTreeSnapshotDto, RepositorySnapshot, RepositoryStatusSnapshotDto,
@@ -21,8 +19,12 @@ use super::worktree::{RepositoryStateNotifier, RepositoryStateWatcher, WorktreeS
 
 const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(300);
 
+pub trait RepositoryStateRepository: Send + Sync {
+    fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError>;
+}
+
 pub struct RepositoryStateService {
-    repository: Arc<RepositoryUsecase>,
+    repository: Arc<dyn RepositoryStateRepository>,
     scanner: Arc<dyn RepositoryScanner>,
     notifier: Arc<dyn RepositoryStateNotifier>,
     watcher: Arc<dyn RepositoryStateWatcher>,
@@ -34,14 +36,13 @@ pub struct RepositoryStateService {
 
 impl RepositoryStateService {
     pub fn new(
-        repository: Arc<RepositoryUsecase>,
-        code: Arc<CodeUsecase>,
+        repository: Arc<dyn RepositoryStateRepository>,
+        scanner: Arc<dyn RepositoryScanner>,
         notifier: Arc<dyn RepositoryStateNotifier>,
         watcher: Arc<dyn RepositoryStateWatcher>,
         runtime: Arc<dyn RepositoryStateWorkerRuntime>,
         path_normalizer: Arc<dyn WorktreePathNormalizer>,
     ) -> Self {
-        let scanner = Arc::new(DefaultRepositoryScanner::new(repository.clone(), code));
         Self::new_with_scanner(
             repository,
             scanner,
@@ -54,7 +55,7 @@ impl RepositoryStateService {
     }
 
     pub fn new_with_scanner(
-        repository: Arc<RepositoryUsecase>,
+        repository: Arc<dyn RepositoryStateRepository>,
         scanner: Arc<dyn RepositoryScanner>,
         notifier: Arc<dyn RepositoryStateNotifier>,
         watcher: Arc<dyn RepositoryStateWatcher>,
@@ -78,7 +79,7 @@ impl RepositoryStateService {
         &self,
         path: &str,
     ) -> Result<Option<u64>, RepositoryStateError> {
-        if self.repository.get_main_repo_path(path).is_err() {
+        if self.repository.main_repo_path(path).is_err() {
             return Ok(None);
         }
         Ok(Some(self.subscribe(path, WatchSubscriptionKind::File)?))
@@ -302,6 +303,14 @@ mod tests {
     };
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+    struct TestRepositoryStateRepository;
+
+    impl RepositoryStateRepository for TestRepositoryStateRepository {
+        fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError> {
+            Ok(path.to_string())
+        }
+    }
+
     struct EmptyScanner {
         ignored_calls: AtomicUsize,
     }
@@ -444,7 +453,7 @@ mod tests {
 
     fn test_service(scanner: Arc<EmptyScanner>) -> RepositoryStateService {
         RepositoryStateService::new_with_scanner(
-            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+            Arc::new(TestRepositoryStateRepository),
             scanner,
             Arc::new(NoopRepositoryStateNotifier),
             Arc::new(NoopRepositoryStateWatcher),
@@ -459,7 +468,7 @@ mod tests {
         notifier: Arc<dyn RepositoryStateNotifier>,
     ) -> RepositoryStateService {
         RepositoryStateService::new_with_scanner(
-            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+            Arc::new(TestRepositoryStateRepository),
             scanner,
             notifier,
             Arc::new(NoopRepositoryStateWatcher),
@@ -474,7 +483,7 @@ mod tests {
         watcher: Arc<dyn RepositoryStateWatcher>,
     ) -> RepositoryStateService {
         RepositoryStateService::new_with_scanner(
-            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+            Arc::new(TestRepositoryStateRepository),
             scanner,
             Arc::new(NoopRepositoryStateNotifier),
             watcher,
@@ -814,15 +823,21 @@ mod tests {
         std::fs::create_dir(dir.path().join("typechange")).unwrap();
         std::fs::write(dir.path().join("typechange").join("child.txt"), "child").unwrap();
 
+        let path = dir.path().to_str().unwrap();
+        let status = crate::adaptor::gateway::repository::status::get_git_status(path)
+            .unwrap()
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        let scanner = Arc::new(CountingScanner::with_status(status));
         let service = RepositoryStateService::new(
-            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
-            Arc::new(crate::adaptor::controller::wiring::build_code_usecase()),
+            Arc::new(TestRepositoryStateRepository),
+            scanner,
             Arc::new(NoopRepositoryStateNotifier),
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(IdentityWorktreePathNormalizer),
         );
-        let path = dir.path().to_str().unwrap();
 
         let legacy =
             crate::adaptor::gateway::repository::worktree::get_worktree_dirty_count(path).unwrap();

@@ -37,7 +37,8 @@ export interface ReviewSnapshot {
 	limited: boolean;
 	base: DiffBase;
 	files: ReviewFileEntry[];
-	status: GitFileStatus[];
+	stagedFiles: GitFileStatus[];
+	changedFiles: GitFileStatus[];
 	diffStats: ReviewDiffStat[];
 	tree: DiffTreeNode[];
 	stagedTree: DiffTreeNode[];
