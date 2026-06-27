@@ -7,7 +7,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::adaptor::protocol::pty::PtyOutputMsg;
-use crate::protocol::*;
+use crate::adaptor::protocol::*;
 use crate::ws_bridge::WsBroadcaster;
 
 use super::auth::{generate_challenge, verify_hmac};
@@ -98,7 +98,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         Ok(Err(e)) => {
             let mut rate_limits = state.rate_limits.lock().await;
             record_auth_failure(&mut rate_limits, peer_addr.ip());
-            let fail_msg = WsMessage::AuthResult(crate::protocol::AuthResult {
+            let fail_msg = WsMessage::AuthResult(crate::adaptor::protocol::AuthResult {
                 success: false,
                 message: Some(e.clone()),
             });
@@ -112,7 +112,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         Err(_) => {
             let mut rate_limits = state.rate_limits.lock().await;
             record_auth_failure(&mut rate_limits, peer_addr.ip());
-            let fail_msg = WsMessage::AuthResult(crate::protocol::AuthResult {
+            let fail_msg = WsMessage::AuthResult(crate::adaptor::protocol::AuthResult {
                 success: false,
                 message: Some("認証タイムアウト".to_string()),
             });
@@ -128,7 +128,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     if !verify_hmac(&challenge, token, &client_hmac) {
         let mut rate_limits = state.rate_limits.lock().await;
         record_auth_failure(&mut rate_limits, peer_addr.ip());
-        let fail_msg = WsMessage::AuthResult(crate::protocol::AuthResult {
+        let fail_msg = WsMessage::AuthResult(crate::adaptor::protocol::AuthResult {
             success: false,
             message: Some("認証失敗".to_string()),
         });
@@ -145,7 +145,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         clear_auth_failures(&mut rate_limits, &peer_addr.ip());
     }
 
-    let success_msg = WsMessage::AuthResult(crate::protocol::AuthResult {
+    let success_msg = WsMessage::AuthResult(crate::adaptor::protocol::AuthResult {
         success: true,
         message: None,
     });
@@ -278,6 +278,9 @@ mod tests {
     use sha2::Sha256;
     use tokio_tungstenite::tungstenite::protocol::Role;
 
+    use crate::adaptor::protocol::{
+        deserialize_message, serialize_message, AuthResponse, WsMessage,
+    };
     use crate::domain::app_config::repository::ConfigUpdate;
     use crate::domain::app_config::value_objects::{
         AgentShortcutConfig, AppConfigDocument, AppSettings, ServerConfig, TelemetryConfig,
@@ -285,7 +288,6 @@ mod tests {
     };
     use crate::domain::app_config::{AppConfigError, ConfigRepository};
     use crate::domain::notification::{DesktopNotifyMode, NotifyConfig};
-    use crate::protocol::{deserialize_message, serialize_message, AuthResponse, WsMessage};
     use crate::usecase::agent_session::session::{
         AgentStreamResyncReadModel, StreamResyncSnapshot,
     };

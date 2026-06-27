@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::adaptor::protocol::pty::{PtyEvictReasonMsg, PtyEvictedMsg, PtyExitMsg, PtyOutputMsg};
+use crate::adaptor::protocol::WsMessage;
 use crate::domain::pty_session::entities::{
     PtySession, PtySessionRegistry, PtySessionSnapshot, PtySpawnReservation,
     PtySpawnReservationError,
@@ -14,7 +15,6 @@ use crate::domain::pty_session::entities::{
 use crate::domain::pty_session::gateway::{PtyBackend, PtyResizer, SpawnConfig};
 use crate::domain::pty_session::services::{append_output_to_ring_buffer, decode_utf8_chunk};
 use crate::domain::pty_session::{PtyEvictReason, PtyLifecycleConfig};
-use crate::protocol::WsMessage;
 use crate::usecase::pty_session::dto::FoundPtySession;
 use crate::usecase::pty_session::error::UsecaseError;
 use crate::usecase::pty_session::ports::{

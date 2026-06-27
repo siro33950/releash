@@ -1,15 +1,6 @@
-use crate::protocol::{AgentStateSync, WsMessage};
-use crate::usecase::agent_session::status::{AgentState, AgentStatusChanges};
+use crate::adaptor::protocol::{AgentStateSync, WsMessage};
+use crate::usecase::agent_session::status::AgentStatusChanges;
 use crate::ws_bridge::WsBroadcaster;
-
-fn protocol_agent_state(state: AgentState) -> crate::protocol::AgentState {
-    match state {
-        AgentState::Running => crate::protocol::AgentState::Running,
-        AgentState::Done => crate::protocol::AgentState::Done,
-        AgentState::Error => crate::protocol::AgentState::Error,
-        AgentState::Waiting => crate::protocol::AgentState::Waiting,
-    }
-}
 
 pub(crate) fn emit_agent_status_changes<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -34,7 +25,7 @@ pub(crate) fn emit_agent_status_changes<R: tauri::Runtime>(
     if let Some(agent_state) = changes.agent_state {
         let payload = AgentStateSync {
             worktree_path: agent_state.worktree_path,
-            state: protocol_agent_state(agent_state.state),
+            state: agent_state.state.into(),
             exit_code: None,
             timestamp: agent_state.timestamp,
             session_id: agent_state.session_id,

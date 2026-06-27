@@ -33,12 +33,12 @@ fn emit_workflow_state_view<R: tauri::Runtime>(
         .try_state::<Arc<crate::ws_bridge::WsBroadcaster>>()
         .map(|state| state.inner().clone());
     if let Some(broadcaster) = &broadcaster {
-        broadcaster.try_send(crate::protocol::WsMessage::WorkflowStateSync(Box::new(
-            WorkflowStateSync {
+        broadcaster.try_send(crate::adaptor::protocol::WsMessage::WorkflowStateSync(
+            Box::new(WorkflowStateSync {
                 worktree_path: worktree_path.to_string(),
                 workflow_state: view.clone(),
-            },
-        )));
+            }),
+        ));
     }
 }
 

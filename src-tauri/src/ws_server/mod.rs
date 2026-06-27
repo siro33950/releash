@@ -80,7 +80,7 @@ impl WsServerState {
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::deserialize_message;
+    use crate::adaptor::protocol::deserialize_message;
 
     #[test]
     fn test_deserialize_invalid_json() {

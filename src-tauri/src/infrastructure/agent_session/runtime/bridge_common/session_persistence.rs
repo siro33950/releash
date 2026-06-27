@@ -362,8 +362,8 @@ impl SessionContextCarryUpdate {
         }
     }
 
-    fn to_protocol(&self) -> crate::protocol::AgentSessionContextCarryUpdated {
-        crate::protocol::AgentSessionContextCarryUpdated {
+    fn to_protocol(&self) -> crate::adaptor::protocol::AgentSessionContextCarryUpdated {
+        crate::adaptor::protocol::AgentSessionContextCarryUpdated {
             chat_session_id: self.chat_session_id.clone(),
             agent_session_id: self.agent_session_id.clone(),
             context_carry: self.context_carry.clone(),

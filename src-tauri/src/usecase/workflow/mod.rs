@@ -363,6 +363,63 @@ mod tests {
         lines.join("\n")
     }
 
+    fn production_source_excluding_cfg_test_items(content: &str) -> String {
+        let lines = content.lines().collect::<Vec<_>>();
+        let mut production = Vec::new();
+        let mut index = 0;
+
+        while index < lines.len() {
+            let line = lines[index];
+            if line.trim_start().starts_with("#[cfg(test)]") {
+                index = skip_cfg_test_item(&lines, index + 1);
+            } else {
+                production.push(line);
+                index += 1;
+            }
+        }
+
+        production.join("\n")
+    }
+
+    fn skip_cfg_test_item(lines: &[&str], mut index: usize) -> usize {
+        while index < lines.len() && lines[index].trim().is_empty() {
+            index += 1;
+        }
+        while index < lines.len() && lines[index].trim_start().starts_with("#[") {
+            index += 1;
+            while index < lines.len() && lines[index].trim().is_empty() {
+                index += 1;
+            }
+        }
+
+        let mut depth = 0_i32;
+        let mut saw_brace = false;
+        while index < lines.len() {
+            let line = lines[index];
+            for ch in line.chars() {
+                match ch {
+                    '{' => {
+                        depth += 1;
+                        saw_brace = true;
+                    }
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+
+            let trimmed = line.trim_end();
+            index += 1;
+            if saw_brace && depth <= 0 {
+                break;
+            }
+            if !saw_brace && (trimmed.ends_with(';') || trimmed.ends_with(',')) {
+                break;
+            }
+        }
+
+        index
+    }
+
     fn assert_no_forbidden_production_patterns(relative_dir: &str, forbidden_patterns: &[&str]) {
         let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let layer_root = source_root.join(relative_dir);
@@ -391,6 +448,41 @@ mod tests {
         assert!(
             violations.is_empty(),
             "workflow production dependency violations:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    fn assert_no_forbidden_production_patterns_in_all_sources(
+        relative_dir: &str,
+        forbidden_patterns: &[&str],
+    ) {
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let layer_root = source_root.join(relative_dir);
+        let mut files = Vec::new();
+        collect_rs_files(&layer_root, &mut files);
+        files.sort();
+
+        assert!(
+            !files.is_empty(),
+            "no source files found under {relative_dir}"
+        );
+
+        let mut violations = Vec::new();
+        for file in files {
+            let content = std::fs::read_to_string(&file)
+                .unwrap_or_else(|err| panic!("read source file {}: {err}", file.display()));
+            let production = production_source_excluding_cfg_test_items(&content);
+            for forbidden in forbidden_patterns {
+                if production.contains(forbidden) {
+                    let display_path = file.strip_prefix(&source_root).unwrap_or(&file);
+                    violations.push(format!("{} -> {forbidden}", display_path.display()));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "production dependency violations:\n{}",
             violations.join("\n")
         );
     }
@@ -958,6 +1050,17 @@ mod tests {
             "usecase/repository_state",
             &external_dependency_patterns,
         );
+    }
+
+    #[test]
+    fn domain_and_usecase_production_do_not_depend_on_protocol_dto() {
+        let forbidden_patterns = [
+            concat!("crate", "::", "adaptor", "::", "protocol"),
+            concat!("adaptor", "::", "protocol"),
+        ];
+
+        assert_no_forbidden_production_patterns_in_all_sources("domain", &forbidden_patterns);
+        assert_no_forbidden_production_patterns_in_all_sources("usecase", &forbidden_patterns);
     }
 
     #[test]

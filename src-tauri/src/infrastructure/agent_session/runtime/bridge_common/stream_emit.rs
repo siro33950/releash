@@ -97,13 +97,13 @@ where
         let session_id = chat_session_id.to_string();
         let message_id = message_id.to_string();
         broadcaster.send_stream_delta(
-            crate::protocol::AgentStreamDeltaMsg {
+            crate::adaptor::protocol::AgentStreamDeltaMsg {
                 session_id: session_id.clone(),
                 message_id: message_id.clone(),
                 seq,
                 parts: parts.into_iter().map(to_agent_stream_part_msg).collect(),
             },
-            || crate::protocol::AgentStreamSync {
+            || crate::adaptor::protocol::AgentStreamSync {
                 session_id,
                 message_id,
                 seq,
@@ -230,7 +230,7 @@ fn flush_pending_persisted_tool_output_resync<F>(
     }
 }
 
-fn to_agent_stream_part_msg(part: MessagePart) -> crate::protocol::AgentStreamPartMsg {
+fn to_agent_stream_part_msg(part: MessagePart) -> crate::adaptor::protocol::AgentStreamPartMsg {
     part.into()
 }
 

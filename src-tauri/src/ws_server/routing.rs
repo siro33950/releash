@@ -1,4 +1,4 @@
-use crate::protocol::*;
+use crate::adaptor::protocol::*;
 
 use super::WsServerState;
 
@@ -37,6 +37,7 @@ pub(super) async fn route_message(msg: &WsMessage, state: &WsServerState) -> Opt
 mod tests {
     use std::sync::Arc;
 
+    use crate::adaptor::protocol::*;
     use crate::domain::app_config::repository::{ConfigRepository, ConfigUpdate};
     use crate::domain::app_config::value_objects::{
         AgentShortcutConfig, AppConfigDocument, AppSettings, ServerConfig, TelemetryConfig,
@@ -44,7 +45,6 @@ mod tests {
     };
     use crate::domain::app_config::AppConfigError;
     use crate::domain::notification::{DesktopNotifyMode, NotifyConfig};
-    use crate::protocol::*;
     use crate::usecase::agent_session::session::{
         AgentStreamResyncReadModel, StreamResyncSnapshot,
     };
