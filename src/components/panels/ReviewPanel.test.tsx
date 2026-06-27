@@ -1,6 +1,8 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import type { ReviewFileView } from "@/types/review";
 import { ReviewPanel } from "./ReviewPanel";
 
 // Radix UI Tooltip require pointer capture APIs not available in jsdom
@@ -123,8 +125,21 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("./DiffViewerSection", () => ({
-	DiffViewerSection: ({ error }: { error?: string | null }) => (
-		<div data-testid="diff-viewer-section" data-error={error ?? ""} />
+	DiffViewerSection: ({
+		error,
+		isMarkdown,
+		showPreview,
+	}: {
+		error?: string | null;
+		isMarkdown?: boolean;
+		showPreview?: boolean;
+	}) => (
+		<div
+			data-testid="diff-viewer-section"
+			data-error={error ?? ""}
+			data-is-markdown={String(Boolean(isMarkdown))}
+			data-show-preview={String(Boolean(showPreview))}
+		/>
 	),
 }));
 
@@ -172,6 +187,80 @@ function mockReviewSnapshot(
 			changesFileCount: 0,
 		},
 		...overrides,
+	});
+}
+
+function makeTextDiffView(path: string): ReviewFileView {
+	return {
+		kind: "textDiff",
+		version: 0,
+		stale: false,
+		fileId: path,
+		path,
+		original: "",
+		modified: "",
+		source: "diff",
+		hunks: [],
+		changeGroups: [],
+		limited: false,
+		viewport: null,
+		totalLines: 0,
+	};
+}
+
+function makeBinaryView(path: string): ReviewFileView {
+	return {
+		kind: "binary",
+		version: 0,
+		stale: false,
+		fileId: path,
+		path,
+		originalUrl: null,
+		modifiedUrl: null,
+		originalSize: null,
+		modifiedSize: null,
+	};
+}
+
+function mockSelectedReviewFile(path: string, view: ReviewFileView) {
+	vi.mocked(useReviewPanel).mockReturnValue({
+		diffBase: "head",
+		diffMode: "gutter",
+		selectedFile: path,
+		selectedSection: "changes",
+		setDiffBase: vi.fn(),
+		setDiffMode: vi.fn(),
+		selectFile: vi.fn(),
+	});
+	mockReviewSnapshot({
+		stagedTree: [],
+		changesTree: [
+			{
+				id: `file:${path}`,
+				name: path.split("/").pop() ?? path,
+				path,
+				node_type: "file",
+				status: "modified",
+				additions: 1,
+				deletions: 0,
+				children: [],
+			},
+		],
+		stagedFileCount: 0,
+		changesFileCount: 1,
+		branchBaseTree: [],
+		branchBaseFileCount: 0,
+		loading: false,
+	});
+	vi.mocked(useReviewFileView).mockReturnValue({
+		view,
+		originalContent: view.kind === "textDiff" ? view.original : "",
+		modifiedContent: view.kind === "textDiff" ? view.modified : "",
+		hunks: view.kind === "textDiff" ? view.hunks : null,
+		changeGroups: view.kind === "textDiff" ? view.changeGroups : null,
+		imageDiff: { originalUrl: null, modifiedUrl: null, loading: false },
+		loading: false,
+		error: null,
 	});
 }
 
@@ -364,6 +453,84 @@ describe("ReviewPanel", () => {
 		expect(screen.getByTestId("diff-viewer-section")).toHaveAttribute(
 			"data-error",
 			"Failed to load diff: review target is not in snapshot",
+		);
+	});
+
+	it("shows markdown preview toggle for selected markdown text diff", async () => {
+		const user = userEvent.setup();
+		mockSelectedReviewFile("README.md", makeTextDiffView("README.md"));
+
+		render(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={() => {}}
+				/>
+			</TooltipProvider>,
+		);
+
+		expect(screen.getByRole("button", { name: "Code" })).toBeInTheDocument();
+		const previewButton = screen.getByRole("button", { name: "Preview" });
+		expect(previewButton).toBeInTheDocument();
+		expect(screen.getByTestId("diff-viewer-section")).toHaveAttribute(
+			"data-is-markdown",
+			"true",
+		);
+		expect(screen.getByTestId("diff-viewer-section")).toHaveAttribute(
+			"data-show-preview",
+			"false",
+		);
+
+		await user.click(previewButton);
+
+		expect(screen.getByTestId("diff-viewer-section")).toHaveAttribute(
+			"data-show-preview",
+			"true",
+		);
+	});
+
+	it("does not show markdown preview toggle for non-markdown text diff", () => {
+		mockSelectedReviewFile("src/main.rs", makeTextDiffView("src/main.rs"));
+
+		render(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={() => {}}
+				/>
+			</TooltipProvider>,
+		);
+
+		expect(
+			screen.queryByRole("button", { name: "Preview" }),
+		).not.toBeInTheDocument();
+		expect(screen.getByTestId("diff-viewer-section")).toHaveAttribute(
+			"data-is-markdown",
+			"false",
+		);
+	});
+
+	it("does not show markdown preview toggle for markdown binary view", () => {
+		mockSelectedReviewFile("README.md", makeBinaryView("README.md"));
+
+		render(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={() => {}}
+				/>
+			</TooltipProvider>,
+		);
+
+		expect(
+			screen.queryByRole("button", { name: "Preview" }),
+		).not.toBeInTheDocument();
+		expect(screen.getByTestId("diff-viewer-section")).toHaveAttribute(
+			"data-is-markdown",
+			"false",
 		);
 	});
 

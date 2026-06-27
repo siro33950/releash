@@ -1,9 +1,11 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReviewThreadHandoffContext } from "@/contexts/ReviewThreadHandoffContext";
 import type { ReviewDiscussionThread } from "@/types/diffComment";
 import { DiffInlineComment, DiffInlineCommentInput } from "./DiffInlineComment";
+
+const fixedNow = new Date("2026-01-01T12:00:00.000Z");
 
 const makeComment = (
 	overrides: Partial<ReviewDiscussionThread> = {},
@@ -48,6 +50,75 @@ describe("DiffInlineComment", () => {
 	it("renders comment content", () => {
 		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 		expect(screen.getByText("Fix this bug")).toBeInTheDocument();
+	});
+
+	describe("relative time label", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+			vi.setSystemTime(fixedNow);
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it.each([
+			{ elapsedMs: 30000, expectedLabel: "now" },
+			{ elapsedMs: 5 * 60000, expectedLabel: "5m" },
+			{ elapsedMs: 3 * 3600000, expectedLabel: "3h" },
+			{ elapsedMs: 2 * 86400000, expectedLabel: "2d" },
+		])("renders $expectedLabel from comment createdAt", ({
+			elapsedMs,
+			expectedLabel,
+		}) => {
+			render(
+				<DiffInlineComment
+					comment={makeComment({
+						comments: [
+							{
+								id: "comment-relative",
+								threadId: "c1",
+								author: { kind: "human", displayName: "Human" },
+								content: "Relative time comment",
+								createdAt: fixedNow.getTime() - elapsedMs,
+							},
+						],
+					})}
+					{...defaultProps}
+				/>,
+			);
+
+			expect(screen.getByText(expectedLabel)).toBeInTheDocument();
+		});
+
+		it("switches the rendered label from now to 1m at 60 seconds", () => {
+			render(
+				<DiffInlineComment
+					comment={makeComment({
+						comments: [
+							{
+								id: "comment-59s",
+								threadId: "c1",
+								author: { kind: "human", displayName: "Human" },
+								content: "59 seconds old",
+								createdAt: fixedNow.getTime() - 59000,
+							},
+							{
+								id: "comment-60s",
+								threadId: "c1",
+								author: { kind: "human", displayName: "Human" },
+								content: "60 seconds old",
+								createdAt: fixedNow.getTime() - 60000,
+							},
+						],
+					})}
+					{...defaultProps}
+				/>,
+			);
+
+			expect(screen.getByText("now")).toBeInTheDocument();
+			expect(screen.getByText("1m")).toBeInTheDocument();
+		});
 	});
 
 	it("renders line label for single line comment", () => {
