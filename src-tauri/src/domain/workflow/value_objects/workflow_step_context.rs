@@ -7,6 +7,9 @@ pub struct WorkflowStepContext {
     pub parent_step_name: Option<String>,
     pub parent_run_index: Option<u32>,
     pub order: u32,
+    pub startup_timeout_secs: Option<u64>,
+    pub startup_max_retries: Option<u32>,
+    pub stale_timeout_secs: Option<u64>,
 }
 
 impl WorkflowStepContext {

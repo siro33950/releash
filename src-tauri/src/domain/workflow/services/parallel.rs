@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use regex::RegexBuilder;
 
 use crate::domain::workflow::value_objects::{
-    default_step_entry_state, ChildOutputSnapshot, CollectConfig, ParallelAggregate,
-    ReduceStrategy, StepHistoryEntry, StepOutput, TokenUsage,
+    default_step_entry_state, ChildOutputSnapshot, CollectConfig, FailureDisposition,
+    ParallelAggregate, ReduceStrategy, StepHistoryEntry, StepOutput, TokenUsage,
+    WorkflowStepFailureKind,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +29,9 @@ pub struct ParallelChildCompletionInput {
     pub result: Option<String>,
     pub token_usage: TokenUsage,
     pub run_index: u32,
+    pub state: String,
+    pub failure_kind: Option<WorkflowStepFailureKind>,
+    pub failure_disposition: Option<FailureDisposition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,7 +207,9 @@ pub fn plan_parallel_parent_completion(
                     .unwrap_or(timestamp),
                 structured_output: output.and_then(|output| output.structured_output.clone()),
                 output_contract: output.and_then(|output| output.output_contract.clone()),
-                state: default_step_entry_state(),
+                state: child.state.clone(),
+                failure_kind: child.failure_kind,
+                failure_disposition: child.failure_disposition,
             }
         })
         .collect();
@@ -371,6 +377,9 @@ mod parallel_tests {
                 output_tokens: 3,
             },
             run_index: 1,
+            state: default_step_entry_state(),
+            failure_kind: None,
+            failure_disposition: None,
         }
     }
 

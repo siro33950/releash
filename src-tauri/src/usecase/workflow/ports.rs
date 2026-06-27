@@ -168,11 +168,17 @@ pub struct WorkflowTurnTokenUsage {
     pub output_tokens: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowTurnFailureSignal {
+    ModelRefusal,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowTurnCompleteCommand {
     pub chat_session_id: String,
     pub exit_code: i64,
     pub final_text_parts: Vec<String>,
+    pub failure_signal: Option<WorkflowTurnFailureSignal>,
     pub token_usage: Option<WorkflowTurnTokenUsage>,
 }
 
@@ -181,6 +187,7 @@ pub struct WorkflowTurnCompleteNotification {
     pub chat_session_id: String,
     pub exit_code: i64,
     pub final_text_parts: Vec<String>,
+    pub failure_signal: Option<WorkflowTurnFailureSignal>,
     pub token_usage: Option<WorkflowTurnTokenUsage>,
     pub interrupted: bool,
 }

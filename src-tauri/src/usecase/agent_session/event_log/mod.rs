@@ -20,13 +20,13 @@ mod projector;
 
 pub use events::{
     human_parts_from_content_images, AgentSessionEvent, InterruptReason, PermissionDecision,
-    PromptInput, TurnTokenUsage,
+    PromptInput, TurnStopReason, TurnTokenUsage,
 };
 pub use log::TurnEventLog;
 pub use part_events::PartEventMode;
 #[cfg(test)]
 pub use projector::project;
-pub use projector::WorkflowTurnCompleteInput;
+pub use projector::{AgentTurnFailureSignal, WorkflowTurnCompleteInput};
 
 #[cfg(test)]
 mod tests;

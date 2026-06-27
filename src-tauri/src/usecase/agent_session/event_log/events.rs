@@ -7,6 +7,12 @@ use crate::usecase::agent_session::session::{
 
 pub type TurnId = u64;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnStopReason {
+    Refusal,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptInput {
@@ -276,6 +282,8 @@ pub enum AgentSessionEvent {
     TurnCompleted {
         turn_id: TurnId,
         exit_code: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop_reason: Option<TurnStopReason>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         token_usage: Option<TurnTokenUsage>,
     },

@@ -6,6 +6,7 @@ use regex::RegexBuilder;
 
 use crate::domain::workflow::value_objects::{
     ApprovalDecision, NodeType, TransitionRule, WorkflowDefinition, WorkflowExecutionState,
+    WorkflowStepFailureKind,
 };
 use crate::domain::workflow::WorkflowError;
 
@@ -30,6 +31,7 @@ pub enum TurnCompleteDecision {
     SessionError {
         node_name: String,
         exit_code: i64,
+        kind: WorkflowStepFailureKind,
     },
     AutoEvaluate {
         rules: Vec<TransitionRule>,
@@ -54,6 +56,7 @@ pub enum TurnCompleteMutationPlan {
     SessionError {
         node_name: String,
         exit_code: i64,
+        kind: WorkflowStepFailureKind,
         history_result: String,
         failure_reason: String,
     },
@@ -106,6 +109,26 @@ pub fn decide_next_node(workflow: &WorkflowDefinition, current_index: usize) -> 
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionFailureSignal {
+    Timeout,
+    BridgeCrash,
+    ModelRefusal,
+}
+
+pub fn classify_session_error(
+    exit_code: i64,
+    signal: Option<SessionFailureSignal>,
+) -> WorkflowStepFailureKind {
+    match signal {
+        Some(SessionFailureSignal::Timeout) => WorkflowStepFailureKind::StaleRuntimeTimeout,
+        Some(SessionFailureSignal::BridgeCrash) => WorkflowStepFailureKind::InfrastructureCrash,
+        Some(SessionFailureSignal::ModelRefusal) => WorkflowStepFailureKind::ModelRefusal,
+        None if exit_code == 124 => WorkflowStepFailureKind::StaleRuntimeTimeout,
+        None => WorkflowStepFailureKind::InfrastructureCrash,
+    }
+}
+
 pub fn check_cycle_guard(
     workflow: &WorkflowDefinition,
     step_execution_counts: &HashMap<String, u32>,
@@ -142,6 +165,16 @@ pub fn decide_turn_complete_action(
     state: &WorkflowExecutionState,
     exit_code: i64,
 ) -> Result<TurnCompleteDecision, WorkflowError> {
+    decide_turn_complete_action_with_signal(workflow, current_index, state, exit_code, None)
+}
+
+pub fn decide_turn_complete_action_with_signal(
+    workflow: &WorkflowDefinition,
+    current_index: usize,
+    state: &WorkflowExecutionState,
+    exit_code: i64,
+    signal: Option<SessionFailureSignal>,
+) -> Result<TurnCompleteDecision, WorkflowError> {
     if !matches!(state, WorkflowExecutionState::Running) {
         return Ok(TurnCompleteDecision::NotRunning);
     }
@@ -150,10 +183,12 @@ pub fn decide_turn_complete_action(
         WorkflowError::validation(format!("node index out of range: {current_index}"))
     })?;
 
-    if exit_code != 0 {
+    if exit_code != 0 || signal.is_some() {
+        let kind = classify_session_error(exit_code, signal);
         return Ok(TurnCompleteDecision::SessionError {
             node_name: node.name.clone(),
             exit_code,
+            kind,
         });
     }
 
@@ -176,11 +211,23 @@ pub fn plan_turn_complete_mutation(
     state: &WorkflowExecutionState,
     exit_code: i64,
 ) -> Result<TurnCompleteMutationPlan, WorkflowError> {
-    let decision = decide_turn_complete_action(workflow, current_index, state, exit_code)?;
+    plan_turn_complete_mutation_with_signal(workflow, current_index, state, exit_code, None)
+}
+
+pub fn plan_turn_complete_mutation_with_signal(
+    workflow: &WorkflowDefinition,
+    current_index: usize,
+    state: &WorkflowExecutionState,
+    exit_code: i64,
+    signal: Option<SessionFailureSignal>,
+) -> Result<TurnCompleteMutationPlan, WorkflowError> {
+    let decision =
+        decide_turn_complete_action_with_signal(workflow, current_index, state, exit_code, signal)?;
     let plan = match decision {
         TurnCompleteDecision::SessionError {
             node_name,
             exit_code,
+            kind,
         } => TurnCompleteMutationPlan::SessionError {
             history_result: format!("error (exit_code: {exit_code})"),
             failure_reason: format!(
@@ -188,6 +235,7 @@ pub fn plan_turn_complete_mutation(
             ),
             node_name,
             exit_code,
+            kind,
         },
         TurnCompleteDecision::AutoEvaluate { rules, node_name } => {
             TurnCompleteMutationPlan::AutoEvaluate { rules, node_name }
@@ -381,9 +429,51 @@ mod tests {
             TurnCompleteMutationPlan::SessionError {
                 node_name: "agent".to_string(),
                 exit_code: 42,
+                kind: WorkflowStepFailureKind::InfrastructureCrash,
                 history_result: "error (exit_code: 42)".to_string(),
                 failure_reason: "AgentSession error at step 'agent' (exit_code: 42)".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn plan_turn_complete_mutation_uses_explicit_model_refusal_signal() {
+        let workflow = workflow(vec![node("agent", NodeType::Agent)]);
+
+        let plan = plan_turn_complete_mutation_with_signal(
+            &workflow,
+            0,
+            &WorkflowExecutionState::Running,
+            0,
+            Some(SessionFailureSignal::ModelRefusal),
+        )
+        .unwrap();
+
+        match plan {
+            TurnCompleteMutationPlan::SessionError { kind, .. } => {
+                assert_eq!(kind, WorkflowStepFailureKind::ModelRefusal);
+            }
+            other => panic!("unexpected plan: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_session_error_maps_runtime_failure_sources() {
+        assert_eq!(
+            classify_session_error(124, Some(SessionFailureSignal::Timeout)),
+            WorkflowStepFailureKind::StaleRuntimeTimeout
+        );
+        assert_eq!(
+            classify_session_error(-1, Some(SessionFailureSignal::BridgeCrash)),
+            WorkflowStepFailureKind::InfrastructureCrash
+        );
+        assert_eq!(
+            classify_session_error(1, Some(SessionFailureSignal::ModelRefusal)),
+            WorkflowStepFailureKind::ModelRefusal
+        );
+        assert_eq!(
+            classify_session_error(42, None),
+            WorkflowStepFailureKind::InfrastructureCrash
         );
     }
 

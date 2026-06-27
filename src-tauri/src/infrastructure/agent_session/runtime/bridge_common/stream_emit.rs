@@ -860,7 +860,9 @@ mod moved_tests {
     use super::super::stream_emit::*;
     use super::super::turn_event_log::*;
 
-    use crate::usecase::agent_session::event_log::{TurnTokenUsage, WorkflowTurnCompleteInput};
+    use crate::usecase::agent_session::event_log::{
+        AgentTurnFailureSignal, TurnTokenUsage, WorkflowTurnCompleteInput,
+    };
 
     use crate::usecase::agent_session::session::{
         create_session_internal, parts_to_legacy, ChatMessage, MessagePart, MessageRole,
@@ -3904,6 +3906,7 @@ mod moved_tests {
                 turn_id: 1,
                 exit_code: 0,
                 final_text_parts: vec!["final text".to_string()],
+                failure_signal: None,
                 token_usage: Some(TurnTokenUsage {
                     input_tokens: 11,
                     output_tokens: 13,
@@ -3914,6 +3917,44 @@ mod moved_tests {
         assert_eq!(
             proc.turn_event_log.project().status.turn_phase,
             crate::usecase::agent_session::status::TurnPhase::Idle
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_assistant_refusal_stop_reason_projects_model_refusal_signal() {
+        let mut proc = make_streaming_test_process();
+        proc.begin_turn_liveness();
+        begin_turn_event_log(&mut proc, "human-1", test_prompt_input("prompt"), "m1", 1.0);
+        let msg = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "stop_reason": "refusal",
+                "content": []
+            }
+        });
+
+        let accumulated = accumulate_stream_or_post_turn_message_locked(
+            &mut proc,
+            "csid",
+            &msg,
+            0,
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
+            None,
+        );
+        assert!(accumulated.accumulated);
+
+        let effect = run_turn_complete_transition_locked(
+            &mut proc,
+            "csid",
+            0,
+            |_mid, _seq, _parts, _snapshot_parts| (true, true),
+        );
+
+        assert_eq!(
+            effect
+                .workflow_turn_complete
+                .and_then(|input| input.failure_signal),
+            Some(AgentTurnFailureSignal::ModelRefusal)
         );
     }
 
@@ -3944,6 +3985,7 @@ mod moved_tests {
                 turn_id: 1,
                 exit_code: 7,
                 final_text_parts: vec!["failed but complete".to_string()],
+                failure_signal: None,
                 token_usage: None,
                 interrupted: false,
             })
@@ -4210,6 +4252,7 @@ mod moved_tests {
                 turn_id: 1,
                 exit_code: 1,
                 final_text_parts: Vec::new(),
+                failure_signal: None,
                 token_usage: None,
                 interrupted: true,
             })

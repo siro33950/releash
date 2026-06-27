@@ -60,6 +60,11 @@ pub(crate) struct RequiredEventCommit<'a> {
 pub(crate) enum StepOutcome {
     /// 状態を永続化・ブロードキャストするだけ（終了状態遷移など）
     Persist(WorkflowState),
+    /// 同一ステップを policy に従って再実行する
+    RetryCurrentStep {
+        snapshot: WorkflowState,
+        completed_session_id: Option<String>,
+    },
     /// 次のステップに遷移し、AgentSession を起動する
     TransitionAndStart(WorkflowState),
     /// collect仮想stepに遷移し、reduce処理を実行する
@@ -72,6 +77,7 @@ impl StepOutcome {
     pub(crate) fn snapshot(&self) -> &WorkflowState {
         match self {
             Self::Persist(snapshot)
+            | Self::RetryCurrentStep { snapshot, .. }
             | Self::TransitionAndStart(snapshot)
             | Self::ReduceAndTransition(snapshot)
             | Self::StartParallel(snapshot) => snapshot,
@@ -94,6 +100,10 @@ impl StepOutcome {
                 completed_step_session_ids(snapshot)
             }
             Self::Persist(_) => Vec::new(),
+            Self::RetryCurrentStep {
+                completed_session_id,
+                ..
+            } => completed_session_id.iter().cloned().collect(),
             Self::TransitionAndStart(snapshot)
             | Self::ReduceAndTransition(snapshot)
             | Self::StartParallel(snapshot) => completed_step_session_ids(snapshot),
@@ -132,7 +142,7 @@ pub(crate) async fn sync_run_store_from_snapshot(
                 .complete_run(run_id, TerminalRunStatus::Completed, now, None)
                 .await
         }
-        WorkflowExecutionState::Failed { reason } => {
+        WorkflowExecutionState::Failed { reason, .. } => {
             run_store
                 .complete_run(run_id, TerminalRunStatus::Failed, now, Some(reason.clone()))
                 .await

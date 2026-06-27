@@ -42,6 +42,13 @@ pub(crate) struct ValidatedSubmissionOutput {
     pub(crate) workflow_variables: HashMap<String, String>,
 }
 
+pub(crate) struct SubmissionTargetContext {
+    pub(crate) workflow_name: String,
+    pub(crate) worktree_path: String,
+    pub(crate) session_id: Option<String>,
+    pub(crate) run_index: u32,
+}
+
 pub(crate) fn validate_submit_output_request(
     run_id: &str,
     step_name: &str,
@@ -140,17 +147,12 @@ pub(crate) fn is_accepting_submission_target(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_validated_submission(
-    exec: &mut WorkflowExecution,
+pub(crate) fn validate_submission_target_context(
+    exec: &WorkflowExecution,
     run_id: &str,
     step_name: &str,
     contract: &str,
-    validated_output: &serde_json::Value,
-    validated_result: Option<String>,
-    contract_vars: HashMap<String, String>,
-    timestamp: f64,
-) -> Result<SubmittedOutputMutation, WorkflowEngineError> {
+) -> Result<SubmissionTargetContext, WorkflowEngineError> {
     match exec.state {
         WorkflowExecutionState::Running | WorkflowExecutionState::WaitingApproval => {}
         _ => {
@@ -202,13 +204,50 @@ pub(crate) fn apply_validated_submission(
         )));
     }
 
-    let run_index = exec
-        .step_execution_counts
-        .get(step_name)
-        .copied()
-        .unwrap_or(0);
-    let mutation = SubmittedOutputMutation {
+    let session_id = exec
+        .parallel_run
+        .as_ref()
+        .and_then(|parallel| {
+            parallel
+                .children
+                .iter()
+                .find(|child| child.step_name == step_name)
+                .map(|child| child.session_id.clone())
+        })
+        .filter(|session_id| !session_id.is_empty())
+        .or_else(|| {
+            let current_node = exec.workflow.nodes.get(exec.current_step_index)?;
+            (current_node.name == step_name)
+                .then(|| exec.current_session_id.clone())
+                .flatten()
+        });
+
+    Ok(SubmissionTargetContext {
         workflow_name: exec.workflow.name.clone(),
+        worktree_path: exec.worktree_path.clone(),
+        session_id,
+        run_index: exec
+            .step_execution_counts
+            .get(step_name)
+            .copied()
+            .unwrap_or(0),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_validated_submission(
+    exec: &mut WorkflowExecution,
+    run_id: &str,
+    step_name: &str,
+    contract: &str,
+    validated_output: &serde_json::Value,
+    validated_result: Option<String>,
+    contract_vars: HashMap<String, String>,
+    timestamp: f64,
+) -> Result<SubmittedOutputMutation, WorkflowEngineError> {
+    let target = validate_submission_target_context(exec, run_id, step_name, contract)?;
+    let mutation = SubmittedOutputMutation {
+        workflow_name: target.workflow_name,
         prior_step_output: exec.step_outputs.get(step_name).cloned(),
         prior_workflow_variables: exec.workflow_variables.clone(),
     };
@@ -216,7 +255,7 @@ pub(crate) fn apply_validated_submission(
         step_name.to_string(),
         StepOutput {
             step_name: step_name.to_string(),
-            run_index,
+            run_index: target.run_index,
             session_id: None,
             result: validated_result,
             structured_output: Some(validated_output.clone()),
@@ -318,7 +357,9 @@ pub(crate) fn resolved_output_contract_definition_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
+    use crate::adaptor::gateway::workflow::runtime_state::{
+        ParallelChildRun, ParallelChildState, ParallelRunState, WorkflowExecution,
+    };
     use crate::adaptor::gateway::workflow::schema::{
         ChildNodeDefinition, NodeDefinition, NodeType, ResolvedFacets,
     };
@@ -353,6 +394,45 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    fn parallel_execution() -> WorkflowExecution {
+        let mut exec = running_execution();
+        exec.workflow = workflow_with_parallel();
+        exec.current_session_id = None;
+        exec.step_execution_counts =
+            HashMap::from([("review-a".to_string(), 3), ("review-b".to_string(), 4)]);
+        exec.parallel_run = Some(ParallelRunState {
+            parent_step_name: "parallel-review".to_string(),
+            aggregate: None,
+            children: vec![
+                ParallelChildRun {
+                    step_name: "review-a".to_string(),
+                    session_id: "session-a".to_string(),
+                    state: ParallelChildState::Running,
+                    result: None,
+                    structured_output: None,
+                    output_contract: Some("review-verdict".to_string()),
+                    failure_kind: None,
+                    failure_disposition: None,
+                    token_usage: TokenUsage::default(),
+                    run_index: 3,
+                },
+                ParallelChildRun {
+                    step_name: "review-b".to_string(),
+                    session_id: "session-b".to_string(),
+                    state: ParallelChildState::Completed,
+                    result: None,
+                    structured_output: None,
+                    output_contract: Some("review-verdict".to_string()),
+                    failure_kind: None,
+                    failure_disposition: None,
+                    token_usage: TokenUsage::default(),
+                    run_index: 4,
+                },
+            ],
+        });
+        exec
     }
 
     fn step_output(run_index: u32, contract: Option<&str>, structured: bool) -> StepOutput {
@@ -550,6 +630,34 @@ mod tests {
     }
 
     #[test]
+    fn validate_submission_target_context_returns_current_step_target_details() {
+        let mut exec = running_execution();
+        exec.current_session_id = Some("session-current".to_string());
+
+        let target =
+            validate_submission_target_context(&exec, "run-1", "review", "review-verdict").unwrap();
+
+        assert_eq!(target.workflow_name, "wf");
+        assert_eq!(target.worktree_path, "/tmp/wt");
+        assert_eq!(target.session_id.as_deref(), Some("session-current"));
+        assert_eq!(target.run_index, 2);
+    }
+
+    #[test]
+    fn validate_submission_target_context_returns_parallel_child_target_details() {
+        let exec = parallel_execution();
+
+        let target =
+            validate_submission_target_context(&exec, "run-1", "review-a", "review-verdict")
+                .unwrap();
+
+        assert_eq!(target.workflow_name, "wf");
+        assert_eq!(target.worktree_path, "/tmp/wt");
+        assert_eq!(target.session_id.as_deref(), Some("session-a"));
+        assert_eq!(target.run_index, 3);
+    }
+
+    #[test]
     fn apply_validated_submission_updates_step_output_and_workflow_variables() {
         let mut exec = running_execution();
         let mutation = apply_validated_submission(
@@ -592,6 +700,25 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
+        assert!(exec.step_outputs.is_empty());
+    }
+
+    #[test]
+    fn apply_validated_submission_rejects_non_accepting_parallel_child_without_mutation() {
+        let mut exec = parallel_execution();
+        let err = apply_validated_submission(
+            &mut exec,
+            "run-1",
+            "review-b",
+            "review-verdict",
+            &serde_json::json!({"verdict": "LGTM"}),
+            Some("LGTM".to_string()),
+            HashMap::new(),
+            42.0,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, WorkflowEngineError::InvalidState(_)));
         assert!(exec.step_outputs.is_empty());
     }
 

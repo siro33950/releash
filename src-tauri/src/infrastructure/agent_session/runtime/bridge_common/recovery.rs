@@ -23,11 +23,14 @@ use super::stream_emit::{emit_session_state_changed, emit_streaming_delta, enque
 use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::context_restore::RestoreContextPayload;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
+use crate::infrastructure::agent_session::runtime::timeouts::{
+    default_stale_timeout, MAX_STALE_TIMEOUT_SECS,
+};
 use crate::usecase::agent_session::event_log::InterruptReason;
 use crate::usecase::agent_session::event_log::TurnEventLog;
 use crate::usecase::agent_session::session::ContextCarryState;
 use crate::usecase::agent_session::session::MessagePart;
-use crate::usecase::agent_session::session::SessionStore;
+use crate::usecase::agent_session::session::{SessionMeta, SessionStore};
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -45,23 +48,31 @@ use tokio::sync::{watch, Mutex};
 
 pub(super) const BRIDGE_EOF_ERROR_MESSAGE: &str = "Bridge process exited unexpectedly.";
 pub(super) const STALE_EXIT_CODE: i64 = 124;
-pub(super) const STALE_TIMEOUT_SECS: u64 = 180;
 pub(super) const STALE_RECOVERY_GRACE_SECS: u64 = 10;
 pub(super) const WATCHDOG_TICK_SECS: u64 = 5;
 pub(super) const STALE_ERROR_MESSAGE: &str =
     "Claude 応答が停止したため中断しました。もう一度お試しください。";
 
-pub(super) fn claude_bridge_watchdog_env_overrides() -> Vec<(&'static str, String)> {
+pub(super) fn claude_bridge_watchdog_env_overrides(
+    stale_timeout: Duration,
+) -> Vec<(&'static str, String)> {
     vec![
         (
             "CLAUDE_STREAM_IDLE_TIMEOUT_MS",
-            (STALE_TIMEOUT_SECS * 1000).to_string(),
+            stale_timeout.as_millis().to_string(),
         ),
         ("CLAUDE_ENABLE_STREAM_WATCHDOG", "1".to_string()),
         ("CLAUDE_ENABLE_BYTE_WATCHDOG", "1".to_string()),
         ("CLAUDE_CODE_MAX_RETRIES", "10".to_string()),
         ("API_TIMEOUT_MS", "600000".to_string()),
     ]
+}
+
+fn stale_timeout_for_session(meta: Option<&SessionMeta>) -> Duration {
+    meta.and_then(|meta| meta.workflow_step_context.as_ref())
+        .and_then(|context| context.stale_timeout_secs)
+        .map(|secs| Duration::from_secs(secs.min(MAX_STALE_TIMEOUT_SECS)))
+        .unwrap_or_else(default_stale_timeout)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,12 +93,12 @@ pub(super) fn evaluate_turn_liveness(
     last_progress_at: Option<Instant>,
     turn_phase_since: Instant,
     now: Instant,
+    stale_timeout: Duration,
 ) -> Option<TurnLivenessTimeout> {
     match turn_phase {
         TurnPhase::Streaming => {
             let base = last_progress_at.unwrap_or(turn_phase_since);
-            (now.duration_since(base) > Duration::from_secs(STALE_TIMEOUT_SECS))
-                .then_some(TurnLivenessTimeout::Stale)
+            (now.duration_since(base) > stale_timeout).then_some(TurnLivenessTimeout::Stale)
         }
         TurnPhase::Idle | TurnPhase::WaitingPermission => None,
     }
@@ -889,9 +900,12 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
     let initial_permission_mode = permission_mode;
     crate::permission::PermissionMode::parse(&initial_permission_mode)
         .map_err(|e| e.to_string())?;
-    #[cfg(unix)]
     let data_dir = resolve_data_dir(app)
         .map_err(|e| format!("Failed to resolve data dir for session {chat_session_id}: {e}"))?;
+    let session_meta = session_store
+        .get_session_meta(&data_dir, chat_session_id)
+        .map_err(|e| format!("Failed to read session meta for session {chat_session_id}: {e}"))?;
+    let stale_timeout = stale_timeout_for_session(session_meta.as_ref());
 
     let mut cmd = Command::new("node");
     cmd.arg(
@@ -935,7 +949,7 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
     for (k, v) in session_specific_env_overrides(chat_session_id, base_branch.as_deref()) {
         cmd.env(k, v);
     }
-    for (k, v) in claude_bridge_watchdog_env_overrides() {
+    for (k, v) in claude_bridge_watchdog_env_overrides(stale_timeout) {
         cmd.env(k, v);
     }
 
@@ -1057,7 +1071,9 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
                 current_permission_mode: initial_permission_mode.clone(),
                 available_models: Vec::new(),
                 selected_model,
+                stale_timeout,
                 last_result_token_usage: None,
+                current_turn_stop_reason: None,
                 latest_token_usage: None,
                 pending_stream_parts: Vec::new(),
                 pending_stream_part_rollbacks: Vec::new(),
@@ -1265,6 +1281,7 @@ pub(super) fn turn_watchdog_decision(
         proc.last_progress_at,
         proc.turn_phase_since,
         now,
+        proc.stale_timeout,
     ) {
         Some(timeout) => TurnWatchdogDecision::Timeout(timeout),
         None => TurnWatchdogDecision::Continue,
@@ -1701,23 +1718,125 @@ mod cleanup_gate_tests {
 #[cfg(test)]
 mod tests {
     use super::super::process_registry::TurnPhase;
-    use super::{evaluate_turn_liveness, TurnLivenessTimeout, STALE_TIMEOUT_SECS};
+    use super::{
+        default_stale_timeout, evaluate_turn_liveness, stale_timeout_for_session,
+        TurnLivenessTimeout,
+    };
+    use crate::infrastructure::agent_session::runtime::timeouts::{
+        DEFAULT_STALE_TIMEOUT_SECS, MAX_STALE_TIMEOUT_SECS,
+    };
     use std::time::{Duration, Instant};
+
+    fn session_meta_with_stale_timeout(
+        stale_timeout_secs: Option<u64>,
+    ) -> crate::usecase::agent_session::session::SessionMeta {
+        crate::usecase::agent_session::session::SessionMeta {
+            id: "session-1".to_string(),
+            worktree_path: "/repo".to_string(),
+            state: crate::usecase::agent_session::session::SessionState::Active,
+            created_at: 1.0,
+            updated_at: 1.0,
+            agent_session_id: None,
+            context_carry: None,
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            selected_model: None,
+            permission_profile_id: None,
+            backend_id: Some("claude".to_string()),
+            workflow_step_session: true,
+            workflow_step_context: Some(
+                crate::usecase::agent_session::session::WorkflowStepContextDto {
+                    run_id: "run-1".to_string(),
+                    workflow_name: "wf".to_string(),
+                    step_name: "review".to_string(),
+                    run_index: 1,
+                    parent_step_name: None,
+                    parent_run_index: None,
+                    order: 0,
+                    startup_timeout_secs: None,
+                    startup_max_retries: None,
+                    stale_timeout_secs,
+                },
+            ),
+            first_message_preview: String::new(),
+            message_count: 0,
+            body_format_version:
+                crate::usecase::agent_session::session::SESSION_BODY_FORMAT_VERSION,
+        }
+    }
 
     #[test]
     fn recovery_liveness_marks_streaming_stale_after_timeout() {
         let now = Instant::now();
-        let stale_at = now - Duration::from_secs(STALE_TIMEOUT_SECS + 1);
+        let stale_at = now - Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS + 1);
 
         assert_eq!(
-            evaluate_turn_liveness(TurnPhase::Streaming, Some(stale_at), now, now),
+            evaluate_turn_liveness(
+                TurnPhase::Streaming,
+                Some(stale_at),
+                now,
+                now,
+                Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS),
+            ),
             Some(TurnLivenessTimeout::Stale)
         );
     }
 
     #[test]
+    fn stale_timeout_for_session_prefers_workflow_context_value() {
+        let meta = session_meta_with_stale_timeout(Some(42));
+
+        assert_eq!(
+            stale_timeout_for_session(Some(&meta)),
+            Duration::from_secs(42)
+        );
+    }
+
+    #[test]
+    fn stale_timeout_for_session_preserves_policy_values() {
+        let default_policy_meta = session_meta_with_stale_timeout(Some(180));
+        let extended_policy_meta = session_meta_with_stale_timeout(Some(600));
+
+        assert_eq!(
+            stale_timeout_for_session(Some(&default_policy_meta)),
+            Duration::from_secs(180)
+        );
+        assert_eq!(
+            stale_timeout_for_session(Some(&extended_policy_meta)),
+            Duration::from_secs(600)
+        );
+    }
+
+    #[test]
+    fn stale_timeout_for_session_clamps_corrupted_workflow_context_value() {
+        let meta = session_meta_with_stale_timeout(Some(u64::MAX));
+
+        assert_eq!(
+            stale_timeout_for_session(Some(&meta)),
+            Duration::from_secs(MAX_STALE_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn stale_timeout_for_session_falls_back_without_workflow_context_value() {
+        let meta_with_none = session_meta_with_stale_timeout(None);
+        let mut meta_without_context = session_meta_with_stale_timeout(Some(42));
+        meta_without_context.workflow_step_context = None;
+
+        assert_eq!(
+            stale_timeout_for_session(Some(&meta_with_none)),
+            default_stale_timeout()
+        );
+        assert_eq!(
+            stale_timeout_for_session(Some(&meta_without_context)),
+            default_stale_timeout()
+        );
+        assert_eq!(stale_timeout_for_session(None), default_stale_timeout());
+    }
+
+    #[test]
     fn claude_bridge_watchdog_env_uses_existing_native_levers() {
-        let env = super::claude_bridge_watchdog_env_overrides();
+        let env = super::claude_bridge_watchdog_env_overrides(Duration::from_secs(600));
         let keys: Vec<&str> = env.iter().map(|(key, _)| *key).collect();
 
         assert_eq!(
@@ -1741,7 +1860,7 @@ mod tests {
             env.iter()
                 .find_map(|(key, value)| (*key == "CLAUDE_STREAM_IDLE_TIMEOUT_MS")
                     .then_some(value.as_str())),
-            Some("180000")
+            Some("600000")
         );
     }
 }
@@ -1756,6 +1875,7 @@ mod moved_tests {
     use super::super::shared::test_support::*;
     use super::super::turn_event_log::*;
 
+    use crate::infrastructure::agent_session::runtime::timeouts::DEFAULT_STALE_TIMEOUT_SECS;
     use crate::usecase::agent_session::event_log::WorkflowTurnCompleteInput;
 
     use crate::usecase::agent_session::session::MessagePart;
@@ -2145,9 +2265,10 @@ mod moved_tests {
         let now = Instant::now();
         let timeout = evaluate_turn_liveness(
             TurnPhase::Streaming,
-            Some(now - Duration::from_secs(STALE_TIMEOUT_SECS + 1)),
-            now - Duration::from_secs(STALE_TIMEOUT_SECS + 1),
+            Some(now - Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS + 1)),
+            now - Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS + 1),
             now,
+            Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS),
         );
 
         assert_eq!(timeout, Some(TurnLivenessTimeout::Stale));
@@ -2158,9 +2279,10 @@ mod moved_tests {
         let now = Instant::now();
         let timeout = evaluate_turn_liveness(
             TurnPhase::Streaming,
-            Some(now - Duration::from_secs(STALE_TIMEOUT_SECS - 1)),
-            now - Duration::from_secs(STALE_TIMEOUT_SECS + 10),
+            Some(now - Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS - 1)),
+            now - Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS + 10),
             now,
+            Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS),
         );
 
         assert_eq!(timeout, None);
@@ -2172,7 +2294,13 @@ mod moved_tests {
         let since = now - Duration::from_secs(3600);
 
         assert_eq!(
-            evaluate_turn_liveness(TurnPhase::WaitingPermission, None, since, now),
+            evaluate_turn_liveness(
+                TurnPhase::WaitingPermission,
+                None,
+                since,
+                now,
+                Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS),
+            ),
             None
         );
     }
@@ -2182,7 +2310,13 @@ mod moved_tests {
         let now = Instant::now();
 
         assert_eq!(
-            evaluate_turn_liveness(TurnPhase::Idle, None, now - Duration::from_secs(3600), now),
+            evaluate_turn_liveness(
+                TurnPhase::Idle,
+                None,
+                now - Duration::from_secs(3600),
+                now,
+                Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS),
+            ),
             None
         );
     }
@@ -2190,7 +2324,7 @@ mod moved_tests {
     #[tokio::test]
     async fn touch_liveness_resets_streaming_stale_clock() {
         let mut proc = make_streaming_test_process();
-        let stale_base = Instant::now() - Duration::from_secs(STALE_TIMEOUT_SECS + 1);
+        let stale_base = Instant::now() - Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS + 1);
         proc.last_progress_at = Some(stale_base);
         proc.turn_phase_since = stale_base;
 
@@ -2215,7 +2349,7 @@ mod moved_tests {
         proc.turn_watchdog_active = true;
         let captured_gen_id = proc.generation_id;
         let captured_turn_seq = proc.turn_seq;
-        let stale_base = Instant::now() - Duration::from_secs(STALE_TIMEOUT_SECS + 1);
+        let stale_base = Instant::now() - Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS + 1);
         proc.last_progress_at = Some(stale_base);
         proc.turn_phase_since = stale_base;
 
@@ -2350,6 +2484,7 @@ mod moved_tests {
                 turn_id: 1,
                 exit_code: -1,
                 final_text_parts: Vec::new(),
+                failure_signal: None,
                 token_usage: None,
                 interrupted: true,
             })
@@ -2528,6 +2663,7 @@ mod moved_tests {
             cleanup_orphan_processes, get_process_start_time, pids_dir, remove_pgid, save_pgid,
             wait_for_startup_orphan_cleanup, CleanupGate, OrphanCleanupReport, PidFileV1,
         };
+        use crate::infrastructure::agent_session::runtime::timeouts::DEFAULT_STALE_TIMEOUT_SECS;
         use crate::infrastructure::agent_session::runtime::{AgentBackendRegistry, ModelInfo};
         use crate::usecase::agent_session::event_log::TurnEventLog;
         use crate::usecase::agent_session::session::create_session_internal;
@@ -3200,7 +3336,9 @@ mod moved_tests {
                 current_permission_mode: "ask".to_string(),
                 available_models: Vec::new(),
                 selected_model: None,
+                stale_timeout: Duration::from_secs(DEFAULT_STALE_TIMEOUT_SECS),
                 last_result_token_usage: None,
+                current_turn_stop_reason: None,
                 latest_token_usage: None,
                 pending_stream_parts: Vec::new(),
                 pending_stream_part_rollbacks: Vec::new(),

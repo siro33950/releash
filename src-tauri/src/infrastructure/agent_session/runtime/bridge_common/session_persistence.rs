@@ -1456,7 +1456,15 @@ mod moved_tests {
                     chat_session_id: session.id.clone(),
                     exit_code: 0,
                     final_text_parts: workflow_final_text_parts(&final_parts),
-                    token_usage: workflow_turn_complete.and_then(|input| {
+                    failure_signal: workflow_turn_complete
+                        .as_ref()
+                        .and_then(|input| input.failure_signal)
+                        .map(|signal| match signal {
+                            crate::usecase::agent_session::event_log::AgentTurnFailureSignal::ModelRefusal => {
+                                crate::usecase::workflow::ports::WorkflowTurnFailureSignal::ModelRefusal
+                            }
+                        }),
+                    token_usage: workflow_turn_complete.as_ref().and_then(|input| {
                         input.token_usage.map(|usage| {
                             crate::usecase::workflow::ports::WorkflowTurnTokenUsage {
                                 input_tokens: usage.input_tokens,

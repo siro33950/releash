@@ -41,6 +41,7 @@ use crate::infrastructure::agent_session::runtime::turn_latency;
 use crate::usecase::agent_session::event_log::InterruptReason;
 use crate::usecase::agent_session::event_log::PromptInput;
 use crate::usecase::agent_session::event_log::TurnEventLog;
+use crate::usecase::agent_session::event_log::TurnStopReason;
 use crate::usecase::agent_session::session::apply_tool_result_update;
 use crate::usecase::agent_session::session::now_timestamp;
 use crate::usecase::agent_session::session::MessagePart;
@@ -315,6 +316,7 @@ pub(super) struct SdkMessageAccumulation {
     pub(crate) handled: bool,
     pub(crate) updated_parts: Option<Vec<MessagePart>>,
     pub(crate) liveness: bool,
+    pub(crate) stop_reason: Option<TurnStopReason>,
 }
 
 pub(super) fn is_explicit_liveness_progress_message(msg: &serde_json::Value) -> bool {
@@ -343,7 +345,16 @@ pub(super) fn accumulate_sdk_message_with_liveness(
         handled,
         updated_parts,
         liveness,
+        stop_reason: turn_stop_reason_from_sdk_message(msg),
     }
+}
+
+fn turn_stop_reason_from_sdk_message(msg: &serde_json::Value) -> Option<TurnStopReason> {
+    let stop_reason = msg
+        .get("message")
+        .and_then(|message| message.get("stop_reason"))
+        .and_then(|value| value.as_str())?;
+    (stop_reason == "refusal").then_some(TurnStopReason::Refusal)
 }
 
 fn sdk_message_can_update_existing_parts(msg: &serde_json::Value) -> bool {
@@ -1141,6 +1152,11 @@ where
         accumulate_sdk_message_with_liveness(msg, &mut proc.streaming_parts, &mut proc.task_id_map);
     let acc = accumulation.handled;
     let updated_parts = accumulation.updated_parts;
+    if in_streaming {
+        if let Some(stop_reason) = accumulation.stop_reason {
+            proc.current_turn_stop_reason = Some(stop_reason);
+        }
+    }
     if !acc {
         proc.streaming_parts.truncate(prev_len);
         if post_turn {

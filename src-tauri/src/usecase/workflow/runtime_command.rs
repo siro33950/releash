@@ -300,6 +300,7 @@ mod tests {
                 chat_session_id: "chat".to_string(),
                 exit_code: 0,
                 final_text_parts: vec!["ok".to_string()],
+                failure_signal: None,
                 token_usage: Some(WorkflowTurnTokenUsage {
                     input_tokens: 1,
                     output_tokens: 2,
@@ -349,6 +350,7 @@ mod tests {
                 chat_session_id: "chat".to_string(),
                 exit_code: 0,
                 final_text_parts: Vec::new(),
+                failure_signal: None,
                 token_usage: None,
                 interrupted: false,
             })

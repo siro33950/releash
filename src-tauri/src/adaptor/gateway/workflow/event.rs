@@ -8,7 +8,17 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::adaptor::gateway::workflow::failure_wire::default_failure_kind;
 use crate::adaptor::gateway::workflow::schema::Workflow;
+use crate::domain::workflow::{FailureDisposition, WorkflowStepFailureKind, STEP_STATE_COMPLETED};
+
+fn default_parallel_child_completed_state() -> String {
+    STEP_STATE_COMPLETED.to_string()
+}
+
+fn default_contract_repair_run_index() -> u32 {
+    1
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -127,6 +137,10 @@ pub enum WorkflowEvent {
         workflow_name: String,
         node_name: String,
         reason: String,
+        #[serde(default = "default_failure_kind")]
+        failure_kind: WorkflowStepFailureKind,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        retry_count: Option<u32>,
         timestamp: f64,
     },
     /// approval runtime primitive の受理直前に、approval 対象の到達を記録する。
@@ -158,6 +172,10 @@ pub enum WorkflowEvent {
         run_id: String,
         workflow_name: String,
         reason: String,
+        #[serde(default = "default_failure_kind")]
+        failure_kind: WorkflowStepFailureKind,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        retry_count: Option<u32>,
         timestamp: f64,
     },
     /// abort runtime primitive の受理結果として run が中断された。
@@ -213,6 +231,12 @@ pub enum WorkflowEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         structured_output: Option<serde_json::Value>,
         run_index: u32,
+        #[serde(default = "default_parallel_child_completed_state")]
+        state: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        failure_kind: Option<WorkflowStepFailureKind>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        failure_disposition: Option<FailureDisposition>,
         timestamp: f64,
     },
     /// 並列ブロック全体が完了し、aggregate 評価結果に基づき遷移する。
@@ -228,6 +252,10 @@ pub enum WorkflowEvent {
         run_id: String,
         workflow_name: String,
         node_name: String,
+        #[serde(default = "default_contract_repair_run_index")]
+        run_index: u32,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        request_id: Option<String>,
         attempt: u32,
         violation_reason: String,
         timestamp: f64,
@@ -462,6 +490,27 @@ mod tests {
     }
 
     #[test]
+    fn node_failed_missing_failure_kind_defaults_to_infrastructure_crash() {
+        let event: WorkflowEvent = serde_json::from_value(serde_json::json!({
+            "event": "node_failed",
+            "run_id": "run-1",
+            "workflow_name": "wf",
+            "node_name": "review",
+            "reason": "legacy failure",
+            "timestamp": 1.0
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            event,
+            WorkflowEvent::NodeFailed {
+                failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn run_aborted_step_snapshot_serializes_without_step_history_display_state() {
         let event = WorkflowEvent::RunAborted {
             run_id: "00000000-0000-0000-0000-000000000801".to_string(),
@@ -659,6 +708,8 @@ mod tests {
                 workflow_name: "w".to_string(),
                 node_name: "n".to_string(),
                 reason: "x".to_string(),
+                failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
+                retry_count: None,
                 timestamp: 0.0,
             },
             WorkflowEvent::ApprovalRequested {
@@ -685,6 +736,8 @@ mod tests {
                 run_id: rid.to_string(),
                 workflow_name: "w".to_string(),
                 reason: "x".to_string(),
+                failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
+                retry_count: None,
                 timestamp: 0.0,
             },
             WorkflowEvent::RunAborted {

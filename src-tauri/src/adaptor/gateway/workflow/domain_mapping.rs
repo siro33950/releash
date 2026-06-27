@@ -32,11 +32,15 @@ pub(crate) fn workflow_execution_state_to_domain(
         legacy_state::WorkflowExecutionState::Completed => {
             domain::WorkflowExecutionState::Completed
         }
-        legacy_state::WorkflowExecutionState::Failed { reason } => {
-            domain::WorkflowExecutionState::Failed {
-                reason: reason.clone(),
-            }
-        }
+        legacy_state::WorkflowExecutionState::Failed {
+            reason,
+            kind,
+            retry_count,
+        } => domain::WorkflowExecutionState::Failed {
+            reason: reason.clone(),
+            kind: *kind,
+            retry_count: *retry_count,
+        },
         legacy_state::WorkflowExecutionState::Aborted => domain::WorkflowExecutionState::Aborted,
     }
 }
@@ -132,6 +136,8 @@ fn child_output_from_domain(
         structured_output: output.structured_output,
         output_contract: output.output_contract,
         state: output.state,
+        failure_kind: output.failure_kind,
+        failure_disposition: output.failure_disposition,
     }
 }
 
@@ -147,6 +153,8 @@ fn child_output_to_domain(
         structured_output: output.structured_output.clone(),
         output_contract: output.output_contract.clone(),
         state: output.state.clone(),
+        failure_kind: output.failure_kind,
+        failure_disposition: output.failure_disposition,
     }
 }
 
@@ -176,6 +184,8 @@ pub(crate) fn parallel_step_state_from_domain(
         completed_at: state.completed_at,
         structured_output: state.structured_output,
         output_contract: state.output_contract,
+        failure_kind: state.failure_kind,
+        failure_disposition: state.failure_disposition,
     }
 }
 
@@ -228,7 +238,7 @@ fn child_node_to_domain(child: &schema::ChildNodeDefinition) -> domain::ChildNod
     }
 }
 
-fn node_type_to_domain(node_type: schema::NodeType) -> domain::NodeType {
+pub(crate) fn node_type_to_domain(node_type: schema::NodeType) -> domain::NodeType {
     match node_type {
         schema::NodeType::Agent => domain::NodeType::Agent,
         schema::NodeType::Bash => domain::NodeType::Bash,

@@ -59,6 +59,8 @@ pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
     async fn submit_workflow_output(
         &self,
         app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
         run_id: &str,
         step_name: String,
         contract: String,
@@ -175,6 +177,8 @@ where
     async fn submit_workflow_output(
         &self,
         app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
         run_id: &str,
         step_name: String,
         contract: String,
@@ -185,6 +189,8 @@ where
         self.as_ref()
             .submit_workflow_output(
                 app,
+                session_store,
+                handles,
                 run_id,
                 step_name,
                 contract,
@@ -313,6 +319,8 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
     async fn submit_workflow_output(
         &self,
         app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
         run_id: &str,
         step_name: String,
         contract: String,
@@ -323,6 +331,8 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
         WorkflowRuntimeService::submit_workflow_output(
             self,
             app,
+            session_store,
+            handles,
             run_id,
             step_name,
             contract,

@@ -493,6 +493,7 @@ pub async fn set_session_backend(
         backend_id,
     )
     .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -510,6 +511,7 @@ pub async fn get_session(
         state, handles, registry, app, session_id,
     )
     .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -801,6 +803,7 @@ pub async fn start_agent_session(
         None,
     )
     .await
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

@@ -41,7 +41,7 @@ impl WorkflowTurnCompleteUsecase {
         {
             return Ok(());
         }
-        if command.interrupted {
+        if command.interrupted && command.exit_code == 0 && command.failure_signal.is_none() {
             return Ok(());
         }
         self.runtime.pickup_pending_submit_outputs().await;
@@ -50,6 +50,7 @@ impl WorkflowTurnCompleteUsecase {
                 chat_session_id: command.chat_session_id,
                 exit_code: command.exit_code,
                 final_text_parts: command.final_text_parts,
+                failure_signal: command.failure_signal,
                 token_usage: command.token_usage,
             })
             .await
@@ -64,6 +65,7 @@ mod tests {
     #[derive(Default)]
     struct FakeRuntimeGateway {
         calls: Mutex<Vec<&'static str>>,
+        completed_commands: Mutex<Vec<WorkflowTurnCompleteCommand>>,
         session_running: bool,
     }
 
@@ -80,9 +82,10 @@ mod tests {
 
         async fn complete_turn(
             &self,
-            _command: WorkflowTurnCompleteCommand,
+            command: WorkflowTurnCompleteCommand,
         ) -> Result<(), WorkflowError> {
             self.calls.lock().unwrap().push("complete_turn");
+            self.completed_commands.lock().unwrap().push(command);
             Ok(())
         }
     }
@@ -97,6 +100,7 @@ mod tests {
                 chat_session_id: " ".to_string(),
                 exit_code: 0,
                 final_text_parts: Vec::new(),
+                failure_signal: None,
                 token_usage: None,
                 interrupted: false,
             })
@@ -117,6 +121,7 @@ mod tests {
                 chat_session_id: "chat".to_string(),
                 exit_code: 0,
                 final_text_parts: Vec::new(),
+                failure_signal: None,
                 token_usage: None,
                 interrupted: false,
             })
@@ -139,6 +144,7 @@ mod tests {
                 chat_session_id: "chat".to_string(),
                 exit_code: 0,
                 final_text_parts: vec!["done".to_string()],
+                failure_signal: None,
                 token_usage: None,
                 interrupted: false,
             })
@@ -164,6 +170,7 @@ mod tests {
                 chat_session_id: "chat".to_string(),
                 exit_code: 0,
                 final_text_parts: Vec::new(),
+                failure_signal: None,
                 token_usage: None,
                 interrupted: true,
             })
@@ -171,5 +178,63 @@ mod tests {
             .unwrap();
 
         assert_eq!(gateway.calls.lock().unwrap().as_slice(), ["is_running"]);
+    }
+
+    #[tokio::test]
+    async fn runtime_interruption_with_non_zero_exit_is_completed_for_failure_policy() {
+        let gateway = Arc::new(FakeRuntimeGateway {
+            session_running: true,
+            ..Default::default()
+        });
+        let usecase = WorkflowTurnCompleteUsecase::new(gateway.clone());
+
+        usecase
+            .complete_turn(WorkflowTurnCompleteNotification {
+                chat_session_id: "chat".to_string(),
+                exit_code: 124,
+                final_text_parts: Vec::new(),
+                failure_signal: None,
+                token_usage: None,
+                interrupted: true,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            gateway.calls.lock().unwrap().as_slice(),
+            ["is_running", "pickup_pending", "complete_turn"]
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupted_turn_with_failure_signal_is_completed_for_failure_policy() {
+        let gateway = Arc::new(FakeRuntimeGateway {
+            session_running: true,
+            ..Default::default()
+        });
+        let usecase = WorkflowTurnCompleteUsecase::new(gateway.clone());
+
+        usecase
+            .complete_turn(WorkflowTurnCompleteNotification {
+                chat_session_id: "chat".to_string(),
+                exit_code: 0,
+                final_text_parts: Vec::new(),
+                failure_signal: Some(
+                    crate::usecase::workflow::ports::WorkflowTurnFailureSignal::ModelRefusal,
+                ),
+                token_usage: None,
+                interrupted: true,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            gateway.calls.lock().unwrap().as_slice(),
+            ["is_running", "pickup_pending", "complete_turn"]
+        );
+        assert_eq!(
+            gateway.completed_commands.lock().unwrap()[0].failure_signal,
+            Some(crate::usecase::workflow::ports::WorkflowTurnFailureSignal::ModelRefusal)
+        );
     }
 }

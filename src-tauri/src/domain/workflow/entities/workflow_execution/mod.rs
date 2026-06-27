@@ -10,9 +10,10 @@ use crate::domain::workflow::services::{contract, history, parallel, projection}
 use crate::domain::workflow::value_objects::{
     ApprovalOperations, NodeDefinition, NodeType, ParallelAggregate, RunId, StepHistoryEntry,
     StepOutput, TokenUsage, WorkflowDefinition, WorkflowExecutionState, WorkflowStateSnapshot,
-    WorktreePath, STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_INTERRUPTED,
-    STEP_STATE_PENDING, STEP_STATE_RUNNING,
+    WorkflowStepFailureKind, WorktreePath, STEP_STATE_COMPLETED, STEP_STATE_FAILED,
+    STEP_STATE_INTERRUPTED, STEP_STATE_PENDING, STEP_STATE_RUNNING,
 };
+use crate::domain::workflow::FailureDisposition;
 use crate::domain::workflow::WorkflowError;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +51,8 @@ pub struct ParallelChildRun {
     pub result: Option<String>,
     pub structured_output: Option<serde_json::Value>,
     pub output_contract: Option<String>,
+    pub failure_kind: Option<WorkflowStepFailureKind>,
+    pub failure_disposition: Option<FailureDisposition>,
     pub token_usage: TokenUsage,
     pub run_index: u32,
 }
@@ -270,7 +273,11 @@ impl WorkflowExecution {
     }
 
     pub fn fail_run(&mut self, reason: String, timestamp: f64) {
-        self.state = WorkflowExecutionState::Failed { reason };
+        self.state = WorkflowExecutionState::Failed {
+            reason,
+            kind: WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: None,
+        };
         self.parallel_run = None;
         self.updated_at = timestamp;
     }
@@ -306,6 +313,8 @@ impl WorkflowExecution {
                 result: None,
                 structured_output: None,
                 output_contract: None,
+                failure_kind: None,
+                failure_disposition: None,
                 token_usage: TokenUsage::default(),
                 run_index: 0,
             })
@@ -340,6 +349,8 @@ impl WorkflowExecution {
             child.session_id = session_id;
             child.state = ParallelChildState::Running;
             child.result = None;
+            child.failure_kind = None;
+            child.failure_disposition = None;
             child.run_index = execution_count;
         } else {
             parallel_run.children.push(ParallelChildRun {
@@ -349,6 +360,8 @@ impl WorkflowExecution {
                 result: None,
                 structured_output: None,
                 output_contract: None,
+                failure_kind: None,
+                failure_disposition: None,
                 token_usage: TokenUsage::default(),
                 run_index: execution_count,
             });
@@ -380,6 +393,8 @@ impl WorkflowExecution {
                 child.token_usage = completion.token_usage.clone().unwrap_or_default();
                 child.structured_output = output_merge.structured_output.clone();
                 child.output_contract = output_merge.output_contract.clone();
+                child.failure_kind = None;
+                child.failure_disposition = None;
                 child.run_index = completion.run_index;
             }
         }

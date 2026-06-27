@@ -29,6 +29,7 @@ use crate::domain::workflow::{
     ContractValidationResult, STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED,
     STEP_STATE_PENDING, STEP_STATE_RUNNING,
 };
+use crate::domain::workflow::{FailureDisposition, WorkflowStepFailureKind};
 
 /// 秒単位の f64 タイムスタンプ（engine 内 `current_timestamp()` 由来）を
 /// frontend 表示用のミリ秒単位に変換するための係数。
@@ -76,6 +77,8 @@ fn child_output_from_run_aborted_snapshot(
             RunAbortedChildOutcome::Aborted => STEP_STATE_ABORTED,
         }
         .to_string(),
+        failure_kind: None,
+        failure_disposition: None,
     }
 }
 
@@ -256,6 +259,9 @@ pub enum WorkflowEventView {
         workflow_name: String,
         node_name: String,
         reason: String,
+        failure_kind: WorkflowStepFailureKind,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_count: Option<u32>,
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
     },
@@ -287,6 +293,9 @@ pub enum WorkflowEventView {
         run_id: String,
         workflow_name: String,
         reason: String,
+        failure_kind: WorkflowStepFailureKind,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_count: Option<u32>,
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
     },
@@ -313,6 +322,9 @@ pub enum WorkflowEventView {
         run_id: String,
         workflow_name: String,
         node_name: String,
+        run_index: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
         attempt: u32,
         violation_reason: String,
         #[serde(rename = "timestampMs")]
@@ -349,6 +361,11 @@ pub enum WorkflowEventView {
         #[serde(skip_serializing_if = "Option::is_none")]
         structured_output: Option<serde_json::Value>,
         run_index: u32,
+        state: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_kind: Option<WorkflowStepFailureKind>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_disposition: Option<FailureDisposition>,
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
     },
@@ -471,12 +488,16 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 workflow_name,
                 node_name,
                 reason,
+                failure_kind,
+                retry_count,
                 timestamp,
             } => WorkflowEventView::NodeFailed {
                 run_id,
                 workflow_name,
                 node_name,
                 reason,
+                failure_kind,
+                retry_count,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
             WorkflowEvent::ApprovalRequested {
@@ -520,11 +541,15 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 run_id,
                 workflow_name,
                 reason,
+                failure_kind,
+                retry_count,
                 timestamp,
             } => WorkflowEventView::RunFailed {
                 run_id,
                 workflow_name,
                 reason,
+                failure_kind,
+                retry_count,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
             WorkflowEvent::RunAborted {
@@ -560,6 +585,8 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 run_id,
                 workflow_name,
                 node_name,
+                run_index,
+                request_id,
                 attempt,
                 violation_reason,
                 timestamp,
@@ -567,6 +594,8 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 run_id,
                 workflow_name,
                 node_name,
+                run_index,
+                request_id,
                 attempt,
                 violation_reason,
                 timestamp_ms: seconds_to_ms(timestamp),
@@ -611,6 +640,9 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 token_usage,
                 structured_output,
                 run_index,
+                state,
+                failure_kind,
+                failure_disposition,
                 timestamp,
             } => WorkflowEventView::ParallelChildCompleted {
                 run_id,
@@ -622,6 +654,9 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 token_usage,
                 structured_output,
                 run_index,
+                state,
+                failure_kind,
+                failure_disposition,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
             WorkflowEvent::ParallelCompleted {
@@ -1141,7 +1176,11 @@ pub(crate) fn reconstruct_state_from_events(
                 updated_at = *timestamp;
             }
             WorkflowEvent::NodeFailed {
-                reason, timestamp, ..
+                reason,
+                failure_kind,
+                retry_count,
+                timestamp,
+                ..
             } => {
                 for ps in &mut active_parallel_steps {
                     if ps.state == STEP_STATE_RUNNING {
@@ -1150,6 +1189,8 @@ pub(crate) fn reconstruct_state_from_events(
                 }
                 exec_state = WorkflowExecutionState::Failed {
                     reason: reason.clone(),
+                    kind: *failure_kind,
+                    retry_count: *retry_count,
                 };
                 current_session_id = None;
                 updated_at = *timestamp;
@@ -1192,10 +1233,16 @@ pub(crate) fn reconstruct_state_from_events(
                 updated_at = *timestamp;
             }
             WorkflowEvent::RunFailed {
-                reason, timestamp, ..
+                reason,
+                failure_kind,
+                retry_count,
+                timestamp,
+                ..
             } => {
                 exec_state = WorkflowExecutionState::Failed {
                     reason: reason.clone(),
+                    kind: *failure_kind,
+                    retry_count: *retry_count,
                 };
                 active_parallel_steps.clear();
                 current_session_id = None;
@@ -1260,6 +1307,8 @@ pub(crate) fn reconstruct_state_from_events(
                                     structured_output: child.structured_output.clone(),
                                     output_contract: child.output_contract.clone(),
                                     state: snapshot_state.to_string(),
+                                    failure_kind: None,
+                                    failure_disposition: None,
                                 }
                             })
                             .collect();
@@ -1331,6 +1380,8 @@ pub(crate) fn reconstruct_state_from_events(
                         completed_at: None,
                         structured_output: None,
                         output_contract: None,
+                        failure_kind: None,
+                        failure_disposition: None,
                     })
                     .collect();
                 updated_at = *timestamp;
@@ -1362,6 +1413,8 @@ pub(crate) fn reconstruct_state_from_events(
                         completed_at: None,
                         structured_output: None,
                         output_contract: None,
+                        failure_kind: None,
+                        failure_disposition: None,
                     });
                 }
                 updated_at = *timestamp;
@@ -1373,6 +1426,9 @@ pub(crate) fn reconstruct_state_from_events(
                 token_usage,
                 structured_output,
                 run_index,
+                state,
+                failure_kind,
+                failure_disposition,
                 timestamp,
                 ..
             } => {
@@ -1394,11 +1450,13 @@ pub(crate) fn reconstruct_state_from_events(
                     .iter_mut()
                     .find(|p| p.step_name == *child_node_name)
                 {
-                    ps.state = STEP_STATE_COMPLETED.to_string();
+                    ps.state = state.clone();
                     ps.result = result.clone();
                     ps.completed_at = Some(*timestamp);
                     ps.structured_output = merged_structured_output.clone();
                     ps.output_contract = merged_output_contract.clone();
+                    ps.failure_kind = *failure_kind;
+                    ps.failure_disposition = *failure_disposition;
                 }
                 step_outputs.insert(
                     child_node_name.clone(),
@@ -1479,7 +1537,9 @@ pub(crate) fn reconstruct_state_from_events(
                             output_contract: child.output_contract.clone().or_else(|| {
                                 output.and_then(|output| output.output_contract.clone())
                             }),
-                            state: STEP_STATE_COMPLETED.to_string(),
+                            state: child.state.clone(),
+                            failure_kind: child.failure_kind,
+                            failure_disposition: child.failure_disposition,
                         }
                     })
                     .collect::<Vec<_>>();
@@ -1791,12 +1851,16 @@ mod tests {
                 workflow_name: "wf".to_string(),
                 node_name: "a".to_string(),
                 reason: "boom".to_string(),
+                failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
+                retry_count: None,
                 timestamp: 2.0,
             },
             WorkflowEvent::RunFailed {
                 run_id: "exec-pf".to_string(),
                 workflow_name: "wf".to_string(),
                 reason: "child failed".to_string(),
+                failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
+                retry_count: None,
                 timestamp: 3.0,
             },
         ];
@@ -2031,6 +2095,9 @@ mod tests {
                 result: Some("LGTM".to_string()),
                 token_usage: None,
                 structured_output: None,
+                state: STEP_STATE_COMPLETED.to_string(),
+                failure_kind: None,
+                failure_disposition: None,
                 timestamp: 1.5,
             },
             WorkflowEvent::RunAborted {
@@ -2128,6 +2195,9 @@ mod tests {
                     output_tokens: 3,
                 }),
                 structured_output: None,
+                state: STEP_STATE_COMPLETED.to_string(),
+                failure_kind: None,
+                failure_disposition: None,
                 timestamp: 1.5,
             },
             WorkflowEvent::ParallelChildCompleted {
@@ -2143,6 +2213,9 @@ mod tests {
                     output_tokens: 2,
                 }),
                 structured_output: Some(serde_json::json!({ "verdict": "LGTM" })),
+                state: STEP_STATE_COMPLETED.to_string(),
+                failure_kind: None,
+                failure_disposition: None,
                 timestamp: 1.6,
             },
             WorkflowEvent::ParallelCompleted {
@@ -2199,6 +2272,90 @@ mod tests {
     }
 
     #[test]
+    fn projection_preserves_delegated_parallel_child_failure_state() {
+        let snapshot = workflow_with_nodes("wf", vec!["parallel-review", "done"]);
+        let events = vec![
+            run_started("exec-parallel-partial", snapshot),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-parallel-partial".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "parallel-review".to_string(),
+                execution_count: 1,
+                timestamp: 1.0,
+            },
+            WorkflowEvent::ParallelStarted {
+                run_id: "exec-parallel-partial".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_names: vec!["review-a".to_string()],
+                timestamp: 1.1,
+            },
+            WorkflowEvent::ParallelChildStarted {
+                run_id: "exec-parallel-partial".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "review-a".to_string(),
+                session_id: "session-review-a".to_string(),
+                execution_count: 1,
+                timestamp: 1.2,
+            },
+            WorkflowEvent::ParallelChildCompleted {
+                run_id: "exec-parallel-partial".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "review-a".to_string(),
+                session_id: "session-review-a".to_string(),
+                run_index: 1,
+                result: Some("model_refusal: provider policy".to_string()),
+                token_usage: None,
+                structured_output: Some(serde_json::json!({
+                    "failure_kind": "model_refusal",
+                    "failure_disposition": "partial",
+                })),
+                state: STEP_STATE_FAILED.to_string(),
+                failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
+                failure_disposition: Some(FailureDisposition::Partial),
+                timestamp: 1.5,
+            },
+            WorkflowEvent::ParallelCompleted {
+                run_id: "exec-parallel-partial".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                aggregate_result: "fix".to_string(),
+                timestamp: 1.7,
+            },
+        ];
+
+        let state = reconstruct_state_from_events("exec-parallel-partial", &events)
+            .unwrap()
+            .unwrap();
+
+        let parent = state.step_history.first().expect("parallel parent history");
+        let child = parent
+            .child_outputs
+            .as_ref()
+            .and_then(|children| children.iter().find(|child| child.step_name == "review-a"))
+            .expect("delegated failed child snapshot");
+        assert_eq!(child.state.as_str(), STEP_STATE_FAILED);
+        assert_eq!(
+            child.result.as_deref(),
+            Some("model_refusal: provider policy")
+        );
+        assert_eq!(
+            child.structured_output,
+            Some(serde_json::json!({
+                "failure_kind": "model_refusal",
+                "failure_disposition": "partial",
+            }))
+        );
+        assert_eq!(
+            child.failure_kind,
+            Some(WorkflowStepFailureKind::ModelRefusal)
+        );
+        assert_eq!(child.failure_disposition, Some(FailureDisposition::Partial));
+    }
+
+    #[test]
     fn projection_keeps_submitted_parallel_child_output_on_child_completed() {
         let snapshot = workflow_with_nodes("wf", vec!["parallel-review"]);
         let events = vec![
@@ -2239,6 +2396,9 @@ mod tests {
                 result: Some("LGTM".to_string()),
                 token_usage: None,
                 structured_output: None,
+                state: STEP_STATE_COMPLETED.to_string(),
+                failure_kind: None,
+                failure_disposition: None,
                 timestamp: 1.5,
             },
         ];
@@ -2363,6 +2523,9 @@ mod tests {
                 token_usage: None,
                 structured_output: None,
                 run_index: 1,
+                state: STEP_STATE_COMPLETED.to_string(),
+                failure_kind: None,
+                failure_disposition: None,
                 timestamp: 300.0,
             },
         ];

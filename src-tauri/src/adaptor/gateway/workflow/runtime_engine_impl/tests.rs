@@ -1,11 +1,15 @@
 use super::*;
 use crate::adaptor::gateway::workflow::approval_runtime::MAX_APPROVAL_COMMENT_CHARS;
+use crate::adaptor::gateway::workflow::failure_wire::{
+    submission_violation_reason, SubmissionViolation,
+};
 use crate::adaptor::gateway::workflow::runtime_state::{ApprovalAction, TurnCompleteAction};
 use crate::domain::workflow::services::transition::ApprovalApplication;
 use crate::infrastructure::agent_session::runtime::{
     AgentBackend, AgentBackendRegistry, AgentMessage as BackendAgentMessage, PermissionResponse,
     SessionConfig as BackendSessionConfig, SessionHandle as BackendSessionHandle,
 };
+use crate::usecase::agent_session::session::MessagePart;
 use async_trait::async_trait;
 
 const TEST_PARENT_SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -76,6 +80,23 @@ fn make_workflow_test_registry(
     }));
     registry.set_config(app_cfg);
     registry
+}
+
+#[test]
+fn parallel_child_failure_kind_uses_typed_refusal_signal() {
+    let kind = parallel_child_failure_kind(
+        0,
+        Some(workflow_transition::SessionFailureSignal::ModelRefusal),
+    );
+
+    assert_eq!(kind, WorkflowStepFailureKind::ModelRefusal);
+}
+
+#[test]
+fn parallel_child_failure_kind_without_signal_uses_session_error_classification() {
+    let kind = parallel_child_failure_kind(1, None);
+
+    assert_eq!(kind, WorkflowStepFailureKind::InfrastructureCrash);
 }
 
 #[test]
@@ -326,6 +347,8 @@ async fn terminal_state_cleanup_targets_current_and_parallel_step_sessions() {
             completed_at: None,
             structured_output: None,
             output_contract: None,
+            failure_kind: None,
+            failure_disposition: None,
         },
         ParallelStepState {
             step_name: "review-b".to_string(),
@@ -336,6 +359,8 @@ async fn terminal_state_cleanup_targets_current_and_parallel_step_sessions() {
             completed_at: None,
             structured_output: None,
             output_contract: None,
+            failure_kind: None,
+            failure_disposition: None,
         },
     ];
 
@@ -377,6 +402,8 @@ async fn terminal_outcome_cleanup_includes_parent_entry_and_parallel_child_outpu
                 structured_output: None,
                 output_contract: None,
                 state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
+                failure_kind: None,
+                failure_disposition: None,
             },
             crate::adaptor::gateway::workflow::state::ChildOutputSnapshot {
                 step_name: "review-b".to_string(),
@@ -387,6 +414,8 @@ async fn terminal_outcome_cleanup_includes_parent_entry_and_parallel_child_outpu
                 structured_output: None,
                 output_contract: None,
                 state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
+                failure_kind: None,
+                failure_disposition: None,
             },
         ]),
         state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
@@ -399,6 +428,27 @@ async fn terminal_outcome_cleanup_includes_parent_entry_and_parallel_child_outpu
             "child-b-session".to_string(),
             "parent-entry-session".to_string(),
         ]
+    );
+}
+
+#[tokio::test]
+async fn retry_current_step_outcome_releases_previous_session_only() {
+    let engine = WorkflowRuntimeService::new_for_test();
+    let snapshot = engine
+        .insert_test_approval_execution(
+            "/repo",
+            TEST_STEP_SESSION_ID,
+            WorkflowExecutionState::Running,
+        )
+        .await;
+
+    assert_eq!(
+        StepOutcome::RetryCurrentStep {
+            snapshot,
+            completed_session_id: Some("stale-session".to_string()),
+        }
+        .completed_step_session_ids(),
+        vec!["stale-session".to_string()]
     );
 }
 use crate::adaptor::gateway::workflow::schema::{
@@ -659,6 +709,8 @@ fn is_active_failed() {
         workflow: make_test_workflow(),
         state: WorkflowExecutionState::Failed {
             reason: "err".to_string(),
+            kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: None,
         },
         current_step_index: 0,
         step_execution_counts: HashMap::new(),
@@ -781,6 +833,8 @@ fn to_workflow_state_failed() {
         workflow,
         state: WorkflowExecutionState::Failed {
             reason: "exit code 1".to_string(),
+            kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: None,
         },
         current_step_index: 1,
         step_execution_counts: HashMap::new(),
@@ -814,7 +868,9 @@ fn to_workflow_state_failed() {
     assert_eq!(
         ws.state,
         WorkflowExecutionState::Failed {
-            reason: "exit code 1".to_string()
+            reason: "exit code 1".to_string(),
+            kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: None,
         }
     );
     assert_eq!(ws.current_step_name, "implement");
@@ -1032,6 +1088,7 @@ fn turn_complete_action_session_error() {
         TurnCompleteAction::SessionError {
             step_name: "plan".to_string(),
             exit_code: 1,
+            kind: WorkflowStepFailureKind::InfrastructureCrash,
         }
     );
 }
@@ -1118,6 +1175,7 @@ fn turn_complete_action_negative_exit_code() {
         TurnCompleteAction::SessionError {
             step_name: "plan".to_string(),
             exit_code: -1,
+            kind: WorkflowStepFailureKind::InfrastructureCrash,
         }
     );
 }
@@ -1256,6 +1314,8 @@ fn is_terminal_failed() {
     let mut exec = make_exec(0);
     exec.state = WorkflowExecutionState::Failed {
         reason: "err".to_string(),
+        kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+        retry_count: None,
     };
     assert!(exec.is_terminal());
 }
@@ -1333,6 +1393,8 @@ fn step_states_failed_step() {
     let mut exec = make_exec(1);
     exec.state = WorkflowExecutionState::Failed {
         reason: "error".to_string(),
+        kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+        retry_count: None,
     };
     exec.step_history = vec![StepHistoryEntry {
         step_name: "plan".to_string(),
@@ -2001,7 +2063,7 @@ impl SessionStartGate for RecordingSessionStartGate {
         worktree_path: &str,
         permission_mode: Option<String>,
         system_prompt: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
         self.records.lock().unwrap().push(RecordedSessionStart {
             session_id: session_id.to_string(),
             worktree_path: worktree_path.to_string(),
@@ -2009,6 +2071,43 @@ impl SessionStartGate for RecordingSessionStartGate {
             system_prompt,
         });
         Ok(())
+    }
+}
+
+struct StartupTimeoutSessionStartGate;
+
+#[async_trait::async_trait]
+impl SessionStartGate for StartupTimeoutSessionStartGate {
+    async fn start_session(
+        &self,
+        _session_id: &str,
+        _worktree_path: &str,
+        _permission_mode: Option<String>,
+        _system_prompt: Option<String>,
+    ) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
+        Err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::startup_timeout(2, 2))
+    }
+}
+
+#[tokio::test]
+async fn dispatch_session_start_preserves_startup_timeout_metadata() {
+    let err = dispatch_session_start(&StartupTimeoutSessionStartGate, "sid", "/repo", None, None)
+        .await
+        .unwrap_err();
+
+    match err {
+        WorkflowEngineError::AgentRuntime {
+            failure_kind,
+            retry_count,
+            ..
+        } => {
+            assert_eq!(
+                failure_kind,
+                crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout
+            );
+            assert_eq!(retry_count, Some(2));
+        }
+        other => panic!("unexpected error: {other:?}"),
     }
 }
 
@@ -2268,6 +2367,7 @@ impl StepSessionDeps for RecordingStepSessionDeps {
         _step_permission: Option<String>,
         _workflow_defaults: WorkflowDefaults,
         workflow_step_context: WorkflowStepContext,
+        _node_kind: crate::domain::workflow::NodeType,
     ) -> Result<StepSessionInfo, WorkflowEngineError> {
         self.create_step_session_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2527,6 +2627,9 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
             parent_step_name: None,
             parent_run_index: None,
             order: 0,
+            startup_timeout_secs: None,
+            startup_max_retries: None,
+            stale_timeout_secs: None,
         }]
     );
     assert!(
@@ -2861,6 +2964,8 @@ fn validate_approval_target_terminal_states_return_invalid_state_without_mutatio
         WorkflowExecutionState::Completed,
         WorkflowExecutionState::Failed {
             reason: "failed".to_string(),
+            kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: None,
         },
         WorkflowExecutionState::Aborted,
     ] {
@@ -5224,6 +5329,8 @@ async fn run_store_completed_listing_includes_completed_failed_aborted_via_autho
             "failed",
             WorkflowExecutionState::Failed {
                 reason: "boom".to_string(),
+                kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+                retry_count: None,
             },
         ),
         ("aborted", WorkflowExecutionState::Aborted),
@@ -5648,6 +5755,8 @@ async fn run_store_terminal_statuses_propagate_status_field_in_completed_listing
         WorkflowExecutionState::Completed,
         WorkflowExecutionState::Failed {
             reason: "boom".to_string(),
+            kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: None,
         },
         WorkflowExecutionState::Aborted,
     ] {
@@ -6113,6 +6222,56 @@ mod dispatch_boundary_tests {
         )
     }
 
+    fn workflow_turn_complete_notification_from_typed_refusal(
+        chat_session_id: &str,
+    ) -> crate::usecase::workflow::ports::WorkflowTurnCompleteNotification {
+        use crate::usecase::agent_session::event_log::{
+            AgentSessionEvent, AgentTurnFailureSignal, PromptInput, TurnEventLog, TurnStopReason,
+        };
+        use crate::usecase::workflow::ports::{
+            WorkflowTurnCompleteNotification, WorkflowTurnFailureSignal, WorkflowTurnTokenUsage,
+        };
+
+        let read_model = TurnEventLog::from_events(vec![
+            AgentSessionEvent::TurnStarted {
+                turn_id: 1,
+                message_id: "human-1".to_string(),
+                assistant_message_id: Some("agent-1".to_string()),
+                prompt: PromptInput::default(),
+                at: 1.0,
+            },
+            AgentSessionEvent::TurnCompleted {
+                turn_id: 1,
+                exit_code: 0,
+                stop_reason: Some(TurnStopReason::Refusal),
+                token_usage: None,
+            },
+        ])
+        .project();
+        let projected = read_model
+            .workflow_turn_complete
+            .expect("typed stop_reason must project a workflow turn completion");
+        assert_eq!(projected.exit_code, 0);
+        assert_eq!(
+            projected.failure_signal,
+            Some(AgentTurnFailureSignal::ModelRefusal)
+        );
+
+        WorkflowTurnCompleteNotification {
+            chat_session_id: chat_session_id.to_string(),
+            exit_code: projected.exit_code,
+            final_text_parts: projected.final_text_parts,
+            failure_signal: projected.failure_signal.map(|signal| match signal {
+                AgentTurnFailureSignal::ModelRefusal => WorkflowTurnFailureSignal::ModelRefusal,
+            }),
+            token_usage: projected.token_usage.map(|usage| WorkflowTurnTokenUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+            }),
+            interrupted: projected.interrupted,
+        }
+    }
+
     async fn insert_execution_and_active_run(
         engine: &WorkflowRuntimeService,
         exec: WorkflowExecution,
@@ -6538,6 +6697,8 @@ mod dispatch_boundary_tests {
             workflow_name: "wf".to_string(),
             node_name: "node-1".to_string(),
             reason: "boom".to_string(),
+            failure_kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: None,
             timestamp: 200.0,
         };
         match workflow_runtime_events::dispatch_internal_node_command(&mut fail_snapshot, fail) {
@@ -6559,7 +6720,7 @@ mod dispatch_boundary_tests {
         // updated_at は command の timestamp と一致する。
         assert!(matches!(
             fail_snapshot.state,
-            WorkflowExecutionState::Failed { ref reason } if reason == "boom"
+            WorkflowExecutionState::Failed { ref reason, .. } if reason == "boom"
         ));
         assert_eq!(fail_snapshot.updated_at, 200.0);
 
@@ -6797,6 +6958,8 @@ mod dispatch_boundary_tests {
                 workflow_name: "fail-wf".to_string(),
                 node_name: "node-1".to_string(),
                 reason: "boom".to_string(),
+                failure_kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+                retry_count: None,
                 timestamp: 200.0,
             }
         }
@@ -6887,6 +7050,8 @@ mod dispatch_boundary_tests {
                 worktree_path,
                 WorkflowExecutionState::Failed {
                     reason: "node failure".to_string(),
+                    kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+                    retry_count: None,
                 },
             )
             .await
@@ -6927,6 +7092,190 @@ mod dispatch_boundary_tests {
             run_failed.is_some(),
             "RunFailed event must follow NodeFailed; got: {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn engine_set_execution_state_failed_records_failure_telemetry_attributes() {
+        let _telemetry_guard = crate::other::telemetry::lock_test_telemetry();
+        crate::other::telemetry::reset_test_metrics();
+        crate::other::telemetry::set_performance_configured(true);
+        crate::other::telemetry::set_performance_enabled(true);
+
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir).await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let startup_run_id = uuid::Uuid::new_v4().to_string();
+        let startup_worktree_path = "/wt/engine-startup-timeout-telemetry";
+        let mut startup_exec = make_waiting_approval_execution_with_workflow(
+            &startup_run_id,
+            startup_worktree_path,
+            make_rejectable_approval_workflow(),
+        );
+        startup_exec.state = WorkflowExecutionState::Running;
+        startup_exec.current_step_index = 1;
+        startup_exec.current_session_id = None;
+        insert_execution_and_active_run(&engine, startup_exec, TriggerSource::DesktopUi).await;
+        engine
+            .set_execution_state(
+                app.handle(),
+                &session_store,
+                &handles,
+                startup_worktree_path,
+                WorkflowExecutionState::Failed {
+                    reason: "startup timeout".to_string(),
+                    kind: WorkflowStepFailureKind::StartupTimeout,
+                    retry_count: Some(2),
+                },
+            )
+            .await
+            .unwrap();
+
+        let validation_run_id = uuid::Uuid::new_v4().to_string();
+        let validation_worktree_path = "/wt/engine-validation-failure-telemetry";
+        let mut validation_exec = make_waiting_approval_execution_with_workflow(
+            &validation_run_id,
+            validation_worktree_path,
+            make_rejectable_approval_workflow(),
+        );
+        validation_exec.state = WorkflowExecutionState::Running;
+        validation_exec.current_step_index = 1;
+        validation_exec.current_session_id = None;
+        insert_execution_and_active_run(&engine, validation_exec, TriggerSource::DesktopUi).await;
+        engine
+            .set_execution_state(
+                app.handle(),
+                &session_store,
+                &handles,
+                validation_worktree_path,
+                WorkflowExecutionState::Failed {
+                    reason: "validation failed".to_string(),
+                    kind: WorkflowStepFailureKind::ValidationFailure,
+                    retry_count: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let records = crate::other::telemetry::test_metric_records();
+        let has_attr =
+            |record: &crate::other::telemetry::TestMetricRecord, key: &str, value: &str| {
+                record
+                    .attributes
+                    .iter()
+                    .any(|(attr_key, attr_value)| attr_key == key && attr_value == value)
+            };
+        let startup_record = records
+            .iter()
+            .find(|record| {
+                record.name == "releash.operation.status"
+                    && has_attr(record, "releash.operation", "workflow.step.failure")
+                    && has_attr(record, "failure.kind", "startup_timeout")
+            })
+            .expect("startup timeout failure telemetry must be recorded");
+        assert!(has_attr(startup_record, "failure.retry_count", "2"));
+        assert!(has_attr(startup_record, "failure.timeout_kind", "startup"));
+
+        let validation_record = records
+            .iter()
+            .find(|record| {
+                record.name == "releash.operation.status"
+                    && has_attr(record, "releash.operation", "workflow.step.failure")
+                    && has_attr(record, "failure.kind", "validation_failure")
+            })
+            .expect("validation failure telemetry must be recorded");
+        assert!(validation_record
+            .attributes
+            .iter()
+            .all(|(key, _)| key != "failure.timeout_kind"));
+
+        crate::other::telemetry::reset_test_metrics();
+    }
+
+    #[tokio::test]
+    async fn stale_turn_complete_failure_is_terminalized_by_retry_policy_default() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/stale-policy-terminal";
+        let step_session_id = "stale-step-session";
+        let workflow = Workflow {
+            variables: Default::default(),
+            name: "stale-policy-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "review".to_string(),
+                node_type: NodeType::Agent,
+                instruction: Some("review".to_string()),
+                ..NodeDefinition::default()
+            }],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_session_id = Some(step_session_id.to_string());
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        engine.session_workflow_refs.lock().await.insert(
+            step_session_id.to_string(),
+            SessionWorkflowRef {
+                run_id: run_id.clone(),
+            },
+        );
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                step_session_id,
+                124,
+                None,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "stale timeout with default max_retries=0 must be terminal"
+        );
+        let run = engine
+            .run_store
+            .get_run(&run_id)
+            .await
+            .expect("RunStore must keep terminal run metadata");
+        assert_eq!(run.status, RunStatus::Failed);
+        assert!(run
+            .error_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("retry policy did not retry")));
+
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeFailed {
+                failure_kind: WorkflowStepFailureKind::StaleRuntimeTimeout,
+                retry_count: Some(0),
+                reason,
+                ..
+            } if reason.contains("max_retries=0")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::RunFailed {
+                failure_kind: WorkflowStepFailureKind::StaleRuntimeTimeout,
+                retry_count: Some(0),
+                ..
+            }
+        )));
     }
 
     #[tokio::test]
@@ -6977,6 +7326,8 @@ mod dispatch_boundary_tests {
                     result: None,
                     structured_output: None,
                     output_contract: None,
+                    failure_kind: None,
+                    failure_disposition: None,
                     token_usage: TokenUsage::default(),
                     run_index: 1,
                 },
@@ -6987,6 +7338,8 @@ mod dispatch_boundary_tests {
                     result: None,
                     structured_output: None,
                     output_contract: None,
+                    failure_kind: None,
+                    failure_disposition: None,
                     token_usage: TokenUsage::default(),
                     run_index: 1,
                 },
@@ -7016,6 +7369,7 @@ mod dispatch_boundary_tests {
                 &handles,
                 failed_child_session_id,
                 1,
+                None,
                 &[],
                 None,
             )
@@ -7048,6 +7402,430 @@ mod dispatch_boundary_tests {
             refs.values()
                 .all(|session_ref| session_ref.run_id != run_id),
             "terminal cleanup must remove all session refs for the failed parallel run"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_success_after_delegated_failure_completes_parent() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/parallel-delegated-failure";
+        let successful_child_session_id = "parallel-child-success-session";
+        let workflow = Workflow {
+            variables: Default::default(),
+            name: "parallel-delegated-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "parallel-review".to_string(),
+                node_type: NodeType::Parallel,
+                parallel_children: Some(vec![
+                    make_parallel_step("review-a"),
+                    make_parallel_step("review-b"),
+                ]),
+                ..NodeDefinition::default()
+            }],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 0;
+        exec.current_session_id = None;
+        exec.step_execution_counts = HashMap::from([
+            ("parallel-review".to_string(), 1),
+            ("review-a".to_string(), 1),
+            ("review-b".to_string(), 1),
+        ]);
+        exec.step_outputs.insert(
+            "review-a".to_string(),
+            StepOutput {
+                step_name: "review-a".to_string(),
+                run_index: 1,
+                session_id: Some("parallel-child-refusal-session".to_string()),
+                result: Some("model_refusal".to_string()),
+                structured_output: Some(serde_json::json!({
+                    "failureKind": "model_refusal",
+                    "disposition": "partial",
+                    "exitCode": 1,
+                })),
+                output_contract: None,
+                token_usage: Some(TokenUsage::default()),
+                completed_at: 1001.0,
+            },
+        );
+        exec.parallel_run = Some(ParallelRunState {
+            parent_step_name: "parallel-review".to_string(),
+            aggregate: None,
+            children: vec![
+                ParallelChildRun {
+                    step_name: "review-a".to_string(),
+                    session_id: "parallel-child-refusal-session".to_string(),
+                    state: ParallelChildState::Failed,
+                    result: Some("model_refusal".to_string()),
+                    structured_output: Some(serde_json::json!({
+                        "failureKind": "model_refusal",
+                        "disposition": "partial",
+                        "exitCode": 1,
+                    })),
+                    output_contract: None,
+                    failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
+                    failure_disposition: Some(FailureDisposition::Partial),
+                    token_usage: TokenUsage::default(),
+                    run_index: 1,
+                },
+                ParallelChildRun {
+                    step_name: "review-b".to_string(),
+                    session_id: successful_child_session_id.to_string(),
+                    state: ParallelChildState::Running,
+                    result: None,
+                    structured_output: None,
+                    output_contract: None,
+                    failure_kind: None,
+                    failure_disposition: None,
+                    token_usage: TokenUsage::default(),
+                    run_index: 1,
+                },
+            ],
+        });
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        engine.session_workflow_refs.lock().await.insert(
+            successful_child_session_id.to_string(),
+            SessionWorkflowRef {
+                run_id: run_id.clone(),
+            },
+        );
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                successful_child_session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: "LGTM".to_string(),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, WorkflowEvent::ParallelCompleted { .. })),
+            "parent parallel must complete once all children are Completed or Failed; got {events:?}"
+        );
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "single-node parent advance should complete and release the run"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_zero_exit_model_refusal_is_partial_failure_before_contract_repair() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/parallel-zero-exit-refusal";
+        let refused_child_session_id = "parallel-child-zero-refusal-session";
+        let waiting_child_session_id = "parallel-child-waiting-session";
+        let mut review_a = make_parallel_step("review-a");
+        review_a.output_contract = Some("review-verdict".to_string());
+        let workflow = Workflow {
+            variables: Default::default(),
+            name: "parallel-zero-refusal-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "parallel-review".to_string(),
+                node_type: NodeType::Parallel,
+                parallel_children: Some(vec![review_a, make_parallel_step("review-b")]),
+                ..NodeDefinition::default()
+            }],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 0;
+        exec.current_session_id = None;
+        exec.step_execution_counts = HashMap::from([
+            ("parallel-review".to_string(), 1),
+            ("review-a".to_string(), 1),
+            ("review-b".to_string(), 1),
+        ]);
+        exec.parallel_run = Some(ParallelRunState {
+            parent_step_name: "parallel-review".to_string(),
+            aggregate: None,
+            children: vec![
+                ParallelChildRun {
+                    step_name: "review-a".to_string(),
+                    session_id: refused_child_session_id.to_string(),
+                    state: ParallelChildState::Running,
+                    result: None,
+                    structured_output: None,
+                    output_contract: Some("review-verdict".to_string()),
+                    failure_kind: None,
+                    failure_disposition: None,
+                    token_usage: TokenUsage::default(),
+                    run_index: 1,
+                },
+                ParallelChildRun {
+                    step_name: "review-b".to_string(),
+                    session_id: waiting_child_session_id.to_string(),
+                    state: ParallelChildState::Running,
+                    result: None,
+                    structured_output: None,
+                    output_contract: None,
+                    failure_kind: None,
+                    failure_disposition: None,
+                    token_usage: TokenUsage::default(),
+                    run_index: 1,
+                },
+            ],
+        });
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        engine.session_workflow_refs.lock().await.insert(
+            refused_child_session_id.to_string(),
+            SessionWorkflowRef {
+                run_id: run_id.clone(),
+            },
+        );
+
+        let turn_complete =
+            workflow_turn_complete_notification_from_typed_refusal(refused_child_session_id);
+        assert!(!turn_complete.interrupted);
+        let final_parts = turn_complete
+            .final_text_parts
+            .iter()
+            .map(|content| MessagePart::Text {
+                content: content.clone(),
+                parent_tool_use_id: None,
+            })
+            .collect::<Vec<_>>();
+        let failure_signal = turn_complete.failure_signal.map(|signal| match signal {
+            crate::usecase::workflow::ports::WorkflowTurnFailureSignal::ModelRefusal => {
+                workflow_transition::SessionFailureSignal::ModelRefusal
+            }
+        });
+        let token_usage = turn_complete
+            .token_usage
+            .map(|usage| (usage.input_tokens, usage.output_tokens));
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                &turn_complete.chat_session_id,
+                turn_complete.exit_code,
+                failure_signal,
+                &final_parts,
+                token_usage,
+            )
+            .await
+            .unwrap();
+
+        let execs = engine.executions.lock().await;
+        let exec = execs.get(&run_id).expect("run must stay active");
+        let child = exec
+            .parallel_run
+            .as_ref()
+            .expect("parallel run must stay active")
+            .children
+            .iter()
+            .find(|child| child.step_name == "review-a")
+            .expect("refused child");
+        assert!(matches!(child.state, ParallelChildState::Failed));
+        assert_eq!(
+            child.failure_kind,
+            Some(WorkflowStepFailureKind::ModelRefusal)
+        );
+        assert_eq!(child.failure_disposition, Some(FailureDisposition::Partial));
+        assert_eq!(child.result.as_deref(), Some("model_refusal"));
+        drop(execs);
+
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                WorkflowEvent::ParallelChildCompleted {
+                    child_node_name,
+                    state,
+                    failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
+                    failure_disposition: Some(FailureDisposition::Partial),
+                    ..
+                } if child_node_name == "review-a" && state == STEP_STATE_FAILED
+            )),
+            "zero-exit model refusal must be recorded as partial child failure; got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, WorkflowEvent::ContractRepairRequested { .. })),
+            "model refusal signal must not be rerouted into contract repair; got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_partial_failure_append_failure_rolls_back_child_state_and_run_store() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/parallel-partial-append-failure";
+        let refused_child_session_id = "parallel-child-refusal-append-failure-session";
+        let waiting_child_session_id = "parallel-child-still-running-session";
+        let workflow = Workflow {
+            variables: Default::default(),
+            name: "parallel-partial-append-failure-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "parallel-review".to_string(),
+                node_type: NodeType::Parallel,
+                parallel_children: Some(vec![
+                    make_parallel_step("review-a"),
+                    make_parallel_step("review-b"),
+                ]),
+                ..NodeDefinition::default()
+            }],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 0;
+        exec.current_session_id = None;
+        exec.updated_at = 1000.0;
+        exec.step_execution_counts = HashMap::from([
+            ("parallel-review".to_string(), 1),
+            ("review-a".to_string(), 1),
+            ("review-b".to_string(), 1),
+        ]);
+        exec.parallel_run = Some(ParallelRunState {
+            parent_step_name: "parallel-review".to_string(),
+            aggregate: None,
+            children: vec![
+                ParallelChildRun {
+                    step_name: "review-a".to_string(),
+                    session_id: refused_child_session_id.to_string(),
+                    state: ParallelChildState::Running,
+                    result: None,
+                    structured_output: None,
+                    output_contract: None,
+                    failure_kind: None,
+                    failure_disposition: None,
+                    token_usage: TokenUsage::default(),
+                    run_index: 1,
+                },
+                ParallelChildRun {
+                    step_name: "review-b".to_string(),
+                    session_id: waiting_child_session_id.to_string(),
+                    state: ParallelChildState::Running,
+                    result: None,
+                    structured_output: None,
+                    output_contract: None,
+                    failure_kind: None,
+                    failure_disposition: None,
+                    token_usage: TokenUsage::default(),
+                    run_index: 1,
+                },
+            ],
+        });
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        let stored_before = engine
+            .run_store
+            .get_run(&run_id)
+            .await
+            .expect("run store must hold active run before append failure");
+        engine.session_workflow_refs.lock().await.insert(
+            refused_child_session_id.to_string(),
+            SessionWorkflowRef {
+                run_id: run_id.clone(),
+            },
+        );
+
+        engine.fail_next_required_event_append_for_test();
+        let err = engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                refused_child_session_id,
+                0,
+                Some(workflow_transition::SessionFailureSignal::ModelRefusal),
+                &[],
+                None,
+            )
+            .await
+            .expect_err("partial child failure event append failure must abort commit");
+        assert!(
+            format!("{err:?}").contains("parallel child progress event append failed"),
+            "append failure context must be surfaced; got {err:?}"
+        );
+
+        let execs = engine.executions.lock().await;
+        let exec = execs.get(&run_id).expect("run must remain active");
+        let child = exec
+            .parallel_run
+            .as_ref()
+            .expect("parallel run must be restored")
+            .children
+            .iter()
+            .find(|child| child.step_name == "review-a")
+            .expect("refused child must still exist");
+        assert!(
+            matches!(child.state, ParallelChildState::Running),
+            "child state must roll back when required event append fails"
+        );
+        assert_eq!(child.failure_kind, None);
+        assert_eq!(child.failure_disposition, None);
+        assert!(
+            !exec.step_outputs.contains_key("review-a"),
+            "synthetic partial StepOutput must not remain after rollback"
+        );
+        drop(execs);
+
+        let stored_after = engine
+            .run_store
+            .get_run(&run_id)
+            .await
+            .expect("run store must be restored to active projection");
+        assert_eq!(stored_after.status, stored_before.status);
+        assert_eq!(
+            stored_after.current_node_name,
+            stored_before.current_node_name
+        );
+        assert_eq!(stored_after.updated_at, stored_before.updated_at);
+        assert_eq!(stored_after.error_reason, stored_before.error_reason);
+
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        assert!(
+            events.iter().all(|event| !matches!(
+                event,
+                WorkflowEvent::ParallelChildCompleted {
+                    child_node_name,
+                    failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
+                    failure_disposition: Some(FailureDisposition::Partial),
+                    ..
+                } if child_node_name == "review-a"
+            )),
+            "partial failure event must not be present when required append fails; got {events:?}"
         );
     }
 
@@ -7093,6 +7871,8 @@ mod dispatch_boundary_tests {
         };
         snapshot.state = WorkflowExecutionState::Failed {
             reason: "node failure".to_string(),
+            kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: None,
         };
         snapshot.updated_at = 9999.0;
 
@@ -7138,9 +7918,10 @@ mod dispatch_boundary_tests {
 
     /// Spec [05] Rule: snapshot に Failed state が反映済みの場合、`write_terminal_log` の
     /// 単体経路 (`terminal_events_for_snapshot` → `write_log_required_batch`) が
-    /// `NodeFailed` + `RunFailed` を順序通り append することを直接検証する（commit 境界の単位テスト）。
+    /// startup timeout の `failure_kind` / retry count を保ったまま
+    /// `NodeFailed` + `RunFailed` を順序通り append することを直接検証する。
     #[test]
-    fn write_terminal_log_emits_node_failed_followed_by_run_failed_for_failed_snapshot() {
+    fn write_terminal_log_emits_startup_timeout_node_failed_followed_by_run_failed() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -7150,7 +7931,9 @@ mod dispatch_boundary_tests {
             execution_id: run_id.clone(),
             workflow_name: "fail-wf".to_string(),
             state: WorkflowExecutionState::Failed {
-                reason: "node boom".to_string(),
+                reason: "startup timeout".to_string(),
+                kind: crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout,
+                retry_count: Some(2),
             },
             current_step_index: 0,
             current_step_name: "step-1".to_string(),
@@ -7191,12 +7974,19 @@ mod dispatch_boundary_tests {
                 workflow_name,
                 node_name,
                 reason,
+                failure_kind,
+                retry_count,
                 ..
             } => {
                 assert_eq!(ev_run_id, &run_id);
                 assert_eq!(workflow_name, "fail-wf");
                 assert_eq!(node_name, "step-1");
-                assert_eq!(reason, "node boom");
+                assert_eq!(reason, "startup timeout");
+                assert_eq!(
+                    *failure_kind,
+                    crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout
+                );
+                assert_eq!(*retry_count, Some(2));
             }
             other => panic!("expected NodeFailed first, got {other:?}"),
         }
@@ -7205,11 +7995,18 @@ mod dispatch_boundary_tests {
                 run_id: ev_run_id,
                 workflow_name,
                 reason,
+                failure_kind,
+                retry_count,
                 ..
             } => {
                 assert_eq!(ev_run_id, &run_id);
                 assert_eq!(workflow_name, "fail-wf");
-                assert_eq!(reason, "node boom");
+                assert_eq!(reason, "startup timeout");
+                assert_eq!(
+                    *failure_kind,
+                    crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout
+                );
+                assert_eq!(*retry_count, Some(2));
             }
             other => panic!("expected RunFailed second, got {other:?}"),
         }
@@ -7242,6 +8039,8 @@ mod dispatch_boundary_tests {
             WorkflowExecutionState::Aborted,
             WorkflowExecutionState::Failed {
                 reason: "x".to_string(),
+                kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+                retry_count: None,
             },
         ] {
             let mut exec = make_waiting_approval_execution(&run_id, "/wt/term");
@@ -7325,6 +8124,8 @@ mod dispatch_boundary_tests {
                 "failed",
                 WorkflowExecutionState::Failed {
                     reason: "boom".to_string(),
+                    kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+                    retry_count: None,
                 },
             ),
             ("aborted", WorkflowExecutionState::Aborted),
@@ -7971,6 +8772,8 @@ mod dispatch_boundary_tests {
                         result: Some("LGTM".to_string()),
                         structured_output: None,
                         output_contract: None,
+                        failure_kind: None,
+                        failure_disposition: None,
                         token_usage: TokenUsage::default(),
                         run_index: 1,
                     },
@@ -7981,6 +8784,8 @@ mod dispatch_boundary_tests {
                         result: None,
                         structured_output: None,
                         output_contract: None,
+                        failure_kind: None,
+                        failure_disposition: None,
                         token_usage: TokenUsage::default(),
                         run_index: 1,
                     },
@@ -9071,6 +9876,35 @@ mod dispatch_boundary_tests {
         request_id: Option<&str>,
         submitted_at: Option<f64>,
     ) -> Result<(), WorkflowEngineError> {
+        let (session_store, handles) = make_dispatch_deps();
+        submit_output_for_test_with_deps(
+            engine,
+            app,
+            &session_store,
+            &handles,
+            run_id,
+            step_name,
+            contract,
+            structured_output,
+            request_id,
+            submitted_at,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn submit_output_for_test_with_deps(
+        engine: &Arc<WorkflowRuntimeService>,
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        run_id: &str,
+        step_name: &str,
+        contract: &str,
+        structured_output: serde_json::Value,
+        request_id: Option<&str>,
+        submitted_at: Option<f64>,
+    ) -> Result<(), WorkflowEngineError> {
         let (request_id, submitted_at) = match (request_id, submitted_at) {
             (Some(rid), Some(ts)) => (Some(rid.to_string()), Some(ts)),
             (None, None) => (None, None),
@@ -9079,6 +9913,8 @@ mod dispatch_boundary_tests {
         engine
             .submit_workflow_output(
                 app,
+                session_store,
+                handles,
                 run_id,
                 step_name.to_string(),
                 contract.to_string(),
@@ -9199,15 +10035,17 @@ mod dispatch_boundary_tests {
         assert_eq!(submitted.3, Some(800.0));
     }
 
-    /// [08] 振る舞い定義 Rule 1（適合しない場合）: contract 不適合の入力は拒否され、
-    /// step_outputs / workflow_variables / 事実履歴のいずれも変化しない。
+    /// #1250: contract 不適合の SubmitOutput は即 reject せず repair policy に渡す。
+    /// invalid payload 自体は保存せず、ContractRepairRequested のみを append する。
     #[tokio::test]
-    async fn submit_output_rejects_invalid_contract_without_side_effects() {
+    async fn submit_output_invalid_contract_requests_repair_without_persisting_output() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        engine.set_run_store_data_dir(data_dir).await;
+        engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/submit-invalid";
+        let session_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
         let mut workflow = make_submit_output_workflow();
         workflow.nodes[0].output_contract = Some("spec-directory".to_string());
         engine
@@ -9215,24 +10053,43 @@ mod dispatch_boundary_tests {
                 run_id.clone(),
                 workflow,
                 WorkflowExecutionState::Running,
-                "/wt/submit-invalid".to_string(),
+                worktree_path.to_string(),
                 TriggerSource::DesktopUi,
             )
             .await;
+        {
+            let mut execs = engine.executions.lock().await;
+            execs
+                .get_mut(&run_id)
+                .expect("seeded execution")
+                .current_session_id = Some(session_id.to_string());
+        }
+        let (session_store, handles) = make_dispatch_deps();
+        session_store
+            .save_full_session_for_migration_or_restore(
+                &data_dir,
+                &chat_session_for_test(session_id, worktree_path, None, true),
+            )
+            .unwrap();
+        handles.lock().await.insert(
+            session_id.to_string(),
+            crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process(),
+        );
 
-        let err = submit_output_for_test(
+        submit_output_for_test_with_deps(
             &engine,
             app.handle(),
+            &session_store,
+            &handles,
             &run_id,
             "review",
             "spec-directory",
             serde_json::json!({"spec_dir": "/not/relative"}),
-            None,
-            None,
+            Some("00000000-0000-0000-0000-000000000ab1"),
+            Some(900.0),
         )
         .await
-        .unwrap_err();
-        assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
+        .unwrap();
 
         // step_outputs は更新されない
         assert!(step_output_for(&engine, &run_id, "review").await.is_none());
@@ -9241,6 +10098,116 @@ mod dispatch_boundary_tests {
         assert!(events
             .iter()
             .all(|e| !matches!(e, WorkflowEvent::OutputSubmitted { .. })));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ContractRepairRequested {
+                node_name,
+                run_index: 1,
+                request_id: Some(request_id),
+                attempt: 1,
+                violation_reason,
+                ..
+            } if node_name == "review"
+                && request_id == "00000000-0000-0000-0000-000000000ab1"
+                && violation_reason
+                    == submission_violation_reason(SubmissionViolation::InvalidSubmitOutput)
+        )));
+    }
+
+    #[tokio::test]
+    async fn pending_invalid_submit_output_repair_is_idempotent_by_request_id() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/submit-invalid-idempotent";
+        let session_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        let mut workflow = make_submit_output_workflow();
+        workflow.nodes[0].output_contract = Some("spec-directory".to_string());
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                workflow,
+                WorkflowExecutionState::Running,
+                worktree_path.to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+        {
+            let mut execs = engine.executions.lock().await;
+            execs
+                .get_mut(&run_id)
+                .expect("seeded execution")
+                .current_session_id = Some(session_id.to_string());
+        }
+        let (session_store, handles) = make_dispatch_deps();
+        session_store
+            .save_full_session_for_migration_or_restore(
+                &data_dir,
+                &chat_session_for_test(session_id, worktree_path, None, true),
+            )
+            .unwrap();
+        handles.lock().await.insert(
+            session_id.to_string(),
+            crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process(),
+        );
+        let pending = crate::adaptor::gateway::workflow::pending_command::PendingCommand::new(
+            run_id.clone(),
+            crate::adaptor::gateway::workflow::pending_command::CliRequestPayload::SubmitOutput {
+                step_name: "review".to_string(),
+                contract: "spec-directory".to_string(),
+                structured_output: serde_json::json!({"spec_dir": "/not/relative"}),
+            },
+            901.0,
+        );
+        let request_id = pending.id.clone();
+
+        let first =
+            crate::adaptor::gateway::workflow::pending_command_dispatcher::dispatch_pending_command(
+                app.handle(),
+                &engine,
+                &session_store,
+                &handles,
+                pending.clone(),
+            )
+            .await;
+        assert_eq!(
+            first,
+            crate::adaptor::gateway::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
+        );
+        let second =
+            crate::adaptor::gateway::workflow::pending_command_dispatcher::dispatch_pending_command(
+                app.handle(),
+                &engine,
+                &session_store,
+                &handles,
+                pending,
+            )
+            .await;
+        assert_eq!(
+            second,
+            crate::adaptor::gateway::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
+        );
+
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        let repair_events = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    WorkflowEvent::ContractRepairRequested {
+                        request_id: Some(id),
+                        ..
+                    } if id == &request_id
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            repair_events.len(),
+            1,
+            "same pending SubmitOutput request_id must not consume a second repair attempt; got {events:?}"
+        );
     }
 
     /// [08] 振る舞い定義 Rule 1: 不在 step に対する提出は副作用なしで拒否される。
@@ -9616,6 +10583,372 @@ mod dispatch_boundary_tests {
                 .iter()
                 .any(|event| matches!(event, WorkflowEvent::RunFailed { .. })),
             "terminal failure must be recorded in the event log"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_required_output_requests_repair_without_failing_within_limit() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/repair-within-limit";
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                make_submit_output_workflow(),
+                WorkflowExecutionState::Running,
+                worktree_path.to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let (session_store, handles) = make_dispatch_deps();
+        let session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        session_store
+            .save_full_session_for_migration_or_restore(
+                &data_dir,
+                &chat_session_for_test(session_id, worktree_path, None, true),
+            )
+            .unwrap();
+        handles.lock().await.insert(
+            session_id.to_string(),
+            crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process(),
+        );
+
+        engine
+            .handle_missing_required_output(
+                app.handle(),
+                &session_store,
+                &handles,
+                worktree_path,
+                &run_id,
+                "submit-wf",
+                "review",
+                "review-verdict",
+                1,
+                Some(session_id),
+                None,
+                SubmissionViolation::MissingSubmitOutput,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            engine.contains_execution_for_test(&run_id).await,
+            "repairable mismatch must keep the run active"
+        );
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                WorkflowEvent::ContractRepairRequested {
+                    node_name,
+                    attempt: 1,
+                    ..
+                } if node_name == "review"
+            )),
+            "repair attempt must append ContractRepairRequested; got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, WorkflowEvent::RunFailed { .. })),
+            "within-limit repair request must not terminally fail the run; got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_required_output_fails_when_repair_turn_cannot_start() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/repair-start-failure";
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                make_submit_output_workflow(),
+                WorkflowExecutionState::Running,
+                worktree_path.to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let (session_store, handles) = make_dispatch_deps();
+        let session_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        session_store
+            .save_full_session_for_migration_or_restore(
+                &data_dir,
+                &chat_session_for_test(session_id, worktree_path, None, true),
+            )
+            .unwrap();
+
+        engine
+            .handle_missing_required_output(
+                app.handle(),
+                &session_store,
+                &handles,
+                worktree_path,
+                &run_id,
+                "submit-wf",
+                "review",
+                "review-verdict",
+                1,
+                Some(session_id),
+                None,
+                SubmissionViolation::MissingSubmitOutput,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "repair start failure must terminally release the run"
+        );
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                WorkflowEvent::ContractRepairRequested {
+                    node_name,
+                    attempt: 1,
+                    ..
+                } if node_name == "review"
+            )),
+            "the attempted repair must be observable before terminal failure; got {events:?}"
+        );
+        let run_failed = events.iter().find_map(|event| match event {
+            WorkflowEvent::RunFailed {
+                reason,
+                failure_kind,
+                ..
+            } => Some((reason, failure_kind)),
+            _ => None,
+        });
+        let Some((reason, failure_kind)) = run_failed else {
+            panic!("repair start failure must append RunFailed; got {events:?}");
+        };
+        assert_eq!(*failure_kind, WorkflowStepFailureKind::InfrastructureCrash);
+        assert!(
+            reason.contains("contract output repair turn failed to start"),
+            "terminal reason must include repair startup failure; got {reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_turn_startup_timeout_failure_preserves_failure_metadata() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/repair-startup-timeout";
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                make_submit_output_workflow(),
+                WorkflowExecutionState::Running,
+                worktree_path.to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let (session_store, handles) = make_dispatch_deps();
+        let error = WorkflowEngineError::with_agent_runtime_context(
+            "contract output repair turn failed to start",
+            crate::infrastructure::agent_session::runtime::AgentRuntimeError::startup_timeout(2, 2),
+        );
+
+        engine
+            .fail_missing_required_output_with_metadata(
+                app.handle(),
+                &session_store,
+                &handles,
+                worktree_path,
+                &run_id,
+                "review",
+                "review-verdict",
+                &error.to_string(),
+                error.workflow_failure_kind(),
+                error.retry_count(),
+            )
+            .await
+            .unwrap();
+
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        let run_failed = events.iter().find_map(|event| match event {
+            WorkflowEvent::RunFailed {
+                reason,
+                failure_kind,
+                retry_count,
+                ..
+            } => Some((reason, failure_kind, retry_count)),
+            _ => None,
+        });
+        let Some((reason, failure_kind, retry_count)) = run_failed else {
+            panic!("repair startup timeout must append RunFailed; got {events:?}");
+        };
+        assert_eq!(*failure_kind, WorkflowStepFailureKind::StartupTimeout);
+        assert_eq!(*retry_count, Some(2));
+        assert!(
+            reason.contains("contract output repair turn failed to start"),
+            "terminal reason must include repair startup timeout context; got {reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_required_output_fails_with_structured_mismatch_after_repair_limit() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/repair-limit";
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                make_submit_output_workflow(),
+                WorkflowExecutionState::Running,
+                worktree_path.to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+        let log = WorkflowEventLog::new(&data_dir);
+        for attempt in 1..=2 {
+            log.append(&WorkflowEvent::ContractRepairRequested {
+                run_id: run_id.clone(),
+                workflow_name: "submit-wf".to_string(),
+                node_name: "review".to_string(),
+                run_index: 1,
+                request_id: None,
+                attempt,
+                violation_reason: submission_violation_reason(
+                    SubmissionViolation::MissingSubmitOutput,
+                )
+                .to_string(),
+                timestamp: 1000.0 + f64::from(attempt),
+            })
+            .unwrap();
+        }
+
+        let (session_store, handles) = make_dispatch_deps();
+        engine
+            .handle_missing_required_output(
+                app.handle(),
+                &session_store,
+                &handles,
+                worktree_path,
+                &run_id,
+                "submit-wf",
+                "review",
+                "review-verdict",
+                1,
+                Some("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+                None,
+                SubmissionViolation::MissingSubmitOutput,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "exhausted repair attempts must terminally release the run"
+        );
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        let run_failed_kind = events.iter().find_map(|event| match event {
+            WorkflowEvent::RunFailed { failure_kind, .. } => Some(*failure_kind),
+            _ => None,
+        });
+        assert_eq!(
+            run_failed_kind,
+            Some(WorkflowStepFailureKind::StructuredOutputMismatch)
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_required_output_repair_attempts_are_scoped_to_run_index() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/repair-run-index";
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                make_submit_output_workflow(),
+                WorkflowExecutionState::Running,
+                worktree_path.to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+        let log = WorkflowEventLog::new(&data_dir);
+        for attempt in 1..=2 {
+            log.append(&WorkflowEvent::ContractRepairRequested {
+                run_id: run_id.clone(),
+                workflow_name: "submit-wf".to_string(),
+                node_name: "review".to_string(),
+                run_index: 1,
+                request_id: None,
+                attempt,
+                violation_reason: submission_violation_reason(
+                    SubmissionViolation::MissingSubmitOutput,
+                )
+                .to_string(),
+                timestamp: 1000.0 + f64::from(attempt),
+            })
+            .unwrap();
+        }
+
+        let (session_store, handles) = make_dispatch_deps();
+        let session_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        session_store
+            .save_full_session_for_migration_or_restore(
+                &data_dir,
+                &chat_session_for_test(session_id, worktree_path, None, true),
+            )
+            .unwrap();
+        handles.lock().await.insert(
+            session_id.to_string(),
+            crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process(),
+        );
+
+        engine
+            .handle_missing_required_output(
+                app.handle(),
+                &session_store,
+                &handles,
+                worktree_path,
+                &run_id,
+                "submit-wf",
+                "review",
+                "review-verdict",
+                2,
+                Some(session_id),
+                None,
+                SubmissionViolation::MissingSubmitOutput,
+            )
+            .await
+            .unwrap();
+
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ContractRepairRequested {
+                node_name,
+                run_index: 2,
+                attempt: 1,
+                ..
+            } if node_name == "review"
+        )));
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, WorkflowEvent::RunFailed { .. })),
+            "prior run_index repair attempts must not force GiveUp for a new run_index; got {events:?}"
         );
     }
 

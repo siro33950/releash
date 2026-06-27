@@ -24,6 +24,8 @@ pub(crate) mod execution_registry;
 pub(crate) mod external_execution_restore;
 pub(crate) mod facet;
 mod facet_repository;
+pub(crate) mod failure_policy_config;
+mod failure_wire;
 pub(crate) mod internal_node_command;
 pub(crate) mod log;
 pub(crate) mod mapper;

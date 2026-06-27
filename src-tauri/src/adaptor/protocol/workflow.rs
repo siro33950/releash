@@ -1,6 +1,16 @@
 use std::collections::HashMap;
 
+use crate::domain::workflow::{FailureDisposition, WorkflowStepFailureKind};
+
 use serde::{Deserialize, Serialize};
+
+const STEP_STATE_COMPLETED_VIEW: &str = "completed";
+#[cfg(test)]
+const STEP_STATE_FAILED_VIEW: &str = "failed";
+
+fn default_step_entry_state_view() -> String {
+    STEP_STATE_COMPLETED_VIEW.to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -64,7 +74,17 @@ pub enum WorkflowExecutionStateView {
     Running,
     WaitingApproval,
     Completed,
-    Failed { reason: String },
+    Failed {
+        reason: String,
+        #[serde(rename = "failureKind")]
+        failure_kind: WorkflowStepFailureKind,
+        #[serde(
+            rename = "retryCount",
+            skip_serializing_if = "Option::is_none",
+            default
+        )]
+        retry_count: Option<u32>,
+    },
     Aborted,
 }
 
@@ -227,8 +247,8 @@ pub struct StepHistoryEntryView {
     pub run_index: u32,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub child_outputs: Option<Vec<ChildOutputSnapshotView>>,
-    /// step entry の終端状態。`"completed"`（既定）/ `"aborted"`。
-    #[serde(default = "crate::domain::workflow::value_objects::default_step_entry_state")]
+    /// step entry の終端状態。`"completed"`（既定）/ `"failed"` / `"aborted"`。
+    #[serde(default = "default_step_entry_state_view")]
     pub state: String,
 }
 
@@ -244,9 +264,13 @@ pub struct ChildOutputSnapshotView {
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub output_contract: Option<String>,
-    /// child snapshot の終端状態。`"completed"`（既定）/ `"aborted"`。
-    #[serde(default = "crate::domain::workflow::value_objects::default_step_entry_state")]
+    /// child snapshot の終端状態。`"completed"`（既定）/ `"failed"` / `"aborted"`。
+    #[serde(default = "default_step_entry_state_view")]
     pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failure_kind: Option<WorkflowStepFailureKind>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failure_disposition: Option<FailureDisposition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,6 +289,10 @@ pub struct ParallelStepStateView {
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub output_contract: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failure_kind: Option<WorkflowStepFailureKind>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failure_disposition: Option<FailureDisposition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -356,11 +384,15 @@ mod tests {
     fn workflow_execution_state_view_failed_tagged_enum_format() {
         let state = WorkflowExecutionStateView::Failed {
             reason: "exit code 1".to_string(),
+            failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: Some(2),
         };
         let json = serde_json::to_string(&state).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "failed");
         assert_eq!(v["reason"], "exit code 1");
+        assert_eq!(v["failureKind"], "infrastructure_crash");
+        assert_eq!(v["retryCount"], 2);
         let back: WorkflowExecutionStateView = serde_json::from_str(&json).unwrap();
         assert_eq!(back, state);
     }
@@ -373,6 +405,8 @@ mod tests {
             WorkflowExecutionStateView::Completed,
             WorkflowExecutionStateView::Failed {
                 reason: "err".to_string(),
+                failure_kind: WorkflowStepFailureKind::ValidationFailure,
+                retry_count: None,
             },
             WorkflowExecutionStateView::Aborted,
         ];
@@ -381,6 +415,50 @@ mod tests {
             let back: WorkflowExecutionStateView = serde_json::from_str(&json).unwrap();
             assert_eq!(back, state);
         }
+    }
+
+    #[test]
+    fn child_output_snapshot_view_exposes_failed_child_contract() {
+        let view = ChildOutputSnapshotView {
+            step_name: "review-a".to_string(),
+            session_id: Some("session-a".to_string()),
+            result: Some("model_refusal".to_string()),
+            run_index: 1,
+            completed_at: 1.0,
+            structured_output: None,
+            output_contract: None,
+            state: STEP_STATE_FAILED_VIEW.to_string(),
+            failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
+            failure_disposition: Some(FailureDisposition::Partial),
+        };
+
+        let value = serde_json::to_value(view).expect("child snapshot serializes");
+
+        assert_eq!(value["state"], "failed");
+        assert_eq!(value["failureKind"], "model_refusal");
+        assert_eq!(value["failureDisposition"], "partial");
+    }
+
+    #[test]
+    fn parallel_step_state_view_exposes_live_partial_failure_contract() {
+        let view = ParallelStepStateView {
+            step_name: "review-a".to_string(),
+            state: STEP_STATE_FAILED_VIEW.to_string(),
+            session_id: Some("session-a".to_string()),
+            result: Some("model_refusal".to_string()),
+            run_index: 1,
+            completed_at: None,
+            structured_output: None,
+            output_contract: None,
+            failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
+            failure_disposition: Some(FailureDisposition::Partial),
+        };
+
+        let value = serde_json::to_value(view).expect("parallel step serializes");
+
+        assert_eq!(value["state"], "failed");
+        assert_eq!(value["failureKind"], "model_refusal");
+        assert_eq!(value["failureDisposition"], "partial");
     }
 
     /// [02] schema 境界: 旧表現（`workflowDefinition.steps`）を含む WorkflowState JSON は

@@ -54,6 +54,8 @@ pub fn active_parallel_steps(parallel_run: Option<&ParallelRunState>) -> Vec<Par
             completed_at: None,
             structured_output: child.structured_output.clone(),
             output_contract: child.output_contract.clone(),
+            failure_kind: child.failure_kind,
+            failure_disposition: child.failure_disposition,
         })
         .collect()
 }
@@ -62,7 +64,7 @@ pub fn active_parallel_steps(parallel_run: Option<&ParallelRunState>) -> Vec<Par
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        value_objects::{NodeType, TransitionRule},
+        value_objects::{FailureDisposition, NodeType, TransitionRule, WorkflowStepFailureKind},
         ParallelChildRun, ParallelChildState, ParallelRunState,
     };
 
@@ -148,6 +150,8 @@ mod tests {
                     result: None,
                     structured_output: None,
                     output_contract: None,
+                    failure_kind: None,
+                    failure_disposition: None,
                     token_usage: TokenUsage::default(),
                     run_index: 1,
                 },
@@ -158,6 +162,8 @@ mod tests {
                     result: Some("ok".to_string()),
                     structured_output: Some(serde_json::json!({ "status": "ok" })),
                     output_contract: Some("contract".to_string()),
+                    failure_kind: None,
+                    failure_disposition: None,
                     token_usage: TokenUsage::default(),
                     run_index: 2,
                 },
@@ -171,5 +177,38 @@ mod tests {
         assert_eq!(steps[1].session_id, None);
         assert_eq!(steps[1].result.as_deref(), Some("ok"));
         assert_eq!(steps[1].output_contract.as_deref(), Some("contract"));
+    }
+
+    #[test]
+    fn active_parallel_steps_preserves_partial_failure_metadata() {
+        let steps = active_parallel_steps(Some(&ParallelRunState {
+            parent_step_name: "parallel-review".to_string(),
+            aggregate: None,
+            children: vec![ParallelChildRun {
+                step_name: "review-policy".to_string(),
+                session_id: "session-a".to_string(),
+                state: ParallelChildState::Failed,
+                result: Some("model_refusal".to_string()),
+                structured_output: Some(serde_json::json!({
+                    "failureKind": "model_refusal",
+                    "disposition": "partial",
+                })),
+                output_contract: None,
+                failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
+                failure_disposition: Some(FailureDisposition::Partial),
+                token_usage: TokenUsage::default(),
+                run_index: 1,
+            }],
+        }));
+
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            steps[0].failure_kind,
+            Some(WorkflowStepFailureKind::ModelRefusal)
+        );
+        assert_eq!(
+            steps[0].failure_disposition,
+            Some(FailureDisposition::Partial)
+        );
     }
 }

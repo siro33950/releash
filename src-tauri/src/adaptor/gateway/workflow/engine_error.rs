@@ -2,6 +2,8 @@ use crate::adaptor::gateway::workflow::event::CliMutationRejectionReason;
 use crate::adaptor::gateway::workflow::resolver::{
     ManagedWorktreeResolverError, WorkflowDefinitionResolverError,
 };
+use crate::domain::workflow::WorkflowStepFailureKind;
+use crate::infrastructure::agent_session::runtime::AgentRuntimeError;
 
 /// ワークフローエンジンのエラー型。
 #[derive(Debug)]
@@ -26,6 +28,12 @@ pub enum WorkflowEngineError {
     SessionStore(String),
     /// AgentSession起動エラー
     AgentSession(String),
+    /// Agent runtime が分類済み failure metadata とともに返したエラー
+    AgentRuntime {
+        message: String,
+        failure_kind: WorkflowStepFailureKind,
+        retry_count: Option<u32>,
+    },
 }
 
 impl std::fmt::Display for WorkflowEngineError {
@@ -46,6 +54,63 @@ impl std::fmt::Display for WorkflowEngineError {
                 write!(f, "unauthorized_approval_target: {msg}")
             }
             Self::SessionStore(msg) | Self::AgentSession(msg) => write!(f, "{msg}"),
+            Self::AgentRuntime { message, .. } => write!(f, "{message}"),
+        }
+    }
+}
+
+impl WorkflowEngineError {
+    pub(crate) fn workflow_failure_kind(&self) -> WorkflowStepFailureKind {
+        match self {
+            Self::AgentRuntime { failure_kind, .. } => *failure_kind,
+            Self::SessionStore(_) | Self::AgentSession(_) => {
+                WorkflowStepFailureKind::InfrastructureCrash
+            }
+            Self::ExecutionNotFound(_)
+            | Self::SessionNotFound(_)
+            | Self::InvalidWorkflow(_)
+            | Self::AlreadyActive(_)
+            | Self::InvalidState(_)
+            | Self::ValidationError(_)
+            | Self::UnauthorizedWorktree(_)
+            | Self::UnauthorizedApprovalTarget(_) => WorkflowStepFailureKind::ValidationFailure,
+        }
+    }
+
+    pub(crate) fn retry_count(&self) -> Option<u32> {
+        match self {
+            Self::AgentRuntime { retry_count, .. } => *retry_count,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn with_agent_runtime_context(
+        context: impl Into<String>,
+        error: AgentRuntimeError,
+    ) -> Self {
+        let context = context.into();
+        match error {
+            error @ AgentRuntimeError::StartupTimeout { retry_count, .. } => Self::AgentRuntime {
+                message: format!("{context}: {error}"),
+                failure_kind: WorkflowStepFailureKind::StartupTimeout,
+                retry_count: Some(retry_count),
+            },
+            AgentRuntimeError::Other(message) => {
+                Self::AgentSession(format!("{context}: {message}"))
+            }
+        }
+    }
+}
+
+impl From<AgentRuntimeError> for WorkflowEngineError {
+    fn from(error: AgentRuntimeError) -> Self {
+        match error {
+            error @ AgentRuntimeError::StartupTimeout { retry_count, .. } => Self::AgentRuntime {
+                message: error.to_string(),
+                failure_kind: WorkflowStepFailureKind::StartupTimeout,
+                retry_count: Some(retry_count),
+            },
+            AgentRuntimeError::Other(message) => Self::AgentSession(message),
         }
     }
 }
@@ -179,6 +244,47 @@ pub(crate) fn classify_cli_mutation_rejection_reason(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::event::CliMutationRejectionReason as R;
+    use crate::infrastructure::agent_session::runtime::AgentRuntimeError;
+
+    #[test]
+    fn workflow_failure_kind_preserves_validation_and_infrastructure_boundary() {
+        let validation_errors = [
+            WorkflowEngineError::InvalidWorkflow("missing facet".to_string()),
+            WorkflowEngineError::ValidationError("bad output".to_string()),
+            WorkflowEngineError::InvalidState("not accepting output".to_string()),
+            WorkflowEngineError::UnauthorizedApprovalTarget("wrong run".to_string()),
+        ];
+        for error in validation_errors {
+            assert_eq!(
+                error.workflow_failure_kind(),
+                WorkflowStepFailureKind::ValidationFailure,
+                "unexpected failure kind for {error:?}"
+            );
+        }
+
+        let infrastructure_errors = [
+            WorkflowEngineError::SessionStore("io".to_string()),
+            WorkflowEngineError::AgentSession("backend unavailable".to_string()),
+        ];
+        for error in infrastructure_errors {
+            assert_eq!(
+                error.workflow_failure_kind(),
+                WorkflowStepFailureKind::InfrastructureCrash,
+                "unexpected failure kind for {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_failure_kind_preserves_agent_runtime_metadata() {
+        let error = WorkflowEngineError::from(AgentRuntimeError::startup_timeout(1, 2));
+
+        assert_eq!(
+            error.workflow_failure_kind(),
+            WorkflowStepFailureKind::StartupTimeout
+        );
+        assert_eq!(error.retry_count(), Some(1));
+    }
 
     #[test]
     fn rejected_external_request_commit_policy_keeps_user_rejections_observable() {

@@ -15,10 +15,16 @@ export interface TokenUsage {
 
 /**
  * spec issues-1023: step / child の終端状態。
- * `"completed"` が既定（旧 ndjson 互換）。`"aborted"` は `RunAborted` で
- * 中断された step / parallel child を表現する。
+ * `"completed"` が既定（旧 ndjson 互換）。`"failed"` は partial child failure、
+ * `"aborted"` は `RunAborted` で中断された step / parallel child を表現する。
  */
-export type StepEntryState = "completed" | "aborted";
+export type StepEntryState = "completed" | "failed" | "aborted";
+
+export type FailureDisposition =
+	| "retryable"
+	| "partial"
+	| "terminal"
+	| "user-action-required";
 
 export interface ChildOutputSnapshot {
 	stepName: string;
@@ -30,6 +36,8 @@ export interface ChildOutputSnapshot {
 	outputContract?: string;
 	/** 受信側 optional。未指定時は `"completed"` 扱い（旧バックエンド互換）。 */
 	state?: StepEntryState;
+	failureKind?: WorkflowStepFailureKind;
+	failureDisposition?: FailureDisposition;
 }
 
 export interface StepHistoryEntry {
@@ -45,11 +53,25 @@ export interface StepHistoryEntry {
 	state?: StepEntryState;
 }
 
+export type WorkflowStepFailureKind =
+	| "startup_timeout"
+	| "stale_runtime_timeout"
+	| "model_refusal"
+	| "structured_output_mismatch"
+	| "validation_failure"
+	| "user_abort"
+	| "infrastructure_crash";
+
 export type WorkflowExecutionState =
 	| { type: "running" }
 	| { type: "waiting_approval" }
 	| { type: "completed" }
-	| { type: "failed"; reason: string }
+	| {
+			type: "failed";
+			reason: string;
+			failureKind: WorkflowStepFailureKind;
+			retryCount?: number;
+	  }
 	| { type: "aborted" };
 
 export interface TransitionRule {
@@ -159,6 +181,8 @@ export interface ParallelStepState {
 	completedAt?: number;
 	structuredOutput?: JsonValue;
 	outputContract?: string;
+	failureKind?: WorkflowStepFailureKind;
+	failureDisposition?: FailureDisposition;
 }
 
 export interface WorkflowStepRuntimeState {
@@ -267,6 +291,8 @@ export type WorkflowEvent =
 			workflow_name: string;
 			node_name: string;
 			reason: string;
+			failure_kind?: WorkflowStepFailureKind;
+			retry_count?: number;
 			timestampMs: number;
 	  }
 	| {
@@ -297,6 +323,8 @@ export type WorkflowEvent =
 			run_id: string;
 			workflow_name: string;
 			reason: string;
+			failure_kind?: WorkflowStepFailureKind;
+			retry_count?: number;
 			timestampMs: number;
 	  }
 	| {
@@ -330,6 +358,8 @@ export type WorkflowEvent =
 			run_id: string;
 			workflow_name: string;
 			node_name: string;
+			run_index: number;
+			request_id?: string;
 			attempt: number;
 			violation_reason: string;
 			timestampMs: number;
@@ -363,6 +393,9 @@ export type WorkflowEvent =
 			token_usage?: TokenUsage;
 			structured_output?: JsonValue;
 			run_index: number;
+			state?: StepEntryState;
+			failure_kind?: WorkflowStepFailureKind;
+			failure_disposition?: FailureDisposition;
 			timestampMs: number;
 	  }
 	| {

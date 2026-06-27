@@ -7,10 +7,11 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
     workflow_execution_state_to_domain,
 };
 pub use crate::adaptor::gateway::workflow::event::TokenUsage;
+use crate::adaptor::gateway::workflow::failure_wire::default_failure_kind;
 use crate::adaptor::gateway::workflow::schema::Workflow;
 use crate::domain::workflow::{
-    STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_RUNNING,
-    STEP_STATE_WAITING_APPROVAL,
+    FailureDisposition, WorkflowStepFailureKind, STEP_STATE_ABORTED, STEP_STATE_COMPLETED,
+    STEP_STATE_FAILED, STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,7 +54,13 @@ pub enum WorkflowExecutionState {
     Running,
     WaitingApproval,
     Completed,
-    Failed { reason: String },
+    Failed {
+        reason: String,
+        #[serde(default = "default_failure_kind")]
+        kind: WorkflowStepFailureKind,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        retry_count: Option<u32>,
+    },
     Aborted,
 }
 
@@ -136,6 +143,10 @@ pub struct ChildOutputSnapshot {
     /// child snapshot の終端状態。`"completed"`（既定）/ `"aborted"`。
     #[serde(default = "default_step_entry_state")]
     pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failure_kind: Option<WorkflowStepFailureKind>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failure_disposition: Option<FailureDisposition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +165,10 @@ pub struct ParallelStepState {
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub output_contract: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failure_kind: Option<WorkflowStepFailureKind>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failure_disposition: Option<FailureDisposition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,6 +269,8 @@ fn child_output_to_domain(
         structured_output: output.structured_output,
         output_contract: output.output_contract,
         state: output.state,
+        failure_kind: output.failure_kind,
+        failure_disposition: output.failure_disposition,
     }
 }
 
@@ -269,6 +286,8 @@ fn parallel_step_state_to_domain(
         completed_at: state.completed_at,
         structured_output: state.structured_output,
         output_contract: state.output_contract,
+        failure_kind: state.failure_kind,
+        failure_disposition: state.failure_disposition,
     }
 }
 
@@ -282,5 +301,27 @@ fn step_output_to_domain(output: StepOutput) -> crate::domain::workflow::StepOut
         output_contract: output.output_contract,
         token_usage: output.token_usage.map(token_usage_to_domain),
         completed_at: output.completed_at,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_state_missing_failure_kind_defaults_to_infrastructure_crash() {
+        let state: WorkflowExecutionState = serde_json::from_value(serde_json::json!({
+            "type": "failed",
+            "reason": "legacy failure"
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            state,
+            WorkflowExecutionState::Failed {
+                kind: WorkflowStepFailureKind::InfrastructureCrash,
+                ..
+            }
+        ));
     }
 }

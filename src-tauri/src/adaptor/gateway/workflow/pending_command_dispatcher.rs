@@ -248,6 +248,8 @@ where
             engine
                 .submit_workflow_output(
                     app,
+                    session_store,
+                    handles,
                     run_id,
                     step_name,
                     contract,
@@ -548,6 +550,8 @@ mod tests {
         async fn submit_workflow_output(
             &self,
             _app: &tauri::AppHandle<tauri::test::MockRuntime>,
+            _session_store: &Arc<SessionStore>,
+            _handles: &Arc<Mutex<AgentProcessMap>>,
             run_id: &str,
             step_name: String,
             contract: String,

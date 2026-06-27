@@ -94,9 +94,15 @@ fn workflow_execution_state_to_view(
         workflow::WorkflowExecutionState::Completed => {
             workflow_wire::WorkflowExecutionStateView::Completed
         }
-        workflow::WorkflowExecutionState::Failed { reason } => {
-            workflow_wire::WorkflowExecutionStateView::Failed { reason }
-        }
+        workflow::WorkflowExecutionState::Failed {
+            reason,
+            kind,
+            retry_count,
+        } => workflow_wire::WorkflowExecutionStateView::Failed {
+            reason,
+            failure_kind: kind,
+            retry_count,
+        },
         workflow::WorkflowExecutionState::Aborted => {
             workflow_wire::WorkflowExecutionStateView::Aborted
         }
@@ -262,6 +268,8 @@ fn child_output_to_view(
         structured_output: output.structured_output,
         output_contract: output.output_contract,
         state: output.state,
+        failure_kind: output.failure_kind,
+        failure_disposition: output.failure_disposition,
     }
 }
 
@@ -277,6 +285,8 @@ fn parallel_step_state_to_view(
         completed_at: state.completed_at,
         structured_output: state.structured_output,
         output_contract: state.output_contract,
+        failure_kind: state.failure_kind,
+        failure_disposition: state.failure_disposition,
     }
 }
 
@@ -327,6 +337,8 @@ mod tests {
                     structured_output: None,
                     output_contract: None,
                     state: "completed".to_string(),
+                    failure_kind: None,
+                    failure_disposition: None,
                 }]),
                 state: "completed".to_string(),
             }],
@@ -350,6 +362,8 @@ mod tests {
                 completed_at: None,
                 structured_output: None,
                 output_contract: None,
+                failure_kind: None,
+                failure_disposition: None,
             }],
             workflow_variables: HashMap::new(),
             approval_operations: None,
@@ -379,6 +393,84 @@ mod tests {
         assert!(!view.runtime_states["done-session"].runtime_active);
         assert!(view.runtime_states["parallel-session"].runtime_active);
         assert!(view.runtime_states["parallel-session"].tab_open);
+    }
+
+    #[test]
+    fn workflow_state_to_view_preserves_failed_classification() {
+        let mut state = state();
+        state.state = WorkflowExecutionState::Failed {
+            reason: "startup timed out".to_string(),
+            kind: crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout,
+            retry_count: Some(2),
+        };
+
+        let view = workflow_state_to_view(state);
+
+        assert_eq!(
+            view.state,
+            workflow_wire::WorkflowExecutionStateView::Failed {
+                reason: "startup timed out".to_string(),
+                failure_kind: crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout,
+                retry_count: Some(2),
+            }
+        );
+        let json = serde_json::to_value(&view.state).unwrap();
+        assert_eq!(json["failureKind"], "startup_timeout");
+        assert_eq!(json["retryCount"], 2);
+    }
+
+    #[test]
+    fn workflow_state_to_view_maps_failure_metadata_to_wire_enums() {
+        let mut state = state();
+        state.active_parallel_steps[0].state =
+            crate::domain::workflow::STEP_STATE_FAILED.to_string();
+        state.active_parallel_steps[0].failure_kind =
+            Some(crate::domain::workflow::WorkflowStepFailureKind::ModelRefusal);
+        state.active_parallel_steps[0].failure_disposition =
+            Some(crate::domain::workflow::FailureDisposition::Partial);
+        state.step_history[0].child_outputs = Some(vec![ChildOutputSnapshot {
+            step_name: "review-child".to_string(),
+            session_id: Some("child-session".to_string()),
+            result: Some("model_refusal".to_string()),
+            run_index: 1,
+            completed_at: 3.0,
+            structured_output: None,
+            output_contract: None,
+            state: crate::domain::workflow::STEP_STATE_FAILED.to_string(),
+            failure_kind: Some(crate::domain::workflow::WorkflowStepFailureKind::ModelRefusal),
+            failure_disposition: Some(crate::domain::workflow::FailureDisposition::Partial),
+        }]);
+
+        let view = workflow_state_to_view(state);
+        let child = view.step_history[0].child_outputs.as_ref().unwrap()[0].clone();
+        let parallel = view.active_parallel_steps[0].clone();
+
+        assert_eq!(
+            child.failure_kind,
+            Some(crate::domain::workflow::WorkflowStepFailureKind::ModelRefusal)
+        );
+        assert_eq!(
+            child.failure_disposition,
+            Some(crate::domain::workflow::FailureDisposition::Partial)
+        );
+        assert_eq!(
+            parallel.failure_kind,
+            Some(crate::domain::workflow::WorkflowStepFailureKind::ModelRefusal)
+        );
+        assert_eq!(
+            parallel.failure_disposition,
+            Some(crate::domain::workflow::FailureDisposition::Partial)
+        );
+
+        let value = serde_json::to_value(view).unwrap();
+        assert_eq!(
+            value["stepHistory"][0]["childOutputs"][0]["failureKind"],
+            "model_refusal"
+        );
+        assert_eq!(
+            value["activeParallelSteps"][0]["failureDisposition"],
+            "partial"
+        );
     }
 
     // ---- WorkflowState wire view serde ----

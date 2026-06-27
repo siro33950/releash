@@ -9,6 +9,7 @@
 //! `ApprovalDecision` 等の engine domain 型には依存しない。
 
 use crate::adaptor::gateway::workflow::event::TokenUsage;
+use crate::domain::workflow::WorkflowStepFailureKind;
 
 /// workflow engine 内部の node 完了 / 失敗遷移を表す typed command。
 ///
@@ -42,6 +43,8 @@ pub(crate) enum InternalNodeCommand {
         workflow_name: String,
         node_name: String,
         reason: String,
+        failure_kind: WorkflowStepFailureKind,
+        retry_count: Option<u32>,
         timestamp: f64,
     },
 }
@@ -85,6 +88,8 @@ mod tests {
             workflow_name: "wf".to_string(),
             node_name: "step2".to_string(),
             reason: "boom".to_string(),
+            failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: None,
             timestamp: 200.0,
         };
         match fail {

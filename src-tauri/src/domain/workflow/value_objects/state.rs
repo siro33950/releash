@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::definition::WorkflowDefinition;
+use super::failure::WorkflowStepFailureKind;
 use super::step_output::{
     ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage, STEP_STATE_ABORTED,
     STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
@@ -11,7 +12,11 @@ pub enum WorkflowExecutionState {
     Running,
     WaitingApproval,
     Completed,
-    Failed { reason: String },
+    Failed {
+        reason: String,
+        kind: WorkflowStepFailureKind,
+        retry_count: Option<u32>,
+    },
     Aborted,
 }
 
@@ -72,7 +77,9 @@ mod state_tests {
         assert!(WorkflowExecutionState::WaitingApproval.is_active());
         assert!(WorkflowExecutionState::Completed.is_terminal());
         assert!(WorkflowExecutionState::Failed {
-            reason: "boom".to_string()
+            reason: "boom".to_string(),
+            kind: WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: None,
         }
         .is_terminal());
         assert!(!WorkflowExecutionState::Aborted.is_active());

@@ -1,6 +1,7 @@
 use super::finalization::finalize_turn;
 use super::projector::{project, ProjectedStatus};
 use super::*;
+use crate::usecase::agent_session::event_log::AgentTurnFailureSignal;
 use crate::usecase::agent_session::session::{
     AttachmentRef, MessageMention, MessagePart, SessionState, SystemNotificationType, TodoListItem,
     ToolOutputRef, ToolOutputSummary,
@@ -20,6 +21,65 @@ fn start_event() -> AgentSessionEvent {
         },
         at: 10.0,
     }
+}
+
+#[test]
+fn workflow_input_preserves_model_refusal_signal_from_completed_stop_reason() {
+    let events = vec![
+        start_event(),
+        AgentSessionEvent::TextRecorded {
+            turn_id: 1,
+            message_id: "agent-1".to_string(),
+            content: "I cannot comply.".to_string(),
+            parent_tool_use_id: None,
+        },
+        AgentSessionEvent::TurnCompleted {
+            turn_id: 1,
+            exit_code: 0,
+            stop_reason: Some(TurnStopReason::Refusal),
+            token_usage: None,
+        },
+    ];
+
+    let read_model = project(&events);
+
+    assert_eq!(
+        read_model
+            .workflow_turn_complete
+            .as_ref()
+            .and_then(|input| input.failure_signal),
+        Some(AgentTurnFailureSignal::ModelRefusal)
+    );
+}
+
+#[test]
+fn workflow_input_does_not_scan_policy_text_for_model_refusal() {
+    let events = vec![
+        start_event(),
+        AgentSessionEvent::TextRecorded {
+            turn_id: 1,
+            message_id: "agent-1".to_string(),
+            content: "Codex text can mention model_refusal, provider policy, and content policy."
+                .to_string(),
+            parent_tool_use_id: None,
+        },
+        AgentSessionEvent::TurnCompleted {
+            turn_id: 1,
+            exit_code: 0,
+            stop_reason: None,
+            token_usage: None,
+        },
+    ];
+
+    let read_model = project(&events);
+
+    assert_eq!(
+        read_model
+            .workflow_turn_complete
+            .as_ref()
+            .and_then(|input| input.failure_signal),
+        None
+    );
 }
 
 #[test]
@@ -49,6 +109,7 @@ fn append_events_project_message_page_and_workflow_input() {
         AgentSessionEvent::TurnCompleted {
             turn_id: 1,
             exit_code: 0,
+            stop_reason: None,
             token_usage: Some(TurnTokenUsage {
                 input_tokens: 3,
                 output_tokens: 5,
@@ -83,6 +144,7 @@ fn append_events_project_message_page_and_workflow_input() {
             turn_id: 1,
             exit_code: 0,
             final_text_parts: vec!["done".to_string()],
+            failure_signal: None,
             token_usage: Some(TurnTokenUsage {
                 input_tokens: 3,
                 output_tokens: 5,
@@ -823,6 +885,7 @@ fn terminal_status_projection_marks_nonzero_completed_as_error() {
         AgentSessionEvent::TurnCompleted {
             turn_id: 1,
             exit_code: 2,
+            stop_reason: None,
             token_usage: None,
         },
     ]);
@@ -918,6 +981,7 @@ fn finalization_closes_tools_permissions_and_turn() {
                 turn_id: 1,
                 exit_code: -1,
                 final_text_parts: Vec::new(),
+                failure_signal: None,
                 token_usage: None,
                 interrupted: true,
             })
