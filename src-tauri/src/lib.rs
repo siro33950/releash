@@ -7,7 +7,6 @@ mod cli_install;
 mod domain;
 mod focus_tracker;
 mod git;
-mod git_host;
 mod infrastructure;
 mod menu;
 mod native_drop;
@@ -177,8 +176,6 @@ pub fn run() {
             usecase::agent_session::session::OpenTabRegistry::default(),
         ))
         .manage(ws_server::WsServerHandle::default())
-        .manage(Arc::new(git_host::PrCache::new()))
-        .manage(Arc::new(git_host::IssueCache::new()))
         .manage(cleanup_gate)
         .manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
             parking_lot::RwLock::new(Vec::new()),
@@ -305,6 +302,8 @@ pub fn run() {
                 let agent_session_usecase = Arc::new(
                     adaptor::controller::wiring::build_agent_session_usecase(app.handle().clone()),
                 );
+                let git_host_usecase =
+                    Arc::new(adaptor::controller::wiring::build_git_host_usecase());
                 let repository_scanner = Arc::new(
                     adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
                         repository_usecase.clone(),
@@ -360,6 +359,7 @@ pub fn run() {
                     agent_session_usecase,
                     workflow_usecase,
                     pty_session_read_usecase,
+                    git_host_usecase,
                 });
             }
 

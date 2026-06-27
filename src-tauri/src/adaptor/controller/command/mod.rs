@@ -3,6 +3,7 @@ pub(crate) mod app_config;
 pub(crate) mod code;
 pub(crate) mod comment;
 pub(crate) mod external_editor;
+pub(crate) mod git_host;
 pub(crate) mod hooks;
 pub(crate) mod notification;
 pub(crate) mod pty_session;
@@ -119,12 +120,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::repository::git_config::set_releash_base,
             crate::adaptor::controller::command::repository::git_config::get_branch_base,
             crate::adaptor::controller::command::repository::git_config::set_branch_base,
-            // Git Host
-            crate::git_host::check_pr_provider_status,
-            crate::git_host::fetch_pr_status,
-            crate::git_host::get_cached_pr_status,
-            crate::git_host::fetch_issues,
-            crate::git_host::get_cached_issues,
             // Notion
             crate::notion::query_notion_tasks,
             crate::notion::fetch_notion_label_options,
@@ -215,6 +210,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
     app_config::register(&mut router);
     comment::register(&mut router);
     external_editor::register(&mut router);
+    git_host::register(&mut router);
     hooks::register(&mut router);
     notification::register(&mut router);
     pty_session::register(&mut router);
@@ -240,6 +236,20 @@ mod tests {
 
         assert_eq!(router.domain_route_index("start_workflow"), Some(0));
         assert_eq!(router.domain_route_index("workflow_submit_output"), Some(0));
+        assert_eq!(router.domain_route_index("get_git_status"), None);
+    }
+
+    #[test]
+    fn git_host_register_routes_git_host_commands_before_fallback() {
+        let mut router = CommandRouter::new(dummy_handler());
+
+        git_host::register(&mut router);
+
+        assert_eq!(
+            router.domain_route_index("check_pr_provider_status"),
+            Some(0)
+        );
+        assert_eq!(router.domain_route_index("get_cached_issues"), Some(0));
         assert_eq!(router.domain_route_index("get_git_status"), None);
     }
 }
