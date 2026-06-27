@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration, Instant};
 
 use crate::app_data_dir::resolve_data_dir;
 use crate::domain::agent_session::CODEX_FIXED_MODELS;
@@ -31,9 +31,13 @@ use crate::infrastructure::agent_session::runtime::context_restore::{
     context_restore_plan_from_meta, ContextRestorePlan, RestoreContextPayload,
 };
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::wait_until_session_close_finished;
+use crate::infrastructure::agent_session::runtime::timeouts::{
+    default_stale_timeout, default_startup_timeout, MAX_STALE_TIMEOUT_SECS, MAX_STARTUP_RETRIES,
+    MAX_STARTUP_TIMEOUT_SECS,
+};
 use crate::infrastructure::agent_session::runtime::{
-    AgentBackend, AgentEditorContext, AgentMessage, ImageAttachment, PermissionResponse,
-    SessionConfig, SessionHandle,
+    AgentBackend, AgentEditorContext, AgentMessage, AgentRuntimeError, ImageAttachment,
+    PermissionResponse, SessionConfig, SessionHandle,
 };
 use crate::usecase::agent_session::session::{
     ContextCarryState, SessionMeta, SessionReaderPort, SessionStore,
@@ -103,11 +107,15 @@ impl CodexBackend {
 #[async_trait]
 trait CodexBackendRuntime: Send + Sync {
     async fn start_session(&self, config: SessionConfig) -> Result<SessionHandle, String>;
+    async fn start_session_runtime(
+        &self,
+        config: SessionConfig,
+    ) -> Result<SessionHandle, AgentRuntimeError>;
     async fn send_message(
         &self,
         session: &SessionHandle,
         message: AgentMessage,
-    ) -> Result<(), String>;
+    ) -> Result<(), AgentRuntimeError>;
     async fn steer_message(
         &self,
         session: &SessionHandle,
@@ -297,7 +305,7 @@ struct AppServerCodexRuntime {
     handles: Arc<Mutex<AgentProcessMap>>,
     session_store: Arc<SessionStore>,
     cli_path: String,
-    sessions: Arc<Mutex<HashMap<String, Arc<Mutex<AppServerSessionState>>>>>,
+    sessions: AppServerSessionMap,
 }
 
 struct AppServerTurnStart<'a> {
@@ -311,6 +319,93 @@ struct AppServerTurnStart<'a> {
     images: &'a [ImageAttachment],
     streaming_message_id: &'a str,
     editor_context: Option<&'a AgentEditorContext>,
+    startup_timeout: Duration,
+}
+
+type AppServerSessionMap = Arc<Mutex<HashMap<String, Arc<Mutex<AppServerSessionState>>>>>;
+
+fn codex_session_startup_timeout(stored_meta: Option<&SessionMeta>) -> Duration {
+    stored_meta
+        .and_then(|meta| meta.workflow_step_context.as_ref())
+        .and_then(|context| context.startup_timeout_secs)
+        .map(|secs| Duration::from_secs(secs.min(MAX_STARTUP_TIMEOUT_SECS)))
+        .unwrap_or_else(default_startup_timeout)
+}
+
+fn codex_session_startup_max_retries(stored_meta: Option<&SessionMeta>) -> u32 {
+    stored_meta
+        .and_then(|meta| meta.workflow_step_context.as_ref())
+        .and_then(|context| context.startup_max_retries)
+        .map(|retries| retries.min(MAX_STARTUP_RETRIES))
+        .unwrap_or(0)
+}
+
+fn codex_session_stale_timeout(stored_meta: Option<&SessionMeta>) -> Duration {
+    stored_meta
+        .and_then(|meta| meta.workflow_step_context.as_ref())
+        .and_then(|context| context.stale_timeout_secs)
+        .map(|secs| Duration::from_secs(secs.min(MAX_STALE_TIMEOUT_SECS)))
+        .unwrap_or_else(default_stale_timeout)
+}
+
+fn thread_id_wait_deadline(now: Instant, timeout_duration: Duration) -> Instant {
+    now.checked_add(timeout_duration)
+        .unwrap_or_else(|| now + Duration::from_secs(MAX_STARTUP_TIMEOUT_SECS))
+}
+
+fn codex_session_startup_timeout_from_store(
+    app: &AppHandle,
+    session_store: &SessionStore,
+    chat_session_id: &str,
+) -> Result<Duration, String> {
+    let data_dir = resolve_data_dir(app)?;
+    let stored_meta = session_store.get_session_meta(&data_dir, chat_session_id)?;
+    Ok(codex_session_startup_timeout(stored_meta.as_ref()))
+}
+
+enum StartupAttemptResult<T> {
+    Ready(T),
+    TimedOut,
+}
+
+async fn retry_startup_until_ready<T, Attempt, AttemptFuture>(
+    startup_max_retries: u32,
+    mut run_attempt: Attempt,
+) -> Result<T, AgentRuntimeError>
+where
+    Attempt: FnMut() -> AttemptFuture,
+    AttemptFuture: std::future::Future<Output = Result<StartupAttemptResult<T>, String>>,
+{
+    let mut attempts = 0;
+    loop {
+        match run_attempt().await.map_err(AgentRuntimeError::Other)? {
+            StartupAttemptResult::Ready(state) => return Ok(state),
+            StartupAttemptResult::TimedOut => {
+                if attempts < startup_max_retries {
+                    attempts += 1;
+                    continue;
+                }
+                return Err(AgentRuntimeError::startup_timeout(
+                    attempts,
+                    startup_max_retries,
+                ));
+            }
+        }
+    }
+}
+
+async fn remove_session_state_if_matches(
+    sessions: &AppServerSessionMap,
+    chat_session_id: &str,
+    state: &Arc<Mutex<AppServerSessionState>>,
+) {
+    let mut guard = sessions.lock().await;
+    if guard
+        .get(chat_session_id)
+        .is_some_and(|current| Arc::ptr_eq(current, state))
+    {
+        guard.remove(chat_session_id);
+    }
 }
 
 impl AppServerCodexRuntime {
@@ -337,9 +432,14 @@ impl AppServerCodexRuntime {
         &self,
         config: &SessionConfig,
         current_turn_agent_message_id: Option<&str>,
-    ) -> Result<Arc<Mutex<AppServerSessionState>>, String> {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(state) = sessions.get(&config.chat_session_id).cloned() {
+    ) -> Result<Arc<Mutex<AppServerSessionState>>, AgentRuntimeError> {
+        if let Some(state) = self
+            .sessions
+            .lock()
+            .await
+            .get(&config.chat_session_id)
+            .cloned()
+        {
             return Ok(state);
         }
 
@@ -353,7 +453,11 @@ impl AppServerCodexRuntime {
         let mut child_envs = crate::path_aliases::prepare_child_env(
             self.app.path().app_data_dir().ok(),
         )
-        .map_err(|e| format!("failed to prepare alias child env for codex app-server: {e}"))?;
+        .map_err(|e| {
+            AgentRuntimeError::Other(format!(
+                "failed to prepare alias child env for codex app-server: {e}"
+            ))
+        })?;
         let base_branch = self
             .app
             .try_state::<Arc<dyn BaseBranchResolverPort>>()
@@ -373,22 +477,19 @@ impl AppServerCodexRuntime {
         {
             child_envs.push((key.to_string(), value));
         }
-        let data_dir = resolve_data_dir(&self.app)?;
+        let data_dir = resolve_data_dir(&self.app).map_err(AgentRuntimeError::Other)?;
         let (stored_meta, context_restore_plan) = resolve_codex_context_restore_plan(
             self.session_store.as_ref(),
             &data_dir,
             &config.chat_session_id,
             current_turn_agent_message_id,
-        )?;
+        )
+        .map_err(AgentRuntimeError::Other)?;
         let restore_context = context_restore_plan.restore_context().cloned();
         let context_carry_on_ready = match &context_restore_plan {
             ContextRestorePlan::Resume { .. } => Some(ContextCarryState::Resumed),
             ContextRestorePlan::NoContext | ContextRestorePlan::Reinject { .. } => None,
         };
-        let state = Arc::new(Mutex::new(AppServerSessionState::new(
-            restore_context,
-            context_carry_on_ready,
-        )));
         let selected_model = stored_meta.as_ref().and_then(|meta| {
             meta.selected_model
                 .as_deref()
@@ -420,12 +521,82 @@ impl AppServerCodexRuntime {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToString::to_string);
+        let startup_timeout = codex_session_startup_timeout(stored_meta.as_ref());
+        let stale_timeout = codex_session_stale_timeout(stored_meta.as_ref());
+        let startup_max_retries = codex_session_startup_max_retries(stored_meta.as_ref());
+        let state = retry_startup_until_ready(startup_max_retries, || {
+            let state = Arc::new(Mutex::new(AppServerSessionState::new(
+                restore_context.clone(),
+                context_carry_on_ready.clone(),
+            )));
+            async {
+                self.spawn_session_attempt(
+                    config,
+                    &child_envs,
+                    &state,
+                    &context_restore_plan,
+                    selected_model.as_deref(),
+                    saved_thread_id.as_deref(),
+                    &permission_mode,
+                    permission_profile_id.as_deref(),
+                    stale_timeout,
+                )
+                .await?;
 
+                if Self::wait_for_thread_id_once(&state, startup_timeout)
+                    .await
+                    .is_some()
+                {
+                    return Ok(StartupAttemptResult::Ready(state));
+                }
+
+                let _ =
+                    close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
+                        .await;
+                Ok(StartupAttemptResult::TimedOut)
+            }
+        })
+        .await;
+        match state {
+            Ok(state) => {
+                self.sessions
+                    .lock()
+                    .await
+                    .insert(config.chat_session_id.clone(), Arc::clone(&state));
+                Ok(state)
+            }
+            Err(err) => {
+                if matches!(err, AgentRuntimeError::StartupTimeout { .. }) {
+                    persist_context_restore_plan_failure(
+                        &self.app,
+                        &self.session_store,
+                        &config.chat_session_id,
+                        &context_restore_plan,
+                    );
+                }
+                Err(err)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_session_attempt(
+        &self,
+        config: &SessionConfig,
+        child_envs: &[(String, String)],
+        state: &Arc<Mutex<AppServerSessionState>>,
+        context_restore_plan: &ContextRestorePlan,
+        selected_model: Option<&str>,
+        saved_thread_id: Option<&str>,
+        permission_mode: &str,
+        permission_profile_id: Option<&str>,
+        stale_timeout: Duration,
+    ) -> Result<(), String> {
         let parts = spawn_app_server_process_parts(
             &self.app,
             &self.cli_path,
             Some(&config.cwd),
-            &child_envs,
+            child_envs,
         )
         .await?;
         register_external_agent_process(
@@ -438,8 +609,9 @@ impl AppServerCodexRuntime {
             parts.stdin,
             #[cfg(unix)]
             parts.pgid,
-            permission_mode.clone(),
-            selected_model.clone(),
+            permission_mode.to_string(),
+            selected_model.map(ToString::to_string),
+            stale_timeout,
             None,
             None,
         )
@@ -448,10 +620,10 @@ impl AppServerCodexRuntime {
         self.spawn_read_loop(
             config.chat_session_id.clone(),
             parts.stdout,
-            Arc::clone(&state),
+            Arc::clone(state),
         );
 
-        let initialize_id = Self::next_request_id(&state).await;
+        let initialize_id = Self::next_request_id(state).await;
         if let Err(err) = self
             .send_jsonrpc(
                 &config.chat_session_id,
@@ -463,7 +635,7 @@ impl AppServerCodexRuntime {
                 &self.app,
                 &self.session_store,
                 &config.chat_session_id,
-                &context_restore_plan,
+                context_restore_plan,
             );
             let _ = close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
                 .await;
@@ -477,32 +649,32 @@ impl AppServerCodexRuntime {
                 &self.app,
                 &self.session_store,
                 &config.chat_session_id,
-                &context_restore_plan,
+                context_restore_plan,
             );
             let _ = close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
                 .await;
             return Err(err);
         }
-        let request_id = Self::next_request_id(&state).await;
-        let thread_request = match if let Some(thread_id) = saved_thread_id.as_deref() {
+        let request_id = Self::next_request_id(state).await;
+        let thread_request = match if let Some(thread_id) = saved_thread_id {
             build_thread_resume_request(
                 request_id,
                 thread_id,
                 &config.cwd,
-                selected_model.as_deref(),
-                Some(&permission_mode),
+                selected_model,
+                Some(permission_mode),
                 config.plan_mode,
-                permission_profile_id.as_deref(),
+                permission_profile_id,
                 config.system_prompt.as_deref(),
             )
         } else {
             build_thread_start_request(
                 request_id,
                 &config.cwd,
-                selected_model.as_deref(),
-                Some(&permission_mode),
+                selected_model,
+                Some(permission_mode),
                 config.plan_mode,
-                permission_profile_id.as_deref(),
+                permission_profile_id,
                 config.system_prompt.as_deref(),
             )
         } {
@@ -512,7 +684,7 @@ impl AppServerCodexRuntime {
                     &self.app,
                     &self.session_store,
                     &config.chat_session_id,
-                    &context_restore_plan,
+                    context_restore_plan,
                 );
                 let _ =
                     close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
@@ -538,16 +710,14 @@ impl AppServerCodexRuntime {
                 &self.app,
                 &self.session_store,
                 &config.chat_session_id,
-                &context_restore_plan,
+                context_restore_plan,
             );
             let _ = close_external_agent_process(&self.app, &self.handles, &config.chat_session_id)
                 .await;
             return Err(err);
         }
 
-        sessions.insert(config.chat_session_id.clone(), Arc::clone(&state));
-
-        Ok(state)
+        Ok(())
     }
 
     fn spawn_read_loop(
@@ -648,7 +818,7 @@ impl AppServerCodexRuntime {
                     .await;
                 }
                 if should_close_failed_request {
-                    sessions.lock().await.remove(&chat_session_id);
+                    remove_session_state_if_matches(&sessions, &chat_session_id, &state).await;
                     let _ = close_external_agent_process(&app, &handles, &chat_session_id).await;
                     continue;
                 }
@@ -668,24 +838,38 @@ impl AppServerCodexRuntime {
                     }
                 }
             }
-            sessions.lock().await.remove(&chat_session_id);
+            remove_session_state_if_matches(&sessions, &chat_session_id, &state).await;
         });
     }
 
     async fn wait_for_thread_id(
         state: &Arc<Mutex<AppServerSessionState>>,
-    ) -> Result<String, String> {
-        for _ in 0..200 {
+        timeout: Duration,
+    ) -> Result<String, AgentRuntimeError> {
+        if let Some(thread_id) = Self::wait_for_thread_id_once(state, timeout).await {
+            return Ok(thread_id);
+        }
+        Err(AgentRuntimeError::startup_timeout(0, 0))
+    }
+
+    async fn wait_for_thread_id_once(
+        state: &Arc<Mutex<AppServerSessionState>>,
+        timeout_duration: Duration,
+    ) -> Option<String> {
+        let deadline = thread_id_wait_deadline(Instant::now(), timeout_duration);
+        loop {
             if let Some(thread_id) = state.lock().await.bridge_state.thread_id.clone() {
-                return Ok(thread_id);
+                return Some(thread_id);
+            }
+            if Instant::now() >= deadline {
+                return None;
             }
             sleep(Duration::from_millis(25)).await;
         }
-        Err("Timed out waiting for Codex app-server thread".to_string())
     }
 
-    async fn send_turn(&self, turn: AppServerTurnStart<'_>) -> Result<(), String> {
-        let thread_id = match Self::wait_for_thread_id(turn.state).await {
+    async fn send_turn(&self, turn: AppServerTurnStart<'_>) -> Result<(), AgentRuntimeError> {
+        let thread_id = match Self::wait_for_thread_id(turn.state, turn.startup_timeout).await {
             Ok(thread_id) => thread_id,
             Err(err) => {
                 let (clear_agent_session_id, should_fail_context_carry) =
@@ -739,7 +923,7 @@ impl AppServerCodexRuntime {
                     false,
                     had_restore_context,
                 );
-                return Err(err);
+                return Err(AgentRuntimeError::Other(err));
             }
         };
         if had_restore_context {
@@ -765,7 +949,7 @@ impl AppServerCodexRuntime {
                 true,
             );
         }
-        result
+        result.map_err(AgentRuntimeError::Other)
     }
 }
 
@@ -783,21 +967,24 @@ async fn start_next_app_server_pending_turn(
     };
 
     let result = async {
-        let thread_id = match AppServerCodexRuntime::wait_for_thread_id(&state).await {
-            Ok(thread_id) => thread_id,
-            Err(err) => {
-                let (clear_agent_session_id, should_fail_context_carry) =
-                    pending_context_restore_failure_flags(&state).await;
-                persist_pending_context_restore_failure(
-                    app,
-                    session_store,
-                    chat_session_id,
-                    clear_agent_session_id,
-                    should_fail_context_carry,
-                );
-                return Err(err);
-            }
-        };
+        let startup_timeout =
+            codex_session_startup_timeout_from_store(app, session_store, chat_session_id)?;
+        let thread_id =
+            match AppServerCodexRuntime::wait_for_thread_id(&state, startup_timeout).await {
+                Ok(thread_id) => thread_id,
+                Err(err) => {
+                    let (clear_agent_session_id, should_fail_context_carry) =
+                        pending_context_restore_failure_flags(&state).await;
+                    persist_pending_context_restore_failure(
+                        app,
+                        session_store,
+                        chat_session_id,
+                        clear_agent_session_id,
+                        should_fail_context_carry,
+                    );
+                    return Err(err.to_string());
+                }
+            };
         start_external_agent_turn_state(
             app,
             session_store,
@@ -874,6 +1061,15 @@ async fn start_next_app_server_pending_turn(
 #[async_trait]
 impl CodexBackendRuntime for AppServerCodexRuntime {
     async fn start_session(&self, config: SessionConfig) -> Result<SessionHandle, String> {
+        self.start_session_runtime(config)
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    async fn start_session_runtime(
+        &self,
+        config: SessionConfig,
+    ) -> Result<SessionHandle, AgentRuntimeError> {
         self.ensure_session(&config, None).await?;
         Ok(SessionHandle {
             chat_session_id: config.chat_session_id,
@@ -885,13 +1081,16 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
         &self,
         session: &SessionHandle,
         message: AgentMessage,
-    ) -> Result<(), String> {
-        ensure_codex_session(session)?;
-        let data_dir = resolve_data_dir(&self.app)?;
+    ) -> Result<(), AgentRuntimeError> {
+        ensure_codex_session(session).map_err(AgentRuntimeError::Other)?;
+        let data_dir = resolve_data_dir(&self.app).map_err(AgentRuntimeError::Other)?;
         let stored_session = self
             .session_store
-            .get_session_meta(&data_dir, &session.chat_session_id)?
-            .ok_or_else(|| format!("Session not found: {}", session.chat_session_id))?;
+            .get_session_meta(&data_dir, &session.chat_session_id)
+            .map_err(AgentRuntimeError::Other)?
+            .ok_or_else(|| {
+                AgentRuntimeError::Other(format!("Session not found: {}", session.chat_session_id))
+            })?;
         let config = SessionConfig {
             chat_session_id: session.chat_session_id.clone(),
             cwd: stored_session.worktree_path.clone(),
@@ -900,6 +1099,7 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
             permission_profile_id: message.permission_profile_id.clone(),
             system_prompt: None,
         };
+        let startup_timeout = codex_session_startup_timeout(Some(&stored_session));
         let state = self
             .ensure_session(&config, Some(message.streaming_message_id.as_str()))
             .await?;
@@ -914,6 +1114,7 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
             images: &message.images,
             streaming_message_id: &message.streaming_message_id,
             editor_context: message.editor_context.as_ref(),
+            startup_timeout,
         })
         .await
     }
@@ -1094,7 +1295,9 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
                     session.chat_session_id
                 )
             })?;
-        let thread_id = Self::wait_for_thread_id(&state).await?;
+        let thread_id = Self::wait_for_thread_id(&state, default_startup_timeout())
+            .await
+            .map_err(|error| error.to_string())?;
         let id = Self::next_request_id(&state).await;
         self.send_jsonrpc(
             &session.chat_session_id,
@@ -1126,7 +1329,9 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
                     session.chat_session_id
                 )
             })?;
-        let thread_id = Self::wait_for_thread_id(&state).await?;
+        let thread_id = Self::wait_for_thread_id(&state, default_startup_timeout())
+            .await
+            .map_err(|error| error.to_string())?;
         let id = Self::next_request_id(&state).await;
         self.send_jsonrpc(
             &session.chat_session_id,
@@ -1173,12 +1378,31 @@ impl AgentBackend for CodexBackend {
         self.runtime()?.start_session(config).await
     }
 
+    async fn start_session_runtime(
+        &self,
+        config: SessionConfig,
+    ) -> Result<SessionHandle, AgentRuntimeError> {
+        let runtime = self.runtime().map_err(AgentRuntimeError::Other)?;
+        runtime.start_session_runtime(config).await
+    }
+
     async fn send_message(
         &self,
         session: &SessionHandle,
         message: AgentMessage,
     ) -> Result<(), String> {
-        self.runtime()?.send_message(session, message).await
+        self.send_message_runtime(session, message)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn send_message_runtime(
+        &self,
+        session: &SessionHandle,
+        message: AgentMessage,
+    ) -> Result<(), AgentRuntimeError> {
+        let runtime = self.runtime().map_err(AgentRuntimeError::Other)?;
+        runtime.send_message(session, message).await
     }
 
     async fn steer_message(
@@ -1348,6 +1572,91 @@ mod tests {
         }
     }
 
+    struct StartupTimeoutRuntime;
+
+    #[async_trait::async_trait]
+    impl CodexBackendRuntime for StartupTimeoutRuntime {
+        async fn start_session(&self, config: SessionConfig) -> Result<SessionHandle, String> {
+            Ok(SessionHandle {
+                chat_session_id: config.chat_session_id,
+                backend_id: CODEX_BACKEND_ID.to_string(),
+            })
+        }
+
+        async fn start_session_runtime(
+            &self,
+            config: SessionConfig,
+        ) -> Result<SessionHandle, AgentRuntimeError> {
+            Ok(SessionHandle {
+                chat_session_id: config.chat_session_id,
+                backend_id: CODEX_BACKEND_ID.to_string(),
+            })
+        }
+
+        async fn send_message(
+            &self,
+            _session: &SessionHandle,
+            _message: AgentMessage,
+        ) -> Result<(), AgentRuntimeError> {
+            Err(AgentRuntimeError::startup_timeout(2, 2))
+        }
+
+        async fn steer_message(
+            &self,
+            _session: &SessionHandle,
+            _message: AgentMessage,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn active_turn_steering_ready(&self, _session: &SessionHandle) -> bool {
+            false
+        }
+
+        async fn interrupt(&self, _session: &SessionHandle) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn respond_permission(
+            &self,
+            _session: &SessionHandle,
+            _response: PermissionResponse,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn set_thread_name(
+            &self,
+            _session: &SessionHandle,
+            _name: &str,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn set_permission_mode(
+            &self,
+            _session: &SessionHandle,
+            _cwd: &str,
+            _permission_mode: &str,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn set_permission_profile(
+            &self,
+            _session: &SessionHandle,
+            _cwd: &str,
+            _permission_mode: &str,
+            _permission_profile_id: Option<&str>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
     fn resume_meta() -> SessionMeta {
         SessionMeta {
             id: "session-1".to_string(),
@@ -1368,6 +1677,189 @@ mod tests {
             message_count: 100,
             body_format_version: SESSION_BODY_FORMAT_VERSION,
         }
+    }
+
+    #[tokio::test]
+    async fn remove_session_state_only_removes_matching_generation() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let stale = Arc::new(Mutex::new(AppServerSessionState::new(None, None)));
+        let current = Arc::new(Mutex::new(AppServerSessionState::new(None, None)));
+        sessions
+            .lock()
+            .await
+            .insert("session-1".to_string(), Arc::clone(&current));
+
+        remove_session_state_if_matches(&sessions, "session-1", &stale).await;
+
+        assert!(sessions
+            .lock()
+            .await
+            .get("session-1")
+            .is_some_and(|state| Arc::ptr_eq(state, &current)));
+
+        remove_session_state_if_matches(&sessions, "session-1", &current).await;
+
+        assert!(!sessions.lock().await.contains_key("session-1"));
+    }
+
+    #[test]
+    fn codex_session_timeouts_use_injected_workflow_context_values() {
+        let mut meta = resume_meta();
+        meta.selected_model = Some("stored-model".to_string());
+        meta.workflow_step_context = Some(
+            crate::usecase::agent_session::session::WorkflowStepContextDto {
+                run_id: "run-1".to_string(),
+                workflow_name: "05_review-fix_gpt55".to_string(),
+                step_name: "review".to_string(),
+                run_index: 1,
+                parent_step_name: None,
+                parent_run_index: None,
+                order: 0,
+                startup_timeout_secs: Some(30),
+                startup_max_retries: Some(2),
+                stale_timeout_secs: Some(600),
+            },
+        );
+
+        assert_eq!(
+            codex_session_startup_timeout(Some(&meta)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(codex_session_startup_max_retries(Some(&meta)), 2);
+        assert_eq!(
+            codex_session_stale_timeout(Some(&meta)),
+            Duration::from_secs(600)
+        );
+
+        let mut default_policy_meta = resume_meta();
+        default_policy_meta.workflow_step_context = Some(
+            crate::usecase::agent_session::session::WorkflowStepContextDto {
+                run_id: "run-1".to_string(),
+                workflow_name: "default-workflow".to_string(),
+                step_name: "review".to_string(),
+                run_index: 1,
+                parent_step_name: None,
+                parent_run_index: None,
+                order: 0,
+                startup_timeout_secs: Some(30),
+                startup_max_retries: Some(2),
+                stale_timeout_secs: Some(180),
+            },
+        );
+        assert_eq!(
+            codex_session_startup_timeout(Some(&default_policy_meta)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            codex_session_stale_timeout(Some(&default_policy_meta)),
+            Duration::from_secs(180)
+        );
+        assert_eq!(
+            codex_session_startup_max_retries(Some(&default_policy_meta)),
+            2
+        );
+    }
+
+    #[test]
+    fn codex_session_timeouts_clamp_corrupted_workflow_context_values() {
+        let mut meta = resume_meta();
+        meta.workflow_step_context = Some(
+            crate::usecase::agent_session::session::WorkflowStepContextDto {
+                run_id: "run-1".to_string(),
+                workflow_name: "corrupted-workflow".to_string(),
+                step_name: "review".to_string(),
+                run_index: 1,
+                parent_step_name: None,
+                parent_run_index: None,
+                order: 0,
+                startup_timeout_secs: Some(u64::MAX),
+                startup_max_retries: Some(u32::MAX),
+                stale_timeout_secs: Some(u64::MAX),
+            },
+        );
+
+        assert_eq!(
+            codex_session_startup_timeout(Some(&meta)),
+            Duration::from_secs(MAX_STARTUP_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            codex_session_stale_timeout(Some(&meta)),
+            Duration::from_secs(MAX_STALE_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            codex_session_startup_max_retries(Some(&meta)),
+            MAX_STARTUP_RETRIES
+        );
+    }
+
+    #[test]
+    fn thread_id_wait_deadline_falls_back_to_startup_ceiling_when_duration_overflows() {
+        let now = Instant::now();
+        let deadline = thread_id_wait_deadline(now, Duration::from_secs(u64::MAX));
+
+        assert_eq!(
+            deadline.duration_since(now),
+            Duration::from_secs(MAX_STARTUP_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn codex_session_startup_max_retries_defaults_to_zero_without_workflow_context() {
+        let meta = resume_meta();
+
+        assert_eq!(codex_session_startup_max_retries(Some(&meta)), 0);
+        assert_eq!(codex_session_startup_max_retries(None), 0);
+    }
+
+    #[tokio::test]
+    async fn startup_retry_succeeds_when_fake_app_server_becomes_ready_within_budget() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_runtime = Arc::clone(&attempts);
+
+        let session_id = retry_startup_until_ready(2, move || {
+            let attempts = Arc::clone(&attempts_for_runtime);
+            async move {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                if attempt < 2 {
+                    return Ok(StartupAttemptResult::TimedOut);
+                }
+                Ok(StartupAttemptResult::Ready("thread-ready".to_string()))
+            }
+        })
+        .await
+        .expect("retry within startup budget should succeed");
+
+        assert_eq!(session_id, "thread-ready");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn startup_retry_exhaustion_returns_startup_timeout() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_runtime = Arc::clone(&attempts);
+
+        let err = match retry_startup_until_ready(2, move || {
+            let attempts = Arc::clone(&attempts_for_runtime);
+            async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, String>(StartupAttemptResult::<String>::TimedOut)
+            }
+        })
+        .await
+        {
+            Ok(_) => panic!("all startup attempts should timeout"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err,
+            AgentRuntimeError::StartupTimeout {
+                retry_count: 2,
+                max_retries: 2,
+                total_attempts: 3,
+            }
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 
     #[test]
@@ -1505,5 +1997,40 @@ mod tests {
             .await
             .is_err());
         assert!(backend.close_session(&session).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn send_message_runtime_preserves_startup_timeout_error() {
+        let backend = CodexBackend {
+            runtime: Some(Arc::new(StartupTimeoutRuntime)),
+            cli_path: None,
+        };
+        let session = SessionHandle {
+            chat_session_id: "session-1".to_string(),
+            backend_id: CODEX_BACKEND_ID.to_string(),
+        };
+        let message = AgentMessage {
+            content: "hello".to_string(),
+            streaming_message_id: "message-1".to_string(),
+            images: vec![],
+            permission_mode: "edit".to_string(),
+            plan_mode: false,
+            permission_profile_id: None,
+            editor_context: None,
+        };
+
+        let err = backend
+            .send_message_runtime(&session, message)
+            .await
+            .expect_err("startup timeout must remain typed");
+
+        assert!(matches!(
+            err,
+            AgentRuntimeError::StartupTimeout {
+                retry_count: 2,
+                max_retries: 2,
+                total_attempts: 3,
+            }
+        ));
     }
 }

@@ -807,22 +807,31 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
     permission_mode: Option<String>,
     plan_mode: bool,
     system_prompt: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
     // 抽象パーミッションモードを境界で解決・検証する。
     // - Some: その場で検証（Tauri/WS 境界が既に弾いている想定だが内部経路でも二重防御）。
     // - None: 内部呼び出し（workflow engine 等）として保存済みセッション値を明示参照する。
     let resolved_permission_mode = match permission_mode {
         Some(value) => crate::permission::PermissionMode::parse(&value)
             .map(|m| m.as_str().to_string())
-            .map_err(|e| e.to_string())?,
+            .map_err(|e| {
+                crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other(
+                    e.to_string(),
+                )
+            })?,
         None => {
-            let data_dir = resolve_data_dir(app)?;
+            let data_dir = resolve_data_dir(app)
+                .map_err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other)?;
             let meta = session_store
                 .get_session_meta(&data_dir, chat_session_id)?
                 .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
             crate::permission::PermissionMode::parse(&meta.permission_mode)
                 .map(|m| m.as_str().to_string())
-                .map_err(|e| e.to_string())?
+                .map_err(|e| {
+                    crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other(
+                        e.to_string(),
+                    )
+                })?
         }
     };
 
@@ -843,7 +852,7 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
     if spawn_info.backend_id == CODEX_BACKEND_ID {
         let backend = codex_backend_from_app(app)?;
         backend
-            .start_session(SessionConfig {
+            .start_session_runtime(SessionConfig {
                 chat_session_id: chat_session_id.to_string(),
                 cwd: cwd.to_string(),
                 permission_mode: Some(resolved_permission_mode),
@@ -870,6 +879,7 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
         spawn_info.context_restore_plan.restore_context().cloned(),
     )
     .await
+    .map_err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other)
 }
 
 fn record_ui_to_start_latency_for_turn(
@@ -1142,9 +1152,31 @@ pub(super) async fn start_codex_backend_turn<R: tauri::Runtime>(
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
+    start_codex_backend_turn_runtime(
+        app,
+        chat_session_id,
+        permission_mode,
+        plan_mode,
+        prompt,
+        streaming_message_id,
+        images,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+pub(super) async fn start_codex_backend_turn_runtime<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    chat_session_id: &str,
+    permission_mode: &str,
+    plan_mode: bool,
+    prompt: &str,
+    streaming_message_id: &str,
+    images: &[ImageAttachment],
+) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
     let backend = codex_backend_from_app(app)?;
     backend
-        .send_message(
+        .send_message_runtime(
             &SessionHandle {
                 chat_session_id: chat_session_id.to_string(),
                 backend_id: CODEX_BACKEND_ID.to_string(),
@@ -1160,6 +1192,51 @@ pub(super) async fn start_codex_backend_turn<R: tauri::Runtime>(
             },
         )
         .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_agent_turn_locked_runtime<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    cwd: &str,
+    permission_mode: &str,
+    plan_mode: bool,
+    prompt: &str,
+    streaming_message_id: &str,
+    images: &[ImageAttachment],
+) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
+    let spawn_info =
+        get_required_persisted_spawn_info_for_turn(app, session_store, chat_session_id)
+            .map_err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other)?;
+    if spawn_info.backend_id == CODEX_BACKEND_ID {
+        return start_codex_backend_turn_runtime(
+            app,
+            chat_session_id,
+            permission_mode,
+            plan_mode,
+            prompt,
+            streaming_message_id,
+            images,
+        )
+        .await;
+    }
+
+    start_agent_turn_locked(
+        app,
+        handles,
+        session_store,
+        chat_session_id,
+        cwd,
+        permission_mode,
+        plan_mode,
+        prompt,
+        streaming_message_id,
+        images,
+    )
+    .await
+    .map_err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2440,8 +2517,9 @@ pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
     cwd: &str,
     permission_mode: &str,
     prompt: &str,
-) -> Result<(), String> {
-    let data_dir = resolve_data_dir(app)?;
+) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
+    let data_dir = resolve_data_dir(app)
+        .map_err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other)?;
 
     // Add human message
     let _human_msg = add_message_internal(
@@ -2452,7 +2530,8 @@ pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
         prompt,
         None,
         None,
-    )?;
+    )
+    .map_err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other)?;
 
     // Add empty agent message (will be filled by streaming)
     let agent_msg = add_message_internal(
@@ -2463,9 +2542,10 @@ pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
         "",
         None,
         None,
-    )?;
+    )
+    .map_err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other)?;
 
-    start_agent_turn_locked(
+    start_agent_turn_locked_runtime(
         app,
         handles,
         session_store,
@@ -4369,7 +4449,9 @@ mod moved_tests {
                 current_permission_mode: "edit".to_string(),
                 available_models: Vec::new(),
                 selected_model: None,
+                stale_timeout: std::time::Duration::from_secs(180),
                 last_result_token_usage: None,
+                current_turn_stop_reason: None,
                 latest_token_usage: None,
                 pending_stream_parts: Vec::new(),
                 pending_stream_part_rollbacks: Vec::new(),

@@ -1,0 +1,82 @@
+use std::time::Duration;
+
+use crate::domain::workflow::{NodeType, TimeoutPolicy};
+
+const EXTENDED_STALE_TIMEOUT: Duration = Duration::from_secs(600);
+
+const EXTENDED_STALE_MODELS: &[&str] = &["claude-opus-4-8", "gpt-5.5"];
+
+const EXTENDED_STALE_NODE_KINDS: &[NodeType] = &[NodeType::Approval];
+
+const EXTENDED_STALE_TEMPLATES: &[&str] = &[
+    "02_implement_gpt55",
+    "02_implement_opus48",
+    "03_review",
+    "03_full-review",
+    "04_review-fix-policy",
+    "05_review-fix",
+    "05_review-fix_gpt55",
+    "05_review-fix_opus48",
+    "06_verify-review-comments",
+];
+
+pub(crate) fn workflow_runtime_timeout_policy() -> TimeoutPolicy {
+    let policy = TimeoutPolicy::default();
+    let policy = EXTENDED_STALE_MODELS.iter().fold(policy, |policy, model| {
+        policy.with_stale_timeout_for_model(*model, EXTENDED_STALE_TIMEOUT)
+    });
+    let policy = EXTENDED_STALE_NODE_KINDS
+        .iter()
+        .fold(policy, |policy, node_kind| {
+            policy.with_stale_timeout_for_node_kind(*node_kind, EXTENDED_STALE_TIMEOUT)
+        });
+    EXTENDED_STALE_TEMPLATES
+        .iter()
+        .fold(policy, |policy, template| {
+            policy.with_stale_timeout_for_template(*template, EXTENDED_STALE_TIMEOUT)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::workflow::TimeoutContext;
+
+    #[test]
+    fn workflow_runtime_timeout_policy_injects_builtin_overrides_outside_domain() {
+        let policy = workflow_runtime_timeout_policy();
+
+        assert_eq!(
+            policy.stale_timeout(&TimeoutContext::new(
+                Some("gpt-5.5".to_string()),
+                NodeType::Agent,
+                None
+            )),
+            EXTENDED_STALE_TIMEOUT
+        );
+        assert_eq!(
+            policy.stale_timeout(&TimeoutContext::new(
+                None,
+                NodeType::Agent,
+                Some("05_review-fix_gpt55".to_string())
+            )),
+            EXTENDED_STALE_TIMEOUT
+        );
+        assert_eq!(
+            policy.stale_timeout(&TimeoutContext::new(
+                Some("unknown-fast".to_string()),
+                NodeType::Approval,
+                Some("unknown-template".to_string())
+            )),
+            EXTENDED_STALE_TIMEOUT
+        );
+        assert_eq!(
+            TimeoutPolicy::default().stale_timeout(&TimeoutContext::new(
+                Some("gpt-5.5".to_string()),
+                NodeType::Approval,
+                Some("05_review-fix_gpt55".to_string())
+            )),
+            Duration::from_secs(180)
+        );
+    }
+}

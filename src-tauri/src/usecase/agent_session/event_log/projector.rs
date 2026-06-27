@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use super::events::{AgentSessionEvent, InterruptReason, PromptInput, TurnId, TurnTokenUsage};
+use super::events::{
+    AgentSessionEvent, InterruptReason, PromptInput, TurnId, TurnStopReason, TurnTokenUsage,
+};
 use super::finalization::has_unresolved_permissions;
 use super::part_events::{permission_request_id, permission_tool_use_id};
 use crate::usecase::agent_session::session::{
@@ -20,8 +22,14 @@ pub struct WorkflowTurnCompleteInput {
     pub turn_id: TurnId,
     pub exit_code: i64,
     pub final_text_parts: Vec<String>,
+    pub failure_signal: Option<AgentTurnFailureSignal>,
     pub token_usage: Option<TurnTokenUsage>,
     pub interrupted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentTurnFailureSignal {
+    ModelRefusal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -362,12 +370,14 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
             AgentSessionEvent::TurnCompleted {
                 turn_id,
                 exit_code,
+                stop_reason,
                 token_usage,
             } => {
                 terminal_by_turn.insert(
                     *turn_id,
                     TerminalEvent::Completed {
                         exit_code: *exit_code,
+                        stop_reason: *stop_reason,
                         token_usage: *token_usage,
                     },
                 );
@@ -502,6 +512,7 @@ fn prompt_parts_for_message(prompt: &PromptInput) -> Vec<MessagePart> {
 enum TerminalEvent {
     Completed {
         exit_code: i64,
+        stop_reason: Option<TurnStopReason>,
         token_usage: Option<TurnTokenUsage>,
     },
     Interrupted {
@@ -866,11 +877,13 @@ fn project_workflow_turn_complete(
     match terminal {
         TerminalEvent::Completed {
             exit_code,
+            stop_reason,
             token_usage,
         } => Some(WorkflowTurnCompleteInput {
             turn_id: turn.turn_id,
             exit_code: *exit_code,
             final_text_parts,
+            failure_signal: workflow_failure_signal_from_stop_reason(*stop_reason),
             token_usage: *token_usage,
             interrupted: false,
         }),
@@ -878,8 +891,16 @@ fn project_workflow_turn_complete(
             turn_id: turn.turn_id,
             exit_code: *exit_code,
             final_text_parts,
+            failure_signal: None,
             token_usage: None,
             interrupted: true,
         }),
     }
+}
+
+fn workflow_failure_signal_from_stop_reason(
+    stop_reason: Option<TurnStopReason>,
+) -> Option<AgentTurnFailureSignal> {
+    matches!(stop_reason, Some(TurnStopReason::Refusal))
+        .then_some(AgentTurnFailureSignal::ModelRefusal)
 }

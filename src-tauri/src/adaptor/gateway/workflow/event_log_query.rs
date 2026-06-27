@@ -21,7 +21,9 @@ impl RequestEventKind {
         match self {
             Self::OutputSubmitted => matches!(
                 event,
-                WorkflowEvent::OutputSubmitted { request_id: Some(id), .. } if id == request_id
+                WorkflowEvent::OutputSubmitted { request_id: Some(id), .. }
+                    | WorkflowEvent::ContractRepairRequested { request_id: Some(id), .. }
+                    if id == request_id
             ),
             Self::CliMutationRequested => matches!(
                 event,
@@ -69,6 +71,9 @@ pub(crate) fn request_event_already_recorded(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::event::CliMutationRequestRecord;
+    use crate::adaptor::gateway::workflow::failure_wire::{
+        submission_violation_reason, SubmissionViolation,
+    };
 
     fn uuid(suffix: u16) -> String {
         format!("00000000-0000-0000-0000-{suffix:012}")
@@ -109,6 +114,38 @@ mod tests {
                 &uuid(3),
             ),
             Ok(false)
+        );
+    }
+
+    #[test]
+    fn request_event_already_recorded_treats_contract_repair_as_submit_output_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run_id = uuid(10);
+        let request_id = uuid(11);
+        WorkflowEventLog::new(tmp.path())
+            .append_batch(&[WorkflowEvent::ContractRepairRequested {
+                run_id: run_id.clone(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                run_index: 1,
+                request_id: Some(request_id.clone()),
+                attempt: 1,
+                violation_reason: submission_violation_reason(
+                    SubmissionViolation::InvalidSubmitOutput,
+                )
+                .to_string(),
+                timestamp: 11.0,
+            }])
+            .unwrap();
+
+        assert_eq!(
+            request_event_already_recorded(
+                tmp.path(),
+                RequestEventKind::OutputSubmitted,
+                &run_id,
+                &request_id,
+            ),
+            Ok(true)
         );
     }
 

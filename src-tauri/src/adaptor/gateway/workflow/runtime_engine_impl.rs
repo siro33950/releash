@@ -15,7 +15,9 @@ use super::step_session_boundary::StepSessionInfo;
 use super::step_session_boundary::{dispatch_session_start, SessionStartGate};
 use super::step_session_boundary::{RealStepSessionDeps, StepSessionDeps};
 use crate::adaptor::gateway::workflow::approval_runtime as workflow_approval_runtime;
-use crate::adaptor::gateway::workflow::domain_mapping::transition_rule_from_domain;
+use crate::adaptor::gateway::workflow::domain_mapping::{
+    node_type_to_domain, parallel_aggregate_to_domain, transition_rule_from_domain,
+};
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::event::{ApprovalDecisionRecord, WorkflowEvent};
 use crate::adaptor::gateway::workflow::event_log_query::{
@@ -26,6 +28,9 @@ use crate::adaptor::gateway::workflow::execution_registry::{
     find_any_by_worktree, find_by_worktree, find_by_worktree_mut, ExecutionStateTarget,
 };
 use crate::adaptor::gateway::workflow::external_execution_restore as workflow_external_restore;
+use crate::adaptor::gateway::workflow::failure_wire::{
+    self as workflow_failure_wire, SubmissionViolation,
+};
 use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
 use crate::adaptor::gateway::workflow::orphan_recovery as workflow_orphan_recovery;
 use crate::adaptor::gateway::workflow::output_submission as workflow_output_submission;
@@ -72,22 +77,26 @@ use crate::adaptor::gateway::workflow::step_settings::ResolvedStepSettings;
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::adaptor::gateway::workflow::turn_completion;
 use crate::domain::workflow::services::contract as workflow_contract;
+use crate::domain::workflow::services::failure_policy::{
+    ParallelFailurePolicy, ParallelPropagation, RepairDecision, RetryPolicy,
+    StructuredOutputRepairPolicy,
+};
 use crate::domain::workflow::services::history::RuntimeStartFailureKind;
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
 use crate::domain::workflow::services::transition as workflow_transition;
 use crate::domain::workflow::OutcomeCommitMode;
 use crate::domain::workflow::WorkflowStepContext;
-use crate::domain::workflow::STEP_STATE_FAILED;
 #[cfg(test)]
 use crate::domain::workflow::STEP_STATE_RUNNING;
+use crate::domain::workflow::{
+    FailureClassification, FailureDisposition, WorkflowStepFailureKind, STEP_STATE_FAILED,
+};
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::permission::PermissionMode;
 use crate::usecase::agent_session::session::SessionStore;
 use crate::usecase::agent_session::status::current_timestamp;
 
 use super::event_projection::reconstruct_state_from_events;
-
-const MAX_CONTRACT_REPAIR_ATTEMPTS: u32 = 2;
 
 fn request_event_lookup_error_to_engine_error(err: RequestEventLookupError) -> WorkflowEngineError {
     match err {
@@ -96,6 +105,25 @@ fn request_event_lookup_error_to_engine_error(err: RequestEventLookupError) -> W
             WorkflowEngineError::ValidationError(message)
         }
         RequestEventLookupError::ReadLog(message) => WorkflowEngineError::SessionStore(message),
+    }
+}
+
+fn parallel_child_failure_kind(
+    exit_code: i64,
+    failure_signal: Option<workflow_transition::SessionFailureSignal>,
+) -> WorkflowStepFailureKind {
+    workflow_transition::classify_session_error(exit_code, failure_signal)
+}
+
+fn record_failed_snapshot_telemetry(snapshot: &WorkflowState) {
+    if let WorkflowExecutionState::Failed {
+        kind, retry_count, ..
+    } = &snapshot.state
+    {
+        crate::other::telemetry::record_workflow_step_failure(
+            FailureClassification::with_disposition(*kind, FailureDisposition::Terminal),
+            *retry_count,
+        );
     }
 }
 
@@ -185,6 +213,129 @@ struct ParallelChildStartedLogObserver<'a, R: tauri::Runtime> {
     execution_id: &'a str,
     workflow_name: &'a str,
     parent_step_name: &'a str,
+}
+
+struct ParallelChildCompletionCommit {
+    all_completed: bool,
+    outcome: Option<StepOutcome>,
+    snapshot_before: WorkflowExecution,
+    progress_events: Vec<WorkflowEvent>,
+    required_progress_events: bool,
+    failure_telemetry: Option<FailureClassification>,
+}
+
+fn complete_parallel_parent_after_all_children(
+    exec: &mut WorkflowExecution,
+    snapshot_before: WorkflowExecution,
+    mut progress_events: Vec<WorkflowEvent>,
+    required_progress_events: bool,
+    failure_telemetry: Option<FailureClassification>,
+) -> Result<ParallelChildCompletionCommit, WorkflowEngineError> {
+    let Some(parallel_run) = exec.parallel_run.as_ref() else {
+        return Err(WorkflowEngineError::InvalidState(
+            "parallel parent completion requires an active parallel run".to_string(),
+        ));
+    };
+    let aggregate = parallel_run.aggregate.clone();
+    let parent_step_name = parallel_run.parent_step_name.clone();
+    let parent_run_index = exec
+        .step_execution_counts
+        .get(&parent_step_name)
+        .copied()
+        .unwrap_or(1);
+    let completed_at = current_timestamp();
+    let completion_plan = workflow_parallel_runtime::plan_parallel_parent_completion(
+        &parent_step_name,
+        parent_run_index,
+        aggregate.as_ref(),
+        &parallel_run.children,
+        &exec.step_outputs,
+        completed_at,
+    );
+    let parallel_completed_result = match &completion_plan.transition {
+        workflow_parallel_runtime::ParallelParentCompletionTransition::Advance => {
+            "advance".to_string()
+        }
+        workflow_parallel_runtime::ParallelParentCompletionTransition::TransitionTo {
+            aggregate_result,
+            ..
+        } => aggregate_result.clone(),
+    };
+    progress_events.push(WorkflowEvent::ParallelCompleted {
+        run_id: exec.id.clone(),
+        workflow_name: exec.workflow.name.clone(),
+        parent_node_name: parent_step_name.clone(),
+        aggregate_result: parallel_completed_result,
+        timestamp: current_timestamp(),
+    });
+
+    exec.parallel_run = None;
+    exec.updated_at = completed_at;
+    exec.step_outputs
+        .insert(parent_step_name.clone(), completion_plan.parent_step_output);
+    exec.current_step_token_usage = TokenUsage::default();
+    exec.current_session_id = None;
+    exec.step_history.push(completion_plan.history_entry);
+
+    let outcome = match completion_plan.transition {
+        workflow_parallel_runtime::ParallelParentCompletionTransition::Advance => {
+            exec.apply_advance()
+        }
+        workflow_parallel_runtime::ParallelParentCompletionTransition::TransitionTo {
+            target_node_name,
+            ..
+        } => exec.apply_transition(&target_node_name)?,
+    };
+
+    Ok(ParallelChildCompletionCommit {
+        all_completed: true,
+        outcome: Some(outcome),
+        snapshot_before,
+        progress_events,
+        required_progress_events,
+        failure_telemetry,
+    })
+}
+
+fn finalize_child_terminal_state(
+    exec: &mut WorkflowExecution,
+    snapshot_before: WorkflowExecution,
+    progress_events: Vec<WorkflowEvent>,
+    required_progress_events: bool,
+    failure_telemetry: Option<FailureClassification>,
+) -> Result<ParallelChildCompletionCommit, WorkflowEngineError> {
+    let Some(parallel_run) = exec.parallel_run.as_ref() else {
+        return Err(WorkflowEngineError::InvalidState(
+            "parallel child terminal state requires an active parallel run".to_string(),
+        ));
+    };
+    let all_done = parallel_run.children.iter().all(|c| {
+        matches!(
+            c.state,
+            ParallelChildState::Completed | ParallelChildState::Failed
+        )
+    });
+
+    if !all_done {
+        exec.updated_at = current_timestamp();
+        let snapshot = exec.to_workflow_state();
+        return Ok(ParallelChildCompletionCommit {
+            all_completed: false,
+            outcome: Some(StepOutcome::Persist(snapshot)),
+            snapshot_before,
+            progress_events,
+            required_progress_events,
+            failure_telemetry,
+        });
+    }
+
+    complete_parallel_parent_after_all_children(
+        exec,
+        snapshot_before,
+        progress_events,
+        required_progress_events,
+        failure_telemetry,
+    )
 }
 
 impl<R: tauri::Runtime> workflow_runtime_session::ParallelChildTurnObserver
@@ -851,6 +1002,8 @@ impl WorkflowRuntimeService {
     pub(crate) async fn submit_workflow_output<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
         run_id: &str,
         step_name: String,
         contract: String,
@@ -860,6 +1013,8 @@ impl WorkflowRuntimeService {
     ) -> Result<(), WorkflowEngineError> {
         self.handle_submit_output(
             app,
+            session_store,
+            handles,
             run_id,
             step_name,
             contract,
@@ -874,6 +1029,8 @@ impl WorkflowRuntimeService {
     async fn handle_submit_output<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
         run_id: &str,
         step_name: String,
         contract: String,
@@ -896,11 +1053,27 @@ impl WorkflowRuntimeService {
             structured_output: validated_output,
             result: validated_result,
             workflow_variables: contract_vars,
-        } = workflow_output_submission::validate_submission_output_with_secrets(
+        } = match workflow_output_submission::validate_submission_output_with_secrets(
             &contract,
             structured_output,
             &secrets,
-        )?;
+        ) {
+            Ok(validated) => validated,
+            Err(validation_error) => {
+                return self
+                    .handle_invalid_submit_output(
+                        app,
+                        session_store,
+                        handles,
+                        run_id,
+                        &step_name,
+                        &contract,
+                        request_id.as_deref(),
+                        validation_error,
+                    )
+                    .await;
+            }
+        };
 
         // 2. writer lock 取得後に state / contract / accepting target / run_index を
         //    再検証し、snapshot 採取と mutation を同一 lock スコープで行う
@@ -950,6 +1123,48 @@ impl WorkflowRuntimeService {
         }
 
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_invalid_submit_output<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        run_id: &str,
+        step_name: &str,
+        contract: &str,
+        request_id: Option<&str>,
+        validation_error: WorkflowEngineError,
+    ) -> Result<(), WorkflowEngineError> {
+        let target = {
+            let execs = self.executions.lock().await;
+            let exec = execs
+                .get(run_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
+            workflow_output_submission::validate_submission_target_context(
+                exec, run_id, step_name, contract,
+            )
+        };
+        let target = match target {
+            Ok(target) => target,
+            Err(_) => return Err(validation_error),
+        };
+        self.handle_missing_required_output(
+            app,
+            session_store,
+            handles,
+            &target.worktree_path,
+            run_id,
+            &target.workflow_name,
+            step_name,
+            contract,
+            target.run_index,
+            target.session_id.as_deref(),
+            request_id,
+            SubmissionViolation::InvalidSubmitOutput,
+        )
+        .await
     }
 
     pub(crate) async fn append_command_commit_context<R: tauri::Runtime>(
@@ -1153,6 +1368,7 @@ impl WorkflowRuntimeService {
         handles: &Arc<Mutex<AgentProcessMap>>,
         session_id: &str,
         exit_code: i64,
+        failure_signal: Option<workflow_transition::SessionFailureSignal>,
         final_parts: &[crate::usecase::agent_session::session::MessagePart],
         token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError> {
@@ -1193,7 +1409,7 @@ impl WorkflowRuntimeService {
                     session_id,
                     &parent_step_name,
                     exit_code,
-                    final_parts,
+                    failure_signal,
                     token_usage,
                 )
                 .await;
@@ -1224,27 +1440,51 @@ impl WorkflowRuntimeService {
                     output_tokens: output,
                 });
             }
-            let plan = exec.plan_turn_complete_mutation(exit_code)?;
+            let plan = exec.plan_turn_complete_mutation(exit_code, failure_signal)?;
 
             match plan {
                 workflow_transition::TurnCompleteMutationPlan::NotRunning => return Ok(()),
                 workflow_transition::TurnCompleteMutationPlan::SessionError {
+                    node_name,
                     history_result,
-                    failure_reason,
+                    mut failure_reason,
+                    kind,
                     ..
                 } => {
                     if exec.is_terminal() {
                         return Ok(());
                     }
                     let snapshot_before = exec.clone();
-                    let entry = exec.make_step_history_entry(Some(history_result), None, None);
-                    exec.step_history.push(entry);
-                    exec.state = WorkflowExecutionState::Failed {
-                        reason: failure_reason,
+                    let retry_count = exec
+                        .step_execution_counts
+                        .get(&node_name)
+                        .copied()
+                        .unwrap_or(1)
+                        .saturating_sub(1);
+                    let retry_policy = RetryPolicy::default();
+                    let retry_allowed = retry_policy.should_retry(kind, retry_count);
+                    let outcome = if retry_allowed {
+                        exec.retry_current_step()
+                    } else {
+                        let max_retries = retry_policy.max_retries(kind);
+                        failure_reason.push_str(&format!(
+                            "; retry policy did not retry failure_kind={} retry_count={} max_retries={}",
+                            kind.as_str(),
+                            retry_count,
+                            max_retries
+                        ));
+                        let entry = exec.make_step_history_entry(Some(history_result), None, None);
+                        exec.step_history.push(entry);
+                        exec.state = WorkflowExecutionState::Failed {
+                            reason: failure_reason,
+                            kind,
+                            retry_count: Some(retry_count),
+                        };
+                        exec.updated_at = current_timestamp();
+                        StepOutcome::Persist(exec.to_workflow_state())
                     };
-                    exec.updated_at = current_timestamp();
                     Ok(TurnCommit {
-                        outcome: StepOutcome::Persist(exec.to_workflow_state()),
+                        outcome,
                         required_events: Vec::new(),
                         rollback_snapshot: (exec.id.clone(), snapshot_before),
                     })
@@ -1281,6 +1521,8 @@ impl WorkflowRuntimeService {
                     exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
                         reason: failure_reason,
+                        kind: WorkflowStepFailureKind::ValidationFailure,
+                        retry_count: None,
                     };
                     exec.updated_at = current_timestamp();
                     Ok(TurnCommit {
@@ -1515,6 +1757,7 @@ impl WorkflowRuntimeService {
             workflow_name_for_contract,
             node_name_for_contract,
             approval_output_contract,
+            approval_run_index,
             approval_submitted_output,
         ) = {
             let execs = self.executions.lock().await;
@@ -1547,6 +1790,7 @@ impl WorkflowRuntimeService {
                 exec.workflow.name.clone(),
                 node.name.clone(),
                 output_contract,
+                run_index,
                 submitted_output,
             )
         };
@@ -1579,7 +1823,10 @@ impl WorkflowRuntimeService {
                         &workflow_name_for_contract,
                         &node_name_for_contract,
                         contract,
+                        approval_run_index,
                         current_session_id.as_deref(),
+                        None,
+                        SubmissionViolation::MissingSubmitOutput,
                     )
                     .await?;
                     return Err(WorkflowEngineError::ValidationError(
@@ -1979,6 +2226,10 @@ impl WorkflowRuntimeService {
             },
         )
         .await?;
+        crate::other::telemetry::record_workflow_step_failure(
+            FailureClassification::new(WorkflowStepFailureKind::UserAbort),
+            None,
+        );
 
         // 4. [04] post-commit: interrupt_agent / cleanup / broadcast。
         //    RunAborted event は append 済み。Run Store / ChatSession は event 後の
@@ -2087,13 +2338,13 @@ impl WorkflowRuntimeService {
         session_id: &str,
         parent_step_name: &str,
         exit_code: i64,
-        final_parts: &[crate::usecase::agent_session::session::MessagePart],
+        failure_signal: Option<workflow_transition::SessionFailureSignal>,
         token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError> {
         // [08] parallel child の構造化出力は CLI / Tauri 経由の `SubmitOutput` で確定する。
         // output_contract がある child は、提出済み output が無い限り Completed にしない。
-        let _ = final_parts;
-        let (submitted_child_output, missing_child_output) = if exit_code == 0 {
+        let child_failed = exit_code != 0 || failure_signal.is_some();
+        let (submitted_child_output, missing_child_output) = if !child_failed {
             let execs = self.executions.lock().await;
             let exec = execs
                 .get(run_id)
@@ -2121,6 +2372,7 @@ impl WorkflowRuntimeService {
                     Some((
                         exec.workflow.name.clone(),
                         child.step_name.clone(),
+                        child.run_index,
                         contract.clone(),
                     ))
                 } else {
@@ -2133,7 +2385,7 @@ impl WorkflowRuntimeService {
         } else {
             (None, None)
         };
-        if let Some((workflow_name, child_name, contract)) = missing_child_output {
+        if let Some((workflow_name, child_name, child_run_index, contract)) = missing_child_output {
             self.handle_missing_required_output(
                 app,
                 session_store,
@@ -2143,7 +2395,10 @@ impl WorkflowRuntimeService {
                 &workflow_name,
                 &child_name,
                 &contract,
+                child_run_index,
                 Some(session_id),
+                None,
+                SubmissionViolation::MissingSubmitOutput,
             )
             .await?;
             return Ok(());
@@ -2156,7 +2411,7 @@ impl WorkflowRuntimeService {
             .and_then(|output| output.structured_output.clone());
 
         // ロック内: 子ステップの状態更新 + 全完了チェック
-        let (all_completed, outcome_opt, exec_snapshot_before, progress_events) = {
+        let completion_commit = 'state_update: {
             let mut execs = self.executions.lock().await;
             let exec = execs
                 .get_mut(run_id)
@@ -2188,90 +2443,154 @@ impl WorkflowRuntimeService {
                 });
             }
 
-            if exit_code != 0 {
-                // 子ステップ失敗 → ワークフロー全体をFailed
+            if child_failed {
+                let failure_kind = parallel_child_failure_kind(exit_code, failure_signal);
+                let aggregate = pr.aggregate.as_ref().map(parallel_aggregate_to_domain);
+                let propagation =
+                    ParallelFailurePolicy.on_child_failure(failure_kind, aggregate.as_ref());
                 child.state = ParallelChildState::Failed;
+                child.failure_kind = Some(failure_kind);
+                child.failure_disposition =
+                    if propagation == ParallelPropagation::DelegateToAggregate {
+                        Some(FailureDisposition::Partial)
+                    } else {
+                        None
+                    };
                 let child_name = child.step_name.clone();
+                let child_token_usage = child.token_usage.clone();
+                let child_run_index = child.run_index;
 
-                // 他の実行中子ステップのstateをInterruptedに更新し、IDを集める
-                let running_ids: Vec<String> = pr
-                    .children
-                    .iter_mut()
-                    .filter(|c| c.state == ParallelChildState::Running)
-                    .map(|c| {
-                        c.state = ParallelChildState::Interrupted;
-                        c.session_id.clone()
-                    })
-                    .collect();
+                if propagation == ParallelPropagation::DelegateToAggregate {
+                    child.result = Some(failure_kind.as_str().to_string());
+                    child.structured_output = Some(serde_json::json!({
+                        "failureKind": failure_kind.as_str(),
+                        "disposition": "partial",
+                        "exitCode": exit_code,
+                    }));
+                    exec.step_outputs.insert(
+                        child_name.clone(),
+                        StepOutput {
+                            step_name: child_name.clone(),
+                            run_index: child_run_index,
+                            session_id: Some(session_id.to_string()),
+                            result: child.result.clone(),
+                            structured_output: child.structured_output.clone(),
+                            output_contract: child.output_contract.clone(),
+                            token_usage: Some(child_token_usage.clone()),
+                            completed_at: current_timestamp(),
+                        },
+                    );
+                    let progress_events = vec![WorkflowEvent::ParallelChildCompleted {
+                        run_id: exec.id.clone(),
+                        workflow_name: exec.workflow.name.clone(),
+                        parent_node_name: pr.parent_step_name.clone(),
+                        child_node_name: child_name,
+                        result: child.result.clone(),
+                        session_id: session_id.to_string(),
+                        token_usage: Some(child_token_usage),
+                        structured_output: child.structured_output.clone(),
+                        run_index: child_run_index,
+                        state: STEP_STATE_FAILED.to_string(),
+                        failure_kind: Some(failure_kind),
+                        failure_disposition: Some(FailureDisposition::Partial),
+                        timestamp: current_timestamp(),
+                    }];
+                    break 'state_update finalize_child_terminal_state(
+                        exec,
+                        exec_snapshot_before,
+                        progress_events,
+                        true,
+                        Some(FailureClassification::with_disposition(
+                            failure_kind,
+                            FailureDisposition::Partial,
+                        )),
+                    )?;
+                } else {
+                    // 他の実行中子ステップのstateをInterruptedに更新し、IDを集める
+                    let running_ids: Vec<String> = pr
+                        .children
+                        .iter_mut()
+                        .filter(|c| c.state == ParallelChildState::Running)
+                        .map(|c| {
+                            c.state = ParallelChildState::Interrupted;
+                            c.session_id.clone()
+                        })
+                        .collect();
 
-                exec.state = WorkflowExecutionState::Failed {
-                    reason: format!(
-                        "Parallel child '{}' failed (exit_code: {})",
-                        child_name, exit_code
-                    ),
-                };
-                exec.parallel_run = None;
-                exec.updated_at = current_timestamp();
-                let snapshot = exec.to_workflow_state();
-                drop(execs);
+                    exec.state = WorkflowExecutionState::Failed {
+                        reason: format!(
+                            "Parallel child '{}' failed (exit_code: {})",
+                            child_name, exit_code
+                        ),
+                        kind: failure_kind,
+                        retry_count: None,
+                    };
+                    exec.parallel_run = None;
+                    exec.updated_at = current_timestamp();
+                    let snapshot = exec.to_workflow_state();
+                    drop(execs);
 
-                // [05] pre-commit: terminal event を先に append。失敗時は engine state
-                // を snapshot_before で一括復元し Err を返す。
-                if let Err(e) = self.write_terminal_log(app, &snapshot) {
-                    let mut execs = self.executions.lock().await;
-                    if let Some(exec) = execs.get_mut(run_id) {
-                        *exec = exec_snapshot_before;
+                    // [05] pre-commit: terminal event を先に append。失敗時は engine state
+                    // を snapshot_before で一括復元し Err を返す。
+                    if let Err(e) = self.write_terminal_log(app, &snapshot) {
+                        let mut execs = self.executions.lock().await;
+                        if let Some(exec) = execs.get_mut(run_id) {
+                            *exec = exec_snapshot_before;
+                        }
+                        return Err(WorkflowEngineError::SessionStore(format!(
+                            "parallel child failure terminal event append failed: {e}"
+                        )));
                     }
-                    return Err(WorkflowEngineError::SessionStore(format!(
-                        "parallel child failure terminal event append failed: {e}"
-                    )));
-                }
 
-                if let Err(e) = workflow_runtime_commit::sync_run_store_from_snapshot(
-                    &self.run_store,
-                    run_id,
-                    &snapshot,
-                )
-                .await
-                {
-                    workflow_runtime_commit::rollback_execution_projection_after_run_store_sync_failure(
+                    if let Err(e) = workflow_runtime_commit::sync_run_store_from_snapshot(
+                        &self.run_store,
+                        run_id,
+                        &snapshot,
+                    )
+                    .await
+                    {
+                        workflow_runtime_commit::rollback_execution_projection_after_run_store_sync_failure(
                         &self.executions,
                         &self.run_store,
                         run_id,
                         &snapshot,
                     )
                     .await;
-                    return Err(e);
+                        return Err(e);
+                    }
+                    record_failed_snapshot_telemetry(&snapshot);
+                    // 他の子ステップをinterrupt
+                    for sid in &running_ids {
+                        workflow_runtime_session::interrupt_agent(handles, sid).await;
+                    }
+                    let mut cleanup_ids = running_ids;
+                    cleanup_ids.push(session_id.to_string());
+                    cleanup_ids.sort();
+                    cleanup_ids.dedup();
+                    for sid in cleanup_ids {
+                        workflow_runtime_session::release_completed_step_session(
+                            app,
+                            session_store,
+                            handles,
+                            &sid,
+                        )
+                        .await;
+                    }
+                    workflow_runtime_session::broadcast_state(app, worktree_path, snapshot.clone())
+                        .await;
+                    self.cleanup_session_workflow_refs_by_run_id(&snapshot.execution_id)
+                        .await;
+                    self.release_terminal_execution(run_id).await;
+                    return Ok(());
                 }
-                // 他の子ステップをinterrupt
-                for sid in &running_ids {
-                    workflow_runtime_session::interrupt_agent(handles, sid).await;
-                }
-                let mut cleanup_ids = running_ids;
-                cleanup_ids.push(session_id.to_string());
-                cleanup_ids.sort();
-                cleanup_ids.dedup();
-                for sid in cleanup_ids {
-                    workflow_runtime_session::release_completed_step_session(
-                        app,
-                        session_store,
-                        handles,
-                        &sid,
-                    )
-                    .await;
-                }
-                workflow_runtime_session::broadcast_state(app, worktree_path, snapshot.clone())
-                    .await;
-                self.cleanup_session_workflow_refs_by_run_id(&snapshot.execution_id)
-                    .await;
-                self.release_terminal_execution(run_id).await;
-                return Ok(());
             }
 
             // 成功
             child.state = ParallelChildState::Completed;
             child.result = child_result.clone();
             child.structured_output = child_structured_output.clone();
+            child.failure_kind = None;
+            child.failure_disposition = None;
             let child_name = child.step_name.clone();
             let child_token_usage = child.token_usage.clone();
             let child_run_index = child.run_index;
@@ -2279,7 +2598,7 @@ impl WorkflowRuntimeService {
             // [08] child の StepOutput は CLI / Tauri 経由の SubmitOutput でのみ確定する。
             // ここでは step_outputs slot に触れず、SubmitOutput 済みの値を保持したまま
             // 親 ParallelChildCompleted の事実だけを event log に積む。
-            let mut progress_events = vec![WorkflowEvent::ParallelChildCompleted {
+            let progress_events = vec![WorkflowEvent::ParallelChildCompleted {
                 run_id: exec.id.clone(),
                 workflow_name: exec.workflow.name.clone(),
                 parent_node_name: pr.parent_step_name.clone(),
@@ -2289,85 +2608,48 @@ impl WorkflowRuntimeService {
                 token_usage: Some(child_token_usage.clone()),
                 structured_output: child_structured_output.clone(),
                 run_index: child_run_index,
+                state: crate::domain::workflow::STEP_STATE_COMPLETED.to_string(),
+                failure_kind: None,
+                failure_disposition: None,
                 timestamp: current_timestamp(),
             }];
 
-            // 全完了チェック
-            let all_done = pr
-                .children
-                .iter()
-                .all(|c| c.state == ParallelChildState::Completed);
-
-            if !all_done {
-                // まだ未完了の子がある → ブロードキャストのみ
-                exec.updated_at = current_timestamp();
-                let snapshot = exec.to_workflow_state();
-                (
-                    false,
-                    Some(StepOutcome::Persist(snapshot)),
-                    exec_snapshot_before,
-                    progress_events,
-                )
-            } else {
-                let aggregate = pr.aggregate.clone();
-                let parent_step_name = pr.parent_step_name.clone();
-                let parent_run_index = exec
-                    .step_execution_counts
-                    .get(&parent_step_name)
-                    .copied()
-                    .unwrap_or(1);
-                let completed_at = current_timestamp();
-                let completion_plan = workflow_parallel_runtime::plan_parallel_parent_completion(
-                    &parent_step_name,
-                    parent_run_index,
-                    aggregate.as_ref(),
-                    &pr.children,
-                    &exec.step_outputs,
-                    completed_at,
-                );
-                let parallel_completed_result = match &completion_plan.transition {
-                    workflow_parallel_runtime::ParallelParentCompletionTransition::Advance => {
-                        "advance".to_string()
-                    }
-                    workflow_parallel_runtime::ParallelParentCompletionTransition::TransitionTo {
-                        aggregate_result,
-                        ..
-                    } => aggregate_result.clone(),
-                };
-                progress_events.push(WorkflowEvent::ParallelCompleted {
-                    run_id: exec.id.clone(),
-                    workflow_name: exec.workflow.name.clone(),
-                    parent_node_name: parent_step_name.clone(),
-                    aggregate_result: parallel_completed_result,
-                    timestamp: current_timestamp(),
-                });
-
-                exec.parallel_run = None;
-                exec.updated_at = completed_at;
-                exec.step_outputs
-                    .insert(parent_step_name.clone(), completion_plan.parent_step_output);
-                exec.current_step_token_usage = TokenUsage::default();
-                exec.current_session_id = None;
-                exec.step_history.push(completion_plan.history_entry);
-
-                let outcome = match completion_plan.transition {
-                    workflow_parallel_runtime::ParallelParentCompletionTransition::Advance => {
-                        exec.apply_advance()
-                    }
-                    workflow_parallel_runtime::ParallelParentCompletionTransition::TransitionTo {
-                        target_node_name,
-                        ..
-                    } => exec.apply_transition(&target_node_name)?,
-                };
-                (true, Some(outcome), exec_snapshot_before, progress_events)
-            }
+            finalize_child_terminal_state(exec, exec_snapshot_before, progress_events, false, None)?
         };
+
+        let ParallelChildCompletionCommit {
+            all_completed,
+            outcome,
+            snapshot_before,
+            progress_events,
+            required_progress_events,
+            failure_telemetry,
+        } = completion_commit;
+
+        if required_progress_events {
+            if let Some(outcome) = outcome {
+                let completed_session_ids = [session_id.to_string()];
+                self.commit_required_parallel_progress_events_and_execute_outcome(
+                    app,
+                    session_store,
+                    handles,
+                    worktree_path,
+                    outcome,
+                    snapshot_before,
+                    progress_events,
+                    &completed_session_ids,
+                    failure_telemetry,
+                )
+                .await?;
+            }
+            return Ok(());
+        }
 
         for event in progress_events {
             self.write_log(app, event);
         }
 
-        if let Some(outcome) = outcome_opt {
+        if let Some(outcome) = outcome {
             if all_completed {
                 self.execute_outcome(
                     app,
@@ -2375,7 +2657,7 @@ impl WorkflowRuntimeService {
                     handles,
                     worktree_path,
                     outcome,
-                    exec_snapshot_before,
+                    snapshot_before,
                 )
                 .await?;
             } else {
@@ -2395,6 +2677,78 @@ impl WorkflowRuntimeService {
         }
 
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_required_parallel_progress_events_and_execute_outcome<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+        outcome: StepOutcome,
+        snapshot_before: WorkflowExecution,
+        mut required_events: Vec<WorkflowEvent>,
+        extra_completed_step_session_ids: &[String],
+        failure_telemetry: Option<FailureClassification>,
+    ) -> Result<(), WorkflowEngineError> {
+        let run_id = outcome.snapshot().execution_id.clone();
+        let snapshot_for_commit = outcome.snapshot().clone();
+        let mut completed_step_session_ids = outcome.completed_step_session_ids();
+        completed_step_session_ids.extend(extra_completed_step_session_ids.iter().cloned());
+        completed_step_session_ids.sort();
+        completed_step_session_ids.dedup();
+
+        let mut pre_commit_events =
+            match workflow_runtime_events::pre_commit_required_events_for_outcome(&outcome) {
+                Ok(events) => events,
+                Err(e) => {
+                    let mut execs = self.executions.lock().await;
+                    if let Some(exec) = execs.get_mut(&run_id) {
+                        *exec = snapshot_before;
+                    }
+                    return Err(e);
+                }
+            };
+        required_events.append(&mut pre_commit_events);
+
+        let run_store_snapshot_before = self.run_store.active_run_snapshot(&run_id).await;
+        self.commit_required_events(
+            app,
+            session_store,
+            RequiredEventCommit {
+                run_id: &run_id,
+                snapshot_for_commit: &snapshot_for_commit,
+                snapshot_before,
+                run_store_snapshot_before,
+                required_events,
+                append_error_context: "parallel child progress event append failed",
+            },
+        )
+        .await?;
+
+        if let Some(classification) = failure_telemetry {
+            crate::other::telemetry::record_workflow_step_failure(classification, None);
+        }
+
+        workflow_runtime_session::release_completed_step_sessions(
+            app,
+            session_store,
+            handles,
+            &completed_step_session_ids,
+        )
+        .await;
+        self.finalize_after_commit(app, &snapshot_for_commit, worktree_path, false)
+            .await;
+        self.dispatch_step_outcome_side_effects(
+            app,
+            session_store,
+            handles,
+            worktree_path,
+            outcome,
+            OutcomeCommitMode::ProgressEventsAlreadyCommitted,
+        )
+        .await
     }
 
     /// `run_id` を直接指定して session_workflow_refs を掃除する。
@@ -2441,6 +2795,7 @@ impl WorkflowRuntimeService {
         app: &tauri::AppHandle<R>,
         run_id: &str,
         node_name: &str,
+        run_index: u32,
     ) -> Result<u32, WorkflowEngineError> {
         let data_dir = crate::app_data_dir::resolve_data_dir(app)
             .map_err(WorkflowEngineError::SessionStore)?;
@@ -2455,8 +2810,9 @@ impl WorkflowRuntimeService {
                     event,
                     WorkflowEvent::ContractRepairRequested {
                         node_name: event_node,
+                        run_index: event_run_index,
                         ..
-                    } if event_node == node_name
+                    } if event_node == node_name && *event_run_index == run_index
                 )
             })
             .count() as u32)
@@ -2473,11 +2829,29 @@ impl WorkflowRuntimeService {
         workflow_name: &str,
         node_name: &str,
         contract: &str,
+        run_index: u32,
         session_id: Option<&str>,
+        request_id: Option<&str>,
+        violation: SubmissionViolation,
     ) -> Result<(), WorkflowEngineError> {
-        let prior_attempts = self.contract_repair_attempt_count(app, run_id, node_name)?;
-        let attempt = prior_attempts + 1;
-        let Some(session_id) = session_id else {
+        let prior_attempts =
+            self.contract_repair_attempt_count(app, run_id, node_name, run_index)?;
+        let repair_policy = StructuredOutputRepairPolicy::default();
+        let decision = repair_policy.decide(prior_attempts, session_id.is_some());
+        let RepairDecision::Repair { attempt } = decision else {
+            let reason = match (session_id.is_none(), violation) {
+                (true, _) => {
+                    "no active session is available for contract output repair".to_string()
+                }
+                (false, SubmissionViolation::InvalidSubmitOutput) => format!(
+                    "submitted structured output did not satisfy contract after {} repair attempts",
+                    repair_policy.max_attempts()
+                ),
+                (false, SubmissionViolation::MissingSubmitOutput) => format!(
+                    "required structured output was not submitted after {} repair attempts",
+                    repair_policy.max_attempts()
+                ),
+            };
             return self
                 .fail_missing_required_output(
                     app,
@@ -2487,26 +2861,11 @@ impl WorkflowRuntimeService {
                     run_id,
                     node_name,
                     contract,
-                    "no active session is available for contract output repair",
+                    &reason,
                 )
                 .await;
         };
-        if attempt > MAX_CONTRACT_REPAIR_ATTEMPTS {
-            return self
-                .fail_missing_required_output(
-                    app,
-                    session_store,
-                    handles,
-                    worktree_path,
-                    run_id,
-                    node_name,
-                    contract,
-                    &format!(
-                        "required structured output was not submitted after {MAX_CONTRACT_REPAIR_ATTEMPTS} repair attempts"
-                    ),
-                )
-                .await;
-        }
+        let session_id = session_id.expect("repair policy requires a session for Repair");
 
         let data_dir = crate::app_data_dir::resolve_data_dir(app)
             .map_err(WorkflowEngineError::SessionStore)?;
@@ -2534,8 +2893,11 @@ impl WorkflowRuntimeService {
                 run_id: run_id.to_string(),
                 workflow_name: workflow_name.to_string(),
                 node_name: node_name.to_string(),
+                run_index,
+                request_id: request_id.map(ToOwned::to_owned),
                 attempt,
-                violation_reason: "missing_submit_output".to_string(),
+                violation_reason: workflow_failure_wire::submission_violation_reason(violation)
+                    .to_string(),
                 timestamp: current_timestamp(),
             },
         )
@@ -2564,17 +2926,38 @@ impl WorkflowRuntimeService {
         let _runtime_guard =
             crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(session_id)
                 .await;
-        crate::infrastructure::agent_session::runtime::start_agent_turn_internal_locked(
-            app,
-            handles,
-            session_store,
-            session_id,
-            worktree_path,
-            &session.permission_mode,
-            &prompt,
-        )
-        .await
-        .map_err(WorkflowEngineError::AgentSession)
+        let start_result =
+            crate::infrastructure::agent_session::runtime::start_agent_turn_internal_locked(
+                app,
+                handles,
+                session_store,
+                session_id,
+                worktree_path,
+                &session.permission_mode,
+                &prompt,
+            )
+            .await;
+        if let Err(err) = start_result {
+            let error = WorkflowEngineError::with_agent_runtime_context(
+                "contract output repair turn failed to start",
+                err,
+            );
+            return self
+                .fail_missing_required_output_with_metadata(
+                    app,
+                    session_store,
+                    handles,
+                    worktree_path,
+                    run_id,
+                    node_name,
+                    contract,
+                    &error.to_string(),
+                    error.workflow_failure_kind(),
+                    error.retry_count(),
+                )
+                .await;
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2588,6 +2971,35 @@ impl WorkflowRuntimeService {
         node_name: &str,
         contract: &str,
         reason: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        self.fail_missing_required_output_with_metadata(
+            app,
+            session_store,
+            handles,
+            worktree_path,
+            run_id,
+            node_name,
+            contract,
+            reason,
+            WorkflowStepFailureKind::StructuredOutputMismatch,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn fail_missing_required_output_with_metadata<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+        run_id: &str,
+        node_name: &str,
+        contract: &str,
+        reason: &str,
+        failure_kind: WorkflowStepFailureKind,
+        retry_count: Option<u32>,
     ) -> Result<(), WorkflowEngineError> {
         let (snapshot, snapshot_before) = {
             let mut execs = self.executions.lock().await;
@@ -2609,6 +3021,8 @@ impl WorkflowRuntimeService {
                 reason: format!(
                     "Required structured output for step '{node_name}' was not submitted: {reason}"
                 ),
+                kind: failure_kind,
+                retry_count,
             };
             exec.updated_at = current_timestamp();
             (exec.to_workflow_state(), snapshot_before)
@@ -2976,7 +3390,10 @@ impl WorkflowRuntimeService {
                     &workflow_name,
                     step_name,
                     contract,
+                    run_index,
                     current_session_id.as_deref(),
+                    None,
+                    SubmissionViolation::MissingSubmitOutput,
                 )
                 .await?;
                 return Ok(());
@@ -3040,6 +3457,8 @@ impl WorkflowRuntimeService {
                     exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
                         reason: format!("No matching rule found for step '{}' output", step_name),
+                        kind: WorkflowStepFailureKind::ValidationFailure,
+                        retry_count: None,
                     };
                     exec.updated_at = current_timestamp();
                     StepOutcome::Persist(exec.to_workflow_state())
@@ -3136,6 +3555,9 @@ impl WorkflowRuntimeService {
                     parent_step_name: None,
                     parent_run_index: None,
                     order: exec.step_history.len() as u32,
+                    startup_timeout_secs: None,
+                    startup_max_retries: None,
+                    stale_timeout_secs: None,
                 },
             )
         };
@@ -3164,6 +3586,7 @@ impl WorkflowRuntimeService {
                 step_clone.permission.clone(),
                 workflow_defaults_clone,
                 workflow_step_context,
+                node_type_to_domain(step_clone.node_type),
             )
             .await?;
         let permission_mode = step_session.permission_mode.clone();
@@ -3371,6 +3794,7 @@ impl WorkflowRuntimeService {
             )));
         }
 
+        record_failed_snapshot_telemetry(snapshot_for_commit);
         Ok(())
     }
 
@@ -3601,6 +4025,38 @@ impl WorkflowRuntimeService {
                         Some(&step_name),
                     ))
                     .await;
+                }
+                Ok(())
+            }
+            StepOutcome::RetryCurrentStep { snapshot, .. } => {
+                if commit_mode.should_emit_progress_events() {
+                    self.write_log(
+                        app,
+                        workflow_runtime_events::node_started_event_for_snapshot(&snapshot),
+                    );
+                }
+                if let Err(e) = self
+                    .start_step_session(app, handles, session_store, worktree_path)
+                    .await
+                {
+                    let failed_state =
+                        workflow_runtime_session::record_post_commit_runtime_start_failure(
+                            &self.executions,
+                            worktree_path,
+                            RuntimeStartFailureKind::StepSession,
+                            &e,
+                        )
+                        .await;
+                    let _ = self
+                        .set_execution_state(
+                            app,
+                            session_store,
+                            handles,
+                            worktree_path,
+                            failed_state,
+                        )
+                        .await;
+                    return Err(e);
                 }
                 Ok(())
             }

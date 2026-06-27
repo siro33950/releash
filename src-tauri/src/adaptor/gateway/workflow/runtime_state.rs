@@ -27,6 +27,7 @@ use crate::domain::workflow::services::projection as workflow_projection;
 use crate::domain::workflow::services::submission as workflow_submission;
 use crate::domain::workflow::services::transition as workflow_transition;
 use crate::domain::workflow::ApprovalDecision as DomainApprovalDecision;
+use crate::domain::workflow::{FailureDisposition, WorkflowStepFailureKind};
 use crate::usecase::agent_session::status::current_timestamp;
 
 /// ワークフロー実行の内部状態。
@@ -79,6 +80,8 @@ pub(crate) struct ParallelChildRun {
     pub(crate) result: Option<String>,
     pub(crate) structured_output: Option<serde_json::Value>,
     pub(crate) output_contract: Option<String>,
+    pub(crate) failure_kind: Option<WorkflowStepFailureKind>,
+    pub(crate) failure_disposition: Option<FailureDisposition>,
     pub(crate) token_usage: TokenUsage,
     pub(crate) run_index: u32,
 }
@@ -229,6 +232,8 @@ impl WorkflowExecution {
                         result: child.result.clone(),
                         structured_output: child.structured_output.clone(),
                         output_contract: child.output_contract.clone(),
+                        failure_kind: child.failure_kind,
+                        failure_disposition: child.failure_disposition,
                         token_usage: token_usage_to_domain(&child.token_usage),
                         run_index: child.run_index,
                     })
@@ -397,6 +402,22 @@ impl WorkflowExecution {
         }
     }
 
+    pub(crate) fn retry_current_step(&mut self) -> StepOutcome {
+        let step_index = self.current_step_index;
+        let step_name = self.workflow.nodes[step_index].name.clone();
+        let completed_session_id = self.current_session_id.clone();
+        self.state = WorkflowExecutionState::Running;
+        *self.step_execution_counts.entry(step_name).or_insert(0) += 1;
+        self.current_session_id = None;
+        self.current_step_token_usage = TokenUsage::default();
+        self.clear_step_outputs_for_new_execution(step_index);
+        self.updated_at = current_timestamp();
+        StepOutcome::RetryCurrentStep {
+            snapshot: self.to_workflow_state(),
+            completed_session_id,
+        }
+    }
+
     /// ロック内で指定ステップへの遷移を適用する（サイクルガード検証含む）。
     pub(crate) fn apply_transition(
         &mut self,
@@ -418,6 +439,8 @@ impl WorkflowExecution {
         if depth >= max_depth {
             self.state = WorkflowExecutionState::Failed {
                 reason: format!("on_exhausted chain depth exceeded (max={max_depth})"),
+                kind: WorkflowStepFailureKind::ValidationFailure,
+                retry_count: None,
             };
             self.updated_at = current_timestamp();
             return Ok(StepOutcome::Persist(self.to_workflow_state()));
@@ -448,6 +471,8 @@ impl WorkflowExecution {
                         reason: format!(
                             "Cycle guard exceeded for step '{target_step_name}': max_iterations={max_iterations}, executed={count}"
                         ),
+                        kind: WorkflowStepFailureKind::ValidationFailure,
+                        retry_count: None,
                     };
                     self.updated_at = current_timestamp();
                     Ok(StepOutcome::Persist(self.to_workflow_state()))
@@ -544,9 +569,11 @@ impl WorkflowExecution {
             workflow_transition::TurnCompleteDecision::SessionError {
                 node_name,
                 exit_code,
+                kind,
             } => TurnCompleteAction::SessionError {
                 step_name: node_name,
                 exit_code,
+                kind,
             },
             workflow_transition::TurnCompleteDecision::AutoEvaluate { rules, node_name } => {
                 TurnCompleteAction::AutoEvaluate {
@@ -571,14 +598,16 @@ impl WorkflowExecution {
     pub(crate) fn plan_turn_complete_mutation(
         &self,
         exit_code: i64,
+        failure_signal: Option<workflow_transition::SessionFailureSignal>,
     ) -> Result<workflow_transition::TurnCompleteMutationPlan, WorkflowEngineError> {
         let workflow = workflow_definition_to_domain(&self.workflow);
         let state = workflow_execution_state_to_domain(&self.state);
-        workflow_transition::plan_turn_complete_mutation(
+        workflow_transition::plan_turn_complete_mutation_with_signal(
             &workflow,
             self.current_step_index,
             &state,
             exit_code,
+            failure_signal,
         )
         .map_err(workflow_error_to_engine_error)
     }
@@ -660,7 +689,11 @@ pub(crate) enum CycleGuardResult {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TurnCompleteAction {
     /// AgentSessionがエラー終了 → Failed
-    SessionError { step_name: String, exit_code: i64 },
+    SessionError {
+        step_name: String,
+        exit_code: i64,
+        kind: WorkflowStepFailureKind,
+    },
     /// agent ノード → タグ検出して遷移
     AutoEvaluate {
         rules: Vec<TransitionRule>,

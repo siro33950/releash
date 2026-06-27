@@ -162,6 +162,8 @@ pub(crate) fn apply_parallel_run_state(
             result: None,
             structured_output: None,
             output_contract: setup.output_contract.clone(),
+            failure_kind: None,
+            failure_disposition: None,
             token_usage: TokenUsage::default(),
             run_index: setup.run_index,
         })
@@ -328,6 +330,15 @@ pub(crate) fn plan_parallel_parent_completion(
             result: child.result.clone(),
             token_usage: token_usage_to_domain(&child.token_usage),
             run_index: child.run_index,
+            state: match child.state {
+                ParallelChildState::Running => crate::domain::workflow::STEP_STATE_RUNNING,
+                ParallelChildState::Completed => crate::domain::workflow::STEP_STATE_COMPLETED,
+                ParallelChildState::Failed => crate::domain::workflow::STEP_STATE_FAILED,
+                ParallelChildState::Interrupted => crate::domain::workflow::STEP_STATE_INTERRUPTED,
+            }
+            .to_string(),
+            failure_kind: child.failure_kind,
+            failure_disposition: child.failure_disposition,
         })
         .collect();
     let step_outputs = step_outputs_to_domain(step_outputs);

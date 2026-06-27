@@ -14,6 +14,7 @@ use crate::adaptor::gateway::workflow::run::TriggerSource;
 use crate::adaptor::gateway::workflow::runtime_state::ApprovalDecision as RuntimeApprovalDecision;
 use crate::adaptor::gateway::workflow::schema::Workflow;
 use crate::adaptor::gateway::workflow::state::WorkflowState;
+use crate::domain::workflow::services::transition::SessionFailureSignal;
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::permission::PermissionMode;
 use crate::usecase::agent_session::session::{MessagePart, SessionStore};
@@ -77,6 +78,7 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         handles: &Arc<Mutex<AgentProcessMap>>,
         chat_session_id: &str,
         exit_code: i64,
+        failure_signal: Option<SessionFailureSignal>,
         final_parts: &[MessagePart],
         token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError>;
@@ -212,6 +214,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         handles: &Arc<Mutex<AgentProcessMap>>,
         chat_session_id: &str,
         exit_code: i64,
+        failure_signal: Option<SessionFailureSignal>,
         final_parts: &[MessagePart],
         token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError> {
@@ -222,6 +225,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
             handles,
             chat_session_id,
             exit_code,
+            failure_signal,
             final_parts,
             token_usage,
         )

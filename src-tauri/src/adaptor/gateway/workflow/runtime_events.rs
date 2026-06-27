@@ -103,6 +103,8 @@ fn apply_internal_node_command_state_mutation(
             workflow_name,
             node_name,
             reason,
+            failure_kind,
+            retry_count,
             timestamp,
         } => {
             if run_id != &snapshot.execution_id {
@@ -126,6 +128,8 @@ fn apply_internal_node_command_state_mutation(
             if !matches!(snapshot.state, WorkflowExecutionState::Failed { .. }) {
                 snapshot.state = WorkflowExecutionState::Failed {
                     reason: reason.clone(),
+                    kind: *failure_kind,
+                    retry_count: *retry_count,
                 };
                 snapshot.updated_at = *timestamp;
             }
@@ -164,12 +168,16 @@ fn map_internal_node_command_to_event(
             workflow_name,
             node_name,
             reason,
+            failure_kind,
+            retry_count,
             timestamp,
         } => Ok(WorkflowEvent::NodeFailed {
             run_id,
             workflow_name,
             node_name,
             reason,
+            failure_kind,
+            retry_count,
             timestamp,
         }),
     }
@@ -259,6 +267,9 @@ pub(crate) fn pre_commit_required_events_for_outcome(
             if is_terminal {
                 return terminal_required_events_for_snapshot(s);
             }
+        }
+        StepOutcome::RetryCurrentStep { snapshot, .. } => {
+            events.push(node_started_event_for_snapshot(snapshot));
         }
         StepOutcome::TransitionAndStart(_)
         | StepOutcome::ReduceAndTransition(_)
@@ -412,24 +423,30 @@ pub(crate) fn parallel_started_event_for_snapshot(
 pub(crate) fn terminal_events_for_snapshot(
     snapshot: &mut WorkflowState,
 ) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
-    match &snapshot.state {
+    match snapshot.state.clone() {
         WorkflowExecutionState::Completed => Ok(vec![WorkflowEvent::RunCompleted {
             run_id: snapshot.execution_id.clone(),
             workflow_name: snapshot.workflow_name.clone(),
             total_token_usage: snapshot.total_token_usage.clone(),
             timestamp: snapshot.updated_at,
         }]),
-        WorkflowExecutionState::Failed { reason } => {
+        WorkflowExecutionState::Failed {
+            reason,
+            kind,
+            retry_count,
+        } => {
             let run_id = snapshot.execution_id.clone();
             let workflow_name = snapshot.workflow_name.clone();
             let node_name = snapshot.current_step_name.clone();
-            let reason = reason.clone();
+            let failure_kind = kind;
             let timestamp = snapshot.updated_at;
             let fail_command = InternalNodeCommand::FailNode {
                 run_id: run_id.clone(),
                 workflow_name: workflow_name.clone(),
                 node_name,
                 reason: reason.clone(),
+                failure_kind,
+                retry_count,
                 timestamp,
             };
             let node_failed = dispatch_internal_node_command(snapshot, fail_command)?;
@@ -439,6 +456,8 @@ pub(crate) fn terminal_events_for_snapshot(
                     run_id,
                     workflow_name,
                     reason,
+                    failure_kind,
+                    retry_count,
                     timestamp,
                 },
             ])
@@ -472,6 +491,9 @@ pub(crate) fn required_events_for_approval_commit(
                     timestamp: snapshot.updated_at,
                 });
             }
+        }
+        StepOutcome::RetryCurrentStep { snapshot, .. } => {
+            events.push(node_started_event_for_snapshot(snapshot));
         }
         StepOutcome::TransitionAndStart(snapshot) => {
             if let Some(event) = last_step_completed_event_for_snapshot(snapshot)? {
@@ -686,6 +708,64 @@ mod tests {
     }
 
     #[test]
+    fn terminal_required_events_for_failed_snapshot_preserves_retry_count() {
+        let mut snapshot = workflow_state_fixture();
+        snapshot.state = WorkflowExecutionState::Failed {
+            reason: "startup exhausted".to_string(),
+            kind: crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout,
+            retry_count: Some(2),
+        };
+
+        let events = terminal_required_events_for_snapshot(&snapshot).unwrap();
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            WorkflowEvent::NodeFailed {
+                failure_kind,
+                retry_count,
+                ..
+            } if *failure_kind == crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout
+                && *retry_count == Some(2)
+        ));
+        assert!(matches!(
+            &events[1],
+            WorkflowEvent::RunFailed {
+                failure_kind,
+                retry_count,
+                ..
+            } if *failure_kind == crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout
+                && *retry_count == Some(2)
+        ));
+    }
+
+    #[test]
+    fn pre_commit_required_events_for_retry_current_step_includes_node_started() {
+        let snapshot = workflow_state_fixture();
+        let events = pre_commit_required_events_for_outcome(&StepOutcome::RetryCurrentStep {
+            snapshot,
+            completed_session_id: Some("previous-session".to_string()),
+        })
+        .unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            WorkflowEvent::NodeStarted {
+                run_id,
+                workflow_name,
+                node_name,
+                execution_count,
+                timestamp,
+            } if run_id == "run-1"
+                && workflow_name == "wf"
+                && node_name == "implement"
+                && *execution_count == 3
+                && (*timestamp - 42.0).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
     fn run_aborted_snapshot_maps_child_display_state_to_typed_outcome() {
         let entry = StepHistoryEntry {
             step_name: "parallel-review".to_string(),
@@ -705,6 +785,8 @@ mod tests {
                     structured_output: None,
                     output_contract: None,
                     state: STEP_STATE_COMPLETED.to_string(),
+                    failure_kind: None,
+                    failure_disposition: None,
                 },
                 ChildOutputSnapshot {
                     step_name: "child-b".to_string(),
@@ -715,6 +797,8 @@ mod tests {
                     structured_output: None,
                     output_contract: None,
                     state: STEP_STATE_ABORTED.to_string(),
+                    failure_kind: None,
+                    failure_disposition: None,
                 },
             ]),
             state: STEP_STATE_ABORTED.to_string(),

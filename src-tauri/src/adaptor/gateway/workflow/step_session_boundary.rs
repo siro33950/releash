@@ -7,8 +7,9 @@ use super::runtime_session as workflow_runtime_session;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::state::WorkflowState;
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
-use crate::domain::workflow::WorkflowStepContext;
+use crate::domain::workflow::{NodeType, WorkflowStepContext};
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::infrastructure::agent_session::runtime::AgentRuntimeError;
 use crate::usecase::agent_session::session::SessionStore;
 
 /// AgentSession 開始呼び出しを抽象化するトレイト。
@@ -23,7 +24,7 @@ pub(crate) trait SessionStartGate: Send + Sync {
         worktree_path: &str,
         permission_mode: Option<String>,
         system_prompt: Option<String>,
-    ) -> Result<(), String>;
+    ) -> Result<(), AgentRuntimeError>;
 }
 
 /// production 用の `SessionStartGate` 実装。`start_agent_session_internal` をそのまま呼び出す。
@@ -41,7 +42,7 @@ impl<'a, R: tauri::Runtime> SessionStartGate for RealSessionStartGate<'a, R> {
         worktree_path: &str,
         permission_mode: Option<String>,
         system_prompt: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<(), AgentRuntimeError> {
         crate::infrastructure::agent_session::runtime::start_agent_session_internal(
             self.app,
             self.handles,
@@ -71,6 +72,7 @@ pub(crate) trait StepSessionDeps: Send + Sync {
         step_permission: Option<String>,
         workflow_defaults: WorkflowDefaults,
         workflow_step_context: WorkflowStepContext,
+        node_kind: NodeType,
     ) -> Result<StepSessionInfo, WorkflowEngineError>;
 
     /// 合成済み `system_prompt` を AgentSession 開始経路へ受け渡す。
@@ -126,6 +128,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         step_permission: Option<String>,
         workflow_defaults: WorkflowDefaults,
         workflow_step_context: WorkflowStepContext,
+        node_kind: NodeType,
     ) -> Result<StepSessionInfo, WorkflowEngineError> {
         let data_dir = crate::app_data_dir::resolve_data_dir(self.app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
@@ -138,6 +141,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
             step_permission,
             &workflow_defaults,
             workflow_step_context,
+            node_kind,
         )
         .await?;
         Ok(StepSessionInfo {
@@ -211,7 +215,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
             prompt,
         )
         .await
-        .map_err(WorkflowEngineError::AgentSession)
+        .map_err(WorkflowEngineError::from)
     }
 }
 
@@ -226,5 +230,10 @@ pub(crate) async fn dispatch_session_start<G: SessionStartGate + ?Sized>(
 ) -> Result<(), WorkflowEngineError> {
     gate.start_session(session_id, worktree_path, permission_mode, system_prompt)
         .await
-        .map_err(WorkflowEngineError::AgentSession)
+        .map_err(|error| {
+            WorkflowEngineError::with_agent_runtime_context(
+                format!("Failed to start AgentSession '{session_id}'"),
+                error,
+            )
+        })
 }

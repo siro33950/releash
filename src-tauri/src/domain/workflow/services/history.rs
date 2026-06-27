@@ -122,6 +122,8 @@ pub fn aborted_parallel_history_entry(
                 } else {
                     STEP_STATE_ABORTED.to_string()
                 },
+                failure_kind: child.failure_kind,
+                failure_disposition: child.failure_disposition,
             }
         })
         .collect();
@@ -261,6 +263,8 @@ mod tests {
                         result: Some("from child".to_string()),
                         structured_output: None,
                         output_contract: None,
+                        failure_kind: None,
+                        failure_disposition: None,
                         token_usage: TokenUsage::default(),
                         run_index: 1,
                     },
@@ -271,6 +275,8 @@ mod tests {
                         result: Some("partial".to_string()),
                         structured_output: None,
                         output_contract: None,
+                        failure_kind: None,
+                        failure_disposition: None,
                         token_usage: TokenUsage::default(),
                         run_index: 2,
                     },

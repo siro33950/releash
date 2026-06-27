@@ -23,7 +23,7 @@ use crate::usecase::workflow::ports::{
     PendingRuntimeCommandPayload, WorkflowAbortRunGateway, WorkflowApprovalChatGateway,
     WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeStateGateway,
     WorkflowStartRunGateway, WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand,
-    WorkflowTurnCompleteGateway,
+    WorkflowTurnCompleteGateway, WorkflowTurnFailureSignal,
 };
 use tokio::sync::Mutex;
 
@@ -237,6 +237,8 @@ impl WorkflowSubmitOutputGateway for TauriWorkflowRuntimeCommandGateway {
         self.engine
             .submit_workflow_output(
                 &self.app,
+                &self.session_store,
+                &self.handles,
                 &command.run_id,
                 command.step_name,
                 command.contract,
@@ -314,6 +316,11 @@ impl WorkflowTurnCompleteGateway for TauriWorkflowRuntimeCommandGateway {
                 &self.handles,
                 &command.chat_session_id,
                 command.exit_code,
+                command.failure_signal.map(|signal| match signal {
+                    WorkflowTurnFailureSignal::ModelRefusal => {
+                        crate::domain::workflow::services::transition::SessionFailureSignal::ModelRefusal
+                    }
+                }),
                 &final_parts,
                 token_usage,
             )

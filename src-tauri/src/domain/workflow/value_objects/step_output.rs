@@ -1,3 +1,5 @@
+use super::failure::{FailureDisposition, WorkflowStepFailureKind};
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TokenUsage {
     pub input_tokens: u64,
@@ -46,6 +48,8 @@ pub struct ChildOutputSnapshot {
     pub structured_output: Option<serde_json::Value>,
     pub output_contract: Option<String>,
     pub state: String,
+    pub failure_kind: Option<WorkflowStepFailureKind>,
+    pub failure_disposition: Option<FailureDisposition>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +62,8 @@ pub struct ParallelStepState {
     pub completed_at: Option<f64>,
     pub structured_output: Option<serde_json::Value>,
     pub output_contract: Option<String>,
+    pub failure_kind: Option<WorkflowStepFailureKind>,
+    pub failure_disposition: Option<FailureDisposition>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

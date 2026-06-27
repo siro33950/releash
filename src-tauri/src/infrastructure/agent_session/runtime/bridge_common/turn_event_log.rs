@@ -170,6 +170,7 @@ pub(super) fn append_terminal_events_and_project(
             });
     }
 
+    let stop_reason = proc.current_turn_stop_reason.take();
     match interrupt {
         Some((reason, error)) => proc
             .turn_event_log
@@ -179,6 +180,7 @@ pub(super) fn append_terminal_events_and_project(
             .append(AgentSessionEvent::TurnCompleted {
                 turn_id,
                 exit_code,
+                stop_reason,
                 token_usage: workflow_token_usage(token_usage),
             }),
     }
@@ -343,6 +345,7 @@ mod moved_tests {
                     turn_id: 1,
                     exit_code: 1,
                     final_text_parts: Vec::new(),
+                    failure_signal: None,
                     token_usage: None,
                     interrupted: true,
                 })

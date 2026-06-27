@@ -1,7 +1,7 @@
 use super::process_registry::{
     AgentProcess, AgentProcessMap, BridgeState, PendingMessage, TurnPhase,
 };
-use super::recovery::{remove_pgid, save_pgid};
+use super::recovery::{remove_pgid, save_pgid, spawn_turn_watchdog};
 use super::session_lifecycle::{
     prepare_pending_turn_messages, prompt_input_for_started_turn, start_pending_message_turn,
     sweep_process_group, take_pending_message,
@@ -91,6 +91,7 @@ pub(crate) async fn start_external_agent_turn_state<R: tauri::Runtime>(
             now_timestamp(),
         );
         spawn_streaming_timer(app, handles, chat_session_id, proc);
+        spawn_turn_watchdog(app, handles, session_store, chat_session_id, proc);
         projected_session_state_for_current_turn(proc)
     };
     emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None, false);
@@ -116,6 +117,7 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
     #[cfg(unix)] pgid: Option<u32>,
     permission_mode: String,
     selected_model: Option<String>,
+    stale_timeout: std::time::Duration,
     sdk_session_id: Option<String>,
     context_carry_on_ready: Option<ContextCarryState>,
 ) -> Result<u64, String> {
@@ -171,7 +173,9 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
         current_permission_mode: permission_mode,
         available_models: Vec::new(),
         selected_model,
+        stale_timeout,
         last_result_token_usage: None,
+        current_turn_stop_reason: None,
         latest_token_usage: None,
         pending_stream_parts: Vec::new(),
         pending_stream_part_rollbacks: Vec::new(),
@@ -417,6 +421,11 @@ pub(super) fn spawn_workflow_turn_complete_notification<R: tauri::Runtime>(
                             chat_session_id: chat_session_id.clone(),
                             exit_code: projected.exit_code,
                             final_text_parts,
+                            failure_signal: projected.failure_signal.map(|signal| match signal {
+                                crate::usecase::agent_session::event_log::AgentTurnFailureSignal::ModelRefusal => {
+                                    crate::usecase::workflow::ports::WorkflowTurnFailureSignal::ModelRefusal
+                                }
+                            }),
                             token_usage,
                             interrupted: projected.interrupted,
                         };

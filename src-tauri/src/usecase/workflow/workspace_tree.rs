@@ -812,6 +812,9 @@ mod tests {
             parent_step_name: parent.map(|(name, _)| name.to_string()),
             parent_run_index: parent.map(|(_, run_index)| run_index),
             order,
+            startup_timeout_secs: None,
+            startup_max_retries: None,
+            stale_timeout_secs: None,
         }
     }
 
@@ -878,6 +881,8 @@ mod tests {
                     structured_output: None,
                     output_contract: None,
                     state: STEP_STATE_COMPLETED.to_string(),
+                    failure_kind: None,
+                    failure_disposition: None,
                 }]),
                 state: STEP_STATE_COMPLETED.to_string(),
             }],
@@ -901,6 +906,8 @@ mod tests {
                 completed_at: None,
                 structured_output: None,
                 output_contract: None,
+                failure_kind: None,
+                failure_disposition: None,
             }],
             workflow_variables: HashMap::new(),
             approval_operations: None,
@@ -1432,6 +1439,8 @@ mod tests {
                         structured_output: None,
                         output_contract: None,
                         state: (*state).to_string(),
+                        failure_kind: None,
+                        failure_disposition: None,
                     })
                     .collect(),
             ),

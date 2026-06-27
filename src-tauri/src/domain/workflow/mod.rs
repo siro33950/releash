@@ -25,17 +25,20 @@ pub use repository::{
     WorkflowRunManualArchiveRecord, WorkflowRunRepository, WORKFLOW_ARCHIVE_REASON_MANUAL,
 };
 pub use services::{
-    approval_rules, contract, parallel, secret_masker, validation, variable_renderer,
-    ApprovalInputError, ParallelReduceResult, ValidationError,
+    approval_rules, contract, failure_policy, parallel, secret_masker, validation,
+    variable_renderer, ApprovalInputError, ParallelFailurePolicy, ParallelPropagation,
+    ParallelReduceResult, RepairDecision, RetryPolicy, StructuredOutputRepairPolicy,
+    TimeoutContext, TimeoutPolicy, ValidationError,
 };
 pub use value_objects::{
     ApprovalDecision, ApprovalOperations, ChildNodeDefinition, ChildOutputSnapshot, CollectConfig,
     ContractType, ContractValidationResult, ContractViolation, CycleGuard, FacetKey, FacetKind,
-    FacetSummary, NodeDefinition, NodeName, NodeType, OutcomeCommitMode, ParallelAggregate,
-    ParallelStepState, ReduceStrategy, RunId, RunListFilter, RunStatus, RunStatusFilter,
-    StepHistoryEntry, StepOutput, TokenUsage, TransitionRule, TriggerSource, WorkflowDefinition,
-    WorkflowExecutionState, WorkflowName, WorkflowRunRecord, WorkflowRunSummary,
-    WorkflowStateSnapshot, WorkflowStepContext, WorkflowSummary, WorktreePath, STEP_STATE_ABORTED,
+    FacetSummary, FailureClassification, FailureDisposition, NodeDefinition, NodeName, NodeType,
+    OutcomeCommitMode, ParallelAggregate, ParallelStepState, ReduceStrategy, RunId, RunListFilter,
+    RunStatus, RunStatusFilter, StepHistoryEntry, StepOutput, TimeoutKind, TokenUsage,
+    TransitionRule, TriggerSource, WorkflowDefinition, WorkflowExecutionState, WorkflowName,
+    WorkflowRunRecord, WorkflowRunSummary, WorkflowStateSnapshot, WorkflowStepContext,
+    WorkflowStepFailureKind, WorkflowSummary, WorktreePath, STEP_STATE_ABORTED,
     STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_INTERRUPTED, STEP_STATE_PENDING,
     STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
 };

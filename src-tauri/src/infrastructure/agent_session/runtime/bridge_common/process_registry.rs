@@ -2,7 +2,7 @@ use crate::infrastructure::agent_session::runtime::turn_latency::TurnLatencyStat
 use crate::infrastructure::agent_session::runtime::AgentEditorContext;
 use crate::infrastructure::agent_session::runtime::ImageAttachment;
 use crate::infrastructure::agent_session::runtime::ModelInfo;
-use crate::usecase::agent_session::event_log::TurnEventLog;
+use crate::usecase::agent_session::event_log::{TurnEventLog, TurnStopReason};
 use crate::usecase::agent_session::session::ContextCarryState;
 use crate::usecase::agent_session::session::MessagePart;
 use crate::usecase::agent_session::session::TokenUsage;
@@ -10,6 +10,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 use tokio::process::Child;
 use tokio::process::ChildStdin;
@@ -104,9 +105,12 @@ pub struct AgentProcess {
     pub available_models: Vec<ModelInfo>,
     /// Currently selected model for this session (None = SDK default).
     pub selected_model: Option<String>,
+    pub(crate) stale_timeout: Duration,
     /// Token usage from the latest `result` message (extracted from modelUsage).
     /// Consumed by turn_complete handler and passed to the workflow runtime usecase.
     pub last_result_token_usage: Option<(u64, u64)>,
+    /// Typed provider stop reason for the current turn, consumed by TurnCompleted.
+    pub(crate) current_turn_stop_reason: Option<TurnStopReason>,
     /// Token usage from the latest SDK result, retained for desktop status display.
     pub latest_token_usage: Option<TokenUsage>,
     /// Concrete streaming delta parts queued since the last successful emit.
@@ -214,7 +218,9 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         current_permission_mode: "edit".to_string(),
         available_models: Vec::new(),
         selected_model: None,
+        stale_timeout: Duration::from_secs(180),
         last_result_token_usage: None,
+        current_turn_stop_reason: None,
         latest_token_usage: None,
         pending_stream_parts: Vec::new(),
         pending_stream_part_rollbacks: Vec::new(),
@@ -250,7 +256,7 @@ pub type AgentProcessMap = HashMap<String, AgentProcess>;
 #[cfg(test)]
 mod tests {
     use super::{make_test_agent_process, AgentProcessMap, TurnPhase};
-    use crate::usecase::agent_session::event_log::PromptInput;
+    use crate::usecase::agent_session::event_log::{PromptInput, TurnStopReason};
     use crate::usecase::agent_session::session::MessagePart;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
@@ -298,6 +304,7 @@ mod tests {
         proc.post_turn_base_untrusted_message_id = Some("agent-1".to_string());
         proc.task_id_map
             .insert("task-1".to_string(), "tool-1".to_string());
+        proc.current_turn_stop_reason = Some(TurnStopReason::Refusal);
 
         proc.reset_streaming_state_for_new_turn();
 
@@ -315,6 +322,7 @@ mod tests {
         assert_eq!(proc.post_turn_message_token, None);
         assert_eq!(proc.post_turn_base_untrusted_message_id, None);
         assert!(proc.task_id_map.is_empty());
+        assert_eq!(proc.current_turn_stop_reason, None);
     }
 
     #[tokio::test]
@@ -379,6 +387,7 @@ impl AgentProcess {
         self.post_turn_message_token = None;
         self.post_turn_base_untrusted_message_id = None;
         self.task_id_map.clear();
+        self.current_turn_stop_reason = None;
     }
 
     pub(crate) fn begin_turn_liveness(&mut self) {

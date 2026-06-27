@@ -5,6 +5,7 @@ pub mod codex_app_server;
 pub(crate) mod context_restore;
 mod permission_flags;
 pub mod runtime_coordinator;
+pub(crate) mod timeouts;
 mod turn_latency;
 
 pub(crate) use bridge_common::*;
@@ -148,6 +149,54 @@ pub struct AgentMessage {
     pub editor_context: Option<AgentEditorContext>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentRuntimeError {
+    StartupTimeout {
+        retry_count: u32,
+        max_retries: u32,
+        total_attempts: u32,
+    },
+    Other(String),
+}
+
+impl AgentRuntimeError {
+    pub fn startup_timeout(retry_count: u32, max_retries: u32) -> Self {
+        Self::StartupTimeout {
+            retry_count,
+            max_retries,
+            total_attempts: retry_count.saturating_add(1),
+        }
+    }
+}
+
+impl std::fmt::Display for AgentRuntimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StartupTimeout {
+                retry_count,
+                max_retries,
+                total_attempts,
+            } => write!(
+                f,
+                "Timed out waiting for Codex app-server thread after {total_attempts} startup attempts (retry_count={retry_count}, max_retries={max_retries})"
+            ),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<String> for AgentRuntimeError {
+    fn from(value: String) -> Self {
+        Self::Other(value)
+    }
+}
+
+impl From<&str> for AgentRuntimeError {
+    fn from(value: &str) -> Self {
+        Self::Other(value.to_string())
+    }
+}
+
 /// ツール実行許可への応答。
 #[allow(dead_code)]
 pub struct PermissionResponse {
@@ -171,12 +220,31 @@ pub trait AgentBackend: Send + Sync {
     /// セッションを開始する。
     async fn start_session(&self, config: SessionConfig) -> Result<SessionHandle, String>;
 
+    async fn start_session_runtime(
+        &self,
+        config: SessionConfig,
+    ) -> Result<SessionHandle, AgentRuntimeError> {
+        self.start_session(config)
+            .await
+            .map_err(AgentRuntimeError::Other)
+    }
+
     /// メッセージを送信し、ストリーミングを開始する。
     async fn send_message(
         &self,
         session: &SessionHandle,
         message: AgentMessage,
     ) -> Result<(), String>;
+
+    async fn send_message_runtime(
+        &self,
+        session: &SessionHandle,
+        message: AgentMessage,
+    ) -> Result<(), AgentRuntimeError> {
+        self.send_message(session, message)
+            .await
+            .map_err(AgentRuntimeError::Other)
+    }
 
     /// Send runtime-native input to the currently active turn when supported.
     async fn steer_message(

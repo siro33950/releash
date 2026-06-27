@@ -1526,7 +1526,9 @@ mod tests {
         assert_eq!(
             AgentStatusCenter::workflow_execution_state_to_agent_state(
                 &WorkflowExecutionState::Failed {
-                    reason: "boom".into()
+                    reason: "boom".into(),
+                    kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+                    retry_count: None,
                 }
             ),
             Some(AgentState::Error)

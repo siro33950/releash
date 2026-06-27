@@ -230,6 +230,12 @@ pub struct WorkflowStepContextDto {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub parent_run_index: Option<u32>,
     pub order: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub startup_timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub startup_max_retries: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub stale_timeout_secs: Option<u64>,
 }
 
 pub(crate) mod workflow_step_context_mapper {
@@ -245,6 +251,9 @@ pub(crate) mod workflow_step_context_mapper {
             parent_step_name: context.parent_step_name,
             parent_run_index: context.parent_run_index,
             order: context.order,
+            startup_timeout_secs: context.startup_timeout_secs,
+            startup_max_retries: context.startup_max_retries,
+            stale_timeout_secs: context.stale_timeout_secs,
         }
     }
 
@@ -257,6 +266,9 @@ pub(crate) mod workflow_step_context_mapper {
             parent_step_name: context.parent_step_name,
             parent_run_index: context.parent_run_index,
             order: context.order,
+            startup_timeout_secs: context.startup_timeout_secs,
+            startup_max_retries: context.startup_max_retries,
+            stale_timeout_secs: context.stale_timeout_secs,
         }
     }
 }
@@ -1519,6 +1531,9 @@ mod tests {
             parent_step_name: None,
             parent_run_index: None,
             order: 0,
+            startup_timeout_secs: None,
+            startup_max_retries: None,
+            stale_timeout_secs: None,
         }
     }
 
@@ -2959,6 +2974,9 @@ mod workflow_step_context_meta_tests {
             parent_step_name: None,
             parent_run_index: None,
             order: 0,
+            startup_timeout_secs: None,
+            startup_max_retries: Some(2),
+            stale_timeout_secs: None,
         }
     }
 
@@ -3008,6 +3026,7 @@ mod workflow_step_context_meta_tests {
 
         // meta.json の serde round-trip でも context を保持する。
         let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains("\"startupMaxRetries\":2"));
         let restored: SessionMeta = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.workflow_step_context, Some(step_context_dto()));
         assert!(restored.is_workflow_step_session());

@@ -2,6 +2,7 @@ mod approval_decision;
 mod contract;
 mod definition;
 mod facet;
+mod failure;
 mod ids;
 mod outcome_commit_mode;
 mod run;
@@ -17,6 +18,9 @@ pub use definition::{
     MAX_NODES_PER_WORKFLOW, MAX_PARALLEL_CHILDREN,
 };
 pub use facet::{FacetKey, FacetKind, FacetSummary};
+pub use failure::{
+    FailureClassification, FailureDisposition, TimeoutKind, WorkflowStepFailureKind,
+};
 pub use ids::{NodeName, RunId, WorkflowName, WorktreePath};
 pub use outcome_commit_mode::OutcomeCommitMode;
 pub use run::{

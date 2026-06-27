@@ -11,6 +11,10 @@ pub(crate) const KEY_AGENT_PERMISSION_MODE: &str = "releash.agent.permission_mod
 pub(crate) const KEY_AGENT_MODEL: &str = "releash.agent.model";
 pub(crate) const KEY_AGENT_CONTEXT: &str = "releash.agent.context";
 pub(crate) const KEY_AGENT_WARM_PATH: &str = "releash.agent.warm_path";
+pub(crate) const KEY_FAILURE_KIND: &str = "failure.kind";
+pub(crate) const KEY_FAILURE_DISPOSITION: &str = "failure.disposition";
+pub(crate) const KEY_RETRY_COUNT: &str = "failure.retry_count";
+pub(crate) const KEY_TIMEOUT_KIND: &str = "failure.timeout_kind";
 
 #[cfg(test)]
 pub(crate) fn allowed_resource_attribute_keys() -> [&'static str; 4] {

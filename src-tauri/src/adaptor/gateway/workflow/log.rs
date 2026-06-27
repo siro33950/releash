@@ -677,6 +677,8 @@ mod tests {
                 workflow_name: "wf".to_string(),
                 node_name: "s1".to_string(),
                 reason: "error".to_string(),
+                failure_kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+                retry_count: None,
                 timestamp: 4.0,
             },
             WorkflowEvent::ApprovalRequested {
@@ -706,6 +708,8 @@ mod tests {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 reason: "failed".to_string(),
+                failure_kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+                retry_count: None,
                 timestamp: 6.0,
             },
             WorkflowEvent::RunAborted {
@@ -757,6 +761,9 @@ mod tests {
                 }),
                 structured_output: None,
                 run_index: 0,
+                state: "completed".to_string(),
+                failure_kind: None,
+                failure_disposition: None,
                 timestamp: 11.0,
             },
             WorkflowEvent::ParallelCompleted {
@@ -770,6 +777,8 @@ mod tests {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 node_name: "s1".to_string(),
+                run_index: 1,
+                request_id: Some("00000000-0000-0000-0000-000000000912".to_string()),
                 attempt: 1,
                 violation_reason: "missing_field".to_string(),
                 timestamp: 13.0,
@@ -986,6 +995,8 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             node_name: "plan".to_string(),
             reason: "exit code 1".to_string(),
+            failure_kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: None,
             timestamp: 2002.0,
         })
         .unwrap();
@@ -993,6 +1004,8 @@ mod tests {
             run_id: "00000000-0000-0000-0000-000000000907".to_string(),
             workflow_name: "test-wf".to_string(),
             reason: "step failed".to_string(),
+            failure_kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+            retry_count: None,
             timestamp: 2003.0,
         })
         .unwrap();
@@ -1003,7 +1016,9 @@ mod tests {
         assert_eq!(
             state.state,
             WorkflowExecutionState::Failed {
-                reason: "step failed".to_string()
+                reason: "step failed".to_string(),
+                kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+                retry_count: None,
             }
         );
         assert_eq!(state.step_states["plan"], "failed");
@@ -1121,6 +1136,9 @@ mod tests {
                 }),
                 structured_output: Some(serde_json::json!({"verdict": "LGTM"})),
                 run_index: 1,
+                state: "completed".to_string(),
+                failure_kind: None,
+                failure_disposition: None,
                 timestamp: 1005.0,
             },
             WorkflowEvent::ParallelChildCompleted {
@@ -1136,6 +1154,9 @@ mod tests {
                 }),
                 structured_output: Some(serde_json::json!({"verdict": "LGTM"})),
                 run_index: 1,
+                state: "completed".to_string(),
+                failure_kind: None,
+                failure_disposition: None,
                 timestamp: 1006.0,
             },
             WorkflowEvent::ParallelCompleted {
