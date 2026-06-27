@@ -46,7 +46,6 @@ impl FileSessionStorage {
                 if !self.cache.read().contains_key(session_id) {
                     return Ok(None);
                 }
-                self.ensure_session_layout(app_data_dir, session_id)?;
                 self.load_full_session_from_layout(app_data_dir, session_id)
                     .map(Some)
             },
@@ -69,7 +68,6 @@ impl FileSessionStorage {
                 if !self.cache.read().contains_key(session_id) {
                     return Ok(None);
                 }
-                self.ensure_session_layout(app_data_dir, session_id)?;
                 let dir = session_dir(app_data_dir, session_id)?;
                 let index = self.read_consistent_index_from_dir(&dir, session_id)?;
                 let Some(agent_entry) = index
@@ -152,7 +150,6 @@ impl FileSessionStorage {
                 if !self.cache.read().contains_key(session_id) {
                     return Ok(None);
                 }
-                self.ensure_session_layout(app_data_dir, session_id)?;
                 let dir = session_dir(app_data_dir, session_id)?;
                 let limit = limit.clamp(1, MAX_SESSION_PAGE_LIMIT);
                 let mut index = self.read_consistent_index_from_dir(&dir, session_id)?;
@@ -197,7 +194,6 @@ impl FileSessionStorage {
                 if !self.cache.read().contains_key(session_id) {
                     return Err(format!("Session not found: {session_id}"));
                 }
-                self.ensure_session_layout(app_data_dir, session_id)?;
                 let _lock = self.file_lock.lock();
                 let dir = session_dir(app_data_dir, session_id)?;
                 let mut index =
@@ -267,7 +263,6 @@ impl FileSessionStorage {
                 if !self.cache.read().contains_key(session_id) {
                     return Err(format!("Session not found: {session_id}"));
                 }
-                self.ensure_session_layout(app_data_dir, session_id)?;
                 let _lock = self.file_lock.lock();
                 let dir = session_dir(app_data_dir, session_id)?;
                 let mut index =
@@ -306,48 +301,6 @@ impl FileSessionStorage {
                 Ok(())
             },
         )
-    }
-
-    pub(super) fn ensure_session_layout(
-        &self,
-        app_data_dir: &Path,
-        session_id: &str,
-    ) -> Result<(), String> {
-        let dir = session_dir(app_data_dir, session_id)?;
-        if meta_file_in_dir(&dir).exists() {
-            return Ok(());
-        }
-        let flat_file = session_file(app_data_dir, session_id)?;
-        if !flat_file.exists() {
-            return Ok(());
-        }
-        let _lock = self.file_lock.lock();
-        if meta_file_in_dir(&dir).exists() {
-            return Ok(());
-        }
-        let session = self.read_flat_session_file(&flat_file, session_id)?;
-        let sessions = sessions_dir(app_data_dir);
-        let tmp_dir = sessions.join(format!("{session_id}.migration.tmp"));
-        let write_result = (|| -> Result<(), String> {
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            self.write_split_session_to_dir(&tmp_dir, &session, false)?;
-            std::fs::rename(&tmp_dir, &dir)
-                .map_err(|e| format!("Failed to install migrated session dir: {e}"))?;
-            Ok(())
-        })();
-        if let Err(err) = write_result {
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            return Err(err);
-        }
-        std::fs::remove_file(&flat_file)
-            .map_err(|e| format!("Failed to remove migrated session file: {e}"))?;
-        if let Ok(sidecar) = legacy_meta_file(app_data_dir, session_id) {
-            let _ = std::fs::remove_file(sidecar);
-        }
-        self.cache
-            .write()
-            .insert(session_id.to_string(), SessionMeta::from_session(&session));
-        Ok(())
     }
 
     pub(super) fn read_message_file(&self, path: &Path) -> Result<ChatMessage, String> {
@@ -604,10 +557,6 @@ impl FileSessionStorage {
     ) -> Result<ChatSession, String> {
         let dir = session_dir(app_data_dir, session_id)?;
         if !meta_file_in_dir(&dir).exists() {
-            let flat = session_file(app_data_dir, session_id)?;
-            if flat.exists() {
-                return self.read_flat_session_file(&flat, session_id);
-            }
             return Err(format!("Session not found: {session_id}"));
         }
         let meta = self.read_meta_from_dir(&dir, session_id)?;

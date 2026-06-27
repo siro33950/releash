@@ -21,7 +21,6 @@ impl FileSessionStorage {
         if !self.cache.read().contains_key(session_id) {
             return Err(format!("Session not found: {session_id}"));
         }
-        self.ensure_session_layout(app_data_dir, session_id)?;
         let parent_dir = session_dir(app_data_dir, session_id)?;
         let forked_meta = validate_meta(forked_meta.clone(), &forked_meta.id)?;
         let _lock = self.file_lock.lock();

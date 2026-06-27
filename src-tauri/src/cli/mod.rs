@@ -706,7 +706,7 @@ fn review_actor_and_worktree(
     }
     let session_store = crate::adaptor::controller::wiring::build_session_store();
     let session = session_store
-        .get_session_meta(data_dir, session_id)
+        .get_session_review_context(data_dir, session_id)
         .map_err(CliError::Other)?
         .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
     if session.state == SessionState::Closed {
@@ -746,7 +746,7 @@ fn review_worktree_from_session(data_dir: &Path, session_id: &str) -> Result<Str
     }
     let session_store = crate::adaptor::controller::wiring::build_session_store();
     let session = session_store
-        .get_session_meta(data_dir, session_id)
+        .get_session_review_context(data_dir, session_id)
         .map_err(CliError::Other)?
         .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
     Ok(session.worktree_path)
@@ -1561,6 +1561,107 @@ models = ["opus"]
             review_actor(tmp.path(), &missing_model_id),
             Err(CliError::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn review_actor_treats_legacy_flat_session_as_not_found() {
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let sessions_dir = tmp.path().join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        fs::write(
+            sessions_dir.join(format!("{session_id}.json")),
+            format!(
+                r#"{{
+                    "id":"{session_id}",
+                    "worktreePath":"/repo",
+                    "messages":[
+                        {{"id":"m1","role":"human","content":["not","a","string"],"timestamp":1000.0}}
+                    ],
+                    "state":"active",
+                    "createdAt":1000.0,
+                    "updatedAt":1001.0,
+                    "permissionMode":"edit",
+                    "selectedModel":"gpt-5",
+                    "backendId":"codex",
+                    "workflowStepSession":false
+                }}"#
+            ),
+        )
+        .unwrap();
+
+        let err = review_actor(tmp.path(), &session_id).unwrap_err();
+
+        assert!(matches!(err, CliError::NotFound(_)));
+    }
+
+    #[test]
+    fn review_actor_treats_legacy_sidecar_session_as_not_found() {
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let sessions_dir = tmp.path().join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        fs::write(
+            sessions_dir.join(format!("{session_id}.meta.json")),
+            format!(
+                r#"{{
+                    "id":"{session_id}",
+                    "worktreePath":"/repo",
+                    "state":"active",
+                    "createdAt":1000.0,
+                    "updatedAt":1001.0,
+                    "permissionMode":"edit",
+                    "selectedModel":"gpt-5",
+                    "backendId":"codex",
+                    "workflowStepSession":false,
+                    "firstMessagePreview":"",
+                    "messageCount":0,
+                    "bodyFormatVersion":1
+                }}"#
+            ),
+        )
+        .unwrap();
+
+        let err = review_actor(tmp.path(), &session_id).unwrap_err();
+
+        assert!(matches!(err, CliError::NotFound(_)));
+    }
+
+    #[test]
+    fn review_actor_and_worktree_rejects_empty_session_id() {
+        let tmp = TempDir::new().unwrap();
+
+        for session_id in ["", " "] {
+            let err = review_actor_and_worktree(tmp.path(), session_id).unwrap_err();
+            assert!(matches!(err, CliError::InvalidInput(_)));
+        }
+    }
+
+    #[test]
+    fn review_worktree_from_session_rejects_empty_session_id() {
+        let tmp = TempDir::new().unwrap();
+
+        for session_id in ["", " "] {
+            let err = review_worktree_from_session(tmp.path(), session_id).unwrap_err();
+            assert!(matches!(err, CliError::InvalidInput(_)));
+        }
+    }
+
+    #[test]
+    fn review_worktree_resolution_allows_closed_session_without_actor_fields() {
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        write_review_session(tmp.path(), &session_id, None, None);
+        crate::test_support::build_session_store()
+            .set_session_state(tmp.path(), &session_id, SessionState::Closed)
+            .unwrap();
+
+        let worktree = review_worktree_from_session(tmp.path(), &session_id).unwrap();
+
+        assert_eq!(worktree, "/repo");
     }
 
     #[test]

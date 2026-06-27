@@ -18,7 +18,6 @@ impl FileSessionStorage {
         if !self.cache.read().contains_key(session_id) {
             return Err(format!("Session not found: {session_id}"));
         }
-        self.ensure_session_layout(app_data_dir, session_id)?;
         let dir = session_dir(app_data_dir, session_id)?;
         self.read_session_events_from_dir(&dir)
     }
@@ -36,7 +35,6 @@ impl FileSessionStorage {
         if !self.cache.read().contains_key(session_id) {
             return Err(format!("Session not found: {session_id}"));
         }
-        self.ensure_session_layout(app_data_dir, session_id)?;
         let _lock = self.file_lock.lock();
         let dir = session_dir(app_data_dir, session_id)?;
         let mut events = self.read_session_events_from_dir(&dir)?;

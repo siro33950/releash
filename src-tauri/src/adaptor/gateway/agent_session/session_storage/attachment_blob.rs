@@ -50,7 +50,6 @@ impl FileSessionStorage {
         if !self.cache.read().contains_key(session_id) {
             return Ok(None);
         }
-        self.ensure_session_layout(app_data_dir, session_id)?;
         let dir = session_dir(app_data_dir, session_id)?;
         let index = self.read_consistent_index_from_dir(&dir, session_id)?;
         let Some(attachment) = index
