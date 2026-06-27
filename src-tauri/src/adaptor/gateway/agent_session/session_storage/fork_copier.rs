@@ -2,7 +2,7 @@ use std::path::Path;
 
 use super::layout::{
     attachments_dir_in_dir, index_file_in_dir, messages_dir_in_dir, meta_file_in_dir, session_dir,
-    sessions_dir, validate_meta, write_json_pretty_atomic,
+    sessions_dir, tool_outputs_dir_in_dir, validate_meta, write_json_pretty_atomic,
 };
 use super::FileSessionStorage;
 use crate::usecase::agent_session::session::SessionMeta;
@@ -32,6 +32,8 @@ impl FileSessionStorage {
                 .map_err(|e| format!("Failed to create fork messages dir: {e}"))?;
             std::fs::create_dir_all(attachments_dir_in_dir(&tmp_dir))
                 .map_err(|e| format!("Failed to create fork attachments dir: {e}"))?;
+            std::fs::create_dir_all(tool_outputs_dir_in_dir(&tmp_dir))
+                .map_err(|e| format!("Failed to create fork tool outputs dir: {e}"))?;
             write_json_pretty_atomic(&meta_file_in_dir(&tmp_dir), &forked_meta, "session meta")?;
             let index = self.read_index_from_dir(&parent_dir)?;
             write_json_pretty_atomic(&index_file_in_dir(&tmp_dir), &index, "session index")?;
@@ -42,6 +44,10 @@ impl FileSessionStorage {
             self.link_or_copy_dir_entries(
                 &attachments_dir_in_dir(&parent_dir),
                 &attachments_dir_in_dir(&tmp_dir),
+            )?;
+            self.link_or_copy_dir_entries(
+                &tool_outputs_dir_in_dir(&parent_dir),
+                &tool_outputs_dir_in_dir(&tmp_dir),
             )?;
             std::fs::rename(&tmp_dir, &fork_dir)
                 .map_err(|e| format!("Failed to install fork session dir: {e}"))?;

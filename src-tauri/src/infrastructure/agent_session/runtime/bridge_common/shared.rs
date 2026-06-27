@@ -6,8 +6,9 @@ use crate::infrastructure::agent_session::runtime::context_restore::RestoreConte
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::is_pending_turn_starting;
 use crate::infrastructure::agent_session::runtime::BackendRuntimeConfig;
 use crate::infrastructure::agent_session::runtime::ImageAttachment;
-use crate::usecase::agent_session::session::MessagePart;
-use crate::usecase::agent_session::session::SessionStore;
+use crate::usecase::agent_session::session::{
+    apply_tool_result_update, MessagePart, SessionStore, ToolResultUpdate,
+};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -182,41 +183,20 @@ pub(super) fn append_stream_delta_parts(
                 is_error,
                 tool_use_id: Some(tool_use_id),
                 parent_tool_use_id,
+                content_ref,
+                summary,
             } => {
-                if let Some(existing) = current_parts.iter_mut().rev().find(|existing| {
-                    matches!(
-                        existing,
-                        MessagePart::ToolResult {
-                            tool_use_id: Some(existing_id),
-                            ..
-                        } if existing_id == tool_use_id
-                    )
-                }) {
-                    if let MessagePart::ToolResult {
-                        content: existing_content,
-                        is_error: existing_error,
-                        parent_tool_use_id: existing_parent,
-                        ..
-                    } = existing
-                    {
-                        if existing_parent.is_none() {
-                            *existing_parent = parent_tool_use_id.clone();
-                        }
-                        if *existing_error && !*is_error {
-                            *existing_content = content.clone();
-                            *existing_error = false;
-                        } else if content.contains(existing_content.as_str())
-                            || existing_content.is_empty()
-                        {
-                            *existing_content = content.clone();
-                        } else {
-                            existing_content.push_str(content);
-                        }
-                        *existing_error = *existing_error || *is_error;
-                    }
-                } else {
-                    current_parts.push(part.clone());
-                }
+                let _ = apply_tool_result_update(
+                    current_parts,
+                    ToolResultUpdate {
+                        content: content.clone(),
+                        is_error: *is_error,
+                        tool_use_id: Some(tool_use_id.clone()),
+                        parent_tool_use_id: parent_tool_use_id.clone(),
+                        content_ref: content_ref.clone(),
+                        summary: summary.clone(),
+                    },
+                );
             }
             MessagePart::TaskStatus {
                 task_tool_use_id, ..
@@ -294,6 +274,18 @@ pub(super) fn append_stream_delta_parts(
     }
 }
 
+pub(super) fn parts_have_tool_output_ref(parts: &[MessagePart]) -> bool {
+    parts.iter().any(|part| {
+        matches!(
+            part,
+            MessagePart::ToolResult {
+                content_ref: Some(_),
+                ..
+            }
+        )
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum StreamDeltaApplyResult {
     Applied,
@@ -360,6 +352,46 @@ mod stream_delta_tests {
             is_error,
             tool_use_id: Some(tool_use_id.to_string()),
             parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
+        }
+    }
+
+    fn ref_tool_result(tool_use_id: &str, content: &str, id: &str) -> MessagePart {
+        MessagePart::ToolResult {
+            content: content.to_string(),
+            is_error: false,
+            tool_use_id: Some(tool_use_id.to_string()),
+            parent_tool_use_id: None,
+            content_ref: Some(crate::usecase::agent_session::session::ToolOutputRef {
+                id: id.to_string(),
+                byte_size: 4096,
+            }),
+            summary: Some(crate::usecase::agent_session::session::ToolOutputSummary {
+                line_count: 200,
+                byte_size: 4096,
+                is_error: false,
+                truncated: true,
+            }),
+        }
+    }
+
+    fn ref_error_tool_result(tool_use_id: &str, content: &str, id: &str) -> MessagePart {
+        MessagePart::ToolResult {
+            content: content.to_string(),
+            is_error: true,
+            tool_use_id: Some(tool_use_id.to_string()),
+            parent_tool_use_id: None,
+            content_ref: Some(crate::usecase::agent_session::session::ToolOutputRef {
+                id: id.to_string(),
+                byte_size: 4096,
+            }),
+            summary: Some(crate::usecase::agent_session::session::ToolOutputSummary {
+                line_count: 200,
+                byte_size: 4096,
+                is_error: true,
+                truncated: true,
+            }),
         }
     }
 
@@ -489,6 +521,8 @@ mod stream_delta_tests {
                 is_error: false,
                 tool_use_id: Some("tool-1".to_string()),
                 parent_tool_use_id: Some("parent-1".to_string()),
+                content_ref: None,
+                summary: None,
             },
             tool_result("tool-2", "partial complete", false),
             tool_result("tool-3", " world", false),
@@ -519,6 +553,8 @@ mod stream_delta_tests {
                     is_error: false,
                     tool_use_id: Some("tool-1".to_string()),
                     parent_tool_use_id: Some("parent-1".to_string()),
+                    content_ref: None,
+                    summary: None,
                 },
                 tool_result("tool-2", "partial complete", false),
                 tool_result("tool-3", "hello world", false),
@@ -551,6 +587,8 @@ mod stream_delta_tests {
                     is_error: false,
                     tool_use_id: Some("tool-1".to_string()),
                     parent_tool_use_id: Some("parent-1".to_string()),
+                    content_ref: None,
+                    summary: None,
                 },
                 tool_result("tool-2", "partial complete", false),
                 tool_result("tool-3", " world", false),
@@ -588,6 +626,8 @@ mod stream_delta_tests {
                     is_error: false,
                     tool_use_id: Some("tool-1".to_string()),
                     parent_tool_use_id: Some("parent-1".to_string()),
+                    content_ref: None,
+                    summary: None,
                 },
                 tool_result("tool-2", "partial complete", false),
                 tool_result("tool-3", "hello world", false),
@@ -603,6 +643,118 @@ mod stream_delta_tests {
             StreamDeltaApplyResult::Duplicate
         );
         assert_eq!(applied, before_duplicate);
+    }
+
+    #[test]
+    fn ref_backed_tool_result_keeps_later_delta_as_separate_part() {
+        let base = ref_tool_result("tool-1", "preview", &"a".repeat(64));
+        let delta = tool_result("tool-1", " late", false);
+        let mut applied = vec![base.clone()];
+        let mut last_seq = 0;
+
+        assert_eq!(
+            apply_stream_delta_to_parts(
+                &mut applied,
+                &mut last_seq,
+                1,
+                std::slice::from_ref(&delta)
+            ),
+            StreamDeltaApplyResult::Applied
+        );
+
+        assert_eq!(applied, vec![base.clone(), delta.clone()]);
+        assert_eq!(
+            canonical_stream_parts_from_slice(&[base.clone(), delta.clone()]),
+            vec![base, delta]
+        );
+    }
+
+    #[test]
+    fn ref_backed_tool_result_ignores_empty_inline_delta_without_separate_part() {
+        let base = ref_tool_result("tool-1", "preview", &"a".repeat(64));
+        let delta = tool_result("tool-1", "", false);
+        let mut applied = vec![base.clone()];
+        let mut last_seq = 0;
+
+        assert_eq!(
+            apply_stream_delta_to_parts(&mut applied, &mut last_seq, 1, &[delta]),
+            StreamDeltaApplyResult::Applied
+        );
+
+        assert_eq!(applied, vec![base.clone()]);
+        assert_eq!(
+            canonical_stream_parts_from_slice(&[base.clone(), tool_result("tool-1", "", false)]),
+            vec![base]
+        );
+    }
+
+    #[test]
+    fn error_recovery_clears_ref_and_summary_consistently_across_merge_paths() {
+        use crate::usecase::agent_session::event_log::{project, AgentSessionEvent, PromptInput};
+
+        for content in ["", "success"] {
+            let base = ref_error_tool_result("tool-1", "error preview", &"b".repeat(64));
+            let delta = tool_result("tool-1", content, false);
+            let live_parts = canonical_stream_parts_from_slice(&[base.clone(), delta.clone()]);
+
+            let projected_parts = project(&[
+                AgentSessionEvent::TurnStarted {
+                    turn_id: 1,
+                    message_id: "human-1".to_string(),
+                    assistant_message_id: Some("agent-1".to_string()),
+                    prompt: PromptInput::default(),
+                    at: 0.0,
+                },
+                AgentSessionEvent::ToolResultRecorded {
+                    turn_id: 1,
+                    message_id: "agent-1".to_string(),
+                    content: "error preview".to_string(),
+                    is_error: true,
+                    content_ref: match &base {
+                        MessagePart::ToolResult { content_ref, .. } => content_ref.clone(),
+                        _ => None,
+                    },
+                    summary: match &base {
+                        MessagePart::ToolResult { summary, .. } => summary.clone(),
+                        _ => None,
+                    },
+                    tool_use_id: Some("tool-1".to_string()),
+                    parent_tool_use_id: None,
+                },
+                AgentSessionEvent::ToolResultRecorded {
+                    turn_id: 1,
+                    message_id: "agent-1".to_string(),
+                    content: content.to_string(),
+                    is_error: false,
+                    content_ref: None,
+                    summary: None,
+                    tool_use_id: Some("tool-1".to_string()),
+                    parent_tool_use_id: None,
+                },
+            ])
+            .agent_parts_for_message("agent-1");
+
+            let mut sdk_parts = vec![base];
+            let _ = super::super::sdk_message::push_or_update_tool_result(
+                &mut sdk_parts,
+                content.to_string(),
+                false,
+                Some("tool-1".to_string()),
+                None,
+            );
+
+            let expected = vec![MessagePart::ToolResult {
+                content: content.to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
+            }];
+            assert_eq!(live_parts, expected);
+            assert_eq!(projected_parts, expected);
+            assert_eq!(sdk_parts, expected);
+        }
     }
 
     #[test]
@@ -1704,6 +1856,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
             pending_stream_bytes: 0,
             streaming_delta_seq: 0,
             streaming_delta_seq_by_message: HashMap::new(),
+            pending_persisted_tool_output_resyncs: HashMap::new(),
             last_stream_emit_at: None,
             streaming_timer_active: false,
             last_progress_at: None,

@@ -1,13 +1,13 @@
 use super::layout::{
     attachment_file_in_dir, attachments_dir_in_dir, content_hash, index_file_in_dir,
     legacy_meta_file, message_file_in_dir, meta_file_in_dir, session_dir, session_file,
-    sessions_dir, write_json_pretty_atomic,
+    sessions_dir, tool_output_file_in_dir, tool_outputs_dir_in_dir, write_json_pretty_atomic,
 };
 use super::*;
-use crate::usecase::agent_session::session::image_attachment::MAX_IMAGE_BYTES;
+use crate::domain::agent_session::services::MAX_IMAGE_BYTES;
 use crate::usecase::agent_session::session::{
     AttachmentRef, ChatMessage, ContextCarryState, MessagePart, MessageRole, SessionState,
-    SESSION_BODY_FORMAT_VERSION,
+    SESSION_BODY_FORMAT_VERSION, TOOL_OUTPUT_PREVIEW_BYTES,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use std::sync::{Arc, Barrier};
@@ -77,6 +77,14 @@ fn attachment_blob_count(dir: &std::path::Path) -> usize {
         return 0;
     }
     std::fs::read_dir(attachments_dir).unwrap().count()
+}
+
+fn tool_output_blob_count(dir: &std::path::Path) -> usize {
+    let tool_outputs_dir = tool_outputs_dir_in_dir(dir);
+    if !tool_outputs_dir.exists() {
+        return 0;
+    }
+    std::fs::read_dir(tool_outputs_dir).unwrap().count()
 }
 
 #[test]
@@ -228,6 +236,678 @@ fn save_session_externalizes_image_attachments() {
 }
 
 #[test]
+fn save_session_externalizes_large_tool_output_and_pages_preview_ref() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    let full_output = format!("{}USER_SECRET_TAIL", "line\n".repeat(1001));
+    session.messages[0].content.clear();
+    session.messages[0].parts = Some(vec![MessagePart::ToolResult {
+        content: full_output.clone(),
+        is_error: true,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: None,
+        summary: None,
+    }]);
+
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    assert_eq!(tool_output_blob_count(&dir), 1);
+    let saved_json = std::fs::read_to_string(message_file_in_dir(&dir, 1)).unwrap();
+    assert!(!saved_json.contains("USER_SECRET_TAIL"));
+    let saved_message = store
+        .read_message_file(&message_file_in_dir(&dir, 1))
+        .unwrap();
+    let part = &saved_message.parts.as_ref().unwrap()[0];
+    let MessagePart::ToolResult {
+        content,
+        is_error,
+        content_ref,
+        summary,
+        ..
+    } = part
+    else {
+        panic!("expected tool result");
+    };
+    assert!(*is_error);
+    assert!(!content.contains("USER_SECRET_TAIL"));
+    let content_ref = content_ref.as_ref().expect("large output should have ref");
+    let summary = summary.as_ref().expect("large output should have summary");
+    assert_eq!(content_ref.byte_size, full_output.len() as u64);
+    assert_eq!(summary.byte_size, full_output.len() as u64);
+    assert!(summary.truncated);
+    let index = store.read_index_from_dir(&dir).unwrap();
+    assert_eq!(index[0].tool_output_refs, vec![content_ref.clone()]);
+    let Some(crate::usecase::agent_session::session::ActivityEntry::ToolResult {
+        content: activity_content,
+        content_ref: activity_content_ref,
+        summary: activity_summary,
+        ..
+    }) = saved_message
+        .activities
+        .as_ref()
+        .and_then(|activities| activities.first())
+    else {
+        panic!("expected legacy tool result activity");
+    };
+    assert!(!activity_content.contains("USER_SECRET_TAIL"));
+    assert_eq!(
+        activity_content_ref
+            .as_ref()
+            .map(|content_ref| content_ref.id.as_str()),
+        Some(content_ref.id.as_str())
+    );
+    assert!(activity_summary
+        .as_ref()
+        .is_some_and(|summary| summary.truncated));
+
+    let page = store
+        .get_session_page(tmp.path(), UUID1, None, 10)
+        .unwrap()
+        .unwrap();
+    let page_json = serde_json::to_string(&page).unwrap();
+    assert!(!page_json.contains("USER_SECRET_TAIL"));
+    let page_part = &page.messages[0].parts.as_ref().unwrap()[0];
+    let MessagePart::ToolResult {
+        content: page_content,
+        content_ref: page_content_ref,
+        ..
+    } = page_part
+    else {
+        panic!("expected paged tool result");
+    };
+    assert!(page_content.len() <= TOOL_OUTPUT_PREVIEW_BYTES);
+    assert_eq!(
+        page_content_ref
+            .as_ref()
+            .map(|content_ref| content_ref.id.as_str()),
+        Some(content_ref.id.as_str())
+    );
+
+    let restored = store
+        .get_session_tool_output(tmp.path(), UUID1, &content_ref.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.content, full_output);
+}
+
+#[test]
+fn get_session_page_returns_preview_ref_after_tool_output_blob_removed() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    let full_output = format!("{}USER_SECRET_TAIL", "line\n".repeat(1001));
+    session.messages[0].content.clear();
+    session.messages[0].parts = Some(vec![MessagePart::ToolResult {
+        content: full_output.clone(),
+        is_error: true,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: None,
+        summary: None,
+    }]);
+
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let saved_message = store
+        .read_message_file(&message_file_in_dir(&dir, 1))
+        .unwrap();
+    let MessagePart::ToolResult {
+        content_ref: Some(content_ref),
+        ..
+    } = &saved_message.parts.as_ref().unwrap()[0]
+    else {
+        panic!("expected externalized tool result");
+    };
+    let content_ref = content_ref.clone();
+    std::fs::remove_dir_all(tool_outputs_dir_in_dir(&dir)).unwrap();
+
+    let page = store
+        .get_session_page(tmp.path(), UUID1, None, 10)
+        .unwrap()
+        .unwrap();
+    let page_json = serde_json::to_string(&page).unwrap();
+    assert!(!page_json.contains("USER_SECRET_TAIL"));
+    let MessagePart::ToolResult {
+        content: page_content,
+        content_ref: page_content_ref,
+        ..
+    } = &page.messages[0].parts.as_ref().unwrap()[0]
+    else {
+        panic!("expected paged tool result");
+    };
+    assert!(page_content.len() <= TOOL_OUTPUT_PREVIEW_BYTES);
+    assert_eq!(
+        page_content_ref
+            .as_ref()
+            .map(|content_ref| content_ref.id.as_str()),
+        Some(content_ref.id.as_str())
+    );
+    assert!(store
+        .get_session_tool_output(tmp.path(), UUID1, &content_ref.id)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn get_session_tool_output_returns_none_for_missing_index_ref_without_rebuild() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    let full_output = "x".repeat(TOOL_OUTPUT_PREVIEW_BYTES + 1);
+    session.messages[0].content.clear();
+    session.messages[0].parts = Some(vec![MessagePart::ToolResult {
+        content: full_output.clone(),
+        is_error: false,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: None,
+        summary: None,
+    }]);
+
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let mut index = store.read_index_from_dir(&dir).unwrap();
+    let content_ref = index[0].tool_output_refs[0].clone();
+    index[0].tool_output_refs.clear();
+    write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index").unwrap();
+
+    store.reset_message_read_count();
+    let restored = store
+        .get_session_tool_output(tmp.path(), UUID1, &content_ref.id)
+        .unwrap();
+
+    assert!(restored.is_none());
+    assert_eq!(
+        store.message_read_count(),
+        0,
+        "unreferenced index entries must not trigger full rebuild"
+    );
+    let unrepaired_index = store.read_index_from_dir(&dir).unwrap();
+    assert!(unrepaired_index[0].tool_output_refs.is_empty());
+    assert!(tool_output_file_in_dir(&dir, &content_ref.id).exists());
+}
+
+#[test]
+fn get_session_tool_output_returns_none_for_unreferenced_stale_blob() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    let full_output = "x".repeat(TOOL_OUTPUT_PREVIEW_BYTES + 1);
+    session.messages[0].content.clear();
+    session.messages[0].parts = Some(vec![MessagePart::ToolResult {
+        content: full_output,
+        is_error: false,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: None,
+        summary: None,
+    }]);
+
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let index = store.read_index_from_dir(&dir).unwrap();
+    let stale_ref = index[0].tool_output_refs[0].clone();
+    let mut updated_message = store
+        .read_message_file(&message_file_in_dir(&dir, index[0].seq))
+        .unwrap();
+    updated_message.parts = Some(vec![MessagePart::ToolResult {
+        content: "new small output".to_string(),
+        is_error: false,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: None,
+        summary: None,
+    }]);
+    write_json_pretty_atomic(
+        &message_file_in_dir(&dir, index[0].seq),
+        &updated_message,
+        "message chunk",
+    )
+    .unwrap();
+
+    assert_eq!(tool_output_blob_count(&dir), 1);
+    assert_eq!(
+        store.read_index_from_dir(&dir).unwrap()[0]
+            .tool_output_refs
+            .len(),
+        1
+    );
+    assert!(store
+        .get_session_tool_output(tmp.path(), UUID1, &stale_ref.id)
+        .unwrap()
+        .is_none());
+    let repaired_index = store.read_index_from_dir(&dir).unwrap();
+    assert!(repaired_index[0].tool_output_refs.is_empty());
+}
+
+#[test]
+fn get_session_tool_output_reads_only_referencing_message_chunk_when_index_is_current() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.messages = vec![
+        message("m1", "first", 1000.0),
+        {
+            let mut message = message("m2", "", 1001.0);
+            message.parts = Some(vec![MessagePart::ToolResult {
+                content: "x".repeat(TOOL_OUTPUT_PREVIEW_BYTES + 1),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
+            }]);
+            message
+        },
+        message("m3", "third", 1002.0),
+    ];
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let index = store.read_index_from_dir(&dir).unwrap();
+    let content_ref = index[1].tool_output_refs[0].clone();
+
+    store.reset_message_read_count();
+    let restored = store
+        .get_session_tool_output(tmp.path(), UUID1, &content_ref.id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(restored.content.len(), TOOL_OUTPUT_PREVIEW_BYTES + 1);
+    assert_eq!(store.message_read_count(), 1);
+}
+
+#[test]
+fn get_session_tool_output_returns_none_without_rebuild_when_index_has_no_reference() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let index_before = std::fs::read_to_string(index_file_in_dir(&dir)).unwrap();
+
+    store.reset_message_read_count();
+    let restored = store
+        .get_session_tool_output(tmp.path(), UUID1, &"b".repeat(64))
+        .unwrap();
+
+    assert!(restored.is_none());
+    assert_eq!(store.message_read_count(), 0);
+    assert_eq!(
+        std::fs::read_to_string(index_file_in_dir(&dir)).unwrap(),
+        index_before
+    );
+}
+
+#[test]
+fn small_tool_output_stays_inline_without_blob() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.messages[0].content.clear();
+    session.messages[0].parts = Some(vec![MessagePart::ToolResult {
+        content: "small output".to_string(),
+        is_error: false,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: None,
+        summary: None,
+    }]);
+
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    assert_eq!(tool_output_blob_count(&dir), 0);
+    let saved_message = store
+        .read_message_file(&message_file_in_dir(&dir, 1))
+        .unwrap();
+    assert!(matches!(
+        &saved_message.parts.as_ref().unwrap()[0],
+        MessagePart::ToolResult {
+            content,
+            content_ref: None,
+            summary: None,
+            ..
+        } if content == "small output"
+    ));
+}
+
+#[test]
+fn externalize_tool_output_write_failure_keeps_inline_fallback() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    std::fs::write(tool_outputs_dir_in_dir(tmp.path()), b"not a directory").unwrap();
+    let full_output = "x".repeat(TOOL_OUTPUT_PREVIEW_BYTES + 1);
+    let message = ChatMessage {
+        id: "m-write-fail".to_string(),
+        role: MessageRole::Agent,
+        content: String::new(),
+        thinking: None,
+        activities: None,
+        parts: Some(vec![MessagePart::ToolResult {
+            content: full_output.clone(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
+        }]),
+        streaming_final_seq: 0,
+        timestamp: 1.0,
+        mentions: None,
+    };
+
+    let fallback = store
+        .externalize_message_tool_outputs(tmp.path(), message)
+        .expect("write failure should preserve message with inline fallback");
+
+    assert!(matches!(
+        &fallback.parts.as_ref().unwrap()[0],
+        MessagePart::ToolResult {
+            content,
+            content_ref: None,
+            summary: None,
+            ..
+        } if content == &full_output
+    ));
+    assert!(matches!(
+        fallback.activities.as_ref().and_then(|activities| activities.first()),
+        Some(crate::usecase::agent_session::session::ActivityEntry::ToolResult {
+            content,
+            content_ref: None,
+            summary: None,
+            ..
+        }) if content == &full_output
+    ));
+}
+
+#[test]
+fn externalize_tool_output_write_failure_log_excludes_body_and_skips_telemetry() {
+    let _guard = crate::other::telemetry::lock_test_telemetry();
+    crate::other::telemetry::reset_test_metrics();
+    crate::other::telemetry::set_performance_configured(true);
+    crate::other::telemetry::set_performance_enabled(true);
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    std::fs::write(tool_outputs_dir_in_dir(tmp.path()), b"not a directory").unwrap();
+    let sentinel = "WRITE_FAILURE_SENTINEL";
+    let full_output = format!("{}{sentinel}", "x".repeat(TOOL_OUTPUT_PREVIEW_BYTES + 1));
+    let log_message = super::tool_output_blob::tool_output_write_failure_log_message(
+        "m-write-fail",
+        full_output.len(),
+        1,
+        "not a directory",
+    );
+    assert!(!log_message.contains(sentinel));
+    let message = ChatMessage {
+        id: "m-write-fail".to_string(),
+        role: MessageRole::Agent,
+        content: String::new(),
+        thinking: None,
+        activities: None,
+        parts: Some(vec![MessagePart::ToolResult {
+            content: full_output,
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
+        }]),
+        streaming_final_seq: 0,
+        timestamp: 1.0,
+        mentions: None,
+    };
+
+    let _ = store
+        .externalize_message_tool_outputs(tmp.path(), message)
+        .expect("write failure should preserve inline fallback");
+
+    let records = crate::other::telemetry::test_metric_records();
+    assert!(!records
+        .iter()
+        .any(|record| record.name == "releash.tool_output.truncated_count"));
+    assert!(!records
+        .iter()
+        .any(|record| record.name == "releash.tool_output.full_output_bytes"));
+    crate::other::telemetry::reset_test_metrics();
+}
+
+#[test]
+fn remove_session_deletes_tool_output_blobs() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.messages[0].content.clear();
+    session.messages[0].parts = Some(vec![MessagePart::ToolResult {
+        content: "x".repeat(crate::usecase::agent_session::session::MAX_TOOL_OUTPUT_BYTES + 1),
+        is_error: false,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: None,
+        summary: None,
+    }]);
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    assert_eq!(tool_output_blob_count(&dir), 1);
+
+    store.remove_session(tmp.path(), UUID1);
+
+    assert!(!dir.exists());
+    assert!(store
+        .get_session_tool_output(tmp.path(), UUID1, &"a".repeat(64))
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn externalized_tool_output_records_safe_telemetry_only() {
+    let _guard = crate::other::telemetry::lock_test_telemetry();
+    crate::other::telemetry::reset_test_metrics();
+    crate::other::telemetry::set_performance_configured(true);
+    crate::other::telemetry::set_performance_enabled(true);
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    let secret = "TELEMETRY_SECRET";
+    session.messages[0].content.clear();
+    session.messages[0].parts = Some(vec![MessagePart::ToolResult {
+        content: format!(
+            "{}{secret}",
+            "x".repeat(crate::usecase::agent_session::session::MAX_TOOL_OUTPUT_BYTES + 1)
+        ),
+        is_error: false,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: None,
+        summary: None,
+    }]);
+
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+
+    let records = crate::other::telemetry::test_metric_records();
+    assert!(records
+        .iter()
+        .any(|record| record.name == "releash.tool_output.truncated_count"));
+    assert!(records
+        .iter()
+        .any(|record| record.name == "releash.tool_output.full_output_bytes"));
+    for record in records {
+        assert!(record
+            .attributes
+            .iter()
+            .all(|(_, value)| !value.contains(secret)));
+    }
+    crate::other::telemetry::reset_test_metrics();
+}
+
+#[test]
+fn repeated_tool_output_persist_records_externalized_telemetry_once() {
+    let _guard = crate::other::telemetry::lock_test_telemetry();
+    crate::other::telemetry::reset_test_metrics();
+    crate::other::telemetry::set_performance_configured(true);
+    crate::other::telemetry::set_performance_enabled(true);
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.messages = vec![message("m1", "", 1000.0)];
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    let full_output = "x".repeat(crate::usecase::agent_session::session::MAX_TOOL_OUTPUT_BYTES + 1);
+    let parts = [MessagePart::ToolResult {
+        content: full_output.clone(),
+        is_error: false,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: None,
+        summary: None,
+    }];
+
+    store
+        .persist_message_parts(tmp.path(), UUID1, "m1", &parts, 1, None)
+        .unwrap();
+    store
+        .persist_message_parts(tmp.path(), UUID1, "m1", &parts, 2, None)
+        .unwrap();
+
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    assert_eq!(tool_output_blob_count(&dir), 1);
+    let records = crate::other::telemetry::test_metric_records();
+    let truncated_records = records
+        .iter()
+        .filter(|record| record.name == "releash.tool_output.truncated_count")
+        .collect::<Vec<_>>();
+    let byte_records = records
+        .iter()
+        .filter(|record| record.name == "releash.tool_output.full_output_bytes")
+        .collect::<Vec<_>>();
+    assert_eq!(truncated_records.len(), 1);
+    assert_eq!(byte_records.len(), 1);
+    assert_eq!(byte_records[0].value, full_output.len() as f64);
+    crate::other::telemetry::reset_test_metrics();
+}
+
+#[test]
+fn existing_tool_output_content_ref_passes_through_without_blob_write_or_telemetry() {
+    let _guard = crate::other::telemetry::lock_test_telemetry();
+    crate::other::telemetry::reset_test_metrics();
+    crate::other::telemetry::set_performance_configured(true);
+    crate::other::telemetry::set_performance_enabled(true);
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.messages = vec![message("m1", "", 1000.0)];
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let content_ref = crate::usecase::agent_session::session::ToolOutputRef {
+        id: "c".repeat(64),
+        byte_size: 4096,
+    };
+    let summary = crate::usecase::agent_session::session::ToolOutputSummary {
+        line_count: 12,
+        byte_size: 4096,
+        is_error: false,
+        truncated: true,
+    };
+    std::fs::create_dir_all(tool_outputs_dir_in_dir(&dir)).unwrap();
+    std::fs::write(
+        tool_output_file_in_dir(&dir, &content_ref.id),
+        b"existing blob",
+    )
+    .unwrap();
+    let part = MessagePart::ToolResult {
+        content: "existing preview".to_string(),
+        is_error: false,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: Some(content_ref.clone()),
+        summary: Some(summary.clone()),
+    };
+
+    let persisted_parts = store
+        .persist_message_parts(
+            tmp.path(),
+            UUID1,
+            "m1",
+            std::slice::from_ref(&part),
+            2,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(tool_output_blob_count(&dir), 1);
+    assert_eq!(
+        std::fs::read_to_string(tool_output_file_in_dir(&dir, &content_ref.id)).unwrap(),
+        "existing blob"
+    );
+    assert_eq!(persisted_parts, vec![part.clone()]);
+    let saved_message = store
+        .read_message_file(&message_file_in_dir(&dir, 1))
+        .unwrap();
+    assert_eq!(saved_message.parts.as_ref().unwrap(), &vec![part]);
+    let records = crate::other::telemetry::test_metric_records();
+    assert!(!records
+        .iter()
+        .any(|record| record.name == "releash.tool_output.truncated_count"));
+    assert!(!records
+        .iter()
+        .any(|record| record.name == "releash.tool_output.full_output_bytes"));
+    crate::other::telemetry::reset_test_metrics();
+}
+
+#[test]
+fn existing_tool_output_content_ref_rejects_invalid_id_on_persist() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.messages = vec![message("m1", "", 1000.0)];
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    let part = MessagePart::ToolResult {
+        content: "preview".to_string(),
+        is_error: false,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: Some(crate::usecase::agent_session::session::ToolOutputRef {
+            id: "../outside".to_string(),
+            byte_size: 7,
+        }),
+        summary: None,
+    };
+
+    let err = store
+        .persist_message_parts(tmp.path(), UUID1, "m1", &[part], 2, None)
+        .unwrap_err();
+
+    assert!(err.contains("Invalid tool output id"), "got: {err}");
+}
+
+#[test]
 fn save_session_rejects_oversized_image_attachment_before_blob_write() {
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
@@ -305,6 +985,29 @@ fn get_session_attachment_rejects_invalid_id_before_blob_read() {
 }
 
 #[test]
+fn get_session_tool_output_rejects_invalid_id_before_blob_read() {
+    let tmp = TempDir::new().unwrap();
+    let store = make_session_store();
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+
+    let invalid_ids = [
+        "a".repeat(63),
+        "a".repeat(65),
+        format!("{}g", "a".repeat(63)),
+        "../../tool-output".to_string(),
+        "aa/{}".replace("{}", &"a".repeat(62)),
+    ];
+    for invalid in invalid_ids {
+        let err = store
+            .get_session_tool_output(tmp.path(), UUID1, &invalid)
+            .unwrap_err();
+        assert!(err.contains("Invalid tool output id"), "got: {err}");
+    }
+}
+
+#[test]
 fn hydrate_attachment_rejects_path_traversal_image_ref() {
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
@@ -356,6 +1059,54 @@ fn hydrate_attachment_rejects_canonical_path_outside_attachments_dir() {
         err.contains("escaped attachments dir"),
         "outside symlink must be rejected, got: {err}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn get_session_tool_output_rejects_canonical_path_outside_tool_outputs_dir() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    let content_ref = crate::usecase::agent_session::session::ToolOutputRef {
+        id: "d".repeat(64),
+        byte_size: 24,
+    };
+    session.messages[0].content.clear();
+    session.messages[0].parts = Some(vec![MessagePart::ToolResult {
+        content: "preview".to_string(),
+        is_error: false,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: Some(content_ref.clone()),
+        summary: None,
+    }]);
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let outside_secret = "OUTSIDE_TOOL_OUTPUT_SECRET";
+    let outside = tmp.path().join("outside-tool-output");
+    std::fs::write(&outside, outside_secret).unwrap();
+    std::fs::create_dir_all(tool_outputs_dir_in_dir(&dir)).unwrap();
+    symlink(&outside, tool_output_file_in_dir(&dir, &content_ref.id)).unwrap();
+
+    let err = store
+        .get_session_tool_output(tmp.path(), UUID1, &content_ref.id)
+        .unwrap_err();
+
+    assert!(
+        err.contains("escaped tool outputs dir"),
+        "outside symlink must be rejected, got: {err}"
+    );
+    assert!(!err.contains(outside_secret));
+    let direct_err = store.read_tool_output(&dir, &content_ref.id).unwrap_err();
+    assert!(
+        direct_err.contains("escaped tool outputs dir"),
+        "direct blob read must reject outside symlink, got: {direct_err}"
+    );
+    assert!(!direct_err.contains(outside_secret));
 }
 
 #[test]
@@ -644,7 +1395,7 @@ fn persist_message_parts_updates_only_target_chunk_index_and_meta() {
     std::thread::sleep(std::time::Duration::from_millis(20));
 
     store.reset_message_read_count();
-    store
+    let persisted_parts = store
         .persist_message_parts(
             tmp.path(),
             UUID1,
@@ -658,6 +1409,13 @@ fn persist_message_parts_updates_only_target_chunk_index_and_meta() {
         )
         .unwrap();
 
+    assert_eq!(
+        persisted_parts,
+        vec![MessagePart::Text {
+            content: "updated second".to_string(),
+            parent_tool_use_id: None,
+        }]
+    );
     assert_eq!(store.message_read_count(), 1);
     assert_eq!(std::fs::read_to_string(&chunk1).unwrap(), chunk1_before);
     assert_eq!(std::fs::read_to_string(&chunk3).unwrap(), chunk3_before);
@@ -689,6 +1447,55 @@ fn persist_message_parts_updates_only_target_chunk_index_and_meta() {
     );
     assert_eq!(page.messages[1].streaming_final_seq, 7);
     assert_eq!(page.total_count, 3);
+}
+
+#[test]
+fn persist_message_parts_returns_externalized_tool_output_parts() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.messages = vec![message("m1", "", 1000.0)];
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    let full_output = format!(
+        "{}PERSIST_RETURN_SECRET_TAIL",
+        "x".repeat(crate::usecase::agent_session::session::MAX_TOOL_OUTPUT_BYTES + 1)
+    );
+
+    let persisted_parts = store
+        .persist_message_parts(
+            tmp.path(),
+            UUID1,
+            "m1",
+            &[MessagePart::ToolResult {
+                content: full_output.clone(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
+            }],
+            4,
+            None,
+        )
+        .unwrap();
+
+    let MessagePart::ToolResult {
+        content,
+        content_ref,
+        summary,
+        ..
+    } = &persisted_parts[0]
+    else {
+        panic!("expected tool result");
+    };
+    assert!(!content.contains("PERSIST_RETURN_SECRET_TAIL"));
+    assert!(content_ref.is_some());
+    assert_eq!(
+        summary.as_ref().map(|summary| summary.byte_size),
+        Some(full_output.len() as u64)
+    );
 }
 
 #[test]
@@ -1024,6 +1831,47 @@ fn fork_session_hardlinks_message_chunks() {
         std::fs::metadata(parent_chunk).unwrap().ino(),
         std::fs::metadata(fork_chunk).unwrap().ino()
     );
+}
+
+#[test]
+fn fork_session_copies_tool_output_blobs() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    let full_output = "x".repeat(TOOL_OUTPUT_PREVIEW_BYTES + 1);
+    session.messages[0].content.clear();
+    session.messages[0].parts = Some(vec![MessagePart::ToolResult {
+        content: full_output.clone(),
+        is_error: false,
+        tool_use_id: Some("tool-1".to_string()),
+        parent_tool_use_id: None,
+        content_ref: None,
+        summary: None,
+    }]);
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+
+    let session_store = make_session_store();
+    let forked = session_store.fork_session(tmp.path(), UUID1).unwrap();
+    let page = session_store
+        .get_session_page(tmp.path(), &forked.id, None, 10)
+        .unwrap()
+        .unwrap();
+    let MessagePart::ToolResult {
+        content_ref: Some(content_ref),
+        ..
+    } = &page.messages[0].parts.as_ref().unwrap()[0]
+    else {
+        panic!("expected forked tool result ref");
+    };
+
+    let restored = session_store
+        .get_session_tool_output(tmp.path(), &forked.id, &content_ref.id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(restored.content, full_output);
 }
 
 #[test]

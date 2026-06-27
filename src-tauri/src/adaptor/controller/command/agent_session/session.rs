@@ -589,6 +589,17 @@ pub async fn get_session_attachment(
 }
 
 #[tauri::command]
+pub async fn get_session_tool_output(
+    state: tauri::State<'_, Arc<SessionStore>>,
+    app: tauri::AppHandle,
+    session_id: String,
+    tool_output_id: String,
+) -> Result<Option<crate::usecase::agent_session::session::SessionToolOutput>, String> {
+    let data_dir = resolve_data_dir(&app)?;
+    state.get_session_tool_output(&data_dir, &session_id, &tool_output_id)
+}
+
+#[tauri::command]
 pub async fn search_agent_sessions(
     app: tauri::AppHandle,
     session_store: tauri::State<'_, Arc<SessionStore>>,
@@ -1044,6 +1055,8 @@ mod tests {
                 is_error: false,
                 tool_use_id: Some("tool-1".to_string()),
                 parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
             }]),
             streaming_final_seq: 0,
             timestamp: 1.0,

@@ -20,6 +20,8 @@ pub fn finalize_turn(
             turn_id,
             tool_use_id,
             content: interrupted_content.clone(),
+            content_ref: None,
+            summary: None,
         });
     }
 

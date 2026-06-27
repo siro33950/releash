@@ -24,6 +24,8 @@ pub use events::{
 };
 pub use log::TurnEventLog;
 pub use part_events::PartEventMode;
+#[cfg(test)]
+pub use projector::project;
 pub use projector::WorkflowTurnCompleteInput;
 
 #[cfg(test)]

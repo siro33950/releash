@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::usecase::agent_session::session::{
     AttachmentRef, ChatMessage, MessageMention, MessagePart, SystemNotificationType, TodoListItem,
+    ToolOutputRef, ToolOutputSummary,
 };
 
 pub type TurnId = u64;
@@ -169,17 +170,41 @@ pub enum AgentSessionEvent {
         turn_id: TurnId,
         tool_use_id: String,
         content: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "contentRef"
+        )]
+        content_ref: Option<ToolOutputRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<ToolOutputSummary>,
     },
     ToolCallFailed {
         turn_id: TurnId,
         tool_use_id: String,
         content: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "contentRef"
+        )]
+        content_ref: Option<ToolOutputRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<ToolOutputSummary>,
     },
     ToolResultRecorded {
         turn_id: TurnId,
         message_id: String,
         content: String,
         is_error: bool,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "contentRef"
+        )]
+        content_ref: Option<ToolOutputRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<ToolOutputSummary>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_use_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

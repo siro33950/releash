@@ -135,6 +135,10 @@ pub struct AgentProcess {
     /// only, not a delta history buffer; it lets late post-turn updates keep
     /// `(session_id, message_id)` sequence continuity after a new turn reset.
     pub(crate) streaming_delta_seq_by_message: HashMap<String, u64>,
+    /// Persisted ref resyncs that must wait until a failed streaming delta
+    /// retry has been delivered. Keyed by message id.
+    pub(crate) pending_persisted_tool_output_resyncs:
+        HashMap<String, PendingPersistedToolOutputResync>,
     /// Timestamp of the most recent successful streaming emit. `None` means
     /// the first emit for this turn — flush immediately.
     pub(crate) last_stream_emit_at: Option<Instant>,
@@ -162,6 +166,11 @@ pub(crate) struct PendingStreamDelta {
     pub(crate) pending_bytes: usize,
     pub(crate) rollbacks: Vec<StreamPartRollback>,
     pub(crate) confirmed_stream_part_len_after_success: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingPersistedToolOutputResync {
+    pub(crate) parts: Vec<MessagePart>,
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +222,7 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         pending_stream_bytes: 0,
         streaming_delta_seq: 0,
         streaming_delta_seq_by_message: HashMap::new(),
+        pending_persisted_tool_output_resyncs: HashMap::new(),
         last_stream_emit_at: None,
         streaming_timer_active: false,
         last_progress_at: None,
@@ -363,6 +373,7 @@ impl AgentProcess {
         self.retry_stream_delta = None;
         self.pending_stream_bytes = 0;
         self.streaming_delta_seq = 0;
+        self.pending_persisted_tool_output_resyncs.clear();
         self.last_stream_emit_at = None;
         self.last_message_id = None;
         self.post_turn_message_token = None;

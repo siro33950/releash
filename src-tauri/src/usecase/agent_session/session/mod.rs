@@ -10,12 +10,13 @@ mod stream_resync;
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::agent_session::services::{
+    DefaultToolOutputExternalizationPolicy, ToolOutputExternalizationPolicy,
+};
 use crate::domain::workflow::WorkflowStepContext;
 
 pub use crate::usecase::agent_session::status::TurnPhase;
-pub(crate) use image_attachment::{
-    reject_oversized_base64_image, validate_image_bytes, validate_image_bytes_for_media_type,
-};
+pub(crate) use image_attachment::validate_image_bytes;
 pub(crate) use message_window::{
     plan_agent_chat_eviction, AgentChatEvictionPlan, AgentChatEvictionPlanRequest,
 };
@@ -98,6 +99,14 @@ pub enum MessagePart {
             rename = "parentToolUseId"
         )]
         parent_tool_use_id: Option<String>,
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            default,
+            rename = "contentRef"
+        )]
+        content_ref: Option<ToolOutputRef>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        summary: Option<ToolOutputSummary>,
     },
     Error {
         content: String,
@@ -266,6 +275,14 @@ pub enum ActivityEntry {
         is_error: bool,
         #[serde(skip_serializing_if = "Option::is_none", default, rename = "toolUseId")]
         tool_use_id: Option<String>,
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            default,
+            rename = "contentRef"
+        )]
+        content_ref: Option<ToolOutputRef>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        summary: Option<ToolOutputSummary>,
     },
     PermissionResult {
         #[serde(rename = "toolName")]
@@ -363,6 +380,69 @@ pub const SESSION_BODY_FORMAT_VERSION: u32 = 1;
 pub const INITIAL_SESSION_PAGE_LIMIT: usize = 50;
 pub const DEFAULT_SESSION_PAGE_LIMIT: usize = INITIAL_SESSION_PAGE_LIMIT;
 pub const MAX_SESSION_PAGE_LIMIT: usize = 200;
+#[cfg(test)]
+pub const MAX_TOOL_OUTPUT_BYTES: usize =
+    crate::domain::agent_session::services::MAX_TOOL_OUTPUT_BYTES;
+#[cfg(test)]
+pub const MAX_TOOL_OUTPUT_LINES: usize =
+    crate::domain::agent_session::services::MAX_TOOL_OUTPUT_LINES;
+#[cfg(test)]
+pub const TOOL_OUTPUT_PREVIEW_BYTES: usize =
+    crate::domain::agent_session::services::TOOL_OUTPUT_PREVIEW_BYTES;
+
+pub fn should_externalize_tool_output(content: &str) -> bool {
+    DefaultToolOutputExternalizationPolicy.should_externalize_tool_output(content)
+}
+
+pub fn tool_output_summary(content: &str, is_error: bool, truncated: bool) -> ToolOutputSummary {
+    let summary =
+        DefaultToolOutputExternalizationPolicy.tool_output_summary(content, is_error, truncated);
+    ToolOutputSummary {
+        line_count: summary.line_count,
+        byte_size: summary.byte_size,
+        is_error,
+        truncated,
+    }
+}
+
+pub fn tool_output_preview(content: &str) -> String {
+    DefaultToolOutputExternalizationPolicy.tool_output_preview(content)
+}
+
+pub fn project_tool_output_part_for_stream(part: &MessagePart) -> MessagePart {
+    let MessagePart::ToolResult {
+        content,
+        is_error,
+        tool_use_id,
+        parent_tool_use_id,
+        content_ref,
+        summary,
+    } = part
+    else {
+        return part.clone();
+    };
+    if content_ref.is_some() || !should_externalize_tool_output(content) {
+        return part.clone();
+    }
+    let projected_summary = summary
+        .clone()
+        .unwrap_or_else(|| tool_output_summary(content, *is_error, true));
+    MessagePart::ToolResult {
+        content: tool_output_preview(content),
+        is_error: *is_error,
+        tool_use_id: tool_use_id.clone(),
+        parent_tool_use_id: parent_tool_use_id.clone(),
+        content_ref: None,
+        summary: Some(projected_summary),
+    }
+}
+
+pub fn project_tool_output_parts_for_stream(parts: &[MessagePart]) -> Vec<MessagePart> {
+    parts
+        .iter()
+        .map(project_tool_output_part_for_stream)
+        .collect()
+}
 
 /// meta.json。message body を含まない session 単位の保存正典。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -429,6 +509,185 @@ pub struct AttachmentRef {
     pub byte_size: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolOutputRef {
+    pub id: String,
+    pub byte_size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolOutputSummary {
+    pub line_count: u64,
+    pub byte_size: u64,
+    pub is_error: bool,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolResultMergeDecision {
+    Merge,
+    Replace,
+    AppendSeparate,
+    Skip,
+}
+
+pub(crate) fn decide_tool_result_merge(
+    existing_content_ref: &Option<ToolOutputRef>,
+    existing_is_error: bool,
+    incoming_content_ref: &Option<ToolOutputRef>,
+    incoming_is_error: bool,
+    incoming_content: &str,
+) -> ToolResultMergeDecision {
+    if existing_is_error && !incoming_is_error && incoming_content_ref.is_none() {
+        ToolResultMergeDecision::Merge
+    } else if existing_content_ref.is_some() && incoming_content_ref.is_none() {
+        if incoming_content.is_empty() {
+            ToolResultMergeDecision::Skip
+        } else {
+            ToolResultMergeDecision::AppendSeparate
+        }
+    } else if incoming_content_ref.is_some() {
+        ToolResultMergeDecision::Replace
+    } else {
+        ToolResultMergeDecision::Merge
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ToolResultUpdate {
+    pub content: String,
+    pub is_error: bool,
+    pub tool_use_id: Option<String>,
+    pub parent_tool_use_id: Option<String>,
+    pub content_ref: Option<ToolOutputRef>,
+    pub summary: Option<ToolOutputSummary>,
+}
+
+impl ToolResultUpdate {
+    pub(crate) fn into_part(self) -> MessagePart {
+        MessagePart::ToolResult {
+            content: self.content,
+            is_error: self.is_error,
+            tool_use_id: self.tool_use_id,
+            parent_tool_use_id: self.parent_tool_use_id,
+            content_ref: self.content_ref,
+            summary: self.summary,
+        }
+    }
+}
+
+fn tool_result_delta_from_update(
+    update: &ToolResultUpdate,
+    parent_tool_use_id: Option<String>,
+) -> MessagePart {
+    MessagePart::ToolResult {
+        content: update.content.clone(),
+        is_error: update.is_error,
+        tool_use_id: update.tool_use_id.clone(),
+        parent_tool_use_id,
+        content_ref: update.content_ref.clone(),
+        summary: update.summary.clone(),
+    }
+}
+
+pub(crate) fn apply_tool_result_update(
+    parts: &mut Vec<MessagePart>,
+    update: ToolResultUpdate,
+) -> Option<MessagePart> {
+    let Some(tool_use_id) = update.tool_use_id.as_deref() else {
+        parts.push(update.into_part());
+        return None;
+    };
+    let Some(existing_index) = parts.iter().rposition(|part| {
+        matches!(
+            part,
+            MessagePart::ToolResult {
+                tool_use_id: Some(id),
+                ..
+            } if id == tool_use_id
+        )
+    }) else {
+        parts.push(update.into_part());
+        return None;
+    };
+
+    let MessagePart::ToolResult {
+        content: existing_content,
+        is_error: existing_error,
+        parent_tool_use_id: existing_parent_tool_use_id,
+        content_ref: existing_content_ref,
+        summary: existing_summary,
+        ..
+    } = &mut parts[existing_index]
+    else {
+        return None;
+    };
+
+    let decision = decide_tool_result_merge(
+        existing_content_ref,
+        *existing_error,
+        &update.content_ref,
+        update.is_error,
+        &update.content,
+    );
+    match decision {
+        ToolResultMergeDecision::Skip => None,
+        ToolResultMergeDecision::AppendSeparate => {
+            parts.push(update.into_part());
+            None
+        }
+        ToolResultMergeDecision::Replace => {
+            if existing_parent_tool_use_id.is_none() {
+                *existing_parent_tool_use_id = update.parent_tool_use_id.clone();
+            }
+            *existing_content = update.content.clone();
+            *existing_error = update.is_error;
+            *existing_content_ref = update.content_ref.clone();
+            *existing_summary = update.summary.clone();
+            Some(tool_result_delta_from_update(
+                &update,
+                existing_parent_tool_use_id.clone(),
+            ))
+        }
+        ToolResultMergeDecision::Merge => {
+            if existing_parent_tool_use_id.is_none() {
+                *existing_parent_tool_use_id = update.parent_tool_use_id.clone();
+            }
+            if *existing_error && !update.is_error && update.content_ref.is_none() {
+                *existing_content = update.content.clone();
+                *existing_error = false;
+                *existing_content_ref = None;
+                *existing_summary = None;
+            } else {
+                if update.content.contains(existing_content.as_str()) || existing_content.is_empty()
+                {
+                    *existing_content = update.content.clone();
+                    *existing_summary = update.summary.clone();
+                } else {
+                    existing_content.push_str(&update.content);
+                    *existing_summary = None;
+                }
+                *existing_content_ref = update.content_ref.clone();
+                *existing_error = *existing_error || update.is_error;
+            }
+            Some(tool_result_delta_from_update(
+                &update,
+                existing_parent_tool_use_id.clone(),
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionToolOutput {
+    pub content: String,
+    pub byte_size: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageIndexEntry {
@@ -439,6 +698,8 @@ pub struct MessageIndexEntry {
     pub content_hash: String,
     #[serde(default)]
     pub attachment_refs: Vec<AttachmentRef>,
+    #[serde(default)]
+    pub tool_output_refs: Vec<ToolOutputRef>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token_meta: Option<serde_json::Value>,
 }
@@ -767,12 +1028,16 @@ pub fn parts_to_legacy(
                 content: c,
                 is_error,
                 tool_use_id,
+                content_ref,
+                summary,
                 ..
             } => {
                 activities.push(ActivityEntry::ToolResult {
                     content: c.clone(),
                     is_error: *is_error,
                     tool_use_id: tool_use_id.clone(),
+                    content_ref: content_ref.clone(),
+                    summary: summary.clone(),
                 });
             }
             MessagePart::Permission {
@@ -1169,6 +1434,79 @@ mod tests {
             self.default_id
                 .clone()
                 .ok_or_else(|| "No default backend configured".to_string())
+        }
+    }
+
+    #[test]
+    fn tool_output_threshold_externalizes_only_when_limit_is_exceeded() {
+        let at_byte_limit = "a".repeat(MAX_TOOL_OUTPUT_BYTES);
+        let over_byte_limit = "a".repeat(MAX_TOOL_OUTPUT_BYTES + 1);
+        let at_line_limit = "x\n".repeat(MAX_TOOL_OUTPUT_LINES);
+        let over_line_limit = "x\n".repeat(MAX_TOOL_OUTPUT_LINES + 1);
+
+        assert!(!should_externalize_tool_output(&at_byte_limit));
+        assert!(should_externalize_tool_output(&over_byte_limit));
+        assert!(!should_externalize_tool_output(&at_line_limit));
+        assert!(should_externalize_tool_output(&over_line_limit));
+    }
+
+    #[test]
+    fn tool_output_preview_is_bounded_and_summary_is_metadata_only() {
+        let secret_tail = "USER_SECRET_TAIL";
+        let content = format!("{}{}", "a".repeat(MAX_TOOL_OUTPUT_BYTES + 128), secret_tail);
+
+        let preview = tool_output_preview(&content);
+        let summary = tool_output_summary(&content, true, true);
+
+        assert!(preview.len() <= TOOL_OUTPUT_PREVIEW_BYTES);
+        assert!(!preview.contains(secret_tail));
+        assert_eq!(summary.byte_size, content.len() as u64);
+        assert_eq!(summary.is_error, true);
+        assert!(summary.truncated);
+    }
+
+    #[test]
+    fn stream_projection_keeps_small_tool_result_inline_and_bounds_large_result() {
+        let small = MessagePart::ToolResult {
+            content: "ok".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
+        };
+        assert_eq!(project_tool_output_part_for_stream(&small), small);
+
+        let large_content = "z".repeat(MAX_TOOL_OUTPUT_BYTES + 1);
+        let large = MessagePart::ToolResult {
+            content: large_content.clone(),
+            is_error: true,
+            tool_use_id: Some("tool-2".to_string()),
+            parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
+        };
+
+        let projected = project_tool_output_part_for_stream(&large);
+        match projected {
+            MessagePart::ToolResult {
+                content,
+                is_error,
+                tool_use_id,
+                content_ref,
+                summary,
+                ..
+            } => {
+                assert!(content.len() <= TOOL_OUTPUT_PREVIEW_BYTES);
+                assert_ne!(content, large_content);
+                assert_eq!(is_error, true);
+                assert_eq!(tool_use_id.as_deref(), Some("tool-2"));
+                assert!(content_ref.is_none());
+                let summary = summary.expect("large output should keep summary");
+                assert_eq!(summary.byte_size, large_content.len() as u64);
+                assert!(summary.truncated);
+            }
+            other => panic!("expected tool result projection, got {other:?}"),
         }
     }
 
@@ -1838,6 +2176,8 @@ mod tests {
             content: "file contents".to_string(),
             is_error: false,
             tool_use_id: Some("toolu_001".into()),
+            content_ref: None,
+            summary: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -1897,6 +2237,8 @@ mod tests {
                     content: "ok".to_string(),
                     is_error: false,
                     tool_use_id: None,
+                    content_ref: None,
+                    summary: None,
                 },
             ]),
             parts: None,
@@ -1935,6 +2277,8 @@ mod tests {
                 is_error: false,
                 tool_use_id: None,
                 parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
             },
             MessagePart::Permission {
                 request: serde_json::json!({"request_id": "r1", "tool_name": "Bash"}),

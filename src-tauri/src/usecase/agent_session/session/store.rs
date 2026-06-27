@@ -11,7 +11,7 @@ use crate::usecase::agent_session::event_log::{AgentSessionEvent, TurnEventLog};
 use super::{
     now_timestamp, ChatMessage, ChatSession, ContextCarryState, MessagePart, PageCursor,
     SessionAttachment, SessionMeta, SessionPage, SessionReviewContext, SessionState,
-    SessionSummary,
+    SessionSummary, SessionToolOutput,
 };
 
 /// `SessionState` の遷移を観測する購読者向けコールバック。
@@ -36,6 +36,7 @@ pub trait SessionStoragePort:
         Message = ChatMessage,
         MessagePart = MessagePart,
         Attachment = SessionAttachment,
+        ToolOutput = SessionToolOutput,
         Event = AgentSessionEvent,
     > + SessionReviewContextReader
     + Send
@@ -52,6 +53,7 @@ impl<T> SessionStoragePort for T where
             Message = ChatMessage,
             MessagePart = MessagePart,
             Attachment = SessionAttachment,
+            ToolOutput = SessionToolOutput,
             Event = AgentSessionEvent,
         > + SessionReviewContextReader
         + Send
@@ -67,6 +69,7 @@ pub type SessionReaderPort = dyn AgentSessionReader<
         Message = ChatMessage,
         MessagePart = MessagePart,
         Attachment = SessionAttachment,
+        ToolOutput = SessionToolOutput,
         Event = AgentSessionEvent,
     > + Send
     + Sync;
@@ -100,6 +103,7 @@ impl AgentSessionStorageTypes for SessionStore {
     type Message = ChatMessage;
     type MessagePart = MessagePart;
     type Attachment = SessionAttachment;
+    type ToolOutput = SessionToolOutput;
     type Event = AgentSessionEvent;
 }
 
@@ -165,6 +169,16 @@ impl AgentSessionReader for SessionStore {
     ) -> Result<Option<Self::Attachment>, String> {
         self.storage
             .get_session_attachment(app_data_dir, session_id, attachment_id)
+    }
+
+    fn get_session_tool_output(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        tool_output_id: &str,
+    ) -> Result<Option<Self::ToolOutput>, String> {
+        self.storage
+            .get_session_tool_output(app_data_dir, session_id, tool_output_id)
     }
 
     fn load_session_events(
@@ -774,6 +788,16 @@ impl SessionStore {
             .get_session_attachment(app_data_dir, session_id, attachment_id)
     }
 
+    pub fn get_session_tool_output(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        tool_output_id: &str,
+    ) -> Result<Option<SessionToolOutput>, String> {
+        self.storage
+            .get_session_tool_output(app_data_dir, session_id, tool_output_id)
+    }
+
     pub fn persist_message_parts(
         &self,
         app_data_dir: &Path,
@@ -782,7 +806,7 @@ impl SessionStore {
         parts: &[MessagePart],
         streaming_final_seq: u64,
         completed_at: Option<f64>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<MessagePart>, String> {
         self.storage.persist_message_parts(
             app_data_dir,
             session_id,

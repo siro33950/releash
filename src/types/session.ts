@@ -150,6 +150,8 @@ export type MessagePart =
 			isError: boolean;
 			toolUseId?: string;
 			parentToolUseId?: string;
+			contentRef?: ToolOutputRef;
+			summary?: ToolOutputSummary;
 	  }
 	| {
 			type: "permission";
@@ -199,6 +201,23 @@ export interface AttachmentRef {
 	byteSize: number;
 }
 
+export interface ToolOutputRef {
+	id: string;
+	byteSize: number;
+}
+
+export interface ToolOutputSummary {
+	lineCount: number;
+	byteSize: number;
+	isError: boolean;
+	truncated: boolean;
+}
+
+export interface SessionToolOutput {
+	content: string;
+	byteSize: number;
+}
+
 export type ActivityEntry =
 	| {
 			type: "tool_use";
@@ -211,6 +230,8 @@ export type ActivityEntry =
 			content: string;
 			isError: boolean;
 			toolUseId?: string;
+			contentRef?: ToolOutputRef;
+			summary?: ToolOutputSummary;
 	  }
 	| {
 			type: "permission_result";

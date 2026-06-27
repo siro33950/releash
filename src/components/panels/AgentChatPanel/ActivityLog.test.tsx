@@ -1,6 +1,16 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ActivityEntry, MessagePart } from "@/types/session";
+import type {
+	ActivityEntry,
+	MessagePart,
+	SessionToolOutput,
+} from "@/types/session";
 import {
 	ActivityItem,
 	fallbackToolPresentationForTest,
@@ -117,9 +127,24 @@ Object.defineProperty(navigator, "clipboard", {
 	},
 });
 
+let mockToolOutput: SessionToolOutput | null = null;
+let mockToolOutputError: Error | null = null;
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, resolve, reject };
+}
+
 beforeEach(() => {
 	resetActivityLogUiStateForTest();
 	resetAgentEditPreviewPanelStateForTest();
+	mockToolOutput = null;
+	mockToolOutputError = null;
 	mockInvoke.mockClear();
 	mockInvoke.mockImplementation((command: string, args: unknown) => {
 		if (command === "present_agent_tool_activity") {
@@ -135,6 +160,12 @@ beforeEach(() => {
 		}
 		if (command === "get_language_from_path") {
 			return Promise.resolve("typescript");
+		}
+		if (command === "get_session_tool_output") {
+			if (mockToolOutputError) {
+				return Promise.reject(mockToolOutputError);
+			}
+			return Promise.resolve(mockToolOutput);
 		}
 		if (command === "build_agent_edit_preview") {
 			const input = (
@@ -208,7 +239,7 @@ describe("ToolActivity", () => {
 				content: "file contents here",
 				isError: false,
 			};
-			render(<ToolActivity entry={entry} result={result} index={0} />);
+			render(<ToolActivity entry={entry} results={[result]} index={0} />);
 
 			expect(screen.queryByText("file contents here")).toBeNull();
 
@@ -322,14 +353,14 @@ describe("ToolActivity", () => {
 				isError: false,
 			};
 			const { unmount } = render(
-				<ToolActivity entry={entry} result={result} index={0} />,
+				<ToolActivity entry={entry} results={[result]} index={0} />,
 			);
 
 			fireEvent.click(await screen.findByText("Explored /src/persist.ts"));
 			expect(screen.getByText("persistent file contents")).toBeInTheDocument();
 
 			unmount();
-			render(<ToolActivity entry={entry} result={result} index={0} />);
+			render(<ToolActivity entry={entry} results={[result]} index={0} />);
 
 			expect(screen.getByText("persistent file contents")).toBeInTheDocument();
 		});
@@ -448,7 +479,7 @@ describe("ToolActivity", () => {
 				content: "clean",
 				isError: false,
 			};
-			render(<ToolActivity entry={entry} result={result} index={0} />);
+			render(<ToolActivity entry={entry} results={[result]} index={0} />);
 
 			const header = await screen.findByTestId("activity-tool-use-0");
 			expect(header).toHaveTextContent("git status");
@@ -467,12 +498,456 @@ describe("ToolActivity", () => {
 				content: "file1.ts\nfile2.ts",
 				isError: false,
 			};
-			render(<ToolActivity entry={entry} result={result} index={0} />);
+			render(<ToolActivity entry={entry} results={[result]} index={0} />);
 
 			expect(screen.queryByText(/file1\.ts/)).toBeNull();
 
 			fireEvent.click(await screen.findByText("ls"));
 			expect(screen.getByText(/file1\.ts/)).toBeInTheDocument();
+		});
+
+		it("keeps externalized result as preview after expanding until full output is requested", async () => {
+			const outputId = "a".repeat(64);
+			mockToolOutput = {
+				content: "full output\nUSER_SECRET_TAIL",
+				byteSize: 4096,
+			};
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Bash",
+				input: { command: "ls" },
+				id: "t4-externalized",
+			};
+			const result = {
+				type: "tool_result" as const,
+				content: "preview only",
+				isError: false,
+				contentRef: {
+					id: outputId,
+					byteSize: 4096,
+				},
+			};
+			render(
+				<ToolActivity
+					entry={entry}
+					results={[result]}
+					index={0}
+					sessionId="session-1"
+				/>,
+			);
+
+			await screen.findByText("ls");
+			expect(
+				mockInvoke.mock.calls.some(
+					([command]) => command === "get_session_tool_output",
+				),
+			).toBe(false);
+
+			fireEvent.click(screen.getByText("ls"));
+			expect(screen.getByText("preview only")).toBeInTheDocument();
+			expect(
+				mockInvoke.mock.calls.some(
+					([command]) => command === "get_session_tool_output",
+				),
+			).toBe(false);
+
+			fireEvent.click(
+				screen.getByRole("button", { name: "Load full tool result" }),
+			);
+			await waitFor(() =>
+				expect(mockInvoke).toHaveBeenCalledWith("get_session_tool_output", {
+					sessionId: "session-1",
+					toolOutputId: outputId,
+				}),
+			);
+			await waitFor(() =>
+				expect(screen.getByText(/USER_SECRET_TAIL/)).toBeInTheDocument(),
+			);
+		});
+
+		it("resets loaded full output when session changes", async () => {
+			const outputId = "a".repeat(64);
+			mockToolOutput = {
+				content: "full output from session one",
+				byteSize: 4096,
+			};
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Bash",
+				input: { command: "ls" },
+				id: "t4-reset-externalized",
+			};
+			const result = {
+				type: "tool_result" as const,
+				content: "preview only",
+				isError: false,
+				contentRef: {
+					id: outputId,
+					byteSize: 4096,
+				},
+			};
+			const { rerender } = render(
+				<ToolActivity
+					entry={entry}
+					results={[result]}
+					index={0}
+					sessionId="session-1"
+				/>,
+			);
+
+			fireEvent.click(await screen.findByText("ls"));
+			fireEvent.click(
+				screen.getByRole("button", { name: "Load full tool result" }),
+			);
+			await waitFor(() =>
+				expect(
+					screen.getByText("full output from session one"),
+				).toBeInTheDocument(),
+			);
+
+			mockToolOutput = {
+				content: "full output from session two",
+				byteSize: 4096,
+			};
+			rerender(
+				<ToolActivity
+					entry={entry}
+					results={[result]}
+					index={0}
+					sessionId="session-2"
+				/>,
+			);
+
+			await waitFor(() =>
+				expect(screen.queryByText("full output from session one")).toBeNull(),
+			);
+			expect(screen.getByText("preview only")).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: "Load full tool result" }),
+			).toBeInTheDocument();
+		});
+
+		it("ignores stale full output responses from earlier requests", async () => {
+			const outputId = "a".repeat(64);
+			const first = deferred<SessionToolOutput | null>();
+			const second = deferred<SessionToolOutput | null>();
+			mockInvoke.mockImplementation((command: string, args: unknown) => {
+				if (command === "present_agent_tool_activity") {
+					return Promise.resolve(
+						presentToolActivity(
+							args as {
+								toolName: string;
+								input: Record<string, unknown>;
+								basePath?: string;
+							},
+						),
+					);
+				}
+				if (command === "get_session_tool_output") {
+					const sessionId = (args as { sessionId: string }).sessionId;
+					return sessionId === "session-1" ? first.promise : second.promise;
+				}
+				return Promise.resolve(null);
+			});
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Bash",
+				input: { command: "ls" },
+				id: "t4-stale-externalized",
+			};
+			const result = {
+				type: "tool_result" as const,
+				content: "preview only",
+				isError: false,
+				contentRef: {
+					id: outputId,
+					byteSize: 4096,
+				},
+			};
+			const { rerender } = render(
+				<ToolActivity
+					entry={entry}
+					results={[result]}
+					index={0}
+					sessionId="session-1"
+				/>,
+			);
+
+			fireEvent.click(await screen.findByText("ls"));
+			fireEvent.click(
+				screen.getByRole("button", { name: "Load full tool result" }),
+			);
+			rerender(
+				<ToolActivity
+					entry={entry}
+					results={[result]}
+					index={0}
+					sessionId="session-2"
+				/>,
+			);
+			await waitFor(() =>
+				expect(
+					screen.getByRole("button", { name: "Load full tool result" }),
+				).not.toBeDisabled(),
+			);
+			fireEvent.click(
+				screen.getByRole("button", { name: "Load full tool result" }),
+			);
+
+			await act(async () => {
+				second.resolve({ content: "latest full output", byteSize: 2048 });
+				await second.promise;
+			});
+			await waitFor(() =>
+				expect(screen.getByText("latest full output")).toBeInTheDocument(),
+			);
+			await act(async () => {
+				first.resolve({ content: "stale full output", byteSize: 4096 });
+				await first.promise;
+			});
+
+			expect(screen.getByText("latest full output")).toBeInTheDocument();
+			expect(screen.queryByText("stale full output")).toBeNull();
+		});
+
+		it("renders empty preview with contentRef and loads full output on demand", async () => {
+			const outputId = "f".repeat(64);
+			mockToolOutput = {
+				content: "full output loaded from empty preview",
+				byteSize: 4096,
+			};
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Bash",
+				input: { command: "ls" },
+				id: "t4-empty-preview-ref",
+			};
+			const result = {
+				type: "tool_result" as const,
+				content: "   ",
+				isError: false,
+				contentRef: {
+					id: outputId,
+					byteSize: 4096,
+				},
+				summary: {
+					lineCount: 12,
+					byteSize: 4096,
+					isError: false,
+					truncated: true,
+				},
+			};
+			render(
+				<ToolActivity
+					entry={entry}
+					results={[result]}
+					index={0}
+					sessionId="session-1"
+				/>,
+			);
+
+			fireEvent.click(await screen.findByText("ls"));
+
+			expect(screen.getByText(/Full output available/)).toBeInTheDocument();
+			fireEvent.click(
+				screen.getByRole("button", { name: "Load full tool result" }),
+			);
+			await waitFor(() =>
+				expect(
+					screen.getByText("full output loaded from empty preview"),
+				).toBeInTheDocument(),
+			);
+		});
+
+		it("keeps empty tool result without contentRef hidden", async () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Bash",
+				input: { command: "ls" },
+				id: "t4-empty-no-ref",
+			};
+			const result = {
+				type: "tool_result" as const,
+				content: "   ",
+				isError: false,
+			};
+			render(<ToolActivity entry={entry} results={[result]} index={0} />);
+
+			fireEvent.click(await screen.findByText("ls"));
+
+			expect(
+				screen.queryByRole("button", { name: "Copy tool result" }),
+			).toBeNull();
+			expect(
+				screen.queryByRole("button", { name: "Load full tool result" }),
+			).toBeNull();
+		});
+
+		it("renders externalized preview and late inline result under one tool activity", async () => {
+			const outputId = "e".repeat(64);
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Bash",
+				input: { command: "ls" },
+				id: "t4-multiple-results",
+			};
+			const preview = {
+				type: "tool_result" as const,
+				content: "preview only",
+				isError: false,
+				contentRef: {
+					id: outputId,
+					byteSize: 4096,
+				},
+			};
+			const lateInline = {
+				type: "tool_result" as const,
+				content: "\nlate inline",
+				isError: false,
+			};
+			render(
+				<ToolActivity
+					entry={entry}
+					results={[preview, lateInline]}
+					index={0}
+					sessionId="session-1"
+				/>,
+			);
+
+			fireEvent.click(await screen.findByText("ls"));
+
+			expect(screen.getByText("preview only")).toBeInTheDocument();
+			expect(screen.getByText(/late inline/)).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: "Load full tool result" }),
+			).toBeInTheDocument();
+		});
+
+		it("fetches full externalized result when copying", async () => {
+			const outputId = "d".repeat(64);
+			mockToolOutput = {
+				content: "full output\nCOPY_SECRET_TAIL",
+				byteSize: 4096,
+			};
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Bash",
+				input: { command: "ls" },
+				id: "t4-copy-externalized",
+			};
+			const result = {
+				type: "tool_result" as const,
+				content: "preview only",
+				isError: false,
+				contentRef: {
+					id: outputId,
+					byteSize: 4096,
+				},
+			};
+			render(
+				<ToolActivity
+					entry={entry}
+					results={[result]}
+					index={0}
+					sessionId="session-1"
+				/>,
+			);
+
+			fireEvent.click(await screen.findByText("ls"));
+			fireEvent.click(screen.getByRole("button", { name: "Copy tool result" }));
+
+			await waitFor(() =>
+				expect(mockInvoke).toHaveBeenCalledWith("get_session_tool_output", {
+					sessionId: "session-1",
+					toolOutputId: outputId,
+				}),
+			);
+			await waitFor(() =>
+				expect(clipboardWriteText).toHaveBeenCalledWith(
+					"full output\nCOPY_SECRET_TAIL",
+				),
+			);
+		});
+
+		it("shows preview and unavailable state when externalized result is missing", async () => {
+			const outputId = "b".repeat(64);
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Bash",
+				input: { command: "ls" },
+				id: "t4-missing-output",
+			};
+			const result = {
+				type: "tool_result" as const,
+				content: "preview only",
+				isError: false,
+				contentRef: {
+					id: outputId,
+					byteSize: 4096,
+				},
+			};
+			render(
+				<ToolActivity
+					entry={entry}
+					results={[result]}
+					index={0}
+					sessionId="session-1"
+				/>,
+			);
+
+			fireEvent.click(await screen.findByText("ls"));
+
+			expect(screen.getByText("preview only")).toBeInTheDocument();
+			expect(screen.queryByText("Full output unavailable")).toBeNull();
+			fireEvent.click(
+				screen.getByRole("button", { name: "Load full tool result" }),
+			);
+			await waitFor(() =>
+				expect(screen.getByText("Full output unavailable")).toBeInTheDocument(),
+			);
+			expect(screen.getByRole("status")).toHaveTextContent(
+				"Full output unavailable",
+			);
+		});
+
+		it("shows preview and unavailable state when externalized result fetch fails", async () => {
+			const outputId = "c".repeat(64);
+			mockToolOutputError = new Error("read failed");
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Bash",
+				input: { command: "ls" },
+				id: "t4-fetch-failed",
+			};
+			const result = {
+				type: "tool_result" as const,
+				content: "preview only",
+				isError: false,
+				contentRef: {
+					id: outputId,
+					byteSize: 4096,
+				},
+			};
+			render(
+				<ToolActivity
+					entry={entry}
+					results={[result]}
+					index={0}
+					sessionId="session-1"
+				/>,
+			);
+
+			fireEvent.click(await screen.findByText("ls"));
+
+			expect(screen.getByText("preview only")).toBeInTheDocument();
+			expect(screen.queryByText("Full output unavailable")).toBeNull();
+			fireEvent.click(
+				screen.getByRole("button", { name: "Load full tool result" }),
+			);
+			await waitFor(() =>
+				expect(screen.getByText("Full output unavailable")).toBeInTheDocument(),
+			);
+			expect(screen.queryByText("read failed")).toBeNull();
 		});
 
 		it("shows error result as collapsible", () => {
@@ -487,7 +962,7 @@ describe("ToolActivity", () => {
 				content: "command not found",
 				isError: true,
 			};
-			render(<ToolActivity entry={entry} result={result} index={0} />);
+			render(<ToolActivity entry={entry} results={[result]} index={0} />);
 
 			expect(screen.getByText("Error")).toBeInTheDocument();
 			expect(screen.queryByText("command not found")).toBeNull();
@@ -525,7 +1000,7 @@ describe("ToolActivity", () => {
 			render(
 				<ToolActivity
 					entry={entry}
-					result={result}
+					results={[result]}
 					index={0}
 					isExecuting={false}
 				/>,
@@ -1072,12 +1547,7 @@ describe("TaskToolActivity", () => {
 			},
 		];
 		render(
-			<TaskToolActivity
-				group={group}
-				parts={parts}
-				pairedResults={new Map()}
-				isStreaming={false}
-			/>,
+			<TaskToolActivity group={group} parts={parts} isStreaming={false} />,
 		);
 
 		const el = screen.getByTestId("activity-task-0");
@@ -1100,14 +1570,7 @@ describe("TaskToolActivity", () => {
 				parentToolUseId: "toolu_task_001",
 			},
 		];
-		render(
-			<TaskToolActivity
-				group={group}
-				parts={parts}
-				pairedResults={new Map()}
-				isStreaming={true}
-			/>,
-		);
+		render(<TaskToolActivity group={group} parts={parts} isStreaming={true} />);
 
 		const el = screen.getByTestId("activity-task-0");
 		// Running task shows exactly one spinner (no duplicate status-icon spinner)
@@ -1133,12 +1596,7 @@ describe("TaskToolActivity", () => {
 			},
 		];
 		render(
-			<TaskToolActivity
-				group={group}
-				parts={parts}
-				pairedResults={new Map()}
-				isStreaming={false}
-			/>,
+			<TaskToolActivity group={group} parts={parts} isStreaming={false} />,
 		);
 
 		const el = screen.getByTestId("activity-task-0");
@@ -1170,12 +1628,7 @@ describe("TaskToolActivity", () => {
 			},
 		];
 		render(
-			<TaskToolActivity
-				group={group}
-				parts={parts}
-				pairedResults={new Map()}
-				isStreaming={false}
-			/>,
+			<TaskToolActivity group={group} parts={parts} isStreaming={false} />,
 		);
 
 		const el = screen.getByTestId("activity-task-0");
@@ -1205,12 +1658,7 @@ describe("TaskToolActivity", () => {
 			},
 		];
 		render(
-			<TaskToolActivity
-				group={group}
-				parts={parts}
-				pairedResults={new Map()}
-				isStreaming={false}
-			/>,
+			<TaskToolActivity group={group} parts={parts} isStreaming={false} />,
 		);
 
 		// Completed → initially collapsed
@@ -1247,12 +1695,7 @@ describe("TaskToolActivity", () => {
 			},
 		];
 		const { unmount } = render(
-			<TaskToolActivity
-				group={group}
-				parts={parts}
-				pairedResults={new Map()}
-				isStreaming={false}
-			/>,
+			<TaskToolActivity group={group} parts={parts} isStreaming={false} />,
 		);
 
 		fireEvent.click(screen.getByTestId("activity-task-0"));
@@ -1260,12 +1703,7 @@ describe("TaskToolActivity", () => {
 
 		unmount();
 		render(
-			<TaskToolActivity
-				group={group}
-				parts={parts}
-				pairedResults={new Map()}
-				isStreaming={false}
-			/>,
+			<TaskToolActivity group={group} parts={parts} isStreaming={false} />,
 		);
 
 		expect(screen.getByText("persisted child output")).toBeInTheDocument();
@@ -1291,16 +1729,16 @@ describe("TaskToolActivity", () => {
 				parentToolUseId: "toolu_task_001",
 			},
 		];
-		const pairedResults = new Map<
+		const pairedResultGroups = new Map<
 			number,
-			Extract<MessagePart, { type: "tool_result" }>
-		>([[1, childResult]]);
+			Extract<MessagePart, { type: "tool_result" }>[]
+		>([[1, [childResult]]]);
 
 		render(
 			<TaskToolActivity
 				group={group}
 				parts={parts}
-				pairedResults={pairedResults}
+				pairedResultGroups={pairedResultGroups}
 				isStreaming={false}
 			/>,
 		);
@@ -1330,12 +1768,7 @@ describe("TaskToolActivity", () => {
 			],
 		});
 		render(
-			<TaskToolActivity
-				group={group}
-				parts={baseParts}
-				pairedResults={new Map()}
-				isStreaming={false}
-			/>,
+			<TaskToolActivity group={group} parts={baseParts} isStreaming={false} />,
 		);
 
 		const el = screen.getByTestId("activity-task-0");
@@ -1355,12 +1788,7 @@ describe("TaskToolActivity", () => {
 			},
 		];
 		render(
-			<TaskToolActivity
-				group={group}
-				parts={parts}
-				pairedResults={new Map()}
-				isStreaming={false}
-			/>,
+			<TaskToolActivity group={group} parts={parts} isStreaming={false} />,
 		);
 
 		// Collapsed by default
@@ -1381,12 +1809,7 @@ describe("TaskToolActivity", () => {
 			subagentType: "Explore",
 		});
 		render(
-			<TaskToolActivity
-				group={group}
-				parts={baseParts}
-				pairedResults={new Map()}
-				isStreaming={false}
-			/>,
+			<TaskToolActivity group={group} parts={baseParts} isStreaming={false} />,
 		);
 
 		expect(screen.getByTestId("activity-task-0")).toHaveTextContent(

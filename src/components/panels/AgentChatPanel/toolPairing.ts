@@ -14,31 +14,36 @@ export interface TaskGroup {
 }
 
 interface ToolPairingResult {
-	pairedResults: Map<number, Extract<MessagePart, { type: "tool_result" }>>;
+	pairedResultGroups: Map<
+		number,
+		Extract<MessagePart, { type: "tool_result" }>[]
+	>;
 	skippedResultIndices: Set<number>;
 	taskGroups: Map<number, TaskGroup>;
 	taskChildIndices: Set<number>;
 }
 
 export function buildToolPairings(parts: MessagePart[]): ToolPairingResult {
-	const pairedResults = new Map<
+	const pairedResultGroups = new Map<
 		number,
-		Extract<MessagePart, { type: "tool_result" }>
+		Extract<MessagePart, { type: "tool_result" }>[]
 	>();
 	const skippedResultIndices = new Set<number>();
 
-	// Build ID-based result map: toolUseId → { index, result }
+	// Build ID-based result map: toolUseId → all matching results in display order.
 	const resultByToolUseId = new Map<
 		string,
-		{ index: number; result: Extract<MessagePart, { type: "tool_result" }> }
+		{ index: number; result: Extract<MessagePart, { type: "tool_result" }> }[]
 	>();
 	for (let i = 0; i < parts.length; i++) {
 		const p = parts[i];
 		if (p.type === "tool_result" && p.toolUseId) {
-			resultByToolUseId.set(p.toolUseId, {
+			const results = resultByToolUseId.get(p.toolUseId) ?? [];
+			results.push({
 				index: i,
 				result: p,
 			});
+			resultByToolUseId.set(p.toolUseId, results);
 		}
 	}
 
@@ -49,16 +54,21 @@ export function buildToolPairings(parts: MessagePart[]): ToolPairingResult {
 
 		// ID-based pairing
 		const byId = resultByToolUseId.get(part.id);
-		if (byId) {
-			pairedResults.set(i, byId.result);
-			skippedResultIndices.add(byId.index);
+		if (byId?.length) {
+			pairedResultGroups.set(
+				i,
+				byId.map(({ result }) => result),
+			);
+			for (const { index } of byId) {
+				skippedResultIndices.add(index);
+			}
 			continue;
 		}
 
 		// Adjacent fallback: next part is an unpaired tool_result
 		const next = parts[i + 1];
 		if (next?.type === "tool_result" && !skippedResultIndices.has(i + 1)) {
-			pairedResults.set(i, next);
+			pairedResultGroups.set(i, [next]);
 			skippedResultIndices.add(i + 1);
 		}
 	}
@@ -143,25 +153,33 @@ export function buildToolPairings(parts: MessagePart[]): ToolPairingResult {
 
 		// Link task tool_result to group
 		for (const [idx, group] of taskGroups) {
-			const paired = pairedResults.get(idx);
-			if (paired) {
-				let resultIdx: number | undefined;
+			const paired = pairedResultGroups.get(idx);
+			if (paired?.length) {
+				let firstResultIndex: number | undefined;
 				for (const si of skippedResultIndices) {
-					if (parts[si] === paired) {
-						resultIdx = si;
-						break;
+					if (
+						paired.includes(
+							parts[si] as Extract<MessagePart, { type: "tool_result" }>,
+						)
+					) {
+						firstResultIndex ??= si;
+						taskChildIndices.add(si);
 					}
 				}
-				if (resultIdx !== undefined) {
-					group.resultIndex = resultIdx;
-					taskChildIndices.add(resultIdx);
-					if (!group.isBackground) {
-						group.isCompleted = true;
-					}
+				if (firstResultIndex !== undefined) {
+					group.resultIndex = firstResultIndex;
+				}
+				if (!group.isBackground) {
+					group.isCompleted = true;
 				}
 			}
 		}
 	}
 
-	return { pairedResults, skippedResultIndices, taskGroups, taskChildIndices };
+	return {
+		pairedResultGroups,
+		skippedResultIndices,
+		taskGroups,
+		taskChildIndices,
+	};
 }

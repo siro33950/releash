@@ -205,7 +205,7 @@ mod tests {
     use crate::usecase::agent_session::event_log::AgentSessionEvent;
     use crate::usecase::agent_session::session::{
         ChatSession, ContextCarryState, MessagePageMetadata, PageCursor, SessionAttachment,
-        SessionMeta, SessionPage, SessionState, SESSION_BODY_FORMAT_VERSION,
+        SessionMeta, SessionPage, SessionState, SessionToolOutput, SESSION_BODY_FORMAT_VERSION,
     };
 
     struct PromptSuggestionStorage;
@@ -218,6 +218,7 @@ mod tests {
         type Message = ChatMessage;
         type MessagePart = MessagePart;
         type Attachment = SessionAttachment;
+        type ToolOutput = SessionToolOutput;
         type Event = AgentSessionEvent;
     }
 
@@ -304,6 +305,15 @@ mod tests {
             _session_id: &str,
             _attachment_id: &str,
         ) -> Result<Option<Self::Attachment>, String> {
+            Ok(None)
+        }
+
+        fn get_session_tool_output(
+            &self,
+            _app_data_dir: &Path,
+            _session_id: &str,
+            _tool_output_id: &str,
+        ) -> Result<Option<Self::ToolOutput>, String> {
             Ok(None)
         }
 

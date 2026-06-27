@@ -5,6 +5,7 @@ import {
 	CheckCircle2,
 	ChevronRight,
 	Copy,
+	Download,
 	FileText,
 	Filter,
 	Globe,
@@ -20,7 +21,13 @@ import {
 } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ActivityEntry, MessagePart } from "@/types/session";
+import { getSessionToolOutput } from "@/hooks/useSessionStore";
+import type {
+	ActivityEntry,
+	MessagePart,
+	ToolOutputRef,
+	ToolOutputSummary,
+} from "@/types/session";
 import { AgentEditPreviewPanel } from "./AgentEditPreviewPanel";
 import type { TaskGroup } from "./toolPairing";
 
@@ -190,12 +197,43 @@ function ToolStatusIcon({
 	return <CheckCircle2 className="size-3 shrink-0 text-muted-foreground/70" />;
 }
 
+function toolResultRenderKey(
+	result: Extract<ActivityEntry, { type: "tool_result" }>,
+) {
+	return (
+		result.contentRef?.id ??
+		`${result.toolUseId ?? "result"}:${result.isError}:${result.summary?.byteSize ?? result.content.length}:${result.content.slice(0, 64)}`
+	);
+}
+
+function formatToolOutputBytes(bytes: number) {
+	if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	return `${bytes} B`;
+}
+
+function toolOutputPlaceholder(
+	summary?: ToolOutputSummary,
+	contentRef?: ToolOutputRef,
+) {
+	const byteSize = summary?.byteSize ?? contentRef?.byteSize;
+	const details = [
+		byteSize !== undefined ? formatToolOutputBytes(byteSize) : null,
+		summary ? `${summary.lineCount} lines` : null,
+	].filter(Boolean);
+	return details.length > 0
+		? `Full output available (${details.join(", ")})`
+		: "Full output available";
+}
+
 function SmallCopyButton({
 	content,
 	ariaLabel,
+	loadContent,
 }: {
 	content: string;
 	ariaLabel: string;
+	loadContent?: () => Promise<string | null>;
 }) {
 	const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
 		"idle",
@@ -207,7 +245,12 @@ function SmallCopyButton({
 	}, [copyState]);
 	const handleCopy = async () => {
 		try {
-			await navigator.clipboard.writeText(content);
+			const contentToCopy = loadContent ? await loadContent() : content;
+			if (contentToCopy === null) {
+				setCopyState("error");
+				return;
+			}
+			await navigator.clipboard.writeText(contentToCopy);
 			setCopyState("copied");
 		} catch {
 			setCopyState("error");
@@ -270,9 +313,15 @@ export function AgentErrorBlock({ content }: { content: string }) {
 export function CollapsibleError({
 	content,
 	maxLines = 5,
+	contentRef,
+	sessionId,
+	summary,
 }: {
 	content: string;
 	maxLines?: number;
+	contentRef?: ToolOutputRef;
+	sessionId?: string;
+	summary?: ToolOutputSummary;
 }) {
 	const [isExpanded, setIsExpanded] = useState(false);
 	return (
@@ -289,7 +338,13 @@ export function CollapsibleError({
 				<span className="text-destructive">Error</span>
 			</button>
 			{isExpanded && (
-				<CopyableToolResult content={content} maxLines={maxLines} />
+				<CopyableToolResult
+					content={content}
+					maxLines={maxLines}
+					contentRef={contentRef}
+					sessionId={sessionId}
+					summary={summary}
+				/>
 			)}
 		</div>
 	);
@@ -300,25 +355,108 @@ function CopyableToolResult({
 	maxLines = 5,
 	className = "max-h-48",
 	terminal = false,
+	contentRef,
+	sessionId,
+	summary,
 }: {
 	content: string;
 	maxLines?: number;
 	className?: string;
 	terminal?: boolean;
+	contentRef?: ToolOutputRef;
+	sessionId?: string;
+	summary?: ToolOutputSummary;
 }) {
+	const [fullContent, setFullContent] = useState<string | null>(null);
+	const [loadFailed, setLoadFailed] = useState(false);
+	const [isLoadingFullContent, setIsLoadingFullContent] = useState(false);
+	const loadRequestRef = useRef(0);
+	const contentRefId = contentRef?.id;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: contentRefId/sessionId changes intentionally reset loaded full-content state.
+	useEffect(() => {
+		loadRequestRef.current += 1;
+		setFullContent(null);
+		setLoadFailed(false);
+		setIsLoadingFullContent(false);
+	}, [contentRefId, sessionId]);
+	const loadFullContent = useCallback(async () => {
+		if (fullContent !== null) return fullContent;
+		if (!contentRefId || !sessionId) return content;
+
+		const requestId = loadRequestRef.current + 1;
+		loadRequestRef.current = requestId;
+		setIsLoadingFullContent(true);
+		setLoadFailed(false);
+		try {
+			const result = await getSessionToolOutput(sessionId, contentRefId);
+			const loadedContent = result?.content ?? null;
+			if (loadRequestRef.current === requestId) {
+				setFullContent(loadedContent);
+				setLoadFailed(!result);
+			}
+			return loadedContent;
+		} catch {
+			if (loadRequestRef.current === requestId) {
+				setFullContent(null);
+				setLoadFailed(true);
+			}
+			return null;
+		} finally {
+			if (loadRequestRef.current === requestId) {
+				setIsLoadingFullContent(false);
+			}
+		}
+	}, [content, contentRefId, fullContent, sessionId]);
+	const canLoadFullContent = Boolean(contentRefId && sessionId);
+	const displayContent = fullContent ?? content;
+	const renderedContent =
+		canLoadFullContent && fullContent === null && displayContent.trim() === ""
+			? toolOutputPlaceholder(summary, contentRef)
+			: displayContent;
+	const contentPaddingClass =
+		canLoadFullContent && fullContent === null ? "pr-14" : "pr-8";
 	return (
 		<div className="relative mt-1 ml-4">
-			<div className="absolute right-1 top-1">
-				<SmallCopyButton content={content} ariaLabel="Copy tool result" />
+			<div className="absolute right-1 top-1 flex items-center gap-0.5">
+				{canLoadFullContent && fullContent === null && (
+					<button
+						type="button"
+						className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
+						aria-label="Load full tool result"
+						title="Load full tool result"
+						disabled={isLoadingFullContent}
+						onClick={loadFullContent}
+					>
+						{isLoadingFullContent ? (
+							<Loader2 className="size-3.5 animate-spin" />
+						) : (
+							<Download className="size-3.5" />
+						)}
+					</button>
+				)}
+				<SmallCopyButton
+					content={displayContent}
+					ariaLabel="Copy tool result"
+					loadContent={canLoadFullContent ? loadFullContent : undefined}
+				/>
 			</div>
+			{loadFailed && (
+				<div
+					role="status"
+					className="mb-1 flex items-center gap-1 text-[11px] text-destructive"
+				>
+					<AlertCircle className="size-3 shrink-0" />
+					<span>Full output unavailable</span>
+				</div>
+			)}
 			<pre
-				className={`whitespace-pre-wrap break-words overflow-hidden overflow-y-auto pr-8 ${
+				className={`whitespace-pre-wrap break-words overflow-hidden overflow-y-auto ${contentPaddingClass} ${
 					terminal
-						? "rounded bg-zinc-950 px-2 py-1.5 font-mono text-[11px] text-zinc-100"
+						? "rounded bg-zinc-950 pl-2 py-1.5 font-mono text-[11px] text-zinc-100"
 						: "text-[11px] text-muted-foreground/70"
 				} ${className}`}
 			>
-				{truncateResult(content, maxLines)}
+				{truncateResult(renderedContent, maxLines)}
 			</pre>
 		</div>
 	);
@@ -460,10 +598,11 @@ function useToolActivityPresentation(
 
 interface ToolActivityProps {
 	entry: Extract<ActivityEntry, { type: "tool_use" }>;
-	result?: Extract<ActivityEntry, { type: "tool_result" }>;
+	results?: Extract<ActivityEntry, { type: "tool_result" }>[];
 	index: number;
 	isExecuting?: boolean;
 	basePath?: string;
+	sessionId?: string;
 	presentation?: AgentToolActivityPresentation;
 	onOpenDiffFile?: (filePath: string) => void;
 }
@@ -514,10 +653,11 @@ function ToolActivityHeader({
 
 export function ToolActivity({
 	entry,
-	result,
+	results,
 	index,
 	isExecuting,
 	basePath,
+	sessionId,
 	onOpenDiffFile,
 }: ToolActivityProps) {
 	const presentation = useToolActivityPresentation(entry, basePath);
@@ -525,7 +665,13 @@ export function ToolActivity({
 	const expansionKey = `tool:${entry.id || `${index}:${entry.tool}:${stableSerialize(entry.input)}`}`;
 	const [isExpanded, setIsExpanded] =
 		usePersistentActivityExpansion(expansionKey);
-	const hasResult = result && result.content.trim().length > 0;
+	const resultItems = results ?? [];
+	const primaryResult = resultItems[0];
+	const visibleResults = resultItems.filter(
+		(result) =>
+			result.content.trim().length > 0 || result.contentRef !== undefined,
+	);
+	const hasResult = visibleResults.length > 0;
 	const hasInput = Object.keys(entry.input).length > 0;
 	const isCommand = category === "command";
 	const isWrite = category === "write";
@@ -547,7 +693,9 @@ export function ToolActivity({
 						? Plug
 						: FileText;
 	const exitCode =
-		hasResult && isCommand ? extractExitCode(result.content) : null;
+		hasResult && isCommand
+			? extractExitCode(visibleResults.map((result) => result.content).join(""))
+			: null;
 	const meta =
 		isCommand && exitCode !== null ? (
 			<span className="rounded border border-border px-1">exit {exitCode}</span>
@@ -563,13 +711,21 @@ export function ToolActivity({
 				icon={Icon}
 				label={presentation.label}
 				meta={meta}
-				result={result}
+				result={primaryResult}
 			/>
-			{result?.isError && hasResult ? (
-				<CollapsibleError
-					content={result.content}
-					maxLines={isCommand ? 20 : 5}
-				/>
+			{visibleResults.some((result) => result.isError) ? (
+				visibleResults.map((result) =>
+					result.isError ? (
+						<CollapsibleError
+							key={`${entry.id}-error-${toolResultRenderKey(result)}`}
+							content={result.content}
+							maxLines={isCommand ? 20 : 5}
+							contentRef={result.contentRef}
+							sessionId={sessionId}
+							summary={result.summary}
+						/>
+					) : null,
+				)
 			) : isExpanded ? (
 				<>
 					{isCommand && (
@@ -601,14 +757,18 @@ export function ToolActivity({
 							{JSON.stringify(entry.input, null, 2)}
 						</pre>
 					)}
-					{hasResult && (
+					{visibleResults.map((result) => (
 						<CopyableToolResult
+							key={`${entry.id}-result-${toolResultRenderKey(result)}`}
 							content={result.content}
 							maxLines={isCommand ? 20 : 5}
 							className={isCommand ? "max-h-64" : "max-h-48"}
 							terminal={isCommand}
+							contentRef={result.contentRef}
+							sessionId={sessionId}
+							summary={result.summary}
 						/>
-					)}
+					))}
 				</>
 			) : null}
 		</div>
@@ -618,9 +778,11 @@ export function ToolActivity({
 export function ActivityItem({
 	entry,
 	index,
+	sessionId,
 }: {
 	entry: ActivityEntry;
 	index: number;
+	sessionId?: string;
 }) {
 	const [isExpanded, setIsExpanded] = useState(false);
 
@@ -639,11 +801,17 @@ export function ActivityItem({
 	}
 
 	if (entry.type === "tool_result") {
-		const hasContent = entry.content.trim().length > 0;
+		const hasContent =
+			entry.content.trim().length > 0 || entry.contentRef !== undefined;
 		if (entry.isError && hasContent) {
 			return (
 				<div data-testid={`activity-tool-result-${index}`}>
-					<CollapsibleError content={entry.content} />
+					<CollapsibleError
+						content={entry.content}
+						contentRef={entry.contentRef}
+						sessionId={sessionId}
+						summary={entry.summary}
+					/>
 				</div>
 			);
 		}
@@ -666,7 +834,13 @@ export function ActivityItem({
 					<span className="text-muted-foreground/70">{label}</span>
 				)}
 				{isExpanded && hasContent && (
-					<CopyableToolResult content={entry.content} className="max-h-48" />
+					<CopyableToolResult
+						content={entry.content}
+						className="max-h-48"
+						contentRef={entry.contentRef}
+						sessionId={sessionId}
+						summary={entry.summary}
+					/>
 				)}
 			</div>
 		);
@@ -678,9 +852,13 @@ export function ActivityItem({
 interface TaskToolActivityProps {
 	group: TaskGroup;
 	parts: MessagePart[];
-	pairedResults: Map<number, Extract<MessagePart, { type: "tool_result" }>>;
+	pairedResultGroups?: Map<
+		number,
+		Extract<MessagePart, { type: "tool_result" }>[]
+	>;
 	isStreaming: boolean;
 	basePath?: string;
+	sessionId?: string;
 	onOpenDiffFile?: (filePath: string) => void;
 }
 
@@ -728,9 +906,10 @@ function taskStatusClass(status: string) {
 export function TaskToolActivity({
 	group,
 	parts,
-	pairedResults,
+	pairedResultGroups,
 	isStreaming,
 	basePath,
+	sessionId,
 	onOpenDiffFile,
 }: TaskToolActivityProps) {
 	const [isExpanded, setIsExpanded] = usePersistentActivityExpansion(
@@ -800,16 +979,17 @@ export function TaskToolActivity({
 									</div>
 								) : null;
 							case "tool_use": {
-								const result = pairedResults.get(ci);
-								const executing = isRunning && !result;
+								const results = pairedResultGroups?.get(ci);
+								const executing = isRunning && !results?.length;
 								return (
 									<div key={key}>
 										<ToolActivity
 											entry={child}
-											result={result}
+											results={results}
 											index={ci}
 											isExecuting={executing}
 											basePath={basePath}
+											sessionId={sessionId}
 											onOpenDiffFile={onOpenDiffFile}
 										/>
 									</div>

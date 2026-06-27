@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::usecase::agent_session::session::{ContextCarryState, MessagePart};
+use crate::usecase::agent_session::session::{
+    ContextCarryState, MessagePart, ToolOutputRef, ToolOutputSummary,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -76,6 +78,23 @@ pub struct AgentStreamAttachmentRefMsg {
     pub byte_size: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentToolOutputRefMsg {
+    pub id: String,
+    pub byte_size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentToolOutputSummaryMsg {
+    pub line_count: u64,
+    pub byte_size: u64,
+    pub is_error: bool,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentStreamPartMsg {
@@ -120,6 +139,14 @@ pub enum AgentStreamPartMsg {
             rename = "parentToolUseId"
         )]
         parent_tool_use_id: Option<String>,
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            default,
+            rename = "contentRef"
+        )]
+        content_ref: Option<AgentToolOutputRefMsg>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        summary: Option<AgentToolOutputSummaryMsg>,
     },
     Error {
         content: String,
@@ -174,6 +201,26 @@ pub enum AgentStreamPartMsg {
     },
 }
 
+impl From<ToolOutputRef> for AgentToolOutputRefMsg {
+    fn from(content_ref: ToolOutputRef) -> Self {
+        Self {
+            id: content_ref.id,
+            byte_size: content_ref.byte_size,
+        }
+    }
+}
+
+impl From<ToolOutputSummary> for AgentToolOutputSummaryMsg {
+    fn from(summary: ToolOutputSummary) -> Self {
+        Self {
+            line_count: summary.line_count,
+            byte_size: summary.byte_size,
+            is_error: summary.is_error,
+            truncated: summary.truncated,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentStreamSync {
     pub session_id: String,
@@ -197,6 +244,20 @@ pub struct ResyncStreamReq {
     pub message_id: String,
     #[serde(default)]
     pub since_seq: u64,
+}
+
+#[cfg(test)]
+// Test-only mirror of the usecase-layer ToolResult merge predicate for protocol
+// message DTOs; production code must use the usecase helper.
+fn tool_result_refs_can_merge(
+    existing: &Option<AgentToolOutputRefMsg>,
+    incoming: &Option<AgentToolOutputRefMsg>,
+) -> bool {
+    match (existing, incoming) {
+        (Some(existing), Some(incoming)) => existing.id == incoming.id,
+        (Some(_), None) => false,
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -244,27 +305,39 @@ pub fn append_agent_stream_delta_parts(
                 is_error,
                 tool_use_id: Some(tool_use_id),
                 parent_tool_use_id,
+                content_ref,
+                summary,
             } => {
                 if let Some(existing) = current_parts.iter_mut().rev().find(|existing| {
-                    matches!(
-                        existing,
-                        AgentStreamPartMsg::ToolResult {
-                            tool_use_id: Some(existing_id),
-                            ..
-                        } if existing_id == tool_use_id
-                    )
+                    let AgentStreamPartMsg::ToolResult {
+                        tool_use_id: Some(existing_id),
+                        content_ref: existing_content_ref,
+                        ..
+                    } = existing
+                    else {
+                        return false;
+                    };
+                    existing_id == tool_use_id
+                        && tool_result_refs_can_merge(existing_content_ref, content_ref)
                 }) {
                     if let AgentStreamPartMsg::ToolResult {
                         content: existing_content,
                         is_error: existing_error,
                         parent_tool_use_id: existing_parent,
+                        content_ref: existing_content_ref,
+                        summary: existing_summary,
                         ..
                     } = existing
                     {
                         if existing_parent.is_none() {
                             *existing_parent = parent_tool_use_id.clone();
                         }
-                        if *existing_error && !*is_error {
+                        if content_ref.is_some() {
+                            *existing_content = content.clone();
+                            *existing_error = *is_error;
+                            *existing_content_ref = content_ref.clone();
+                            *existing_summary = summary.clone();
+                        } else if *existing_error && !*is_error {
                             *existing_content = content.clone();
                             *existing_error = false;
                         } else if content.contains(existing_content.as_str())
@@ -275,6 +348,9 @@ pub fn append_agent_stream_delta_parts(
                             existing_content.push_str(content);
                         }
                         *existing_error = *existing_error || *is_error;
+                        if summary.is_some() {
+                            *existing_summary = summary.clone();
+                        }
                     }
                 } else {
                     current_parts.push(part.clone());
@@ -389,11 +465,15 @@ impl From<MessagePart> for AgentStreamPartMsg {
                 is_error,
                 tool_use_id,
                 parent_tool_use_id,
+                content_ref,
+                summary,
             } => Self::ToolResult {
                 content,
                 is_error,
                 tool_use_id,
                 parent_tool_use_id,
+                content_ref: content_ref.map(Into::into),
+                summary: summary.map(Into::into),
             },
             MessagePart::Error {
                 content,
@@ -550,6 +630,134 @@ mod tests {
     }
 
     #[test]
+    fn agent_stream_delta_serializes_tool_result_ref_without_full_tail() {
+        let full_tail = "USER_SECRET_TAIL";
+        let output_id = "a".repeat(64);
+        let delta = AgentStreamDeltaMsg {
+            session_id: "session-1".to_string(),
+            message_id: "message-1".to_string(),
+            seq: 9,
+            parts: vec![AgentStreamPartMsg::ToolResult {
+                content: "preview only".to_string(),
+                is_error: true,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+                content_ref: Some(AgentToolOutputRefMsg {
+                    id: output_id.clone(),
+                    byte_size: 4096,
+                }),
+                summary: Some(AgentToolOutputSummaryMsg {
+                    line_count: 1200,
+                    byte_size: 4096,
+                    is_error: true,
+                    truncated: true,
+                }),
+            }],
+        };
+
+        let json = serde_json::to_string(&delta).unwrap();
+
+        assert!(json.contains("\"contentRef\""));
+        assert!(json.contains(&output_id));
+        assert!(json.contains("preview only"));
+        assert!(!json.contains(full_tail));
+        let roundtrip: AgentStreamDeltaMsg = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            &roundtrip.parts[0],
+            AgentStreamPartMsg::ToolResult {
+                content,
+                content_ref: Some(content_ref),
+                summary: Some(summary),
+                ..
+            } if content == "preview only"
+                && content_ref.id == output_id
+                && summary.truncated
+                && summary.byte_size == 4096
+        ));
+    }
+
+    #[test]
+    fn agent_stream_sync_serializes_tool_result_ref_without_full_tail() {
+        let full_tail = "USER_SECRET_TAIL";
+        let output_id = "b".repeat(64);
+        let sync = AgentStreamSync {
+            session_id: "session-1".to_string(),
+            message_id: "message-1".to_string(),
+            seq: 10,
+            parts: vec![AgentStreamPartMsg::ToolResult {
+                content: "sync preview".to_string(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+                content_ref: Some(AgentToolOutputRefMsg {
+                    id: output_id.clone(),
+                    byte_size: 8192,
+                }),
+                summary: Some(AgentToolOutputSummaryMsg {
+                    line_count: 1500,
+                    byte_size: 8192,
+                    is_error: false,
+                    truncated: true,
+                }),
+            }],
+        };
+
+        let json = serde_json::to_string(&sync).unwrap();
+
+        assert!(json.contains("\"contentRef\""));
+        assert!(json.contains(&output_id));
+        assert!(json.contains("sync preview"));
+        assert!(!json.contains(full_tail));
+        let roundtrip: AgentStreamSync = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            &roundtrip.parts[0],
+            AgentStreamPartMsg::ToolResult {
+                content,
+                content_ref: Some(content_ref),
+                summary: Some(summary),
+                ..
+            } if content == "sync preview"
+                && content_ref.id == output_id
+                && summary.truncated
+                && summary.byte_size == 8192
+        ));
+    }
+
+    #[test]
+    fn agent_stream_sync_from_snapshot_copies_parts_without_projection() {
+        let full_tail = "PROTOCOL_LAYER_COPY_TAIL";
+        let content = format!(
+            "{}{full_tail}",
+            "x".repeat(crate::usecase::agent_session::session::MAX_TOOL_OUTPUT_BYTES + 1)
+        );
+        let snapshot = crate::usecase::agent_session::session::StreamResyncSnapshot {
+            session_id: "session-1".to_string(),
+            message_id: "message-1".to_string(),
+            seq: 11,
+            parts: vec![MessagePart::ToolResult {
+                content: content.clone(),
+                is_error: false,
+                tool_use_id: Some("tool-1".to_string()),
+                parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
+            }],
+        };
+
+        let sync: AgentStreamSync = snapshot.into();
+
+        assert!(matches!(
+            &sync.parts[0],
+            AgentStreamPartMsg::ToolResult {
+                content: dto_content,
+                content_ref: None,
+                summary: None,
+                ..
+            } if dto_content == &content && dto_content.contains(full_tail)
+        ));
+    }
+
+    #[test]
     fn append_agent_stream_delta_parts_updates_existing_non_tail_parts() {
         let mut parts = vec![
             AgentStreamPartMsg::ToolUse {
@@ -644,6 +852,8 @@ mod tests {
             is_error: true,
             tool_use_id: Some("tool-1".to_string()),
             parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
         }];
 
         append_agent_stream_delta_parts(
@@ -653,6 +863,8 @@ mod tests {
                 is_error: false,
                 tool_use_id: Some("tool-1".to_string()),
                 parent_tool_use_id: Some("parent-1".to_string()),
+                content_ref: None,
+                summary: None,
             }],
         );
 
@@ -663,6 +875,8 @@ mod tests {
                 is_error: false,
                 tool_use_id: Some("tool-1".to_string()),
                 parent_tool_use_id: Some("parent-1".to_string()),
+                content_ref: None,
+                summary: None,
             }]
         );
     }
@@ -676,12 +890,16 @@ mod tests {
                 is_error: false,
                 tool_use_id: Some("tool-1".to_string()),
                 parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
             },
             AgentStreamPartMsg::ToolResult {
                 content: String::new(),
                 is_error: false,
                 tool_use_id: Some("tool-2".to_string()),
                 parent_tool_use_id: None,
+                content_ref: None,
+                summary: None,
             },
         ];
 
@@ -693,12 +911,16 @@ mod tests {
                     is_error: false,
                     tool_use_id: Some("tool-1".to_string()),
                     parent_tool_use_id: None,
+                    content_ref: None,
+                    summary: None,
                 },
                 AgentStreamPartMsg::ToolResult {
                     content: "first content".to_string(),
                     is_error: false,
                     tool_use_id: Some("tool-2".to_string()),
                     parent_tool_use_id: None,
+                    content_ref: None,
+                    summary: None,
                 },
             ],
         );
@@ -711,15 +933,54 @@ mod tests {
                     is_error: false,
                     tool_use_id: Some("tool-1".to_string()),
                     parent_tool_use_id: None,
+                    content_ref: None,
+                    summary: None,
                 },
                 AgentStreamPartMsg::ToolResult {
                     content: "first content".to_string(),
                     is_error: false,
                     tool_use_id: Some("tool-2".to_string()),
                     parent_tool_use_id: None,
+                    content_ref: None,
+                    summary: None,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn append_agent_stream_delta_parts_keeps_ref_backed_tool_result_separate() {
+        let content_ref = AgentToolOutputRefMsg {
+            id: "a".repeat(64),
+            byte_size: 4096,
+        };
+        let summary = AgentToolOutputSummaryMsg {
+            line_count: 200,
+            byte_size: 4096,
+            is_error: false,
+            truncated: true,
+        };
+        let base = AgentStreamPartMsg::ToolResult {
+            content: "preview".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+            content_ref: Some(content_ref),
+            summary: Some(summary),
+        };
+        let delta = AgentStreamPartMsg::ToolResult {
+            content: " late".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
+        };
+        let mut parts = vec![base.clone()];
+
+        append_agent_stream_delta_parts(&mut parts, std::slice::from_ref(&delta));
+
+        assert_eq!(parts, vec![base, delta]);
     }
 
     #[test]
