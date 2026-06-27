@@ -1802,6 +1802,9 @@ mod tests {
                     stale_timeout_secs,
                 },
             ),
+            workflow_instructions: Vec::new(),
+            agent_read_paths: None,
+            context_epoch: None,
             first_message_preview: String::new(),
             message_count: 0,
             body_format_version:

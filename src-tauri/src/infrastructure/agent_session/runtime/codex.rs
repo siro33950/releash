@@ -2043,6 +2043,7 @@ mod tests {
             permission_mode: "edit".to_string(),
             plan_mode: false,
             permission_profile_id: None,
+            system_prompt: None,
             editor_context: None,
         };
 

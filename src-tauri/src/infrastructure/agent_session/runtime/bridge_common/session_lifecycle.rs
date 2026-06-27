@@ -193,6 +193,26 @@ fn build_internal_turn_system_prompt(
     )
 }
 
+#[cfg(test)]
+pub(crate) fn internal_turn_system_prompt_fingerprint_for_test(
+    branch_diff_context: Option<&dyn BranchDiffContextPort>,
+    session_store: &SessionStore,
+    data_dir: &Path,
+    chat_session_id: &str,
+    base_system_prompt: Option<String>,
+    workflow_instructions: Vec<String>,
+) -> Result<Option<String>, String> {
+    let system_prompt = build_internal_turn_system_prompt(
+        branch_diff_context,
+        session_store,
+        data_dir,
+        chat_session_id,
+        base_system_prompt,
+        workflow_instructions,
+    )?;
+    Ok(runtime_system_prompt_fingerprint(system_prompt.as_deref()))
+}
+
 pub(super) struct StartedTurnPrompt {
     pub(crate) message_id: String,
     pub(crate) prompt: PromptInput,
@@ -1369,6 +1389,7 @@ pub(super) async fn start_codex_backend_turn<R: tauri::Runtime>(
     .map_err(|error| error.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn start_codex_backend_turn_runtime<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     chat_session_id: &str,
@@ -2959,6 +2980,9 @@ mod moved_tests {
             parent_step_name: None,
             parent_run_index: None,
             order: 0,
+            startup_timeout_secs: None,
+            startup_max_retries: None,
+            stale_timeout_secs: None,
         });
         store
             .save_full_session_for_migration_or_restore(temp.path(), &session)

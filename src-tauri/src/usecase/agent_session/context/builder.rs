@@ -1015,6 +1015,9 @@ mod tests {
             parent_step_name: None,
             parent_run_index: None,
             order: 0,
+            startup_timeout_secs: None,
+            startup_max_retries: None,
+            stale_timeout_secs: None,
         })
         .expect("workflow state dto serializes");
 

@@ -171,6 +171,31 @@ fn chat_session_for_test(
     }
 }
 
+async fn insert_ready_agent_process_for_internal_turn_test(
+    handles: &Arc<
+        tokio::sync::Mutex<
+            crate::infrastructure::agent_session::runtime::bridge_common::AgentProcessMap,
+        >,
+    >,
+    session_store: &Arc<SessionStore>,
+    data_dir: &std::path::Path,
+    session_id: &str,
+) {
+    let mut proc =
+        crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process();
+    proc.system_prompt_fingerprint =
+        crate::infrastructure::agent_session::runtime::bridge_common::internal_turn_system_prompt_fingerprint_for_test(
+            None,
+            session_store,
+            data_dir,
+            session_id,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+    handles.lock().await.insert(session_id.to_string(), proc);
+}
+
 fn chat_session_with_message_for_test(
     id: &str,
     worktree_path: &str,
@@ -10194,10 +10219,13 @@ mod dispatch_boundary_tests {
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )
             .unwrap();
-        handles.lock().await.insert(
-            session_id.to_string(),
-            crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process(),
-        );
+        insert_ready_agent_process_for_internal_turn_test(
+            &handles,
+            &session_store,
+            &data_dir,
+            session_id,
+        )
+        .await;
 
         submit_output_for_test_with_deps(
             &engine,
@@ -10271,10 +10299,13 @@ mod dispatch_boundary_tests {
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )
             .unwrap();
-        handles.lock().await.insert(
-            session_id.to_string(),
-            crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process(),
-        );
+        insert_ready_agent_process_for_internal_turn_test(
+            &handles,
+            &session_store,
+            &data_dir,
+            session_id,
+        )
+        .await;
         let pending = crate::adaptor::gateway::workflow::pending_command::PendingCommand::new(
             run_id.clone(),
             crate::adaptor::gateway::workflow::pending_command::CliRequestPayload::SubmitOutput {
@@ -10735,10 +10766,13 @@ mod dispatch_boundary_tests {
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )
             .unwrap();
-        handles.lock().await.insert(
-            session_id.to_string(),
-            crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process(),
-        );
+        insert_ready_agent_process_for_internal_turn_test(
+            &handles,
+            &session_store,
+            &data_dir,
+            session_id,
+        )
+        .await;
 
         engine
             .handle_missing_required_output(
@@ -11034,10 +11068,13 @@ mod dispatch_boundary_tests {
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )
             .unwrap();
-        handles.lock().await.insert(
-            session_id.to_string(),
-            crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process(),
-        );
+        insert_ready_agent_process_for_internal_turn_test(
+            &handles,
+            &session_store,
+            &data_dir,
+            session_id,
+        )
+        .await;
 
         engine
             .handle_missing_required_output(

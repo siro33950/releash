@@ -3093,6 +3093,9 @@ mod workflow_step_context_meta_tests {
             parent_step_name: None,
             parent_run_index: None,
             order: 0,
+            startup_timeout_secs: None,
+            startup_max_retries: None,
+            stale_timeout_secs: None,
         });
 
         let dto_json = serde_json::to_string(&dto).expect("serialize dto");
