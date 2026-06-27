@@ -1,5 +1,5 @@
-use crate::protocol::AgentStreamSync;
-use crate::protocol::{AgentStreamDeltaMsg, AgentStreamPartMsg, WsMessage};
+use crate::adaptor::protocol::AgentStreamSync;
+use crate::adaptor::protocol::{AgentStreamDeltaMsg, AgentStreamPartMsg, WsMessage};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, Notify};
@@ -328,10 +328,11 @@ mod tests {
         broadcaster.set_sender(Some(tx));
         drop(rx);
 
-        let sent = broadcaster.send_without_buffer(WsMessage::Error(crate::protocol::ErrorMsg {
-            code: "X".to_string(),
-            message: "x".to_string(),
-        }));
+        let sent =
+            broadcaster.send_without_buffer(WsMessage::Error(crate::adaptor::protocol::ErrorMsg {
+                code: "X".to_string(),
+                message: "x".to_string(),
+            }));
         assert!(
             !sent,
             "send must return false when the receiver has been dropped"
@@ -344,10 +345,11 @@ mod tests {
         // caller (PTY replay path) treat the absence of a subscriber as a
         // benign no-op instead of an error.
         let broadcaster = WsBroadcaster::default();
-        let sent = broadcaster.send_without_buffer(WsMessage::Error(crate::protocol::ErrorMsg {
-            code: "X".to_string(),
-            message: "x".to_string(),
-        }));
+        let sent =
+            broadcaster.send_without_buffer(WsMessage::Error(crate::adaptor::protocol::ErrorMsg {
+                code: "X".to_string(),
+                message: "x".to_string(),
+            }));
         assert!(
             sent,
             "send must return true when no sender is registered (no client to satisfy)"
@@ -360,7 +362,7 @@ mod tests {
             message_id: message.to_string(),
             seq,
             parts: (0..n)
-                .map(|i| crate::protocol::AgentStreamPartMsg::Text {
+                .map(|i| crate::adaptor::protocol::AgentStreamPartMsg::Text {
                     content: format!("p{i}"),
                     parent_tool_use_id: None,
                 })
@@ -378,7 +380,7 @@ mod tests {
             session_id: session.to_string(),
             message_id: message.to_string(),
             seq,
-            parts: vec![crate::protocol::AgentStreamPartMsg::Text {
+            parts: vec![crate::adaptor::protocol::AgentStreamPartMsg::Text {
                 content: content.to_string(),
                 parent_tool_use_id: None,
             }],
@@ -433,11 +435,11 @@ mod tests {
                 is_error: false,
                 tool_use_id: Some("tool-1".to_string()),
                 parent_tool_use_id: None,
-                content_ref: Some(crate::protocol::AgentToolOutputRefMsg {
+                content_ref: Some(crate::adaptor::protocol::AgentToolOutputRefMsg {
                     id: output_id.clone(),
                     byte_size: 4096,
                 }),
-                summary: Some(crate::protocol::AgentToolOutputSummaryMsg {
+                summary: Some(crate::adaptor::protocol::AgentToolOutputSummaryMsg {
                     line_count: 1200,
                     byte_size: 4096,
                     is_error: false,

@@ -15,7 +15,6 @@ mod notion;
 mod other;
 mod path_aliases;
 mod permission;
-mod protocol;
 mod review_comments;
 #[cfg(test)]
 mod test_support;

@@ -1381,15 +1381,17 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
     match msg_type {
         "supported_commands" => {
             let commands = supported_commands_from_bridge_message(&msg);
-            let payload = crate::protocol::AgentSupportedCommandsUpdated {
+            let payload = crate::adaptor::protocol::AgentSupportedCommandsUpdated {
                 chat_session_id: chat_session_id.to_string(),
                 commands: commands
                     .into_iter()
-                    .map(|command| crate::protocol::AgentSupportedCommandMsg {
-                        name: command.name,
-                        description: command.description,
-                        argument_hint: command.argument_hint,
-                    })
+                    .map(
+                        |command| crate::adaptor::protocol::AgentSupportedCommandMsg {
+                            name: command.name,
+                            description: command.description,
+                            argument_hint: command.argument_hint,
+                        },
+                    )
                     .collect(),
             };
             let _ = app.emit("agent-supported-commands-updated", &payload);

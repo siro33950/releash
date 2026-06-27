@@ -557,7 +557,7 @@ pub async fn resync_streaming_message(
     session_id: String,
     message_id: String,
     since_seq: u64,
-) -> Result<Option<crate::protocol::AgentStreamSync>, String> {
+) -> Result<Option<crate::adaptor::protocol::AgentStreamSync>, String> {
     crate::usecase::agent_session::session::resync_streaming_message(
         read_model.inner().as_ref(),
         &session_id,

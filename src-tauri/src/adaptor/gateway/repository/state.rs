@@ -6,7 +6,7 @@ use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent};
 use tauri::{Emitter, Runtime};
 
-use crate::protocol::{BranchCardMsg, BranchListSync, WsMessage};
+use crate::adaptor::protocol::{BranchCardMsg, BranchListSync, WsMessage};
 use crate::usecase::agent_session::context::invalidate_instruction_resolution_cache_for_path;
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
