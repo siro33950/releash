@@ -22,6 +22,7 @@ use crate::adaptor::gateway::code::staging::StagingGateway;
 use crate::adaptor::gateway::comment::{
     FileReviewEventStore, SystemReviewClock, UuidReviewIdGenerator,
 };
+use crate::adaptor::gateway::git_host::{GitHubGitHostGateway, InMemoryTtlCache};
 #[cfg(test)]
 use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
 use crate::adaptor::gateway::repository::branch::BranchGateway;
@@ -48,6 +49,7 @@ use crate::domain::agent_session::SkillEntry;
 use crate::domain::app_config::{ConfigRepository, ConfigSecretRepository};
 #[cfg(test)]
 use crate::domain::code::CodeError;
+use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
 use crate::infrastructure::agent_session::codex_fuzzy_file_search_gateway::TauriCodexFuzzyFileSearchGateway;
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
@@ -68,6 +70,7 @@ use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::comment::{
     ReviewClock, ReviewCommentUsecase, ReviewEventStore, ReviewIdGenerator,
 };
+use crate::usecase::git_host::GitHostUsecase;
 #[cfg(test)]
 use crate::usecase::pty_session::read_usecase::PtySessionReadUsecase;
 use crate::usecase::repository_query_service::RepositoryQueryService;
@@ -92,6 +95,15 @@ pub(crate) fn build_repository_usecase() -> RepositoryUsecase {
         Arc::new(GitConfigGateway),
         Arc::new(RepoLocatorGateway),
         query,
+    )
+}
+
+pub(crate) fn build_git_host_usecase() -> GitHostUsecase {
+    let ttl = CacheTtl::from_secs(30);
+    GitHostUsecase::new(
+        Arc::new(GitHubGitHostGateway::default()),
+        Arc::new(InMemoryTtlCache::<PrStatus>::new(ttl)),
+        Arc::new(InMemoryTtlCache::<Vec<IssueInfo>>::new(ttl)),
     )
 }
 

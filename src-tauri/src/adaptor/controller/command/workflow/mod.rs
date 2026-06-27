@@ -2432,6 +2432,9 @@ mod tests {
             pty_session_read_usecase: Arc::new(
                 crate::adaptor::controller::wiring::build_pty_session_read_usecase_for_tests(),
             ),
+            git_host_usecase: Arc::new(
+                crate::adaptor::controller::wiring::build_git_host_usecase(),
+            ),
         });
         (app, engine, data_dir)
     }

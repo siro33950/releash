@@ -3,6 +3,7 @@ pub(crate) mod app_config;
 pub(crate) mod code;
 pub(crate) mod comment;
 pub(crate) mod external_editor;
+pub(crate) mod git_host;
 pub(crate) mod hooks;
 pub(crate) mod notification;
 pub(crate) mod pty_session;
