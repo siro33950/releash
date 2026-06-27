@@ -159,7 +159,7 @@ impl BranchDiffQuery for BranchDiffGateway {
 #[cfg(test)]
 mod branch_diff_gateway_tests {
     use super::*;
-    use crate::git::test_helpers::*;
+    use crate::test_support::git::*;
     use git2::build::CheckoutBuilder;
 
     fn repo_path_str(repo: &Repository) -> String {

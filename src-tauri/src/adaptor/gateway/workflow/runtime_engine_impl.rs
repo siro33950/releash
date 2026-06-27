@@ -76,6 +76,7 @@ use crate::adaptor::gateway::workflow::step_settings::resolve_step_settings;
 use crate::adaptor::gateway::workflow::step_settings::ResolvedStepSettings;
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::adaptor::gateway::workflow::turn_completion;
+use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::failure_policy::{
     ParallelFailurePolicy, ParallelPropagation, RepairDecision, RetryPolicy,
@@ -92,7 +93,6 @@ use crate::domain::workflow::{
     FailureClassification, FailureDisposition, WorkflowStepFailureKind, STEP_STATE_FAILED,
 };
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
-use crate::permission::PermissionMode;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::SessionStore;
 use crate::usecase::agent_session::status::current_timestamp;
@@ -456,7 +456,7 @@ impl WorkflowRuntimeService {
                 step_history: Vec::new(),
                 workflow_defaults: WorkflowDefaults {
                     backend_id: None,
-                    permission_mode: crate::permission::PermissionMode::EDIT.to_string(),
+                    permission_mode: crate::domain::agent_session::PermissionMode::EDIT.to_string(),
                 },
                 worktree_path,
                 started_at: now,
@@ -613,7 +613,7 @@ impl WorkflowRuntimeService {
             task,
             WorkflowDefaults {
                 backend_id: None,
-                permission_mode: crate::permission::PermissionMode::EDIT.to_string(),
+                permission_mode: crate::domain::agent_session::PermissionMode::EDIT.to_string(),
             },
             now,
         )
@@ -766,7 +766,7 @@ impl WorkflowRuntimeService {
         // Spec issues-1011 finding 5/8: 並行起動でも parent ChatSession を孤立させないために
         // Run Store reservation を「最初の副作用」にする。reservation が失敗（同一 worktree
         // への並行起動）した場合は AlreadyActive として返り、他の副作用は走らない。
-        let data_dir = crate::app_data_dir::resolve_data_dir(app)
+        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let now = current_timestamp();
         let run_id = self
@@ -984,7 +984,7 @@ impl WorkflowRuntimeService {
         run_id: &str,
         request_id: &str,
     ) -> Result<bool, WorkflowEngineError> {
-        let data_dir = crate::app_data_dir::resolve_data_dir(app)
+        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
             .map_err(WorkflowEngineError::SessionStore)?;
         request_event_already_recorded(
             &data_dir,
@@ -1282,7 +1282,7 @@ impl WorkflowRuntimeService {
         run_id: &str,
         request_id: &str,
     ) -> Result<bool, WorkflowEngineError> {
-        let data_dir = crate::app_data_dir::resolve_data_dir(app)
+        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
             .map_err(WorkflowEngineError::SessionStore)?;
         request_event_already_recorded(
             &data_dir,
@@ -1320,7 +1320,7 @@ impl WorkflowRuntimeService {
             .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
         workflow_external_restore::validate_run_record_for_external_restore(run_id, &run)?;
 
-        let data_dir = crate::app_data_dir::resolve_data_dir(app)
+        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
             .map_err(WorkflowEngineError::SessionStore)?;
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(run_id)
@@ -2791,8 +2791,10 @@ impl WorkflowRuntimeService {
     /// 巻き込まれないようにする。
     #[cfg(test)]
     fn resolve_releash_alias() -> String {
-        crate::path_aliases::alias_name_for_profile(crate::path_aliases::BuildProfile::current())
-            .to_string()
+        crate::infrastructure::platform::path_aliases::alias_name_for_profile(
+            crate::infrastructure::platform::path_aliases::BuildProfile::current(),
+        )
+        .to_string()
     }
 
     fn contract_repair_attempt_count<R: tauri::Runtime>(
@@ -2802,7 +2804,7 @@ impl WorkflowRuntimeService {
         node_name: &str,
         run_index: u32,
     ) -> Result<u32, WorkflowEngineError> {
-        let data_dir = crate::app_data_dir::resolve_data_dir(app)
+        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
             .map_err(WorkflowEngineError::SessionStore)?;
         let log = WorkflowEventLog::new(&data_dir);
         let events = log
@@ -2872,7 +2874,7 @@ impl WorkflowRuntimeService {
         };
         let session_id = session_id.expect("repair policy requires a session for Repair");
 
-        let data_dir = crate::app_data_dir::resolve_data_dir(app)
+        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
             .map_err(WorkflowEngineError::SessionStore)?;
         let Some(session) = session_store
             .get_session_meta(&data_dir, session_id)
@@ -2918,8 +2920,8 @@ impl WorkflowRuntimeService {
                 )
             })
         };
-        let cli_alias = crate::path_aliases::alias_name_for_profile(
-            crate::path_aliases::BuildProfile::current(),
+        let cli_alias = crate::infrastructure::platform::path_aliases::alias_name_for_profile(
+            crate::infrastructure::platform::path_aliases::BuildProfile::current(),
         );
         let prompt = workflow_contract::build_missing_output_repair_prompt(
             cli_alias,

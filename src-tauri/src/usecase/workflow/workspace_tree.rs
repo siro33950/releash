@@ -140,12 +140,11 @@ struct StepSessionRef {
 impl WorkflowUsecase {
     pub(crate) fn collect_workspace_session_inputs(
         &self,
-        sessions: &dyn WorkspaceSessionGateway,
         worktree_path: &str,
     ) -> Result<Vec<WorkspaceSessionInput>, WorkflowError> {
-        let mut active_sessions = sessions.list_active_sessions(worktree_path)?;
+        let mut active_sessions = self.sessions.list_active_sessions(worktree_path)?;
         active_sessions.extend(
-            sessions
+            self.sessions
                 .list_closed_sessions(worktree_path)?
                 .into_iter()
                 .filter(WorkspaceSessionInput::is_workflow_step_session),

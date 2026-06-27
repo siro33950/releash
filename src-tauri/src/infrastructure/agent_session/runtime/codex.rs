@@ -6,7 +6,6 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration, Instant};
 
-use crate::app_data_dir::resolve_data_dir;
 use crate::domain::agent_session::CODEX_FIXED_MODELS;
 use crate::infrastructure::agent_session::resolver_ports::BaseBranchResolverPort;
 use crate::infrastructure::agent_session::runtime::bridge_common::{
@@ -39,6 +38,7 @@ use crate::infrastructure::agent_session::runtime::{
     AgentBackend, AgentEditorContext, AgentMessage, AgentRuntimeError, ImageAttachment,
     PermissionResponse, SessionConfig, SessionHandle,
 };
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::{
     ContextCarryState, SessionMeta, SessionReaderPort, SessionStore,
@@ -456,7 +456,7 @@ impl AppServerCodexRuntime {
         // （RELEASH_SESSION_ID / RELEASH_BASE_BRANCH）を agent 子プロセスへ伝搬する。
         // legacy Node bridge では spawn_bridge_process が担っていた責務であり、
         // app-server 直結への移行で欠落していたため、ここで等価に復元する。
-        let mut child_envs = crate::path_aliases::prepare_child_env(
+        let mut child_envs = crate::infrastructure::platform::path_aliases::prepare_child_env(
             self.app.path().app_data_dir().ok(),
         )
         .map_err(|e| {

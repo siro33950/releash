@@ -1,6 +1,6 @@
 pub(crate) mod commands;
 
-const COMMAND_NAMES: &[&str] = &[
+pub(super) const COMMAND_NAMES: &[&str] = &[
     "detect_editors",
     "open_in_editor",
     "open_folder_in_editor",

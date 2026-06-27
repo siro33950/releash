@@ -1,8 +1,8 @@
-use crate::app_data_dir::resolve_data_dir;
+use crate::domain::agent_session::PermissionMode;
 use crate::infrastructure::agent_session::runtime_gateway::{
     AgentImageAttachment, AgentRuntimeGateway, AgentRuntimeSendRequest, AgentSendMessageResponse,
 };
-use crate::permission::PermissionMode;
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::session::errors::session_target_rejected;
 
 pub struct AgentMessageDispatchRequest {

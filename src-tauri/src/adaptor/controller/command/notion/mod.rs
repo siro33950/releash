@@ -1,6 +1,6 @@
 pub(crate) mod commands;
 
-const COMMAND_NAMES: &[&str] = &[
+pub(super) const COMMAND_NAMES: &[&str] = &[
     "query_notion_tasks",
     "fetch_notion_label_options",
     "save_notion_config",

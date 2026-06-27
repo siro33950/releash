@@ -1,12 +1,12 @@
-//! repository 責務の composition root（DI 配線）。
+//! repository / usecase builder 群の composition root（DI 配線）。
 //!
-//! gateway 実装を usecase へ合成する組み立ては controller の責務であり、gateway 層や
-//! 各エントリポイントへ漏らさない（依存方向の遵守）。AppState を持つ Tauri コマンド
-//! だけでなく、WebSocket ハンドラ・MCP・watcher・workflow など非 AppState エントリも、
-//! ここで構築した `RepositoryUsecase` を各 State へ注入する形で受け取る。
+//! gateway 実装を repository / usecase へ合成する組み立ては controller の責務であり、
+//! gateway 層や各エントリポイントへ漏らさない（依存方向の遵守）。AppState を持つ
+//! Tauri コマンドだけでなく、WebSocket ハンドラ・MCP・watcher・workflow など非 AppState
+//! エントリも、ここで構築した usecase を各 State へ注入する形で受け取る。
 //!
-//! 読み取りも含めた唯一の入口は `RepositoryUsecase`。read model（DTO）生成の協力者である
-//! `RepositoryQueryService` は Usecase 内部に閉じ込め、外部へ直接配らない。
+//! repository / code / agent_session / workflow などの usecase builder を一元的に束ね、
+//! query service や gateway 協力者は対応する usecase の構築時に注入する。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,12 +37,13 @@ use crate::adaptor::gateway::workflow::{
     EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
 };
 use crate::adaptor::gateway::workflow::{
-    RepositoryManagedWorktreeGateway, TauriWorkflowExternalEditorGateway,
-    TauriWorkflowRuntimeCommandGateway, TauriWorkflowStepLifecycleGateway,
-    WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
-    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository, WorkflowFacetFileRepository,
-    WorkflowRunArchiveFileRepository, WorkflowRunFileRepository, WorkflowSecretSourceConfigGateway,
-    WorkflowStateProjectionLogRepository, WorkflowStepDetailProjectionLogRepository,
+    RepositoryManagedWorktreeGateway, StoredWorkspaceSessionGateway,
+    TauriWorkflowExternalEditorGateway, TauriWorkflowRuntimeCommandGateway,
+    TauriWorkflowStepLifecycleGateway, WorkflowConfigPathFileGateway,
+    WorkflowDefinitionFileRepository, WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository,
+    WorkflowFacetFileRepository, WorkflowRunArchiveFileRepository, WorkflowRunFileRepository,
+    WorkflowSecretSourceConfigGateway, WorkflowStateProjectionLogRepository,
+    WorkflowStepDetailProjectionLogRepository,
 };
 #[cfg(test)]
 use crate::domain::agent_session::SkillEntry;
@@ -78,7 +79,7 @@ use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
 use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::usecase::workflow::{
-    WorkflowRuntimeUsecase, WorkflowStepLifecycleUsecase, WorkflowUsecase,
+    WorkflowRuntimeUsecase, WorkflowStepLifecycleUsecase, WorkflowUsecase, WorkspaceSessionGateway,
 };
 use tokio::sync::Mutex;
 
@@ -234,12 +235,47 @@ pub(crate) fn build_stored_session_lifecycle_usecase(
 /// controller の read-only 経路を `WorkflowUsecase` に寄せる。
 #[cfg(test)]
 pub(crate) fn build_workflow_usecase(data_dir: impl Into<std::path::PathBuf>) -> WorkflowUsecase {
+    build_workflow_usecase_with_workspace_sessions(data_dir, Arc::new(EmptyWorkspaceSessionGateway))
+}
+
+#[cfg(test)]
+pub(crate) fn build_workflow_usecase_with_workspace_sessions(
+    data_dir: impl Into<std::path::PathBuf>,
+    sessions: Arc<dyn WorkspaceSessionGateway>,
+) -> WorkflowUsecase {
     build_workflow_usecase_with_gateways(
         data_dir,
         Arc::new(PassthroughManagedWorktreeGateway),
         Arc::new(NoopWorkflowExternalEditorGateway),
         Arc::new(EmptySecretSourceGateway),
+        sessions,
     )
+}
+
+#[cfg(test)]
+struct EmptyWorkspaceSessionGateway;
+
+#[cfg(test)]
+impl WorkspaceSessionGateway for EmptyWorkspaceSessionGateway {
+    fn list_active_sessions(
+        &self,
+        _worktree_path: &str,
+    ) -> Result<
+        Vec<crate::usecase::workflow::WorkspaceSessionInput>,
+        crate::domain::workflow::WorkflowError,
+    > {
+        Ok(Vec::new())
+    }
+
+    fn list_closed_sessions(
+        &self,
+        _worktree_path: &str,
+    ) -> Result<
+        Vec<crate::usecase::workflow::WorkspaceSessionInput>,
+        crate::domain::workflow::WorkflowError,
+    > {
+        Ok(Vec::new())
+    }
 }
 
 pub(crate) fn build_workflow_usecase_with_repository_worktrees<R: tauri::Runtime + 'static>(
@@ -247,8 +283,14 @@ pub(crate) fn build_workflow_usecase_with_repository_worktrees<R: tauri::Runtime
     repository_usecase: Arc<RepositoryUsecase>,
     app_config: Arc<dyn ConfigRepository>,
     config_secrets: Arc<dyn ConfigSecretRepository>,
+    session_store: Arc<SessionStore>,
     app: tauri::AppHandle<R>,
 ) -> WorkflowUsecase {
+    let data_dir = data_dir.into();
+    let sessions = Arc::new(StoredWorkspaceSessionGateway::new(
+        session_store,
+        data_dir.clone(),
+    ));
     build_workflow_usecase_with_gateways(
         data_dir,
         Arc::new(RepositoryManagedWorktreeGateway::new(
@@ -257,6 +299,7 @@ pub(crate) fn build_workflow_usecase_with_repository_worktrees<R: tauri::Runtime
         )),
         Arc::new(TauriWorkflowExternalEditorGateway::new(app, app_config)),
         Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets)),
+        sessions,
     )
 }
 
@@ -265,6 +308,7 @@ fn build_workflow_usecase_with_gateways(
     worktrees: Arc<dyn ManagedWorktreeGateway>,
     editors: Arc<dyn ExternalEditorGateway>,
     secrets: Arc<dyn SecretSourceGateway>,
+    sessions: Arc<dyn WorkspaceSessionGateway>,
 ) -> WorkflowUsecase {
     let data_dir = data_dir.into();
     let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
@@ -301,6 +345,7 @@ fn build_workflow_usecase_with_gateways(
         diagnostics,
         config_paths,
         secrets,
+        sessions,
         archive_runs,
     )
 }

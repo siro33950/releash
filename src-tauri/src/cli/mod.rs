@@ -429,7 +429,7 @@ fn resolve_data_dir_from_env(env_value: Option<String>) -> Result<PathBuf, Strin
     if let Some(custom) = env_value.filter(|s| !s.is_empty()) {
         return Ok(PathBuf::from(custom));
     }
-    let aliases = crate::path_aliases::PathAliases::from_runtime(None)?;
+    let aliases = crate::infrastructure::platform::path_aliases::PathAliases::from_runtime(None)?;
     Ok(aliases.releash().data_dir.clone())
 }
 
@@ -2575,8 +2575,8 @@ models = ["opus"]
     /// 正規化済みの絶対パス文字列として projection helper に渡せる。
     #[test]
     fn cli_worktree_filter_accepts_managed_worktree_with_non_canonical_input() {
-        let (repo_dir, repo) = crate::git::test_helpers::create_test_repo();
-        crate::git::test_helpers::create_initial_commit(&repo);
+        let (repo_dir, repo) = crate::test_support::git::create_test_repo();
+        crate::test_support::git::create_initial_commit(&repo);
         let worktree_parent = tempfile::TempDir::new().unwrap();
         let worktree_path = worktree_parent.path().join("managed-wt");
         repo.worktree("managed-wt", &worktree_path, None).unwrap();
@@ -3566,9 +3566,10 @@ models = ["opus"]
             return;
         }
         let resolved = resolve_data_dir_from_env(None).unwrap();
-        let expected_suffix = crate::path_aliases::default_data_dir_name_for_profile(
-            crate::path_aliases::BuildProfile::current(),
-        );
+        let expected_suffix =
+            crate::infrastructure::platform::path_aliases::default_data_dir_name_for_profile(
+                crate::infrastructure::platform::path_aliases::BuildProfile::current(),
+            );
         assert!(
             resolved.ends_with(expected_suffix),
             "expected suffix {expected_suffix}, got {}",
@@ -3585,9 +3586,10 @@ models = ["opus"]
             return;
         }
         let resolved = resolve_data_dir_from_env(Some(String::new())).unwrap();
-        let expected_suffix = crate::path_aliases::default_data_dir_name_for_profile(
-            crate::path_aliases::BuildProfile::current(),
-        );
+        let expected_suffix =
+            crate::infrastructure::platform::path_aliases::default_data_dir_name_for_profile(
+                crate::infrastructure::platform::path_aliases::BuildProfile::current(),
+            );
         assert!(
             resolved.ends_with(expected_suffix),
             "empty env should fall through to alias data_dir, got {}",

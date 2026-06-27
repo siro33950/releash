@@ -21,12 +21,12 @@ use super::shared::{
     write_bridge_command_for_captured_turn, BridgeInitOptions, GENERATION_COUNTER,
 };
 use super::stream_emit::{emit_session_state_changed, emit_streaming_delta, enqueue_pending_delta};
-use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::context_restore::RestoreContextPayload;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
 use crate::infrastructure::agent_session::runtime::timeouts::{
     default_stale_timeout, MAX_STALE_TIMEOUT_SECS,
 };
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::event_log::InterruptReason;
 use crate::usecase::agent_session::event_log::TurnEventLog;
@@ -931,7 +931,7 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
     // spawn 前にパーミッションモードを検証する。Tauri/WS 境界で検証済みのはずだが、
     // 内部経路の保護として二重に弾く（不正値で子プロセス起動を許さない）。
     let initial_permission_mode = permission_mode;
-    crate::permission::PermissionMode::parse(&initial_permission_mode)
+    crate::domain::agent_session::PermissionMode::parse(&initial_permission_mode)
         .map_err(|e| e.to_string())?;
     let data_dir = resolve_data_dir(app)
         .map_err(|e| format!("Failed to resolve data dir for session {chat_session_id}: {e}"))?;
@@ -957,7 +957,9 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
 
     // spec issues-1054: agent bridge にも起動環境別 alias が解決可能な PATH と
     // `RELEASH_DATA_DIR` を伝搬する（bridge 経由で呼ばれるツールが alias を解決できるように）。
-    match crate::path_aliases::prepare_child_env(app.path().app_data_dir().ok()) {
+    match crate::infrastructure::platform::path_aliases::prepare_child_env(
+        app.path().app_data_dir().ok(),
+    ) {
         Ok(env) => {
             for (k, v) in env {
                 cmd.env(k, v);

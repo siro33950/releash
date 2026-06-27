@@ -1,4 +1,3 @@
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -68,25 +67,6 @@ impl fmt::Display for PermissionMode {
     }
 }
 
-impl Serialize for PermissionMode {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for PermissionMode {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(&value).map_err(serde::de::Error::custom)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,25 +114,5 @@ mod tests {
         assert!(PermissionMode::Ask < PermissionMode::Edit);
         assert!(PermissionMode::Edit < PermissionMode::Full);
         assert!(PermissionMode::Ask < PermissionMode::Full);
-    }
-
-    #[test]
-    fn serde_canonical_values() {
-        assert_eq!(
-            serde_json::to_string(&PermissionMode::Ask).unwrap(),
-            "\"ask\""
-        );
-        assert_eq!(
-            serde_json::to_string(&PermissionMode::Edit).unwrap(),
-            "\"edit\""
-        );
-        assert_eq!(
-            serde_json::to_string(&PermissionMode::Full).unwrap(),
-            "\"full\""
-        );
-        let back: PermissionMode = serde_json::from_str("\"edit\"").unwrap();
-        assert_eq!(back, PermissionMode::Edit);
-        let legacy: PermissionMode = serde_json::from_str("\"readonly\"").unwrap();
-        assert_eq!(legacy, PermissionMode::Ask);
     }
 }

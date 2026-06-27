@@ -4795,7 +4795,7 @@ fn step_session_persists_permission_workflow_flag_and_model_on_initial_save() {
         },
     );
     let permission_mode =
-        crate::permission::PermissionMode::parse(&settings.permission_mode).unwrap();
+        crate::domain::agent_session::PermissionMode::parse(&settings.permission_mode).unwrap();
     let session = crate::usecase::agent_session::session::create_session_internal_with_attributes(
         &store,
         tmp.path(),
@@ -4846,7 +4846,7 @@ fn step_session_inherits_parent_permission_and_backend_on_initial_save() {
         },
     );
     let permission_mode =
-        crate::permission::PermissionMode::parse(&settings.permission_mode).unwrap();
+        crate::domain::agent_session::PermissionMode::parse(&settings.permission_mode).unwrap();
     let session = crate::usecase::agent_session::session::create_session_internal_with_attributes(
         &store,
         tmp.path(),
@@ -6180,7 +6180,8 @@ mod dispatch_boundary_tests {
     }
 
     fn dispatch_data_dir(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> std::path::PathBuf {
-        crate::app_data_dir::resolve_data_dir(app).expect("mock app data dir must resolve")
+        crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
+            .expect("mock app data dir must resolve")
     }
 
     fn make_approval_only_workflow() -> Workflow {
@@ -6354,7 +6355,9 @@ mod dispatch_boundary_tests {
             crate::adaptor::controller::wiring::build_workflow_usecase(data_dir.clone()),
         );
         tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(data_dir))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                data_dir,
+            ))
             .manage(app_config)
             .manage(config_repository)
             .manage(agent_config_repository)
@@ -8673,7 +8676,7 @@ mod dispatch_boundary_tests {
                 &stem,
                 Some("start me".to_string()),
                 TriggerSource::DesktopUi,
-                crate::permission::PermissionMode::Edit,
+                crate::domain::agent_session::PermissionMode::Edit,
             )
             .await
             .unwrap();
@@ -8732,7 +8735,7 @@ mod dispatch_boundary_tests {
                 &stem,
                 Some("start with append failure".to_string()),
                 TriggerSource::DesktopUi,
-                crate::permission::PermissionMode::Edit,
+                crate::domain::agent_session::PermissionMode::Edit,
             )
             .await;
 
@@ -10116,7 +10119,9 @@ mod dispatch_boundary_tests {
     }
 
     fn read_submit_output_events(app: &DispatchTestApp, run_id: &str) -> Vec<WorkflowEvent> {
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).expect("data_dir");
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle())
+                .expect("data_dir");
         WorkflowEventLog::new(&data_dir)
             .read_log(run_id)
             .unwrap_or_default()
@@ -10141,7 +10146,8 @@ mod dispatch_boundary_tests {
     async fn submit_output_persists_step_output_and_appends_event_when_contract_satisfied() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
@@ -10216,7 +10222,8 @@ mod dispatch_boundary_tests {
     async fn submit_output_invalid_contract_requests_repair_without_persisting_output() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/submit-invalid";
@@ -10296,7 +10303,8 @@ mod dispatch_boundary_tests {
     async fn pending_invalid_submit_output_repair_is_idempotent_by_request_id() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/submit-invalid-idempotent";
@@ -10396,7 +10404,8 @@ mod dispatch_boundary_tests {
     async fn submit_output_rejects_unknown_step_without_side_effects() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
@@ -10433,7 +10442,8 @@ mod dispatch_boundary_tests {
     async fn submit_output_rejects_unknown_run() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
 
@@ -10458,7 +10468,8 @@ mod dispatch_boundary_tests {
     async fn submit_output_rejects_contract_type_mismatch() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
@@ -10494,7 +10505,8 @@ mod dispatch_boundary_tests {
     async fn submit_output_step_output_carries_contract_for_downstream_reference() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
@@ -10536,7 +10548,8 @@ mod dispatch_boundary_tests {
     async fn submit_output_applies_contract_variables_for_spec_dir() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
@@ -10593,7 +10606,8 @@ mod dispatch_boundary_tests {
     async fn submit_output_rejects_non_accepting_step_without_side_effects() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
@@ -10678,7 +10692,8 @@ mod dispatch_boundary_tests {
     async fn agent_free_text_workflow_output_block_does_not_confirm_step_output() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
@@ -10771,7 +10786,8 @@ mod dispatch_boundary_tests {
     async fn missing_required_output_requests_repair_without_failing_within_limit() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/repair-within-limit";
@@ -10847,7 +10863,8 @@ mod dispatch_boundary_tests {
     async fn missing_required_output_fails_when_repair_turn_cannot_start() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/repair-start-failure";
@@ -10926,7 +10943,8 @@ mod dispatch_boundary_tests {
     async fn repair_turn_startup_timeout_failure_preserves_failure_metadata() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/repair-startup-timeout";
@@ -10987,7 +11005,8 @@ mod dispatch_boundary_tests {
     async fn missing_required_output_fails_with_structured_mismatch_after_repair_limit() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/repair-limit";
@@ -11056,7 +11075,8 @@ mod dispatch_boundary_tests {
     async fn missing_required_output_repair_attempts_are_scoped_to_run_index() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/repair-run-index";
@@ -11147,7 +11167,8 @@ mod dispatch_boundary_tests {
     async fn submit_output_rolls_back_state_when_event_append_fails() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {

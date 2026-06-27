@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::domain::app_config::ConfigRepository;
 use crate::domain::notification::NotifyConfig;
+use crate::usecase::notification::usecase::NotificationSettingsGateway;
 
 #[derive(Clone)]
 pub struct NotificationSettingsConfigGateway {
@@ -27,5 +28,11 @@ impl NotificationSettingsConfigGateway {
         let mut config = self.config.load().map_err(|e| e.to_string())?;
         config.server.notify.webhook_url = url;
         self.config.save(config).map_err(|e| e.to_string())
+    }
+}
+
+impl NotificationSettingsGateway for NotificationSettingsConfigGateway {
+    fn load_notify_config(&self) -> Result<NotifyConfig, String> {
+        self.get_notify_config()
     }
 }

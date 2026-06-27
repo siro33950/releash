@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
-use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::session::{OpenTabRegistry, SessionState, SessionStore};
 use crate::usecase::workflow::step_lifecycle::{
     release_step_runtime_on_done_with_gateways, ResolvedWorkflowStepSession, WorkflowStepLifecycle,

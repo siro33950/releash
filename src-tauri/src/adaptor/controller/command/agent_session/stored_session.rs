@@ -4,11 +4,11 @@ use tauri::State;
 use tokio::sync::Mutex;
 
 use crate::adaptor::controller_support::WorkflowStepLifecycleUsecaseState;
-use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::AgentBackendRegistry;
 use crate::infrastructure::agent_session::runtime::{
     AgentProcessMap, SessionHandle, CODEX_BACKEND_ID,
 };
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::session::{
     add_message_internal, update_session_state_in_data_dir, ChatMessage, ChatSession, MessageRole,
     OpenTabRegistry, RestoreSessionResponse, SessionState, SessionStore, SessionSummary,
@@ -37,8 +37,8 @@ pub fn create_session(
     model_id: Option<String>,
 ) -> Result<ChatSession, String> {
     let data_dir = resolve_data_dir(&app)?;
-    let permission_mode =
-        crate::permission::PermissionMode::parse(&permission_mode).map_err(|e| e.to_string())?;
+    let permission_mode = crate::domain::agent_session::PermissionMode::parse(&permission_mode)
+        .map_err(|e| e.to_string())?;
     let resolved_model = match model_id.as_deref() {
         Some(model_id) => Some(registry.resolve_model_entry(model_id)?),
         None => None,

@@ -646,8 +646,8 @@ mod tests {
         let scanner = Arc::new(CountingScanner::default());
         let watcher = Arc::new(CountingRepositoryStateWatcher::default());
         let service = counting_service(scanner, watcher.clone());
-        let (dir, repo) = crate::git::test_helpers::create_test_repo();
-        crate::git::test_helpers::create_initial_commit(&repo);
+        let (dir, repo) = crate::test_support::git::create_test_repo();
+        crate::test_support::git::create_initial_commit(&repo);
         let path = dir.path().to_str().unwrap();
 
         service.get_status_snapshot(path).unwrap();
@@ -800,10 +800,10 @@ mod tests {
 
     #[test]
     fn real_repo_dirty_count_matches_legacy_count_for_untracked_rename_and_typechange() {
-        let (dir, repo) = crate::git::test_helpers::create_test_repo();
-        crate::git::test_helpers::create_initial_commit(&repo);
-        crate::git::test_helpers::add_and_commit(&repo, "rename-old.txt", "old", "add old");
-        crate::git::test_helpers::add_and_commit(&repo, "typechange", "file", "add typechange");
+        let (dir, repo) = crate::test_support::git::create_test_repo();
+        crate::test_support::git::create_initial_commit(&repo);
+        crate::test_support::git::add_and_commit(&repo, "rename-old.txt", "old", "add old");
+        crate::test_support::git::add_and_commit(&repo, "typechange", "file", "add typechange");
 
         std::fs::create_dir_all(dir.path().join("untracked-dir").join("nested")).unwrap();
         std::fs::write(

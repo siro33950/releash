@@ -3,7 +3,7 @@ pub(crate) mod pr;
 
 use crate::other::AppError;
 
-const COMMAND_NAMES: &[&str] = &[
+pub(super) const COMMAND_NAMES: &[&str] = &[
     "check_pr_provider_status",
     "fetch_pr_status",
     "get_cached_pr_status",

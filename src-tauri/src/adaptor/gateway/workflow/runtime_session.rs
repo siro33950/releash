@@ -20,6 +20,7 @@ use crate::adaptor::gateway::workflow::state::{WorkflowExecutionState, WorkflowS
 use crate::adaptor::gateway::workflow::step_settings::{
     resolve_step_settings, ResolvedStepSettings, WorkflowDefaults,
 };
+use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::services::history::{
     self as workflow_history, RuntimeStartFailureKind,
 };
@@ -27,7 +28,6 @@ use crate::domain::workflow::{
     NodeType, RetryPolicy, TimeoutContext, WorkflowStepContext, WorkflowStepFailureKind,
 };
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
-use crate::permission::PermissionMode;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::{ChatSession, OpenTabRegistry, SessionStore};
 
@@ -344,7 +344,7 @@ pub(crate) async fn prepare_parallel_child_session_setups<R: tauri::Runtime>(
         prepare_parallel_child_prompt_plans(worktree_path, parallel_start, prompt_inputs)?;
     let creation_plans =
         prepare_parallel_child_creation_plans(app, parallel_start, prompt_plans).await?;
-    let data_dir = crate::app_data_dir::resolve_data_dir(app)
+    let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
         .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
     let mut child_setups = Vec::new();
     let mut created_session_ids = Vec::new();

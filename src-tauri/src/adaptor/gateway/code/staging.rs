@@ -199,7 +199,7 @@ mod staging_gateway_tests {
     use crate::adaptor::gateway::repository::status::get_git_status;
     use crate::domain::code::services::hunk as hunk_service;
     use crate::domain::code::{ChangeGroup, Hunk};
-    use crate::git::test_helpers::*;
+    use crate::test_support::git::*;
     use std::fs;
     use std::path::Path;
 

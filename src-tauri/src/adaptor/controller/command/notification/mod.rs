@@ -1,6 +1,6 @@
 pub(crate) mod commands;
 
-const COMMAND_NAMES: &[&str] = &[
+pub(super) const COMMAND_NAMES: &[&str] = &[
     "get_notify_config",
     "update_notify_config",
     "update_webhook_url",

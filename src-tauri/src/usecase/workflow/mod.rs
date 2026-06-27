@@ -54,6 +54,7 @@ pub struct WorkflowUsecase {
     editors: std::sync::Arc<dyn ExternalEditorGateway>,
     diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
     config_paths: std::sync::Arc<dyn WorkflowConfigPathGateway>,
+    sessions: std::sync::Arc<dyn WorkspaceSessionGateway>,
     archive_runs: std::sync::Arc<dyn WorkflowRunArchiveRepository>,
 }
 
@@ -68,6 +69,7 @@ impl WorkflowUsecase {
         diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
         config_paths: std::sync::Arc<dyn WorkflowConfigPathGateway>,
         secrets: std::sync::Arc<dyn SecretSourceGateway>,
+        sessions: std::sync::Arc<dyn WorkspaceSessionGateway>,
         archive_runs: std::sync::Arc<dyn WorkflowRunArchiveRepository>,
     ) -> Self {
         let definition_commands = WorkflowDefinitionUsecase::new(definitions);
@@ -82,6 +84,7 @@ impl WorkflowUsecase {
             editors,
             diagnostics,
             config_paths,
+            sessions,
             archive_runs,
         }
     }
@@ -821,6 +824,24 @@ mod tests {
         }
     }
 
+    struct EmptyWorkspaceSessionGateway;
+
+    impl WorkspaceSessionGateway for EmptyWorkspaceSessionGateway {
+        fn list_active_sessions(
+            &self,
+            _worktree_path: &str,
+        ) -> Result<Vec<WorkspaceSessionInput>, WorkflowError> {
+            Ok(Vec::new())
+        }
+
+        fn list_closed_sessions(
+            &self,
+            _worktree_path: &str,
+        ) -> Result<Vec<WorkspaceSessionInput>, WorkflowError> {
+            Ok(Vec::new())
+        }
+    }
+
     struct Fixture {
         usecase: WorkflowUsecase,
         editors: Arc<FakeExternalEditorGateway>,
@@ -853,6 +874,7 @@ mod tests {
                 Arc::new(FakeDiagnosticsGateway),
                 Arc::new(FakeConfigPathGateway),
                 Arc::new(FakeSecretSourceGateway),
+                Arc::new(EmptyWorkspaceSessionGateway),
                 Arc::new(NoopArchiveRepository),
             );
             Self { usecase, editors }

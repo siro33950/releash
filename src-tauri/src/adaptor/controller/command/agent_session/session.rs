@@ -4,13 +4,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::Mutex;
 
-use crate::agent_message_dispatcher::{
+use crate::adaptor::controller::agent_session::message_dispatch::{
     dispatch_agent_message, AgentMessageDispatchContext, AgentMessageDispatchRequest,
 };
-use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::{
     AgentBackendRegistry, AgentProcessMap, ImageAttachment, SessionConfig,
 };
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::errors::session_target_rejected;
 use crate::usecase::agent_session::session::{
@@ -458,13 +458,14 @@ fn reject_explicit_start_for_workflow_step_session(
 }
 
 /// Tauri invoke 境界で permission_mode を検証し、検証済み抽象モードを返す。
-/// 欠落（None）は空文字相当として扱い、対象外値とともに [`crate::permission::InvalidPermissionMode`]
+/// 欠落（None）は空文字相当として扱い、対象外値とともに [`crate::domain::agent_session::InvalidPermissionMode`]
 /// で拒否する。command 経路と単体テスト経路の両方で同じ拒否ロジックを共有する（Spec issues-947）。
 fn validate_invoke_permission_mode(
     permission_mode: Option<String>,
-) -> Result<crate::permission::PermissionMode, String> {
+) -> Result<crate::domain::agent_session::PermissionMode, String> {
     let permission_value = permission_mode.unwrap_or_default();
-    crate::permission::PermissionMode::parse(&permission_value).map_err(|e| e.to_string())
+    crate::domain::agent_session::PermissionMode::parse(&permission_value)
+        .map_err(|e| e.to_string())
 }
 
 fn should_skip_close_agent_session(

@@ -1137,11 +1137,11 @@ pub fn create_session_internal(
         data_dir,
         worktree_path,
         backend_id,
-        crate::permission::PermissionMode::Edit,
+        crate::domain::agent_session::PermissionMode::Edit,
     )
 }
 
-/// 検証済みの抽象 [`crate::permission::PermissionMode`] を初回保存で確定するセッション生成 API。
+/// 検証済みの抽象 [`crate::domain::agent_session::PermissionMode`] を初回保存で確定するセッション生成 API。
 /// WS handler や message → 新規 session 経路から呼び、edit デフォルトで保存→update の二段階を回避する
 /// （Spec issues-947: セッション保存層が permission_mode の正典）。
 #[allow(dead_code)]
@@ -1150,7 +1150,7 @@ pub fn create_session_internal_with_permission(
     data_dir: &std::path::Path,
     worktree_path: &str,
     backend_id: Option<String>,
-    permission_mode: crate::permission::PermissionMode,
+    permission_mode: crate::domain::agent_session::PermissionMode,
 ) -> Result<ChatSession, String> {
     create_session_internal_with_attributes(
         session_store,
@@ -1178,7 +1178,7 @@ pub fn create_session_internal_with_attributes(
     data_dir: &std::path::Path,
     worktree_path: &str,
     backend_id: Option<String>,
-    permission_mode: crate::permission::PermissionMode,
+    permission_mode: crate::domain::agent_session::PermissionMode,
     attributes: SessionCreationAttributes,
 ) -> Result<ChatSession, String> {
     let workflow_step_session =
@@ -1202,7 +1202,7 @@ pub fn create_session_internal_with_attributes(
 fn build_new_session(
     worktree_path: &str,
     backend_id: Option<String>,
-    permission_mode: crate::permission::PermissionMode,
+    permission_mode: crate::domain::agent_session::PermissionMode,
     selected_model: Option<String>,
     plan_mode: bool,
     workflow_step_session: bool,
@@ -1235,7 +1235,7 @@ fn build_new_session(
 /// （[`SessionBackendResolver::default_model_for`] = 固定リスト先頭）を
 /// `selected_model` に持つ。既定モデルが解決できない場合はセッション作成エラーとする。
 ///
-/// `permission_mode` は検証済みの抽象 [`crate::permission::PermissionMode`] を要求し、
+/// `permission_mode` は検証済みの抽象 [`crate::domain::agent_session::PermissionMode`] を要求し、
 /// 初回保存で確定する（Spec issues-947: セッション保存層が permission_mode の正典）。
 #[cfg(test)]
 pub fn create_session_with_initial_model(
@@ -1244,7 +1244,7 @@ pub fn create_session_with_initial_model(
     data_dir: &std::path::Path,
     worktree_path: &str,
     backend_id: String,
-    permission_mode: crate::permission::PermissionMode,
+    permission_mode: crate::domain::agent_session::PermissionMode,
 ) -> Result<ChatSession, String> {
     create_session_with_initial_model_and_plan_mode(
         session_store,
@@ -1264,7 +1264,7 @@ pub fn create_session_with_initial_model_and_plan_mode(
     data_dir: &std::path::Path,
     worktree_path: &str,
     backend_id: String,
-    permission_mode: crate::permission::PermissionMode,
+    permission_mode: crate::domain::agent_session::PermissionMode,
     plan_mode: bool,
 ) -> Result<ChatSession, String> {
     create_session_with_model_and_plan_mode(
@@ -1286,7 +1286,7 @@ pub fn create_session_with_model_and_plan_mode(
     data_dir: &std::path::Path,
     worktree_path: &str,
     backend_id: String,
-    permission_mode: crate::permission::PermissionMode,
+    permission_mode: crate::domain::agent_session::PermissionMode,
     selected_model: Option<String>,
     plan_mode: bool,
 ) -> Result<ChatSession, String> {
@@ -1349,8 +1349,8 @@ pub(crate) fn create_session_command_inner(
     permission_mode: &str,
     backend_id: Option<String>,
 ) -> Result<ChatSession, String> {
-    let permission_mode =
-        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
+    let permission_mode = crate::domain::agent_session::PermissionMode::parse(permission_mode)
+        .map_err(|e| e.to_string())?;
     let resolved_backend_id = registry.resolve_backend_id(backend_id)?;
     create_session_with_initial_model(
         session_store,
@@ -1404,7 +1404,7 @@ pub fn resolve_session_backend(
 /// 対象外の値（旧語彙 acceptEdits / bypassPermissions / plan / default、未知語彙、空文字）が
 /// 保存されていた場合はバリデーションエラーで拒否し、ユーザに手動更新を求める（破壊的変更）。
 pub fn validate_session_permission_mode(session: &ChatSession) -> Result<(), String> {
-    crate::permission::PermissionMode::parse(&session.permission_mode)
+    crate::domain::agent_session::PermissionMode::parse(&session.permission_mode)
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
@@ -1581,7 +1581,7 @@ mod tests {
         let mut session = build_new_session(
             "/repo",
             None,
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             None,
             false,
             false,
@@ -1608,7 +1608,7 @@ mod tests {
         let mut session = build_new_session(
             "/repo",
             None,
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             None,
             false,
             true,
@@ -1643,7 +1643,7 @@ mod tests {
         let mut session = build_new_session(
             "/repo",
             None,
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             None,
             false,
             false,
@@ -2725,9 +2725,9 @@ mod tests {
     #[test]
     fn create_session_with_permission_persists_selected_abstract_mode() {
         for mode in [
-            crate::permission::PermissionMode::Ask,
-            crate::permission::PermissionMode::Edit,
-            crate::permission::PermissionMode::Full,
+            crate::domain::agent_session::PermissionMode::Ask,
+            crate::domain::agent_session::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Full,
         ] {
             let store = crate::test_support::build_session_store();
             let dir = tempfile::tempdir().unwrap();
@@ -2845,7 +2845,7 @@ mod tests {
             dir.path(),
             "/repo",
             "claude".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
         )
         .unwrap();
         assert_eq!(session.selected_model, Some(default_model.clone()));
@@ -2874,7 +2874,7 @@ mod tests {
             dir.path(),
             "/repo",
             "codex".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
         )
         .unwrap();
         assert_eq!(session.selected_model, Some(default_model));
@@ -2895,7 +2895,7 @@ mod tests {
             dir.path(),
             "/repo",
             "claude".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             Some(selected_model.clone()),
             false,
         )

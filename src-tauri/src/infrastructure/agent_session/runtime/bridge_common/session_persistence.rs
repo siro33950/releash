@@ -3,12 +3,12 @@ use super::process_registry::{AgentProcess, AgentProcessMap, BridgeState, Pendin
 use super::shared::{
     parts_have_tool_output_ref, CLAUDE_BACKEND_ID, DEFER_AGENT_SESSION_ID_PERSIST_ON_READY,
 };
-use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::context_restore::context_restore_plan_for_session;
 use crate::infrastructure::agent_session::runtime::context_restore::context_restore_plan_for_session_before_turn;
 use crate::infrastructure::agent_session::runtime::context_restore::context_restore_plan_from_meta;
 use crate::infrastructure::agent_session::runtime::context_restore::ContextRestorePlan;
 use crate::infrastructure::agent_session::runtime::ImageAttachment;
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::session::parts_to_legacy;
 use crate::usecase::agent_session::session::ChatMessage;
 use crate::usecase::agent_session::session::ChatSession;
@@ -764,7 +764,9 @@ mod moved_tests {
     fn persist_agent_session_id_updates_session_store_on_ready() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = crate::test_support::build_session_store();
@@ -789,7 +791,9 @@ mod moved_tests {
     fn load_post_turn_base_parts_preserves_legacy_content_without_parts() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = crate::test_support::build_session_store();
@@ -991,7 +995,9 @@ mod moved_tests {
     async fn external_session_ready_can_defer_agent_session_id_persistence() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -1042,7 +1048,9 @@ mod moved_tests {
     async fn stale_session_ready_token_does_not_update_resume_state() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -1111,7 +1119,9 @@ mod moved_tests {
     async fn external_turn_complete_persists_successful_session_id() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -1164,7 +1174,9 @@ mod moved_tests {
     async fn interrupted_turn_complete_does_not_persist_session_id_or_overwrite_done_state() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -1240,7 +1252,9 @@ mod moved_tests {
 
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -1495,7 +1509,9 @@ mod moved_tests {
     async fn external_session_ready_mismatch_prepares_reinject_and_crashes_process() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -1551,7 +1567,9 @@ mod moved_tests {
     async fn session_ready_streaming_resume_mismatch_requeues_current_turn_for_reinject() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -1698,7 +1716,9 @@ mod moved_tests {
     fn persist_context_carry_failed_can_force_failed_before_success_state() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = crate::test_support::build_session_store();
@@ -1737,7 +1757,9 @@ mod moved_tests {
     async fn bridge_eof_initializing_pending_context_carry_persists_failed() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -1803,7 +1825,9 @@ mod moved_tests {
     async fn bridge_eof_initializing_without_pending_context_carry_does_not_persist_failed() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());

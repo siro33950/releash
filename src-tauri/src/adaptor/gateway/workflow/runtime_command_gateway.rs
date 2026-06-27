@@ -5,13 +5,13 @@ use crate::adaptor::gateway::workflow::pending_command::{
     PendingCommand, PendingCommandPayload, PendingCommandStore, DEFAULT_PENDING_TTL_SECS,
 };
 use crate::adaptor::gateway::workflow::runtime_state::ApprovalDecision as RuntimeApprovalDecision;
-use crate::app_data_dir::resolve_data_dir;
+use crate::domain::agent_session::PermissionMode;
 use crate::domain::app_config::ConfigRepository;
 use crate::domain::workflow::{
     ApprovalDecision, TriggerSource, WorkflowDefinition, WorkflowError, WorkflowStateSnapshot,
 };
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
-use crate::permission::PermissionMode;
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::{MessagePart, SessionStore};
 use crate::usecase::agent_session::status::current_timestamp;

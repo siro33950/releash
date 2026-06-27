@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::app_data_dir::resolve_data_dir;
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::other::telemetry::{
     record_agent_turn_duration, AgentTurn, AgentTurnDimensions, ModelFamily, Payload,
     PermissionModeDim, TurnContext, WarmPath,

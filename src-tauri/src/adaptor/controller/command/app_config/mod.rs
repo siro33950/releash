@@ -1,6 +1,6 @@
 pub(crate) mod commands;
 
-const COMMAND_NAMES: &[&str] = &[
+pub(super) const COMMAND_NAMES: &[&str] = &[
     "update_performance_telemetry",
     "get_workflow_config",
     "update_workflow_config",

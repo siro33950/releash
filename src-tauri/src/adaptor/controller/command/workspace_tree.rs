@@ -1,29 +1,42 @@
-use std::sync::Arc;
-
 use tauri::State;
 
 use crate::adaptor::controller::state::AppState;
-use crate::adaptor::gateway::workflow::StoredWorkspaceSessionGateway;
-use crate::app_data_dir::resolve_data_dir;
-use crate::usecase::agent_session::session::SessionStore;
 use crate::usecase::workflow::{
     WorkspaceTreeNodeDto, WorkspaceWorkflowHistoryItemDto, WorkspaceWorkflowStepNodeDto,
 };
 
+pub(super) const COMMAND_NAMES: &[&str] = &[
+    "list_workspace_worktree_nodes",
+    "list_workspace_workflow_history",
+    "get_workspace_workflow_step_detail",
+    "archive_workspace_workflow_run",
+    "restore_workspace_workflow_run",
+];
+
+pub(crate) fn register(router: &mut super::CommandRouter) {
+    router.register_domain(COMMAND_NAMES, Box::new(invoke_handler()));
+}
+
+pub(crate) fn invoke_handler(
+) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        list_workspace_worktree_nodes,
+        list_workspace_workflow_history,
+        get_workspace_workflow_step_detail,
+        archive_workspace_workflow_run,
+        restore_workspace_workflow_run,
+    ]
+}
+
 #[tauri::command]
 pub async fn list_workspace_worktree_nodes(
     app_state: State<'_, AppState>,
-    session_store: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
     worktree_path: String,
 ) -> Result<Vec<WorkspaceTreeNodeDto>, String> {
-    let data_dir = resolve_data_dir(&app)?;
-    let session_gateway =
-        StoredWorkspaceSessionGateway::new(session_store.inner().clone(), data_dir);
     let workflow_usecase = app_state.workflow_usecase.clone();
     let nodes = tokio::task::spawn_blocking(move || {
         let sessions = workflow_usecase
-            .collect_workspace_session_inputs(&session_gateway, &worktree_path)
+            .collect_workspace_session_inputs(&worktree_path)
             .map_err(|e| e.to_string())?;
         workflow_usecase
             .list_workspace_tree_nodes(&worktree_path, sessions)
@@ -53,19 +66,14 @@ pub async fn list_workspace_workflow_history(
 #[tauri::command]
 pub async fn get_workspace_workflow_step_detail(
     app_state: State<'_, AppState>,
-    session_store: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
     worktree_path: String,
     run_id: String,
     step_id: String,
 ) -> Result<Option<WorkspaceWorkflowStepNodeDto>, String> {
-    let data_dir = resolve_data_dir(&app)?;
-    let session_gateway =
-        StoredWorkspaceSessionGateway::new(session_store.inner().clone(), data_dir);
     let workflow_usecase = app_state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
         let sessions = workflow_usecase
-            .collect_workspace_session_inputs(&session_gateway, &worktree_path)
+            .collect_workspace_session_inputs(&worktree_path)
             .map_err(|e| e.to_string())?;
         workflow_usecase
             .get_workspace_workflow_step_detail(&worktree_path, &run_id, &step_id, sessions)
@@ -161,10 +169,13 @@ mod tests {
             ],
         };
         let workflow_usecase =
-            crate::adaptor::controller::wiring::build_workflow_usecase("/tmp/releash-test");
+            crate::adaptor::controller::wiring::build_workflow_usecase_with_workspace_sessions(
+                "/tmp/releash-test",
+                std::sync::Arc::new(gateway),
+            );
 
         let sessions = workflow_usecase
-            .collect_workspace_session_inputs(&gateway, "/repo/wt")
+            .collect_workspace_session_inputs("/repo/wt")
             .unwrap();
 
         assert_eq!(

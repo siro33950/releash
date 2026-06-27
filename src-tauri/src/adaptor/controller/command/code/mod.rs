@@ -17,7 +17,68 @@ use crate::domain::code::CodeError;
 use crate::other::AppError;
 use crate::usecase::code_error::CodeUsecaseError;
 
+pub(super) const COMMAND_NAMES: &[&str] = &[
+    "get_file_at_ref",
+    "get_staged_content",
+    "get_binary_staged_content",
+    "get_file_at_branch_base",
+    "get_binary_file_at_branch_base",
+    "get_binary_file_at_ref",
+    "get_review_snapshot",
+    "get_review_file_view",
+    "git_stage_review_group",
+    "git_unstage_review_group",
+    "get_branch_diff_summary",
+    "build_diff_file_tree",
+    "get_head_diff_file_tree_snapshot",
+    "get_file_navigation",
+    "compute_hidden_ranges",
+    "compute_hidden_ranges_from_content",
+    "compute_visible_markdown_blocks",
+    "get_language_from_path",
+    "get_relative_path",
+    "git_stage",
+    "git_unstage",
+    "list_mentionable_files",
+    "read_codex_mentionable_files",
+    "sync_mentions_with_text",
+];
+
 const STALE_REVIEW_GROUP_TARGET_ERROR_CODE: &str = "STALE_REVIEW_GROUP_TARGET";
+
+pub(crate) fn register(router: &mut super::CommandRouter) {
+    router.register_domain(COMMAND_NAMES, Box::new(invoke_handler()));
+}
+
+pub(crate) fn invoke_handler(
+) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        file_content::get_file_at_ref,
+        file_content::get_staged_content,
+        file_content::get_binary_staged_content,
+        file_content::get_file_at_branch_base,
+        file_content::get_binary_file_at_branch_base,
+        file_content::get_binary_file_at_ref,
+        review::get_review_snapshot,
+        review::get_review_file_view,
+        review::git_stage_review_group,
+        review::git_unstage_review_group,
+        diff::get_branch_diff_summary,
+        diff::build_diff_file_tree,
+        diff::get_head_diff_file_tree_snapshot,
+        diff::get_file_navigation,
+        hunk::compute_hidden_ranges,
+        hunk::compute_hidden_ranges_from_content,
+        hunk::compute_visible_markdown_blocks,
+        language::get_language_from_path,
+        diff::get_relative_path,
+        staging::git_stage,
+        staging::git_unstage,
+        mention::list_mentionable_files,
+        mention::read_codex_mentionable_files,
+        mention::sync_mentions_with_text,
+    ]
+}
 
 /// ユースケースエラー → アプリエラーの集約変換（adaptor 層が担う）。
 /// `#[error(transparent)]` な `CodeUsecaseError` の `Display` を保持するため、

@@ -1,6 +1,6 @@
 pub(crate) mod commands;
 
-const COMMAND_NAMES: &[&str] = &["load_workspace_state", "save_workspace_state"];
+pub(super) const COMMAND_NAMES: &[&str] = &["load_workspace_state", "save_workspace_state"];
 
 pub(crate) fn register(router: &mut super::CommandRouter) {
     router.register_domain(COMMAND_NAMES, Box::new(invoke_handler()));

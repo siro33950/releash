@@ -907,7 +907,9 @@ mod moved_tests {
     async fn permission_request_token_fence_rejects_stale_and_accepts_active_turn() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -1212,7 +1214,9 @@ mod moved_tests {
     async fn persisted_tool_output_resync_waits_for_pending_retry_and_flushes_after_success() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -3326,7 +3330,9 @@ mod moved_tests {
     async fn post_turn_reseed_retry_persist_payload_restores_old_message_without_duplication() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -3531,7 +3537,9 @@ mod moved_tests {
     async fn bridge_error_persist_success_clears_untrusted_and_allows_post_turn_update() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -3639,7 +3647,9 @@ mod moved_tests {
     async fn bridge_error_persist_failure_keeps_untrusted() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());

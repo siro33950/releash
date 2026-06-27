@@ -11,8 +11,8 @@ use super::stream_emit::{
 use super::turn_event_log::{
     projected_session_state_for_current_turn, record_permission_resolution_for_current_turn,
 };
-use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::turn_latency;
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::session::MessagePart;
 use crate::usecase::agent_session::session::SessionState;
 use crate::usecase::agent_session::session::SessionStore;
@@ -56,7 +56,7 @@ pub(super) async fn handle_sdk_permission_mode_notification<R: tauri::Runtime>(
         crate::infrastructure::agent_session::runtime::permission_flags::mode_from_claude_flag(
             sdk_mode,
         );
-    let data_dir = match crate::app_data_dir::resolve_data_dir(app) {
+    let data_dir = match crate::infrastructure::platform::app_data_dir::resolve_data_dir(app) {
         Ok(dir) => dir,
         Err(e) => {
             log::error!(
@@ -83,16 +83,17 @@ pub(super) async fn handle_sdk_permission_mode_notification<R: tauri::Runtime>(
         );
         return;
     };
-    let canonical_mode = match crate::permission::PermissionMode::parse(&meta.permission_mode) {
-        Ok(mode) => mode,
-        Err(e) => {
-            log::error!(
-                "Saved permission_mode is invalid for SDK permissionMode notification \
+    let canonical_mode =
+        match crate::domain::agent_session::PermissionMode::parse(&meta.permission_mode) {
+            Ok(mode) => mode,
+            Err(e) => {
+                log::error!(
+                    "Saved permission_mode is invalid for SDK permissionMode notification \
                      (chat_session_id={chat_session_id}): {e}"
-            );
-            return;
-        }
-    };
+                );
+                return;
+            }
+        };
     let canonical_str = canonical_mode.as_str();
     let (backend_for_resync, needs_resync) = {
         let mut map = handles.lock().await;
@@ -127,13 +128,13 @@ pub(super) fn build_set_mode_command_for_backend(
     permission_mode: &str,
     backend_id: &str,
 ) -> Result<String, String> {
-    let pm =
-        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
+    let pm = crate::domain::agent_session::PermissionMode::parse(permission_mode)
+        .map_err(|e| e.to_string())?;
     Ok(build_set_mode_command_for_mode(pm, backend_id))
 }
 
 pub(super) fn build_set_mode_payload_for_mode(
-    pm: crate::permission::PermissionMode,
+    pm: crate::domain::agent_session::PermissionMode,
     backend_id: &str,
 ) -> serde_json::Value {
     let mut payload = serde_json::json!({ "type": "setMode" });
@@ -147,7 +148,7 @@ pub(super) fn build_set_mode_payload_for_mode(
 }
 
 pub(super) fn build_set_mode_command_for_mode(
-    pm: crate::permission::PermissionMode,
+    pm: crate::domain::agent_session::PermissionMode,
     backend_id: &str,
 ) -> String {
     format!("{}\n", build_set_mode_payload_for_mode(pm, backend_id))
@@ -329,8 +330,8 @@ pub(super) async fn set_agent_permission_mode_internal(
     permission_mode: &str,
 ) -> Result<(), String> {
     // 境界で抽象モードを検証。対象外の値はセッション状態を変更せず bridge にも送らない。
-    let pm =
-        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
+    let pm = crate::domain::agent_session::PermissionMode::parse(permission_mode)
+        .map_err(|e| e.to_string())?;
 
     // Persist to SessionStore（検証済みの抽象モード）
     session_store.update_permission_mode(data_dir, chat_session_id, pm.as_str())?;
@@ -762,10 +763,10 @@ mod moved_tests {
 
     #[test]
     fn claude_flag_round_trip_via_permission_flags_module() {
+        use crate::domain::agent_session::PermissionMode;
         use crate::infrastructure::agent_session::runtime::permission_flags::{
             claude_flag_from_mode, mode_from_claude_flag,
         };
-        use crate::permission::PermissionMode;
         for (abstract_mode, expected_flag) in [
             (PermissionMode::Ask, "default"),
             (PermissionMode::Edit, "acceptEdits"),
@@ -785,12 +786,12 @@ mod moved_tests {
         // 抽象モード以外は早期に弾かれる契約を確認する。
         for invalid in ["acceptEdits", "bypassPermissions", "plan", "default", ""] {
             assert!(
-                crate::permission::PermissionMode::parse(invalid).is_err(),
+                crate::domain::agent_session::PermissionMode::parse(invalid).is_err(),
                 "spawn 前の検証は '{invalid}' を弾く必要がある"
             );
         }
         for valid in ["ask", "edit", "full"] {
-            assert!(crate::permission::PermissionMode::parse(valid).is_ok());
+            assert!(crate::domain::agent_session::PermissionMode::parse(valid).is_ok());
         }
     }
 

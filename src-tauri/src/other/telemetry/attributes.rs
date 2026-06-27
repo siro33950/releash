@@ -1,5 +1,7 @@
 use opentelemetry::KeyValue;
 
+use crate::domain::agent_session::{InvalidPermissionMode, PermissionMode};
+
 pub(crate) const KEY_OPERATION: &str = "releash.operation";
 pub(crate) const KEY_STATUS: &str = "releash.status";
 pub(crate) const KEY_OUTCOME: &str = "releash.outcome";
@@ -162,10 +164,12 @@ pub(crate) enum PermissionModeDim {
 
 impl PermissionModeDim {
     pub(crate) fn normalize(permission_mode: &str) -> Self {
-        match crate::permission::PermissionMode::parse(permission_mode) {
-            Ok(crate::permission::PermissionMode::Ask) => Self::Ask,
-            Ok(crate::permission::PermissionMode::Edit) => Self::Edit,
-            Ok(crate::permission::PermissionMode::Full) => Self::Full,
+        let parsed: Result<PermissionMode, InvalidPermissionMode> =
+            PermissionMode::parse(permission_mode);
+        match parsed {
+            Ok(PermissionMode::Ask) => Self::Ask,
+            Ok(PermissionMode::Edit) => Self::Edit,
+            Ok(PermissionMode::Full) => Self::Full,
             Err(_) => Self::Other,
         }
     }

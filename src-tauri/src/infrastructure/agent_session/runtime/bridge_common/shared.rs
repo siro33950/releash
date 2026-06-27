@@ -855,7 +855,7 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
     turn_phase: TurnPhase,
     session_state_override: Option<crate::usecase::agent_session::session::SessionState>,
 ) {
-    use crate::app_data_dir::resolve_data_dir;
+    use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
     use crate::usecase::agent_session::status::{
         current_timestamp, AgentStatusCenter, SessionStatus, TurnPhaseRepr,
     };
@@ -931,7 +931,7 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
 /// 同じ変換ロジックを参照し、Claude/Codex 判定とフラグ変換の重複実装を防ぐ
 /// （Spec issues-947: バックエンド変換層の DRY 化）。
 pub(super) fn bridge_permission_fields(
-    pm: crate::permission::PermissionMode,
+    pm: crate::domain::agent_session::PermissionMode,
     backend_id: &str,
     plan_mode: bool,
 ) -> Vec<(String, serde_json::Value)> {
@@ -1207,8 +1207,8 @@ pub(super) fn build_init_cmd(
     backend_id: &str,
     options: BridgeInitOptions<'_>,
 ) -> Result<serde_json::Value, String> {
-    let pm =
-        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
+    let pm = crate::domain::agent_session::PermissionMode::parse(permission_mode)
+        .map_err(|e| e.to_string())?;
     let mut cmd = serde_json::json!({
         "type": "init",
         "cwd": cwd,

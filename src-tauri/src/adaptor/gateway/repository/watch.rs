@@ -94,7 +94,7 @@ pub(crate) fn classify_git_dir_events(events: &[DebouncedEvent]) -> (bool, bool)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::test_helpers::*;
+    use crate::test_support::git::*;
     use notify_debouncer_mini::DebouncedEventKind;
 
     fn test_usecase() -> RepositoryUsecase {

@@ -8,12 +8,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::time::{timeout, Duration};
 
+use crate::domain::agent_session::PermissionMode;
 use crate::infrastructure::agent_session::runtime::permission_flags::{
     codex_approval_policy_from_mode, codex_sandbox_mode_from_mode,
 };
 use crate::infrastructure::agent_session::runtime::wait_for_startup_orphan_cleanup;
 use crate::infrastructure::agent_session::runtime::{AgentEditorContext, ImageAttachment};
-use crate::permission::PermissionMode;
 
 pub(crate) const METHOD_INITIALIZE: &str = "initialize";
 pub(crate) const METHOD_INITIALIZED: &str = "initialized";

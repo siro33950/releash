@@ -1,11 +1,11 @@
 //! 抽象 `PermissionMode` → 各CLIバックエンド固有フラグへの変換ヘルパー。
 //!
-//! 抽象モード自体の語彙・ランクは [`crate::permission::PermissionMode`] が単一の正典として
+//! 抽象モード自体の語彙・ランクは [`crate::domain::agent_session::PermissionMode`] が単一の正典として
 //! 保持する。CLI固有フラグの語彙（Claude の `default` / `acceptEdits` / `bypassPermissions`、
 //! Codex の `sandbox_mode` / `approval_policy`）はバックエンドの実装詳細として
 //! このモジュールに閉じ込め、コア型層には露出させない。
 
-use crate::permission::PermissionMode;
+use crate::domain::agent_session::PermissionMode;
 
 /// 抽象モード → Claude SDK の permissionMode 値
 pub(super) fn claude_flag_from_mode(mode: PermissionMode) -> &'static str {

@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use tauri::{
     image::Image,
@@ -14,8 +15,14 @@ pub mod ids {
     pub const QUIT: &str = "tray-quit";
 }
 
-pub fn setup_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
+type QuitHandler = Arc<dyn Fn(tauri::AppHandle) + Send + Sync + 'static>;
+
+pub fn setup_tray(
+    app: &App,
+    on_quit_requested: impl Fn(tauri::AppHandle) + Send + Sync + 'static,
+) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle();
+    let on_quit_requested: QuitHandler = Arc::new(on_quit_requested);
 
     let show_window = MenuItemBuilder::with_id(ids::SHOW_WINDOW, "Show Releash").build(handle)?;
     let quit = MenuItemBuilder::with_id(ids::QUIT, "Quit").build(handle)?;
@@ -26,13 +33,15 @@ pub fn setup_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         .item(&quit)
         .build()?;
 
-    let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
+    let icon = Image::from_bytes(include_bytes!("../../../icons/32x32.png"))?;
 
     TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
         .tooltip("Releash")
-        .on_menu_event(handle_menu_event)
+        .on_menu_event(move |app, event| {
+            handle_menu_event(app, event, Arc::clone(&on_quit_requested));
+        })
         .on_tray_icon_event(|tray, event| {
             if let tauri::tray::TrayIconEvent::DoubleClick { .. } = event {
                 let app = tray.app_handle();
@@ -47,7 +56,11 @@ pub fn setup_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
+fn handle_menu_event(
+    app: &tauri::AppHandle,
+    event: tauri::menu::MenuEvent,
+    on_quit_requested: QuitHandler,
+) {
     match event.id().as_ref() {
         ids::SHOW_WINDOW => {
             if let Some(window) = app.get_webview_window("main") {
@@ -57,22 +70,7 @@ fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
         }
         ids::QUIT => {
             QUIT_REQUESTED.store(true, Ordering::SeqCst);
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                // Kill all agent sessions before stopping the server
-                if let Some(handles) = app.try_state::<std::sync::Arc<
-                    tokio::sync::Mutex<
-                        crate::infrastructure::agent_session::runtime::AgentProcessMap,
-                    >,
-                >>() {
-                    crate::infrastructure::agent_session::runtime::close_all_agent_sessions(
-                        &app,
-                        handles.inner(),
-                    )
-                    .await;
-                }
-                app.exit(0);
-            });
+            on_quit_requested(app.clone());
         }
         _ => {}
     }

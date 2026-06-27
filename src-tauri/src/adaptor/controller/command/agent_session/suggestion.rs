@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::app_data_dir::resolve_data_dir;
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::session::{AgentPromptSuggestion, AgentPromptSuggestionUsecase};
 
 #[tauri::command]
