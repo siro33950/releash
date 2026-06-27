@@ -64,6 +64,7 @@ pub(crate) struct ParallelChildSessionSetup {
     pub(crate) step_name: String,
     pub(crate) session_id: String,
     pub(crate) system_prompt: Option<String>,
+    pub(crate) workflow_instruction: Option<String>,
     pub(crate) user_message: String,
     pub(crate) output_contract: Option<String>,
     pub(crate) permission_mode: String,

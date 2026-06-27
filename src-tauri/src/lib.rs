@@ -291,8 +291,12 @@ pub fn run() {
                 let mention_resolver: Arc<
                     dyn infrastructure::agent_session::resolver_ports::MentionResolverPort,
                 > = code_usecase.clone();
+                let branch_diff_context: Arc<
+                    dyn usecase::agent_session::context::BranchDiffContextPort,
+                > = code_usecase.clone();
                 app.manage(base_branch_resolver);
                 app.manage(mention_resolver);
+                app.manage(branch_diff_context);
                 let agent_session_usecase = Arc::new(
                     adaptor::controller::wiring::build_agent_session_usecase(app.handle().clone()),
                 );
@@ -464,6 +468,10 @@ pub fn run() {
                 .state::<Arc<usecase::agent_session::session::OpenTabRegistry>>()
                 .inner()
                 .clone();
+            let branch_diff_context = app
+                .state::<Arc<dyn usecase::agent_session::context::BranchDiffContextPort>>()
+                .inner()
+                .clone();
             let workflow_step_lifecycle_usecase = Arc::new(
                 adaptor::controller::wiring::build_workflow_step_lifecycle_usecase(
                     app.handle().clone(),
@@ -480,6 +488,7 @@ pub fn run() {
                     config_repository.clone(),
                     session_store.clone(),
                     agent_handles.clone(),
+                    branch_diff_context.clone(),
                     pending_data_dir.clone(),
                 ));
             app.manage(workflow_runtime_usecase);
@@ -489,6 +498,7 @@ pub fn run() {
                     app.handle().clone(),
                     agent_handles,
                     session_store,
+                    branch_diff_context,
                 ),
             );
             app.manage(registry.clone());

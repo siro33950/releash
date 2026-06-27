@@ -61,6 +61,7 @@ pub struct AgentProcess {
     pub state: BridgeState,
     pub turn_phase: TurnPhase,
     pub sdk_session_id: Option<String>,
+    pub system_prompt_fingerprint: Option<String>,
     pub context_carry_on_ready: Option<ContextCarryState>,
     #[cfg_attr(unix, allow(dead_code))]
     pub child: Child,
@@ -199,6 +200,7 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         state: BridgeState::Ready,
         turn_phase: TurnPhase::Idle,
         sdk_session_id: None,
+        system_prompt_fingerprint: None,
         context_carry_on_ready: None,
         child,
         generation_id: 0,

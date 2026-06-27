@@ -1482,6 +1482,7 @@ models = ["opus"]
             backend_id: backend_id.map(str::to_string),
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         store
             .save_full_session_for_migration_or_restore(data_dir, &session)

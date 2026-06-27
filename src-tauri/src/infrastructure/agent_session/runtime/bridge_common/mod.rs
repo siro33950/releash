@@ -9,6 +9,7 @@ mod session_persistence;
 mod shared;
 mod skills;
 mod stream_emit;
+mod system_context_rendering;
 mod turn_event_log;
 
 pub(crate) use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
@@ -28,6 +29,8 @@ pub(crate) use process_registry::{BridgeState, PendingMessage};
 pub(crate) use recovery::{cleanup_orphan_processes, OrphanCleanupReport};
 pub(crate) use recovery::{wait_for_startup_orphan_cleanup, CleanupGate};
 pub(crate) use sdk_message::handle_external_bridge_message;
+#[cfg(test)]
+pub(crate) use session_lifecycle::internal_turn_system_prompt_fingerprint_for_test;
 pub(crate) use session_lifecycle::{
     cancel_agent_queued_turn_internal, close_agent_session_internal, close_all_agent_sessions,
     get_session, get_session_page_internal_with_data_dir, init_agent_sessions,

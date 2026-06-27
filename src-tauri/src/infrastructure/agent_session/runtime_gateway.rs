@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 
 use crate::infrastructure::agent_session::runtime;
 use crate::permission::PermissionMode;
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::{
     AgentStreamResyncReadModel, SessionStore, StreamResyncSnapshot,
 };
@@ -14,6 +15,7 @@ pub type AgentSendMessageResponse = runtime::SendMessageResponse;
 
 pub struct AgentRuntimeGateway<'a> {
     pub app: &'a tauri::AppHandle,
+    pub branch_diff_context: &'a Arc<dyn BranchDiffContextPort>,
     pub session_store: &'a Arc<SessionStore>,
     pub registry: &'a Arc<runtime::AgentBackendRegistry>,
     pub handles: &'a Arc<Mutex<runtime::AgentProcessMap>>,
@@ -81,6 +83,7 @@ impl AgentRuntimeGateway<'_> {
     ) -> Result<AgentSendMessageResponse, String> {
         runtime::send_agent_message_internal(
             self.app,
+            Some(Arc::clone(self.branch_diff_context)),
             self.session_store,
             self.registry,
             self.handles,

@@ -11,6 +11,7 @@ use crate::infrastructure::agent_session::runtime::{
     AgentBackendRegistry, AgentProcessMap, ImageAttachment, SendMessageResponse,
 };
 use crate::infrastructure::agent_session::runtime_gateway::AgentRuntimeGateway;
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::{ChatSession, OpenTabRegistry, SessionStore};
 use crate::usecase::workflow::step_lifecycle::ResolvedWorkflowStepSession;
 use crate::usecase::workflow::{WorkflowRuntimeUsecase, WorkflowStepLifecycleUsecase};
@@ -36,6 +37,7 @@ pub(crate) async fn build_workflow_state_view(
 
 pub(crate) async fn dispatch_agent_message_with_runtime(
     app: &tauri::AppHandle,
+    branch_diff_context: &Arc<dyn BranchDiffContextPort>,
     session_store: &SessionStoreState,
     registry: &AgentBackendRegistryState,
     handles: &AgentProcessMapState,
@@ -45,6 +47,7 @@ pub(crate) async fn dispatch_agent_message_with_runtime(
         AgentMessageDispatchContext {
             gateway: AgentRuntimeGateway {
                 app,
+                branch_diff_context,
                 session_store,
                 registry,
                 handles,

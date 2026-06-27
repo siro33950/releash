@@ -141,6 +141,7 @@ pub struct SessionHandle {
 #[allow(dead_code)]
 pub struct AgentMessage {
     pub content: String,
+    pub system_prompt: Option<String>,
     pub streaming_message_id: String,
     pub images: Vec<ImageAttachment>,
     pub permission_mode: String,
@@ -597,6 +598,7 @@ pub fn build_registry_with_runtime(
     app: tauri::AppHandle,
     handles: Arc<Mutex<bridge_common::AgentProcessMap>>,
     session_store: Arc<SessionStore>,
+    branch_diff_context: Arc<dyn crate::usecase::agent_session::context::BranchDiffContextPort>,
 ) -> AgentBackendRegistry {
     build_registry_inner(
         config,
@@ -605,6 +607,7 @@ pub fn build_registry_with_runtime(
             app,
             handles,
             session_store,
+            Some(branch_diff_context),
         ))),
     )
 }

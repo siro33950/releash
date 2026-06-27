@@ -28,6 +28,7 @@ use crate::domain::workflow::{
 };
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::permission::PermissionMode;
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::{ChatSession, OpenTabRegistry, SessionStore};
 
 fn runtime_start_failure_reason(
@@ -388,6 +389,7 @@ pub(crate) async fn prepare_parallel_child_session_setups<R: tauri::Runtime>(
             step_name: ps.name.clone(),
             session_id: step_session_id,
             system_prompt: creation_plan.system_prompt,
+            workflow_instruction: creation_plan.workflow_instruction,
             user_message: creation_plan.user_message,
             permission_mode: child_permission_mode,
             output_contract: ps.output_contract.clone(),
@@ -403,6 +405,7 @@ struct ParallelChildPromptPlan {
     run_index: u32,
     system_prompt: Option<String>,
     user_message: String,
+    workflow_instruction: Option<String>,
 }
 
 struct ParallelChildCreationPlan {
@@ -410,6 +413,7 @@ struct ParallelChildCreationPlan {
     run_index: u32,
     system_prompt: Option<String>,
     user_message: String,
+    workflow_instruction: Option<String>,
     settings: StepSessionCreationSettings,
     workflow_step_context: WorkflowStepContext,
     node_kind: NodeType,
@@ -442,6 +446,13 @@ fn prepare_parallel_child_prompt_plans(
                 run_index,
                 system_prompt,
                 user_message,
+                workflow_instruction: workflow_prompt::render_child_workflow_instruction(
+                    ps,
+                    &parallel_start.execution_id,
+                    worktree_path,
+                    parallel_start.task.as_deref(),
+                    &prompt_inputs.workflow_declared_variables,
+                ),
             })
         })
         .collect()
@@ -481,6 +492,7 @@ async fn prepare_parallel_child_creation_plans<R: tauri::Runtime>(
                 stale_timeout_secs: None,
             },
             node_kind: node_type_to_domain(ps.node_type),
+            workflow_instruction: prompt_plan.workflow_instruction,
         });
     }
     Ok(creation_plans)
@@ -524,6 +536,7 @@ async fn rollback_created_parallel_child_sessions(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn activate_parallel_child_sessions<R: tauri::Runtime, O>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     executions: &Mutex<HashMap<String, WorkflowExecution>>,
@@ -550,6 +563,7 @@ where
     broadcast_state(app, worktree_path, snapshot.clone()).await;
     start_parallel_child_sessions(
         app,
+        branch_diff_context,
         session_store,
         handles,
         worktree_path,
@@ -574,6 +588,7 @@ pub(crate) trait ParallelChildTurnObserver {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_parallel_child_sessions<R: tauri::Runtime, O>(
     app: &tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     worktree_path: &str,
@@ -596,6 +611,7 @@ where
             .await;
         if let Err(e) = crate::infrastructure::agent_session::runtime::start_agent_session_internal(
             app,
+            branch_diff_context.clone(),
             handles,
             session_store,
             &setup.session_id,
@@ -603,6 +619,7 @@ where
             None,
             false,
             setup.system_prompt.clone(),
+            setup.workflow_instruction.clone().into_iter().collect(),
         )
         .await
         {
@@ -632,12 +649,15 @@ where
         if let Err(e) =
             crate::infrastructure::agent_session::runtime::start_agent_turn_internal_locked(
                 app,
+                branch_diff_context.clone(),
                 handles,
                 session_store,
                 &setup.session_id,
                 worktree_path,
                 &setup.permission_mode,
                 &setup.user_message,
+                setup.system_prompt.clone(),
+                setup.workflow_instruction.clone().into_iter().collect(),
             )
             .await
         {

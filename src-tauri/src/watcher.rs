@@ -2,7 +2,7 @@ use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -10,6 +10,7 @@ use crate::adaptor::controller::state::AppState;
 use crate::adaptor::gateway::repository::watch::{
     canonicalize_event_path, generate_watcher_id, FileChangeEvent,
 };
+use crate::usecase::agent_session::context::invalidate_instruction_resolution_cache_for_path;
 
 struct WatcherSession {
     _debouncer: notify_debouncer_mini::Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>,
@@ -63,6 +64,7 @@ pub fn start_watching(
                         };
                         let event_path = canonicalize_event_path(&event.path)
                             .unwrap_or_else(|| event.path.to_string_lossy().to_string());
+                        invalidate_instruction_resolution_cache_for_path(Path::new(&event_path));
                         let _ = app_clone.emit(
                             "file-change",
                             FileChangeEvent {

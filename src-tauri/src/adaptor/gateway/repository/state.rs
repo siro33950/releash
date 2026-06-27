@@ -7,6 +7,7 @@ use notify_debouncer_mini::{new_debouncer, DebouncedEvent};
 use tauri::{Emitter, Runtime};
 
 use crate::protocol::{BranchCardMsg, BranchListSync, WsMessage};
+use crate::usecase::agent_session::context::invalidate_instruction_resolution_cache_for_path;
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
     RepositoryStateWorkerFuture, RepositoryStateWorkerRuntime, WorktreePathNormalizer,
@@ -164,6 +165,7 @@ fn handle_file_events(state: &WorktreeState, events: Vec<DebouncedEvent>) {
     for event in events {
         let event_path = canonicalize_event_path(&event.path)
             .unwrap_or_else(|| event.path.to_string_lossy().to_string());
+        invalidate_instruction_resolution_cache_for_path(Path::new(&event_path));
         state.invalidate(InvalidateReason::file(Some(event_path)));
     }
 }

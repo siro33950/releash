@@ -10,6 +10,7 @@ use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::domain::workflow::{NodeType, WorkflowStepContext};
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::infrastructure::agent_session::runtime::AgentRuntimeError;
+use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::SessionStore;
 
 /// AgentSession 開始呼び出しを抽象化するトレイト。
@@ -24,12 +25,14 @@ pub(crate) trait SessionStartGate: Send + Sync {
         worktree_path: &str,
         permission_mode: Option<String>,
         system_prompt: Option<String>,
+        workflow_instruction: Option<String>,
     ) -> Result<(), AgentRuntimeError>;
 }
 
 /// production 用の `SessionStartGate` 実装。`start_agent_session_internal` をそのまま呼び出す。
 struct RealSessionStartGate<'a, R: tauri::Runtime> {
     app: &'a tauri::AppHandle<R>,
+    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     handles: &'a Arc<Mutex<AgentProcessMap>>,
     session_store: &'a Arc<SessionStore>,
 }
@@ -42,9 +45,11 @@ impl<'a, R: tauri::Runtime> SessionStartGate for RealSessionStartGate<'a, R> {
         worktree_path: &str,
         permission_mode: Option<String>,
         system_prompt: Option<String>,
+        workflow_instruction: Option<String>,
     ) -> Result<(), AgentRuntimeError> {
         crate::infrastructure::agent_session::runtime::start_agent_session_internal(
             self.app,
+            self.branch_diff_context.clone(),
             self.handles,
             self.session_store,
             session_id,
@@ -52,6 +57,7 @@ impl<'a, R: tauri::Runtime> SessionStartGate for RealSessionStartGate<'a, R> {
             permission_mode,
             false,
             system_prompt,
+            workflow_instruction.into_iter().collect(),
         )
         .await
     }
@@ -82,6 +88,7 @@ pub(crate) trait StepSessionDeps: Send + Sync {
         worktree_path: &str,
         permission_mode: Option<String>,
         system_prompt: Option<String>,
+        workflow_instruction: Option<String>,
     ) -> Result<(), WorkflowEngineError>;
 
     async fn mark_step_tab_open(&self, step_session_id: &str);
@@ -102,6 +109,8 @@ pub(crate) trait StepSessionDeps: Send + Sync {
         worktree_path: &str,
         permission_mode: &str,
         prompt: &str,
+        system_prompt: Option<String>,
+        workflow_instruction: Option<String>,
     ) -> Result<(), WorkflowEngineError>;
 }
 
@@ -115,6 +124,7 @@ pub(crate) struct StepSessionInfo {
 /// production 用の `StepSessionDeps` 実装。
 pub(crate) struct RealStepSessionDeps<'a, R: tauri::Runtime> {
     pub(crate) app: &'a tauri::AppHandle<R>,
+    pub(crate) branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     pub(crate) handles: &'a Arc<Mutex<AgentProcessMap>>,
     pub(crate) session_store: &'a Arc<SessionStore>,
 }
@@ -156,9 +166,11 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         worktree_path: &str,
         permission_mode: Option<String>,
         system_prompt: Option<String>,
+        workflow_instruction: Option<String>,
     ) -> Result<(), WorkflowEngineError> {
         let gate = RealSessionStartGate {
             app: self.app,
+            branch_diff_context: self.branch_diff_context.clone(),
             handles: self.handles,
             session_store: self.session_store,
         };
@@ -168,6 +180,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
             worktree_path,
             permission_mode,
             system_prompt,
+            workflow_instruction,
         )
         .await
     }
@@ -204,15 +217,20 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         worktree_path: &str,
         permission_mode: &str,
         prompt: &str,
+        system_prompt: Option<String>,
+        workflow_instruction: Option<String>,
     ) -> Result<(), WorkflowEngineError> {
         crate::infrastructure::agent_session::runtime::start_agent_turn_internal_locked(
             self.app,
+            self.branch_diff_context.clone(),
             self.handles,
             self.session_store,
             step_session_id,
             worktree_path,
             permission_mode,
             prompt,
+            system_prompt,
+            workflow_instruction.into_iter().collect(),
         )
         .await
         .map_err(WorkflowEngineError::from)
@@ -227,13 +245,20 @@ pub(crate) async fn dispatch_session_start<G: SessionStartGate + ?Sized>(
     worktree_path: &str,
     permission_mode: Option<String>,
     system_prompt: Option<String>,
+    workflow_instruction: Option<String>,
 ) -> Result<(), WorkflowEngineError> {
-    gate.start_session(session_id, worktree_path, permission_mode, system_prompt)
-        .await
-        .map_err(|error| {
-            WorkflowEngineError::with_agent_runtime_context(
-                format!("Failed to start AgentSession '{session_id}'"),
-                error,
-            )
-        })
+    gate.start_session(
+        session_id,
+        worktree_path,
+        permission_mode,
+        system_prompt,
+        workflow_instruction,
+    )
+    .await
+    .map_err(|error| {
+        WorkflowEngineError::with_agent_runtime_context(
+            format!("Failed to start AgentSession '{session_id}'"),
+            error,
+        )
+    })
 }

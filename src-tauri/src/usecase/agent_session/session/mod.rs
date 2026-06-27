@@ -4,16 +4,19 @@ pub(crate) mod lifecycle_controller;
 mod message_window;
 mod open_tabs;
 mod prompt_suggestion;
+mod read_paths;
 mod store;
 mod stored_lifecycle;
 mod stream_resync;
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 use crate::domain::agent_session::services::{
     DefaultToolOutputExternalizationPolicy, ToolOutputExternalizationPolicy,
 };
 use crate::domain::workflow::WorkflowStepContext;
+use crate::usecase::agent_session::context_meta::ContextEpochMeta;
 
 pub use crate::usecase::agent_session::status::TurnPhase;
 pub(crate) use image_attachment::validate_image_bytes;
@@ -24,6 +27,10 @@ pub use open_tabs::OpenTabRegistry;
 pub(crate) use prompt_suggestion::{
     AgentPromptGitStatusGateway, AgentPromptSuggestion, AgentPromptSuggestionUsecase,
     GitSuggestionContext,
+};
+pub(crate) use read_paths::{
+    agent_read_paths_from_message, agent_read_paths_from_messages, agent_read_paths_from_parts,
+    merge_agent_read_paths,
 };
 pub use store::{SessionReaderPort, SessionReviewContextReader, SessionStore};
 pub(crate) use stored_lifecycle::{
@@ -386,6 +393,10 @@ pub struct ChatSession {
     pub workflow_step_session: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub workflow_step_context: Option<WorkflowStepContextDto>,
+    /// Backend-internal freshness meta. Persist it through [`SessionMeta`], but
+    /// never expose it through flattened ChatSession command responses.
+    #[serde(default, skip_serializing)]
+    pub context_epoch: Option<ContextEpochMeta>,
 }
 
 pub const SESSION_BODY_FORMAT_VERSION: u32 = 1;
@@ -484,6 +495,12 @@ pub struct SessionMeta {
     /// メタ情報なので、Workflow View のヘッダー表示のため meta に保持する。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub workflow_step_context: Option<WorkflowStepContextDto>,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub workflow_instructions: Vec<String>,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub agent_read_paths: Option<Vec<PathBuf>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub context_epoch: Option<ContextEpochMeta>,
     pub first_message_preview: String,
     pub message_count: usize,
     pub body_format_version: u32,
@@ -933,6 +950,9 @@ impl SessionMeta {
             backend_id: session.backend_id.clone(),
             workflow_step_session: session.is_workflow_step_session(),
             workflow_step_context: session.workflow_step_context.clone(),
+            workflow_instructions: Vec::new(),
+            agent_read_paths: Some(agent_read_paths_from_messages(&session.messages)),
+            context_epoch: session.context_epoch.clone(),
             first_message_preview: first_message_preview(&session.messages),
             message_count: session.messages.len(),
             body_format_version: SESSION_BODY_FORMAT_VERSION,
@@ -956,6 +976,7 @@ impl SessionMeta {
             backend_id: self.backend_id.clone(),
             workflow_step_session: self.is_workflow_step_session(),
             workflow_step_context: self.workflow_step_context.clone(),
+            context_epoch: self.context_epoch.clone(),
         }
     }
 
@@ -1204,6 +1225,7 @@ fn build_new_session(
         backend_id,
         workflow_step_session,
         workflow_step_context,
+        context_epoch: None,
     }
 }
 
@@ -1537,6 +1559,23 @@ mod tests {
         }
     }
 
+    fn context_epoch_meta_for_test(payload: &str) -> ContextEpochMeta {
+        ContextEpochMeta {
+            epoch_id: 1,
+            backend_id: Some("claude".to_string()),
+            model_id: Some("sonnet".to_string()),
+            worktree_path: "/repo".to_string(),
+            source_revisions: vec![
+                crate::usecase::agent_session::context_meta::ContextSourceRevisionMeta {
+                    kind: "repo_summary".to_string(),
+                    revision: 2,
+                    fingerprint: Some("repo-fingerprint".to_string()),
+                    payload: Some(payload.to_string()),
+                },
+            ],
+        }
+    }
+
     #[test]
     fn workflow_step_session_predicate_uses_flag_or_context() {
         let mut session = build_new_session(
@@ -1597,6 +1636,36 @@ mod tests {
         session.workflow_step_context = None;
         let value = serde_json::to_value(&session).unwrap();
         assert!(value.get("workflowStepContext").is_none());
+    }
+
+    #[test]
+    fn get_session_response_does_not_expose_context_epoch() {
+        let mut session = build_new_session(
+            "/repo",
+            None,
+            crate::permission::PermissionMode::Edit,
+            None,
+            false,
+            false,
+            None,
+        );
+        session.context_epoch = Some(context_epoch_meta_for_test("repo payload"));
+        let meta = SessionMeta::from_session(&session);
+        let response = GetSessionResponse {
+            session,
+            turn_phase: TurnPhase::Idle,
+            available_models: Vec::new(),
+            pending_queue: Vec::new(),
+            pending_queue_count: 0,
+            initial_page: None,
+            latest_token_usage: None,
+        };
+
+        let response_value = serde_json::to_value(&response).unwrap();
+        let meta_value = serde_json::to_value(&meta).unwrap();
+
+        assert!(response_value.get("contextEpoch").is_none());
+        assert!(meta_value.get("contextEpoch").is_some());
     }
 
     #[test]
@@ -1682,6 +1751,7 @@ mod tests {
                 backend_id: None,
                 workflow_step_session: false,
                 workflow_step_context: None,
+                context_epoch: None,
             };
             let err = validate_session_permission_mode(&session).unwrap_err();
             assert!(
@@ -1719,6 +1789,7 @@ mod tests {
             backend_id: None,
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.id, "s1");
@@ -1757,6 +1828,7 @@ mod tests {
             backend_id: None,
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message.len(), 100 + "…".len());
@@ -1793,6 +1865,7 @@ mod tests {
             backend_id: None,
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         let summary = session.to_summary();
         // 100 chars of "あ" (300 bytes) + "…" (3 bytes)
@@ -1819,6 +1892,7 @@ mod tests {
             backend_id: None,
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message, "");
@@ -1848,6 +1922,7 @@ mod tests {
             backend_id: None,
             workflow_step_session: true,
             workflow_step_context: None,
+            context_epoch: None,
         };
         let mut regular = workflow_step.clone();
         regular.id = regular_id.clone();
@@ -1907,6 +1982,7 @@ mod tests {
             backend_id: None,
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         store
             .save_full_session_for_migration_or_restore(tmp.path(), &session)
@@ -1974,6 +2050,7 @@ mod tests {
             backend_id: None,
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         store
             .save_full_session_for_migration_or_restore(tmp.path(), &session)
@@ -2128,6 +2205,7 @@ mod tests {
             backend_id: None,
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         let back: ChatSession = serde_json::from_str(&json).unwrap();
@@ -2163,6 +2241,7 @@ mod tests {
             backend_id: None,
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("selectedModel"));
@@ -2850,6 +2929,7 @@ mod tests {
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("\"backendId\":\"claude\""));
@@ -2885,6 +2965,7 @@ mod tests {
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
+            context_epoch: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.backend_id, Some("claude".to_string()));
@@ -2913,6 +2994,7 @@ mod tests {
                 backend_id: backend_id.map(str::to_string),
                 workflow_step_session: false,
                 workflow_step_context: None,
+                context_epoch: None,
             }
         }
 
@@ -2997,7 +3079,51 @@ mod workflow_step_context_meta_tests {
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
             workflow_step_context: context,
+            context_epoch: None,
         }
+    }
+
+    #[test]
+    fn workflow_step_context_is_workflow_state_only() {
+        let dto = workflow_step_context_mapper::to_dto(WorkflowStepContext {
+            run_id: "run-1".to_string(),
+            workflow_name: "wf".to_string(),
+            step_name: "step-a".to_string(),
+            run_index: 0,
+            parent_step_name: None,
+            parent_run_index: None,
+            order: 0,
+            startup_timeout_secs: None,
+            startup_max_retries: None,
+            stale_timeout_secs: None,
+        });
+
+        let dto_json = serde_json::to_string(&dto).expect("serialize dto");
+        let restored = workflow_step_context_mapper::to_domain(dto.clone());
+        let session = session_with_context(Some(dto));
+        let session_json = serde_json::to_string(&session).expect("serialize session");
+        let meta = SessionMeta::from_session(&session);
+        let meta_json = serde_json::to_string(&meta).expect("serialize meta");
+        let summary_json = serde_json::to_string(&session.to_summary()).expect("serialize summary");
+        let restored_from_meta = meta.to_session(Vec::new());
+
+        assert!(!dto_json.contains("workflowInstruction"));
+        assert!(!session_json.contains("workflowInstruction"));
+        assert_eq!(restored.step_name, "step-a");
+        assert_eq!(
+            meta.workflow_step_context
+                .as_ref()
+                .map(|context| context.step_name.as_str()),
+            Some("step-a")
+        );
+        assert!(!meta_json.contains("workflowInstruction"));
+        assert!(!summary_json.contains("workflowInstruction"));
+        assert_eq!(
+            restored_from_meta
+                .workflow_step_context
+                .map(|context| context.step_name),
+            Some("step-a".to_string())
+        );
     }
 
     #[test]

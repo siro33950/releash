@@ -167,7 +167,33 @@ fn chat_session_for_test(
         ),
         workflow_step_session,
         workflow_step_context: None,
+        context_epoch: None,
     }
+}
+
+async fn insert_ready_agent_process_for_internal_turn_test(
+    handles: &Arc<
+        tokio::sync::Mutex<
+            crate::infrastructure::agent_session::runtime::bridge_common::AgentProcessMap,
+        >,
+    >,
+    session_store: &Arc<SessionStore>,
+    data_dir: &std::path::Path,
+    session_id: &str,
+) {
+    let mut proc =
+        crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process();
+    proc.system_prompt_fingerprint =
+        crate::infrastructure::agent_session::runtime::bridge_common::internal_turn_system_prompt_fingerprint_for_test(
+            None,
+            session_store,
+            data_dir,
+            session_id,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+    handles.lock().await.insert(session_id.to_string(), proc);
 }
 
 fn chat_session_with_message_for_test(
@@ -1846,9 +1872,18 @@ fn build_step_prompt_full_pipeline() {
     let sys_str = sys.expect("system_prompt should be set");
     assert!(sys_str.contains("Coding policy for my-app."));
     assert!(sys_str.contains("Output as markdown."));
-    // instruction in user_message, with variable expansion
-    assert!(prompt.contains("Task: Fix bug"));
-    assert!(prompt.contains("Implement the feature."));
+    let instruction = workflow_prompt::render_step_workflow_instruction(
+        &step,
+        "00000000-0000-0000-0000-000000000000",
+        "/home/user/my-app",
+        Some("Fix bug"),
+        &HashMap::new(),
+    )
+    .expect("workflow instruction");
+    assert!(instruction.contains("Task: Fix bug"));
+    assert!(instruction.contains("Implement the feature."));
+    assert!(!prompt.contains("Task: Fix bug"));
+    assert!(!prompt.contains("Implement the feature."));
     // output_contract がある場合、作業本文の末尾にも Contract 由来の
     // 完了時アクションを置き、初回完了時に CLI 提出へ誘導する。
     assert!(prompt.contains("完了時の必須アクション"));
@@ -1986,8 +2021,8 @@ fn build_step_prompt_passes_composed_system_prompt_through() {
 fn build_step_prompt_expands_workflow_declared_variables_in_user_message() {
     // spec issues-1054「workflow 定義変数の facet 展開」:
     // build_step_prompt は workflow_declared_variables を facet 本文の
-    // `{{vars.<name>}}` 展開に渡す。本テストは instruction（user_message）と
-    // policy（system_prompt）の双方で `{{vars.*}}` が宣言値に置換されることを検証する。
+    // `{{vars.<name>}}` 展開に渡す。instruction は system context 経路へ渡す値として、
+    // policy は system_prompt として `{{vars.*}}` が宣言値に置換されることを検証する。
     let tmp = tempfile::TempDir::new().unwrap();
     let base = tmp.path();
     let instructions = base.join("instructions");
@@ -2026,10 +2061,20 @@ fn build_step_prompt_expands_workflow_declared_variables_in_user_message() {
         &declared,
     )
     .unwrap();
+    let instruction = workflow_prompt::render_step_workflow_instruction(
+        &step,
+        "00000000-0000-0000-0000-000000000000",
+        "/repo",
+        None,
+        &declared,
+    )
+    .expect("workflow instruction");
 
-    // user_message 側の `{{vars.spec_dir}}` / `{{vars.env}}` が宣言値に展開される
-    assert!(prompt.contains("Spec dir: docs/specs/issues-1054"));
-    assert!(prompt.contains("Env: production"));
+    // workflow instruction 側の `{{vars.spec_dir}}` / `{{vars.env}}` が宣言値に展開される
+    assert!(instruction.contains("Spec dir: docs/specs/issues-1054"));
+    assert!(instruction.contains("Env: production"));
+    assert!(!prompt.contains("Spec dir: docs/specs/issues-1054"));
+    assert!(!prompt.contains("Env: production"));
     // 未展開トークンが残らない
     assert!(!prompt.contains("{{vars.spec_dir}}"));
     assert!(!prompt.contains("{{vars.env}}"));
@@ -2053,6 +2098,7 @@ struct RecordedSessionStart {
     worktree_path: String,
     permission_mode: Option<String>,
     system_prompt: Option<String>,
+    workflow_instruction: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -2063,12 +2109,14 @@ impl SessionStartGate for RecordingSessionStartGate {
         worktree_path: &str,
         permission_mode: Option<String>,
         system_prompt: Option<String>,
+        workflow_instruction: Option<String>,
     ) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
         self.records.lock().unwrap().push(RecordedSessionStart {
             session_id: session_id.to_string(),
             worktree_path: worktree_path.to_string(),
             permission_mode,
             system_prompt,
+            workflow_instruction,
         });
         Ok(())
     }
@@ -2084,6 +2132,7 @@ impl SessionStartGate for StartupTimeoutSessionStartGate {
         _worktree_path: &str,
         _permission_mode: Option<String>,
         _system_prompt: Option<String>,
+        _workflow_instruction: Option<String>,
     ) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
         Err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::startup_timeout(2, 2))
     }
@@ -2091,9 +2140,16 @@ impl SessionStartGate for StartupTimeoutSessionStartGate {
 
 #[tokio::test]
 async fn dispatch_session_start_preserves_startup_timeout_metadata() {
-    let err = dispatch_session_start(&StartupTimeoutSessionStartGate, "sid", "/repo", None, None)
-        .await
-        .unwrap_err();
+    let err = dispatch_session_start(
+        &StartupTimeoutSessionStartGate,
+        "sid",
+        "/repo",
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
 
     match err {
         WorkflowEngineError::AgentRuntime {
@@ -2155,6 +2211,7 @@ async fn dispatch_session_start_passes_composed_system_prompt_to_gate() {
         "/repo",
         None,
         system_prompt.clone(),
+        None,
     )
     .await
     .unwrap();
@@ -2276,7 +2333,7 @@ async fn dispatch_session_start_passes_none_when_no_facets() {
         records: records.clone(),
     };
 
-    dispatch_session_start(&gate, "sid", "/repo", None, system_prompt)
+    dispatch_session_start(&gate, "sid", "/repo", None, system_prompt, None)
         .await
         .unwrap();
 
@@ -2305,6 +2362,8 @@ struct RecordingStepSessionDeps {
     assert_runtime_lock_during_start: std::sync::atomic::AtomicBool,
     runtime_lock_was_held_during_start: std::sync::atomic::AtomicBool,
     created_contexts: std::sync::Mutex<Vec<WorkflowStepContext>>,
+    dispatched_workflow_instructions: std::sync::Mutex<Vec<Option<String>>>,
+    started_workflow_instructions: std::sync::Mutex<Vec<Option<String>>>,
 }
 
 impl RecordingStepSessionDeps {
@@ -2347,6 +2406,17 @@ impl RecordingStepSessionDeps {
         self.created_contexts.lock().unwrap().clone()
     }
 
+    fn dispatched_workflow_instructions(&self) -> Vec<Option<String>> {
+        self.dispatched_workflow_instructions
+            .lock()
+            .unwrap()
+            .clone()
+    }
+
+    fn started_workflow_instructions(&self) -> Vec<Option<String>> {
+        self.started_workflow_instructions.lock().unwrap().clone()
+    }
+
     fn assert_runtime_lock_during_start(&self) {
         self.assert_runtime_lock_during_start
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -2387,9 +2457,14 @@ impl StepSessionDeps for RecordingStepSessionDeps {
         _worktree_path: &str,
         _permission_mode: Option<String>,
         _system_prompt: Option<String>,
+        workflow_instruction: Option<String>,
     ) -> Result<(), WorkflowEngineError> {
         self.dispatch_session_start_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.dispatched_workflow_instructions
+            .lock()
+            .unwrap()
+            .push(workflow_instruction);
         Ok(())
     }
 
@@ -2426,9 +2501,15 @@ impl StepSessionDeps for RecordingStepSessionDeps {
         _worktree_path: &str,
         _permission_mode: &str,
         _prompt: &str,
+        _system_prompt: Option<String>,
+        workflow_instruction: Option<String>,
     ) -> Result<(), WorkflowEngineError> {
         self.start_agent_turn_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.started_workflow_instructions
+            .lock()
+            .unwrap()
+            .push(workflow_instruction);
         if self
             .assert_runtime_lock_during_start
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -2656,6 +2737,54 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
 }
 
 #[tokio::test]
+async fn start_step_session_with_deps_keeps_workflow_instruction_outside_step_context() {
+    let engine = WorkflowRuntimeService::new_for_test();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let instructions = tmp.path().join("instructions");
+    std::fs::create_dir_all(&instructions).unwrap();
+    std::fs::write(
+        instructions.join("impl.md"),
+        "Keep this instruction private.",
+    )
+    .unwrap();
+
+    let mut step = make_test_step("instruction-step", NodeType::Agent, "unused", vec![], None);
+    step.inline_prompt = Some("hello".to_string());
+    step.instruction = Some("impl".to_string());
+    resolve_node_facets_for_test(&mut step, tmp.path());
+
+    {
+        let mut execs = engine.executions.lock().await;
+        insert_single_step_execution(&mut execs, step);
+    }
+
+    let deps = RecordingStepSessionDeps::default();
+    engine
+        .start_step_session_with_deps(&deps, "/repo")
+        .await
+        .expect("start_step_session_with_deps must succeed");
+
+    let contexts = deps.created_contexts();
+    assert_eq!(contexts.len(), 1);
+    assert_eq!(contexts[0].step_name, "instruction-step");
+    let dispatched = deps.dispatched_workflow_instructions();
+    let started = deps.started_workflow_instructions();
+    assert_eq!(dispatched.len(), 1);
+    assert_eq!(started.len(), 1);
+    let dispatched_instruction = dispatched[0]
+        .as_deref()
+        .expect("dispatch_session_start must receive workflow instruction");
+    let started_instruction = started[0]
+        .as_deref()
+        .expect("start_agent_turn_locked must receive workflow instruction");
+    assert_eq!(dispatched_instruction, started_instruction);
+    assert!(
+        dispatched_instruction.contains("Keep this instruction private."),
+        "rendered workflow instruction body must be handed off to both gates"
+    );
+}
+
+#[tokio::test]
 async fn start_step_session_with_deps_propagates_node_session_append_failure() {
     let engine = WorkflowRuntimeService::new_for_test();
 
@@ -2754,10 +2883,19 @@ fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
     assert!(!sp.contains("PARALLEL_KNOWLEDGE_BODY"));
     assert!(!sp.contains("PARALLEL_INSTRUCTION_BODY"));
 
-    // knowledge / instruction の本文と、Contract 由来の完了時アクションは
-    // user_message に集約される。
+    // knowledge と Contract 由来の完了時アクションは user_message に集約される。
+    // instruction は Agent system context の dedup 経路へ渡す。
     assert!(user_message.contains("PARALLEL_KNOWLEDGE_BODY"));
-    assert!(user_message.contains("PARALLEL_INSTRUCTION_BODY"));
+    assert!(!user_message.contains("PARALLEL_INSTRUCTION_BODY"));
+    let instruction = workflow_prompt::render_child_workflow_instruction(
+        &ps,
+        "11111111-1111-1111-1111-111111111111",
+        "/repo",
+        None,
+        &HashMap::new(),
+    )
+    .expect("parallel workflow instruction");
+    assert!(instruction.contains("PARALLEL_INSTRUCTION_BODY"));
     assert!(user_message.contains("完了時の必須アクション"));
     // CLI 名は起動環境別 alias で展開される（spec issues-1054）。
     let cli_alias = WorkflowRuntimeService::resolve_releash_alias();
@@ -2798,7 +2936,16 @@ fn build_parallel_step_prompt_no_policy_or_contract_returns_none_system_prompt()
     .unwrap();
 
     assert!(system_prompt.is_none());
-    assert!(user_message.contains("INSTR"));
+    assert!(!user_message.contains("INSTR"));
+    let instruction = workflow_prompt::render_child_workflow_instruction(
+        &ps,
+        "11111111-1111-1111-1111-111111111111",
+        "/repo",
+        None,
+        &HashMap::new(),
+    )
+    .expect("parallel workflow instruction");
+    assert_eq!(instruction, "INSTR");
 }
 
 // ---- decide_approval_action ----
@@ -3312,6 +3459,7 @@ fn latest_assistant_output_after_approval_chat_adjustment_is_selected() {
         backend_id: None,
         workflow_step_session: false,
         workflow_step_context: None,
+        context_epoch: None,
     };
 
     let output =
@@ -10071,10 +10219,13 @@ mod dispatch_boundary_tests {
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )
             .unwrap();
-        handles.lock().await.insert(
-            session_id.to_string(),
-            crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process(),
-        );
+        insert_ready_agent_process_for_internal_turn_test(
+            &handles,
+            &session_store,
+            &data_dir,
+            session_id,
+        )
+        .await;
 
         submit_output_for_test_with_deps(
             &engine,
@@ -10148,10 +10299,13 @@ mod dispatch_boundary_tests {
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )
             .unwrap();
-        handles.lock().await.insert(
-            session_id.to_string(),
-            crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process(),
-        );
+        insert_ready_agent_process_for_internal_turn_test(
+            &handles,
+            &session_store,
+            &data_dir,
+            session_id,
+        )
+        .await;
         let pending = crate::adaptor::gateway::workflow::pending_command::PendingCommand::new(
             run_id.clone(),
             crate::adaptor::gateway::workflow::pending_command::CliRequestPayload::SubmitOutput {
@@ -10612,10 +10766,13 @@ mod dispatch_boundary_tests {
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )
             .unwrap();
-        handles.lock().await.insert(
-            session_id.to_string(),
-            crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process(),
-        );
+        insert_ready_agent_process_for_internal_turn_test(
+            &handles,
+            &session_store,
+            &data_dir,
+            session_id,
+        )
+        .await;
 
         engine
             .handle_missing_required_output(
@@ -10911,10 +11068,13 @@ mod dispatch_boundary_tests {
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )
             .unwrap();
-        handles.lock().await.insert(
-            session_id.to_string(),
-            crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process(),
-        );
+        insert_ready_agent_process_for_internal_turn_test(
+            &handles,
+            &session_store,
+            &data_dir,
+            session_id,
+        )
+        .await;
 
         engine
             .handle_missing_required_output(
