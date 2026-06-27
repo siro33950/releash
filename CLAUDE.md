@@ -1,30 +1,48 @@
 # Releash
 
-Tauri + React + Monaco Editor のデスクトップGitエディタ。
-WebSocketサーバーとremote_accessバックエンドは残存しているが、モバイル向けフロントremoteクライアントと専用ビルド経路は削除済み。
+Releash は、ソフトウェア開発のための **programmable agentic workflow workbench**。
 
-## アーキテクチャ
+プロダクトの中心は workflow である。開発者が agentic workflow を定義し、実行し、観測し、承認し、却下し、再指示し、その判断に必要な作業状態を同じ場所で扱えることを目指す。
 
-### ロジック配置の原則
-- **全てのロジックはRustに実装し、フロントエンドはインターフェースに徹する（例外なし）**
-- フロントエンドの責務: 表示、入力受付、Tauriコマンド呼び出し、表示用フォーマット
-- 新機能のロジックは必ずTauriコマンドとして実装し、フロントからは `invoke` で呼ぶ
+Releash は、特定の作業単位や特定の道具を主語にしない。コード、差分、terminal、テスト出力、review comment、agent session、workflow run、approval、実行履歴などを、workflow が扱う artifact として統合する。
 
-### デスクトップアプリ（メイン）
+## プロダクト方針
+
+- Releash は programmable agentic workflow の workbench であり、小さな IDE クローンではない。
+- 第一級の状態は workflow state である。
+- human checkpoint を第一級に扱う。観測、承認、却下、指示修正、再開を自然にできるようにする。
+- artifact は workflow の入力・出力・判断材料であり、プロダクトの主語ではない。
+- remote / mobile を扱う場合は、workflow 判断点への監督・介入を中心にする。
+- 実装は、実際の workflow action が軽くなる・信頼できるようになる薄い縦切りを優先する。
+
+## アーキテクチャ原則
+
+### Rust がロジックを所有する
+
+- **全てのアプリケーションロジックは Rust に置く。例外なし。**
+- フロントエンドの責務は、表示、入力受付、backend command 呼び出し、最小限の表示用フォーマットに限る。
+- 新しい振る舞いは Rust の usecase / query service / Tauri command の背後に実装し、frontend からは `invoke` で呼ぶ。
+- workflow、session、artifact、terminal、review、persistence のロジックを React hook や UI component に追加しない。
+- 触った frontend code に既存ロジックが残っている場合は、タスクのスコープ内で可能な範囲で Rust 境界へ移す。
+
+### 状態の所有者を明確にする
+
+- workflow runtime、workflow artifact、agent session state、review comment、terminal state、persistence の所有者を明確にする。
+- full-retention 設計を避ける。summary、page、id-based operation、delta で足りる場合に、session body、artifact、stream、workflow state 全体を clone / store / recompute / resend しない。
+- read model は、Tauri、WebSocket、将来の daemon / native client が同じ backend-owned state を読める形にする。
+- frontend state は UI に必要な状態の mirror に留め、domain behavior の source of truth にしない。
+
+### デスクトップアプリ
+
 - **フロントエンド**: React 19 + TypeScript + TailwindCSS 4 + Monaco Editor
-- **バックエンド**: Rust (Tauri 2) + git2 + tokio
-- **ビルド**: Vite + Biome (lint/format)
-
-### リモートアクセス（バックエンドのみ残存）
-- モバイル向けフロントremoteクライアントとremote専用ビルド経路は削除済み
-- デスクトップ側のWebSocketサーバー（`ws_server/`）と`ws_bridge.rs`は残存
-- `src-tauri/src/domain/remote_access/` と `src-tauri/src/usecase/remote_access/` にremote_accessバックエンドロジックが残存
-- WebSocketメッセージ型・認証・セッション管理は `protocol/` と `ws_server/` が担当
+- **バックエンド**: Rust (Tauri 2) + tokio
+- **ビルド**: Vite + Biome
 
 ### 通信レイヤー
-- `src-tauri/src/protocol/` — WebSocketメッセージの型定義（auth, git, pty, comment, agent等）
-- `src-tauri/src/ws_bridge.rs` — ブロードキャスター（PTY出力バッファリング含む）
-- `src-tauri/src/ws_server/` — セッション管理、認証、ルーティング、レート制限
+
+- `src-tauri/src/protocol/` - WebSocket message type / DTO
+- `src-tauri/src/ws_bridge.rs` - broadcaster / sync bridge
+- `src-tauri/src/ws_server/` - session、auth、routing、handler、rate limit
 
 ## ディレクトリ構造
 
@@ -32,40 +50,55 @@ WebSocketサーバーとremote_accessバックエンドは残存しているが�
 src/                        # フロントエンド
 ├── components/panels/      # EditorTabContent, FileTree, TerminalPanel, SourceControlPanel 等
 ├── components/layout/      # ActivityBar, StatusBar
-├── components/workspace/   # Worktree管理UI
-├── components/ui/          # shadcn/ui プリミティブ
-├── hooks/                  # カスタムフック（useFileContents, useGitStatus 等）
-├── lib/                    # ユーティリティ（computeHunks, generatePatch 等）
-├── contexts/               # EditorContext
+├── components/workspace/   # Worktree 管理 UI
+├── components/ui/          # shadcn/ui primitive
+├── hooks/                  # React hook。interface-oriented に保つ
+├── lib/                    # frontend utility。domain logic を追加しない
+├── contexts/               # EditorContext と UI context
 ├── screens/                # WorktreeView, WorkspaceManagerScreen
-└── types/                  # 型定義
+└── types/                  # frontend-facing type
 
 src-tauri/src/              # バックエンド
-├── domain/remote_access/   # リモートアクセス用ドメインロジック
-├── usecase/remote_access/  # リモートアクセス用ユースケース
-├── git/                    # Git操作（branch, commit, status, diff, stage, worktree, log）
-├── ws_server/              # WebSocketサーバー（handlers, session, auth, routing）
-├── protocol/               # 通信プロトコル型定義
-├── git_host/               # GitHub連携（PR取得等）
-├── pty.rs                  # 疑似端末管理
-├── config.rs               # アプリ設定（TOML）
-├── webhook.rs              # Slack/Discord Webhook通知
-├── watcher.rs              # ファイル変更監視
-└── shell_integration.rs    # Bash/Zsh/Fish シェル統合
+├── domain/                 # domain logic
+├── usecase/                # application workflow / usecase
+├── adaptor/                # controller, gateway, presenter, protocol adapter
+├── infrastructure/         # filesystem, process, network client 等
+├── protocol/               # WebSocket protocol type
+├── ws_server/              # WebSocket server
+├── ws_bridge.rs            # WebSocket / app bridge
+├── pty.rs                  # PTY management
+├── config.rs               # app config
+├── webhook.rs              # Slack / Discord webhook notification
+├── watcher.rs              # file watching
+└── shell_integration.rs    # Bash / Zsh / Fish shell integration
 ```
+
+バックエンドは clean architecture へ段階移行中。Rust layer の詳細な規約は `src-tauri/AGENTS.md` と `docs/architecture/` を参照。
 
 ## ビルド・テスト・Lint
 
-CIと同じコマンドを使うこと（`.github/workflows/ci.yml` 参照）。
+CI と同じコマンドを使う。`.github/workflows/ci.yml` を参照。
 
-### フロントエンド（プロジェクトルートで実行）
+### フロントエンド
+
+プロジェクトルートで実行:
+
 ```bash
-pnpm lint          # Biome check（失敗時は pnpm lint:fix で修正）
-pnpm test          # Vitest
-pnpm build         # TSC + Vite build + bridge生成
+pnpm lint
+pnpm test
+pnpm build
 ```
 
-### Rust（src-tauri/ ディレクトリで実行）
+format / import order で lint が落ちた場合:
+
+```bash
+pnpm lint:fix
+```
+
+### Rust
+
+`src-tauri/` で実行:
+
 ```bash
 cargo fmt --check
 cargo clippy -- -D warnings
@@ -73,46 +106,64 @@ cargo test
 ```
 
 ### 統合テスト
+
+プロジェクトルートで実行:
+
 ```bash
-pnpm test:integration   # Playwright
+pnpm test:integration
 ```
 
 ## テスト方針
 
 ### 配置
-- フロントエンド: ソースファイルと同じディレクトリに `*.test.tsx` / `*.test.ts`
-- Rust: 各モジュール内に `#[cfg(test)] mod tests { ... }`
 
-### 何をテストするか
-- 新規ロジックには必ずテストを書く
-- ユーティリティ関数（`lib/`）: 入出力の網羅テスト、境界値テスト
-- カスタムフック（`hooks/`）: 状態遷移と副作用のテスト
-- コンポーネント: ユーザーインタラクションと表示条件のテスト
-- Rustコマンド: 正常系・エラー系の両方
+- フロントエンドテストは対象ファイルの隣に `*.test.tsx` / `*.test.ts` として置く。
+- Rust テストは該当 module 内に `#[cfg(test)] mod tests { ... }` として置く。
 
-### モックの方針
-- `react-resizable-panels`: jsdomで動作しないため `vi.mock` 必須
-- Tauri API（`@tauri-apps/api`）: `vi.mock` でスタブ化
-- Monaco Editor: 命令型APIのため統合テストではなくロジックのみ単体テスト
-- 外部プロセス（`git push` 等）: テストでは実行しない
+### カバレッジ期待値
+
+- 新規ロジックにはテストを書く。
+- frontend utility は入出力と edge case をテストする。
+- hook は状態遷移と副作用をテストする。
+- component は user interaction と conditional rendering をテストする。
+- Rust command / usecase は正常系とエラー系をテストする。
+
+### モック方針
+
+- `react-resizable-panels` は jsdom で動作しないため `vi.mock` する。
+- `@tauri-apps/api` の Tauri API は `vi.mock` で stub する。
+- Monaco Editor は imperative API を持つため、Monaco 自体の integration test より周辺ロジックの unit test を優先する。
+- 外部プロセスはテストで実行しない。
 
 ## コーディング規約
 
 ### フロントエンド
-- インデント: Tab（Biome設定）
-- インポート整理: Biomeの自動整理に任せる
-- UIコンポーネント: shadcn/ui (Radix UI) ベース
-- スタイル: TailwindCSS
+
+- インデントは tab。Biome に従う。
+- import 整理は Biome に任せる。
+- UI component は shadcn/ui と Radix UI をベースにする。
+- styling は TailwindCSS。
+- React component は interface-oriented に保つ。domain decision を hook、reducer、view helper に埋め込まない。
 
 ### Rust
-- `git2` クレートでGit操作。pushのみ `std::process::Command` で `git push`
-- 非同期処理: tokio
-- エラー型: 各モジュールに専用エラー型
 
-## 既知の制約・注意点
+- async 処理は tokio を使う。
+- module ごとに専用 error type を使う。
+- domain code は infrastructure dependency を持たない。
+- controller は Tauri / WebSocket input を usecase call へ変換する。business behavior を controller に持たせない。
 
-- Monaco Editorのファイル切り替え: `key={filePath}` で再マウントすること（中間状態でフリーズする）
-- `git2` の UnbornBranch: `repo.head()` が `ErrorCode::UnbornBranch` → 初回コミット前の特別処理が必要
-- `git apply --cached`: パッチのベースはStagedにすること（HEADベースだとコンテキスト行不一致）
-- worktreeをリポジトリルート内に作るとBiomeがネスト設定エラーを起こす → worktreeは外部に配置
-- `ignore::WalkBuilder` はテストで `.git` ディレクトリが必要 → `git2::Repository::init()` で初期化
+## 既知の制約
+
+- Monaco Editor のファイル切り替えは `key={filePath}` で remount する。中間状態で freeze することがある。
+- worktree は repository root 内に作らない。Biome が nested config で失敗することがある。
+
+## レビュー観点
+
+Releash を変更するときは、次を確認する。
+
+- workflow action の定義、実行、観測、承認、却下、再指示のどれかが軽くなるか。
+- 新しいロジックは frontend ではなく Rust に置かれているか。
+- 変更した state の source of truth は明確か。
+- full-retention / full-recompute 経路を増やしていないか。
+- 同じ backend-owned state を Tauri、WebSocket、将来の client surface で再利用できるか。
+- artifact が workflow の判断材料として扱われているか。
