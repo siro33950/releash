@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::usecase::agent_session::AgentSessionUsecase;
 use crate::usecase::code_usecase::CodeUsecase;
+use crate::usecase::pty_session::read_usecase::PtySessionReadUsecase;
 use crate::usecase::repo_paths_usecase::RepoPathsUsecase;
 use crate::usecase::repository_state::RepositoryStateService;
 use crate::usecase::repository_usecase::RepositoryUsecase;
@@ -21,4 +22,5 @@ pub struct AppState {
     pub review_usecase: Arc<ReviewUsecase>,
     pub agent_session_usecase: Arc<AgentSessionUsecase>,
     pub workflow_usecase: Arc<WorkflowUsecase>,
+    pub pty_session_read_usecase: Arc<PtySessionReadUsecase>,
 }

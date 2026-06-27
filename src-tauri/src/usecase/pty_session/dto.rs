@@ -22,6 +22,11 @@ impl From<PtySessionSnapshot> for PtySessionInfo {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct PtySessionAvailability {
+    pub unavailable_session_keys: Vec<String>,
+}
+
 pub struct FoundPtySession {
     pub snapshot: PtySessionSnapshot,
     pub buffered_output: String,

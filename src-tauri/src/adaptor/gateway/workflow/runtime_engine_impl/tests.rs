@@ -6361,6 +6361,9 @@ mod dispatch_boundary_tests {
                     crate::adaptor::controller::wiring::build_agent_session_usecase_for_tests(),
                 ),
                 workflow_usecase,
+                pty_session_read_usecase: Arc::new(
+                    crate::adaptor::controller::wiring::build_pty_session_read_usecase_for_tests(),
+                ),
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("tauri mock test app must build")

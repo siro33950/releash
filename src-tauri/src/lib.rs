@@ -126,6 +126,11 @@ pub fn run() {
     let ws_broadcaster = Arc::new(ws_bridge::WsBroadcaster::default());
     let pty_gateway =
         Arc::new(adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default());
+    let pty_read_gateway: Arc<
+        dyn usecase::pty_session::ports::PtySessionReadGateway + Send + Sync,
+    > = pty_gateway.clone();
+    let pty_session_read_usecase =
+        Arc::new(usecase::pty_session::read_usecase::PtySessionReadUsecase::new(pty_read_gateway));
     let pty_gateway_for_setup = Arc::clone(&pty_gateway);
     let pty_replay_reader: Arc<dyn usecase::pty_session::query_service::PtySessionReplayReader> =
         Arc::new(
@@ -354,6 +359,7 @@ pub fn run() {
                     review_usecase,
                     agent_session_usecase,
                     workflow_usecase,
+                    pty_session_read_usecase,
                 });
             }
 
