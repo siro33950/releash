@@ -13,7 +13,10 @@ use crate::domain::app_config::repository::{
 use crate::domain::app_config::services::generate_token;
 use crate::domain::app_config::value_objects as domain_vo;
 
-use super::config_models::{apply_domain_to_config, config_to_domain, ReleashConfig};
+use super::config_models::{
+    apply_domain_to_config, config_to_domain, NotionLabelPropertyModel, NotionPropertyMappingModel,
+    NotionRepoConfigModel, ReleashConfig,
+};
 
 static CONFIG_WRITE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -153,7 +156,7 @@ impl NotionConfigRepository for AppConfig {
     }
 }
 
-fn notion_to_domain(config: crate::notion::types::NotionRepoConfig) -> domain_vo::NotionRepoConfig {
+fn notion_to_domain(config: NotionRepoConfigModel) -> domain_vo::NotionRepoConfig {
     domain_vo::NotionRepoConfig {
         api_token: config.api_token,
         database_id: config.database_id,
@@ -161,8 +164,8 @@ fn notion_to_domain(config: crate::notion::types::NotionRepoConfig) -> domain_vo
     }
 }
 
-fn notion_to_model(config: domain_vo::NotionRepoConfig) -> crate::notion::types::NotionRepoConfig {
-    crate::notion::types::NotionRepoConfig {
+fn notion_to_model(config: domain_vo::NotionRepoConfig) -> NotionRepoConfigModel {
+    NotionRepoConfigModel {
         api_token: config.api_token,
         database_id: config.database_id,
         property_mapping: notion_mapping_to_model(config.property_mapping),
@@ -170,7 +173,7 @@ fn notion_to_model(config: domain_vo::NotionRepoConfig) -> crate::notion::types:
 }
 
 fn notion_mapping_to_domain(
-    mapping: crate::notion::types::PropertyMapping,
+    mapping: NotionPropertyMappingModel,
 ) -> domain_vo::NotionPropertyMapping {
     domain_vo::NotionPropertyMapping {
         title: mapping.title,
@@ -189,13 +192,13 @@ fn notion_mapping_to_domain(
 
 fn notion_mapping_to_model(
     mapping: domain_vo::NotionPropertyMapping,
-) -> crate::notion::types::PropertyMapping {
-    crate::notion::types::PropertyMapping {
+) -> NotionPropertyMappingModel {
+    NotionPropertyMappingModel {
         title: mapping.title,
         labels: mapping
             .labels
             .into_iter()
-            .map(|label| crate::notion::types::LabelProperty {
+            .map(|label| NotionLabelPropertyModel {
                 name: label.name,
                 property_type: label.property_type,
             })
@@ -332,12 +335,12 @@ fn write_config_tmp_file(tmp_path: &Path, content: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::super::config_models::{
-        AgentsSection, AppSection, DesktopNotifyMode, NotifySection, WorkflowSection,
+        AgentsSection, AppSection, DesktopNotifyMode, NotifySection, NotionPropertyMappingModel,
+        NotionRepoConfigModel, WorkflowSection,
     };
     use super::*;
     use crate::domain::app_config::services::TOKEN_LENGTH;
     use crate::domain::hooks::services::build_hooks_json;
-    use crate::notion::types::NotionRepoConfig;
     use tempfile::TempDir;
 
     fn config_path(dir: &TempDir) -> PathBuf {
@@ -995,10 +998,10 @@ token = "existing_token_value_here_with_enough_length_!!"
         config.server.token = generate_token();
         config.notion.insert(
             "/path/to/repo".to_string(),
-            NotionRepoConfig {
+            NotionRepoConfigModel {
                 api_token: "ntn_test_token".to_string(),
                 database_id: "db-id-456".to_string(),
-                property_mapping: crate::notion::types::PropertyMapping::default(),
+                property_mapping: NotionPropertyMappingModel::default(),
             },
         );
         write_config(&path, &config).unwrap();
@@ -1010,6 +1013,105 @@ token = "existing_token_value_here_with_enough_length_!!"
         assert_eq!(repo_config.api_token, "ntn_test_token");
         assert_eq!(repo_config.database_id, "db-id-456");
         assert_eq!(repo_config.property_mapping.title, "Name");
+    }
+
+    #[test]
+    fn notion_config_repository_upsert_get_remove_preserves_all_fields() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+        let app_config = AppConfig::new(ReleashConfig::default(), path);
+        let repo_path = "/path/to/repo";
+        let config = domain_vo::NotionRepoConfig {
+            api_token: "ntn_test_token".to_string(),
+            database_id: "db-id-456".to_string(),
+            property_mapping: domain_vo::NotionPropertyMapping {
+                title: "Task Name".to_string(),
+                labels: vec![
+                    domain_vo::NotionLabelProperty {
+                        name: "Status".to_string(),
+                        property_type: "status".to_string(),
+                    },
+                    domain_vo::NotionLabelProperty {
+                        name: "Tags".to_string(),
+                        property_type: "multi_select".to_string(),
+                    },
+                ],
+                branch_name: "Branch".to_string(),
+                branch_prefix: "feat/".to_string(),
+            },
+        };
+
+        NotionConfigRepository::upsert(&app_config, repo_path.to_string(), config.clone()).unwrap();
+        let stored = NotionConfigRepository::get(&app_config, repo_path)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(stored.api_token, config.api_token);
+        assert_eq!(stored.database_id, config.database_id);
+        assert_eq!(stored.property_mapping.title, config.property_mapping.title);
+        assert_eq!(
+            stored.property_mapping.labels,
+            config.property_mapping.labels
+        );
+        assert_eq!(
+            stored.property_mapping.branch_name,
+            config.property_mapping.branch_name
+        );
+        assert_eq!(
+            stored.property_mapping.branch_prefix,
+            config.property_mapping.branch_prefix
+        );
+
+        NotionConfigRepository::remove(&app_config, repo_path).unwrap();
+        assert!(NotionConfigRepository::get(&app_config, repo_path)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn notion_config_model_domain_conversion_roundtrip_preserves_mapping() {
+        let model = NotionRepoConfigModel {
+            api_token: "ntn_test_token".to_string(),
+            database_id: "db-id-456".to_string(),
+            property_mapping: NotionPropertyMappingModel {
+                title: "Task Name".to_string(),
+                labels: vec![
+                    NotionLabelPropertyModel {
+                        name: "Status".to_string(),
+                        property_type: "status".to_string(),
+                    },
+                    NotionLabelPropertyModel {
+                        name: "Tags".to_string(),
+                        property_type: "multi_select".to_string(),
+                    },
+                ],
+                branch_name: "Branch".to_string(),
+                branch_prefix: "feat/".to_string(),
+            },
+        };
+
+        let domain = notion_to_domain(model.clone());
+        let model_again = notion_to_model(domain.clone());
+
+        assert_eq!(model_again.api_token, model.api_token);
+        assert_eq!(model_again.database_id, model.database_id);
+        assert_eq!(
+            model_again.property_mapping.title,
+            model.property_mapping.title
+        );
+        assert_eq!(
+            model_again.property_mapping.labels,
+            model.property_mapping.labels
+        );
+        assert_eq!(
+            model_again.property_mapping.branch_name,
+            model.property_mapping.branch_name
+        );
+        assert_eq!(
+            model_again.property_mapping.branch_prefix,
+            model.property_mapping.branch_prefix
+        );
+        assert_eq!(notion_to_domain(model_again), domain);
     }
 
     #[test]

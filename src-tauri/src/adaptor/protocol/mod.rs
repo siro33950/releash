@@ -9,6 +9,7 @@ pub(crate) mod branch;
 pub(crate) mod code;
 pub(crate) mod error;
 pub(crate) mod mention;
+pub(crate) mod notion;
 pub(crate) mod pty;
 pub(crate) mod workflow;
 pub(crate) mod worktree;

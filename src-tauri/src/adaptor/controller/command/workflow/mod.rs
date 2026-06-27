@@ -2371,6 +2371,14 @@ mod tests {
             .state::<Arc<dyn crate::domain::app_config::ConfigSecretRepository>>()
             .inner()
             .clone();
+        let notion_config_repository: Arc<dyn crate::domain::app_config::NotionConfigRepository> =
+            app.state::<Arc<crate::adaptor::gateway::app_config::AppConfig>>()
+                .inner()
+                .clone();
+        let notion_usecase = Arc::new(crate::usecase::notion::usecase::NotionUsecase::new(
+            notion_config_repository,
+            Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new()),
+        ));
         let repo_paths_gateway =
             crate::adaptor::gateway::repository::repo_paths::RepoPathsGateway::new(
                 <crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths>::default(),
@@ -2420,6 +2428,7 @@ mod tests {
             agent_session_usecase: Arc::new(
                 crate::adaptor::controller::wiring::build_agent_session_usecase(app.handle().clone()),
             ),
+            notion_usecase,
             workflow_usecase: Arc::new(
                 crate::adaptor::controller::wiring::build_workflow_usecase_with_repository_worktrees(
                     data_dir.clone(),

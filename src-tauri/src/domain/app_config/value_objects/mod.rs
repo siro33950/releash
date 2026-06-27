@@ -54,11 +54,21 @@ pub struct WorkflowConfig {
     pub approval_auto_approve: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct NotionRepoConfig {
     pub api_token: String,
     pub database_id: String,
     pub property_mapping: NotionPropertyMapping,
+}
+
+impl std::fmt::Debug for NotionRepoConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotionRepoConfig")
+            .field("api_token", &"[REDACTED]")
+            .field("database_id", &self.database_id)
+            .field("property_mapping", &self.property_mapping)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,4 +94,23 @@ impl Default for NotionPropertyMapping {
 pub struct NotionLabelProperty {
     pub name: String,
     pub property_type: String,
+}
+
+#[cfg(test)]
+mod value_objects_tests {
+    use super::*;
+
+    #[test]
+    fn test_notion_config_debugでapi_tokenをマスクする() {
+        let config = NotionRepoConfig {
+            api_token: "ntn_secret_token".to_string(),
+            database_id: "db-1".to_string(),
+            property_mapping: NotionPropertyMapping::default(),
+        };
+
+        let output = format!("{config:?}");
+
+        assert!(output.contains("[REDACTED]"));
+        assert!(!output.contains("ntn_secret_token"));
+    }
 }

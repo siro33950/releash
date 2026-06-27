@@ -6,6 +6,7 @@ pub(crate) mod external_editor;
 pub(crate) mod git_host;
 pub(crate) mod hooks;
 pub(crate) mod notification;
+pub(crate) mod notion;
 pub(crate) mod pty_session;
 pub(crate) mod repository;
 pub(crate) mod telemetry;
@@ -120,13 +121,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
             crate::adaptor::controller::command::repository::git_config::set_releash_base,
             crate::adaptor::controller::command::repository::git_config::get_branch_base,
             crate::adaptor::controller::command::repository::git_config::set_branch_base,
-            // Notion
-            crate::notion::query_notion_tasks,
-            crate::notion::fetch_notion_label_options,
-            crate::notion::save_notion_config,
-            crate::notion::get_notion_config,
-            crate::notion::delete_notion_config,
-            crate::notion::validate_notion_config,
             // アプリ設定
             // Agent Status (Rust 中央管理)
             crate::adaptor::controller::command::agent_session::status::get_session_status,
@@ -213,6 +207,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
     git_host::register(&mut router);
     hooks::register(&mut router);
     notification::register(&mut router);
+    notion::register(&mut router);
     pty_session::register(&mut router);
     telemetry::register(&mut router);
     workspace_state::register(&mut router);
@@ -250,6 +245,24 @@ mod tests {
             Some(0)
         );
         assert_eq!(router.domain_route_index("get_cached_issues"), Some(0));
+        assert_eq!(router.domain_route_index("get_git_status"), None);
+    }
+
+    #[test]
+    fn notion_register_routes_notion_commands_before_fallback() {
+        let mut router = CommandRouter::new(dummy_handler());
+
+        notion::register(&mut router);
+
+        assert_eq!(router.domain_route_index("query_notion_tasks"), Some(0));
+        assert_eq!(
+            router.domain_route_index("fetch_notion_label_options"),
+            Some(0)
+        );
+        assert_eq!(router.domain_route_index("save_notion_config"), Some(0));
+        assert_eq!(router.domain_route_index("get_notion_config"), Some(0));
+        assert_eq!(router.domain_route_index("delete_notion_config"), Some(0));
+        assert_eq!(router.domain_route_index("validate_notion_config"), Some(0));
         assert_eq!(router.domain_route_index("get_git_status"), None);
     }
 }
