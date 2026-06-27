@@ -14,9 +14,9 @@ use crate::adaptor::gateway::workflow::run::TriggerSource;
 use crate::adaptor::gateway::workflow::runtime_state::ApprovalDecision as RuntimeApprovalDecision;
 use crate::adaptor::gateway::workflow::schema::Workflow;
 use crate::adaptor::gateway::workflow::state::WorkflowState;
+use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::services::transition::SessionFailureSignal;
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
-use crate::permission::PermissionMode;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::{MessagePart, SessionStore};
 

@@ -284,7 +284,7 @@ impl StatusRepository for StatusGateway {
 #[cfg(test)]
 mod status_gateway_tests {
     use super::*;
-    use crate::git::test_helpers::*;
+    use crate::test_support::git::*;
     use std::fs;
     use std::path::Path;
 

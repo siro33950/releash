@@ -140,7 +140,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         workflow_step_context: WorkflowStepContext,
         node_kind: NodeType,
     ) -> Result<StepSessionInfo, WorkflowEngineError> {
-        let data_dir = crate::app_data_dir::resolve_data_dir(self.app)
+        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(self.app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let step_session = workflow_runtime_session::create_step_session_with_settings(
             self.app,

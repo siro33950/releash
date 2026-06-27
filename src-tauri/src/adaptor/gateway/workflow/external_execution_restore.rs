@@ -44,7 +44,7 @@ pub(crate) fn restore_execution_from_projected_state(
     // the event log. Later step startup settles model/permission from node definitions.
     let restored_workflow_defaults = WorkflowDefaults {
         backend_id: None,
-        permission_mode: crate::permission::PermissionMode::EDIT.to_string(),
+        permission_mode: crate::domain::agent_session::PermissionMode::EDIT.to_string(),
     };
     let current_session_id = state.current_session_id.clone();
     let execution = WorkflowExecution {
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(restored.execution.workflow_defaults.backend_id, None);
         assert_eq!(
             restored.execution.workflow_defaults.permission_mode,
-            crate::permission::PermissionMode::EDIT.to_string()
+            crate::domain::agent_session::PermissionMode::EDIT.to_string()
         );
     }
 }

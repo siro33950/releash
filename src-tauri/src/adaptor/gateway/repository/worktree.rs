@@ -324,7 +324,7 @@ impl WorktreeRepository for WorktreeGateway {
 mod worktree_gateway_tests {
     use super::*;
     use crate::adaptor::gateway::repository::branch::get_current_branch;
-    use crate::git::test_helpers::*;
+    use crate::test_support::git::*;
     use std::fs;
 
     fn create_test_repo_with_parent() -> (tempfile::TempDir, PathBuf, Repository) {

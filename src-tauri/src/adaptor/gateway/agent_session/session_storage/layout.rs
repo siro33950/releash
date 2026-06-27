@@ -85,14 +85,14 @@ pub(super) fn tool_output_file_in_dir(session_dir: &Path, tool_output_id: &str) 
 pub(super) fn invalid_session_error_message_with_id(session_id: &str) -> String {
     format!(
         "Invalid session data (id={session_id}, allowed permission modes: {})",
-        crate::permission::PermissionMode::allowed_list()
+        crate::domain::agent_session::PermissionMode::allowed_list()
     )
 }
 
 pub(super) fn invalid_session_error_message() -> String {
     format!(
         "Invalid session data (allowed permission modes: {})",
-        crate::permission::PermissionMode::allowed_list()
+        crate::domain::agent_session::PermissionMode::allowed_list()
     )
 }
 
@@ -143,7 +143,7 @@ pub(super) fn write_binary_atomic(path: &Path, bytes: &[u8], label: &str) -> Res
 }
 
 pub(super) fn validate_permission_mode(permission_mode: &str) -> Result<String, String> {
-    crate::permission::PermissionMode::parse(permission_mode)
+    crate::domain::agent_session::PermissionMode::parse(permission_mode)
         .map(|mode| mode.as_str().to_string())
         .map_err(|_| invalid_session_error_message())
 }

@@ -147,8 +147,8 @@ mod tests {
 
     #[test]
     fn canonicalize_managed_worktree_path_accepts_configured_git_worktree_only() {
-        let (repo_dir, repo) = crate::git::test_helpers::create_test_repo();
-        crate::git::test_helpers::create_initial_commit(&repo);
+        let (repo_dir, repo) = crate::test_support::git::create_test_repo();
+        crate::test_support::git::create_initial_commit(&repo);
         let worktree_parent = tempfile::TempDir::new().unwrap();
         let worktree_path = worktree_parent.path().join("managed-wt");
         repo.worktree("managed-wt", &worktree_path, None).unwrap();

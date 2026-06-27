@@ -32,8 +32,9 @@ pub(crate) fn render_namespaced_variables(
     content: &str,
     workflow_declared_variables: &HashMap<String, String>,
 ) -> String {
-    let releash_alias =
-        crate::path_aliases::alias_name_for_profile(crate::path_aliases::BuildProfile::current());
+    let releash_alias = crate::infrastructure::platform::path_aliases::alias_name_for_profile(
+        crate::infrastructure::platform::path_aliases::BuildProfile::current(),
+    );
     let rendered_alias =
         variable_renderer::render_path_alias_variables_with_name(content, releash_alias);
     variable_renderer::render_workflow_variables(&rendered_alias, workflow_declared_variables)

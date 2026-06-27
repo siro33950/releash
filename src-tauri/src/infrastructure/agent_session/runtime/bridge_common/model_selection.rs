@@ -3,8 +3,8 @@ use super::session_lifecycle::{
     can_change_session_backend_from_meta, remove_stale_unstarted_agent_process,
 };
 use super::shared::CLAUDE_BACKEND_ID;
-use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::ModelInfo;
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::session::SessionStore;
 use std::path::Path;
 use std::sync::Arc;

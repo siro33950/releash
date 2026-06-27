@@ -1,6 +1,7 @@
 mod agent_models;
 mod context_epoch;
 mod model_id;
+mod permission_mode;
 mod skill_entry;
 
 pub(crate) use agent_models::{
@@ -12,4 +13,5 @@ pub(crate) use context_epoch::{
     ReplacementTrigger, ResolvedInstruction,
 };
 pub(crate) use model_id::ModelId;
+pub(crate) use permission_mode::{InvalidPermissionMode, PermissionMode};
 pub(crate) use skill_entry::SkillEntry;

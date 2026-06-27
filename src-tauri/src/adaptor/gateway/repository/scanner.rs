@@ -82,10 +82,10 @@ mod tests {
 
     #[test]
     fn default_scanner_matches_existing_usecase_read_models_for_real_repo() {
-        let (dir, repo) = crate::git::test_helpers::create_test_repo();
-        crate::git::test_helpers::create_initial_commit(&repo);
-        crate::git::test_helpers::add_and_commit(&repo, "staged.txt", "before\n", "add staged");
-        crate::git::test_helpers::add_and_commit(&repo, "unstaged.txt", "before\n", "add unstaged");
+        let (dir, repo) = crate::test_support::git::create_test_repo();
+        crate::test_support::git::create_initial_commit(&repo);
+        crate::test_support::git::add_and_commit(&repo, "staged.txt", "before\n", "add staged");
+        crate::test_support::git::add_and_commit(&repo, "unstaged.txt", "before\n", "add unstaged");
         let head = repo.head().unwrap().peel_to_commit().unwrap();
         repo.branch("feature", &head, false).unwrap();
 
@@ -162,8 +162,8 @@ mod tests {
 
     #[tokio::test]
     async fn default_scanner_prunes_stale_branch_bases_after_committed_cold_start_scan() {
-        let (dir, repo) = crate::git::test_helpers::create_test_repo();
-        crate::git::test_helpers::create_initial_commit(&repo);
+        let (dir, repo) = crate::test_support::git::create_test_repo();
+        crate::test_support::git::create_initial_commit(&repo);
         let branch_name = repo.head().unwrap().shorthand().unwrap().to_string();
         {
             let mut config = repo.config().unwrap();

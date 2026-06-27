@@ -395,7 +395,7 @@ impl FileContentRepository for FileContentGateway {
 #[cfg(test)]
 mod file_content_gateway_tests {
     use super::*;
-    use crate::git::test_helpers::*;
+    use crate::test_support::git::*;
     use git2::build::CheckoutBuilder;
 
     /// macOS では TempDir::path() が /var/... を返すが workdir() は /private/var/... を返す。

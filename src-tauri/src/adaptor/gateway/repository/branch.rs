@@ -115,7 +115,7 @@ impl BranchRepository for BranchGateway {
 #[cfg(test)]
 mod branch_gateway_tests {
     use super::*;
-    use crate::git::test_helpers::*;
+    use crate::test_support::git::*;
     use git2::Repository;
     use std::path::Path;
 

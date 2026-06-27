@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use crate::domain::comment::{ReviewActor, ReviewTarget};
-use crate::path_aliases::{alias_name_for_profile, BuildProfile};
+use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
 use crate::usecase::comment::{
     review_error_to_json_string, ReviewCommentUsecase, ReviewHistoryEntryDto, ReviewThreadDto,
     ReviewThreadFilterDto,

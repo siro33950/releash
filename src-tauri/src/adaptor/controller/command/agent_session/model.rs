@@ -16,9 +16,9 @@ pub async fn set_agent_permission_mode(
     chat_session_id: String,
     permission_mode: String,
 ) -> Result<(), String> {
-    let pm = crate::permission::PermissionMode::parse(&permission_mode)
+    let pm = crate::domain::agent_session::PermissionMode::parse(&permission_mode)
         .map_err(|error| error.to_string())?;
-    let data_dir = crate::app_data_dir::resolve_data_dir(&app)?;
+    let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(&app)?;
     let meta = session_store
         .get_session_meta(&data_dir, &chat_session_id)?
         .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
@@ -63,7 +63,7 @@ pub async fn set_agent_plan_mode(
     chat_session_id: String,
     plan_mode: bool,
 ) -> Result<(), String> {
-    let data_dir = crate::app_data_dir::resolve_data_dir(&app)?;
+    let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(&app)?;
     session_store.update_plan_mode(&data_dir, &chat_session_id, plan_mode)
 }
 

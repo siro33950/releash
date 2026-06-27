@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
+use crate::domain::agent_session::PermissionMode;
 use crate::infrastructure::agent_session::runtime;
-use crate::permission::PermissionMode;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::session::{
     AgentStreamResyncReadModel, SessionStore, StreamResyncSnapshot,

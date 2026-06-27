@@ -186,15 +186,3 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
-#[tauri::command]
-pub fn set_menu_items_enabled(
-    state: tauri::State<'_, Mutex<MenuItemsState>>,
-    enabled: bool,
-) -> Result<(), String> {
-    let guard = state.lock();
-    for item in &guard.worktree_items {
-        item.set_enabled(enabled).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}

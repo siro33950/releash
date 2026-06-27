@@ -347,7 +347,7 @@ impl BranchCardQuery for BranchCardGateway {
 mod branch_card_gateway_tests {
     use super::*;
     use crate::adaptor::gateway::repository::git_config::set_releash_base;
-    use crate::git::test_helpers::*;
+    use crate::test_support::git::*;
     use git2::build::CheckoutBuilder;
     use git2::WorktreeAddOptions;
     use std::fs;

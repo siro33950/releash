@@ -12,6 +12,6 @@ pub(crate) use storage::{
 pub(crate) use value_objects::{
     model_entry_for_backend_model, model_entry_id, ContextEpoch, ContextEpochId,
     ContextEpochIdentity, ContextRevision, ContextSnapshot, ContextSourceKind, ContextSourceState,
-    InstructionOrigin, ModelId, ReplacementAction, ReplacementTrigger, ResolvedInstruction,
-    SkillEntry, CLAUDE_FIXED_MODELS, CODEX_FIXED_MODELS,
+    InstructionOrigin, InvalidPermissionMode, ModelId, PermissionMode, ReplacementAction,
+    ReplacementTrigger, ResolvedInstruction, SkillEntry, CLAUDE_FIXED_MODELS, CODEX_FIXED_MODELS,
 };

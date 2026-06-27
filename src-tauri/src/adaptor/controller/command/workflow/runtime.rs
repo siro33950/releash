@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::adaptor::controller::agent_session::message_dispatch::AgentMessageDispatchRequest;
 use crate::adaptor::controller::command::workflow::{
     parse_workflow_approval_permission_mode, parse_workflow_start_permission_mode, validate_run_id,
 };
@@ -10,7 +11,6 @@ use crate::adaptor::controller_support::{
     SessionStoreState,
 };
 use crate::adaptor::protocol::workflow::WorkflowStateView;
-use crate::agent_message_dispatcher::AgentMessageDispatchRequest;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::workflow::command::{AbortRunCommand, ApprovalCommand, StartRunCommand};
 use crate::usecase::workflow::WorkflowRuntimeUsecase;

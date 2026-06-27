@@ -186,7 +186,9 @@ mod tests {
             std::env::temp_dir().join(format!("releash-pending-watcher-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).unwrap();
         tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(data_dir))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                data_dir,
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("tauri mock test app must build")
     }
@@ -196,7 +198,9 @@ mod tests {
         gateway: Arc<TestWorkflowRuntimeGateway>,
     ) -> tauri::App<tauri::test::MockRuntime> {
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(data_dir.to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                data_dir.to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("tauri mock test app must build");
         let runtime = WorkflowRuntimeUsecase::new(gateway);

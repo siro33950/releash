@@ -35,9 +35,9 @@ use super::turn_event_log::{
     append_parts_to_event_log_in_order, clear_post_turn_store_base_untrusted_for_message,
     mark_post_turn_store_base_untrusted, record_durable_parts_for_current_turn,
 };
-use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::acquire_session_runtime_lock;
 use crate::infrastructure::agent_session::runtime::turn_latency;
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::event_log::InterruptReason;
 use crate::usecase::agent_session::event_log::PromptInput;
 use crate::usecase::agent_session::event_log::TurnEventLog;
@@ -2971,7 +2971,9 @@ mod moved_tests {
     async fn periodic_persisted_tool_output_ref_updates_live_buffer_page_and_resync_once() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());

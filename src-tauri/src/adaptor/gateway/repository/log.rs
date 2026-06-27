@@ -58,7 +58,7 @@ impl LogRepository for LogGateway {
 #[cfg(test)]
 mod log_gateway_tests {
     use super::*;
-    use crate::git::test_helpers::*;
+    use crate::test_support::git::*;
 
     #[test]
     fn test_コミット履歴取得() {

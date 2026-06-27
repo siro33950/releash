@@ -1022,8 +1022,8 @@ mod tests {
     #[test]
     fn render_path_alias_substitutes_releash_with_runtime_alias() {
         // Rule: 起動環境別 `{{path_alias.releash}}` が `releash` / `releash-dev` に展開される
-        let alias_name = crate::path_aliases::alias_name_for_profile(
-            crate::path_aliases::BuildProfile::current(),
+        let alias_name = crate::infrastructure::platform::path_aliases::alias_name_for_profile(
+            crate::infrastructure::platform::path_aliases::BuildProfile::current(),
         );
         let content = "Run `{{path_alias.releash}} workflow output submit`";
         let rendered =
@@ -1090,8 +1090,8 @@ mod tests {
     #[test]
     fn render_path_alias_variables_leaves_unknown_keys_intact() {
         // typo した key は置換せず未展開のまま残す（未定義検出側でエラーになる）。
-        let alias_name = crate::path_aliases::alias_name_for_profile(
-            crate::path_aliases::BuildProfile::current(),
+        let alias_name = crate::infrastructure::platform::path_aliases::alias_name_for_profile(
+            crate::infrastructure::platform::path_aliases::BuildProfile::current(),
         );
         let content = "{{path_alias.relase}} / {{path_alias.releash}}";
         let rendered =

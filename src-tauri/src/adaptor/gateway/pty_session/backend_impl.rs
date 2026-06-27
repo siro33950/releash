@@ -304,7 +304,9 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
 
         let mut extra_env = Vec::new();
-        match crate::path_aliases::prepare_child_env(app.path().app_data_dir().ok()) {
+        match crate::infrastructure::platform::path_aliases::prepare_child_env(
+            app.path().app_data_dir().ok(),
+        ) {
             Ok(env) => extra_env.extend(env),
             Err(e) => {
                 return Err(UsecaseError::Gateway(format!(

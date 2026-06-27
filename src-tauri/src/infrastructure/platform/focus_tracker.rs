@@ -1,4 +1,7 @@
+use std::sync::Arc;
 use std::time::Instant;
+
+use tauri::Manager;
 
 pub struct FocusTracker {
     last_blur_at: Option<Instant>,
@@ -23,6 +26,14 @@ impl FocusTracker {
         self.last_blur_at = Some(Instant::now());
     }
 
+    pub fn on_focus_changed(&mut self, focused: bool) {
+        if focused {
+            self.on_focus();
+        } else {
+            self.on_blur();
+        }
+    }
+
     pub fn is_inactive(&self, timeout_minutes: u32) -> bool {
         if self.is_focused {
             return false;
@@ -33,6 +44,26 @@ impl FocusTracker {
             }
             None => false,
         }
+    }
+}
+
+pub(crate) fn install<R: tauri::Runtime>(
+    app: &tauri::App<R>,
+    focus_tracker: Arc<parking_lot::Mutex<FocusTracker>>,
+) {
+    let window = app.get_webview_window("main");
+    if window.is_none() {
+        log::warn!("Main window not found; focus tracking will be disabled");
+    }
+    if let Some(window) = window {
+        crate::other::telemetry::record_startup_from_origin(
+            crate::other::telemetry::Startup::FirstWindowReady,
+        );
+        window.on_window_event(move |event| {
+            if let tauri::WindowEvent::Focused(focused) = event {
+                focus_tracker.lock().on_focus_changed(*focused);
+            }
+        });
     }
 }
 
@@ -73,5 +104,18 @@ mod tests {
         tracker.on_blur();
         // timeout=0 なので、blur後すぐにinactive
         assert!(tracker.is_inactive(0));
+    }
+
+    #[test]
+    fn focus_change_dispatches_to_matching_tracker_state() {
+        let mut tracker = FocusTracker::new();
+
+        tracker.on_focus_changed(false);
+        assert!(!tracker.is_focused);
+        assert!(tracker.last_blur_at.is_some());
+
+        tracker.on_focus_changed(true);
+        assert!(tracker.is_focused);
+        assert!(tracker.last_blur_at.is_none());
     }
 }

@@ -11,7 +11,7 @@
 //! 側で payload が `"*"` または自分の `worktreeName` に一致するときに
 //! reload する仕様。watcher は worktree 名を逆引きしない。
 //!
-//! debounce は 500ms。`src-tauri/src/watcher.rs` の `start_git_dir_watching`
+//! debounce は 500ms。`infrastructure/file_watcher` の file watcher
 //! と同じ値を採用している。
 
 use std::path::{Path, PathBuf};

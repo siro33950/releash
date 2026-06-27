@@ -13,13 +13,13 @@ use super::shared::{
 };
 use super::stream_emit::{emit_session_state_changed, spawn_streaming_timer};
 use super::turn_event_log::{begin_turn_event_log, projected_session_state_for_current_turn};
-use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::clear_pending_turn_starting;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::clear_session_closing;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::mark_session_closing;
 use crate::infrastructure::agent_session::runtime::runtime_coordinator::prune_session_runtime_lock;
 use crate::infrastructure::agent_session::runtime::AgentEditorContext;
 use crate::infrastructure::agent_session::runtime::ImageAttachment;
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::event_log::TurnEventLog;
 use crate::usecase::agent_session::event_log::WorkflowTurnCompleteInput;
@@ -73,8 +73,9 @@ pub(crate) async fn start_external_agent_turn_state<R: tauri::Runtime>(
     chat_session_id: &str,
     turn: ExternalAgentTurnStart<'_>,
 ) -> Result<(), String> {
-    let canonical_permission_mode = crate::permission::PermissionMode::parse(turn.permission_mode)
-        .map_err(|e| e.to_string())?;
+    let canonical_permission_mode =
+        crate::domain::agent_session::PermissionMode::parse(turn.permission_mode)
+            .map_err(|e| e.to_string())?;
     let started_turn_prompt = prompt_input_for_started_turn(
         Some(app),
         Some(session_store),
@@ -140,7 +141,7 @@ pub(crate) async fn register_external_agent_process<R: tauri::Runtime>(
     sdk_session_id: Option<String>,
     context_carry_on_ready: Option<ContextCarryState>,
 ) -> Result<u64, String> {
-    if let Err(err) = crate::permission::PermissionMode::parse(&permission_mode) {
+    if let Err(err) = crate::domain::agent_session::PermissionMode::parse(&permission_mode) {
         cleanup_unregistered_agent_process(
             child,
             #[cfg(unix)]
@@ -520,7 +521,9 @@ mod moved_tests {
     async fn external_agent_turn_state_records_saved_human_prompt_input() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -638,7 +641,9 @@ mod moved_tests {
     async fn stale_turn_complete_token_does_not_complete_active_turn() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -705,7 +710,9 @@ mod moved_tests {
     async fn stale_stream_token_does_not_append_to_active_message() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -756,7 +763,9 @@ mod moved_tests {
     async fn external_post_turn_events_reseed_from_store_without_duplication() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -890,7 +899,9 @@ mod moved_tests {
     async fn prepare_external_pending_message_turn_requeues_pending_on_prepare_failure() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -940,7 +951,9 @@ mod moved_tests {
         )
         .unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());

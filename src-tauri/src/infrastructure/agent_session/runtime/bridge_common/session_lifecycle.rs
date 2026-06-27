@@ -28,7 +28,6 @@ use super::turn_event_log::{
     clear_post_turn_store_base_untrusted_for_message, mark_post_turn_store_base_untrusted,
     projected_session_state_for_current_turn,
 };
-use crate::app_data_dir::resolve_data_dir;
 use crate::infrastructure::agent_session::resolver_ports::{
     FileSystemInstructionSourcePort, MentionResolverPort,
 };
@@ -47,6 +46,7 @@ use crate::infrastructure::agent_session::runtime::AgentMessage;
 use crate::infrastructure::agent_session::runtime::ImageAttachment;
 use crate::infrastructure::agent_session::runtime::SessionConfig;
 use crate::infrastructure::agent_session::runtime::SessionHandle;
+use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::context::{BranchDiffContextPort, SystemContextEditorInput};
 use crate::usecase::agent_session::event_log::human_parts_from_content_images;
 use crate::usecase::agent_session::event_log::InterruptReason;
@@ -941,7 +941,7 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
     // - Some: その場で検証（Tauri/WS 境界が既に弾いている想定だが内部経路でも二重防御）。
     // - None: 内部呼び出し（workflow engine 等）として保存済みセッション値を明示参照する。
     let resolved_permission_mode = match permission_mode {
-        Some(value) => crate::permission::PermissionMode::parse(&value)
+        Some(value) => crate::domain::agent_session::PermissionMode::parse(&value)
             .map(|m| m.as_str().to_string())
             .map_err(|e| {
                 crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other(
@@ -954,7 +954,7 @@ pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
             let meta = session_store
                 .get_session_meta(&data_dir, chat_session_id)?
                 .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
-            crate::permission::PermissionMode::parse(&meta.permission_mode)
+            crate::domain::agent_session::PermissionMode::parse(&meta.permission_mode)
                 .map(|m| m.as_str().to_string())
                 .map_err(|e| {
                     crate::infrastructure::agent_session::runtime::AgentRuntimeError::Other(
@@ -1570,7 +1570,8 @@ where
     Fut: Future<Output = Result<(), String>>,
 {
     let canonical_permission_mode =
-        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
+        crate::domain::agent_session::PermissionMode::parse(permission_mode)
+            .map_err(|e| e.to_string())?;
     ensure_runtime_for_turn(handles, chat_session_id, spawn_runtime).await?;
     let started_turn_prompt = prompt_input_for_started_turn(
         app,
@@ -2270,7 +2271,7 @@ pub(super) async fn prepare_send_agent_message_internal(
     chat_session_id: Option<String>,
     worktree_path: String,
     content: String,
-    permission_mode: crate::permission::PermissionMode,
+    permission_mode: crate::domain::agent_session::PermissionMode,
     plan_mode: bool,
     backend_id: Option<String>,
     model_id: Option<String>,
@@ -2649,7 +2650,7 @@ pub async fn send_agent_message_internal(
     chat_session_id: Option<String>,
     worktree_path: String,
     content: String,
-    permission_mode: crate::permission::PermissionMode,
+    permission_mode: crate::domain::agent_session::PermissionMode,
     plan_mode: bool,
     backend_id: Option<String>,
     model_id: Option<String>,
@@ -2779,7 +2780,9 @@ pub(super) async fn init_agent_sessions_internal<R: tauri::Runtime>(
         Ok(InitSessionsResponse {
             sessions,
             active_session: None,
-            permission_mode: crate::permission::PermissionMode::Edit.as_str().to_string(),
+            permission_mode: crate::domain::agent_session::PermissionMode::Edit
+                .as_str()
+                .to_string(),
             plan_mode: false,
         })
     } else {
@@ -2802,7 +2805,9 @@ pub(super) async fn init_agent_sessions_internal<R: tauri::Runtime>(
             })
             .unwrap_or_else(|| {
                 (
-                    crate::permission::PermissionMode::Edit.as_str().to_string(),
+                    crate::domain::agent_session::PermissionMode::Edit
+                        .as_str()
+                        .to_string(),
                     false,
                 )
             });
@@ -2959,7 +2964,9 @@ mod moved_tests {
     fn internal_turn_system_prompt_uses_session_shell_context() {
         let temp = tempfile::tempdir().unwrap();
         let _app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -3520,7 +3527,9 @@ mod moved_tests {
     fn started_turn_prompt_uses_saved_human_message_id_and_parts() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -3581,7 +3590,9 @@ mod moved_tests {
     fn started_turn_prompt_selects_previous_human_before_target_agent_with_single_message_read() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let storage = Arc::new(FileSessionStorage::default());
@@ -3653,7 +3664,9 @@ mod moved_tests {
     fn started_turn_prompt_falls_back_when_target_or_previous_human_is_missing() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -3697,7 +3710,9 @@ mod moved_tests {
     fn started_turn_prompt_falls_back_when_app_store_or_lightweight_load_fails() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
@@ -3739,7 +3754,7 @@ mod moved_tests {
         let broken_data_dir = tempfile::tempdir().unwrap();
         std::fs::write(broken_data_dir.path().join("sessions"), "not a directory").unwrap();
         let broken_app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
                 broken_data_dir.path().to_path_buf(),
             ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -3765,7 +3780,9 @@ mod moved_tests {
     fn started_turn_prompt_hydrates_saved_human_like_full_restore() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let storage = Arc::new(FileSessionStorage::default());
@@ -3884,7 +3901,7 @@ mod moved_tests {
             Some(step_session.id.clone()),
             "/different-request-worktree".to_string(),
             "continue completed step".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             false,
             None,
             None,
@@ -3968,7 +3985,7 @@ mod moved_tests {
             Some(regular_session.id),
             worktree_path,
             "regular chat".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             false,
             None,
             None,
@@ -4019,7 +4036,7 @@ mod moved_tests {
             None,
             worktree_path.clone(),
             "hi".to_string(),
-            crate::permission::PermissionMode::Ask,
+            crate::domain::agent_session::PermissionMode::Ask,
             false,
             Some(CLAUDE_BACKEND_ID.to_string()),
             None,
@@ -4108,7 +4125,7 @@ mod moved_tests {
             Some(session_id.clone()),
             "/repo".to_string(),
             "new prompt".to_string(),
-            crate::permission::PermissionMode::Ask,
+            crate::domain::agent_session::PermissionMode::Ask,
             true,
             None,
             None,
@@ -4161,7 +4178,7 @@ mod moved_tests {
             None,
             "/repo".to_string(),
             "hello codex".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             false,
             Some(CODEX_BACKEND_ID.to_string()),
             None,
@@ -4198,7 +4215,7 @@ mod moved_tests {
             None,
             "/repo".to_string(),
             "hello without stale context".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             false,
             Some(CLAUDE_BACKEND_ID.to_string()),
             None,
@@ -4259,7 +4276,7 @@ mod moved_tests {
             None,
             "/repo".to_string(),
             "hello with context".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             false,
             Some(CLAUDE_BACKEND_ID.to_string()),
             None,
@@ -4305,7 +4322,7 @@ mod moved_tests {
             None,
             "/repo".to_string(),
             "review diff".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             false,
             Some(CLAUDE_BACKEND_ID.to_string()),
             None,
@@ -4360,7 +4377,7 @@ mod moved_tests {
             Some(session.id.clone()),
             worktree_path,
             "first restored turn".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             false,
             None,
             None,
@@ -4418,7 +4435,7 @@ mod moved_tests {
             Some(session.id.clone()),
             worktree_path.clone(),
             "/status".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             false,
             None,
             None,
@@ -4484,7 +4501,7 @@ mod moved_tests {
             Some(step_session.id.clone()),
             worktree_path.clone(),
             "resume step".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             false,
             None,
             None,
@@ -4512,7 +4529,7 @@ mod moved_tests {
     async fn turn_start_requires_existing_session_meta() {
         let data_dir = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
                 data_dir.path().to_path_buf(),
             ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -5269,7 +5286,7 @@ mod moved_tests {
             Some(session.id.clone()),
             worktree_path.clone(),
             "Narrow the policy to reviewed findings.".to_string(),
-            crate::permission::PermissionMode::Edit,
+            crate::domain::agent_session::PermissionMode::Edit,
             false,
             None,
             None,
@@ -5433,7 +5450,9 @@ mod moved_tests {
     async fn init_agent_sessions_returns_active_latest_page_without_starting_processes() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let session_store = Arc::new(crate::test_support::build_session_store());
@@ -5493,7 +5512,9 @@ mod moved_tests {
     async fn pending_turn_requeues_when_system_context_persist_fails() {
         let temp = tempfile::tempdir().unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(temp.path().to_path_buf()))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let session_store = Arc::new(crate::test_support::build_session_store());
@@ -5793,7 +5814,7 @@ mod moved_tests {
             Some(session_id.clone()),
             "/repo".to_string(),
             "hello".to_string(),
-            crate::permission::PermissionMode::Ask,
+            crate::domain::agent_session::PermissionMode::Ask,
             true,
             Some("mock".to_string()),
             None,

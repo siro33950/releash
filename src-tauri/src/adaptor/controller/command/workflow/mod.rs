@@ -14,9 +14,9 @@ use crate::adaptor::gateway::workflow::schema::{
 use crate::adaptor::gateway::workflow::storage;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::test_support::TestRuntimeKernel;
+use crate::domain::agent_session::PermissionMode;
 #[cfg(test)]
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
-use crate::permission::PermissionMode;
 #[cfg(test)]
 use crate::usecase::agent_session::session::SessionStore;
 #[cfg(test)]
@@ -36,7 +36,7 @@ pub(crate) mod run;
 pub(crate) mod runtime;
 pub(crate) mod session_errors;
 
-const COMMAND_NAMES: &[&str] = &[
+pub(super) const COMMAND_NAMES: &[&str] = &[
     "list_workflows",
     "get_workflow",
     "save_workflow",
@@ -580,7 +580,9 @@ mod tests {
             std::env::temp_dir().join(format!("releash-command-adapter-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).unwrap();
         tauri::test::mock_builder()
-            .manage(crate::app_data_dir::TestDataDir(data_dir))
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                data_dir,
+            ))
             .manage(app_config)
             .manage(config_repository)
             .manage(agent_config_repository)
@@ -609,7 +611,8 @@ mod tests {
         app: &AdapterTestApp,
         engine: &Arc<TestRuntimeKernel>,
     ) -> std::path::PathBuf {
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_run_store_data_dir(data_dir.clone()).await;
         data_dir
     }
@@ -2357,7 +2360,8 @@ mod tests {
     fn make_read_only_app() -> (AdapterTestApp, Arc<TestRuntimeKernel>, std::path::PathBuf) {
         let app = make_adapter_app();
         let engine = make_adapter_engine();
-        let data_dir = crate::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir =
+            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         app.manage(engine.clone());
         // workflow コマンドは repository usecase を State 注入で受け取る。
         let repository_usecase =
@@ -2419,6 +2423,7 @@ mod tests {
             repository_state.clone(),
             code_usecase.clone(),
         ));
+        let session_store = Arc::new(crate::test_support::build_session_store());
         app.manage(AppState {
             repository_usecase: repository_usecase.clone(),
             repository_state,
@@ -2435,6 +2440,7 @@ mod tests {
                     repository_usecase,
                     config_repository,
                     config_secret_repository,
+                    session_store,
                     app.handle().clone(),
                 ),
             ),

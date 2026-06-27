@@ -14,7 +14,7 @@ pub(crate) fn append_required_events_for_app<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     events: &[WorkflowEvent],
 ) -> Result<(), String> {
-    let data_dir = crate::app_data_dir::resolve_data_dir(app)
+    let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
         .map_err(|_| "failed to resolve app data dir".to_string())?;
     append_required_events(&data_dir, events)
 }

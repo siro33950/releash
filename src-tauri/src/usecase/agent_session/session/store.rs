@@ -503,8 +503,9 @@ impl SessionStore {
         app_data_dir: &Path,
         session: &ChatSession,
     ) -> Result<(), String> {
-        let permission_mode = crate::permission::PermissionMode::parse(&session.permission_mode)
-            .map_err(|e| e.to_string())?;
+        let permission_mode =
+            crate::domain::agent_session::PermissionMode::parse(&session.permission_mode)
+                .map_err(|e| e.to_string())?;
         let normalized_session;
         let session = if session.permission_mode == permission_mode.as_str() {
             session
@@ -633,8 +634,8 @@ impl SessionStore {
         session_id: &str,
         permission_mode: &str,
     ) -> Result<(), String> {
-        let permission_mode =
-            crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
+        let permission_mode = crate::domain::agent_session::PermissionMode::parse(permission_mode)
+            .map_err(|e| e.to_string())?;
         self.update_meta_only(app_data_dir, session_id, |meta| {
             meta.permission_mode = permission_mode.as_str().to_string();
             Ok(())

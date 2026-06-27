@@ -3,10 +3,10 @@ use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
-use crate::adaptor::protocol::workflow::WorkflowStateView;
-use crate::agent_message_dispatcher::{
+use crate::adaptor::controller::agent_session::message_dispatch::{
     dispatch_agent_message, AgentMessageDispatchContext, AgentMessageDispatchRequest,
 };
+use crate::adaptor::protocol::workflow::WorkflowStateView;
 use crate::infrastructure::agent_session::runtime::{
     AgentBackendRegistry, AgentProcessMap, ImageAttachment, SendMessageResponse,
 };
