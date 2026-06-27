@@ -18,7 +18,7 @@ impl std::fmt::Display for NotionError {
 impl std::error::Error for NotionError {}
 
 #[cfg(test)]
-mod tests {
+mod notion_error_tests {
     use super::*;
 
     #[test]

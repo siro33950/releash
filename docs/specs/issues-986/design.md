@@ -35,7 +35,7 @@
 | `src-tauri/src/domain/notion/gateway.rs` | `NotionApiGateway` trait |
 | `src-tauri/src/usecase/notion/mod.rs` | サブモジュール公開 |
 | `src-tauri/src/usecase/notion/usecase.rs` | `NotionUsecase` と query / fetch label / save / get / delete / validate の業務手順 |
-| `src-tauri/src/usecase/notion/error.rs`（任意） | usecase エラー（`String` 表現を現状維持する場合は不要、後述 §6） |
+| `src-tauri/src/usecase/notion/error.rs` | usecase 専用エラー `NotionUsecaseError`（`Display` で command の既存エラー文字列を維持、後述 §6） |
 | `src-tauri/src/adaptor/protocol/notion.rs` | command I/O 用 serde model + domain 変換 |
 | `src-tauri/src/adaptor/gateway/notion/mod.rs` | サブモジュール公開 |
 | `src-tauri/src/adaptor/gateway/notion/service_impl.rs` | `NotionApiGatewayImpl`（reqwest blocking・header/version・retry） |
@@ -109,13 +109,13 @@ gateway/app_config（notion 永続化モデルを自前所有。crate::notion �
 - **業務手順**（`usecase/notion/usecase.rs`、いずれも同期関数）:
   - `NotionUsecase` が `Arc<dyn NotionConfigRepository>` と `Arc<dyn NotionApiGateway>` を保持し、`lib.rs` / `AppState` で 1 回だけ組み立てる。
   - `query_tasks(repo_path, query)`:
-    `repo.get` → `None` なら `"Notion設定が見つかりません"` エラー、`Some` なら `api.query_tasks`。
+    `repo.get` → `None` または保存済み config の `api_token` / `database_id` が trim 後に空なら `"Notion設定が見つかりません"` エラー、非空 config なら `api.query_tasks`。
   - `fetch_label_options(repo_path)`: 同様に config 解決後 `api.fetch_label_options`。
   - `save_config(repo_path, config)`: `repo.upsert`。
   - `get_config(repo_path)`: `repo.get`。
   - `delete_config(repo_path)`: `repo.remove`。
   - `validate_config(api_token, database_id)`: **空 token または空 database_id なら API を呼ばず `NotConfigured`（properties 空）を返す**。それ以外は `NotionRepoConfig`（default mapping）を組み立てて `api.validate`。
-  - config 未保存時に「Notion API への問い合わせを行わない」こと（behavior Rule: unconfigured）と、空入力時に「問い合わせを行わない」こと（behavior Scenario Outline）は、usecase でガードすることで担保する。
+  - config 未保存時または保存済み config の token/database が空のときに「Notion API への問い合わせを行わない」ことと、validate の空入力時に「問い合わせを行わない」こと（behavior Scenario Outline）は、usecase でガードすることで担保する。
 
 ### 3.3 adaptor/protocol/notion
 
@@ -186,8 +186,8 @@ pub struct LabelPropertyModel { name, property_type }
 command(spawn_blocking)
   → AppState.notion_usecase.query_tasks(repo_path, query.into())
       → repo.get(repo_path)?           // app_config port
-          None  → Err("Notion設定が見つかりません")   // API 未呼び出し
-          Some(config) → api.query_tasks(&config, &query)   // gateway: reqwest + parse
+          None または token/database 空 → Err("Notion設定が見つかりません")   // API 未呼び出し
+          Some(non-empty config) → api.query_tasks(&config, &query)   // gateway: reqwest + parse
   → Result<NotionTaskPage> を NotionTaskPageView へ変換し返却
 ```
 
@@ -206,7 +206,7 @@ command(spawn_blocking)
   → NotionValidationResultView へ変換し返却
 ```
 
-HTTP status からの status 判定（UNAUTHORIZED→InvalidToken、NOT_FOUND/BAD_REQUEST/その他非成功/parse 失敗→InvalidDatabase、送信失敗→NetworkError、成功→Configured）は gateway `validate` 実装に保持し、現行 `client::validate_config` と等価にする（behavior A3）。
+HTTP status からの status 判定（UNAUTHORIZED→InvalidToken、429/5xx→NetworkError、NOT_FOUND/BAD_REQUEST/その他非成功/parse 失敗→InvalidDatabase、送信失敗→NetworkError、成功→Configured）は gateway `validate` 実装に保持する（behavior A3）。
 
 ### save / get / delete config
 
@@ -217,15 +217,15 @@ HTTP status からの status 判定（UNAUTHORIZED→InvalidToken、NOT_FOUND/BA
 ## 6. エラー処理
 
 - **gateway → 上位**: `NotionApiGateway` のメソッドは `Result<_, NotionError>`（`validate` のみ `NotionValidationResult` 直返し、現状踏襲）。`NotionError::Display` 文字列（`リクエスト失敗:` / `API エラー:` / `パースエラー:`）を不変に保つ。
-- **usecase → controller**: 現状 command は `Result<_, String>`。usecase 関数も `Result<_, String>` を返し、`NotionError` は呼び出し側（usecase または command）で `e.to_string()` 化する。`"Notion設定が見つかりません"` は usecase が文字列で返す。これにより command の戻り値エラー文字列が現状と完全一致する（behavior A1/A2、Rule: API 失敗時のエラー等価）。
-  - 専用エラー型（`other/` 等）を新設するとエラー文字列表現が変わる懸念があるため、本移行では `String` 表現を維持する（純粋移行のため）。`usecase/notion/error.rs` は新設しない。
+- **usecase → controller**: 現状 command は `Result<_, String>`。usecase 関数は `Result<_, NotionUsecaseError>` を返し、`NotionError` / app-config error / config 未設定を専用エラー型で表す。`NotionUsecaseError::Display` は `NotionError::Display` と `"Notion設定が見つかりません"` をそのまま保持する。
+  - Tauri command 境界でのみ `e.to_string()` 化して `Result<_, String>` を維持する。これにより command の戻り値エラー文字列が現状と完全一致する（behavior A1/A2、Rule: API 失敗時のエラー等価）。
 - **spawn_blocking join error**: 現状の `format!("task join error: {e}")` を command 側でそのまま維持。
 
 ---
 
 ## 7. テスト方針
 
-TEST.md と requirements の明示要件に従い、層ごとに配置する（`#[cfg(test)] mod tests`）。
+TEST.md と requirements の明示要件に従い、層ごとに配置する。インラインの `#[cfg(test)]` モジュールは `{implementation_name}_tests` 形式で命名する。
 
 ### domain/notion
 - VO の不変条件（例: `NotionConfigStatus` の意味、`NotionValidationResult` 構築）に最小限のテスト。serde を持たないため snake_case serialize テストは protocol 側へ移す。
@@ -234,6 +234,7 @@ TEST.md と requirements の明示要件に従い、層ごとに配置する（`
 - mock `NotionConfigRepository` と mock `NotionApiGateway` を用意し、以下をカバー:
   - configured repo → `query_tasks` が task page を返す。
   - unconfigured repo → `query_tasks` / `fetch_label_options` が `"Notion設定が見つかりません"` を返し、**gateway が呼ばれない**（mock の呼び出し回数で検証）。
+  - 保存済み config の `api_token` / `database_id` が trim 後に空 → `query_tasks` / `fetch_label_options` が `"Notion設定が見つかりません"` を返し、gateway が呼ばれない。
   - `save_config` / `get_config`（Some / None）/ `delete_config` が repository を介して反映される。
   - `validate_config`: 空 token / 空 db → `NotConfigured` かつ gateway 未呼び出し。空でない場合は gateway 委譲。
   - label fetch 成功。
@@ -283,7 +284,7 @@ TEST.md と requirements の明示要件に従い、層ごとに配置する（`
 - **D2**: `NotionApiGateway` trait は同期（blocking）。reqwest blocking と現状の `spawn_blocking` 境界を controller に維持する。
 - **D3**: Notion HTTP client 実装・JSON parse・filter 構築は `adaptor/gateway/notion/` に配置する（`infrastructure/notion/` は新設しない）。
 - **D4**: command I/O の serde 表現は `adaptor/protocol/notion.rs` が、TOML 永続化の serde 表現は `adaptor/gateway/app_config/` が、それぞれ自層で所有する。domain VO は serde を持たない。
-- **D5**: usecase / command のエラーは現状の `String` 表現を維持し、専用エラー型を新設しない。
+- **D5**: usecase のエラーは `NotionUsecaseError` で表し、command 境界でのみ現状の `String` 表現へ変換する。
 
 ## 11. Open Questions
 

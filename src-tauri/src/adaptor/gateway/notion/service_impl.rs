@@ -196,11 +196,11 @@ fn validate_config(config: &NotionRepoConfig) -> NotionValidationResult {
         }
     };
 
-    let properties = match extract_first_data_source_id(&json) {
-        Some(data_source_id) => {
-            fetch_data_source_properties(&client, &data_source_id).unwrap_or_default()
-        }
-        None => extract_properties_from_json(&json),
+    let properties = match validation_properties(&json, |data_source_id| {
+        fetch_data_source_properties(&client, data_source_id)
+    }) {
+        Ok(properties) => properties,
+        Err(status) => return empty_validation_result(status),
     };
 
     NotionValidationResult {
@@ -227,6 +227,10 @@ fn classify_validation_status(status_code: reqwest::StatusCode) -> NotionConfigS
         return NotionConfigStatus::InvalidToken;
     }
 
+    if status_code == reqwest::StatusCode::TOO_MANY_REQUESTS || status_code.is_server_error() {
+        return NotionConfigStatus::NetworkError;
+    }
+
     if status_code == reqwest::StatusCode::NOT_FOUND
         || status_code == reqwest::StatusCode::BAD_REQUEST
         || !status_code.is_success()
@@ -241,6 +245,20 @@ fn empty_validation_result(status: NotionConfigStatus) -> NotionValidationResult
     NotionValidationResult {
         status,
         properties: Vec::new(),
+    }
+}
+
+fn validation_properties<F>(
+    json: &serde_json::Value,
+    fetch_data_source_properties: F,
+) -> Result<Vec<NotionPropertyInfo>, NotionConfigStatus>
+where
+    F: FnOnce(&str) -> Result<Vec<NotionPropertyInfo>, NotionError>,
+{
+    match extract_first_data_source_id(json) {
+        Some(data_source_id) => fetch_data_source_properties(&data_source_id)
+            .map_err(|_| NotionConfigStatus::NetworkError),
+        None => Ok(extract_properties_from_json(json)),
     }
 }
 
@@ -261,11 +279,8 @@ fn fetch_label_options(config: &NotionRepoConfig) -> Result<Vec<NotionLabelOptio
         .iter()
         .any(|label| label.property_type == "people");
 
-    let workspace_users = if has_people {
-        fetch_workspace_users(&client).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let workspace_users =
+        fetch_workspace_users_for_label_options(has_people, || fetch_workspace_users(&client))?;
 
     Ok(props
         .into_iter()
@@ -299,6 +314,20 @@ fn fetch_label_options(config: &NotionRepoConfig) -> Result<Vec<NotionLabelOptio
             }
         })
         .collect())
+}
+
+fn fetch_workspace_users_for_label_options<F>(
+    has_people: bool,
+    fetch_workspace_users: F,
+) -> Result<Vec<(String, String)>, NotionError>
+where
+    F: FnOnce() -> Result<Vec<(String, String)>, NotionError>,
+{
+    if has_people {
+        fetch_workspace_users()
+    } else {
+        Ok(Vec::new())
+    }
 }
 
 fn fetch_workspace_users(
@@ -500,8 +529,12 @@ mod tests {
             NotionConfigStatus::InvalidDatabase
         );
         assert_eq!(
+            classify_validation_status(StatusCode::TOO_MANY_REQUESTS),
+            NotionConfigStatus::NetworkError
+        );
+        assert_eq!(
             classify_validation_status(StatusCode::INTERNAL_SERVER_ERROR),
-            NotionConfigStatus::InvalidDatabase
+            NotionConfigStatus::NetworkError
         );
         assert_eq!(
             classify_validation_status(StatusCode::OK),
@@ -524,5 +557,62 @@ mod tests {
         ));
         assert_eq!(parse_failure.status, NotionConfigStatus::InvalidDatabase);
         assert!(parse_failure.properties.is_empty());
+    }
+
+    #[test]
+    fn validation_properties_data_source取得失敗はnetwork_errorを返す() {
+        let json = serde_json::json!({
+            "data_sources": [{ "id": "ds-1" }]
+        });
+
+        let result = validation_properties(&json, |_| {
+            Err(NotionError::RequestFailed("timeout".to_string()))
+        });
+
+        assert_eq!(result.unwrap_err(), NotionConfigStatus::NetworkError);
+    }
+
+    #[test]
+    fn validation_properties_data_sourceがない場合はdatabase_jsonから抽出する() {
+        let json = serde_json::json!({
+            "properties": {
+                "Name": {
+                    "type": "title",
+                    "title": {}
+                }
+            }
+        });
+
+        let result =
+            validation_properties(&json, |_| panic!("data source fetch should not be called"))
+                .unwrap();
+
+        assert_eq!(
+            result,
+            vec![NotionPropertyInfo {
+                name: "Name".to_string(),
+                property_type: "title".to_string(),
+                options: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn fetch_workspace_users_for_label_options_people取得失敗を伝播する() {
+        let result = fetch_workspace_users_for_label_options(true, || {
+            Err(NotionError::ApiError("HTTP 500".to_string()))
+        });
+
+        assert_eq!(result.unwrap_err().to_string(), "API エラー: HTTP 500");
+    }
+
+    #[test]
+    fn fetch_workspace_users_for_label_options_people以外ではusersを取得しない() {
+        let result = fetch_workspace_users_for_label_options(false, || {
+            panic!("workspace users fetch should not be called")
+        })
+        .unwrap();
+
+        assert!(result.is_empty());
     }
 }

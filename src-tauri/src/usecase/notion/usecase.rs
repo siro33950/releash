@@ -5,8 +5,7 @@ use crate::domain::app_config::NotionConfigRepository;
 use crate::domain::notion::{
     NotionApiGateway, NotionLabelOption, NotionTaskPage, NotionTaskQuery, NotionValidationResult,
 };
-
-const NOTION_CONFIG_NOT_FOUND: &str = "Notion設定が見つかりません";
+use crate::usecase::notion::error::NotionUsecaseError;
 
 pub(crate) struct NotionUsecase {
     repository: Arc<dyn NotionConfigRepository>,
@@ -25,7 +24,7 @@ impl NotionUsecase {
         &self,
         repo_path: &str,
         query: &NotionTaskQuery,
-    ) -> Result<NotionTaskPage, String> {
+    ) -> Result<NotionTaskPage, NotionUsecaseError> {
         query_tasks(
             self.repository.as_ref(),
             self.api.as_ref(),
@@ -37,7 +36,7 @@ impl NotionUsecase {
     pub(crate) fn fetch_label_options(
         &self,
         repo_path: &str,
-    ) -> Result<Vec<NotionLabelOption>, String> {
+    ) -> Result<Vec<NotionLabelOption>, NotionUsecaseError> {
         fetch_label_options(self.repository.as_ref(), self.api.as_ref(), repo_path)
     }
 
@@ -45,18 +44,18 @@ impl NotionUsecase {
         &self,
         repo_path: String,
         config: app_config_vo::NotionRepoConfig,
-    ) -> Result<(), String> {
+    ) -> Result<(), NotionUsecaseError> {
         save_config(self.repository.as_ref(), repo_path, config)
     }
 
     pub(crate) fn get_config(
         &self,
         repo_path: &str,
-    ) -> Result<Option<app_config_vo::NotionRepoConfig>, String> {
+    ) -> Result<Option<app_config_vo::NotionRepoConfig>, NotionUsecaseError> {
         get_config(self.repository.as_ref(), repo_path)
     }
 
-    pub(crate) fn delete_config(&self, repo_path: &str) -> Result<(), String> {
+    pub(crate) fn delete_config(&self, repo_path: &str) -> Result<(), NotionUsecaseError> {
         delete_config(self.repository.as_ref(), repo_path)
     }
 
@@ -74,41 +73,40 @@ fn query_tasks(
     api: &dyn NotionApiGateway,
     repo_path: &str,
     query: &NotionTaskQuery,
-) -> Result<NotionTaskPage, String> {
+) -> Result<NotionTaskPage, NotionUsecaseError> {
     let config = resolve_config(repository, repo_path)?;
-    api.query_tasks(&config, query).map_err(|e| e.to_string())
+    api.query_tasks(&config, query).map_err(Into::into)
 }
 
 fn fetch_label_options(
     repository: &dyn NotionConfigRepository,
     api: &dyn NotionApiGateway,
     repo_path: &str,
-) -> Result<Vec<NotionLabelOption>, String> {
+) -> Result<Vec<NotionLabelOption>, NotionUsecaseError> {
     let config = resolve_config(repository, repo_path)?;
-    api.fetch_label_options(&config).map_err(|e| e.to_string())
+    api.fetch_label_options(&config).map_err(Into::into)
 }
 
 fn save_config(
     repository: &dyn NotionConfigRepository,
     repo_path: String,
     config: app_config_vo::NotionRepoConfig,
-) -> Result<(), String> {
-    repository
-        .upsert(repo_path, config)
-        .map_err(|error| error.to_string())
+) -> Result<(), NotionUsecaseError> {
+    repository.upsert(repo_path, config).map_err(Into::into)
 }
 
 fn get_config(
     repository: &dyn NotionConfigRepository,
     repo_path: &str,
-) -> Result<Option<app_config_vo::NotionRepoConfig>, String> {
-    repository.get(repo_path).map_err(|error| error.to_string())
+) -> Result<Option<app_config_vo::NotionRepoConfig>, NotionUsecaseError> {
+    repository.get(repo_path).map_err(Into::into)
 }
 
-fn delete_config(repository: &dyn NotionConfigRepository, repo_path: &str) -> Result<(), String> {
-    repository
-        .remove(repo_path)
-        .map_err(|error| error.to_string())
+fn delete_config(
+    repository: &dyn NotionConfigRepository,
+    repo_path: &str,
+) -> Result<(), NotionUsecaseError> {
+    repository.remove(repo_path).map_err(Into::into)
 }
 
 fn validate_config(
@@ -131,11 +129,13 @@ fn validate_config(
 fn resolve_config(
     repository: &dyn NotionConfigRepository,
     repo_path: &str,
-) -> Result<app_config_vo::NotionRepoConfig, String> {
+) -> Result<app_config_vo::NotionRepoConfig, NotionUsecaseError> {
     repository
-        .get(repo_path)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| NOTION_CONFIG_NOT_FOUND.to_string())
+        .get(repo_path)?
+        .filter(|config| {
+            !config.api_token.trim().is_empty() && !config.database_id.trim().is_empty()
+        })
+        .ok_or(NotionUsecaseError::ConfigNotFound)
 }
 
 #[cfg(test)]
@@ -148,6 +148,7 @@ mod tests {
     use crate::domain::notion::{
         NotionConfigStatus, NotionError, NotionLabelOption, NotionPropertyInfo, NotionTask,
     };
+    use crate::usecase::notion::error::NOTION_CONFIG_NOT_FOUND;
 
     use super::*;
 
@@ -306,7 +307,7 @@ mod tests {
 
         let result = query_tasks(&repo, &api, "/repo", &query());
 
-        assert_eq!(result.unwrap_err(), NOTION_CONFIG_NOT_FOUND);
+        assert_eq!(result.unwrap_err().to_string(), NOTION_CONFIG_NOT_FOUND);
         assert_eq!(api.query_calls.load(Ordering::SeqCst), 0);
     }
 
@@ -317,7 +318,7 @@ mod tests {
 
         let result = fetch_label_options(&repo, &api, "/repo");
 
-        assert_eq!(result.unwrap_err(), NOTION_CONFIG_NOT_FOUND);
+        assert_eq!(result.unwrap_err().to_string(), NOTION_CONFIG_NOT_FOUND);
         assert_eq!(api.label_calls.load(Ordering::SeqCst), 0);
     }
 
@@ -347,8 +348,44 @@ mod tests {
 
         let result = query_tasks(&repo, &api, "/repo", &query());
 
-        assert_eq!(result.unwrap_err(), "API エラー: HTTP 500");
+        assert_eq!(result.unwrap_err().to_string(), "API エラー: HTTP 500");
         assert_eq!(api.query_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_task_query_configが空文字ならapiを呼ばず未設定エラーにする() {
+        let repo = FakeNotionConfigRepository::with_config(
+            "/repo",
+            app_config_vo::NotionRepoConfig {
+                api_token: " \t".to_string(),
+                database_id: "db-1".to_string(),
+                property_mapping: app_config_vo::NotionPropertyMapping::default(),
+            },
+        );
+        let api = FakeNotionApiGateway::default();
+
+        let result = query_tasks(&repo, &api, "/repo", &query());
+
+        assert_eq!(result.unwrap_err().to_string(), NOTION_CONFIG_NOT_FOUND);
+        assert_eq!(api.query_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_label_fetch_configが空文字ならapiを呼ばず未設定エラーにする() {
+        let repo = FakeNotionConfigRepository::with_config(
+            "/repo",
+            app_config_vo::NotionRepoConfig {
+                api_token: "ntn_token".to_string(),
+                database_id: "\n ".to_string(),
+                property_mapping: app_config_vo::NotionPropertyMapping::default(),
+            },
+        );
+        let api = FakeNotionApiGateway::default();
+
+        let result = fetch_label_options(&repo, &api, "/repo");
+
+        assert_eq!(result.unwrap_err().to_string(), NOTION_CONFIG_NOT_FOUND);
+        assert_eq!(api.label_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

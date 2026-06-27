@@ -5,9 +5,14 @@ use crate::adaptor::protocol::notion::{
     NotionLabelOptionView, NotionRepoConfigView, NotionTaskPageView, NotionTaskQueryInput,
     NotionValidationResultView, PropertyMappingView,
 };
+use crate::usecase::notion::error::NotionUsecaseError;
 
 fn map_join_error(error: tokio::task::JoinError) -> String {
     format!("task join error: {error}")
+}
+
+fn map_usecase_error(error: NotionUsecaseError) -> String {
+    error.to_string()
 }
 
 #[tauri::command]
@@ -25,6 +30,7 @@ pub(crate) async fn query_notion_tasks(
     })
     .await
     .map_err(map_join_error)?
+    .map_err(map_usecase_error)
 }
 
 #[tauri::command]
@@ -40,6 +46,7 @@ pub(crate) async fn fetch_notion_label_options(
     })
     .await
     .map_err(map_join_error)?
+    .map_err(map_usecase_error)
 }
 
 #[tauri::command]
@@ -60,6 +67,7 @@ pub(crate) async fn save_notion_config(
     tokio::task::spawn_blocking(move || notion_usecase.save_config(repo_path, config))
         .await
         .map_err(map_join_error)?
+        .map_err(map_usecase_error)
 }
 
 #[tauri::command]
@@ -71,6 +79,7 @@ pub(crate) fn get_notion_config(
         .notion_usecase
         .get_config(&repo_path)
         .map(|config| config.map(Into::into))
+        .map_err(map_usecase_error)
 }
 
 #[tauri::command]
@@ -82,6 +91,7 @@ pub(crate) async fn delete_notion_config(
     tokio::task::spawn_blocking(move || notion_usecase.delete_config(&repo_path))
         .await
         .map_err(map_join_error)?
+        .map_err(map_usecase_error)
 }
 
 #[tauri::command]

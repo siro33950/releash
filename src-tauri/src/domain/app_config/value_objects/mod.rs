@@ -97,7 +97,7 @@ pub struct NotionLabelProperty {
 }
 
 #[cfg(test)]
-mod tests {
+mod value_objects_tests {
     use super::*;
 
     #[test]
