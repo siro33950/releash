@@ -11,11 +11,10 @@ pub(super) fn compose_system_prompt(
         .filter_map(system_context_block)
         .collect::<Vec<_>>();
     let context_prompt = (!context_blocks.is_empty()).then(|| context_blocks.join("\n\n"));
+    let system_prompt = system_prompt.filter(|prompt| !prompt.trim().is_empty());
 
     match (system_prompt, context_prompt) {
-        (Some(prompt), Some(context_prompt)) if !prompt.trim().is_empty() => {
-            Some(format!("{prompt}\n\n{context_prompt}"))
-        }
+        (Some(prompt), Some(context_prompt)) => Some(format!("{prompt}\n\n{context_prompt}")),
         (None, Some(context_prompt)) => Some(context_prompt),
         (Some(prompt), _) => Some(prompt),
         (None, None) => None,
@@ -102,5 +101,44 @@ mod tests {
         assert!(prompt.contains("<releash_diff_review_snapshot>"));
         assert!(prompt.contains("<releash_terminal_log_summary>"));
         assert!(prompt.contains("<releash_backend_model_identity>"));
+    }
+
+    #[test]
+    fn compose_system_prompt_empty_string_treated_as_none_when_context_exists() {
+        let context = built_context(vec![snapshot(
+            ContextSourceKind::ProjectInstructions,
+            "Use Rust.",
+        )]);
+
+        let prompt = compose_system_prompt(Some(String::new()), &context).expect("prompt");
+
+        assert_eq!(
+            prompt,
+            "<releash_project_instructions>\nUse Rust.\n</releash_project_instructions>"
+        );
+    }
+
+    #[test]
+    fn compose_system_prompt_whitespace_string_treated_as_none_when_context_exists() {
+        let context = built_context(vec![snapshot(
+            ContextSourceKind::ProjectInstructions,
+            "Use Rust.",
+        )]);
+
+        let prompt = compose_system_prompt(Some(" \n\t ".to_string()), &context).expect("prompt");
+
+        assert_eq!(
+            prompt,
+            "<releash_project_instructions>\nUse Rust.\n</releash_project_instructions>"
+        );
+    }
+
+    #[test]
+    fn compose_system_prompt_none_without_context_returns_none() {
+        let context = built_context(Vec::new());
+
+        let prompt = compose_system_prompt(None, &context);
+
+        assert_eq!(prompt, None);
     }
 }
