@@ -9,6 +9,7 @@ pub(crate) mod external_editor;
 pub(crate) mod git_host;
 pub(crate) mod hooks;
 pub(crate) mod notification;
+pub(crate) mod notion;
 pub(crate) mod pty_session;
 pub(crate) mod remote_access;
 pub(crate) mod repo_paths_usecase;

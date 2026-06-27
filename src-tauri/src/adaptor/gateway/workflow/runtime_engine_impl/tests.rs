@@ -1,4 +1,7 @@
 use super::*;
+use crate::adaptor::gateway::app_config::{
+    NotionPropertyMappingModel, NotionRepoConfigModel, ReleashConfig,
+};
 use crate::adaptor::gateway::workflow::approval_runtime::MAX_APPROVAL_COMMENT_CHARS;
 use crate::adaptor::gateway::workflow::failure_wire::{
     submission_violation_reason, SubmissionViolation,
@@ -1492,14 +1495,14 @@ fn mask_sensitive_text_redacts_policy_secrets() {
 
 #[test]
 fn configured_secret_values_include_notion_api_tokens() {
-    let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
+    let mut cfg = ReleashConfig::default();
     cfg.server.token = "SERVER_TOKEN_123".to_string();
     cfg.notion.insert(
         "/repo".to_string(),
-        crate::notion::types::NotionRepoConfig {
+        NotionRepoConfigModel {
             api_token: "NOTION_TOKEN_123456".to_string(),
             database_id: "database".to_string(),
-            property_mapping: crate::notion::types::PropertyMapping::default(),
+            property_mapping: NotionPropertyMappingModel::default(),
         },
     );
 
@@ -6271,6 +6274,12 @@ mod dispatch_boundary_tests {
             app_config.clone();
         let config_secret_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
             app_config.clone();
+        let notion_config_repository: Arc<dyn crate::domain::app_config::NotionConfigRepository> =
+            app_config.clone();
+        let notion_usecase = Arc::new(crate::usecase::notion::usecase::NotionUsecase::new(
+            notion_config_repository,
+            Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new()),
+        ));
         // 実 backend と同じ供給経路（fixed_models()）で claude / codex の固定モデルを
         // 供給する mock backend を登録する。builtin workflow が使う claude-opus-4-8 /
         // gpt-5.5 が production と同一経路で解決され、dispatch フロー検証を維持できる。
@@ -6360,6 +6369,7 @@ mod dispatch_boundary_tests {
                 agent_session_usecase: Arc::new(
                     crate::adaptor::controller::wiring::build_agent_session_usecase_for_tests(),
                 ),
+                notion_usecase,
                 workflow_usecase,
                 pty_session_read_usecase: Arc::new(
                     crate::adaptor::controller::wiring::build_pty_session_read_usecase_for_tests(),

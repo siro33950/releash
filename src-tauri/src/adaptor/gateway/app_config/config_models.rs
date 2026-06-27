@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::app_config::value_objects as domain_vo;
 use crate::domain::notification::DesktopNotifyMode as DomainDesktopNotifyMode;
-use crate::notion::types::NotionRepoConfig;
 
 fn default_true() -> bool {
     true
@@ -17,13 +16,96 @@ pub struct ReleashConfig {
     #[serde(default)]
     pub telemetry: TelemetrySection,
     #[serde(default)]
-    pub notion: HashMap<String, NotionRepoConfig>,
+    pub notion: HashMap<String, NotionRepoConfigModel>,
     #[serde(default)]
     pub app: AppSection,
     #[serde(default)]
     pub agents: AgentsSection,
     #[serde(default)]
     pub workflow: WorkflowSection,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct NotionRepoConfigModel {
+    pub api_token: String,
+    pub database_id: String,
+    #[serde(default)]
+    pub property_mapping: NotionPropertyMappingModel,
+}
+
+impl std::fmt::Debug for NotionRepoConfigModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotionRepoConfigModel")
+            .field("api_token", &"[REDACTED]")
+            .field("database_id", &self.database_id)
+            .field("property_mapping", &self.property_mapping)
+            .finish()
+    }
+}
+
+fn default_notion_title() -> String {
+    "Name".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotionLabelPropertyModel {
+    pub name: String,
+    pub property_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotionPropertyMappingModel {
+    #[serde(default = "default_notion_title")]
+    pub title: String,
+    #[serde(default, deserialize_with = "deserialize_notion_labels")]
+    pub labels: Vec<NotionLabelPropertyModel>,
+    #[serde(default)]
+    pub branch_name: String,
+    #[serde(default)]
+    pub branch_prefix: String,
+}
+
+impl Default for NotionPropertyMappingModel {
+    fn default() -> Self {
+        Self {
+            title: default_notion_title(),
+            labels: Vec::new(),
+            branch_name: String::new(),
+            branch_prefix: String::new(),
+        }
+    }
+}
+
+fn deserialize_notion_labels<'de, D>(
+    deserializer: D,
+) -> Result<Vec<NotionLabelPropertyModel>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Entry {
+        Full { name: String, property_type: String },
+        Name(String),
+    }
+
+    let entries: Vec<Entry> = Vec::deserialize(deserializer)?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| match entry {
+            Entry::Full {
+                name,
+                property_type,
+            } => NotionLabelPropertyModel {
+                name,
+                property_type,
+            },
+            Entry::Name(name) => NotionLabelPropertyModel {
+                name,
+                property_type: "select".to_string(),
+            },
+        })
+        .collect())
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -439,5 +521,91 @@ mod config_models_tests {
 
         // When / Then
         assert_domain_roundtrip(config);
+    }
+
+    #[test]
+    fn test_notion_config_model_toml_roundtripする() {
+        let config = NotionRepoConfigModel {
+            api_token: "ntn_test_token".to_string(),
+            database_id: "db-id-456".to_string(),
+            property_mapping: NotionPropertyMappingModel {
+                title: "Task Name".to_string(),
+                labels: vec![
+                    NotionLabelPropertyModel {
+                        name: "Tags".to_string(),
+                        property_type: "multi_select".to_string(),
+                    },
+                    NotionLabelPropertyModel {
+                        name: "Status".to_string(),
+                        property_type: "status".to_string(),
+                    },
+                ],
+                branch_name: "Branch".to_string(),
+                branch_prefix: "feat/".to_string(),
+            },
+        };
+
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let deserialized: NotionRepoConfigModel = toml::from_str(&toml_str).unwrap();
+
+        assert_eq!(deserialized.api_token, config.api_token);
+        assert_eq!(deserialized.database_id, config.database_id);
+        assert_eq!(deserialized.property_mapping.title, "Task Name");
+        assert_eq!(deserialized.property_mapping.labels.len(), 2);
+        assert_eq!(deserialized.property_mapping.labels[0].name, "Tags");
+        assert_eq!(
+            deserialized.property_mapping.labels[0].property_type,
+            "multi_select"
+        );
+        assert_eq!(deserialized.property_mapping.branch_prefix, "feat/");
+    }
+
+    #[test]
+    fn test_notion_config_model_省略mapping項目は既定値になる() {
+        let toml_str = r#"
+api_token = "ntn_test"
+database_id = "db-123"
+"#;
+
+        let config: NotionRepoConfigModel = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(config.property_mapping.title, "Name");
+        assert!(config.property_mapping.labels.is_empty());
+        assert!(config.property_mapping.branch_name.is_empty());
+        assert!(config.property_mapping.branch_prefix.is_empty());
+    }
+
+    #[test]
+    fn test_notion_config_model_labels旧文字列配列をselectとして読む() {
+        let toml_str = r#"
+api_token = "ntn_test"
+database_id = "db-123"
+
+[property_mapping]
+title = "Name"
+labels = ["Status", "Tags"]
+"#;
+
+        let config: NotionRepoConfigModel = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(config.property_mapping.labels.len(), 2);
+        assert_eq!(config.property_mapping.labels[0].name, "Status");
+        assert_eq!(config.property_mapping.labels[0].property_type, "select");
+        assert_eq!(config.property_mapping.labels[1].name, "Tags");
+        assert_eq!(config.property_mapping.labels[1].property_type, "select");
+    }
+
+    #[test]
+    fn test_notion_config_model_debugでtokenをマスクする() {
+        let config = NotionRepoConfigModel {
+            api_token: "ntn_secret_token".to_string(),
+            database_id: "db-1".to_string(),
+            property_mapping: NotionPropertyMappingModel::default(),
+        };
+
+        let output = format!("{config:?}");
+
+        assert!(output.contains("[REDACTED]"));
+        assert!(!output.contains("ntn_secret_token"));
     }
 }

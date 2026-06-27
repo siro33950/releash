@@ -10,7 +10,6 @@ mod git;
 mod infrastructure;
 mod menu;
 mod native_drop;
-mod notion;
 mod other;
 mod path_aliases;
 mod permission;
@@ -234,10 +233,11 @@ pub fn run() {
             let agent_config_repository: Arc<dyn AgentConfigRepository> = app_config.clone();
             let config_secret_repository: Arc<dyn ConfigSecretRepository> = app_config.clone();
             let notion_config_repository: Arc<dyn NotionConfigRepository> = app_config.clone();
+            let notion_api_gateway: Arc<dyn domain::notion::NotionApiGateway> =
+                Arc::new(adaptor::gateway::notion::NotionApiGatewayImpl::new());
             app.manage(config_repository.clone());
             app.manage(agent_config_repository.clone());
             app.manage(config_secret_repository.clone());
-            app.manage(notion_config_repository.clone());
 
             // Initialize shared repo_paths from config
             let shared_repo_paths = app
@@ -349,6 +349,10 @@ pub fn run() {
                         app.handle().clone(),
                     ),
                 );
+                let notion_usecase = Arc::new(usecase::notion::usecase::NotionUsecase::new(
+                    notion_config_repository.clone(),
+                    notion_api_gateway.clone(),
+                ));
 
                 app.manage(AppState {
                     repository_usecase: repository_usecase.clone(),
@@ -357,6 +361,7 @@ pub fn run() {
                     code_usecase,
                     review_usecase,
                     agent_session_usecase,
+                    notion_usecase,
                     workflow_usecase,
                     pty_session_read_usecase,
                     git_host_usecase,
