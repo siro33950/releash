@@ -11,6 +11,7 @@ pub(crate) mod git_config;
 pub(crate) mod log;
 pub(crate) mod notify;
 pub(crate) mod repo_paths;
+pub(crate) mod scanner;
 pub(crate) mod state;
 pub(crate) mod status;
 pub(crate) mod util;

@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { GitFileStatus } from "@/types/git";
 import type { ReviewSnapshot } from "@/types/review";
 import type { DiffBase } from "@/types/settings";
 
@@ -11,7 +10,8 @@ const EMPTY_SNAPSHOT: ReviewSnapshot = {
 	limited: false,
 	base: "head",
 	files: [],
-	status: [],
+	stagedFiles: [],
+	changedFiles: [],
 	diffStats: [],
 	tree: [],
 	stagedTree: [],
@@ -109,19 +109,11 @@ export function useReviewSnapshot(
 			? snapshot
 			: { ...EMPTY_SNAPSHOT, base: diffBase };
 
-	const stagedFiles = visibleSnapshot.status.filter(
-		(entry: GitFileStatus) => entry.index_status !== "none",
-	);
-	const changedFiles = visibleSnapshot.status.filter(
-		(entry: GitFileStatus) =>
-			entry.worktree_status !== "none" && entry.worktree_status !== "ignored",
-	);
-
 	return {
 		snapshot: visibleSnapshot,
 		files: visibleSnapshot.files,
-		stagedFiles,
-		changedFiles,
+		stagedFiles: visibleSnapshot.stagedFiles,
+		changedFiles: visibleSnapshot.changedFiles,
 		stagedTree: visibleSnapshot.stagedTree,
 		changesTree: visibleSnapshot.changesTree,
 		branchBaseTree: visibleSnapshot.tree,

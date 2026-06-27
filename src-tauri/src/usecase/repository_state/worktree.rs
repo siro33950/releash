@@ -593,45 +593,4 @@ mod tests {
         assert!(!snapshot.flags.loading);
         assert!(scanner.take_prune_calls().is_empty());
     }
-
-    #[tokio::test]
-    async fn cold_start_gc_runs_after_committed_scan_with_complete_branch_names() {
-        let (dir, repo) = crate::git::test_helpers::create_test_repo();
-        crate::git::test_helpers::create_initial_commit(&repo);
-        let branch_name = repo.head().unwrap().shorthand().unwrap().to_string();
-        {
-            let mut config = repo.config().unwrap();
-            config
-                .set_str(&format!("branch.{branch_name}.releash-base"), "main")
-                .unwrap();
-            config
-                .set_str("branch.deleted.releash-base", "main")
-                .unwrap();
-        }
-
-        let repository = Arc::new(crate::adaptor::controller::wiring::build_repository_usecase());
-        let code = Arc::new(crate::adaptor::controller::wiring::build_code_usecase());
-        let scanner = Arc::new(super::super::scanner::DefaultRepositoryScanner::new(
-            repository, code,
-        ));
-        let state = WorktreeState::new(
-            dir.path().to_str().unwrap().to_string(),
-            scanner,
-            Arc::new(NoopRepositoryStateNotifier),
-            Arc::new(TestRepositoryStateWorkerRuntime),
-            Duration::ZERO,
-        );
-
-        state.invalidate(InvalidateReason::initial());
-        wait_for_version(&state, 1).await;
-
-        let config = repo.config().unwrap();
-        assert_eq!(
-            config
-                .get_string(&format!("branch.{branch_name}.releash-base"))
-                .unwrap(),
-            "main"
-        );
-        assert!(config.get_string("branch.deleted.releash-base").is_err());
-    }
 }

@@ -1,8 +1,16 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { ReviewFileView } from "@/types/review";
+import type { GitFileStatus } from "@/types/git";
+import type { DiffTreeNode, ReviewFileView } from "@/types/review";
 import { ReviewPanel } from "./ReviewPanel";
 
 // Radix UI Tooltip require pointer capture APIs not available in jsdom
@@ -57,14 +65,6 @@ vi.mock("@/hooks/useBranchDiffFiles", () => ({
 	useBranchDiffFiles: vi.fn().mockReturnValue({ files: [] }),
 }));
 
-vi.mock("@/hooks/useGitStatus", () => ({
-	useGitStatus: vi.fn().mockReturnValue({
-		stagedFiles: [],
-		changedFiles: [],
-		refresh: vi.fn(),
-	}),
-}));
-
 vi.mock("@/hooks/useReviewSnapshot", () => ({
 	useReviewSnapshot: vi.fn().mockReturnValue({
 		files: [],
@@ -100,6 +100,7 @@ vi.mock("@/hooks/useGitActions", () => ({
 	useGitActions: vi.fn().mockReturnValue({
 		stage: vi.fn(),
 		unstage: vi.fn(),
+		createBranch: vi.fn(),
 	}),
 }));
 
@@ -152,6 +153,7 @@ vi.mock("./DiffToolbar", () => ({
 const { useReviewSnapshot } = await import("@/hooks/useReviewSnapshot");
 const { useReviewFileView } = await import("@/hooks/useReviewFileView");
 const { useReviewPanel } = await import("@/hooks/useReviewPanel");
+const { useGitActions } = await import("@/hooks/useGitActions");
 const { useGitEventRefresh } = await import("@/hooks/useGitEventRefresh");
 
 function mockReviewSnapshot(
@@ -178,7 +180,8 @@ function mockReviewSnapshot(
 			limited: false,
 			base: "head",
 			files: [],
-			status: [],
+			stagedFiles: [],
+			changedFiles: [],
 			diffStats: [],
 			tree: [],
 			stagedTree: [],
@@ -261,6 +264,58 @@ function mockSelectedReviewFile(path: string, view: ReviewFileView) {
 		imageDiff: { originalUrl: null, modifiedUrl: null, loading: false },
 		loading: false,
 		error: null,
+	});
+}
+
+function gitStatus(
+	path: string,
+	indexStatus: GitFileStatus["index_status"],
+	worktreeStatus: GitFileStatus["worktree_status"],
+): GitFileStatus {
+	return {
+		path,
+		index_status: indexStatus,
+		worktree_status: worktreeStatus,
+	};
+}
+
+function treeFile(path: string, status: string): DiffTreeNode {
+	return {
+		id: `file:${path}`,
+		name: path,
+		path,
+		node_type: "file",
+		status,
+		additions: 1,
+		deletions: 0,
+		children: [],
+	};
+}
+
+function mockNonEmptyHeadSnapshot(
+	overrides: Partial<ReturnType<typeof useReviewSnapshot>> = {},
+) {
+	const stagedOnly = gitStatus("staged-only.ts", "modified", "none");
+	const changedOnly = gitStatus("changed-only.ts", "none", "modified");
+	const both = gitStatus("both.ts", "modified", "modified");
+
+	mockReviewSnapshot({
+		stagedFiles: [stagedOnly, both],
+		changedFiles: [changedOnly, both],
+		stagedTree: [
+			treeFile(stagedOnly.path, stagedOnly.index_status),
+			treeFile(both.path, both.index_status),
+		],
+		changesTree: [
+			treeFile(changedOnly.path, changedOnly.worktree_status),
+			treeFile(both.path, both.worktree_status),
+		],
+		stagedFileCount: 2,
+		changesFileCount: 2,
+		branchBaseTree: [],
+		branchBaseFileCount: 0,
+		loading: false,
+		...overrides,
 	});
 }
 
@@ -349,6 +404,150 @@ describe("ReviewPanel", () => {
 		// DiffFileTree is rendered inside the diff-files panel
 		expect(screen.getByTestId("panel-diff-files")).toBeInTheDocument();
 		expect(screen.getByTestId("panel-diff-view")).toBeInTheDocument();
+	});
+
+	it("classifies non-empty staged and changed collections and stages each supplied path list", async () => {
+		const stage = vi.fn().mockResolvedValue(undefined);
+		const unstage = vi.fn().mockResolvedValue(undefined);
+		const createBranch = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(useGitActions).mockReturnValue({ stage, unstage, createBranch });
+		mockNonEmptyHeadSnapshot();
+
+		render(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={vi.fn()}
+				/>
+			</TooltipProvider>,
+		);
+
+		const diffTree = screen.getByTestId("diff-file-tree");
+		const [changesSection, stagedSection] = Array.from(
+			diffTree.children,
+		) as HTMLElement[];
+
+		expect(within(changesSection).getByText("Unstaged")).toBeInTheDocument();
+		expect(
+			within(changesSection).getByText("changed-only.ts"),
+		).toBeInTheDocument();
+		expect(within(changesSection).getByText("both.ts")).toBeInTheDocument();
+		expect(
+			within(changesSection).queryByText("staged-only.ts"),
+		).not.toBeInTheDocument();
+
+		expect(within(stagedSection).getByText("Staged")).toBeInTheDocument();
+		expect(
+			within(stagedSection).getByText("staged-only.ts"),
+		).toBeInTheDocument();
+		expect(within(stagedSection).getByText("both.ts")).toBeInTheDocument();
+		expect(
+			within(stagedSection).queryByText("changed-only.ts"),
+		).not.toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: "Stage All" }));
+		await waitFor(() => {
+			expect(stage).toHaveBeenCalledWith("/repo", [
+				"changed-only.ts",
+				"both.ts",
+			]);
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Unstage All" }));
+		await waitFor(() => {
+			expect(unstage).toHaveBeenCalledWith("/repo", [
+				"staged-only.ts",
+				"both.ts",
+			]);
+		});
+	});
+
+	it("selects review thread sections from supplied staged and changed memberships", async () => {
+		const selectFile = vi.fn();
+		mockNonEmptyHeadSnapshot({
+			stagedTree: [],
+			changesTree: [],
+			stagedFileCount: 0,
+			changesFileCount: 0,
+		});
+		vi.mocked(useReviewPanel).mockReturnValue({
+			diffBase: "head",
+			diffMode: "gutter",
+			selectedFile: null,
+			selectedSection: "changes",
+			setDiffBase: vi.fn(),
+			setDiffMode: vi.fn(),
+			selectFile,
+		});
+
+		const view = render(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={vi.fn()}
+					navigateToThread={{
+						filePath: "staged-only.ts",
+						threadId: "thread-staged",
+						isFileComment: true,
+					}}
+				/>
+			</TooltipProvider>,
+		);
+
+		await waitFor(() => {
+			expect(selectFile).toHaveBeenCalledWith("staged-only.ts", "staged");
+		});
+
+		selectFile.mockClear();
+		view.rerender(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={vi.fn()}
+					navigateToThread={{
+						filePath: "changed-only.ts",
+						threadId: "thread-changed",
+						isFileComment: true,
+					}}
+				/>
+			</TooltipProvider>,
+		);
+
+		await waitFor(() => {
+			expect(selectFile).toHaveBeenCalledWith("changed-only.ts", "changes");
+		});
+
+		selectFile.mockClear();
+		vi.mocked(useReviewPanel).mockReturnValue({
+			diffBase: "head",
+			diffMode: "gutter",
+			selectedFile: null,
+			selectedSection: "staged",
+			setDiffBase: vi.fn(),
+			setDiffMode: vi.fn(),
+			selectFile,
+		});
+		view.rerender(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={vi.fn()}
+					navigateToThread={{
+						filePath: "both.ts",
+						threadId: "thread-both",
+						isFileComment: true,
+					}}
+				/>
+			</TooltipProvider>,
+		);
+
+		await waitFor(() => {
+			expect(selectFile).toHaveBeenCalledWith("both.ts", "staged");
+		});
 	});
 
 	it("should show breadcrumb when a file is selected", () => {

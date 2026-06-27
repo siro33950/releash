@@ -126,7 +126,8 @@ pub struct ReviewSnapshotDto {
     pub limited: bool,
     pub base: String,
     pub files: Vec<ReviewFileEntryDto>,
-    pub status: Vec<FileStatusDto>,
+    pub staged_files: Vec<FileStatusDto>,
+    pub changed_files: Vec<FileStatusDto>,
     pub diff_stats: Vec<FileDiffStatDto>,
     pub tree: Vec<DiffTreeNodeDto>,
     pub staged_tree: Vec<DiffTreeNodeDto>,
@@ -506,7 +507,12 @@ mod code_dto_serialize_tests {
                 additions: 1,
                 deletions: 2,
             }],
-            status: Vec::new(),
+            staged_files: vec![FileStatusDto {
+                path: "a.rs".to_string(),
+                index_status: "modified".to_string(),
+                worktree_status: "none".to_string(),
+            }],
+            changed_files: Vec::new(),
             diff_stats: Vec::new(),
             tree: vec![DiffTreeNodeDto {
                 id: "a.rs".to_string(),
@@ -527,6 +533,8 @@ mod code_dto_serialize_tests {
 
         assert_eq!(v["fileId"], json!(null));
         assert_eq!(v["files"][0]["fileId"], json!("a.rs"));
+        assert_eq!(v["stagedFiles"][0]["path"], json!("a.rs"));
+        assert_eq!(v["changedFiles"], json!([]));
         assert_eq!(v["stagedTree"], json!([]));
         assert_eq!(v["tree"][0]["node_type"], json!("file"));
     }

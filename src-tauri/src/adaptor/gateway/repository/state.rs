@@ -13,6 +13,7 @@ use crate::usecase::repository_state::runtime::{
     RepositoryStateWorkerFuture, RepositoryStateWorkerRuntime, WorktreePathNormalizer,
 };
 use crate::usecase::repository_state::scanner::RepositoryScanner;
+use crate::usecase::repository_state::service::RepositoryStateRepository;
 use crate::usecase::repository_state::snapshot::RepositorySnapshotChangedEvent;
 use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
 use crate::usecase::repository_state::worker::InvalidateReason;
@@ -31,6 +32,22 @@ use super::watch::{
 
 type RecommendedDebouncer =
     notify_debouncer_mini::Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>;
+
+pub struct RepositoryStateRepositoryGateway {
+    repository: Arc<RepositoryUsecase>,
+}
+
+impl RepositoryStateRepositoryGateway {
+    pub fn new(repository: Arc<RepositoryUsecase>) -> Self {
+        Self { repository }
+    }
+}
+
+impl RepositoryStateRepository for RepositoryStateRepositoryGateway {
+    fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError> {
+        Ok(self.repository.get_main_repo_path(path)?)
+    }
+}
 
 struct RepositoryStateWatcherHandles {
     _file_debouncer: RecommendedDebouncer,

@@ -6312,10 +6312,21 @@ mod dispatch_boundary_tests {
                 repo_paths_notifier,
             ));
         let code_usecase = Arc::new(crate::adaptor::controller::wiring::build_code_usecase());
-        let repository_state = Arc::new(
-            crate::usecase::repository_state::RepositoryStateService::new(
+        let repository_scanner = Arc::new(
+            crate::adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
                 repository_usecase.clone(),
                 code_usecase.clone(),
+            ),
+        );
+        let repository_state_repository = Arc::new(
+            crate::adaptor::gateway::repository::state::RepositoryStateRepositoryGateway::new(
+                repository_usecase.clone(),
+            ),
+        );
+        let repository_state = Arc::new(
+            crate::usecase::repository_state::RepositoryStateService::new(
+                repository_state_repository,
+                repository_scanner,
                 Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateNotifier),
                 Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateWatcher),
                 Arc::new(

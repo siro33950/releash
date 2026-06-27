@@ -24,6 +24,7 @@ use super::code_error::CodeUsecaseError;
 use super::code_usecase::{CodeUsecase, ReviewContentSource, SelectedReviewSide};
 use super::repository_dto::{FileDiffStatDto, FileStatusDto};
 use super::repository_state::snapshot::RepositorySnapshot;
+use super::repository_state::status_membership::split_staged_changed_statuses;
 use super::repository_state::{RepositoryStateError, RepositoryStateService};
 
 trait ReviewSnapshotProvider: Send + Sync {
@@ -497,14 +498,21 @@ impl ReviewUsecase {
                 deletions: file.stats.deletions,
             })
             .collect::<Vec<_>>();
-        let status = files
+        let status = summary
+            .changed_files
             .iter()
-            .map(|file| FileStatusDto {
-                path: file.path.clone(),
-                index_status: file.index_status.clone(),
-                worktree_status: file.worktree_status.clone(),
+            .map(|file| {
+                Ok(FileStatusDto {
+                    path: file.path.clone(),
+                    index_status: "none".to_string(),
+                    worktree_status: normalize_branch_diff_worktree_status(&file.status)?
+                        .to_string(),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, CodeUsecaseError>>()?;
+        let (staged_files, changed_files) = split_staged_changed_statuses(&status);
+        let staged_file_count = staged_files.len();
+        let changes_file_count = changed_files.len();
         let diff_stats = summary
             .changed_files
             .iter()
@@ -524,13 +532,14 @@ impl ReviewUsecase {
             limited: snapshot.flags.limited,
             base: base.as_str().to_string(),
             files,
-            status,
+            staged_files,
+            changed_files,
             diff_stats,
             tree: tree.clone(),
             staged_tree: Vec::new(),
             changes_tree: tree,
-            staged_file_count: 0,
-            changes_file_count: summary.changed_files.len(),
+            staged_file_count,
+            changes_file_count,
         })
     }
 
@@ -877,16 +886,9 @@ fn head_review_snapshot(base: ReviewBase, snapshot: &RepositorySnapshot) -> Revi
             }
         })
         .collect();
-    let staged_file_count = snapshot
-        .status
-        .iter()
-        .filter(|entry| entry.index_status != "none")
-        .count();
-    let changes_file_count = snapshot
-        .status
-        .iter()
-        .filter(|entry| entry.worktree_status != "none" && entry.worktree_status != "ignored")
-        .count();
+    let (staged_files, changed_files) = split_staged_changed_statuses(&snapshot.status);
+    let staged_file_count = staged_files.len();
+    let changes_file_count = changed_files.len();
 
     ReviewSnapshotDto {
         version: snapshot.version,
@@ -895,13 +897,26 @@ fn head_review_snapshot(base: ReviewBase, snapshot: &RepositorySnapshot) -> Revi
         limited: snapshot.flags.limited,
         base: base.as_str().to_string(),
         files,
-        status: snapshot.status.clone(),
+        staged_files,
+        changed_files,
         diff_stats: snapshot.diff_stats.clone(),
         tree: snapshot.diff_file_tree.clone(),
         staged_tree: snapshot.staged_diff_file_tree.clone(),
         changes_tree: snapshot.changes_diff_file_tree.clone(),
         staged_file_count,
         changes_file_count,
+    }
+}
+
+fn normalize_branch_diff_worktree_status(status: &str) -> Result<&'static str, CodeUsecaseError> {
+    match status {
+        "added" | "copied" => Ok("new"),
+        "deleted" => Ok("deleted"),
+        "modified" | "renamed" => Ok("modified"),
+        _ => Err(CodeError::Rule(format!(
+            "unsupported branch diff status for review snapshot: {status}"
+        ))
+        .into()),
     }
 }
 
@@ -939,16 +954,15 @@ fn review_snapshot_contains_target(
 
     if section.is_staged() {
         return snapshot
-            .status
+            .staged_files
             .iter()
-            .any(|entry| entry.path == relative_path && entry.index_status != "none");
+            .any(|entry| entry.path == relative_path);
     }
 
-    snapshot.status.iter().any(|entry| {
-        entry.path == relative_path
-            && entry.worktree_status != "none"
-            && entry.worktree_status != "ignored"
-    })
+    snapshot
+        .changed_files
+        .iter()
+        .any(|entry| entry.path == relative_path)
 }
 
 fn review_file_entry_matches(entry: &ReviewFileEntryDto, relative_path: &str) -> bool {
@@ -1887,6 +1901,17 @@ mod tests {
         index_status: &str,
         worktree_status: &str,
     ) -> RepositorySnapshot {
+        let status = vec![file_status(path, index_status, worktree_status)];
+        let (staged_files, changed_files) = split_staged_changed_statuses(&status);
+        let staged_tree = staged_files
+            .iter()
+            .map(|entry| tree_node(&entry.path, &entry.index_status, 1, 0))
+            .collect();
+        let changes_tree = changed_files
+            .iter()
+            .map(|entry| tree_node(&entry.path, &entry.worktree_status, 1, 0))
+            .collect();
+
         repository_snapshot_with_parts(
             version,
             SnapshotFlags {
@@ -1894,16 +1919,10 @@ mod tests {
                 loading: false,
                 limited: false,
             },
-            vec![file_status(path, index_status, worktree_status)],
+            status,
             vec![diff_stat(path, 1, 0, 1, 0)],
-            (index_status != "none")
-                .then(|| tree_node(path, index_status, 1, 0))
-                .into_iter()
-                .collect(),
-            (worktree_status != "none" && worktree_status != "ignored")
-                .then(|| tree_node(path, worktree_status, 1, 0))
-                .into_iter()
-                .collect(),
+            staged_tree,
+            changes_tree,
         )
     }
 
@@ -2042,9 +2061,52 @@ mod tests {
         assert_eq!(dto.files[0].additions, 2);
         assert_eq!(dto.files[1].file_id, "src/main.rs");
         assert_eq!(dto.files[1].deletions, 4);
+        assert_eq!(dto.staged_files.len(), 1);
+        assert_eq!(dto.staged_files[0].path, "src/lib.rs");
+        assert_eq!(dto.changed_files.len(), 1);
+        assert_eq!(dto.changed_files[0].path, "src/main.rs");
         assert_eq!(dto.staged_file_count, 1);
         assert_eq!(dto.changes_file_count, 1);
         assert!(code.calls().is_empty());
+    }
+
+    #[test]
+    fn head_snapshot_read_model_splits_staged_and_changed_status_in_rust() {
+        let snapshot = repository_snapshot_with_parts(
+            7,
+            SnapshotFlags {
+                stale: false,
+                loading: false,
+                limited: false,
+            },
+            vec![
+                file_status("staged.rs", "modified", "none"),
+                file_status("changed.rs", "none", "modified"),
+                file_status("both.rs", "new", "deleted"),
+                file_status("ignored.rs", "none", "ignored"),
+                file_status("clean.rs", "none", "none"),
+            ],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let dto = head_review_snapshot(ReviewBase::Head, &snapshot);
+
+        let staged_paths = dto
+            .staged_files
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>();
+        let changed_paths = dto
+            .changed_files
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(staged_paths, vec!["staged.rs", "both.rs"]);
+        assert_eq!(changed_paths, vec!["changed.rs", "both.rs"]);
+        assert_eq!(dto.staged_file_count, dto.staged_files.len());
+        assert_eq!(dto.changes_file_count, dto.changed_files.len());
     }
 
     #[test]
@@ -2099,13 +2161,46 @@ mod tests {
         assert_eq!(dto.files[0].file_id, "src/feature.rs");
         assert_eq!(dto.files[0].index_status, "none");
         assert_eq!(dto.files[0].worktree_status, "modified");
+        assert_eq!(dto.files[1].worktree_status, "added");
         assert_eq!(dto.diff_stats[0].wt_additions, 5);
         assert!(dto.staged_tree.is_empty());
         assert_eq!(dto.changes_tree.len(), 2);
         assert_eq!(dto.tree.len(), 2);
+        assert!(dto.staged_files.is_empty());
+        assert_eq!(
+            dto.changed_files
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/feature.rs", "README.md"]
+        );
+        assert_eq!(dto.changed_files[1].worktree_status, "new");
         assert_eq!(dto.staged_file_count, 0);
         assert_eq!(dto.changes_file_count, 2);
         assert_eq!(code.calls(), vec!["branch-diff:/repo"]);
+    }
+
+    #[test]
+    fn branch_diff_statuses_are_normalized_for_git_file_status_contract() {
+        let cases = [
+            ("added", "new"),
+            ("copied", "new"),
+            ("renamed", "modified"),
+            ("modified", "modified"),
+            ("deleted", "deleted"),
+        ];
+
+        for (branch_diff_status, git_worktree_status) in cases {
+            assert_eq!(
+                normalize_branch_diff_worktree_status(branch_diff_status).unwrap(),
+                git_worktree_status
+            );
+        }
+
+        let err = normalize_branch_diff_worktree_status("ignored")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unsupported branch diff status"));
     }
 
     #[test]
@@ -3505,7 +3600,12 @@ mod tests {
                 additions: 1,
                 deletions: 0,
             }],
-            status: Vec::new(),
+            staged_files: Vec::new(),
+            changed_files: vec![FileStatusDto {
+                path: "src/app.rs".to_string(),
+                index_status: "none".to_string(),
+                worktree_status: "modified".to_string(),
+            }],
             diff_stats: Vec::new(),
             tree: Vec::new(),
             staged_tree: Vec::new(),
