@@ -4,6 +4,7 @@ export interface PaneLeaf {
 	type: "leaf";
 	id: string;
 	label: string;
+	// PTY binding references for the pane; these are not live/stale decision state.
 	ptyId: number | null;
 	sessionKey: string | null;
 	pendingKill?: boolean;

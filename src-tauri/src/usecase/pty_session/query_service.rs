@@ -1,13 +1,14 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::domain::pty_session::PtyKind;
 use crate::usecase::pty_session::dto::{
-    GetPtyBufferedOutputResult, PtyReplayOutput, PtySessionInfo,
+    GetPtyBufferedOutputResult, PtyReplayOutput, PtySessionAvailability, PtySessionInfo,
 };
 use crate::usecase::pty_session::error::UsecaseError;
 use crate::usecase::pty_session::ports::PtySessionReadGateway;
 
-pub fn list(manager: &impl PtySessionReadGateway) -> Vec<PtySessionInfo> {
+pub fn list(manager: &(impl PtySessionReadGateway + ?Sized)) -> Vec<PtySessionInfo> {
     manager
         .list_snapshots()
         .into_iter()
@@ -15,8 +16,27 @@ pub fn list(manager: &impl PtySessionReadGateway) -> Vec<PtySessionInfo> {
         .collect()
 }
 
+pub fn reconcile_unavailable(
+    manager: &(impl PtySessionReadGateway + ?Sized),
+    referenced_session_keys: &[String],
+) -> PtySessionAvailability {
+    let live_session_keys: HashSet<String> = manager
+        .list_snapshots()
+        .into_iter()
+        .map(|snapshot| snapshot.session_key)
+        .collect();
+
+    PtySessionAvailability {
+        unavailable_session_keys: referenced_session_keys
+            .iter()
+            .filter(|session_key| !live_session_keys.contains(*session_key))
+            .cloned()
+            .collect(),
+    }
+}
+
 pub fn get_buffered_output(
-    manager: &impl PtySessionReadGateway,
+    manager: &(impl PtySessionReadGateway + ?Sized),
     session_key: &str,
     worktree_path: &str,
 ) -> Result<GetPtyBufferedOutputResult, UsecaseError> {
@@ -159,6 +179,61 @@ mod tests {
                 sequence: 5,
             }]
         );
+    }
+
+    #[test]
+    fn reconcile_unavailable_returns_only_referenced_keys_missing_from_live_sessions() {
+        let gateway = MockGateway::new(
+            vec![
+                snapshot(1, "live-a", PtyKind::Terminal, false),
+                snapshot(2, "live-b", PtyKind::Terminal, false),
+                snapshot(3, "unreferenced-live", PtyKind::Terminal, false),
+            ],
+            HashMap::new(),
+        );
+
+        let availability = reconcile_unavailable(
+            &gateway,
+            &[
+                "live-a".to_string(),
+                "missing-a".to_string(),
+                "live-b".to_string(),
+                "missing-b".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            availability.unavailable_session_keys,
+            vec!["missing-a".to_string(), "missing-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn reconcile_unavailable_is_empty_when_all_referenced_sessions_are_live() {
+        let gateway = MockGateway::new(
+            vec![
+                snapshot(1, "live-a", PtyKind::Terminal, false),
+                snapshot(2, "live-b", PtyKind::Terminal, false),
+            ],
+            HashMap::new(),
+        );
+
+        let availability =
+            reconcile_unavailable(&gateway, &["live-a".to_string(), "live-b".to_string()]);
+
+        assert!(availability.unavailable_session_keys.is_empty());
+    }
+
+    #[test]
+    fn reconcile_unavailable_is_empty_without_referenced_sessions() {
+        let gateway = MockGateway::new(
+            vec![snapshot(1, "live-a", PtyKind::Terminal, false)],
+            HashMap::new(),
+        );
+
+        let availability = reconcile_unavailable(&gateway, &[]);
+
+        assert!(availability.unavailable_session_keys.is_empty());
     }
 
     #[test]

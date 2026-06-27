@@ -3,10 +3,11 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
+use crate::adaptor::controller::state::AppState;
 use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
 use crate::domain::pty_session::services::parse_pty_kind;
 use crate::usecase::pty_session::dto::{
-    GetOrSpawnPtyResult, GetPtyBufferedOutputResult, PtySessionInfo,
+    GetOrSpawnPtyResult, GetPtyBufferedOutputResult, PtySessionAvailability, PtySessionInfo,
 };
 use crate::usecase::pty_session::error::UsecaseError;
 
@@ -54,22 +55,30 @@ pub fn resize_pty(
 }
 
 #[tauri::command]
-pub fn list_pty_sessions(state: State<'_, Arc<PtySessionRuntimeGateway>>) -> Vec<PtySessionInfo> {
-    crate::usecase::pty_session::query_service::list(state.inner().as_ref())
+pub fn list_pty_sessions(state: State<'_, AppState>) -> Vec<PtySessionInfo> {
+    state.pty_session_read_usecase.list()
+}
+
+#[tauri::command]
+pub fn reconcile_pty_sessions(
+    state: State<'_, AppState>,
+    session_keys: Vec<String>,
+) -> PtySessionAvailability {
+    state
+        .pty_session_read_usecase
+        .reconcile_unavailable(&session_keys)
 }
 
 #[tauri::command]
 pub fn get_pty_buffered_output(
-    state: State<'_, Arc<PtySessionRuntimeGateway>>,
+    state: State<'_, AppState>,
     session_key: String,
     worktree_path: String,
 ) -> Result<GetPtyBufferedOutputResult, PtyCommandError> {
-    crate::usecase::pty_session::query_service::get_buffered_output(
-        state.inner().as_ref(),
-        &session_key,
-        &worktree_path,
-    )
-    .map_err(PtyCommandError::from)
+    state
+        .pty_session_read_usecase
+        .get_buffered_output(&session_key, &worktree_path)
+        .map_err(PtyCommandError::from)
 }
 
 #[tauri::command]

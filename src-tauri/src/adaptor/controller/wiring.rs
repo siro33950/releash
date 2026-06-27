@@ -22,6 +22,8 @@ use crate::adaptor::gateway::code::staging::StagingGateway;
 use crate::adaptor::gateway::comment::{
     FileReviewEventStore, SystemReviewClock, UuidReviewIdGenerator,
 };
+#[cfg(test)]
+use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
 use crate::adaptor::gateway::repository::branch::BranchGateway;
 use crate::adaptor::gateway::repository::branch_card::BranchCardGateway;
 use crate::adaptor::gateway::repository::git_config::GitConfigGateway;
@@ -66,6 +68,8 @@ use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::comment::{
     ReviewClock, ReviewCommentUsecase, ReviewEventStore, ReviewIdGenerator,
 };
+#[cfg(test)]
+use crate::usecase::pty_session::read_usecase::PtySessionReadUsecase;
 use crate::usecase::repository_query_service::RepositoryQueryService;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
@@ -177,6 +181,11 @@ pub(crate) fn build_agent_session_usecase<R: tauri::Runtime + 'static>(
 #[cfg(test)]
 pub(crate) fn build_agent_session_usecase_for_tests() -> AgentSessionUsecase {
     AgentSessionUsecase::new(Arc::new(UnavailableCodexSkillCatalogGateway))
+}
+
+#[cfg(test)]
+pub(crate) fn build_pty_session_read_usecase_for_tests() -> PtySessionReadUsecase {
+    PtySessionReadUsecase::new(Arc::new(PtySessionRuntimeGateway::default()))
 }
 
 pub(crate) fn build_session_store() -> SessionStore {

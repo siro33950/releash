@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	closePane,
 	countLeaves,
@@ -50,22 +50,15 @@ interface PtyEvicted {
 	reason: string;
 }
 
-interface PtySessionInfo {
-	session_key: string;
+interface PtySessionAvailability {
+	unavailable_session_keys: string[];
 }
 
 const tabStateCache = new Map<string, CachedTabState>();
-let ptyEvictionMirrorPromise: Promise<() => void> | null = null;
-let ptyEvictionMirrorUnlisten: (() => void) | undefined;
-let ptyEvictionMirrorToken = 0;
 
 /** テスト用: キャッシュクリア */
 export function _clearTabStateCache(): void {
 	tabStateCache.clear();
-	ptyEvictionMirrorToken += 1;
-	ptyEvictionMirrorUnlisten?.();
-	ptyEvictionMirrorUnlisten = undefined;
-	ptyEvictionMirrorPromise = null;
 }
 
 type NavigationDirection = "left" | "right" | "up" | "down";
@@ -170,6 +163,10 @@ export function useTerminalPanes(
 	const activeTab = tabs.find((t) => t.id === activeTabId);
 	const activeTabIdRef = useRef(activeTabId);
 	activeTabIdRef.current = activeTabId;
+	const referencedSessionKeySignature = useMemo(
+		() => collectReferencedSessionKeySignature(tabs),
+		[tabs],
+	);
 
 	useEffect(() => {
 		if (!cacheKey) return;
@@ -178,13 +175,19 @@ export function useTerminalPanes(
 
 		listen<PtyEvicted>("pty-evicted", (event) => {
 			if (cancelled) return;
-			setTabs((prev) =>
-				removePaneBySessionKey(
+			setTabs((prev) => {
+				const result = removeBackendSelectedSessionPanes(
 					prev,
-					event.payload.session_key,
 					activeTabIdRef.current,
-				),
-			);
+					[event.payload.session_key],
+					false,
+				);
+				if (!result.changed) return prev;
+				if (result.activeTabId !== activeTabIdRef.current) {
+					setActiveTabId(result.activeTabId);
+				}
+				return result.tabs;
+			});
 		})
 			.then((fn) => {
 				if (cancelled) {
@@ -205,24 +208,26 @@ export function useTerminalPanes(
 
 	useEffect(() => {
 		if (!cacheKey) return;
-		ensurePtyEvictionMirror();
-	}, [cacheKey]);
-
-	useEffect(() => {
-		if (!cacheKey) return;
+		const sessionKeys = parseReferencedSessionKeySignature(
+			referencedSessionKeySignature,
+		);
+		if (sessionKeys.length === 0) return;
 		let cancelled = false;
 
-		invoke<PtySessionInfo[]>("list_pty_sessions")
-			.then((sessions) => {
-				if (cancelled || !Array.isArray(sessions)) return;
-				const liveSessionKeys = new Set(
-					sessions.map((session) => session.session_key),
-				);
+		invoke<PtySessionAvailability>("reconcile_pty_sessions", { sessionKeys })
+			.then((availability) => {
+				if (
+					cancelled ||
+					!Array.isArray(availability?.unavailable_session_keys)
+				) {
+					return;
+				}
 				setTabs((prev) => {
-					const result = removeStalePanes(
+					const result = removeBackendSelectedSessionPanes(
 						prev,
 						activeTabIdRef.current,
-						liveSessionKeys,
+						availability.unavailable_session_keys,
+						true,
 					);
 					if (!result.changed) return prev;
 					if (result.activeTabId !== activeTabIdRef.current) {
@@ -238,7 +243,7 @@ export function useTerminalPanes(
 		return () => {
 			cancelled = true;
 		};
-	}, [cacheKey]);
+	}, [cacheKey, referencedSessionKeySignature]);
 
 	const addTab = useCallback(() => {
 		if (tabsLengthRef.current >= MAX_TABS) return;
@@ -609,89 +614,55 @@ function killPanePty(pane: PaneLeaf): void {
 	});
 }
 
-function removePaneBySessionKey(
-	tabs: TerminalTab[],
-	sessionKey: string,
-	activeTabId: string,
-): TerminalTab[] {
-	return removePaneBySessionKeyFromState(tabs, sessionKey, activeTabId, false)
-		.tabs;
-}
-
 interface PaneRemovalResult {
 	tabs: TerminalTab[];
 	activeTabId: string;
 	changed: boolean;
 }
 
-function ensurePtyEvictionMirror(): void {
-	if (ptyEvictionMirrorPromise) return;
-	const token = ptyEvictionMirrorToken;
-	ptyEvictionMirrorPromise = listen<PtyEvicted>("pty-evicted", (event) => {
-		removeEvictedSessionFromTabStateCache(event.payload.session_key);
-	})
-		.then((unlisten) => {
-			if (token !== ptyEvictionMirrorToken) {
-				unlisten();
-				return unlisten;
+function collectReferencedSessionKeys(tabs: TerminalTab[]): string[] {
+	const sessionKeys = new Set<string>();
+	for (const tab of tabs) {
+		for (const leaf of getAllLeaves(tab.paneTree)) {
+			if (leaf.sessionKey !== null) {
+				sessionKeys.add(leaf.sessionKey);
 			}
-			ptyEvictionMirrorUnlisten = unlisten;
-			return unlisten;
-		})
-		.catch((error) => {
-			if (token === ptyEvictionMirrorToken) {
-				ptyEvictionMirrorPromise = null;
-			}
-			console.error("Failed to listen for global PTY eviction:", error);
-			return () => {};
-		});
-}
-
-function removeEvictedSessionFromTabStateCache(sessionKey: string): void {
-	for (const [key, cached] of tabStateCache) {
-		const result = removePaneBySessionKeyFromState(
-			cached.tabs,
-			sessionKey,
-			cached.activeTabId,
-			true,
-		);
-		if (!result.changed) continue;
-		tabStateCache.set(key, {
-			...cached,
-			tabs: result.tabs,
-			activeTabId: result.activeTabId,
-		});
+		}
 	}
+	return [...sessionKeys];
 }
 
-function removeStalePanes(
+function collectReferencedSessionKeySignature(tabs: TerminalTab[]): string {
+	return JSON.stringify(collectReferencedSessionKeys(tabs).sort());
+}
+
+function parseReferencedSessionKeySignature(signature: string): string[] {
+	return JSON.parse(signature) as string[];
+}
+
+function removeBackendSelectedSessionPanes(
 	tabs: TerminalTab[],
 	activeTabId: string,
-	liveSessionKeys: Set<string>,
+	sessionKeys: string[],
+	removeActiveSinglePaneTab: boolean,
 ): PaneRemovalResult {
 	let currentTabs = tabs;
 	let currentActiveTabId = activeTabId;
 	let changed = false;
 
-	while (true) {
-		const staleLeaf = currentTabs
-			.flatMap((tab) => getAllLeaves(tab.paneTree))
-			.find(
-				(leaf) =>
-					leaf.sessionKey !== null && !liveSessionKeys.has(leaf.sessionKey),
+	for (const sessionKey of sessionKeys) {
+		while (true) {
+			const result = removeFirstPaneBySessionKeyFromState(
+				currentTabs,
+				sessionKey,
+				currentActiveTabId,
+				removeActiveSinglePaneTab,
 			);
-		if (!staleLeaf?.sessionKey) break;
-
-		const result = removePaneBySessionKeyFromState(
-			currentTabs,
-			staleLeaf.sessionKey,
-			currentActiveTabId,
-			true,
-		);
-		if (!result.changed) break;
-		currentTabs = result.tabs;
-		currentActiveTabId = result.activeTabId;
-		changed = true;
+			if (!result.changed) break;
+			currentTabs = result.tabs;
+			currentActiveTabId = result.activeTabId;
+			changed = true;
+		}
 	}
 
 	return {
@@ -701,7 +672,7 @@ function removeStalePanes(
 	};
 }
 
-function removePaneBySessionKeyFromState(
+function removeFirstPaneBySessionKeyFromState(
 	tabs: TerminalTab[],
 	sessionKey: string,
 	activeTabId: string,
