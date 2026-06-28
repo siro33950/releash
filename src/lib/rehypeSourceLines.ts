@@ -1,4 +1,4 @@
-import type { DiffRange } from "./markdownDiff";
+import type { DiffRange } from "@/types/markdown-diff";
 
 interface HastPosition {
 	start: { line: number };

@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 
-use crate::domain::code::{DiffFileEntry, DiffTreeNode, Hunk};
+use crate::domain::code::{DiffFileEntry, DiffSide, DiffTreeNode, Hunk};
 
 /// `compute_hidden_ranges` のコマンド引数として受け取る hunk。
 #[derive(Debug, Clone, Deserialize)]
@@ -32,6 +32,23 @@ impl HunkInput {
             new_start: self.new_start,
             new_lines: self.new_lines,
             lines: self.lines,
+        }
+    }
+}
+
+/// `compute_markdown_diff_ranges` の対象 side。
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MarkdownDiffSideInput {
+    Modified,
+    Original,
+}
+
+impl MarkdownDiffSideInput {
+    pub fn into_usecase(self) -> DiffSide {
+        match self {
+            Self::Modified => DiffSide::Modified,
+            Self::Original => DiffSide::Original,
         }
     }
 }
@@ -148,6 +165,15 @@ mod protocol_code_tests {
         assert_eq!(h.new_start, 3);
         assert_eq!(h.new_lines, 4);
         assert_eq!(h.lines, vec!["-a".to_string(), "+b".to_string()]);
+    }
+
+    #[test]
+    fn test_markdown_diff_side_inputはlowercaseを受理する() {
+        let modified: MarkdownDiffSideInput = serde_json::from_str(r#""modified""#).unwrap();
+        let original: MarkdownDiffSideInput = serde_json::from_str(r#""original""#).unwrap();
+
+        assert!(matches!(modified.into_usecase(), DiffSide::Modified));
+        assert!(matches!(original.into_usecase(), DiffSide::Original));
     }
 
     #[test]

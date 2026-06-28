@@ -12,12 +12,16 @@
 
 pub mod diff_tree;
 pub mod hunk;
+pub mod markdown_diff;
 pub mod mention_reference;
 pub mod range;
 pub mod review;
 
 pub use diff_tree::{DiffFileEntry, DiffTreeNode, FileNavigationResult};
 pub use hunk::{ChangeGroup, Hunk};
+pub use markdown_diff::{
+    DiffRange, DiffRangeKind, DiffSide, InlineChunk, InlineChunkKind, SplitRow, SplitRowKind,
+};
 pub use mention_reference::MentionReference;
 pub use range::{HiddenRange, VisibleBlock};
 pub use review::{

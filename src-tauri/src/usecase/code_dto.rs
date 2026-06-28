@@ -1,8 +1,8 @@
 //! code ユースケースの read model（DTO）。
 //!
-//! フロントへ返す転送表現を所有する層。domain の値オブジェクトは serde 非依存であり、
-//! Query 経路（QueryService）が domain の純粋ロジック結果（VO）を本 DTO へ詰め替えて返す。
-//! serialize 表現（フィールド名・camelCase・省略）は移行前の各型と等価に保つ。
+//! フロントへ返す転送表現を所有する層。Query 経路（QueryService）が読み取り要求ごとに
+//! 本 DTO を直接組み立てる。serialize 表現（フィールド名・camelCase・省略）は移行前の
+//! 各型と等価に保つ。
 //!
 //! branch diff のサマリは git2 の diff 結果を denormalize した表示・転送向けモデルで
 //! あり domain Entity ではない。Query 経路（[`BranchDiffQuery`](super::code_query_service::BranchDiffQuery)）の
@@ -90,6 +90,60 @@ pub struct VisibleBlockDto {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deleted_content: Option<String>,
+}
+
+/// Markdown gutter diff range の転送表現。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffRangeDto {
+    pub start_line: u32,
+    pub end_line: u32,
+    #[serde(rename = "type")]
+    pub kind: DiffRangeKindDto,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DiffRangeKindDto {
+    Added,
+    Modified,
+    Deleted,
+}
+
+/// Markdown split diff row の転送表現。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitRowDto {
+    pub left: Option<String>,
+    pub right: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: SplitRowKindDto,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SplitRowKindDto {
+    Unchanged,
+    Added,
+    Removed,
+    Modified,
+}
+
+/// Markdown inline diff chunk の転送表現。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InlineChunkDto {
+    pub content: String,
+    #[serde(rename = "type")]
+    pub kind: InlineChunkKindDto,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum InlineChunkKindDto {
+    Unchanged,
+    Added,
+    Removed,
 }
 
 // ── diff_tree（フィールド名は snake_case のまま＝移行前と等価） ──
@@ -346,6 +400,54 @@ mod code_dto_serialize_tests {
         assert_eq!(
             serde_json::to_value(&some).unwrap().get("deletedContent"),
             Some(&json!("d"))
+        );
+    }
+
+    #[test]
+    fn test_markdown_diff_range_dtoは既存frontend形で出力する() {
+        let dto = DiffRangeDto {
+            start_line: 2,
+            end_line: 4,
+            kind: DiffRangeKindDto::Modified,
+        };
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap(),
+            json!({"startLine": 2, "endLine": 4, "type": "modified"})
+        );
+
+        let deleted = DiffRangeDto {
+            start_line: 5,
+            end_line: 6,
+            kind: DiffRangeKindDto::Deleted,
+        };
+        assert_eq!(
+            serde_json::to_value(&deleted).unwrap(),
+            json!({"startLine": 5, "endLine": 6, "type": "deleted"})
+        );
+    }
+
+    #[test]
+    fn test_markdown_split_row_dtoはtypeとnullable_sideを出力する() {
+        let dto = SplitRowDto {
+            left: None,
+            right: Some("new\n".to_string()),
+            kind: SplitRowKindDto::Added,
+        };
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap(),
+            json!({"left": null, "right": "new\n", "type": "added"})
+        );
+    }
+
+    #[test]
+    fn test_markdown_inline_chunk_dtoはtypeを出力する() {
+        let dto = InlineChunkDto {
+            content: "old\n".to_string(),
+            kind: InlineChunkKindDto::Removed,
+        };
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap(),
+            json!({"content": "old\n", "type": "removed"})
         );
     }
 

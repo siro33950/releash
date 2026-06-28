@@ -8,14 +8,14 @@
 use std::sync::Arc;
 
 use crate::domain::code::{
-    ChangeGroup, DiffFileEntry, DiffTreeNode, Hunk, MentionReference, ReviewBase, ReviewBlobSide,
-    ReviewBlobUrlParams, ReviewBlobUrlProvider, ReviewSection, ReviewSideBytes, ReviewSideMetadata,
-    StagingRepository,
+    ChangeGroup, DiffFileEntry, DiffSide, DiffTreeNode, Hunk, MentionReference, ReviewBase,
+    ReviewBlobSide, ReviewBlobUrlParams, ReviewBlobUrlProvider, ReviewSection, ReviewSideBytes,
+    ReviewSideMetadata, StagingRepository,
 };
 
 use super::code_dto::{
-    BranchDiffSummaryDto, DiffHunksResultDto, DiffTreeNodeDto, FileNavigationResultDto,
-    HiddenRangeDto, VisibleBlockDto,
+    BranchDiffSummaryDto, DiffHunksResultDto, DiffRangeDto, DiffTreeNodeDto,
+    FileNavigationResultDto, HiddenRangeDto, InlineChunkDto, SplitRowDto, VisibleBlockDto,
 };
 use super::code_error::CodeUsecaseError;
 use super::code_query_service::CodeQueryService;
@@ -286,6 +286,29 @@ impl CodeUsecase {
     ) -> Vec<VisibleBlockDto> {
         self.query
             .compute_visible_markdown_blocks(original, modified, context_lines)
+    }
+
+    pub fn compute_markdown_diff_ranges(
+        &self,
+        original: &str,
+        modified: &str,
+        side: DiffSide,
+    ) -> Vec<DiffRangeDto> {
+        self.query
+            .compute_markdown_diff_ranges(original, modified, side)
+    }
+
+    pub fn compute_markdown_split_rows(&self, original: &str, modified: &str) -> Vec<SplitRowDto> {
+        self.query.compute_markdown_split_rows(original, modified)
+    }
+
+    pub fn compute_markdown_inline_chunks(
+        &self,
+        original: &str,
+        modified: &str,
+    ) -> Vec<InlineChunkDto> {
+        self.query
+            .compute_markdown_inline_chunks(original, modified)
     }
 
     // ── language ──
