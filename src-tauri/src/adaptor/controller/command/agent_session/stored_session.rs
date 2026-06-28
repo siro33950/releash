@@ -10,9 +10,8 @@ use crate::infrastructure::agent_session::runtime::{
 };
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::session::{
-    add_message_internal, update_session_state_in_data_dir, ChatMessage, ChatSession, MessageRole,
-    OpenTabRegistry, RestoreSessionResponse, SessionState, SessionStore, SessionSummary,
-    StoredSessionLifecycleUsecase,
+    add_message_internal, ChatMessage, ChatSession, MessageRole, OpenTabRegistry,
+    RestoreSessionResponse, SessionStore, SessionSummary, StoredSessionLifecycleUsecase,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -71,17 +70,6 @@ pub fn add_message(
 ) -> Result<ChatMessage, String> {
     let data_dir = resolve_data_dir(&app)?;
     add_message_internal(&state, &data_dir, &session_id, role, &content, None, None)
-}
-
-#[tauri::command]
-pub fn update_session_state(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
-    session_id: String,
-    new_state: SessionState,
-) -> Result<(), String> {
-    let data_dir = resolve_data_dir(&app)?;
-    update_session_state_in_data_dir(&state, &data_dir, &session_id, new_state)
 }
 
 #[tauri::command]

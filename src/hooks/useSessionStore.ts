@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentStreamSync } from "@/types/protocol";
 import {
 	type AgentEditorContext,
 	type BackendInfo,
@@ -22,7 +21,7 @@ import {
 	type TurnPhase,
 } from "@/types/session";
 
-interface LegacyChatSession {
+export interface LegacyChatSession {
 	id: string;
 	worktreePath: string;
 	messages: (LegacyChatMessage & { parts?: MessagePart[] })[];
@@ -81,7 +80,7 @@ export function legacyToParts(msg: LegacyChatMessage): MessagePart[] {
 	return parts;
 }
 
-function convertLegacyMessage(
+export function convertLegacyMessage(
 	msg: LegacyChatMessage & { parts?: MessagePart[] },
 ): ChatMessage {
 	return {
@@ -93,7 +92,7 @@ function convertLegacyMessage(
 	};
 }
 
-function convertLegacySession(session: LegacyChatSession): ChatSession {
+export function convertLegacySession(session: LegacyChatSession): ChatSession {
 	return {
 		...session,
 		messages: session.messages.map(convertLegacyMessage),
@@ -287,18 +286,6 @@ export async function getSession(
 	});
 	if (!raw) return null;
 	return convertRawGetSessionResponse(raw);
-}
-
-export async function resyncStreamingMessage(
-	sessionId: string,
-	messageId: string,
-	sinceSeq: number,
-): Promise<AgentStreamSync | null> {
-	return invoke<AgentStreamSync | null>("resync_streaming_message", {
-		sessionId,
-		messageId,
-		sinceSeq,
-	});
 }
 
 export async function getSessionToolOutput(
@@ -545,13 +532,6 @@ export async function setSessionBackend(
 		backendId,
 	});
 	return convertRawGetSessionResponse(raw);
-}
-
-export async function updateSessionState(
-	sessionId: string,
-	newState: SessionState,
-): Promise<void> {
-	return invoke("update_session_state", { sessionId, newState });
 }
 
 export async function updateSessionAgentInfo(

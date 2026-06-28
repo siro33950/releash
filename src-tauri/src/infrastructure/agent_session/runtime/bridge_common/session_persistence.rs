@@ -1302,7 +1302,7 @@ mod moved_tests {
                 proc,
                 &session.id,
                 0,
-                |_mid, _seq, _parts, _snapshot_parts| (true, true),
+                |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
             );
             proc.sdk_session_id = Some("previous-good-session".to_string());
             proc.post_turn_message_token = None;
@@ -1791,7 +1791,7 @@ mod moved_tests {
                 generation_matches,
                 proc,
                 &session.id,
-                |_mid, _seq, _parts, _snapshot_parts| (true, true),
+                |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
             );
             (
                 transition.was_initializing,
@@ -1859,7 +1859,7 @@ mod moved_tests {
                 generation_matches,
                 proc,
                 &session.id,
-                |_mid, _seq, _parts, _snapshot_parts| (true, true),
+                |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
             );
             assert!(transition.was_initializing);
             transition.context_restore_failed_on_init

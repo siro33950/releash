@@ -17,7 +17,8 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "get_workspace_status",
     "list_workspace_statuses",
     "list_session_statuses",
-    "list_workflow_step_statuses",
+    "query_worktree_step_statuses",
+    "sync_worktree_step_statuses",
     "list_agent_backends",
     "start_agent_session",
     "interrupt_agent_query",
@@ -54,7 +55,6 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "list_sessions",
     "get_session",
     "get_session_page",
-    "resync_streaming_message",
     "plan_agent_chat_eviction",
     "get_session_attachment",
     "get_session_tool_output",
@@ -67,7 +67,6 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "fork_session",
     "set_session_title",
     "add_message",
-    "update_session_state",
     "update_session_agent_info",
 ];
 
@@ -82,7 +81,8 @@ pub(crate) fn invoke_handler(
         status::get_workspace_status,
         status::list_workspace_statuses,
         status::list_session_statuses,
-        status::list_workflow_step_statuses,
+        status::query_worktree_step_statuses,
+        status::sync_worktree_step_statuses,
         backend::list_agent_backends,
         session::start_agent_session,
         session::interrupt_agent_query,
@@ -119,7 +119,6 @@ pub(crate) fn invoke_handler(
         stored_session::list_sessions,
         session::get_session,
         session::get_session_page,
-        session::resync_streaming_message,
         session::plan_agent_chat_eviction,
         session::get_session_attachment,
         session::get_session_tool_output,
@@ -132,7 +131,6 @@ pub(crate) fn invoke_handler(
         stored_session::fork_session,
         stored_session::set_session_title,
         stored_session::add_message,
-        stored_session::update_session_state,
         stored_session::update_session_agent_info,
     ]
 }

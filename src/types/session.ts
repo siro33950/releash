@@ -343,6 +343,7 @@ export interface SessionStatus {
 	turn_phase: TurnPhase;
 	session_state: SessionState;
 	pending_permission: boolean;
+	pending_permission_request?: PermissionRequest | null;
 	last_activity_at: number;
 	workflow_step?: string | null;
 	workflow_execution_state?: string | null;

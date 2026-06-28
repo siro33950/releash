@@ -336,7 +336,7 @@ mod moved_tests {
                 1,
                 Some(reason),
                 Some("stopped".to_string()),
-                |_mid, _seq, _parts, _snapshot_parts| (true, true),
+                |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
             );
 
             assert_eq!(

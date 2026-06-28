@@ -6,6 +6,7 @@ import type {
 	AgentSupportedCommandsUpdated,
 } from "@/types/protocol";
 import {
+	type LegacyChatMessage,
 	type MessagePart,
 	type ModelInfo,
 	normalizeModelSelectionId,
@@ -17,34 +18,18 @@ import {
 } from "@/types/session";
 import type { AgentChatAction } from "./agentChatReducer";
 import {
-	getSession,
-	resyncStreamingMessage,
-	updateSessionState,
+	convertLegacyMessage,
+	convertLegacySession,
+	type LegacyChatSession,
 } from "./useSessionStore";
 
-interface PermissionRequestMessage {
-	type: "permission_request";
+type SdkMessage = {
+	type: string;
 	session_id?: string;
 	chat_session_id?: string;
-	request_id: string;
-	tool_name: string;
-	input: Record<string, unknown>;
-	tool_use_id: string;
-	title?: string;
-	display_name?: string;
-	description?: string;
-	decision_reason?: string;
-}
-
-type SdkMessage =
-	| PermissionRequestMessage
-	| {
-			type: string;
-			session_id?: string;
-			chat_session_id?: string;
-			parent_tool_use_id?: string | null;
-			[key: string]: unknown;
-	  };
+	parent_tool_use_id?: string | null;
+	[key: string]: unknown;
+};
 
 interface SessionStateChanged {
 	chat_session_id: string;
@@ -52,13 +37,23 @@ interface SessionStateChanged {
 	exit_code: number | null;
 	completed_at?: number | null;
 	interrupted?: boolean;
+	session_state?: SessionState | null;
+	pending_permission_request?: PermissionRequest | null;
 }
 
 interface StreamingMessageUpdated {
 	chat_session_id: string;
 	message_id: string;
 	seq: number;
+	snapshot?: boolean;
 	parts: MessagePart[];
+}
+
+interface AgentTurnPrepared {
+	chat_session_id: string;
+	session: LegacyChatSession;
+	human_message: LegacyChatMessage & { parts?: MessagePart[] | null };
+	agent_message: LegacyChatMessage & { parts?: MessagePart[] | null };
 }
 
 interface PendingMessageConsumed {
@@ -102,14 +97,7 @@ export interface AgentSdkListenerRefs {
 	dispatch: Dispatch<AgentChatAction>;
 	viewableRegistry: ViewableSessionRegistry;
 	refreshSessions: () => Promise<unknown>;
-	/**
-	 * 指定 session に message_id のメッセージが既に存在するか。streaming 更新時の
-	 * cache-miss hydration を「本当に未存在の時だけ」に限定するために使う。毎回
-	 * getSession→UPSERT_SESSION すると、drain 直後の楽観追加メッセージを古い
-	 * snapshot で上書きして消すレースが起きる。
-	 */
-	hasMessage: (sessionId: string, messageId: string) => boolean;
-	getLastStreamingSeq: (sessionId: string, messageId: string) => number;
+	worktreePath?: string;
 }
 
 function isViewable(
@@ -117,30 +105,6 @@ function isViewable(
 	viewableRegistry: ViewableSessionRegistry,
 ): boolean {
 	return viewableRegistry.getIds().has(sessionId);
-}
-
-function handlePermissionRequest(
-	msg: SdkMessage,
-	chatSessionId: string | undefined,
-	dispatch: Dispatch<AgentChatAction>,
-): void {
-	if (msg.type !== "permission_request" || !chatSessionId) return;
-	const prMsg = msg as PermissionRequestMessage;
-	const req: PermissionRequest = {
-		request_id: prMsg.request_id,
-		tool_name: prMsg.tool_name,
-		input: prMsg.input,
-		tool_use_id: prMsg.tool_use_id,
-		title: prMsg.title,
-		display_name: prMsg.display_name,
-		description: prMsg.description,
-		decision_reason: prMsg.decision_reason,
-	};
-	dispatch({
-		type: "SET_PENDING_PERMISSION",
-		sessionId: chatSessionId,
-		request: req,
-	});
 }
 
 function handleSystemMessage(
@@ -269,16 +233,19 @@ function handleResultTokenUsage(
 	});
 }
 
-export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
-	const {
-		dispatch,
-		viewableRegistry,
-		refreshSessions,
-		hasMessage,
-		getLastStreamingSeq,
-	} = refs;
+function toPreparedChatMessage(
+	message: LegacyChatMessage & { parts?: MessagePart[] | null },
+) {
+	return convertLegacyMessage({
+		...message,
+		parts: message.parts ?? undefined,
+	});
+}
 
-	// Listen to SDK messages for meta events (permissions, system messages)
+export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
+	const { dispatch, viewableRegistry, refreshSessions, worktreePath } = refs;
+
+	// Listen to SDK messages for meta events that are not part of session state.
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;
 		let cancelled = false;
@@ -287,7 +254,6 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			const msg = event.payload;
 			const chatSessionId = msg.chat_session_id;
 
-			handlePermissionRequest(msg, chatSessionId, dispatch);
 			handleSystemMessage(msg, chatSessionId, dispatch, viewableRegistry);
 			handleResultErrors(msg, chatSessionId, dispatch, viewableRegistry);
 			handleResultTokenUsage(msg, chatSessionId, dispatch);
@@ -304,6 +270,43 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			unlisten?.();
 		};
 	}, [dispatch, viewableRegistry]);
+
+	// Listen to prepared turn read model emitted before runtime streaming starts.
+	useEffect(() => {
+		let unlisten: UnlistenFn | null = null;
+		let cancelled = false;
+
+		listen<AgentTurnPrepared>("agent-turn-prepared", (event) => {
+			const { chat_session_id, session, human_message, agent_message } =
+				event.payload;
+			if (worktreePath && session.worktreePath !== worktreePath) return;
+			dispatch({
+				type: "UPSERT_SESSION",
+				session: convertLegacySession(session),
+			});
+			dispatch({
+				type: "ADD_MESSAGE",
+				sessionId: chat_session_id,
+				message: toPreparedChatMessage(human_message),
+			});
+			dispatch({
+				type: "ADD_MESSAGE",
+				sessionId: chat_session_id,
+				message: toPreparedChatMessage(agent_message),
+			});
+		}).then((fn) => {
+			if (cancelled) {
+				fn();
+			} else {
+				unlisten = fn;
+			}
+		});
+
+		return () => {
+			cancelled = true;
+			unlisten?.();
+		};
+	}, [dispatch, worktreePath]);
 
 	// Listen to agent-supported-commands-updated from Rust backend.
 	useEffect(() => {
@@ -406,130 +409,21 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;
 		let cancelled = false;
-		const refreshInFlightBySession = new Set<string>();
-		const resyncInFlight = new Map<string, number>();
-		const optimisticLastSeqByMessage = new Map<string, number>();
 
-		function streamingSeqKey(chatSessionId: string, messageId: string): string {
-			return `${chatSessionId}:${messageId}`;
-		}
+		listen<StreamingMessageUpdated>("agent-streaming-delta", (event) => {
+			const { chat_session_id, message_id, seq, snapshot, parts } =
+				event.payload;
 
-		function getEffectiveLastSeq(
-			chatSessionId: string,
-			messageId: string,
-		): number {
-			const key = streamingSeqKey(chatSessionId, messageId);
-			return Math.max(
-				getLastStreamingSeq(chatSessionId, messageId),
-				optimisticLastSeqByMessage.get(key) ?? 0,
-			);
-		}
-
-		function advanceOptimisticLastSeq(key: string, seq: number): void {
-			if (seq > (optimisticLastSeqByMessage.get(key) ?? 0)) {
-				optimisticLastSeqByMessage.set(key, seq);
-			}
-		}
-
-		async function hydrateMessageIfMissing(
-			chatSessionId: string,
-			messageId: string,
-		): Promise<void> {
-			if (
-				hasMessage(chatSessionId, messageId) ||
-				refreshInFlightBySession.has(chatSessionId)
-			) {
-				return;
-			}
-			refreshInFlightBySession.add(chatSessionId);
-			try {
-				const response = await getSession(chatSessionId);
-				if (response && !cancelled) {
-					dispatch({ type: "UPSERT_SESSION", session: response.session });
-				}
-			} catch (error) {
-				console.error("Failed to hydrate streaming message:", error);
-			} finally {
-				refreshInFlightBySession.delete(chatSessionId);
-			}
-		}
-
-		async function dispatchResyncSnapshot(
-			chatSessionId: string,
-			messageId: string,
-			sinceSeq: number,
-			observedSeq: number,
-		): Promise<void> {
-			const key = streamingSeqKey(chatSessionId, messageId);
-			const existingObservedSeq = resyncInFlight.get(key);
-			if (existingObservedSeq !== undefined) {
-				resyncInFlight.set(key, Math.max(existingObservedSeq, observedSeq));
-				return;
-			}
-			let nextSinceSeq = sinceSeq;
-			resyncInFlight.set(key, observedSeq);
-			try {
-				while (!cancelled) {
-					const snapshot = await resyncStreamingMessage(
-						chatSessionId,
-						messageId,
-						nextSinceSeq,
-					);
-					if (cancelled) return;
-					if (!snapshot) {
-						await hydrateMessageIfMissing(chatSessionId, messageId);
-						return;
-					}
-					await hydrateMessageIfMissing(chatSessionId, messageId);
-					if (!hasMessage(chatSessionId, messageId)) {
-						return;
-					}
-					advanceOptimisticLastSeq(key, snapshot.seq);
-					dispatch({
-						type: "SET_STREAMING_MESSAGE",
-						sessionId: chatSessionId,
-						messageId,
-						seq: snapshot.seq,
-						parts: snapshot.parts,
-					});
-					const maxObservedSeq = resyncInFlight.get(key) ?? observedSeq;
-					if (snapshot.seq >= maxObservedSeq || snapshot.seq <= nextSinceSeq) {
-						return;
-					}
-					nextSinceSeq = snapshot.seq;
-				}
-			} catch (error) {
-				console.error("Failed to resync streaming message:", error);
-			} finally {
-				resyncInFlight.delete(key);
-			}
-		}
-
-		listen<StreamingMessageUpdated>("agent-streaming-delta", async (event) => {
-			const { chat_session_id, message_id, seq, parts } = event.payload;
-
-			// viewable でない session の streaming 更新は他のハンドラと同様にスキップ。
-			// SET_STREAMING_MESSAGE のみガード外にあると非表示 session の streaming が
-			// sessionsById に反映される非対称が生じるため、ここで早期 return する。
-			if (!isViewable(chat_session_id, viewableRegistry)) {
+			if (snapshot) {
+				dispatch({
+					type: "SET_STREAMING_MESSAGE",
+					sessionId: chat_session_id,
+					messageId: message_id,
+					parts,
+				});
 				return;
 			}
 
-			const key = streamingSeqKey(chat_session_id, message_id);
-			const lastSeq = getEffectiveLastSeq(chat_session_id, message_id);
-			if (seq <= lastSeq) {
-				return;
-			}
-			if (parts.length === 0) {
-				await dispatchResyncSnapshot(chat_session_id, message_id, lastSeq, seq);
-				return;
-			}
-			if (!hasMessage(chat_session_id, message_id) || seq !== lastSeq + 1) {
-				await dispatchResyncSnapshot(chat_session_id, message_id, lastSeq, seq);
-				return;
-			}
-
-			advanceOptimisticLastSeq(key, seq);
 			dispatch({
 				type: "APPLY_STREAMING_DELTA",
 				sessionId: chat_session_id,
@@ -549,7 +443,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, viewableRegistry, hasMessage, getLastStreamingSeq]);
+	}, [dispatch]);
 
 	// Listen to agent-session-state-changed (unified state event from Rust)
 	useEffect(() => {
@@ -563,6 +457,8 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				exit_code,
 				completed_at,
 				interrupted,
+				session_state,
+				pending_permission_request,
 			} = event.payload;
 
 			dispatch({
@@ -571,7 +467,13 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				turnPhase: turn_phase,
 			});
 
-			// Turn completed (idle with exit_code): update session state and clear permissions
+			dispatch({
+				type: "SET_PENDING_PERMISSION",
+				sessionId: chat_session_id,
+				request: pending_permission_request ?? null,
+			});
+
+			// Turn completed (idle with exit_code): mirror backend state and clear permissions
 			if (turn_phase === "idle" && exit_code != null) {
 				if (
 					!interrupted &&
@@ -585,28 +487,13 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 					});
 				}
 
-				dispatch({
-					type: "SET_PENDING_PERMISSION",
-					sessionId: chat_session_id,
-					request: null,
-				});
-
-				const newState: SessionState = interrupted
-					? "idle"
-					: exit_code === 0
-						? "done"
-						: "error";
-				if (isViewable(chat_session_id, viewableRegistry)) {
+				if (session_state && isViewable(chat_session_id, viewableRegistry)) {
 					dispatch({
 						type: "UPDATE_SESSION_STATE",
 						sessionId: chat_session_id,
-						state: newState,
+						state: session_state,
 					});
 				}
-
-				updateSessionState(chat_session_id, newState).catch((e) =>
-					console.error("Failed to update session state:", e),
-				);
 
 				refreshSessions().catch((e) =>
 					console.error("Failed to refresh sessions:", e),

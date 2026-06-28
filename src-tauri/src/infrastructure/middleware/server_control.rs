@@ -5,6 +5,7 @@ use tauri::{Emitter, Manager};
 use crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster;
 use crate::domain::app_config::ConfigRepository;
 use crate::usecase::agent_session::session::AgentStreamResyncReadModel;
+use crate::usecase::agent_session::status::AgentStatusCenter;
 use crate::usecase::pty_session::query_service::PtySessionReplayReader;
 
 use super::http_upgrade::start_ws_server;
@@ -28,6 +29,7 @@ pub async fn start_server_core(
     let broadcaster = app.state::<Arc<WsBroadcaster>>();
     let pty_replay_reader = app.state::<Arc<dyn PtySessionReplayReader>>();
     let stream_resync_read_model = app.state::<Arc<dyn AgentStreamResyncReadModel>>();
+    let agent_status_center = app.state::<Arc<AgentStatusCenter>>();
 
     {
         let running = handle.running.lock();
@@ -76,6 +78,7 @@ pub async fn start_server_core(
         Arc::clone(&pty_replay_reader),
         Arc::clone(config_state.inner()),
         Arc::clone(stream_resync_read_model.inner()),
+        Arc::clone(agent_status_center.inner()),
         cfg.server.tls.enabled,
     ));
 

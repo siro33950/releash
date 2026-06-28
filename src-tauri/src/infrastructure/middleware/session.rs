@@ -162,50 +162,30 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     let (tx, mut rx) = WsBroadcaster::create_channel();
     state.broadcaster.set_sender(Some(tx));
     let _sender_guard = BroadcasterGuard(state.broadcaster.clone());
-    let stream_sync_notify = state.broadcaster.stream_sync_notify();
     let broadcaster_for_forward = state.broadcaster.clone();
 
     // PTY出力 + Agent stream delta/snapshot を WebSocket にフォワードするタスク。
-    // 通常の `WsMessage` は `rx` から受け取って即送信する。一方で
-    // Agent stream は `WsBroadcaster` 側の ordered queue に delta を保持し、
-    // slow consumer 時だけ message 単位の snapshot に畳む。
+    // `rx` は wakeup のみを運び、payload は broadcaster 側の ordered outbound
+    // queue から drain する。これにより stream flush と status sync の相対順序を
+    // backend-owned event log として保持する。
     let forward_task = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                biased;
-                _ = stream_sync_notify.notified() => {
-                    let drained = broadcaster_for_forward.drain_stream_messages();
-                    let mut send_failed = false;
-                    for msg in drained {
-                        if let Ok(json) = serialize_message(&msg) {
-                            crate::other::telemetry::record_payload_size(
-                                crate::other::telemetry::Payload::WebSocket,
-                                || json.len(),
-                            );
-                            if write.send(Message::text(json)).await.is_err() {
-                                send_failed = true;
-                                break;
-                            }
-                        }
-                    }
-                    if send_failed { break; }
-                }
-                maybe = rx.recv() => {
-                    match maybe {
-                        Some(msg) => {
-                            if let Ok(json) = serialize_message(&msg) {
-                                crate::other::telemetry::record_payload_size(
-                                    crate::other::telemetry::Payload::WebSocket,
-                                    || json.len(),
-                                );
-                                if write.send(Message::text(json)).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        None => break,
+        while rx.recv().await.is_some() {
+            let drained = broadcaster_for_forward.drain_messages();
+            let mut send_failed = false;
+            for msg in drained {
+                if let Ok(json) = serialize_message(&msg) {
+                    crate::other::telemetry::record_payload_size(
+                        crate::other::telemetry::Payload::WebSocket,
+                        || json.len(),
+                    );
+                    if write.send(Message::text(json)).await.is_err() {
+                        send_failed = true;
+                        break;
                     }
                 }
+            }
+            if send_failed {
+                break;
             }
         }
         write
@@ -240,6 +220,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                     &ws_msg,
                     state.broadcaster.as_ref(),
                     state.stream_resync_read_model.as_ref(),
+                    state.agent_status_center.as_ref(),
                 )
                 .await
                 {
@@ -264,7 +245,7 @@ fn replay_pty_buffers(state: &WsServerState) {
     for output in state.pty_replay_reader.replay_outputs() {
         let sent = state
             .broadcaster
-            .send_without_buffer(WsMessage::PtyOutput(PtyOutputMsg {
+            .enqueue_or_report_disconnect(WsMessage::PtyOutput(PtyOutputMsg {
                 pty_id: output.pty_id,
                 data: output.data,
                 sequence: output.sequence,
@@ -297,6 +278,7 @@ mod tests {
     use crate::usecase::agent_session::session::{
         AgentStreamResyncReadModel, StreamResyncSnapshot,
     };
+    use crate::usecase::agent_session::status::AgentStatusCenter;
     use crate::usecase::pty_session::dto::PtyReplayOutput;
     use crate::usecase::pty_session::query_service::PtySessionReplayReader;
 
@@ -399,18 +381,20 @@ mod tests {
             Arc::new(MockReplayReader),
             Arc::new(MockConfigRepository),
             Arc::new(EmptyStreamResyncReadModel),
+            Arc::new(AgentStatusCenter::new()),
             false,
         );
 
         replay_pty_buffers(&state);
 
-        match rx.try_recv().unwrap() {
-            WsMessage::PtyOutput(output) => {
+        rx.try_recv().unwrap();
+        match &state.broadcaster.drain_messages()[..] {
+            [WsMessage::PtyOutput(output)] => {
                 assert_eq!(output.pty_id, 7);
                 assert_eq!(output.data, "buffered output");
                 assert_eq!(output.sequence, 42);
             }
-            other => panic!("unexpected replay message: {other:?}"),
+            other => panic!("unexpected replay messages: {other:?}"),
         }
     }
 
@@ -421,6 +405,7 @@ mod tests {
             Arc::new(MockReplayReader),
             Arc::new(MockConfigRepository),
             Arc::new(EmptyStreamResyncReadModel),
+            Arc::new(AgentStatusCenter::new()),
             false,
         ));
         let (client_io, server_io) = tokio::io::duplex(4096);

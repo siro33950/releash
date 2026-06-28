@@ -36,7 +36,6 @@ vi.mock("./useSessionStore", () => ({
 		permissionMode: "edit",
 	}),
 	addMessage: vi.fn(),
-	updateSessionState: vi.fn().mockResolvedValue(undefined),
 	updateSessionAgentInfo: vi.fn().mockResolvedValue(undefined),
 	closeSession: vi.fn().mockResolvedValue(undefined),
 	archiveSession: vi.fn().mockResolvedValue(undefined),
@@ -3749,7 +3748,6 @@ describe("useSessionStore", () => {
 		expect(mod.getSession).toBeDefined();
 		expect(mod.createSession).toBeDefined();
 		expect(mod.addMessage).toBeDefined();
-		expect(mod.updateSessionState).toBeDefined();
 		expect(mod.updateSessionAgentInfo).toBeDefined();
 		expect(mod.closeSession).toBeDefined();
 		expect(mod.restoreSession).toBeDefined();

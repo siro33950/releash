@@ -173,10 +173,11 @@ pub(super) async fn sync_pre_turn_settings(
     Ok(())
 }
 
-/// Effect returned by `run_permission_request_transition_locked`. The caller
-/// (production stdout reader / unit tests) inspects `did_transition` to decide
-/// whether to emit `agent-session-state-changed(WaitingPermission)` after
-/// releasing the process lock.
+/// Effect returned by `run_permission_request_transition_locked`.
+/// `did_transition` reports whether the process actually moved from
+/// `Streaming` to `WaitingPermission`; production still mirrors the pending
+/// permission request even when a late/out-of-order request arrives after the
+/// process has already left `Streaming`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct PermissionRequestTransition {
     pub(crate) did_transition: bool,
@@ -188,7 +189,7 @@ pub(super) struct PermissionRequestTransition {
 /// `Streaming` — promote `turn_phase` to `WaitingPermission`. The flush runs
 /// before the state mutation so the frontend never observes a state change
 /// ahead of the tail content. The caller is responsible for emitting the
-/// state-change notification outside the lock when `did_transition` is true.
+/// pending permission state outside the lock.
 pub(super) fn run_permission_request_transition_locked<F>(
     proc: &mut AgentProcess,
     chat_session_id: &str,
@@ -197,7 +198,7 @@ pub(super) fn run_permission_request_transition_locked<F>(
     emit_stream: F,
 ) -> PermissionRequestTransition
 where
-    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     if proc.state == BridgeState::Streaming {
         if let Some(request_id) = request_id {
@@ -245,7 +246,7 @@ pub(super) fn apply_respond_permission_locked<F>(
     mut emit_stream: F,
 ) -> PermissionResponseTransition
 where
-    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     let did_transition = proc.turn_phase == TurnPhase::WaitingPermission;
     turn_latency::record_permission_wait_latency(&mut proc.turn_latency, request_id);
@@ -285,9 +286,14 @@ where
     let emit_msg_id = proc.streaming_message_id.clone();
     if let (Some(mid), Some(part)) = (emit_msg_id, found_part) {
         enqueue_pending_delta_with_rollbacks(proc, std::slice::from_ref(&part), rollbacks);
-        force_flush_pending_streaming(proc, chat_session_id, &mid, |seq, parts, snapshot_parts| {
-            emit_stream(&mid, seq, parts, snapshot_parts)
-        });
+        force_flush_pending_streaming(
+            proc,
+            chat_session_id,
+            &mid,
+            |seq, snapshot, parts, snapshot_parts| {
+                emit_stream(&mid, seq, snapshot, parts, snapshot_parts)
+            },
+        );
     }
     record_permission_resolution_for_current_turn(
         proc,
@@ -472,12 +478,13 @@ pub async fn respond_agent_permission_internal(
                 &request_id,
                 &behavior,
                 answers_value.as_ref(),
-                |mid, seq, parts, snapshot_parts| {
+                |mid, seq, snapshot, parts, snapshot_parts| {
                     emit_streaming_delta(
                         app,
                         &chat_session_id,
                         mid,
                         seq,
+                        snapshot,
                         parts.to_vec(),
                         snapshot_parts,
                     )
@@ -500,7 +507,14 @@ pub async fn respond_agent_permission_internal(
 
     // Emit state change only if we actually transitioned: WaitingPermission → Streaming
     if permission_transition.did_transition {
-        emit_session_state_changed(app, &chat_session_id, TurnPhase::Streaming, None, false);
+        emit_session_state_changed(
+            app,
+            &chat_session_id,
+            TurnPhase::Streaming,
+            None,
+            false,
+            None,
+        );
         notify_status_transition(
             app,
             session_store,
@@ -615,7 +629,7 @@ mod moved_tests {
             "req-1",
             "allow",
             None,
-            |_mid, _seq, _parts, _snapshot_parts| (true, true),
+            |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
         );
 
         assert!(effect.did_transition);
@@ -662,7 +676,7 @@ mod moved_tests {
             "req-1",
             "allow",
             None,
-            |_mid, _seq, _parts, _snapshot_parts| (false, false), // emit failure on both channels
+            |_mid, _seq, _snapshot, _parts, _snapshot_parts| (false, false), // emit failure on both channels
         );
         assert!(
             effect.did_transition,

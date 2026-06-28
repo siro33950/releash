@@ -235,7 +235,40 @@ pub struct AgentStreamDeltaMsg {
     pub session_id: String,
     pub message_id: String,
     pub seq: u64,
+    #[serde(default)]
+    pub snapshot: bool,
     pub parts: Vec<AgentStreamPartMsg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStepRepresentativeMsg {
+    pub execution_id: String,
+    pub step_name: String,
+    pub run_index: Option<u32>,
+    pub representative: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRepresentativeMsg {
+    pub execution_id: String,
+    pub representative: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeStepStatusSync {
+    pub worktree_path: String,
+    pub version: u64,
+    pub steps: Vec<WorkflowStepRepresentativeMsg>,
+    pub workflows: Vec<WorkflowRepresentativeMsg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeStepStatusResyncReq {
+    pub worktree_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -352,6 +385,43 @@ impl From<MessagePart> for AgentStreamPartMsg {
     }
 }
 
+impl From<crate::usecase::agent_session::status::WorkflowStepRepresentative>
+    for WorkflowStepRepresentativeMsg
+{
+    fn from(value: crate::usecase::agent_session::status::WorkflowStepRepresentative) -> Self {
+        Self {
+            execution_id: value.execution_id,
+            step_name: value.step_name,
+            run_index: value.run_index,
+            representative: value.representative,
+        }
+    }
+}
+
+impl From<crate::usecase::agent_session::status::WorkflowRepresentative>
+    for WorkflowRepresentativeMsg
+{
+    fn from(value: crate::usecase::agent_session::status::WorkflowRepresentative) -> Self {
+        Self {
+            execution_id: value.execution_id,
+            representative: value.representative,
+        }
+    }
+}
+
+impl From<crate::usecase::agent_session::status::WorktreeStepStatusView>
+    for WorktreeStepStatusSync
+{
+    fn from(value: crate::usecase::agent_session::status::WorktreeStepStatusView) -> Self {
+        Self {
+            worktree_path: value.worktree_path,
+            version: value.version,
+            steps: value.steps.into_iter().map(Into::into).collect(),
+            workflows: value.workflows.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 impl From<crate::usecase::agent_session::session::StreamResyncSnapshot> for AgentStreamSync {
     fn from(snapshot: crate::usecase::agent_session::session::StreamResyncSnapshot) -> Self {
         Self {
@@ -451,6 +521,7 @@ mod agent_tests {
             session_id: "session-1".to_string(),
             message_id: "message-1".to_string(),
             seq: 9,
+            snapshot: false,
             parts: vec![AgentStreamPartMsg::ToolResult {
                 content: "preview only".to_string(),
                 is_error: true,
@@ -569,5 +640,39 @@ mod agent_tests {
                 ..
             } if dto_content == &content && dto_content.contains(full_tail)
         ));
+    }
+
+    #[test]
+    fn worktree_step_status_sync_from_view_preserves_wire_shape() {
+        let sync = WorktreeStepStatusSync::from(
+            crate::usecase::agent_session::status::WorktreeStepStatusView {
+                worktree_path: "/repo".to_string(),
+                version: 12,
+                steps: vec![
+                    crate::usecase::agent_session::status::WorkflowStepRepresentative {
+                        execution_id: "exec-1".to_string(),
+                        step_name: "build".to_string(),
+                        run_index: Some(2),
+                        representative: "running".to_string(),
+                    },
+                ],
+                workflows: vec![
+                    crate::usecase::agent_session::status::WorkflowRepresentative {
+                        execution_id: "exec-1".to_string(),
+                        representative: "running".to_string(),
+                    },
+                ],
+            },
+        );
+
+        let json = serde_json::to_string(&sync).unwrap();
+
+        assert!(json.contains(r#""worktreePath":"/repo""#));
+        assert!(json.contains(r#""version":12"#));
+        assert!(json.contains(r#""executionId":"exec-1""#));
+        assert!(json.contains(r#""stepName":"build""#));
+        assert!(json.contains(r#""runIndex":2"#));
+        assert_eq!(sync.steps[0].representative, "running");
+        assert_eq!(sync.workflows[0].representative, "running");
     }
 }
