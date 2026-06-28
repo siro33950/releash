@@ -169,20 +169,6 @@ tasks[]              # 予約 global 名
     items: tasks       # global の作業リストを展開
 ```
 
-## Trigger（起動設定・別レイヤー）
-
-Trigger は「いつ起動するか」の設定であり、WorkflowDefinition には含めない。workflow を名前で参照する別物として持つ。
-
-```yaml
-triggers:
-  - workflow: full-pipeline
-    on: schedule
-    cron: "0 9 * * 1-5"
-  - workflow: full-pipeline
-    on: external
-    event: sentry.alert
-```
-
 ## 例
 
 完成形の全体例は [`examples/full-pipeline.yml`](./examples/full-pipeline.yml) を参照。

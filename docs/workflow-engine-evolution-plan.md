@@ -8,12 +8,12 @@
 
 Releash は workflow を決定論的な実行レールとして扱う。開発者が WorkflowDefinition を定義し、WorkflowExecution として実行し、観測し、承認できるようにする。`gate: approval` の session は対話式で、承認するまで人間が指示し直せる。
 
-workflow engine は状態遷移の唯一の権威である。Agent / UI / CLI / Trigger は action を要求できるが、workflow state を直接決めない。状態変更は typed command を唯一の入口として engine に届く。
+workflow engine は状態遷移の唯一の権威である。Agent / UI / CLI / API は action を要求できるが、workflow state を直接決めない。状態変更は typed command を唯一の入口として engine に届く。
 
 ## プロダクト方針
 
 ```text
-User / UI / CLI / API / Trigger (timer / external event)
+User / UI / CLI / API / Agent action
         |
         v  typed command（状態変更の唯一の入口）
         v
@@ -27,7 +27,7 @@ NodeExecution
 ```
 
 - NodeExecution の種別は `command` / `session` / `fanout` の3つ。完了判定（自動 / 人間）は session の `gate`（`auto` / `approval`）で表す。種別ではない。
-- WorkflowExecution は UI からの手動起動だけでなく、CLI・タイマー・外部イベント（Trigger）からも起動される。
+- WorkflowExecution は typed command boundary から起動される。タイマー・外部イベント連携などの起動設定は本マイルストーン外で扱う。
 - human checkpoint を第一級に扱う。`gate: approval` の session で止まり、人間が Artifact（diff / 出力 / 検証結果）を見て承認する。承認しなければ対話で指示し直す（session は対話式・却下や再実行という別操作は無い）。
 - UI / CLI / API は同じ command boundary を共有する。画面操作と外部操作が別世界にならない。
 - engine は確率論ではなく決定論的に動く。NodeExecution の成否・遷移は Contract 検証済み Artifact と exit code で判断する。
@@ -57,7 +57,7 @@ fanout: { ... }      -> 子 NodeExecution 群を展開する（child / items）
 
 ### WorkflowExecution
 
-WorkflowDefinition の一回の実行。`status` を持つ。起動経路（trigger_source）、対象 Worktree、現在 node、タイムスタンプ、失敗理由を集約する。
+WorkflowDefinition の一回の実行。`status` を持つ。起動元、対象 Worktree、現在 node、タイムスタンプ、失敗理由を集約する。
 
 ### NodeExecution
 
@@ -102,7 +102,6 @@ WorkflowDefinition / NodeDefinition の構文・参照・validation error は li
 | Fanout | 並列を Fanout に統一する。`child`（Node 参照、単一/複数）と `items`（配列）で展開。集約 node は持たず、結果の畳みは command 等の node で行う。 |
 | 構造化出力（Contract 検証済み Artifact） | 全 node 種別が同一 Contract 機構で typed な Artifact を出す。CLI/API からも提出できる。`schemas:` で Contract を宣言する。 |
 | Routing / Diagnostic | 遷移は `rules`（`when` / `switch` / `next` / `loop_guard`）。順序非依存で、網羅・排他・ループ健全性を load 時に検証する。式言語は持たない。 |
-| 外部 Trigger | タイマー / CLI / 外部イベント（Sentry 等）から WorkflowExecution を起動する。Trigger は WorkflowDefinition と別レイヤー。 |
 | CLI/API | UI / Agent / Remote が共有する typed command boundary にする。 |
 | WorkflowExecution 管理 | 実行を execution id で扱い、status / logs / approval / abort の主語を WorkflowExecution にする。 |
 | Workflow Panel | 右パネルを Review / Workflow で切り替え、active execution・timeline・node 詳細・conversation・承認・logs・Artifact を置く。 |
@@ -262,13 +261,7 @@ main agent は user-facing narrator として残す（進捗報告・承認依�
     - workflow からは read のみ許可し、`fanout.items: tasks` で展開できるようにする。
     - workflow YAML から `tasks` へ書き込めないこと、Node 名 `tasks` を拒否することを保証する。
 
-13. Trigger を WorkflowDefinition 外の起動設定として実装する
-
-    - Timer / CLI / external event から WorkflowExecution を起動できるようにする。
-    - Trigger は WorkflowDefinition に含めず、workflow 名を参照する別レイヤーの設定として扱う。
-    - 起動時の `"<task>"` は `request` Artifact になり、`tasks[]` には入らない。
-
-14. Resume を abort-only recovery から移行する
+13. Resume を abort-only recovery から移行する
 
     - 中断状態を再開可能な checkpoint として WorkflowExecution / NodeExecution に表現する。
     - event log から最後に確定した NodeExecution までを再構築し、次の NodeExecution から再開できるようにする。
@@ -309,7 +302,6 @@ main agent は user-facing narrator として残す（進捗報告・承認依�
 - CLI/API naming: `executions` / `execution-id` / `--node` の語彙で status / logs / approve / abort / output が動き、旧 `runs` / `run_id` / `--step` が外部 API に残っていないこと。
 - Start request: `workflow start <workflow-name> "<task>"` が `request` Artifact を作り、`tasks[]` には書かないこと。
 - Task: `releash task list|add|done`、`tasks[]` の `{ id, description, done }` schema、workflow から read-only、`fanout.items: tasks` 展開、workflow YAML からの書き込み不可。
-- Trigger: timer / CLI / external event から WorkflowExecution を起動でき、Trigger 設定が WorkflowDefinition に混入しないこと。
 - Resume: crash / stale / explicit stop 後に event log から再構築し、最後に確定した NodeExecution の次から resume できること。orphan recovery で abort / resume を typed command として選べること。
 - Built-in / example: `docs/examples/full-pipeline.yml` と built-in workflow が新 schema で load でき、旧 field を含まないこと。
 - Remote sync: remote workflow state sync が WorkflowExecution / NodeExecution / Artifact read model を配信し、frontend 側で domain decision を再実装していないこと。
