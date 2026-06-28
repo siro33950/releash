@@ -1,0 +1,173 @@
+name: full-pipeline
+description: テスト→複数モデルレビュー→Open Thread修正→出荷判断
+
+schemas:
+  review_verdict:
+    type: object
+    properties:
+      lgtm:
+        type: boolean
+  judge_result:
+    type: object
+    properties:
+      all_lgtm:
+        type: boolean
+  thread:
+    type: object
+    properties:
+      thread_id:
+        type: string
+  thread_scan:
+    type: object
+    properties:
+      threads:
+        type: array
+        items: thread
+      has_open:
+        type: boolean
+  ship_decision:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+          - SHIP
+          - HOLD
+          - ESCALATE
+
+nodes:
+  - name: run_tests
+    command: "cargo test"
+    rules:
+      - when: { on: ok, then: review }
+        next: fix_tests
+
+  - name: fix_tests
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      gate: auto
+      facets:
+        policy: implementing
+        instruction: fix-failing-tests
+    inputs:
+      - run_tests
+    rules:
+      - loop_guard: { max_iterations: 3, on_exhausted: give_up }
+      - next: run_tests
+
+  - name: review
+    fanout:
+      child:
+        - review_opus
+        - review_gpt
+    rules:
+      - next: judge
+
+  - name: review_opus
+    session:
+      model: claude-opus-4-8
+      permission: read
+      gate: auto
+      facets:
+        policy: reviewing
+        knowledge: releash-review
+        instruction: review-diff
+    artifact: review_verdict
+  - name: review_gpt
+    session:
+      model: gpt-5.5
+      permission: read
+      gate: auto
+      facets:
+        policy: reviewing
+        knowledge: releash-review
+        instruction: review-diff
+    artifact: review_verdict
+
+  - name: judge
+    command: "echo '{{ review }}' | jq '{all_lgtm: all(.[].lgtm)}'"   # review = 子 artifact の配列
+    inputs:
+      - review
+    artifact: judge_result
+    rules:
+      - when: { on: all_lgtm, then: list_threads }
+        next: apply_fixes
+
+  - name: apply_fixes
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      gate: auto
+      facets:
+        policy: implementing
+        instruction: apply-review-fixes
+    rules:
+      - loop_guard: { max_iterations: 3, on_exhausted: give_up }
+      - next: review
+
+  - name: list_threads
+    command: "releash thread list --open --format json"
+    artifact: thread_scan
+    rules:
+      - when: { on: has_open, then: fix_each }
+        next: done
+
+  - name: fix_each
+    fanout:
+      child: fix_one
+      items: list_threads.threads
+    rules:
+      - next: triage
+
+  - name: fix_one
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      gate: approval
+      facets:
+        policy: triage
+        knowledge: releash-thread
+        instruction: decide-thread-fix   # item（{{ item.thread_id }}）で参照
+    input: thread                        # パラメータ。fanout の各要素が入る
+    artifact: fix_result
+
+  - name: triage
+    session:
+      model: claude-opus-4-8
+      permission: read
+      gate: auto
+      facets:
+        policy: reviewing
+        instruction: triage-ship-decision
+    artifact: ship_decision
+    rules:
+      - loop_guard: { max_iterations: 2, on_exhausted: escalate }
+      - switch:
+          on: verdict
+          cases:
+            SHIP: done
+            HOLD: list_threads
+            ESCALATE: escalate
+
+  - name: done
+    session:
+      model: claude-opus-4-8
+      permission: read
+      gate: approval
+      facets:
+        instruction: summarize-ship
+  - name: give_up
+    session:
+      model: claude-opus-4-8
+      permission: read
+      gate: approval
+      facets:
+        instruction: summarize-failure
+  - name: escalate
+    session:
+      model: claude-opus-4-8
+      permission: read
+      gate: approval
+      facets:
+        instruction: summarize-escalation

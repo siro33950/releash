@@ -1,581 +1,315 @@
 # ワークフローエンジン発展計画
 
-この文書は、Releash のワークフローエンジンを実装前にどう発展させるかを整理した設計メモである。
+この文書は、Releash のワークフローエンジンをこれからどう発展させるかを定義する。戦略・採用判断・マイルストーンの一次 Owner である。
 
-目的は、Releash のエンジンを Archon などの外部 OSS runner に置き換えることではない。Rust 側が所有する現在のワークフローランタイムを維持しつつ、Releash に合う運用パターンだけを取り込む。
+語彙は [`architecture/GLOSSARY.md`](./architecture/GLOSSARY.md) を正とする。本文書は GLOSSARY 正規語で記述する。
 
-取り込む対象は、テンプレート、Agent 向け Skill、明示的な Node type、決定論的な CLI/API command、Run 管理、構造化出力の提出、validation gate、Workflow 専用 UI パネルである。
+## 目的
 
-## 背景
+Releash は workflow を決定論的な実行レールとして扱う。開発者が WorkflowDefinition を定義し、WorkflowExecution として実行し、観測し、承認できるようにする。`gate: approval` の session は対話式で、承認するまで人間が指示し直せる。
 
-現在のワークフローエンジンには、すでに価値のある要素がある。
-
-- YAML による workflow 定義
-- `approval` / `auto` / `interactive` step mode
-- 並列 step と aggregate 判定
-- cycle guard
-- output contract と repair prompt
-- desktop UI / remote UI への workflow state 同期
-- NDJSON の workflow event log
-
-課題は、workflow の実行が主に chat session と worktree-scoped state として表現されていることにある。step session は本来 1 つの workflow run に属する実行単位だが、通常の自由対話 session と同列の tab として見えやすい。
-
-その結果、UI 上の主語と engine 上の主語がずれる。将来 CLI、Skill、structured output、承認操作を足すほど、このずれは大きくなる。
-
-次の設計では、workflow run を第一級の操作対象にする。
+workflow engine は状態遷移の唯一の権威である。Agent / UI / CLI / Trigger は action を要求できるが、workflow state を直接決めない。状態変更は typed command を唯一の入口として engine に届く。
 
 ## プロダクト方針
 
-Releash は、すでに選択済みの worktree の中で workflow を決定論的な実行レールとして扱う。
-
 ```text
-User / Main Agent / UI / Remote
+User / UI / CLI / API / Trigger (timer / external event)
+        |
+        v  typed command（状態変更の唯一の入口）
+        v
+Workflow Engine（状態遷移の唯一の権威・WorkflowExecution を所有）
         |
         v
-Releash CLI/API command boundary
-        |
-        v
-Workflow Run Manager
-        |
-        v
-Workflow Engine
-        |
-        v
-Node Executions
-  - agent
-  - bash
-  - approval
-  - parallel
-  - aggregate
+NodeExecution
+  - command   (非対話の一回実行)
+  - session   (agent 実行)
+  - fanout    (子 NodeExecution 群の展開)
 ```
 
-workflow engine は状態遷移の唯一の権威であり続ける。Agent や UI は action を要求できるが、workflow state を直接決めない。
-
-## 採用するもの
-
-| 項目 | 判断 | 方針 |
-| --- | --- | --- |
-| テンプレート | 採用 | Releash native の built-in workflow template を追加する。PR/Issue 系は直接 GitHub lifecycle に接続せず、汎用テンプレートとして扱う。 |
-| Skill | 採用 | Agent に「いつ Releash workflow を使うか」「どの CLI command を叩くか」を教える instruction/skill file を提供する。 |
-| Node 概念 | 採用 | step に明示的な実行種別を持たせる。初期対象は `agent`, `bash`, `approval`, `parallel`, `aggregate`。必要になれば `loop` や `output/form` を追加する。 |
-| Bash / validation gate | 採用 | test、lint、validation を決定論的な command node として実行する。exit code や structured result で分岐できるようにする。 |
-| CLI | 採用 | UI、Agent、Remote が共有する command boundary にする。 |
-| Run / Execution 管理 | 採用 | workflow 実行を `run_id` で扱う。status、logs、approval、abort などの主語を run にする。 |
-| OutputForm / structured output CLI | 採用 | step agent が文章抽出だけに頼らず、CLI/API 経由で typed output を提出できるようにする。 |
-| Command Center / Dashboard | 採用 | 右パネルを Review / Workflow で切り替え可能にし、Workflow 側に run history、timeline、step detail、step conversation を置く。 |
-| Main Agent 仲介 | 採用 | main agent が進捗報告や承認依頼を行う。ただし user decision は typed command として engine に戻す。 |
-
-## 採用しないもの
-
-| 項目 | 判断 | 理由 |
-| --- | --- | --- |
-| Worktree isolation | 今回は採用しない | Releash は worktree を作成・選択してから task を渡す設計である。workflow 起動時に worktree を自動生成するには、一段上の Agent Orchestrator が必要になる。 |
-| Chat router | 今回は採用しない | 自然文から workflow を自動選択する必要はまだない。Skill + CLI で十分。 |
-| PR/Issue の直接 lifecycle 連携 | 今回は採用しない | 直接 API 連携ではなく、workflow template の操作として表現する。 |
-| Workflow marketplace/defaults | 今回は採用しない | まずは Releash curated built-ins に絞る。 |
-| External triggers | 今回は採用しない | Slack/GitHub/Telegram などの trigger は surface area が大きく、Agent CLI 依存も重い。 |
-| Per-node MCP | 今回は採用しない | 現在の Releash workflow boundary では不要。 |
-| Web UI 移植 | 採用しない | UI の考え方だけ借りる。Archon の Web UI を移植しない。 |
-| Archon 置換 | 採用しない | Releash の Rust engine を維持する。 |
-| Workflow map / DAG 表示 | 後回し | まずは timeline と step detail で十分。loop があるため厳密な DAG 表示は誤解を生みやすい。 |
+- NodeExecution の種別は `command` / `session` / `fanout` の3つ。完了判定（自動 / 人間）は session の `gate`（`auto` / `approval`）で表す。種別ではない。
+- WorkflowExecution は UI からの手動起動だけでなく、CLI・タイマー・外部イベント（Trigger）からも起動される。
+- human checkpoint を第一級に扱う。`gate: approval` の session で止まり、人間が Artifact（diff / 出力 / 検証結果）を見て承認する。承認しなければ対話で指示し直す（session は対話式・却下や再実行という別操作は無い）。
+- UI / CLI / API は同じ command boundary を共有する。画面操作と外部操作が別世界にならない。
+- engine は確率論ではなく決定論的に動く。NodeExecution の成否・遷移は Contract 検証済み Artifact と exit code で判断する。
 
 ## 中核モデル
 
-milestone [02] で旧 YAML / 旧 `WorkflowState` JSON / 旧 NDJSON 互換を廃棄し、`Workflow`（template 定義）と `NodeDefinition` を新 schema として直接 YAML deserialize 先に据える。旧 `Step` / `ParallelStep` / `AggregateConfig` / `StepMode` 型は削除済みで、`workflow/normalized.rs`（旧→新の変換層）は新設しない。
+語彙・状態所有は GLOSSARY を正とする。本節は engine が主語として扱う対象を示す。
 
-未来形モデル各々のフィールド詳細・既存モジュールの future core / compatibility adapter 分類・境界条件は、本文書から派生する north star ドキュメントとして [`workflow-engine-model-boundary.md`](./workflow-engine-model-boundary.md) にまとめている。詳細を参照する場合はそちらを正本とすること。
+### WorkflowDefinition
 
-### Workflow Definition
+ユーザーが書く workflow template。`name` / `description` / `builtin` / `nodes` を持ち、YAML deserialize の直接先となる。
 
-ユーザーが書く workflow template。新 schema の `Workflow`（`name` / `description` / `builtin` / `nodes`）が YAML deserialize の直接先となる。旧 `steps:` 記法・旧 `mode` 記法は受理されない。
+### NodeDefinition
 
-### Node Definition
-
-実行単位。`NodeDefinition` は `node_type` を直接持ち、YAML 上は `type: agent | bash | approval | parallel` で表現される。並列 node の子 node は `ChildNodeDefinition`（top-level 専用フィールド `transition_rules` / `cycle_guard` / `parallel_children` / `aggregate` / `command` / `collect` / `resets_cycle_for` を持たない子専用型）として再帰構造から切り離される。
-
-YAML 上の表現例:
+WorkflowDefinition 内の実行単位の定義。種別は **kind ブロックをちょうど1つ**持つことで表す（`type:` フィールドは持たず、どのブロックがあるかで自明）。
 
 ```text
-type: agent       -> エージェント駆動の作業単位
-type: approval    -> 利用者の承認を必要とする待機単位
-type: bash        -> シェル実行に相当する作業単位（command 必須）
-type: parallel    -> 子 node 群を並列に走らせ、aggregate で収束する単位
+command: "<shell>"   -> 非対話の一回実行（標準結果 ok / exit_code / stdout 等）
+session: { ... }     -> agent 実行。model / permission / gate / facets を持つ
+fanout: { ... }      -> 子 NodeExecution 群を展開する（child / items）
 ```
 
-### Workflow Run
+- 完了判定は session の `gate`（`auto` / `approval`）で表す。approval は種別ではない。
+- facet 参照（policy / knowledge / instruction）は session の `facets:` にまとめる。
+- 他 node の Artifact を入力に受けるのは `inputs:`。
+- 詳細な構文は [`workflow-yaml-syntax.md`](./workflow-yaml-syntax.md) を正本とする。
 
-workflow template を 1 回起動した実行インスタンス。
+### WorkflowExecution
 
-想定フィールド:
+WorkflowDefinition の一回の実行。`status` を持つ。起動経路（trigger_source）、対象 Worktree、現在 node、タイムスタンプ、失敗理由を集約する。
 
-```text
-run_id
-workflow_name
-task
-status
-worktree_path
-current_node_name
-trigger_source
-started_at
-updated_at
-completed_at
-error_reason
-```
+### NodeExecution
 
-初期実装では、既存の `WorkflowState.execution_id` を `run_id` として扱える。
+NodeDefinition の一回の実行結果。所属 WorkflowExecution・node・反復回で識別し、Contract 検証済み Artifact・session 参照・token 使用量・失敗理由を保持する。
 
-`chat_session_id`（main agent narrator session 紐付け）は [16] Main Agent Mediation 着手時に
-改めて命名・追加するフィールドとして本マイルストーン群では保持しない。engine が起動時に独自の
-「親 ChatSession」を作って `WorkflowState` の永続化先として流用する経路は撤去済みであり、
-WorkflowRun は ChatSession 抽象と独立に識別される（永続化は NDJSON event log + Run Store
-metadata で完結し、現在状態は in-memory `WorkflowExecution` で派生キャッシュする）。
+### Fanout
 
-### Node Execution
+親 NodeExecution から展開された子 NodeExecution 群を束ねる実体。
 
-run の中で 1 つの node が実行された結果。
+- `child`: 展開する Node を名前で参照する（普通の Node を1つ、または複数）。子に特別扱いは無い。
+- `items`: 任意の配列（リテラル / 前 Node の Artifact 配列）。child を要素ぶん展開する。Artifact 参照なら実行時に件数が決まり、0 件なら展開なし。
+- 組合せ: child 複数 = 別 Node を並列 / child 1つ + items = 配列展開 / child 複数 + items = マトリクス（item × child）。
+- 各要素は子の `input` に入る（items 要素型 == child の input 型を load 時に検証）。
+- fanout の `artifact` は子 Artifact の配列。**集約機構（aggregate / all / any）は持たない**。結果でまとめて分岐したい場合は、配列を畳んで boolean を出す Node（command 等）を挟み、通常の rules で分岐する。
 
-想定フィールド:
+### Task
 
-```text
-run_id
-node_name
-node_type
-status
-run_index
-session_id
-started_at
-completed_at
-result
-structured_output
-output_contract
-token_usage
-error_reason
-```
+WorkflowExecution 内で NodeExecution 間を跨ぐ作業情報。main / sub の区別を持たない。WorkflowExecution に属する状態として所有する。
 
-既存の `StepHistoryEntry`、`StepOutput`、`ParallelStepState` は、この shape の多くをすでに持っている。
+固定 schema の global な作業リスト `tasks[]`（要素 `{ id, description, done }`）として持つ。書き込みは CLI のみ、workflow からは read（`fanout` の `items: tasks`）のみ。workflow YAML では定義しない。`tasks` は予約語。`start` の `"<task>"` 文字列は `tasks` には入らず、初回 Artifact `request`（String・予約名）になる。
 
-### Workflow Command
+### Artifact / Contract
 
-workflow state を変化させる唯一の入口。
+Artifact は NodeExecution の間で生成・参照される判断材料・成果物・中間出力で、状態を持たない。Contract は Artifact の validation 語彙。全 node 種別（command / session / CLI submit）が同一の Contract 機構で検証済み Artifact を出す。routing が見る値は Contract に宣言された boolean / enum であること。起動時の `"<task>"` は初回 Artifact `request`（String・予約名）として扱う。
 
-例:
+### 状態変更と event log
 
-```text
-StartRun
-AbortRun
-ApproveNode
-RejectNode
-SubmitOutput
-CompleteNode
-FailNode
-```
+- 状態変更は typed command（domain entity ではない実装機構）を唯一の入口とする。UI button / CLI / API / Agent action はすべてこの command に落とす。
+- engine の状態遷移は append-only な event log として積む。event log は projection / resume / 観測の adapter 語彙であり、domain entity ではない。
+- 現在状態は WorkflowExecution / NodeExecution から読み、履歴は event log から辿る。
 
-UI button、CLI、remote UI、Agent action は、すべてこの command に落とす。
+### Diagnostic
 
-### Workflow Event
+WorkflowDefinition / NodeDefinition の構文・参照・validation error は lifecycle state ではなく Diagnostic として扱う。
 
-engine が発行する append-only な事実。
+## 採用するもの
 
-例:
+| 項目 | 方針 |
+| --- | --- |
+| Node 種別 | kind ブロック（`command` / `session` / `fanout`）で種別を表す。`type:` は持たない。完了判定は session の `gate`（`auto` / `approval`）。必要になれば `loop` を追加する。 |
+| Command / validation gate | test / lint / validation を決定論的な command node として実行し、標準結果（`ok` / `exit_code`）と stdout-JSON の Contract 検証済み Artifact で分岐する。 |
+| Fanout | 並列を Fanout に統一する。`child`（Node 参照、単一/複数）と `items`（配列）で展開。集約 node は持たず、結果の畳みは command 等の node で行う。 |
+| 構造化出力（Contract 検証済み Artifact） | 全 node 種別が同一 Contract 機構で typed な Artifact を出す。CLI/API からも提出できる。`schemas:` で Contract を宣言する。 |
+| Routing / Diagnostic | 遷移は `rules`（`when` / `switch` / `next` / `loop_guard`）。順序非依存で、網羅・排他・ループ健全性を load 時に検証する。式言語は持たない。 |
+| 外部 Trigger | タイマー / CLI / 外部イベント（Sentry 等）から WorkflowExecution を起動する。Trigger は WorkflowDefinition と別レイヤー。 |
+| CLI/API | UI / Agent / Remote が共有する typed command boundary にする。 |
+| WorkflowExecution 管理 | 実行を execution id で扱い、status / logs / approval / abort の主語を WorkflowExecution にする。 |
+| Workflow Panel | 右パネルを Review / Workflow で切り替え、active execution・timeline・node 詳細・conversation・承認・logs・Artifact を置く。 |
 
-```text
-RunStarted
-NodeStarted
-NodeCompleted
-ApprovalRequested
-ApprovalResolved
-OutputSubmitted
-ValidationPassed
-ValidationFailed
-RunCompleted
-RunFailed
-RunAborted
-```
+## 採用しないもの
 
-既存の `WorkflowEventLog` は `WorkflowEvent` NDJSON adapter に縮退する。旧 `WorkflowLogEvent` 語彙と旧 NDJSON 在庫の互換は維持せず、リリース時に破棄される前提で扱う。
-
-## 互換性境界
-
-新設計を旧概念に合わせて曲げない。**[02] Normalized Workflow 以降は、互換性境界の責務を縮退させ、旧 schema / 旧 state / 旧 NDJSON 互換は維持しない**。旧概念から新モデルへの adapter 層は、user-authored YAML（新 schema として記述される）の入力経路と built-in YAML 提供経路のみに限定する。
-
-```text
-User-authored YAML (新 schema) / built-in YAML / external command
-        |
-        v
-compat adapter（user input の YAML 入口に縮退）
-        |
-        v
-Run / Node / Command / Event model
-```
-
-ルール（[02] 以降）:
-
-- 旧 `Workflow` / `Step` / `ParallelStep` / `AggregateConfig` / `StepMode` は codebase から削除する。
-- 既存 `WorkflowState` JSON / NDJSON event log の在庫はリリース時に破棄される前提を許容する（互換は維持しない）。
-- 既存 Tauri command の入口・出口形は本マイルストーン範囲では維持し、後続で `WorkflowCommand` typed 入口に寄せる。
-- engine 全体に old/new 分岐を散らさない。
-- 旧→新の変換層（`workflow/normalized.rs`）は**新設しない**。`schema.rs` が新 `Workflow` / `NodeDefinition` を YAML deserialize 先として直接保持し、engine もそれを直接消費する。
-- `worktree_path` 主語の API は、active `run_id` を解決する互換 wrapper として残す。
-- 新 API と CLI は `run_id` を主語にする。
+| 項目 | 理由 |
+| --- | --- |
+| テンプレート / Skill / Main Agent 仲介 | 不要と判断し採用しない。 |
+| Worktree isolation | Releash は Worktree を選択してから task を渡す設計。workflow 起動時の自動生成は扱わない。 |
+| Chat router | 自然文からの workflow 自動選択は不要。CLI で十分。 |
+| PR/Issue の直接 lifecycle 連携 | 直接 API 連携ではなく workflow template の操作として表現する。 |
+| Workflow marketplace / defaults | curated built-in に絞る。 |
+| Per-node MCP | 現在の workflow boundary では不要。 |
+| Workflow map / DAG 表示 | timeline と node 詳細で足りる。loop があり厳密な DAG 表示は誤解を生む。 |
 
 ## CLI/API の形
 
-CLI は単なる外部操作口ではない。Agent、UI、remote access、engine をつなぐ typed protocol として扱う。
-
-read-only の初期 command:
+CLI は typed protocol として、Agent / UI / remote / engine をつなぐ。
 
 ```sh
+# 観測
 releash workflow list
-releash workflow runs
-releash workflow status <run-id>
-releash workflow logs <run-id>
+releash workflow executions
+releash workflow status <execution-id>
+releash workflow logs <execution-id>
+
+# 操作（状態変更は typed command 経由）
+releash workflow start <workflow-name> "<task>"
+releash workflow approve <execution-id> --node <node-name> --comment "LGTM"
+releash workflow abort <execution-id>
+
+# Contract 検証済み Artifact の提出
+releash workflow output submit <execution-id> --node <node-name> --type <contract> --json '{"key":"value"}'
+releash workflow output validate <execution-id> --node <node-name> --file output.json
+releash workflow output get <execution-id> --node <node-name>
+
+# Task（global 作業リスト・書き込みは CLI のみ）
+releash task list <execution-id>
+releash task add <execution-id> --description "..."
+releash task done <execution-id> --id <task-id>
 ```
 
-mutation command:
-
-```sh
-releash workflow run <workflow-name> "<task>"
-releash workflow approve <run-id> --step <step-name> --comment "LGTM"
-releash workflow reject <run-id> --step <step-name> --reason "Needs stronger tests"
-releash workflow abort <run-id>
-```
-
-structured output command:
-
-```sh
-releash workflow output submit <run-id> --step <step-name> --type <contract> --json '{"key":"value"}'
-releash workflow output submit <run-id> --step <step-name> --type <contract> --file output.json
-releash workflow output validate <run-id> --step <step-name> --file output.json
-releash workflow output get <run-id> --step <step-name>
-```
-
-最初の実装では、CLI は起動中の Releash app を local API 経由で操作する。headless engine は別プロジェクトとして後回しにする。
+CLI は local API 経由で engine を操作する。headless engine（server-client 化）は別系列（GitHub #77/#78/#79）で扱い、後段で統合する。
 
 ## UI 方針
 
-右パネルを切り替え可能にする。
+右パネルを Review / Workflow で切り替える。Workflow panel には次を置く。
 
-```text
-Right panel
-  - Review
-  - Workflow
-```
+- active WorkflowExecution summary と execution 履歴
+- event timeline
+- NodeExecution 詳細と conversation transcript
+- approval actions（CLI と同じ command boundary）
+- logs と Contract 検証済み Artifact
 
-Workflow panel に置くもの:
-
-- workflow run history
-- active run summary
-- timeline
-- step/node detail
-- step conversation transcript
-- approval actions
-- logs and structured output
-
-main agent は user-facing narrator として残す。
-
-- 進捗を報告する
-- 完了 step を説明する
-- 承認を依頼する
-- 失敗 summary を伝える
-
-main agent は state transition を所有しない。approve、reject、abort、output submission は CLI/API command として engine に戻す。
+main agent は user-facing narrator として残す（進捗報告・承認依頼・失敗 summary）。state transition は所有しない。approve / abort / output 提出は typed command として engine に戻す。
 
 ## マイルストーン
 
-### [01] 設計境界の固定
+構文の正本は [`workflow-yaml-syntax.md`](./workflow-yaml-syntax.md)、完成形の例は [`examples/full-pipeline.yml`](./examples/full-pipeline.yml)。
 
-目的: 互換性の圧力で設計が崩れる前に、目標モデルを固定する。
+### Workflow Engine 新モデル移行
 
-作業:
-
-- 未来形モデルを定義する: `WorkflowRun`, `NodeDefinition`, `NodeExecution`, `WorkflowCommand`, `WorkflowEvent`。
-- 互換性をどこに閉じ込めるかを決める。
-- この文書を north star として追加する。
-- runtime behavior は変えない。
-
-完了条件:
-
-- モデルが文書化されている。
-- どの module が compatibility adapter で、どの module が future core か説明できる。
-
-成果物: [`workflow-engine-model-boundary.md`](./workflow-engine-model-boundary.md)（未来形モデル仕様と既存モジュール分類の正本）。
-
-### [02] Normalized Workflow
-
-目的: 旧 `Step` schema を**削除**し、新 `NodeDefinition` を YAML deserialize 先として直接持つ構造に統一する。
+目的: 現行実装の旧 workflow 表現（`type: agent/bash/approval/parallel`、`output_contract`、`pass_output_from`、`parallel_children`、`aggregate`、step/run 語彙）を、`command` / `session` / `fanout`、Contract 検証済み Artifact、WorkflowExecution / NodeExecution 主語へ移行する。
 
 方針:
 
-- 旧 `Workflow` / `Step` / `ParallelStep` / `AggregateConfig` / `StepMode` を削除する（codebase から完全に消す）。
-- 新 `Workflow`（template 定義）/ `NodeDefinition` および関連型を `schema.rs` に直接導入する。`workflow/normalized.rs` は新設しない。
-- YAML schema を `node_type` ベース（`type: agent | bash | approval | parallel`）で書き直す。`mode` は廃止する。
-- 旧 `Step` の各 mode/parallel 表現は、新 schema 上では node_type で直接表現する:
+- マイルストーンは一つにまとめる。
+- 配下 issue は表現単位で切る。各 issue は schema 置換だけでなく、実行、validation、event log / projection、CLI/API、UI、built-in workflow の移行までを完了条件に含める。
+- 新旧互換を長く持たない。issue 内で一時 adapter が必要な場合も、完了時点では旧表現を残さない。
 
-```text
-旧 mode: auto / mode 未指定  → 新 type: agent
-旧 mode: approval            → 新 type: approval
-旧 mode: interactive         → 新 type: agent（対話前提の agent として扱う）
-旧 parallel: [...]           → 新 type: parallel + parallel_children
-旧 aggregate: ...            → 新 parallel node の aggregate 振る舞い
-```
+配下 issue:
 
-- `built-in/spec-driven-development.yml` を新 schema で書き直す（既存挙動と等価）。
-- `state.rs::WorkflowState.workflow_definition` と `event.rs::WorkflowEvent::RunStarted.workflow_definition` の型を新 `Workflow` に揃える（在庫 JSON / 旧 NDJSON は破棄前提）。
-- `engine.rs` / `contract.rs` は旧 schema 型を一切 import しない状態にする。
-- `validation.rs` / `diagnostics.rs` / `storage.rs` / `facet.rs` / `builtin.rs` / `runtime_view.rs` の compat adapter 群と、`commands.rs` / `agent_commands.rs` / `session_commands.rs` / `session/mod.rs` / `workflow_state_presenter.rs` の caller 群を新型に追従させる。
+1. NodeDefinition を kind block へ移行する
 
-完了条件:
+   - `type:` を廃止し、`command` / `session` / `fanout` の kind block をちょうど1つ持つ schema にする。
+   - `session.facets` に `policy` / `knowledge` / `instruction` を集約する。
+   - `artifact` / `inputs` / `input` / `rules` を共通フィールドとして扱う。
+   - kind block が0個 / 2個以上、`tasks` など予約語との衝突、未定義 Contract / node 参照は load 時 Diagnostic にする。
 
-- 旧 schema 型（`Workflow` / `Step` / `ParallelStep` / `AggregateConfig` / `StepMode`）が codebase に存在しない（`grep` で 0 件）。
-- `workflow/normalized.rs` は新設されていない。
-- `spec-driven-development.yml` が新 schema で書き直され、既存挙動と等価に実行できる。
-- node_type（agent / approval / parallel / bash）別の load unit test が `schema.rs` 内に存在する。
-- `cargo fmt --check` / `cargo clippy -- -D warnings` / `cargo test` および `pnpm lint` / `pnpm test` / `pnpm build` が成功する。
+2. 文法健全性 / Diagnostic front-end を独立させる
 
-### [03] Run Store / Run ID
+   - WorkflowDefinition の検証を parse / shape、resolve、typecheck、control-flow の段階に分ける。
+   - parse / shape は YAML 構文、unknown field、kind block 個数、kind ごとの許可 field を検査する。
+   - resolve は node 名、Contract 名、Artifact path、予約名（`request` / `tasks` / `item`）を解決する。
+   - typecheck は `rules.when.on` の boolean、`switch.on` の enum、fanout `items` と child `input` の型一致、`artifact` / `input` の Contract 存在を検査する。
+   - control-flow は終端 node、到達不能 node、cycle、`loop_guard`、rules の排他・網羅を検査し、任意の Artifact 値から遷移先が一意に定まることを保証する。
+   - Diagnostic は lifecycle state ではなく validation result として返す。UI / CLI は Rust が返す Diagnostic code / span / message を表示するだけにし、frontend に validator を再実装しない。
 
-目的: workflow 実行を `run_id` で参照できるようにする。
+3. `approval` node を `session.gate=approval` に移行する
 
-作業:
+   - `approval` を node 種別から削除し、session の完了 gate として扱う。
+   - `gate: auto` / `gate: approval` を session 必須 field にする。
+   - `gate: approval` は承認まで完了しない対話式 session とし、承認しなければ同じ session で人間が指示を続ける。
+   - `reject` / reject rule / rerun 操作は廃止する。abort は WorkflowExecution に対する別 typed command として扱う。
+   - approval chat / UI action / CLI approve / stale target validation を `session.gate=approval` に合わせる。
 
-- `workflow/run.rs` を追加する。
-- `WorkflowRunSummary` を追加する。
-- run metadata を保存する。保存先候補は `workflow_runs/{run_id}.json`。
-- 既存 `execution_id` を `run_id` として使う。
-- active lookup を追加する: `worktree_path -> active run_id`。
-- reverse lookup を追加する: `run_id -> worktree_path`。
+4. Contract / Artifact を `schemas:` と `artifact:` に統一する
 
-完了条件:
+   - 旧 `output_contract` / `input_contracts` を廃止し、YAML 内の `schemas:` と node の `artifact:` / `input:` を正にする。
+   - 各 NodeExecution は最大1つの Contract 検証済み Artifact を産出し、Node 名で参照できるようにする。
+   - command は stdout-JSON、session / CLI submit は typed command 経由で Artifact を提出する。
+   - routing が参照する field は Contract に宣言された boolean / enum に限定する。
 
-- active run と completed run を metadata/logs から一覧できる。
-- 既存の worktree-scoped state が動き続ける。
+5. Artifact 入力と参照規約を実装する
 
-### [04] Command / Event Boundary
-
-目的: state change を typed command 経由にする。
-
-作業:
-
-- `WorkflowCommand` を追加する。
-- start、approve、reject、abort の command handler を追加する。
-- 既存 Tauri command は残しつつ wrapper 化する。
-- 既存 `WorkflowLogEvent` を廃止し、`WorkflowEvent` NDJSON へ完全置換する。
-
-完了条件:
-
-- 既存 UI command が動き続ける。
-- 新しい internal command path が test されている。
-- state transition が main-agent free text に依存しない。
-
-### [05] Read-Only Run APIs + CLI
-
-目的: 外部 caller が workflow run を観測できるようにし、engine 内部の node 完了/失敗遷移も typed command として揃える。
-
-作業:
-
-- Tauri/local API command を追加する:
-  - `list_workflow_runs`
-  - `get_workflow_run`
-  - `get_workflow_run_log`
-  - `get_workflow_run_state`
-- CLI を追加する:
-  - `workflow list`
-  - `workflow runs`
-  - `workflow status <run-id>`
-  - `workflow logs <run-id>`
-- engine 内部の typed 遷移 command を追加する:
-  - `WorkflowCommand::CompleteNode`
-  - `WorkflowCommand::FailNode`
-  - これらは外部入口（UI / CLI / Agent）には公開せず、engine 内部の状態遷移を typed に表現するためのもの。NodeCompleted / NodeFailed event の発行点として、観測経路（API / CLI）整備と同じ marker で揃える。
-
-完了条件:
-
-- running workflow を `run_id` で inspect できる。
-- completed workflow の log を `run_id` で読める。
-- engine 内部の node 完了/失敗遷移が `CompleteNode` / `FailNode` typed command 経由で行われる。
-
-### [06] Mutating CLI
-
-目的: `run_id` を操作の主語にする。
-
-作業:
-
-- CLI/API を追加する:
-  - `workflow approve <run-id>`
-  - `workflow reject <run-id>`
-  - `workflow abort <run-id>`
-- 既存 engine path のために内部で `run_id -> worktree_path` を解決する。
-- 旧 `worktree_path` command は wrapper として維持する。
-
-完了条件:
-
-- CLI から approve/reject/abort できる。
-- 既存 UI approval が動き続ける。
-- stale な approval target や unauthorized target が拒否される。
-
-### [07] Workflow Panel / Command Center
-
-目的: UI model を整理する。
-
-作業:
-
-- 右パネルに Review/Workflow switch を追加する。
-- Workflow panel に active run と run history を表示する。
-- run event timeline を追加する。
-- step detail view を追加する。
-- step conversation transcript を追加する。
-- approval button は CLI と同じ command boundary に通す。
-
-完了条件:
-
-- workflow step が自由対話 chat tab と同格に見えない。
-- 多数の chat session を切り替えなくても run を inspect できる。
-
-### [08] OutputForm CLI
-
-目的: agent-to-engine のデータ受け渡しを typed にする。
-
-作業:
-
-- CLI/API を追加する:
-  - `workflow output submit`
-  - `workflow output validate`
-  - `workflow output get`
-- 既存 output contract validation を再利用する。
-- valid submit 時に `step_outputs` と `workflow_variables` を更新する。
-- output submission event を発行する。
-- `<workflow_output>` 抽出は fallback として維持する。
-
-完了条件:
-
-- step agent が prose parsing に頼らず structured output を提出できる。
-- invalid output が決定論的な validation error になる。
-
-### [13] Node Type + Bash Gate
-
-目的: agent 以外の決定論的実行を追加する。
-
-作業:
-
-- 新 schema は [02] で既に `type: agent | bash | approval | parallel` を持つ。本マイルストーンでは `type: bash` の**実行系統**を engine に実装する（[02] では型・load・schema までの対応で、engine からは bash 開始を明示拒否している）。
-- 以下を capture する:
-  - command
-  - exit code
-  - stdout
-  - stderr
-  - duration
-- bash result を structured step output として保存する。
-- exit code による branching を support する。
-
-完了条件:
-
-- workflow から `pnpm test` や `cargo test` を validation node として実行できる。
-- validation failure を fix node へ route できる。
-
-### [14] Templates
-
-目的: 新しい primitive を実用 workflow にする。
-
-作業:
-
-- curated built-in template を追加する。候補:
-  - `validate-and-fix`
-  - `smart-review`
-  - `refactor-safely`
-  - `idea-to-implementation`
-- PR/Issue API への直接 coupling は避ける。
-
-完了条件:
-
-- template が必要に応じて bash gate と run management を使う。
-- template が YAML として読みやすい。
-
-### [15] Skill
-
-目的: Agent に Releash workflow の使い方を教える。
-
-作業:
-
-- Agent 向け skill/instructions file を追加する。
-- 以下を説明する:
-  - いつ workflow を使うか
-  - workflow list の見方
-  - workflow run の起動方法
-  - structured output の提出方法
-  - user approval を勝手に決めず、どう依頼するか
-- command が安定してから文書化する。
-
-完了条件:
-
-- Agent が追加の UI instruction なしに、適切な workflow を CLI で起動できる。
-
-### [16] Main Agent Mediation
-
-目的: main agent に state authority を与えず、自然な workflow 対話を実現する。
-
-作業:
-
-- typed event を発行する:
-  - approval requested
-  - approval resolved
-  - step completed
-  - run failed
-  - run completed
-- それらの event を main agent に渡し、user-facing report に使う。
-- user decision は必ず CLI/API command として戻す。
-
-完了条件:
-
-- main agent が承認依頼と結果報告をできる。
-- engine が唯一の state transition authority であり続ける。
-
-## 互換性テスト
-
-milestone [02] 以降では、旧 `WorkflowState` JSON / 旧 NDJSON は load 経路から除外され（`workflow_definition` を required 化、deserialize 不能なログは listing/reconstruction の対象外）、新 schema として書き直された built-in YAML の挙動等価のみを担保する。
-
-各マイルストーンで以下を守る。
-
-- 新 `spec-driven-development.yml`（新 schema 表現）の挙動等価（step 数・遷移・並列・aggregate・cycle guard・facet 解決結果）
-- 既存 Tauri command の入口・出口（典型 happy path）
-- approval/reject branching
-- parallel aggregate behavior
-- cycle guard behavior
-- output contract extraction and repair
-- remote workflow state sync
-
-追加したい focused test:
-
-- built-in workflow の normalization snapshot
-- active worktree からの `run_id` lookup
-- 旧 worktree-scoped command wrapper
-- stale approval target rejection
-- structured output validation success/failure
-- bash node exit-code routing
-
-## 実装メモ
-
-追加候補 module:
-
-```text
-src-tauri/src/workflow/run.rs       # [03] WorkflowRun store / run_id 主語管理
-src-tauri/src/workflow/command.rs   # [04] WorkflowCommand typed 入口
-src-tauri/src/workflow/event.rs     # [04] WorkflowEvent 出口（NDJSON vocabulary 寄せ）
-```
-
-`workflow/normalized.rs` は [02] で削除前提に方針変更されたため新設しない。
-
-既存 module は可能な限り現在の責務を保つ。
-
-- `schema.rs`: user-authored workflow schema
-- `validation.rs`: workflow validation
-- `engine.rs`: execution and state transition authority
-- `state.rs`: UI 向け serialized workflow state
-- `log.rs`: append-only execution events
-- `commands.rs`: Tauri/local API command wrappers
-
-最重要ルール:
-
-```text
-Future core は Run / Node / Command / Event を見る。
-Compatibility adapter が Step / WorkflowState / worktree_path をその model へ変換する。
-```
+   - 旧 `pass_output_from` / `pass_previous_response` / `workflow_variables` 依存の入力注入を `inputs:` に置き換える。
+   - `request` を起動時 `"<task>"` 由来の初回 Artifact として扱う。`request` は Node 名ではなく予約 Artifact 名にする。
+   - fanout child では `item` / `item.<field>` を使えるようにする。
+   - template 補間は `{{ request }}` / `{{ node.field }}` / `{{ item.field }}` の参照規約に統一する。
+
+6. `rules` を順序非依存の Diagnostic 対象にする
+
+   - 旧 regex `match` / `next` と node 直下 `cycle_guard` を廃止し、`when` / `switch` / `next` / `loop_guard` に移行する。
+   - `when` は boolean、`switch` は enum、`next` は catch-all として型付きに検証する。
+   - 排他、網羅、無防備な loop を load 時 Diagnostic にする。
+   - 式言語は持たず、比較・集約は command / session が boolean / enum Artifact に落としてから routing する。
+
+7. `bash` を `command` node に移行して実行可能にする
+
+   - 旧 `type: bash` を廃止し、`command: "<shell>"` kind block にする。
+   - command 実行は `ok` / `exit_code` / `stdout` / `stderr` / `duration` を標準結果として持つ。
+   - `artifact:` 指定時は stdout を JSON parse / Contract validation し、Artifact として保存する。
+   - command result と Artifact field の両方で routing できるようにする。
+
+8. `parallel_children` を `fanout.child` に移行する
+
+   - 旧 `parallel` / `parallel_children` を廃止し、fanout が普通の NodeDefinition を名前で参照する形にする。
+   - fanout child は leaf として Artifact を返すだけにし、child 自身の `rules` は fanout 実行中は無視する。
+   - child 複数、child 1つ + `items`、child 複数 + `items` のマトリクスを実行できるようにする。
+   - fanout child を個別 NodeExecution として event log / projection / UI に出す。
+
+9. `aggregate` を廃止し、畳み込みは通常 node に移す
+
+   - 旧 `aggregate` / `all_match` / `any_match` を廃止する。
+   - fanout の Artifact は子 Artifact 配列とする。
+   - 配列をまとめて分岐したい場合は command 等の通常 node で boolean / enum Artifact を作り、通常 `rules` で分岐する。
+   - built-in workflow の aggregate は reducer command / session node に移す。
+
+10. WorkflowExecution / NodeExecution read model へ移行する
+
+   - 現在状態は WorkflowExecution / NodeExecution から読み、履歴は event log projection で辿る。
+   - 旧 `StepHistoryEntry` / `StepOutput` / `ParallelStepState` / `WorkflowStateSnapshot` の公開語彙を NodeExecution / Artifact / Fanout に寄せる。
+   - `run_id` / `WorkflowRun` / `runs` の外部語彙を `execution_id` / WorkflowExecution / `executions` に揃える。内部互換名を残す場合も外部 API では露出しない。
+
+11. CLI/API command boundary を新語彙に揃える
+
+    - `releash workflow start <workflow-name> "<task>"` を CLI から起動できるようにする。
+    - `releash workflow executions` / `status <execution-id>` / `logs <execution-id>` を正にする。
+    - `output submit|validate|get` は `--node` / `--type` を使い、step 語彙を出さない。
+    - UI / CLI / API / Agent action は同じ typed command boundary に落とす。CLI は local API 経由を正とし、file-direct / pending file 経路は必要最小の adapter に縮退する。
+
+12. WorkflowExecution-owned `tasks[]` を実装する
+
+    - 固定 schema の `tasks[]`（`{ id, description, done }`）を WorkflowExecution に属する状態として持つ。
+    - `releash task list|add|done <execution-id>` を追加し、書き込みは CLI に閉じる。
+    - workflow からは read のみ許可し、`fanout.items: tasks` で展開できるようにする。
+    - workflow YAML から `tasks` へ書き込めないこと、Node 名 `tasks` を拒否することを保証する。
+
+13. Trigger を WorkflowDefinition 外の起動設定として実装する
+
+    - Timer / CLI / external event から WorkflowExecution を起動できるようにする。
+    - Trigger は WorkflowDefinition に含めず、workflow 名を参照する別レイヤーの設定として扱う。
+    - 起動時の `"<task>"` は `request` Artifact になり、`tasks[]` には入らない。
+
+14. Resume を abort-only recovery から移行する
+
+    - 中断状態を再開可能な checkpoint として WorkflowExecution / NodeExecution に表現する。
+    - event log から最後に確定した NodeExecution までを再構築し、次の NodeExecution から再開できるようにする。
+    - orphan recovery は強制 abort ではなく、abort / resume を typed command として選べる形にする。
+
+横断完了条件:
+
+- `docs/examples/full-pipeline.yml` が新 schema で load / 実行できる。
+- built-in workflow は新 schema に移行済みで、旧 `type` / `output_contract` / `input_contracts` / `pass_output_from` / `parallel_children` / `aggregate` / step 語彙を含まない。
+- Automation UI / Workflow panel は新語彙で表示・操作し、domain behavior を frontend に持たない。
+- Tauri / CLI / Remote / Agent action が同じ backend-owned WorkflowExecution state と typed command boundary を使う。
+- 旧 workflow state / old NDJSON / old YAML 互換は保持しない。必要な移行 adapter はこのマイルストーン内で撤去する。
+
+## テスト方針
+
+各 issue は、旧表現を削る regression test と新表現の behavior test を同じ PR に置く。新ロジックは Rust 側の domain / usecase / adaptor test を主にし、frontend test は表示・操作・invoke 境界に限定する。
+
+必須テスト:
+
+- Diagnostic front-end: parse / shape、resolve、typecheck、control-flow の各段階が structured Diagnostic（code / span / message）を返すこと。
+- Fixture suite: `valid/` と `invalid/` の YAML fixture を用意し、invalid fixture は期待 Diagnostic code を固定して検証すること。
+- Parse / shape: YAML 構文、unknown field、kind block が0個 / 2個以上、kind ごとの不許可 field、旧 `type:` / `output_contract` / `parallel_children` / `aggregate` / `rules.match` の拒否。
+- Resolve: 予約語 `tasks` の node 名拒否、未定義 node / Contract / Artifact path、`request` / `tasks` / `item` のスコープ違反、fanout child 参照の解決失敗を Diagnostic にすること。
+- Typecheck: `when.on` が boolean field、`switch.on` が enum field、`artifact` / `input` が既存 Contract、fanout `items` の要素型と child `input` 型が一致すること。
+- Control-flow: 終端 node、到達不能 node、rules の排他・網羅、switch enum の抜け、cycle に到達可能な `loop_guard` が無い場合の拒否、任意の Artifact 値で遷移先が1つに定まること。
+- Session gate: `gate` 必須、`gate: auto` の自動完了、`gate: approval` が承認まで完了しないこと、同じ session で追加指示できること。
+- Approval command: approve は通る、stale / unauthorized target は拒否される、reject command / reject rule が受理されない。
+- Artifact / Contract: `schemas:` の validation、`artifact:` 産出、Contract validation success / failure、routing 対象 field が boolean / enum 以外なら Diagnostic。
+- CLI submit: session / CLI submit が同じ Artifact 機構に書き込むこと、`workflow output submit|get|validate` が `--node` / `--type` 語彙で動くこと。
+- Input / reference: `inputs: [request]`、`inputs: [node]`、`{{ request }}`、`{{ node.field }}`、`{{ item.field }}` が展開されること。旧 `{{task}}` / `pass_output_from` 依存が残っていないこと。
+- Routing: `when` / `switch` / `next` の排他・網羅検証、switch enum の抜け検出、cycle に到達可能な `loop_guard` が無い場合の拒否。
+- Command node: `ok` / `exit_code` / `stdout` / `stderr` / `duration` の標準結果、exit code routing、stdout-JSON の Contract 検証、validation failure から fix node への route。
+- Fanout: child 複数、child 1つ + `items`、child 複数 + `items` のマトリクス展開、`items` 0件、items 要素型と child `input` 型の一致検証。
+- Fanout semantics: fanout child の `rules` が fanout 実行中に無視されること、子 Artifact 配列が fanout Artifact になること、旧 `aggregate` が受理されないこと。
+- Reducer node: fanout 結果を command / session node で boolean / enum Artifact に畳み、通常 `rules` で分岐できること。
+- Property test: 小さな Contract / rules / enum を生成し、validator が valid と判断した workflow では任意の routing 対象値に対して遷移先がちょうど1つになること。
+- Execution projection: WorkflowExecution / NodeExecution / Artifact / Fanout が event log から再構築され、UI / CLI / Remote が同じ read model を読めること。
+- CLI/API naming: `executions` / `execution-id` / `--node` の語彙で status / logs / approve / abort / output が動き、旧 `runs` / `run_id` / `--step` が外部 API に残っていないこと。
+- Start request: `workflow start <workflow-name> "<task>"` が `request` Artifact を作り、`tasks[]` には書かないこと。
+- Task: `releash task list|add|done`、`tasks[]` の `{ id, description, done }` schema、workflow から read-only、`fanout.items: tasks` 展開、workflow YAML からの書き込み不可。
+- Trigger: timer / CLI / external event から WorkflowExecution を起動でき、Trigger 設定が WorkflowDefinition に混入しないこと。
+- Resume: crash / stale / explicit stop 後に event log から再構築し、最後に確定した NodeExecution の次から resume できること。orphan recovery で abort / resume を typed command として選べること。
+- Built-in / example: `docs/examples/full-pipeline.yml` と built-in workflow が新 schema で load でき、旧 field を含まないこと。
+- Remote sync: remote workflow state sync が WorkflowExecution / NodeExecution / Artifact read model を配信し、frontend 側で domain decision を再実装していないこと。
