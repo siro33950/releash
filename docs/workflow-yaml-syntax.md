@@ -193,3 +193,26 @@ tasks[]              # 予約 global 名
 - 子の一部失敗 = 固有 failure policy なし。Resume で再開する。
 - 並列度制御 = 現状スコープ外。
 - `request` は String（scalar Artifact を許す）。
+
+## 懸念
+
+この節は、TAKT（[`nrslib/takt`](https://github.com/nrslib/takt)）、Archon（[`ScalingIntelligence/Archon`](https://github.com/ScalingIntelligence/Archon)）、Argo Workflows / Tekton / GitHub Actions / GitLab CI / Kestra などの YAML workflow 系 OSS と比較した設計レビューの懸念を記録する。構文の確定仕様ではなく、実装前に潰すべき論点である。
+
+- **command の標準結果と Artifact の関係が曖昧**: `command` は常に `ok` / `exit_code` / `stdout` / `stderr` / `duration` を持つが、`artifact:` 指定時に stdout JSON から生成される Contract Artifact と標準結果が同じ Artifact なのか、別の実行結果なのかが明文化されていない。`rules.on: ok` と `rules.on: <contract field>` を同じ規則で扱えるかを定義する必要がある。
+- **`schemas:` の dialect が未定義**: 例は JSON Schema 風だが、`required` / `additionalProperties` / scalar schema / nullable / enum / default の扱いが決まっていない。特に `properties` だけだと必須 field が表現されず、routing が参照する boolean / enum が欠落した Artifact をどう扱うかが曖昧になる。
+- **順序非依存 rules の排他検証が難しい**: `switch` は enum で排他性を検証しやすい。一方、複数の `when` が同じ node にある場合、boolean field 同士が同時に true にならないことは Contract だけでは証明しにくい。排他性を厳密に担保するには、routing discriminator を enum 1個へ寄せる設計が必要になる可能性がある。
+- **fanout child の `rules` 無視は読み手に誤解を生む**: `fanout.child` は普通の Node を参照するが、fanout 実行中は child の `rules` が無視される。この二重の意味は事故の元になりやすい。child として参照される node に `rules` がある場合は Diagnostic にするか、leaf/template 用の制約を明示する必要がある。
+- **テンプレート補間を shell command に直接埋める例は安全性が低い**: `echo '{{ review }}' | jq ...` のように JSON Artifact を shell 文字列へ展開すると、引用符、改行、shell metacharacter、巨大出力で壊れやすい。Artifact を stdin / 一時ファイル / 環境変数に安全に渡す規約が必要になる。
+- **fanout の失敗・再開単位が未定義**: 子の一部失敗を Resume に委ねる方針は決まっているが、失敗した child だけ再開するのか、fanout 全体を再展開するのか、完了済み child Artifact を再利用するのかが未定義である。
+- **timeout / retry / cancellation / parallelism が構文上予約されていない**: 現状スコープ外でも、実行系では早期に必要になりやすい。後から追加したときに `session` / `command` / `fanout` で意味が割れないよう、拡張位置を決めておく必要がある。
+
+## 検討事項
+
+- **routing は enum discriminator を第一候補にする**: bool `when` は単純な gate に限定し、複数分岐や複雑な状態は node 側で enum field に畳む運用を推奨する。TAKT のように自然言語 condition や AI judge を routing に入れると柔軟だが、Releash の「engine が状態遷移の唯一の権威」という方針とは相性が悪い。
+- **Contract は JSON Schema subset として明文化する**: 最初は `type` / `properties` / `required` / `items` / `enum` / `additionalProperties` 程度に絞り、routing 参照 field は `required` かつ `boolean` / `enum` であることを load 時 Diagnostic にする。
+- **command result と typed Artifact を分離して名前付けする**: 例として、標準結果は常に `<node>.$result.ok` のような system field に置き、`artifact:` 由来の field は `<node>.<field>` に置く、または標準結果を Artifact の reserved field として統合する、のどちらかを選ぶ。
+- **fanout child は leaf 制約を明確にする**: child node に `rules` がある場合は Diagnostic にする、または `fanout` から参照できる node は `artifact` / `input` / kind block のみに制限する。普通の top-level node と fanout child の読み替えを減らす。
+- **Artifact injection の安全な実行 ABI を用意する**: shell 文字列補間に頼らず、`inputs:` を JSON ファイル、stdin、または engine 管理の path として command へ渡す。テンプレート補間は短い scalar 値や prompt 用に限定する。
+- **実行制御 field の追加位置を予約する**: `command.timeout`、`session.timeout`、`fanout.parallelism`、`retry`、`fail_fast` などの候補を、未実装でも将来予約語として整理する。Argo / Tekton / CI 系 OSS はこの領域の運用知見が多いため参考にする。
+- **TAKT からは human checkpoint と loop monitor の運用語彙を参考にする**: TAKT は agentic coding workflow の現実的な loop / review / approval 表現が豊富である。一方で routing は Releash 側で typed Artifact に閉じ、TAKT 的な自然言語 condition は session 内の判断材料に留める。
+- **Archon からは fanout + judge の分離を参考にする**: Archon は LLM 推論 pipeline の layer / verifier / fuser 構成が中心であり、Releash の workflow state 管理とは主語が違う。ただし複数候補を並列に出して、別 node で評価・統合する形は `fanout -> command/session judge -> rules` と相性が良い。
