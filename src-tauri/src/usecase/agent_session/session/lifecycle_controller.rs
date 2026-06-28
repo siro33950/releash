@@ -155,6 +155,20 @@ mod tests {
     }
 
     #[test]
+    fn complete_turn_state_returns_error_when_session_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let controller = SessionLifecycleController {
+            session_store: &store,
+            data_dir: temp.path(),
+        };
+
+        let result = controller.complete_turn_state("missing-session", 0, false);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn close_session_state_marks_session_closed() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::test_support::build_session_store());

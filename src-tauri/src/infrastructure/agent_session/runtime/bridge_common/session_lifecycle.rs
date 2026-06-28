@@ -480,7 +480,8 @@ pub(super) async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
         chat_session_id,
         projected_exit_code,
         interrupted,
-    );
+    )
+    .or_else(|| effect.projected_session_state.clone());
 
     emit_session_state_changed(
         app,
@@ -495,7 +496,7 @@ pub(super) async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
         session_store,
         chat_session_id,
         TurnPhase::Idle,
-        session_state.or(effect.projected_session_state.clone()),
+        session_state,
     );
 
     let pending = if options.consume_pending {
@@ -2707,8 +2708,62 @@ fn spawn_prepared_agent_turn_after_response<R: tauri::Runtime + 'static>(
             start_prepared_agent_turn(&app, &session_store, &registry, &handles, turn).await
         {
             log::error!("Failed to start prepared agent turn for session {session_id}: {e}");
+            emit_prepared_agent_turn_start_error(&app, &session_store, &session_id);
         }
     });
+}
+
+fn emit_prepared_agent_turn_start_error<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+) {
+    let session_state = Some(SessionState::Error);
+    persist_prepared_agent_turn_start_error_state(app, session_store, chat_session_id);
+    emit_session_state_changed(
+        app,
+        chat_session_id,
+        TurnPhase::Idle,
+        None,
+        false,
+        session_state.clone(),
+    );
+    notify_status_transition(
+        app,
+        session_store,
+        chat_session_id,
+        TurnPhase::Idle,
+        session_state,
+    );
+}
+
+fn persist_prepared_agent_turn_start_error_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+) {
+    let Ok(data_dir) = resolve_data_dir(app) else {
+        return;
+    };
+    match session_store.get_session_meta(&data_dir, chat_session_id) {
+        Ok(Some(meta)) if meta.state != SessionState::Archived => {
+            if let Err(e) =
+                session_store.set_session_state(&data_dir, chat_session_id, SessionState::Error)
+            {
+                log::warn!(
+                    "Failed to persist prepared agent turn start error state for session \
+                     {chat_session_id}: {e}"
+                );
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            log::warn!(
+                "Failed to load session metadata for prepared agent turn start error \
+                 (session {chat_session_id}): {e}"
+            );
+        }
+    }
 }
 
 pub(super) async fn steer_prepared_agent_turn(
@@ -3016,7 +3071,9 @@ mod moved_tests {
         BranchDiffContextChangedFile, BranchDiffContextPort, BranchDiffContextStats,
         BranchDiffContextSummary,
     };
-    use crate::usecase::agent_session::event_log::{PromptInput, TurnEventLog};
+    use crate::usecase::agent_session::event_log::{
+        PromptInput, TurnEventLog, WorkflowTurnCompleteInput,
+    };
 
     use crate::usecase::agent_session::session::{
         add_message_internal, create_session_internal, ActivityEntry, AttachmentRef, ChatMessage,
@@ -3232,6 +3289,140 @@ mod moved_tests {
             .await
             .expect("background runtime send should finish after release")
             .expect("finished semaphore should stay open");
+    }
+
+    #[tokio::test]
+    async fn prepared_turn_start_error_emits_terminal_error_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(&session_store, temp.path(), "/repo", None).unwrap();
+        session_store
+            .set_session_state(temp.path(), &session.id, SessionState::Done)
+            .unwrap();
+        let center = Arc::new(crate::usecase::agent_session::status::AgentStatusCenter::new());
+        let app = tauri::test::mock_builder()
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
+            .manage(Arc::clone(&center))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        let (state_tx, state_rx) = tokio::sync::oneshot::channel();
+        let state_tx = Arc::new(StdMutex::new(Some(state_tx)));
+        let state_tx_for_listener = Arc::clone(&state_tx);
+        app.listen("agent-session-state-changed", move |event| {
+            let payload = serde_json::from_str::<serde_json::Value>(event.payload())
+                .expect("agent-session-state-changed payload must be json");
+            if let Some(tx) = state_tx_for_listener.lock().unwrap().take() {
+                let _ = tx.send(payload);
+            }
+        });
+
+        emit_prepared_agent_turn_start_error(app.handle(), &session_store, &session.id);
+
+        let state_payload = tokio::time::timeout(Duration::from_secs(1), state_rx)
+            .await
+            .expect("terminal state event should be emitted")
+            .expect("terminal state channel should stay open");
+        assert_eq!(
+            state_payload
+                .get("chat_session_id")
+                .and_then(serde_json::Value::as_str),
+            Some(session.id.as_str())
+        );
+        assert_eq!(
+            state_payload
+                .get("turn_phase")
+                .and_then(serde_json::Value::as_str),
+            Some("idle")
+        );
+        assert_eq!(
+            state_payload
+                .get("session_state")
+                .and_then(serde_json::Value::as_str),
+            Some("error")
+        );
+
+        let status = center
+            .get_session(&session.id)
+            .expect("status center receives terminal state");
+        assert_eq!(
+            status.agent_state,
+            crate::usecase::agent_session::status::AgentState::Error
+        );
+        assert_eq!(
+            status.turn_phase,
+            crate::usecase::agent_session::status::TurnPhaseRepr::Idle
+        );
+        assert_eq!(status.session_state, SessionState::Error);
+        let meta = session_store
+            .get_session_meta(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.state, SessionState::Error);
+    }
+
+    #[tokio::test]
+    async fn complete_streaming_turn_post_lock_uses_projected_state_when_persist_fails() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        let (state_tx, state_rx) = tokio::sync::oneshot::channel();
+        let state_tx = Arc::new(StdMutex::new(Some(state_tx)));
+        let state_tx_for_listener = Arc::clone(&state_tx);
+        app.listen("agent-session-state-changed", move |event| {
+            let payload = serde_json::from_str::<serde_json::Value>(event.payload())
+                .expect("agent-session-state-changed payload must be json");
+            if let Some(tx) = state_tx_for_listener.lock().unwrap().take() {
+                let _ = tx.send(payload);
+            }
+        });
+
+        complete_streaming_turn_post_lock(
+            app.handle(),
+            None,
+            &session_store,
+            &handles,
+            "missing-session",
+            TurnCompleteTransition {
+                turn_completed: true,
+                workflow_turn_complete: Some(WorkflowTurnCompleteInput {
+                    turn_id: 1,
+                    exit_code: 1,
+                    final_text_parts: Vec::new(),
+                    failure_signal: None,
+                    token_usage: None,
+                    interrupted: false,
+                }),
+                projected_session_state: Some(SessionState::Error),
+                ..Default::default()
+            },
+            TurnCompletePostOptions {
+                consume_pending: false,
+            },
+        )
+        .await;
+
+        let state_payload = tokio::time::timeout(Duration::from_secs(1), state_rx)
+            .await
+            .expect("completed turn state event should be emitted")
+            .expect("completed turn state channel should stay open");
+        assert_eq!(
+            state_payload
+                .get("chat_session_id")
+                .and_then(serde_json::Value::as_str),
+            Some("missing-session")
+        );
+        assert_eq!(
+            state_payload
+                .get("session_state")
+                .and_then(serde_json::Value::as_str),
+            Some("error")
+        );
     }
 
     #[test]

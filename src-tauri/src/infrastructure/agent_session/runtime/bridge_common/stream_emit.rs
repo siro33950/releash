@@ -516,6 +516,19 @@ fn snapshot_retry_parts_after_partial_failure(
     project_tool_output_parts_for_stream(&parts)
 }
 
+fn should_store_retry(
+    proc: &AgentProcess,
+    snapshot: &StreamingFlushSnapshot,
+    partial_failure: bool,
+) -> bool {
+    match snapshot.source {
+        StreamingFlushSource::Pending | StreamingFlushSource::OneShot => {
+            proc.retry_stream_delta.is_none()
+        }
+        StreamingFlushSource::Retry => partial_failure,
+    }
+}
+
 /// Apply the emit result to the coalescing state. On success clears the
 /// pending buffer, commits the delta seq, and bumps `last_stream_emit_at`; on
 /// failure retains both (so the next flush retries the same delta seq) and emits a warning
@@ -566,12 +579,8 @@ pub(super) fn apply_streaming_emit_result(
             tauri_ok,
             ws_ok
         );
-        let retryable = matches!(
-            snapshot.source,
-            StreamingFlushSource::Pending | StreamingFlushSource::OneShot
-        );
-        if retryable && proc.retry_stream_delta.is_none() {
-            let partial_failure = tauri_ok != ws_ok;
+        let partial_failure = tauri_ok != ws_ok;
+        if should_store_retry(proc, snapshot, partial_failure) {
             let retry_as_snapshot = snapshot.snapshot
                 || partial_failure
                 || snapshot.source == StreamingFlushSource::OneShot;
@@ -1780,6 +1789,61 @@ mod moved_tests {
             MessagePart::Text { content, .. } => assert_eq!(content, "lo"),
             _ => panic!("expected Text"),
         }
+    }
+
+    #[tokio::test]
+    async fn retry_partial_failure_promotes_append_retry_to_snapshot() {
+        let mut proc = make_streaming_test_process();
+        let first_part = MessagePart::Text {
+            content: "Hello".to_string(),
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(first_part.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&first_part));
+
+        let first = prepare_streaming_flush(&proc).expect("first snapshot");
+        assert!(!first.snapshot);
+        apply_streaming_emit_result(&mut proc, "csid", "mid", &first, false, false);
+        let retry = proc.retry_stream_delta.as_ref().expect("append retry");
+        assert_eq!(retry.seq, 1);
+        assert!(
+            !retry.snapshot,
+            "both transports failed, so append retry remains safe"
+        );
+
+        let retry_flush = prepare_streaming_flush(&proc).expect("retry flush");
+        assert_eq!(retry_flush.seq, 1);
+        assert!(!retry_flush.snapshot);
+        apply_streaming_emit_result(&mut proc, "csid", "mid", &retry_flush, true, false);
+
+        let snapshot_retry = proc
+            .retry_stream_delta
+            .as_ref()
+            .expect("partial retry failure should keep retry");
+        assert_eq!(snapshot_retry.seq, 1);
+        assert!(
+            snapshot_retry.snapshot,
+            "partial retry failure must become idempotent replacement"
+        );
+        assert_eq!(snapshot_retry.parts, vec![first_part.clone()]);
+        assert_eq!(
+            snapshot_retry.retry_snapshot_parts,
+            Some(vec![first_part.clone()])
+        );
+
+        let final_retry = prepare_streaming_flush(&proc).expect("snapshot retry");
+        assert_eq!(final_retry.seq, 1);
+        assert!(final_retry.snapshot);
+        assert_eq!(final_retry.parts, vec![first_part]);
+        assert!(apply_streaming_emit_result(
+            &mut proc,
+            "csid",
+            "mid",
+            &final_retry,
+            true,
+            true,
+        ));
+        assert!(proc.retry_stream_delta.is_none());
     }
 
     #[tokio::test]

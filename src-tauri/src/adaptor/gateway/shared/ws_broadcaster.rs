@@ -4,8 +4,8 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 
-pub type WsSender = mpsc::UnboundedSender<()>;
-pub type WsReceiver = mpsc::UnboundedReceiver<()>;
+pub type WsSender = mpsc::Sender<()>;
+pub type WsReceiver = mpsc::Receiver<()>;
 
 const STREAM_DELTA_QUEUE_LIMIT: usize = 1024;
 const STREAM_DELTA_QUEUE_BYTE_LIMIT: usize = 512 * 1024;
@@ -106,7 +106,7 @@ impl WsBroadcaster {
     }
 
     pub fn create_channel() -> (WsSender, WsReceiver) {
-        mpsc::unbounded_channel()
+        mpsc::channel(1)
     }
 
     fn enqueue_if_connected<F>(&self, enqueue: F) -> Option<bool>
@@ -124,12 +124,13 @@ impl WsBroadcaster {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         enqueue(&mut queue);
-        if sender.send(()).is_ok() {
-            Some(true)
-        } else {
-            queue.clear();
-            *sender_guard = None;
-            Some(false)
+        match sender.try_send(()) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(())) => Some(true),
+            Err(mpsc::error::TrySendError::Closed(())) => {
+                queue.clear();
+                *sender_guard = None;
+                Some(false)
+            }
         }
     }
 }
@@ -322,7 +323,7 @@ mod tests {
         ));
 
         rx.try_recv().unwrap();
-        rx.try_recv().unwrap();
+        assert!(rx.try_recv().is_err());
         let drained = broadcaster.drain_messages();
         assert!(matches!(
             &drained[0],
@@ -350,8 +351,7 @@ mod tests {
         }));
 
         rx.try_recv().unwrap();
-        rx.try_recv().unwrap();
-        rx.try_recv().unwrap();
+        assert!(rx.try_recv().is_err());
         let drained = broadcaster.drain_messages();
         match &drained[0] {
             WsMessage::PtyOutput(msg) => {
@@ -389,6 +389,38 @@ mod tests {
             1,
             "message should be queued for the forwarder"
         );
+    }
+
+    #[test]
+    fn enqueue_burst_keeps_single_wake_token_and_all_messages() {
+        let broadcaster = WsBroadcaster::default();
+        let (tx, mut rx) = WsBroadcaster::create_channel();
+        broadcaster.set_sender(Some(tx));
+
+        for sequence in 1..=3 {
+            broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+                pty_id: 1,
+                data: format!("msg-{sequence}"),
+                sequence,
+            }));
+        }
+
+        rx.try_recv().unwrap();
+        assert!(rx.try_recv().is_err());
+        let drained = broadcaster.drain_messages();
+        assert_eq!(drained.len(), 3);
+        assert!(matches!(
+            &drained[0],
+            WsMessage::PtyOutput(msg) if msg.data == "msg-1"
+        ));
+        assert!(matches!(
+            &drained[1],
+            WsMessage::PtyOutput(msg) if msg.data == "msg-2"
+        ));
+        assert!(matches!(
+            &drained[2],
+            WsMessage::PtyOutput(msg) if msg.data == "msg-3"
+        ));
     }
 
     #[test]

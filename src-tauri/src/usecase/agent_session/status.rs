@@ -495,16 +495,11 @@ impl AgentStatusCenter {
         }
 
         steps.sort_by(|left, right| {
-            (
-                &left.execution_id,
-                &left.step_name,
-                left.run_index.unwrap_or(1),
-            )
-                .cmp(&(
-                    &right.execution_id,
-                    &right.step_name,
-                    right.run_index.unwrap_or(1),
-                ))
+            (&left.execution_id, &left.step_name, left.run_index).cmp(&(
+                &right.execution_id,
+                &right.step_name,
+                right.run_index,
+            ))
         });
 
         let mut workflows = workflow_keys
@@ -2205,6 +2200,34 @@ mod tests {
         let queried = center.query_worktree_step_statuses("/repo");
 
         assert_eq!(emitted, &queried);
+    }
+
+    #[test]
+    fn workflow_step_status_view_sorts_none_run_index_before_some() {
+        let center = mk_center();
+        center.update_session(workflow_session(
+            "step-some",
+            "build",
+            Some(1),
+            StepProgress::Running,
+            AgentState::Running,
+        ));
+        center.update_session(workflow_session(
+            "step-none",
+            "build",
+            None,
+            StepProgress::Running,
+            AgentState::Running,
+        ));
+
+        let queried = center.query_worktree_step_statuses("/repo");
+        let run_indexes = queried
+            .steps
+            .iter()
+            .map(|step| step.run_index)
+            .collect::<Vec<_>>();
+
+        assert_eq!(run_indexes, vec![None, Some(1)]);
     }
 
     #[test]

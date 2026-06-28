@@ -184,8 +184,9 @@ pub struct WorktreeStepStatusView {
 - **C（配信）**: snapshot event 構築失敗・emit 失敗は既存の retry 経路（`retry_stream_delta`）を踏襲する。
   frontend は失敗時の resync を駆動しないため、欠損が起きても backend の次回 flush / snapshot で収束する。
   module ごとの専用 error type（Rust 規約）を維持する。
-- **D（query）**: query 失敗は frontend で握り潰さず、空 read model にフォールバックして描画を壊さない。
-  backend query は `Result<_, String>` を返し、command 層で Tauri error に変換する（既存パターン踏襲）。
+- **D（query）**: backend query は `WorktreeStepStatusView` を直接返す。frontend の再同期要求も
+  backend が現行 view を `WorktreeStepStatusSync` に変換して返す契約とする。frontend 側で別の
+  代替 read model を組み立てる責務は持たない。
 
 ## テスト方針
 
