@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DiffRange } from "../markdownDiff";
+import type { DiffRange } from "@/types/markdown-diff";
 import { rehypeSourceLines } from "../rehypeSourceLines";
 
 function makeElement(

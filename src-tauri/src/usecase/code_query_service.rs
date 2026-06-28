@@ -10,14 +10,16 @@ use std::sync::Arc;
 
 use crate::domain::code::services;
 use crate::domain::code::{
-    BranchBaseResolver, ChangeGroup, CodeError, DiffComputer, DiffFileEntry, DiffTreeNode,
-    FileContentRepository, HiddenRange, Hunk, MentionReference, MentionRepository, ReviewSideBytes,
-    ReviewSideMetadata, VisibleBlock,
+    BranchBaseResolver, ChangeGroup, CodeError, DiffComputer, DiffFileEntry, DiffRange,
+    DiffRangeKind, DiffSide, DiffTreeNode, FileContentRepository, HiddenRange, Hunk, InlineChunk,
+    InlineChunkKind, MentionReference, MentionRepository, ReviewSideBytes, ReviewSideMetadata,
+    SplitRow, SplitRowKind, VisibleBlock,
 };
 
 use super::code_dto::{
-    BranchDiffSummaryDto, ChangeGroupDto, DiffHunksResultDto, DiffTreeNodeDto,
-    FileNavigationResultDto, HiddenRangeDto, HunkDto, VisibleBlockDto,
+    BranchDiffSummaryDto, ChangeGroupDto, DiffHunksResultDto, DiffRangeDto, DiffRangeKindDto,
+    DiffTreeNodeDto, FileNavigationResultDto, HiddenRangeDto, HunkDto, InlineChunkDto,
+    InlineChunkKindDto, SplitRowDto, SplitRowKindDto, VisibleBlockDto,
 };
 use super::code_error::CodeUsecaseError;
 
@@ -340,6 +342,42 @@ impl CodeQueryService {
             .collect()
     }
 
+    pub fn compute_markdown_diff_ranges(
+        &self,
+        original: &str,
+        modified: &str,
+        side: DiffSide,
+    ) -> Vec<DiffRangeDto> {
+        let hunks = self.diff_computer.diff_buffers(original, modified, None);
+        let blocks = services::markdown_diff::compute_diff_blocks(&hunks, original, modified);
+        services::markdown_diff::markdown_diff_ranges_from_blocks(&blocks, side)
+            .iter()
+            .map(diff_range_to_dto)
+            .collect()
+    }
+
+    pub fn compute_markdown_split_rows(&self, original: &str, modified: &str) -> Vec<SplitRowDto> {
+        let hunks = self.diff_computer.diff_buffers(original, modified, None);
+        let blocks = services::markdown_diff::compute_diff_blocks(&hunks, original, modified);
+        services::markdown_diff::markdown_split_rows_from_blocks(&blocks)
+            .iter()
+            .map(split_row_to_dto)
+            .collect()
+    }
+
+    pub fn compute_markdown_inline_chunks(
+        &self,
+        original: &str,
+        modified: &str,
+    ) -> Vec<InlineChunkDto> {
+        let hunks = self.diff_computer.diff_buffers(original, modified, None);
+        let blocks = services::markdown_diff::compute_diff_blocks(&hunks, original, modified);
+        services::markdown_diff::markdown_inline_chunks_from_blocks(&blocks)
+            .iter()
+            .map(inline_chunk_to_dto)
+            .collect()
+    }
+
     // ── language（純粋） ──
 
     pub fn get_language_from_path(&self, file_path: &str) -> String {
@@ -386,7 +424,7 @@ impl CodeQueryService {
     }
 }
 
-// ── VO → DTO 変換（QueryService が算出結果を転送表現へ詰め替える） ──
+// ── 既存 domain VO → DTO 変換（hunk/range などの共通 read model） ──
 
 fn hunk_to_dto(h: &Hunk) -> HunkDto {
     HunkDto {
@@ -427,6 +465,42 @@ fn visible_block_to_dto(b: &VisibleBlock) -> VisibleBlockDto {
         end_line: b.end_line,
         content: b.content.clone(),
         deleted_content: b.deleted_content.clone(),
+    }
+}
+
+fn diff_range_to_dto(r: &DiffRange) -> DiffRangeDto {
+    DiffRangeDto {
+        start_line: r.start_line,
+        end_line: r.end_line,
+        kind: match r.kind {
+            DiffRangeKind::Added => DiffRangeKindDto::Added,
+            DiffRangeKind::Modified => DiffRangeKindDto::Modified,
+            DiffRangeKind::Deleted => DiffRangeKindDto::Deleted,
+        },
+    }
+}
+
+fn split_row_to_dto(r: &SplitRow) -> SplitRowDto {
+    SplitRowDto {
+        left: r.left.clone(),
+        right: r.right.clone(),
+        kind: match r.kind {
+            SplitRowKind::Unchanged => SplitRowKindDto::Unchanged,
+            SplitRowKind::Added => SplitRowKindDto::Added,
+            SplitRowKind::Removed => SplitRowKindDto::Removed,
+            SplitRowKind::Modified => SplitRowKindDto::Modified,
+        },
+    }
+}
+
+fn inline_chunk_to_dto(c: &InlineChunk) -> InlineChunkDto {
+    InlineChunkDto {
+        content: c.content.clone(),
+        kind: match c.kind {
+            InlineChunkKind::Unchanged => InlineChunkKindDto::Unchanged,
+            InlineChunkKind::Added => InlineChunkKindDto::Added,
+            InlineChunkKind::Removed => InlineChunkKindDto::Removed,
+        },
     }
 }
 
@@ -682,6 +756,25 @@ mod code_query_service_tests {
         assert_eq!(result.hunks.len(), 1);
         assert_eq!(result.change_groups.len(), 1);
         assert_eq!(result.change_groups[0].hunk_index, 0);
+    }
+
+    #[test]
+    fn test_markdown_diff_read_modelを算出する() {
+        let s = service();
+
+        let ranges = s.compute_markdown_diff_ranges("a\n", "b\n", DiffSide::Modified);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].start_line, 1);
+
+        let rows = s.compute_markdown_split_rows("a\n", "b\n");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].left.as_deref(), Some("a\n"));
+        assert_eq!(rows[0].right.as_deref(), Some("b\n"));
+
+        let chunks = s.compute_markdown_inline_chunks("a\n", "b\n");
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].content, "a\n");
+        assert_eq!(chunks[1].content, "b\n");
     }
 
     #[test]

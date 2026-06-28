@@ -8,6 +8,7 @@ pub(crate) mod diff;
 pub(crate) mod file_content;
 pub(crate) mod hunk;
 pub(crate) mod language;
+pub(crate) mod markdown;
 pub(crate) mod mention;
 pub(crate) mod review;
 pub(crate) mod review_blob;
@@ -35,6 +36,9 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "compute_hidden_ranges",
     "compute_hidden_ranges_from_content",
     "compute_visible_markdown_blocks",
+    "compute_markdown_diff_ranges",
+    "compute_markdown_split_rows",
+    "compute_markdown_inline_chunks",
     "get_language_from_path",
     "get_relative_path",
     "git_stage",
@@ -70,6 +74,9 @@ pub(crate) fn invoke_handler(
         hunk::compute_hidden_ranges,
         hunk::compute_hidden_ranges_from_content,
         hunk::compute_visible_markdown_blocks,
+        markdown::compute_markdown_diff_ranges,
+        markdown::compute_markdown_split_rows,
+        markdown::compute_markdown_inline_chunks,
         language::get_language_from_path,
         diff::get_relative_path,
         staging::git_stage,

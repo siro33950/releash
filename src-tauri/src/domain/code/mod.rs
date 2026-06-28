@@ -21,6 +21,7 @@ pub use repository::{
     StagingRepository,
 };
 pub use value_objects::{
-    ChangeGroup, DiffFileEntry, DiffTreeNode, HiddenRange, Hunk, MentionReference, ReviewBase,
-    ReviewBlobContentType, ReviewLimitReason, ReviewSection, ReviewThresholds, VisibleBlock,
+    ChangeGroup, DiffFileEntry, DiffRange, DiffRangeKind, DiffSide, DiffTreeNode, HiddenRange,
+    Hunk, InlineChunk, InlineChunkKind, MentionReference, ReviewBase, ReviewBlobContentType,
+    ReviewLimitReason, ReviewSection, ReviewThresholds, SplitRow, SplitRowKind, VisibleBlock,
 };

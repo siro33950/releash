@@ -9,13 +9,8 @@ import {
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
-import {
-	computeInlineChunks,
-	computeModifiedDiffRanges,
-	computeSplitRows,
-	type SplitRow,
-} from "@/lib/markdownDiff";
 import { rehypeSourceLines } from "@/lib/rehypeSourceLines";
+import type { DiffRange, InlineChunk, SplitRow } from "@/types/markdown-diff";
 import type { DiffMode } from "@/types/settings";
 
 interface VisibleBlock {
@@ -24,6 +19,37 @@ interface VisibleBlock {
 	content: string;
 	deletedContent?: string;
 }
+
+interface ReadModelArgs {
+	original: string;
+	modified: string;
+	[key: string]: unknown;
+}
+
+interface ReadModelInputKey {
+	original: string;
+	modified: string;
+}
+
+interface StoredReadModel<T> {
+	inputKey: ReadModelInputKey;
+	data: T;
+}
+
+type StoredReadModelState<T> =
+	| { status: "loading"; result: StoredReadModel<T> | null; error: null }
+	| { status: "ready"; result: StoredReadModel<T>; error: null }
+	| { status: "error"; result: StoredReadModel<T> | null; error: string };
+
+type ReadModelState<T> =
+	| { status: "loading"; data: T; error: null }
+	| { status: "ready"; data: T; error: null }
+	| { status: "error"; data: T; error: string };
+
+const EMPTY_DIFF_RANGES: DiffRange[] = [];
+const EMPTY_SPLIT_ROWS: SplitRow[] = [];
+const EMPTY_INLINE_CHUNKS: InlineChunk[] = [];
+const EMPTY_VISIBLE_BLOCKS: VisibleBlock[] = [];
 
 export interface MarkdownDiffViewerProps {
 	originalContent: string;
@@ -34,6 +60,99 @@ export interface MarkdownDiffViewerProps {
 
 const remarkPlugins = [remarkGfm];
 
+function readModelErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function readModelInputKeyFromArgs(args: ReadModelArgs): ReadModelInputKey {
+	return {
+		original: args.original,
+		modified: args.modified,
+	};
+}
+
+function readModelInputKeysEqual(
+	left: ReadModelInputKey,
+	right: ReadModelInputKey,
+): boolean {
+	return left.original === right.original && left.modified === right.modified;
+}
+
+function currentReadModelResult<T>(
+	result: StoredReadModel<T> | null,
+	inputKey: ReadModelInputKey,
+): StoredReadModel<T> | null {
+	return result && readModelInputKeysEqual(result.inputKey, inputKey)
+		? result
+		: null;
+}
+
+function useReadModel<T>(
+	command: string,
+	args: ReadModelArgs,
+	fallbackData: T,
+): ReadModelState<T> {
+	const inputKey = useMemo(() => readModelInputKeyFromArgs(args), [args]);
+	const [state, setState] = useState<StoredReadModelState<T>>({
+		status: "loading",
+		result: null,
+		error: null,
+	});
+
+	useEffect(() => {
+		let cancelled = false;
+		setState((prev) => ({
+			status: "loading",
+			result: currentReadModelResult(prev.result, inputKey),
+			error: null,
+		}));
+		invoke<T>(command, args)
+			.then((data) => {
+				if (!cancelled) {
+					setState({
+						status: "ready",
+						result: { inputKey, data },
+						error: null,
+					});
+				}
+			})
+			.catch((error: unknown) => {
+				if (!cancelled) {
+					setState((prev) => ({
+						status: "error",
+						result: currentReadModelResult(prev.result, inputKey),
+						error: readModelErrorMessage(error),
+					}));
+				}
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, [command, args, inputKey]);
+
+	const result = currentReadModelResult(state.result, inputKey);
+	const data = result?.data ?? fallbackData;
+	if (state.status === "error") {
+		return { status: "error", data, error: state.error };
+	}
+	if (state.status === "ready") {
+		return { status: "ready", data, error: null };
+	}
+	return { status: "loading", data, error: null };
+}
+
+function ReadModelErrorNotice({ message }: { message: string }) {
+	return (
+		<div
+			role="alert"
+			className="m-4 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+		>
+			Failed to load markdown diff: {message}
+		</div>
+	);
+}
+
 function GutterView({
 	modifiedContent,
 	originalContent,
@@ -41,16 +160,29 @@ function GutterView({
 	modifiedContent: string;
 	originalContent: string;
 }) {
-	const diffRanges = useMemo(
-		() => computeModifiedDiffRanges(originalContent, modifiedContent),
+	const readModelArgs = useMemo(
+		() => ({
+			original: originalContent,
+			modified: modifiedContent,
+			side: "modified",
+		}),
 		[originalContent, modifiedContent],
 	);
+	const diffRanges = useReadModel<DiffRange[]>(
+		"compute_markdown_diff_ranges",
+		readModelArgs,
+		EMPTY_DIFF_RANGES,
+	);
+
 	const rehypePlugins = useMemo(
-		() => [rehypeSourceLines(diffRanges), rehypeHighlight],
-		[diffRanges],
+		() => [rehypeSourceLines(diffRanges.data), rehypeHighlight],
+		[diffRanges.data],
 	);
 	return (
 		<div className="h-full overflow-auto">
+			{diffRanges.status === "error" && (
+				<ReadModelErrorNotice message={diffRanges.error} />
+			)}
 			<div className="markdown-preview p-6">
 				<Markdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
 					{modifiedContent}
@@ -90,15 +222,25 @@ function SplitView({
 	originalContent: string;
 	modifiedContent: string;
 }) {
-	const rows = useMemo(
-		() => computeSplitRows(originalContent, modifiedContent),
+	const readModelArgs = useMemo(
+		() => ({
+			original: originalContent,
+			modified: modifiedContent,
+		}),
 		[originalContent, modifiedContent],
 	);
+	const rows = useReadModel<SplitRow[]>(
+		"compute_markdown_split_rows",
+		readModelArgs,
+		EMPTY_SPLIT_ROWS,
+	);
+
 	const rehypePlugins = useMemo(() => [rehypeHighlight], []);
 
 	return (
 		<div className="md-split-container" data-testid="md-split-grid">
-			{rows.map((row, rowIndex) => (
+			{rows.status === "error" && <ReadModelErrorNotice message={rows.error} />}
+			{rows.data.map((row, rowIndex) => (
 				// biome-ignore lint/suspicious/noArrayIndexKey: rows are positional diff output, order is fixed
 				<div key={rowIndex} className="md-split-row">
 					<div className={splitCellClass(row.type, "left")}>
@@ -139,15 +281,27 @@ function InlineView({
 	originalContent: string;
 	modifiedContent: string;
 }) {
-	const chunks = useMemo(
-		() => computeInlineChunks(originalContent, modifiedContent),
+	const readModelArgs = useMemo(
+		() => ({
+			original: originalContent,
+			modified: modifiedContent,
+		}),
 		[originalContent, modifiedContent],
 	);
+	const chunks = useReadModel<InlineChunk[]>(
+		"compute_markdown_inline_chunks",
+		readModelArgs,
+		EMPTY_INLINE_CHUNKS,
+	);
+
 	const rehypePlugins = useMemo(() => [rehypeHighlight], []);
 	return (
 		<div className="h-full overflow-auto">
+			{chunks.status === "error" && (
+				<ReadModelErrorNotice message={chunks.error} />
+			)}
 			<div className="markdown-preview p-6">
-				{chunks.map((chunk, chunkIndex) => {
+				{chunks.data.map((chunk, chunkIndex) => {
 					const className =
 						chunk.type === "added"
 							? "md-diff-inline-added"
@@ -178,29 +332,21 @@ function DiffOnlyMarkdownView({
 	originalContent: string;
 	modifiedContent: string;
 }) {
-	const [visibleBlocks, setVisibleBlocks] = useState<VisibleBlock[]>([]);
 	const [expandedGaps, setExpandedGaps] = useState<Set<number>>(new Set());
 	const rehypePlugins = useMemo(() => [rehypeHighlight], []);
-
-	useEffect(() => {
-		let cancelled = false;
-		setExpandedGaps(new Set());
-		invoke<VisibleBlock[]>("compute_visible_markdown_blocks", {
+	const readModelArgs = useMemo(
+		() => ({
 			original: originalContent,
 			modified: modifiedContent,
 			contextLines: 3,
-		})
-			.then((blocks) => {
-				if (!cancelled) setVisibleBlocks(blocks);
-			})
-			.catch(() => {
-				if (!cancelled) setVisibleBlocks([]);
-			});
-
-		return () => {
-			cancelled = true;
-		};
-	}, [originalContent, modifiedContent]);
+		}),
+		[originalContent, modifiedContent],
+	);
+	const visibleBlocks = useReadModel<VisibleBlock[]>(
+		"compute_visible_markdown_blocks",
+		readModelArgs,
+		EMPTY_VISIBLE_BLOCKS,
+	);
 
 	const expandGap = useCallback((gapIndex: number) => {
 		setExpandedGaps((prev) => {
@@ -215,7 +361,13 @@ function DiffOnlyMarkdownView({
 		[modifiedContent],
 	);
 
-	if (visibleBlocks.length === 0) {
+	const blocks = visibleBlocks.data;
+
+	if (visibleBlocks.status === "error" && blocks.length === 0) {
+		return <ReadModelErrorNotice message={visibleBlocks.error} />;
+	}
+
+	if (blocks.length === 0) {
 		return (
 			<div className="h-full flex items-center justify-center text-muted-foreground text-sm">
 				No changes
@@ -223,14 +375,17 @@ function DiffOnlyMarkdownView({
 		);
 	}
 
-	const lastBlock = visibleBlocks[visibleBlocks.length - 1];
+	const lastBlock = blocks[blocks.length - 1];
 	const trailingGapLines = lastBlock ? modLines.length - lastBlock.endLine : 0;
-	const trailingGapIndex = visibleBlocks.length;
+	const trailingGapIndex = blocks.length;
 
 	return (
 		<div className="markdown-preview h-full overflow-auto p-6">
-			{visibleBlocks.map((block, i) => {
-				const prevEnd = visibleBlocks[i - 1]?.endLine ?? 0;
+			{visibleBlocks.status === "error" && (
+				<ReadModelErrorNotice message={visibleBlocks.error} />
+			)}
+			{blocks.map((block, i) => {
+				const prevEnd = blocks[i - 1]?.endLine ?? 0;
 				const gapLines = block.startLine - prevEnd - 1;
 
 				return (
@@ -313,6 +468,7 @@ export function MarkdownDiffViewer({
 		return (
 			<div data-testid="markdown-diff-viewer" className="h-full">
 				<DiffOnlyMarkdownView
+					key={`${deferredOriginal}\0${deferredModified}`}
 					originalContent={deferredOriginal}
 					modifiedContent={deferredModified}
 				/>
