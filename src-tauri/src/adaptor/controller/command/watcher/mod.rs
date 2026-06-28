@@ -77,8 +77,7 @@ pub fn stop_watching(
 }
 
 fn file_change_event_from_path(watcher_id: u64, path: &Path) -> FileChangeEvent {
-    let event_path =
-        canonicalize_event_path(path).unwrap_or_else(|| path.to_string_lossy().to_string());
+    let event_path = canonicalize_event_path(path);
     FileChangeEvent {
         watcher_id,
         path: event_path,
@@ -120,5 +119,12 @@ mod tests {
         assert_eq!(event.watcher_id, 7);
         assert!(event.path.ends_with("deleted.txt"));
         assert!(!event.path.contains(".."));
+    }
+
+    #[test]
+    fn file_change_event_fallback_returns_forward_slash_path() {
+        let event = file_change_event_from_path(8, Path::new(r"C:\missing\file.txt"));
+
+        assert_eq!(event.path, "C:/missing/file.txt");
     }
 }

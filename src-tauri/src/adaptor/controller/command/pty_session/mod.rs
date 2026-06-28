@@ -2,6 +2,7 @@ pub(crate) mod commands;
 
 pub(super) const COMMAND_NAMES: &[&str] = &[
     "write_pty",
+    "write_paths_to_pty",
     "resize_pty",
     "kill_pty",
     "list_pty_sessions",
@@ -22,6 +23,7 @@ pub(crate) fn invoke_handler(
 ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         commands::write_pty,
+        commands::write_paths_to_pty,
         commands::resize_pty,
         commands::kill_pty,
         commands::list_pty_sessions,

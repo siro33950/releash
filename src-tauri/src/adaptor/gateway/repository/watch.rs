@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::domain::path::to_canonical_forward_slash;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 
 pub(crate) struct GitWatchPaths {
@@ -42,19 +43,20 @@ pub(crate) fn resolve_file_watch_paths(
     vec![path.canonicalize().unwrap_or(path)]
 }
 
-pub(crate) fn canonicalize_event_path(path: &Path) -> Option<String> {
+pub(crate) fn canonicalize_event_path(path: &Path) -> String {
     if let Ok(canonical) = path.canonicalize() {
-        return Some(canonical.to_string_lossy().to_string());
+        return to_canonical_forward_slash(&canonical.to_string_lossy());
     }
-    let parent = path.parent()?;
-    let file_name = path.file_name()?;
-    let canonical_parent = parent.canonicalize().ok()?;
-    Some(
-        canonical_parent
-            .join(file_name)
-            .to_string_lossy()
-            .to_string(),
-    )
+    if let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) {
+        if let Ok(canonical_parent) = parent.canonicalize() {
+            let path = canonical_parent
+                .join(file_name)
+                .to_string_lossy()
+                .to_string();
+            return to_canonical_forward_slash(&path);
+        }
+    }
+    to_canonical_forward_slash(&path.to_string_lossy())
 }
 
 static WATCHER_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -77,7 +79,7 @@ pub struct GitStatusChangedEvent {
 
 pub(crate) fn classify_git_dir_events(events: &[DebouncedEvent]) -> (bool, bool) {
     let has_branch_change = events.iter().any(|e| {
-        let p = e.path.to_string_lossy().replace('\\', "/");
+        let p = to_canonical_forward_slash(&e.path.to_string_lossy());
         p.contains("/refs/heads/") || e.path.file_name().is_some_and(|n| n == "HEAD")
     });
     let has_index_change = events.iter().any(|e| {
@@ -266,10 +268,8 @@ mod tests {
         std::fs::write(&file_path, "hello").unwrap();
 
         let result = canonicalize_event_path(&file_path);
-        assert!(result.is_some());
-        let canonical = result.unwrap();
-        assert!(canonical.ends_with("test.txt"));
-        assert!(!canonical.contains(".."));
+        assert!(result.ends_with("test.txt"));
+        assert!(!result.contains(".."));
     }
 
     #[test]
@@ -278,15 +278,13 @@ mod tests {
         let file_path = dir.path().join("deleted.txt");
 
         let result = canonicalize_event_path(&file_path);
-        assert!(result.is_some());
-        let canonical = result.unwrap();
-        assert!(canonical.ends_with("deleted.txt"));
+        assert!(result.ends_with("deleted.txt"));
     }
 
     #[test]
-    fn canonicalize_nonexistent_parent_returns_none() {
-        let path = PathBuf::from("/nonexistent/parent/file.txt");
+    fn canonicalize_nonexistent_parent_falls_back_to_normalized_path() {
+        let path = PathBuf::from(r"C:\nonexistent\parent\file.txt");
         let result = canonicalize_event_path(&path);
-        assert!(result.is_none());
+        assert_eq!(result, "C:/nonexistent/parent/file.txt");
     }
 }

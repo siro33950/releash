@@ -1,6 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
-import { normalizePath } from "@/lib/normalizePath";
 import type { WorkspaceStatus } from "@/types/session";
 import type { WorktreeTab } from "@/types/workspace-tab";
 
@@ -28,18 +27,17 @@ export function useWorkspaceNavigation(): UseWorkspaceNavigationReturn {
 
 	const openWorktreeTab = useCallback(
 		(rootPath: string, branchName?: string, repoName?: string) => {
-			const normalized = normalizePath(rootPath);
 			setWorktrees((prev) => {
-				const existing = prev.find((t) => t.rootPath === normalized);
+				const existing = prev.find((t) => t.rootPath === rootPath);
 				if (existing) {
 					setSelectedWorktreeId(existing.id);
 					return prev;
 				}
 				const newTab: WorktreeTab = {
 					type: "worktree",
-					id: normalized,
-					rootPath: normalized,
-					branchName: branchName ?? fallbackBranchName(normalized),
+					id: rootPath,
+					rootPath,
+					branchName: branchName ?? fallbackBranchName(rootPath),
 					repoName,
 				};
 				setSelectedWorktreeId(newTab.id);
@@ -77,7 +75,7 @@ export function useWorkspaceNavigation(): UseWorkspaceNavigationReturn {
 				const off = await listen<WorkspaceStatus>(
 					"workspace-status-changed",
 					(event) => {
-						const worktreePath = normalizePath(event.payload.worktree_id);
+						const worktreePath = event.payload.worktree_id;
 						const aggregated = event.payload.aggregated_state;
 						setWorktrees((prev) =>
 							prev.map((t) =>

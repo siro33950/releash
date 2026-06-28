@@ -1,6 +1,8 @@
 //! worktree 責務の gateway 実装。git2 によるワークツリー操作を封じ込める。
 
-use crate::domain::repository::{RepositoryError, Worktree, WorktreeRepository};
+use crate::domain::repository::{
+    normalize_repo_path, RepositoryError, Worktree, WorktreeRepository,
+};
 use crate::infrastructure::git::client;
 use crate::infrastructure::git::helpers::get_branch_name_for_repo;
 use git2::{BranchType, Repository, StatusOptions, WorktreeAddOptions, WorktreePruneOptions};
@@ -19,21 +21,21 @@ pub(crate) fn get_main_repo_path(any_path: &str) -> Result<String, RepositoryErr
             let main_workdir = commondir
                 .parent()
                 .ok_or_else(|| RepositoryError::rule("cannot determine main repo path"))?;
-            return Ok(main_workdir
-                .to_str()
-                .ok_or_else(|| RepositoryError::rule("invalid path encoding"))?
-                .to_string());
+            return path_to_normalized_repo_string(main_workdir);
         }
     }
 
     let workdir = repo
         .workdir()
         .ok_or_else(|| RepositoryError::rule("bare repository"))?;
-    Ok(workdir
+    path_to_normalized_repo_string(workdir)
+}
+
+fn path_to_normalized_repo_string(path: &Path) -> Result<String, RepositoryError> {
+    let path = path
         .to_str()
-        .ok_or_else(|| RepositoryError::rule("invalid path encoding"))?
-        .trim_end_matches('/')
-        .to_string())
+        .ok_or_else(|| RepositoryError::rule("invalid path encoding"))?;
+    Ok(normalize_repo_path(path))
 }
 
 /// worktree の dirty 件数を算出する共通ロジック。
@@ -122,11 +124,7 @@ pub(crate) fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, Repositor
 
     entries.push(Worktree {
         name: main_name,
-        path: main_workdir
-            .to_str()
-            .ok_or_else(|| RepositoryError::rule("invalid path encoding"))?
-            .trim_end_matches('/')
-            .to_string(),
+        path: path_to_normalized_repo_string(&main_workdir)?,
         branch: main_branch,
         is_main: true,
         is_locked: false,
@@ -149,11 +147,7 @@ pub(crate) fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, Repositor
 
         entries.push(Worktree {
             name: wt_name,
-            path: wt_path
-                .to_str()
-                .ok_or_else(|| RepositoryError::rule("invalid path encoding"))?
-                .trim_end_matches('/')
-                .to_string(),
+            path: path_to_normalized_repo_string(wt_path)?,
             branch,
             is_main: false,
             is_locked,
@@ -211,10 +205,7 @@ pub(crate) fn create_worktree(
 
     Ok(Worktree {
         name: wt_name.to_string(),
-        path: wt_path
-            .to_str()
-            .ok_or_else(|| RepositoryError::rule("invalid path encoding"))?
-            .to_string(),
+        path: path_to_normalized_repo_string(wt_path)?,
         branch: branch.to_string(),
         is_main: false,
         is_locked: false,
@@ -378,6 +369,15 @@ mod worktree_gateway_tests {
         let expected = repo_dir.canonicalize().unwrap();
         let result_canon = PathBuf::from(&result).canonicalize().unwrap();
         assert_eq!(result_canon, expected);
+    }
+
+    #[test]
+    fn test_メインリポジトリパス正規化_unc_prefix保持() {
+        let path = Path::new(r"\\server\share\repo");
+
+        let result = path_to_normalized_repo_string(path).unwrap();
+
+        assert_eq!(result, "//server/share/repo");
     }
 
     #[test]

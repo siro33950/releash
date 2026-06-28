@@ -8,9 +8,11 @@
 
 use std::sync::Arc;
 
+use crate::domain::path::to_canonical_forward_slash;
 use crate::domain::repository::{
-    Branch, BranchRepository, Commit, FileStatus, GitConfigRepository, LogRepository, RepoLocator,
-    RepositoryStatusScan, StatusRepository, WorktreeRepository,
+    worktree_path as derive_worktree_path, Branch, BranchRepository, Commit, FileStatus,
+    GitConfigRepository, LogRepository, RepoLocator, RepositoryStatusScan, StatusRepository,
+    WorktreeRepository,
 };
 
 use super::repository_dto::{BranchCardDto, WorktreeEntryDto};
@@ -171,7 +173,7 @@ impl RepositoryUsecase {
                 .unwrap_or(None);
             entries.push(WorktreeEntryDto {
                 name: wt.name,
-                path: wt.path,
+                path: to_canonical_forward_slash(&wt.path),
                 branch: wt.branch,
                 is_main: wt.is_main,
                 is_locked: wt.is_locked,
@@ -187,14 +189,18 @@ impl RepositoryUsecase {
     pub fn create_worktree(
         &self,
         repo_path: &str,
-        worktree_path: &str,
         branch: &str,
         create_branch: bool,
         base_branch: Option<&str>,
     ) -> Result<WorktreeEntryDto, UsecaseError> {
-        let wt =
-            self.worktree
-                .create(repo_path, worktree_path, branch, create_branch, base_branch)?;
+        let worktree_path = derive_worktree_path(repo_path, branch);
+        let wt = self.worktree.create(
+            repo_path,
+            &worktree_path,
+            branch,
+            create_branch,
+            base_branch,
+        )?;
         // base 指定時は releash-base config を設定する（旧 gateway 内蔵処理を
         // usecase オーケストレーションへ引き上げ。set は旧実装どおり伝播する）。
         if let Some(base) = base_branch {
@@ -204,7 +210,7 @@ impl RepositoryUsecase {
         // 新規作成直後は dirty_count = 0、base_branch は指定値（旧 gateway 戻り値と等価）。
         Ok(WorktreeEntryDto {
             name: wt.name,
-            path: wt.path,
+            path: to_canonical_forward_slash(&wt.path),
             branch: wt.branch,
             is_main: wt.is_main,
             is_locked: wt.is_locked,
@@ -548,17 +554,17 @@ mod repository_usecase_tests {
     fn test_worktree作成をdtoへ合成する() {
         let fake = Arc::new(<FakeRepo as Default>::default());
         let entry = usecase(fake.clone())
-            .create_worktree("/r", "/wt", "feat", true, Some("main"))
+            .create_worktree("/r", "feat/issues/1302", true, Some("main"))
             .unwrap();
-        assert_eq!(entry.branch, "feat");
-        assert_eq!(entry.path, "/wt");
+        assert_eq!(entry.branch, "feat/issues/1302");
+        assert_eq!(entry.path, "/r-worktrees/feat-issues-1302");
         // 新規作成直後は dirty_count = 0、base_branch は指定値。
         assert_eq!(entry.dirty_count, 0);
         assert_eq!(entry.base_branch, Some("main".to_string()));
         // base 指定時は usecase が releash-base を設定する（旧 gateway 内蔵処理の引き上げ）。
         assert_eq!(
             *fake.set_branch_base_override_calls.lock(),
-            vec![("feat".to_string(), Some("main".to_string()))]
+            vec![("feat/issues/1302".to_string(), Some("main".to_string()))]
         );
     }
 
@@ -566,7 +572,7 @@ mod repository_usecase_tests {
     fn test_worktree作成_base未指定ではbase設定しない() {
         let fake = Arc::new(<FakeRepo as Default>::default());
         usecase(fake.clone())
-            .create_worktree("/r", "/wt", "feat", true, None)
+            .create_worktree("/r", "feat", true, None)
             .unwrap();
         assert!(fake.set_branch_base_override_calls.lock().is_empty());
     }
@@ -608,13 +614,36 @@ mod repository_usecase_tests {
     }
 
     #[test]
+    fn test_worktree一覧のpathはunc_prefixを保持して正規化する() {
+        let fake = Arc::new(FakeRepo {
+            worktrees: vec![wt(r"\\server\share\wt-feat", "feat", false)],
+            ..<FakeRepo as Default>::default()
+        });
+
+        let entries = usecase(fake).list_worktrees("/r").unwrap();
+
+        assert_eq!(entries[0].path, "//server/share/wt-feat");
+    }
+
+    #[test]
+    fn test_worktree作成はunc_repo_pathから意味保存でpathを導出する() {
+        let fake = Arc::new(<FakeRepo as Default>::default());
+
+        let entry = usecase(fake)
+            .create_worktree(r"\\server\share\repo", "feat/issues/1302", true, None)
+            .unwrap();
+
+        assert_eq!(entry.path, "//server/share/repo-worktrees/feat-issues-1302");
+    }
+
+    #[test]
     fn test_worktree作成エラーをusecaseエラーへ変換する() {
         let fake = Arc::new(FakeRepo {
             fail_create_worktree: true,
             ..<FakeRepo as Default>::default()
         });
         let err = usecase(fake)
-            .create_worktree("/r", "/wt", "feat", true, None)
+            .create_worktree("/r", "feat", true, None)
             .unwrap_err();
         assert_eq!(err.to_string(), "boom");
     }

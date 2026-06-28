@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::git_host::{
-    IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrStatus, ProviderStatus,
+    issue_branch_name, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrStatus, ProviderStatus,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +106,7 @@ impl From<IssueLabel> for IssueLabelDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueInfoDto {
     pub number: u64,
+    pub default_branch_name: String,
     pub title: String,
     pub state: String,
     pub url: String,
@@ -122,6 +123,7 @@ impl From<IssueInfo> for IssueInfoDto {
     fn from(issue: IssueInfo) -> Self {
         Self {
             number: issue.number,
+            default_branch_name: issue_branch_name(issue.number),
             title: issue.title,
             state: issue.state,
             url: issue.url,
@@ -213,6 +215,7 @@ mod tests {
             serde_json::to_value(dto).unwrap(),
             json!({
                 "number": 305,
+                "default_branch_name": "feat/issues/305",
                 "title": "Add issue panel",
                 "state": "OPEN",
                 "url": "https://github.com/owner/repo/issues/305",

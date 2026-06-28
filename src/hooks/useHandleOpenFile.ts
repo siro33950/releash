@@ -1,5 +1,4 @@
 import { useCallback, useRef } from "react";
-import { normalizePath } from "@/lib/normalizePath";
 import type { TabInfo } from "@/types/editor";
 
 interface UseHandleOpenFileParams {
@@ -20,11 +19,10 @@ export function useHandleOpenFile({
 
 	return useCallback(
 		async (path: string) => {
-			const normalizedPath = normalizePath(path);
-			await openFile(normalizedPath);
-			const file = getFileContent(normalizedPath);
-			const name = normalizedPath.split("/").pop() ?? normalizedPath;
-			addTab(normalizedPath, name, file?.isDirty ?? false);
+			await openFile(path);
+			const file = getFileContent(path);
+			const name = path.split("/").pop() ?? path;
+			addTab(path, name, file?.isDirty ?? false);
 			onSwitchToEditorRef.current?.();
 		},
 		[openFile, getFileContent, addTab],

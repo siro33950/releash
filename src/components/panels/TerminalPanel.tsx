@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
 	forwardRef,
@@ -17,7 +18,6 @@ import {
 } from "@/components/ui/context-menu";
 import type { NativeFileDropPayload } from "@/hooks/useNativeFileDrop";
 import { useTerminal } from "@/hooks/useTerminal";
-import { quotePathForShell, quotePathsForShell } from "@/lib/quotePathForShell";
 import type { Theme } from "@/types/settings";
 import "@xterm/xterm/css/xterm.css";
 
@@ -66,7 +66,7 @@ export const TerminalPanel = forwardRef<
 	ref,
 ) {
 	const containerRef = useRef<HTMLDivElement>(null);
-	const { terminalRef, writeToTerminal, requestKill } = useTerminal(
+	const { terminalRef, ptyIdRef, writeToTerminal, requestKill } = useTerminal(
 		containerRef,
 		cwd,
 		theme,
@@ -79,6 +79,19 @@ export const TerminalPanel = forwardRef<
 	);
 	const [isDragOver, setIsDragOver] = useState(false);
 	const isDragOverRef = useRef(false);
+
+	const writePathsToTerminal = useCallback(
+		(paths: string[]) => {
+			if (ptyIdRef.current === null || paths.length === 0) return;
+			invoke("write_paths_to_pty", {
+				ptyId: ptyIdRef.current,
+				paths,
+			}).catch((error) => {
+				console.error("Failed to write paths to PTY:", error);
+			});
+		},
+		[ptyIdRef],
+	);
 
 	useImperativeHandle(
 		ref,
@@ -98,7 +111,7 @@ export const TerminalPanel = forwardRef<
 				if (isDragOverRef.current) {
 					const { paths } = event.payload;
 					if (paths.length > 0) {
-						writeToTerminal(quotePathsForShell(paths));
+						writePathsToTerminal(paths);
 					}
 				}
 				isDragOverRef.current = false;
@@ -108,7 +121,7 @@ export const TerminalPanel = forwardRef<
 		return () => {
 			unlisten.then((f) => f());
 		};
-	}, [writeToTerminal]);
+	}, [writePathsToTerminal]);
 
 	const handleDragOver = useCallback((e: React.DragEvent) => {
 		if (
@@ -138,10 +151,10 @@ export const TerminalPanel = forwardRef<
 				"application/x-releash-file-path",
 			);
 			if (filePath) {
-				writeToTerminal(quotePathForShell(filePath));
+				writePathsToTerminal([filePath]);
 			}
 		},
-		[writeToTerminal],
+		[writePathsToTerminal],
 	);
 
 	const handleCopy = useCallback(async () => {

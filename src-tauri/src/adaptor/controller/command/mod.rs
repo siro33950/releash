@@ -360,6 +360,7 @@ mod tests {
             "workflow_get_output",
             "workflow_submit_output",
             "workflow_validate_output",
+            "write_paths_to_pty",
             "write_pty",
         ]
     }

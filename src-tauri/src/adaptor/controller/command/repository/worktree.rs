@@ -55,20 +55,13 @@ pub async fn list_branches_with_status_snapshot(
 pub async fn create_worktree(
     state: State<'_, AppState>,
     repo_path: String,
-    worktree_path: String,
     branch: String,
     create_branch: bool,
     base_branch: Option<String>,
 ) -> Result<WorktreeEntryDto, AppError> {
     let uc = state.repository_usecase.clone();
     run_blocking(move || {
-        uc.create_worktree(
-            &repo_path,
-            &worktree_path,
-            &branch,
-            create_branch,
-            base_branch.as_deref(),
-        )
+        uc.create_worktree(&repo_path, &branch, create_branch, base_branch.as_deref())
     })
     .await
 }

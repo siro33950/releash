@@ -1,4 +1,3 @@
-import { normalizePath } from "@/lib/normalizePath";
 import type { AgentState, AgentStateSync } from "@/types/protocol";
 
 const STATE_PRIORITY: Record<AgentState, number> = {
@@ -16,8 +15,7 @@ export function aggregateAgentState(
 	let bestPriority = 0;
 
 	for (const entry of states.values()) {
-		if (normalizePath(entry.worktree_path) !== normalizePath(worktreePath))
-			continue;
+		if (entry.worktree_path !== worktreePath) continue;
 		const p = STATE_PRIORITY[entry.state] ?? 0;
 		if (p > bestPriority) {
 			bestPriority = p;

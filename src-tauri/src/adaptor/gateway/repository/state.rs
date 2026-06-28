@@ -180,8 +180,7 @@ fn start_git_watcher(
 
 fn handle_file_events(state: &WorktreeState, events: Vec<DebouncedEvent>) {
     for event in events {
-        let event_path = canonicalize_event_path(&event.path)
-            .unwrap_or_else(|| event.path.to_string_lossy().to_string());
+        let event_path = canonicalize_event_path(&event.path);
         invalidate_instruction_resolution_cache_for_path(Path::new(&event_path));
         state.invalidate(InvalidateReason::file(Some(event_path)));
     }
