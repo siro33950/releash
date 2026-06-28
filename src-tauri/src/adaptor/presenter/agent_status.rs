@@ -1,6 +1,25 @@
+use std::sync::Arc;
+
+use crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster;
 use crate::adaptor::protocol::{AgentStateSync, WsMessage};
-use crate::usecase::agent_session::status::AgentStatusChanges;
-use crate::ws_bridge::WsBroadcaster;
+use crate::usecase::agent_session::status::{AgentStatusChanges, AgentStatusNotifier};
+
+pub(crate) struct TauriAgentStatusNotifier<R: tauri::Runtime> {
+    app: tauri::AppHandle<R>,
+    broadcaster: Arc<WsBroadcaster>,
+}
+
+impl<R: tauri::Runtime> TauriAgentStatusNotifier<R> {
+    pub(crate) fn new(app: tauri::AppHandle<R>, broadcaster: Arc<WsBroadcaster>) -> Self {
+        Self { app, broadcaster }
+    }
+}
+
+impl<R: tauri::Runtime> AgentStatusNotifier for TauriAgentStatusNotifier<R> {
+    fn status_changed(&self, changes: AgentStatusChanges) {
+        emit_agent_status_changes(&self.app, Some(&self.broadcaster), changes);
+    }
+}
 
 pub(crate) fn emit_agent_status_changes<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,

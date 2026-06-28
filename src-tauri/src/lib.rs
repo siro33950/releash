@@ -1,5 +1,4 @@
 mod adaptor;
-mod agent_status_events;
 pub mod cli;
 mod domain;
 mod infrastructure;
@@ -8,8 +7,6 @@ mod other;
 #[cfg(test)]
 mod test_support;
 mod usecase;
-mod ws_bridge;
-mod ws_server;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -34,7 +31,8 @@ pub fn run() {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let _ = fix_path_env::fix();
 
-    let ws_broadcaster = Arc::new(ws_bridge::WsBroadcaster::default());
+    let ws_broadcaster =
+        Arc::new(adaptor::gateway::shared::ws_broadcaster::WsBroadcaster::default());
     let pty_gateway =
         Arc::new(adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default());
     let pty_read_gateway: Arc<
@@ -87,7 +85,7 @@ pub fn run() {
         .manage(Arc::new(
             usecase::agent_session::session::OpenTabRegistry::default(),
         ))
-        .manage(ws_server::WsServerHandle::default())
+        .manage(infrastructure::middleware::WsServerHandle::default())
         .manage(cleanup_gate)
         .manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
             parking_lot::RwLock::new(Vec::new()),
@@ -323,6 +321,13 @@ pub fn run() {
             // AgentStatusCenter を構築・登録
             let agent_status_center =
                 Arc::new(usecase::agent_session::status::AgentStatusCenter::new());
+            let agent_status_notifier: Arc<dyn usecase::agent_session::status::AgentStatusNotifier> =
+                Arc::new(adaptor::presenter::agent_status::TauriAgentStatusNotifier::new(
+                    app.handle().clone(),
+                    app.state::<Arc<adaptor::gateway::shared::ws_broadcaster::WsBroadcaster>>()
+                        .inner()
+                        .clone(),
+                ));
             // SessionStore の状態変更通知を購読して、保持している SessionStatus を
             // 最新化＋再集約する。Closed への遷移は aggregate でフィルタされ、
             // Closed → Idle の復帰では再び集約対象に戻る。
@@ -331,14 +336,13 @@ pub fn run() {
                     .state::<Arc<usecase::agent_session::session::SessionStore>>()
                     .inner()
                     .clone();
-                let broadcaster = app.state::<Arc<ws_bridge::WsBroadcaster>>().inner().clone();
                 adaptor::controller::agent_status_wiring::register_agent_status_listener(
-                    app.handle().clone(),
-                    broadcaster,
                     session_store_state,
                     agent_status_center.clone(),
+                    agent_status_notifier.clone(),
                 );
             }
+            app.manage(agent_status_notifier);
             app.manage(agent_status_center);
             let pending_data_dir = app.path().app_data_dir().ok();
             // AgentBackendRegistry を構築・登録

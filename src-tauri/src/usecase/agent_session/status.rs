@@ -171,6 +171,10 @@ impl AgentStatusChanges {
     }
 }
 
+pub trait AgentStatusNotifier: Send + Sync {
+    fn status_changed(&self, changes: AgentStatusChanges);
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentStateChange {
     pub worktree_path: String,

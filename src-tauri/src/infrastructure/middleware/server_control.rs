@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use tauri::{Emitter, Manager};
 
+use crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster;
 use crate::domain::app_config::ConfigRepository;
 use crate::usecase::agent_session::session::AgentStreamResyncReadModel;
 use crate::usecase::pty_session::query_service::PtySessionReplayReader;
-use crate::ws_bridge::WsBroadcaster;
 
-use super::http::start_ws_server;
+use super::http_upgrade::start_ws_server;
 use super::{StartServerResult, WsServerHandle, WsServerState};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
