@@ -321,6 +321,13 @@ pub fn run() {
             // AgentStatusCenter を構築・登録
             let agent_status_center =
                 Arc::new(usecase::agent_session::status::AgentStatusCenter::new());
+            let agent_status_notifier: Arc<dyn usecase::agent_session::status::AgentStatusNotifier> =
+                Arc::new(adaptor::presenter::agent_status::TauriAgentStatusNotifier::new(
+                    app.handle().clone(),
+                    app.state::<Arc<adaptor::gateway::shared::ws_broadcaster::WsBroadcaster>>()
+                        .inner()
+                        .clone(),
+                ));
             // SessionStore の状態変更通知を購読して、保持している SessionStatus を
             // 最新化＋再集約する。Closed への遷移は aggregate でフィルタされ、
             // Closed → Idle の復帰では再び集約対象に戻る。
@@ -329,17 +336,13 @@ pub fn run() {
                     .state::<Arc<usecase::agent_session::session::SessionStore>>()
                     .inner()
                     .clone();
-                let broadcaster = app
-                    .state::<Arc<adaptor::gateway::shared::ws_broadcaster::WsBroadcaster>>()
-                    .inner()
-                    .clone();
                 adaptor::controller::agent_status_wiring::register_agent_status_listener(
-                    app.handle().clone(),
-                    broadcaster,
                     session_store_state,
                     agent_status_center.clone(),
+                    agent_status_notifier.clone(),
                 );
             }
+            app.manage(agent_status_notifier);
             app.manage(agent_status_center);
             let pending_data_dir = app.path().app_data_dir().ok();
             // AgentBackendRegistry を構築・登録

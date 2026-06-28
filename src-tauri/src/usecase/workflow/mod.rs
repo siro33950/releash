@@ -455,6 +455,30 @@ mod tests {
         );
     }
 
+    fn assert_no_forbidden_production_patterns_in_file(
+        relative_file: &str,
+        forbidden_patterns: &[&str],
+    ) {
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let file = source_root.join(relative_file);
+        let content = std::fs::read_to_string(&file)
+            .unwrap_or_else(|err| panic!("read source file {}: {err}", file.display()));
+        let production = production_source_excluding_cfg_test_items(&content);
+        let mut violations = Vec::new();
+
+        for forbidden in forbidden_patterns {
+            if production.contains(forbidden) {
+                violations.push(format!("{relative_file} -> {forbidden}"));
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "workflow production dependency violations:\n{}",
+            violations.join("\n")
+        );
+    }
+
     fn assert_no_forbidden_production_patterns_in_all_sources(
         relative_dir: &str,
         forbidden_patterns: &[&str],
@@ -1118,6 +1142,17 @@ mod tests {
     }
 
     #[test]
+    fn agent_session_runtime_status_notification_uses_usecase_port() {
+        assert_no_forbidden_production_patterns_in_file(
+            "infrastructure/agent_session/runtime/bridge_common/shared.rs",
+            &[
+                concat!("crate", "::", "adaptor", "::", "presenter"),
+                concat!("crate", "::", "adaptor", "::", "gateway"),
+            ],
+        );
+    }
+
+    #[test]
     fn workflow_legacy_entrypoints_are_removed() {
         let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for relative_path in [
@@ -1142,6 +1177,7 @@ mod tests {
         let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for relative_path in [
             "ws_server",
+            concat!("ws_server", ".rs"),
             concat!("ws_bridge", ".rs"),
             concat!("agent_status", "_events.rs"),
         ] {

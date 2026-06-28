@@ -857,7 +857,7 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
 ) {
     use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
     use crate::usecase::agent_session::status::{
-        current_timestamp, AgentStatusCenter, SessionStatus, TurnPhaseRepr,
+        current_timestamp, AgentStatusCenter, AgentStatusNotifier, SessionStatus, TurnPhaseRepr,
     };
 
     let data_dir = match resolve_data_dir(app) {
@@ -919,14 +919,9 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
             workflow_step_progress: wf_step_progress,
         };
         let changes = center.update_session(status);
-        let broadcaster = app
-            .try_state::<Arc<crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster>>()
-            .map(|state| state.inner().clone());
-        crate::adaptor::presenter::agent_status::emit_agent_status_changes(
-            app,
-            broadcaster.as_deref(),
-            changes,
-        );
+        if let Some(notifier) = app.try_state::<Arc<dyn AgentStatusNotifier>>() {
+            notifier.status_changed(changes);
+        }
     }
 }
 
@@ -1280,6 +1275,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
 
     use super::super::turn_event_log::*;
     use super::{CLAUDE_BACKEND_ID, CODEX_BACKEND_ID};
+    use crate::domain::app_config::{AgentConfigRepository, AppConfigError};
     use crate::infrastructure::agent_session::runtime::{
         AgentBackend, AgentBackendRegistry, AgentMessage, ImageAttachment, PermissionResponse,
         SessionConfig, SessionHandle,
@@ -1413,6 +1409,47 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
 
         async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
             Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct TestAgentConfig {
+        models_by_backend: HashMap<String, Vec<String>>,
+    }
+
+    impl TestAgentConfig {
+        fn with_models(claude_models: &[&str], codex_models: &[&str]) -> Self {
+            let mut models_by_backend = HashMap::new();
+            models_by_backend.insert(
+                CLAUDE_BACKEND_ID.to_string(),
+                claude_models
+                    .iter()
+                    .map(|model| model.to_string())
+                    .collect(),
+            );
+            models_by_backend.insert(
+                CODEX_BACKEND_ID.to_string(),
+                codex_models.iter().map(|model| model.to_string()).collect(),
+            );
+            Self { models_by_backend }
+        }
+    }
+
+    impl AgentConfigRepository for TestAgentConfig {
+        fn default_agent_backend(&self) -> Result<Option<String>, AppConfigError> {
+            Ok(None)
+        }
+
+        fn models_for_backend(&self, backend_id: &str) -> Result<Vec<String>, AppConfigError> {
+            Ok(self
+                .models_by_backend
+                .get(backend_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn codex_cli_path(&self) -> Result<Option<String>, AppConfigError> {
+            Ok(None)
         }
     }
 
@@ -1888,14 +1925,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
         claude_models: &[&str],
         codex_models: &[&str],
     ) -> Arc<AgentBackendRegistry> {
-        let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
-        cfg.agents.claude.models = claude_models.iter().map(|s| s.to_string()).collect();
-        cfg.agents.codex.models = codex_models.iter().map(|s| s.to_string()).collect();
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
-            cfg,
-            tmp.path().to_path_buf(),
-        ));
+        let config = Arc::new(TestAgentConfig::with_models(claude_models, codex_models));
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: CLAUDE_BACKEND_ID.to_string(),
@@ -1913,11 +1943,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
 
     pub(in crate::infrastructure::agent_session::runtime::bridge_common) fn make_fixed_model_registry(
     ) -> Arc<AgentBackendRegistry> {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
-            crate::adaptor::gateway::app_config::ReleashConfig::default(),
-            tmp.path().to_path_buf(),
-        ));
+        let config = Arc::new(TestAgentConfig::default());
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(
             crate::infrastructure::agent_session::runtime::claude::ClaudeBackend::new(),
