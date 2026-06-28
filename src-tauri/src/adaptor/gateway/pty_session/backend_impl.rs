@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster;
 use crate::adaptor::protocol::pty::{PtyEvictReasonMsg, PtyEvictedMsg, PtyExitMsg, PtyOutputMsg};
 use crate::adaptor::protocol::WsMessage;
 use crate::domain::pty_session::entities::{
@@ -20,7 +21,6 @@ use crate::usecase::pty_session::error::UsecaseError;
 use crate::usecase::pty_session::ports::{
     PtyBackendSpawnRequest, PtySessionGateway, PtySessionReadGateway,
 };
-use crate::ws_bridge::WsBroadcaster;
 
 use super::direct::DirectPtyBackend;
 

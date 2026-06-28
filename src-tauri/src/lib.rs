@@ -1,5 +1,4 @@
 mod adaptor;
-mod agent_status_events;
 pub mod cli;
 mod domain;
 mod infrastructure;
@@ -8,8 +7,6 @@ mod other;
 #[cfg(test)]
 mod test_support;
 mod usecase;
-mod ws_bridge;
-mod ws_server;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -34,7 +31,8 @@ pub fn run() {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let _ = fix_path_env::fix();
 
-    let ws_broadcaster = Arc::new(ws_bridge::WsBroadcaster::default());
+    let ws_broadcaster =
+        Arc::new(adaptor::gateway::shared::ws_broadcaster::WsBroadcaster::default());
     let pty_gateway =
         Arc::new(adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default());
     let pty_read_gateway: Arc<
@@ -87,7 +85,7 @@ pub fn run() {
         .manage(Arc::new(
             usecase::agent_session::session::OpenTabRegistry::default(),
         ))
-        .manage(ws_server::WsServerHandle::default())
+        .manage(infrastructure::middleware::WsServerHandle::default())
         .manage(cleanup_gate)
         .manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
             parking_lot::RwLock::new(Vec::new()),
@@ -331,7 +329,10 @@ pub fn run() {
                     .state::<Arc<usecase::agent_session::session::SessionStore>>()
                     .inner()
                     .clone();
-                let broadcaster = app.state::<Arc<ws_bridge::WsBroadcaster>>().inner().clone();
+                let broadcaster = app
+                    .state::<Arc<adaptor::gateway::shared::ws_broadcaster::WsBroadcaster>>()
+                    .inner()
+                    .clone();
                 adaptor::controller::agent_status_wiring::register_agent_status_listener(
                     app.handle().clone(),
                     broadcaster,

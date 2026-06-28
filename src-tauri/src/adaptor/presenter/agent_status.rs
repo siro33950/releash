@@ -1,6 +1,6 @@
+use crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster;
 use crate::adaptor::protocol::{AgentStateSync, WsMessage};
 use crate::usecase::agent_session::status::AgentStatusChanges;
-use crate::ws_bridge::WsBroadcaster;
 
 pub(crate) fn emit_agent_status_changes<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,

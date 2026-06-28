@@ -6,6 +6,7 @@ use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent};
 use tauri::{Emitter, Runtime};
 
+use crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster;
 use crate::adaptor::protocol::{BranchCardMsg, BranchListSync, WsMessage};
 use crate::usecase::agent_session::context::invalidate_instruction_resolution_cache_for_path;
 use crate::usecase::repository_state::runtime::{
@@ -23,7 +24,6 @@ use crate::usecase::repository_state::worktree::{
 };
 use crate::usecase::repository_state::RepositoryStateError;
 use crate::usecase::repository_usecase::RepositoryUsecase;
-use crate::ws_bridge::WsBroadcaster;
 
 use super::watch::{
     canonicalize_event_path, classify_git_dir_events, generate_watcher_id,

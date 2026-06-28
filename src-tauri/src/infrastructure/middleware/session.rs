@@ -6,13 +6,13 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::adaptor::controller::handler::route_message;
+use crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster;
 use crate::adaptor::protocol::pty::PtyOutputMsg;
 use crate::adaptor::protocol::*;
-use crate::ws_bridge::WsBroadcaster;
 
 use super::auth::{generate_challenge, verify_hmac};
 use super::rate_limit::{clear_auth_failures, is_ip_blocked, record_auth_failure};
-use super::routing::route_message;
 use super::WsServerState;
 
 const AUTH_TIMEOUT_SECS: u64 = 5;
@@ -236,7 +236,13 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                         continue;
                     }
                 };
-                if let Some(response) = route_message(&ws_msg, state).await {
+                if let Some(response) = route_message(
+                    &ws_msg,
+                    state.broadcaster.as_ref(),
+                    state.stream_resync_read_model.as_ref(),
+                )
+                .await
+                {
                     state.broadcaster.try_send(response);
                 }
             }

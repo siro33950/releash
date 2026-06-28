@@ -93,7 +93,9 @@ where
         },
     );
     let tauri_ok = app.emit("agent-streaming-delta", &payload).is_ok();
-    if let Some(broadcaster) = app.try_state::<Arc<crate::ws_bridge::WsBroadcaster>>() {
+    if let Some(broadcaster) =
+        app.try_state::<Arc<crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster>>()
+    {
         let session_id = chat_session_id.to_string();
         let message_id = message_id.to_string();
         broadcaster.send_stream_delta(

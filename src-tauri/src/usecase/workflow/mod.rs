@@ -1014,7 +1014,6 @@ mod tests {
         let outer_modules = [
             "adaptor",
             "agent_message_dispatcher",
-            "agent_status_events",
             "app_data_dir",
             "cli",
             "cli_install",
@@ -1044,8 +1043,6 @@ mod tests {
             "webhook",
             "workflow",
             "workspace_state_store",
-            "ws_bridge",
-            "ws_server",
         ];
         let mut domain_forbidden = outer_modules.to_vec();
         domain_forbidden.push("usecase");
@@ -1111,24 +1108,12 @@ mod tests {
             )],
         );
 
-        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let handler_root = source_root.join("adaptor/controller/handler");
-        let mut handler_files = Vec::new();
-        if handler_root.exists() {
-            collect_rs_files(&handler_root, &mut handler_files);
-        }
-        assert!(
-            handler_files.is_empty(),
-            "controller/handler must remain empty after WebSocket handlers are removed: {}",
-            handler_files
-                .iter()
-                .map(|path| path
-                    .strip_prefix(&source_root)
-                    .unwrap_or(path)
-                    .display()
-                    .to_string())
-                .collect::<Vec<_>>()
-                .join("\n")
+        assert_no_forbidden_production_patterns(
+            "adaptor/controller/handler",
+            &[
+                concat!("crate", "::", "infrastructure"),
+                concat!("infrastructure", "::"),
+            ],
         );
     }
 
@@ -1148,6 +1133,21 @@ mod tests {
             assert!(
                 !source_root.join(relative_path).exists(),
                 "{relative_path} must not remain as a workflow compatibility shim"
+            );
+        }
+    }
+
+    #[test]
+    fn transport_legacy_entrypoints_are_removed() {
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for relative_path in [
+            "ws_server",
+            concat!("ws_bridge", ".rs"),
+            concat!("agent_status", "_events.rs"),
+        ] {
+            assert!(
+                !source_root.join(relative_path).exists(),
+                "{relative_path} must not remain as a transport compatibility path"
             );
         }
     }

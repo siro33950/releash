@@ -920,9 +920,13 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
         };
         let changes = center.update_session(status);
         let broadcaster = app
-            .try_state::<Arc<crate::ws_bridge::WsBroadcaster>>()
+            .try_state::<Arc<crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster>>()
             .map(|state| state.inner().clone());
-        crate::agent_status_events::emit_agent_status_changes(app, broadcaster.as_deref(), changes);
+        crate::adaptor::presenter::agent_status::emit_agent_status_changes(
+            app,
+            broadcaster.as_deref(),
+            changes,
+        );
     }
 }
 
