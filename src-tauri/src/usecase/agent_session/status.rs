@@ -1,3 +1,4 @@
+use crate::domain::path::to_canonical_forward_slash;
 use crate::domain::workflow::services::session_projection::StepSessionProjection;
 use crate::domain::workflow::status_aggregation::{
     aggregate_representative_statuses, session_result, RepresentativeStatus, SessionActivity,
@@ -203,6 +204,15 @@ impl AgentStatusCenter {
             workflow_status_version: AtomicU64::new(0),
             workflows: RwLock::new(HashMap::new()),
         }
+    }
+
+    fn canonical_worktree_path(path: &str) -> String {
+        to_canonical_forward_slash(path)
+    }
+
+    fn normalize_session_paths(status: &mut SessionStatus) {
+        status.worktree_id = Self::canonical_worktree_path(&status.worktree_id);
+        status.worktree_path = Self::canonical_worktree_path(&status.worktree_path);
     }
 
     /// `WorkflowExecutionState` を Workspace 集約に寄与する `AgentState` にマップする。
@@ -679,6 +689,7 @@ impl AgentStatusCenter {
     /// 3. 同 worktree の全 SessionStatus から WorkspaceStatus を再計算
     /// 4. 呼び出し側が transport 層で通知できるよう変更結果を返す
     pub fn update_session(&self, mut status: SessionStatus) -> AgentStatusChanges {
+        Self::normalize_session_paths(&mut status);
         let prev = self.sessions.read().get(&status.chat_session_id).cloned();
         if prev.is_none() {
             self.apply_pending_workflow_step_session_status(&mut status);
@@ -758,6 +769,7 @@ impl AgentStatusCenter {
         agent_state: Option<AgentState>,
         last_activity_at: f64,
     ) -> AgentStatusChanges {
+        let worktree_path = Self::canonical_worktree_path(worktree_path);
         let new_snapshot = WorkflowAggSnapshot {
             execution_id: execution_id.to_string(),
             agent_state: agent_state.clone(),
@@ -767,7 +779,7 @@ impl AgentStatusCenter {
         // 1. dedup（execution_id / agent_state が変わらなければスキップ）
         {
             let workflows = self.workflows.read();
-            if let Some(prev) = workflows.get(worktree_path) {
+            if let Some(prev) = workflows.get(&worktree_path) {
                 if prev.execution_id == new_snapshot.execution_id
                     && prev.agent_state == new_snapshot.agent_state
                 {
@@ -779,12 +791,12 @@ impl AgentStatusCenter {
         // 2. workflows マップ反映
         {
             let mut workflows = self.workflows.write();
-            workflows.insert(worktree_path.to_string(), new_snapshot);
+            workflows.insert(worktree_path.clone(), new_snapshot);
         }
 
         // 3. 再集約
         AgentStatusChanges {
-            workspace: self.reaggregate_workspace(worktree_path, last_activity_at),
+            workspace: self.reaggregate_workspace(&worktree_path, last_activity_at),
             ..Default::default()
         }
     }
@@ -796,8 +808,9 @@ impl AgentStatusCenter {
         workflow_execution_state: &str,
         projections: Vec<StepSessionProjection>,
     ) -> Vec<AgentStatusChanges> {
+        let worktree_path = Self::canonical_worktree_path(worktree_path);
         let baseline_changes =
-            self.update_workflow_step_baselines(worktree_path, execution_id, &projections);
+            self.update_workflow_step_baselines(&worktree_path, execution_id, &projections);
         let inputs = projections
             .into_iter()
             .filter_map(|projection| {
@@ -821,7 +834,7 @@ impl AgentStatusCenter {
             .map(|status| status.chat_session_id.clone())
             .collect::<HashSet<_>>();
         self.update_pending_workflow_step_session_statuses(
-            worktree_path,
+            &worktree_path,
             execution_id,
             workflow_execution_state,
             &inputs,
@@ -871,7 +884,8 @@ impl AgentStatusCenter {
         worktree_path: &str,
         last_activity_at: f64,
     ) -> Option<WorkspaceStatus> {
-        let workflow_snapshot = self.workflow_agg_snapshot_for(worktree_path);
+        let worktree_path = Self::canonical_worktree_path(worktree_path);
+        let workflow_snapshot = self.workflow_agg_snapshot_for(&worktree_path);
         let (worktree_id, new_workspace) = {
             let sessions = self.sessions.read();
             let same_workspace: Vec<&SessionStatus> = sessions
@@ -883,7 +897,7 @@ impl AgentStatusCenter {
             let worktree_id = same_workspace
                 .first()
                 .map(|s| s.worktree_id.clone())
-                .unwrap_or_else(|| worktree_path.to_string());
+                .unwrap_or_else(|| worktree_path.clone());
             let workspace = if same_workspace.is_empty()
                 && workflow_snapshot
                     .as_ref()
@@ -893,7 +907,7 @@ impl AgentStatusCenter {
             } else {
                 Some(Self::aggregate_with_workflow_snapshot(
                     &worktree_id,
-                    worktree_path,
+                    &worktree_path,
                     &same_workspace,
                     workflow_snapshot.as_ref(),
                     last_activity_at,
@@ -926,7 +940,7 @@ impl AgentStatusCenter {
                 if removed_ws.is_some() {
                     let empty = WorkspaceStatus {
                         worktree_id: worktree_id.clone(),
-                        worktree_path: worktree_path.to_string(),
+                        worktree_path: worktree_path.clone(),
                         aggregated_state: AgentState::Done,
                         running_count: 0,
                         waiting_count: 0,
@@ -1001,7 +1015,10 @@ impl AgentStatusCenter {
     }
 
     pub fn get_workspace(&self, worktree_id: &str) -> Option<WorkspaceStatus> {
-        self.workspaces.read().get(worktree_id).cloned()
+        self.workspaces
+            .read()
+            .get(&Self::canonical_worktree_path(worktree_id))
+            .cloned()
     }
 
     pub fn list_workspaces(&self) -> Vec<WorkspaceStatus> {
@@ -1098,6 +1115,46 @@ mod tests {
             representative,
             order: 0,
         }
+    }
+
+    #[test]
+    fn update_session_normalizes_worktree_paths_before_storing() {
+        let center = AgentStatusCenter::new();
+        let changes = center.update_session(mk_session(
+            "s1",
+            r"C:\repo\wt",
+            TurnPhase::Streaming,
+            SessionState::Active,
+        ));
+
+        let session = changes.session.unwrap();
+        assert_eq!(session.worktree_id, "C:/repo/wt");
+        assert_eq!(session.worktree_path, "C:/repo/wt");
+        let workspace = changes.workspace.unwrap();
+        assert_eq!(workspace.worktree_id, "C:/repo/wt");
+        assert_eq!(workspace.worktree_path, "C:/repo/wt");
+        assert!(center.get_workspace("C:/repo/wt").is_some());
+        assert!(center.get_workspace(r"C:\repo\wt").is_some());
+    }
+
+    #[test]
+    fn update_session_preserves_unc_prefix_before_storing() {
+        let center = AgentStatusCenter::new();
+        let changes = center.update_session(mk_session(
+            "s1",
+            r"\\server\share\wt",
+            TurnPhase::Streaming,
+            SessionState::Active,
+        ));
+
+        let session = changes.session.unwrap();
+        assert_eq!(session.worktree_id, "//server/share/wt");
+        assert_eq!(session.worktree_path, "//server/share/wt");
+        let workspace = changes.workspace.unwrap();
+        assert_eq!(workspace.worktree_id, "//server/share/wt");
+        assert_eq!(workspace.worktree_path, "//server/share/wt");
+        assert!(center.get_workspace("//server/share/wt").is_some());
+        assert!(center.get_workspace(r"\\server\share\wt").is_some());
     }
 
     // ---- derive_agent_state ----
@@ -1731,6 +1788,32 @@ mod tests {
         assert_eq!(ws.session_count, 0);
         assert_eq!(ws.worktree_id, "/repo");
         assert_eq!(ws.worktree_path, "/repo");
+    }
+
+    #[test]
+    fn update_workflow_snapshot_normalizes_worktree_path_without_sessions() {
+        let center = mk_center();
+        let changes = center.update_workflow_snapshot(
+            r"C:\repo\wt",
+            "exec-1",
+            Some(AgentState::Running),
+            5.0,
+        );
+
+        let changed = changes
+            .workspace
+            .expect("workspace from workflow-only snapshot");
+        assert_eq!(changed.worktree_id, "C:/repo/wt");
+        assert_eq!(changed.worktree_path, "C:/repo/wt");
+        assert_eq!(changed.aggregated_state, AgentState::Running);
+        assert_eq!(changed.running_count, 1);
+        assert_eq!(changed.session_count, 0);
+
+        let stored = center
+            .get_workspace(r"C:\repo\wt")
+            .expect("raw backslash path resolves to stored workspace");
+        assert_eq!(stored, changed);
+        assert!(center.get_workspace("C:/repo/wt").is_some());
     }
 
     #[test]

@@ -100,6 +100,7 @@ export interface IssueLabel {
 
 export interface IssueInfo {
 	number: number;
+	default_branch_name: string;
 	title: string;
 	state: string;
 	url: string;

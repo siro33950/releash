@@ -141,7 +141,7 @@ describe("useHandleOpenFile", () => {
 		);
 	});
 
-	it("should normalize Windows paths to forward slashes", async () => {
+	it("should use backend-provided paths without frontend normalization", async () => {
 		const openFile = vi.fn().mockResolvedValue(undefined);
 		const getFileContent = vi.fn().mockReturnValue(undefined);
 		const addTab = vi.fn();
@@ -152,10 +152,10 @@ describe("useHandleOpenFile", () => {
 
 		await act(() => result.current("src\\components\\Button.tsx"));
 
-		expect(openFile).toHaveBeenCalledWith("src/components/Button.tsx");
+		expect(openFile).toHaveBeenCalledWith("src\\components\\Button.tsx");
 		expect(addTab).toHaveBeenCalledWith(
-			"src/components/Button.tsx",
-			"Button.tsx",
+			"src\\components\\Button.tsx",
+			"src\\components\\Button.tsx",
 			false,
 		);
 	});

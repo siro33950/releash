@@ -44,6 +44,16 @@ pub fn write_pty(
 }
 
 #[tauri::command]
+pub fn write_paths_to_pty(
+    state: State<'_, Arc<PtySessionRuntimeGateway>>,
+    pty_id: u64,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    crate::usecase::pty_session::io_usecase::write_paths(state.inner().as_ref(), pty_id, &paths)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn resize_pty(
     state: State<'_, Arc<PtySessionRuntimeGateway>>,
     pty_id: u64,

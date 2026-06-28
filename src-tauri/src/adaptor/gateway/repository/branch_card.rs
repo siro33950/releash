@@ -6,6 +6,7 @@
 
 use super::util::resolve_branch_base;
 use super::worktree::each_worktree;
+use crate::domain::path::to_canonical_forward_slash;
 use crate::domain::repository::RepositoryError;
 use crate::infrastructure::git::client;
 use crate::infrastructure::git::helpers::{detect_default_branch, get_branch_name_for_repo};
@@ -21,7 +22,7 @@ thread_local! {
 }
 
 fn normalize_worktree_path(path: &str) -> String {
-    path.trim_end_matches('/').to_string()
+    to_canonical_forward_slash(path)
 }
 
 struct DirtyCountSnapshot {
@@ -104,7 +105,7 @@ fn build_worktree_map(repo: &Repository) -> (HashMap<String, String>, Option<Str
     let main_workdir = repo
         .workdir()
         .and_then(|p| p.to_str())
-        .map(|s| s.trim_end_matches('/').to_string());
+        .map(normalize_worktree_path);
     if let Some(ref workdir) = main_workdir {
         wt_map.insert(main_branch, workdir.clone());
     }
@@ -119,11 +120,7 @@ fn build_worktree_map(repo: &Repository) -> (HashMap<String, String>, Option<Str
                 let branch = get_branch_name_for_repo(&wt_repo);
                 wt_map.insert(
                     branch,
-                    wt_path
-                        .to_str()
-                        .unwrap_or("")
-                        .trim_end_matches('/')
-                        .to_string(),
+                    normalize_worktree_path(wt_path.to_str().unwrap_or("")),
                 );
             }
         }
@@ -392,6 +389,22 @@ mod branch_card_gateway_tests {
 
     fn dirty_scan_count() -> usize {
         DIRTY_WORKTREE_SCAN_COUNT.with(|count| count.get())
+    }
+
+    #[test]
+    fn normalize_worktree_path_replaces_backslashes_only() {
+        assert_eq!(
+            normalize_worktree_path(r"C:\\repo\\worktree/"),
+            "C://repo//worktree/"
+        );
+    }
+
+    #[test]
+    fn normalize_worktree_path_preserves_unc_prefix() {
+        assert_eq!(
+            normalize_worktree_path(r"\\server\share\worktree"),
+            "//server/share/worktree"
+        );
     }
 
     #[test]

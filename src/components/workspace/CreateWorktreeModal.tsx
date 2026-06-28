@@ -43,10 +43,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useIssues } from "@/hooks/useIssues";
 import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
 import { useNotionTasks } from "@/hooks/useNotionTasks";
-import { generateIssueBranchName } from "@/lib/issueBranch";
 import { trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
-import { branchToDir, computeWorktreeDir } from "@/lib/worktreePath";
 import type {
 	BranchInfo,
 	IssueInfo,
@@ -54,15 +52,6 @@ import type {
 	WorktreeEntry,
 } from "@/types/git";
 import type { NotionTask } from "@/types/notion";
-
-function notionTaskToBranchName(title: string): string {
-	const slug = title
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, "-")
-		.replace(/^-|-$/g, "")
-		.slice(0, 40);
-	return `feat/${slug}`;
-}
 
 type CreateMode = "plain" | "branch" | "issue" | "notion";
 
@@ -179,7 +168,6 @@ export function CreateWorktreeModal({
 		if (selectedBranches.length === 0 || !selectedRepoPath) return;
 		setCreating(true);
 		setError(null);
-		const worktreeDir = computeWorktreeDir(selectedRepoPath);
 		const existingNames = allBranches.map((b) => b.name);
 
 		try {
@@ -187,13 +175,10 @@ export function CreateWorktreeModal({
 			const failedBranches: string[] = [];
 
 			for (const branch of selectedBranches) {
-				const dirName = branchToDir(branch);
-				const worktreePath = `${worktreeDir}/${dirName}`;
 				const isNewBranch = !existingNames.includes(branch);
 				try {
 					const entry = await invoke<WorktreeEntry>("create_worktree", {
 						repoPath: selectedRepoPath,
-						worktreePath,
 						branch,
 						createBranch: isNewBranch,
 						baseBranch: isNewBranch ? baseBranch || "HEAD" : null,
@@ -322,9 +307,7 @@ export function CreateWorktreeModal({
 							<IssueMode
 								key={`issue-${selectedRepoPath}`}
 								repoPath={selectedRepoPath}
-								onToggle={(issue) =>
-									toggleBranch(generateIssueBranchName(issue.number))
-								}
+								onToggle={(issue) => toggleBranch(issue.default_branch_name)}
 								selectedBranches={selectedBranches}
 								worktreeBranchNames={worktreeBranchNames}
 							/>
@@ -333,11 +316,7 @@ export function CreateWorktreeModal({
 							<NotionMode
 								key={`notion-${selectedRepoPath}`}
 								repoPath={selectedRepoPath}
-								onToggle={(task) =>
-									toggleBranch(
-										task.branch_name || notionTaskToBranchName(task.title),
-									)
-								}
+								onToggle={(task) => toggleBranch(task.branch_name)}
 								selectedBranches={selectedBranches}
 								worktreeBranchNames={worktreeBranchNames}
 							/>
@@ -537,7 +516,7 @@ function IssueMode({
 
 	const filtered = useMemo(() => {
 		let result = issues.filter(
-			(i) => !worktreeBranchNames.has(generateIssueBranchName(i.number)),
+			(i) => !worktreeBranchNames.has(i.default_branch_name),
 		);
 		if (filter) {
 			const lower = filter.toLowerCase();
@@ -715,7 +694,7 @@ function IssueMode({
 					<div className="space-y-0.5">
 						{filtered.map((issue) => {
 							const isSelected = selectedBranches.includes(
-								generateIssueBranchName(issue.number),
+								issue.default_branch_name,
 							);
 							return (
 								// biome-ignore lint/a11y/useSemanticElements: Checkbox renders as <button> internally, so outer cannot be <button>
@@ -812,10 +791,7 @@ function NotionMode({
 	const filteredTasks = useMemo(
 		() =>
 			tasks.filter(
-				(t) =>
-					!worktreeBranchNames.has(
-						t.branch_name || notionTaskToBranchName(t.title),
-					),
+				(t) => t.branch_name !== "" && !worktreeBranchNames.has(t.branch_name),
 			),
 		[tasks, worktreeBranchNames],
 	);
@@ -928,8 +904,7 @@ function NotionMode({
 				) : (
 					<div className="space-y-0.5">
 						{filteredTasks.map((task) => {
-							const branchName =
-								task.branch_name || notionTaskToBranchName(task.title);
+							const branchName = task.branch_name;
 							const isSelected = selectedBranches.includes(branchName);
 							return (
 								// biome-ignore lint/a11y/useSemanticElements: Checkbox renders as <button> internally, so outer cannot be <button>

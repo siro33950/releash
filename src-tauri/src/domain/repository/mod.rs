@@ -12,4 +12,4 @@ pub use repository::{
     BranchRepository, GitConfigRepository, LogRepository, RepoLocator, RepoPathsNotifier,
     RepoPathsRepository, StatusRepository, WorktreeRepository,
 };
-pub use value_objects::normalize_repo_path;
+pub use value_objects::{normalize_repo_path, worktree_path};

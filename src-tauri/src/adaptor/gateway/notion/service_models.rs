@@ -1,4 +1,5 @@
 use crate::domain::app_config::value_objects::NotionPropertyMapping;
+use crate::domain::notion::services::notion_task_title_branch_name;
 use crate::domain::notion::{NotionError, NotionPropertyInfo, NotionTask, NotionTaskQuery};
 
 pub(crate) fn build_notion_filter(
@@ -231,6 +232,11 @@ pub(crate) fn parse_query_response(
                 .and_then(|props| props.get(&mapping.branch_name))
                 .map(extract_property_value)
                 .unwrap_or_default()
+        };
+        let branch_name = if branch_name.is_empty() {
+            notion_task_title_branch_name(&title)
+        } else {
+            branch_name
         };
 
         tasks.push(NotionTask {
@@ -590,6 +596,7 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].id, "page-1");
         assert_eq!(tasks[0].title, "Task 1");
+        assert_eq!(tasks[0].branch_name, "feat/task-1");
         assert!(tasks[0].labels.is_empty());
     }
 
@@ -665,6 +672,66 @@ mod tests {
             &vec!["Alice".to_string(), "Bob".to_string()]
         );
         assert_eq!(tasks[0].branch_name, "fix/bug-123");
+    }
+
+    #[test]
+    fn test_query_response_parse_branch未設定ならtitle由来fallbackを返す() {
+        let json = serde_json::json!({
+            "results": [{
+                "id": "page-3",
+                "url": "https://notion.so/page-3",
+                "created_time": "2026-01-01T00:00:00.000Z",
+                "last_edited_time": "2026-01-02T00:00:00.000Z",
+                "properties": {
+                    "Name": {
+                        "type": "title",
+                        "title": [{ "plain_text": "Move Notion branch rules" }]
+                    }
+                }
+            }]
+        });
+        let mapping = NotionPropertyMapping {
+            title: "Name".to_string(),
+            labels: Vec::new(),
+            branch_name: "Branch".to_string(),
+            branch_prefix: String::new(),
+        };
+
+        let tasks = parse_query_response(&json, &mapping).unwrap();
+
+        assert_eq!(tasks[0].branch_name, "feat/move-notion-branch-rules");
+    }
+
+    #[test]
+    fn test_query_response_parse_branch_propertyはsanitizeやprefixを適用せず保持する() {
+        let json = serde_json::json!({
+            "results": [{
+                "id": "page-4",
+                "url": "https://notion.so/page-4",
+                "created_time": "2026-01-01T00:00:00.000Z",
+                "last_edited_time": "2026-01-02T00:00:00.000Z",
+                "properties": {
+                    "Task": {
+                        "type": "title",
+                        "title": [{ "plain_text": "Ignored title" }]
+                    },
+                    "Branch": {
+                        "type": "rich_text",
+                        "rich_text": [{ "plain_text": "fix login bug" }]
+                    }
+                }
+            }]
+        });
+        let mapping = NotionPropertyMapping {
+            title: "Task".to_string(),
+            labels: Vec::new(),
+            branch_name: "Branch".to_string(),
+            branch_prefix: "feat/".to_string(),
+        };
+
+        let tasks = parse_query_response(&json, &mapping).unwrap();
+
+        assert_eq!(tasks[0].branch_name, "fix login bug");
     }
 
     #[test]

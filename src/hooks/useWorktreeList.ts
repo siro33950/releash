@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { normalizePath } from "@/lib/normalizePath";
 import type { PrStatus, WorktreeBranch } from "@/types/git";
 import type { WorkspaceStatus } from "@/types/session";
 
@@ -77,7 +76,7 @@ export function useWorktreeList(repoPath: string) {
 					// 入った新しいエントリを last_activity_at で守る。
 					const nextMap = new Map(workspaceStatusesRef.current);
 					for (const ws of workspaceStatuses) {
-						const key = normalizePath(ws.worktree_id);
+						const key = ws.worktree_id;
 						const current = nextMap.get(key);
 						if (!current || current.last_activity_at <= ws.last_activity_at) {
 							nextMap.set(key, ws);
@@ -91,7 +90,7 @@ export function useWorktreeList(repoPath: string) {
 				const latestStatusMap = workspaceStatusesRef.current;
 				const withAgentState = enriched.map((b) => {
 					if (!b.worktree_path) return b;
-					const ws = latestStatusMap.get(normalizePath(b.worktree_path));
+					const ws = latestStatusMap.get(b.worktree_path);
 					return ws ? { ...b, agent_state: ws.aggregated_state } : b;
 				});
 				const filtered = withAgentState.filter((b) => b.worktree_path != null);
@@ -161,13 +160,13 @@ export function useWorktreeList(repoPath: string) {
 			"workspace-status-changed",
 			(event) => {
 				const payload = event.payload;
-				const key = normalizePath(payload.worktree_id);
+				const key = payload.worktree_id;
 				workspaceStatusesRef.current.set(key, payload);
 
 				setBranches((prev) =>
 					prev.map((b) => {
 						if (!b.worktree_path) return b;
-						if (normalizePath(b.worktree_path) !== key) return b;
+						if (b.worktree_path !== key) return b;
 						return { ...b, agent_state: payload.aggregated_state };
 					}),
 				);

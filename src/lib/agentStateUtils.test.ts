@@ -49,10 +49,10 @@ describe("aggregateAgentState", () => {
 		expect(aggregateAgentState(map, "/repo")).toBe("done");
 	});
 
-	it("treats backslash-normalized paths as the same worktree", () => {
+	it("does not normalize paths on the frontend", () => {
 		const map = new Map<string, AgentStateSync>();
 		map.set("C:\\repo::1", makeSync("C:\\repo", "running", "1"));
-		expect(aggregateAgentState(map, "C:/repo")).toBe("running");
+		expect(aggregateAgentState(map, "C:/repo")).toBeUndefined();
 	});
 
 	it("error beats waiting and done", () => {
