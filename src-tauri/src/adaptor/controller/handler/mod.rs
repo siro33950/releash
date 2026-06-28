@@ -1,11 +1,13 @@
 use crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster;
 use crate::adaptor::protocol::*;
 use crate::usecase::agent_session::session::AgentStreamResyncReadModel;
+use crate::usecase::agent_session::status::AgentStatusCenter;
 
 pub(crate) async fn route_message(
     msg: &WsMessage,
     broadcaster: &WsBroadcaster,
     resync_read_model: &dyn AgentStreamResyncReadModel,
+    status_center: &AgentStatusCenter,
 ) -> Option<WsMessage> {
     if let WsMessage::ResyncStream(req) = msg {
         return match crate::usecase::agent_session::session::resync_streaming_message(
@@ -31,6 +33,14 @@ pub(crate) async fn route_message(
         };
     }
 
+    if let WsMessage::WorktreeStepStatusResync(req) = msg {
+        return Some(WsMessage::WorktreeStepStatusSync(
+            status_center
+                .query_worktree_step_statuses(&req.worktree_path)
+                .into(),
+        ));
+    }
+
     Some(WsMessage::Error(ErrorMsg {
         code: "INVALID_MESSAGE".to_string(),
         message: "Unexpected message from client".to_string(),
@@ -46,6 +56,7 @@ mod tests {
     use crate::usecase::agent_session::session::{
         AgentStreamResyncReadModel, StreamResyncSnapshot,
     };
+    use crate::usecase::agent_session::status::AgentStatusCenter;
 
     use super::route_message;
 
@@ -65,20 +76,31 @@ mod tests {
         }
     }
 
-    fn test_dependencies() -> (Arc<WsBroadcaster>, Arc<dyn AgentStreamResyncReadModel>) {
+    fn test_dependencies() -> (
+        Arc<WsBroadcaster>,
+        Arc<dyn AgentStreamResyncReadModel>,
+        Arc<AgentStatusCenter>,
+    ) {
         (
             Arc::new(WsBroadcaster::default()),
             Arc::new(StaticStreamResyncReadModel { result: Ok(None) }),
+            Arc::new(AgentStatusCenter::new()),
         )
     }
 
     #[tokio::test]
     async fn test_route_known_inbound_message_returns_error() {
-        let (broadcaster, read_model) = test_dependencies();
+        let (broadcaster, read_model, status_center) = test_dependencies();
         let msg = WsMessage::AuthChallenge(AuthChallenge {
             challenge: "x".to_string(),
         });
-        let result = route_message(&msg, broadcaster.as_ref(), read_model.as_ref()).await;
+        let result = route_message(
+            &msg,
+            broadcaster.as_ref(),
+            read_model.as_ref(),
+            status_center.as_ref(),
+        )
+        .await;
         match result {
             Some(WsMessage::Error(e)) => assert_eq!(e.code, "INVALID_MESSAGE"),
             _ => panic!("expected error"),
@@ -87,7 +109,7 @@ mod tests {
 
     #[tokio::test]
     async fn route_resync_stream_missing_message_returns_stream_not_found() {
-        let (broadcaster, read_model) = test_dependencies();
+        let (broadcaster, read_model, status_center) = test_dependencies();
         let result = route_message(
             &WsMessage::ResyncStream(ResyncStreamReq {
                 session_id: "missing".to_string(),
@@ -96,6 +118,7 @@ mod tests {
             }),
             broadcaster.as_ref(),
             read_model.as_ref(),
+            status_center.as_ref(),
         )
         .await;
 
@@ -130,15 +153,19 @@ mod tests {
             }),
             broadcaster.as_ref(),
             read_model.as_ref(),
+            &AgentStatusCenter::new(),
         )
         .await;
 
         assert!(result.is_none());
-        let drained = broadcaster.drain_stream_messages();
+        let drained = broadcaster.drain_messages();
         assert!(matches!(
             &drained[..],
-            [WsMessage::AgentStreamSync(snapshot)]
-                if snapshot.session_id == "s1" && snapshot.message_id == "m1" && snapshot.seq == 4
+            [WsMessage::AgentStreamDelta(snapshot)]
+                if snapshot.session_id == "s1"
+                    && snapshot.message_id == "m1"
+                    && snapshot.seq == 4
+                    && snapshot.snapshot
         ));
     }
 
@@ -157,6 +184,7 @@ mod tests {
             }),
             broadcaster.as_ref(),
             read_model.as_ref(),
+            &AgentStatusCenter::new(),
         )
         .await;
 
@@ -166,6 +194,31 @@ mod tests {
                 assert_eq!(e.message, "read model exploded");
             }
             _ => panic!("expected STREAM_RESYNC_FAILED"),
+        }
+    }
+
+    #[tokio::test]
+    async fn route_worktree_step_status_resync_returns_backend_view() {
+        let (broadcaster, read_model, status_center) = test_dependencies();
+
+        let result = route_message(
+            &WsMessage::WorktreeStepStatusResync(WorktreeStepStatusResyncReq {
+                worktree_path: "/repo".to_string(),
+            }),
+            broadcaster.as_ref(),
+            read_model.as_ref(),
+            status_center.as_ref(),
+        )
+        .await;
+
+        match result {
+            Some(WsMessage::WorktreeStepStatusSync(sync)) => {
+                assert_eq!(sync.worktree_path, "/repo");
+                assert_eq!(sync.version, 0);
+                assert!(sync.steps.is_empty());
+                assert!(sync.workflows.is_empty());
+            }
+            other => panic!("expected worktree step status sync, got {other:?}"),
         }
     }
 

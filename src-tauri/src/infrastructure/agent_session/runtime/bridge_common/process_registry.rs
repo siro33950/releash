@@ -165,12 +165,16 @@ pub struct AgentProcess {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PendingStreamDelta {
+    pub(crate) message_id: String,
     pub(crate) seq: u64,
+    pub(crate) snapshot: bool,
     pub(crate) parts: Vec<MessagePart>,
+    pub(crate) retry_snapshot_parts: Option<Vec<MessagePart>>,
     pub(crate) part_count: usize,
     pub(crate) pending_bytes: usize,
     pub(crate) rollbacks: Vec<StreamPartRollback>,
     pub(crate) confirmed_stream_part_len_after_success: usize,
+    pub(crate) updates_live_counter: bool,
 }
 
 #[derive(Debug, Clone)]

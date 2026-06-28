@@ -55,10 +55,12 @@ pub(crate) enum WsMessage {
     AgentStateSync(AgentStateSync),
     #[serde(rename = "workflow_state_sync")]
     WorkflowStateSync(Box<WorkflowStateSync>),
-    #[serde(rename = "agent_stream_sync")]
-    AgentStreamSync(AgentStreamSync),
     #[serde(rename = "agent_stream_delta")]
     AgentStreamDelta(AgentStreamDeltaMsg),
+    #[serde(rename = "worktree_step_status_sync")]
+    WorktreeStepStatusSync(WorktreeStepStatusSync),
+    #[serde(rename = "worktree_step_status_resync")]
+    WorktreeStepStatusResync(WorktreeStepStatusResyncReq),
     #[serde(rename = "resync_stream")]
     ResyncStream(ResyncStreamReq),
 
@@ -154,8 +156,9 @@ mod adaptor_protocol_tests {
             WsMessage::BranchListSync(_) => "branch_list_sync",
             WsMessage::AgentStateSync(_) => "agent_state_sync",
             WsMessage::WorkflowStateSync(_) => "workflow_state_sync",
-            WsMessage::AgentStreamSync(_) => "agent_stream_sync",
             WsMessage::AgentStreamDelta(_) => "agent_stream_delta",
+            WsMessage::WorktreeStepStatusSync(_) => "worktree_step_status_sync",
+            WsMessage::WorktreeStepStatusResync(_) => "worktree_step_status_resync",
             WsMessage::ResyncStream(_) => "resync_stream",
             WsMessage::Error(_) => "error",
         }
@@ -205,12 +208,16 @@ mod adaptor_protocol_tests {
                 r#"{"type":"workflow_state_sync","payload":{"worktreePath":"/repo","workflowState":{"executionId":"exec-1","workflowName":"test","state":{"type":"running"},"currentStepIndex":0,"currentStepName":"step1","currentSessionId":"step-session-1","totalSteps":1,"stepHistory":[],"stepExecutionCounts":{},"workflowDefinition":{"name":"test","description":"test","builtin":false,"nodes":[]},"totalTokenUsage":{"inputTokens":0,"outputTokens":0},"stepStates":{},"stepOutputs":{},"startedAt":1000.0,"updatedAt":1000.0}}}"#,
             ),
             (
-                "agent_stream_sync",
-                r#"{"type":"agent_stream_sync","payload":{"session_id":"sess-1","message_id":"a-1","seq":7,"parts":[{"type":"text","content":"hello","parentToolUseId":"tool-parent"}]}}"#,
+                "agent_stream_delta",
+                r#"{"type":"agent_stream_delta","payload":{"session_id":"sess-1","message_id":"a-1","seq":8,"snapshot":false,"parts":[{"type":"tool_result","content":"preview","isError":false,"toolUseId":"tool-1","parentToolUseId":"parent-1","contentRef":{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","byteSize":4096},"summary":{"lineCount":10,"byteSize":4096,"isError":false,"truncated":true}}]}}"#,
             ),
             (
-                "agent_stream_delta",
-                r#"{"type":"agent_stream_delta","payload":{"session_id":"sess-1","message_id":"a-1","seq":8,"parts":[{"type":"tool_result","content":"preview","isError":false,"toolUseId":"tool-1","parentToolUseId":"parent-1","contentRef":{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","byteSize":4096},"summary":{"lineCount":10,"byteSize":4096,"isError":false,"truncated":true}}]}}"#,
+                "worktree_step_status_sync",
+                r#"{"type":"worktree_step_status_sync","payload":{"worktreePath":"/repo","version":3,"steps":[{"executionId":"exec-1","stepName":"build","runIndex":1,"representative":"running"}],"workflows":[{"executionId":"exec-1","representative":"running"}]}}"#,
+            ),
+            (
+                "worktree_step_status_resync",
+                r#"{"type":"worktree_step_status_resync","payload":{"worktreePath":"/repo"}}"#,
             ),
             (
                 "resync_stream",
@@ -221,7 +228,7 @@ mod adaptor_protocol_tests {
                 r#"{"type":"error","payload":{"code":"E","message":"M"}}"#,
             ),
         ];
-        assert_eq!(cases.len(), 14);
+        assert_eq!(cases.len(), 15);
 
         for (expected_tag, golden) in cases {
             let msg = deserialize_message(golden)
@@ -324,17 +331,29 @@ mod adaptor_protocol_tests {
                     std::collections::HashMap::new(),
                 ),
             })),
-            WsMessage::AgentStreamSync(AgentStreamSync {
-                session_id: "sess-1".to_string(),
-                message_id: "a-1".to_string(),
-                seq: 7,
-                parts: vec![],
-            }),
             WsMessage::AgentStreamDelta(AgentStreamDeltaMsg {
                 session_id: "sess-1".to_string(),
                 message_id: "a-1".to_string(),
                 seq: 8,
+                snapshot: false,
                 parts: vec![],
+            }),
+            WsMessage::WorktreeStepStatusSync(WorktreeStepStatusSync {
+                worktree_path: "/repo".to_string(),
+                version: 3,
+                steps: vec![WorkflowStepRepresentativeMsg {
+                    execution_id: "exec-1".to_string(),
+                    step_name: "build".to_string(),
+                    run_index: Some(1),
+                    representative: "running".to_string(),
+                }],
+                workflows: vec![WorkflowRepresentativeMsg {
+                    execution_id: "exec-1".to_string(),
+                    representative: "running".to_string(),
+                }],
+            }),
+            WsMessage::WorktreeStepStatusResync(WorktreeStepStatusResyncReq {
+                worktree_path: "/repo".to_string(),
             }),
             WsMessage::ResyncStream(ResyncStreamReq {
                 session_id: "sess-1".to_string(),

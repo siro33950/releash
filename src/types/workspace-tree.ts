@@ -92,12 +92,21 @@ export type WorkspaceTreeNode = WorkspaceSessionNode | WorkspaceWorkflowNode;
 
 export type WorkspaceSessionHistoryItem = SessionSummary;
 
-export interface WorkflowStepStatusChange {
-	worktreePath: string;
+export interface WorkflowStepRepresentative {
 	executionId: string;
 	stepName: string;
 	runIndex?: number | null;
-	representative?: WorkspaceStepStatus | null;
-	workflowRepresentative?: WorkspaceStepStatus | null;
+	representative: WorkspaceStepStatus;
+}
+
+export interface WorkflowRepresentative {
+	executionId: string;
+	representative: WorkspaceStepStatus;
+}
+
+export interface WorktreeStepStatusView {
+	worktreePath: string;
 	version: number;
+	steps: WorkflowStepRepresentative[];
+	workflows: WorkflowRepresentative[];
 }

@@ -114,7 +114,14 @@ pub(crate) async fn start_external_agent_turn_state<R: tauri::Runtime>(
         );
         projected_session_state_for_current_turn(proc)
     };
-    emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None, false);
+    emit_session_state_changed(
+        app,
+        chat_session_id,
+        TurnPhase::Streaming,
+        None,
+        false,
+        None,
+    );
     notify_status_transition(
         app,
         session_store,

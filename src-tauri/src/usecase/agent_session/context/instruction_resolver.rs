@@ -526,6 +526,17 @@ fn clear_instruction_resolution_cache_for_test() {
 mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
+    use std::sync::OnceLock;
+
+    static INSTRUCTION_RESOLUTION_TEST_LOCK: OnceLock<parking_lot::Mutex<()>> = OnceLock::new();
+
+    fn reset_instruction_resolution_cache_for_test() -> parking_lot::MutexGuard<'static, ()> {
+        let guard = INSTRUCTION_RESOLUTION_TEST_LOCK
+            .get_or_init(|| parking_lot::Mutex::new(()))
+            .lock();
+        clear_instruction_resolution_cache_for_test();
+        guard
+    }
 
     #[derive(Default)]
     struct FakeInstructionSource {
@@ -579,7 +590,7 @@ mod tests {
 
     #[test]
     fn resolves_repo_hierarchy_and_file_neighbor_inside_worktree_only() {
-        clear_instruction_resolution_cache_for_test();
+        let _cache_guard = reset_instruction_resolution_cache_for_test();
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("repo");
         let outside = temp.path().join("outside");
@@ -610,7 +621,7 @@ mod tests {
 
     #[test]
     fn dedups_repo_file_neighbor_and_workflow_instruction_content() {
-        clear_instruction_resolution_cache_for_test();
+        let _cache_guard = reset_instruction_resolution_cache_for_test();
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("repo");
         let source = FakeInstructionSource::default()
@@ -637,7 +648,7 @@ mod tests {
 
     #[test]
     fn read_errors_are_skipped_without_dropping_other_instructions() {
-        clear_instruction_resolution_cache_for_test();
+        let _cache_guard = reset_instruction_resolution_cache_for_test();
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("repo");
         let source = FakeInstructionSource::default()
@@ -659,7 +670,7 @@ mod tests {
 
     #[test]
     fn dedups_repo_and_workflow_instruction_after_trim_normalization() {
-        clear_instruction_resolution_cache_for_test();
+        let _cache_guard = reset_instruction_resolution_cache_for_test();
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("repo");
         let source =
@@ -679,7 +690,7 @@ mod tests {
 
     #[test]
     fn repeated_resolution_for_same_read_paths_validates_cache_with_distinct_candidate_paths() {
-        clear_instruction_resolution_cache_for_test();
+        let _cache_guard = reset_instruction_resolution_cache_for_test();
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("repo");
         let source = FakeInstructionSource::default()
@@ -711,7 +722,7 @@ mod tests {
 
     #[test]
     fn growing_read_paths_only_reads_new_candidate_paths() {
-        clear_instruction_resolution_cache_for_test();
+        let _cache_guard = reset_instruction_resolution_cache_for_test();
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("repo");
         let source = FakeInstructionSource::default()
@@ -753,7 +764,7 @@ mod tests {
 
     #[test]
     fn cached_resolution_is_invalidated_when_instruction_content_changes() {
-        clear_instruction_resolution_cache_for_test();
+        let _cache_guard = reset_instruction_resolution_cache_for_test();
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("repo");
         let request = InstructionResolutionRequest {
@@ -776,7 +787,7 @@ mod tests {
 
     #[test]
     fn cached_empty_resolution_is_invalidated_when_instruction_file_appears() {
-        clear_instruction_resolution_cache_for_test();
+        let _cache_guard = reset_instruction_resolution_cache_for_test();
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("repo");
         let request = InstructionResolutionRequest {

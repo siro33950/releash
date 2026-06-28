@@ -48,7 +48,6 @@ describe("agentChatReducer", () => {
 			sessionPlanModes: {},
 			pendingPermissions: {},
 			pendingQueues: {},
-			lastStreamingSeqByMessage: {},
 			latestTokenUsage: {},
 			runtimeSlashCommands: {},
 			availableModels: [],
@@ -825,11 +824,9 @@ describe("agentChatReducer", () => {
 				type: "SET_STREAMING_MESSAGE",
 				sessionId: "s1",
 				messageId: "m1",
-				seq: 5,
 				parts: cumulativeParts,
 			});
 			expect(next.sessionsById.s1.messages[0].parts).toEqual(cumulativeParts);
-			expect(next.lastStreamingSeqByMessage["s1:m1"]).toBe(5);
 		});
 
 		it("converges on re-delivery of the same snapshot payload", () => {
@@ -913,7 +910,6 @@ describe("agentChatReducer", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
-				lastStreamingSeqByMessage: { "s1:m1": 1 },
 			};
 
 			const next = reducer(state, {
@@ -927,7 +923,6 @@ describe("agentChatReducer", () => {
 			expect(next.sessionsById.s1.messages[0].parts).toEqual([
 				{ type: "text", content: "Hello" },
 			]);
-			expect(next.lastStreamingSeqByMessage["s1:m1"]).toBe(2);
 		});
 
 		it("appends non-text delta parts without identity convergence", () => {
@@ -946,7 +941,6 @@ describe("agentChatReducer", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
-				lastStreamingSeqByMessage: { "s1:m1": 1 },
 			};
 
 			const next = reducer(state, {
@@ -1013,7 +1007,6 @@ describe("agentChatReducer", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
-				lastStreamingSeqByMessage: { "s1:m1": 1 },
 			};
 
 			const afterFirst = reducer(state, {
@@ -1036,7 +1029,7 @@ describe("agentChatReducer", () => {
 			]);
 		});
 
-		it("ignores duplicate delta seqs", () => {
+		it("applies duplicate-looking delta seqs without frontend dedup", () => {
 			const msg = makeMessage({
 				id: "m1",
 				role: "agent",
@@ -1045,7 +1038,6 @@ describe("agentChatReducer", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
-				lastStreamingSeqByMessage: { "s1:m1": 2 },
 			};
 
 			const next = reducer(state, {
@@ -1056,10 +1048,12 @@ describe("agentChatReducer", () => {
 				parts: [{ type: "text", content: "lo" }],
 			});
 
-			expect(next).toBe(state);
+			expect(next.sessionsById.s1.messages[0].parts).toEqual([
+				{ type: "text", content: "Hellolo" },
+			]);
 		});
 
-		it("does not apply out-of-sequence delta gaps", () => {
+		it("applies out-of-sequence-looking deltas without frontend drop", () => {
 			const msg = makeMessage({
 				id: "m1",
 				role: "agent",
@@ -1068,7 +1062,6 @@ describe("agentChatReducer", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
-				lastStreamingSeqByMessage: { "s1:m1": 1 },
 			};
 
 			const next = reducer(state, {
@@ -1079,7 +1072,9 @@ describe("agentChatReducer", () => {
 				parts: [{ type: "text", content: " skipped" }],
 			});
 
-			expect(next).toBe(state);
+			expect(next.sessionsById.s1.messages[0].parts).toEqual([
+				{ type: "text", content: "Hello skipped" },
+			]);
 		});
 	});
 

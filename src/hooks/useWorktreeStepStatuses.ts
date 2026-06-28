@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type {
-	WorkflowStepStatusChange,
 	WorkspaceStepStatus,
+	WorktreeStepStatusView,
 } from "@/types/workspace-tree";
 
 export interface WorktreeStepStatuses {
@@ -19,37 +19,17 @@ export function workflowStepStatusKey(
 	return `${executionId}:${stepName}:${runIndex ?? 1}`;
 }
 
-function applyStatusChange(
-	prev: WorktreeStepStatuses,
-	change: WorkflowStepStatusChange,
-	stepVersions: Map<string, number>,
-	workflowVersions: Map<string, number>,
-): WorktreeStepStatuses {
-	const steps = new Map(prev.steps);
-	const workflows = new Map(prev.workflows);
-	const key = workflowStepStatusKey(
-		change.executionId,
-		change.stepName,
-		change.runIndex,
-	);
-	const previousStepVersion = stepVersions.get(key) ?? -1;
-	if (change.version >= previousStepVersion) {
-		stepVersions.set(key, change.version);
-		if (change.representative) {
-			steps.set(key, change.representative);
-		} else {
-			steps.delete(key);
-		}
+function viewToStatuses(view: WorktreeStepStatusView): WorktreeStepStatuses {
+	const steps = new Map<string, WorkspaceStepStatus>();
+	for (const step of view.steps) {
+		steps.set(
+			workflowStepStatusKey(step.executionId, step.stepName, step.runIndex),
+			step.representative,
+		);
 	}
-	const previousWorkflowVersion =
-		workflowVersions.get(change.executionId) ?? -1;
-	if (change.version >= previousWorkflowVersion) {
-		workflowVersions.set(change.executionId, change.version);
-		if (change.workflowRepresentative) {
-			workflows.set(change.executionId, change.workflowRepresentative);
-		} else {
-			workflows.delete(change.executionId);
-		}
+	const workflows = new Map<string, WorkspaceStepStatus>();
+	for (const workflow of view.workflows) {
+		workflows.set(workflow.executionId, workflow.representative);
 	}
 	return { steps, workflows };
 }
@@ -61,39 +41,30 @@ export function useWorktreeStepStatuses(
 		steps: new Map(),
 		workflows: new Map(),
 	});
-	const stepVersions = useRef(new Map<string, number>());
-	const workflowVersions = useRef(new Map<string, number>());
 
 	useEffect(() => {
 		if (!worktreePath) {
-			stepVersions.current = new Map();
-			workflowVersions.current = new Map();
 			setStatuses({ steps: new Map(), workflows: new Map() });
 			return;
 		}
 
 		let mounted = true;
 		let unlisten: UnlistenFn | null = null;
-		stepVersions.current = new Map();
-		workflowVersions.current = new Map();
 		setStatuses({ steps: new Map(), workflows: new Map() });
+
+		const applyView = (view: WorktreeStepStatusView) => {
+			if (view.worktreePath !== worktreePath) return;
+			setStatuses(viewToStatuses(view));
+		};
 
 		const subscribe = async () => {
 			let subscribed = false;
 			try {
-				unlisten = await listen<WorkflowStepStatusChange>(
+				unlisten = await listen<WorktreeStepStatusView>(
 					"workflow-step-status-changed",
 					(event) => {
 						if (!mounted) return;
-						if (event.payload.worktreePath !== worktreePath) return;
-						setStatuses((prev) =>
-							applyStatusChange(
-								prev,
-								event.payload,
-								stepVersions.current,
-								workflowVersions.current,
-							),
-						);
+						applyView(event.payload);
 					},
 				);
 				subscribed = true;
@@ -103,23 +74,7 @@ export function useWorktreeStepStatuses(
 					return;
 				}
 
-				const initial = await invoke<WorkflowStepStatusChange[]>(
-					"list_workflow_step_statuses",
-				);
-				if (!mounted) return;
-				setStatuses((prev) => {
-					let merged = prev;
-					for (const status of Array.isArray(initial) ? initial : []) {
-						if (status.worktreePath !== worktreePath) continue;
-						merged = applyStatusChange(
-							merged,
-							status,
-							stepVersions.current,
-							workflowVersions.current,
-						);
-					}
-					return merged;
-				});
+				await invoke("sync_worktree_step_statuses", { worktreePath });
 			} catch {
 				if (mounted && !subscribed) {
 					setStatuses({ steps: new Map(), workflows: new Map() });

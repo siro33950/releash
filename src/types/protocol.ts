@@ -67,17 +67,11 @@ export interface AgentSessionContextCarryUpdated {
 	updated_at: number;
 }
 
-export interface AgentStreamSync {
-	session_id: string;
-	message_id: string;
-	seq: number;
-	parts: MessagePart[];
-}
-
 export interface AgentStreamDelta {
 	session_id: string;
 	message_id: string;
 	seq: number;
+	snapshot: boolean;
 	parts: MessagePart[];
 }
 
@@ -85,6 +79,29 @@ export interface ResyncStreamReq {
 	session_id: string;
 	message_id: string;
 	since_seq: number;
+}
+
+export interface WorktreeStepStatusStep {
+	executionId: string;
+	stepName: string;
+	runIndex?: number | null;
+	representative: string;
+}
+
+export interface WorktreeStepStatusWorkflow {
+	executionId: string;
+	representative: string;
+}
+
+export interface WorktreeStepStatusSync {
+	worktreePath: string;
+	version: number;
+	steps: WorktreeStepStatusStep[];
+	workflows: WorktreeStepStatusWorkflow[];
+}
+
+export interface WorktreeStepStatusResyncReq {
+	worktreePath: string;
 }
 
 export interface WorkflowStateSync {
@@ -208,7 +225,11 @@ export type WsMessage =
 	| { type: "branch_list_sync"; payload: BranchListSync }
 	| { type: "agent_state_sync"; payload: AgentStateSync }
 	| { type: "workflow_state_sync"; payload: WorkflowStateSync }
-	| { type: "agent_stream_sync"; payload: AgentStreamSync }
 	| { type: "agent_stream_delta"; payload: AgentStreamDelta }
+	| { type: "worktree_step_status_sync"; payload: WorktreeStepStatusSync }
+	| {
+			type: "worktree_step_status_resync";
+			payload: WorktreeStepStatusResyncReq;
+	  }
 	| { type: "resync_stream"; payload: ResyncStreamReq }
 	| { type: "error"; payload: ErrorMsg };

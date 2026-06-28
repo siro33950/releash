@@ -43,7 +43,6 @@ export interface AgentChatState {
 	sessionPlanModes: Record<string, PlanMode>;
 	pendingPermissions: Record<string, PermissionRequest>;
 	pendingQueues: Record<string, QueuedAgentTurn[]>;
-	lastStreamingSeqByMessage: Record<string, number>;
 	latestTokenUsage: Record<string, TokenUsage | null>;
 	runtimeSlashCommands: Record<string, SlashCommand[]>;
 	availableModels: ModelInfo[];
@@ -119,7 +118,6 @@ export type AgentChatAction =
 			type: "SET_STREAMING_MESSAGE";
 			sessionId: string;
 			messageId: string;
-			seq?: number;
 			parts: MessagePart[];
 	  }
 	| {
@@ -148,10 +146,6 @@ export type AgentChatAction =
 	| { type: "CLEANUP_SESSION"; sessionId: string }
 	| { type: "SET_BACKENDS"; backends: BackendInfo[]; defaultId: string | null }
 	| { type: "SET_SELECTED_BACKEND"; backendId: string | null };
-
-function streamingMessageKey(sessionId: string, messageId: string): string {
-	return `${sessionId}:${messageId}`;
-}
 
 function appendStreamingDeltaParts(
 	current: MessagePart[] | undefined,
@@ -530,17 +524,8 @@ export function reducer(
 				parts: action.parts,
 			}));
 			if (!updated) return state;
-			const key = streamingMessageKey(action.sessionId, action.messageId);
-			const lastStreamingSeqByMessage =
-				typeof action.seq === "number" && Number.isFinite(action.seq)
-					? {
-							...state.lastStreamingSeqByMessage,
-							[key]: action.seq,
-						}
-					: state.lastStreamingSeqByMessage;
 			return {
 				...state,
-				lastStreamingSeqByMessage,
 				sessionsById: {
 					...state.sessionsById,
 					[action.sessionId]: updated,
@@ -550,11 +535,6 @@ export function reducer(
 		case "APPLY_STREAMING_DELTA": {
 			const existing = state.sessionsById[action.sessionId];
 			if (!existing) return state;
-			const key = streamingMessageKey(action.sessionId, action.messageId);
-			const lastSeq = state.lastStreamingSeqByMessage[key] ?? 0;
-			if (action.seq <= lastSeq || action.seq !== lastSeq + 1) {
-				return state;
-			}
 			const updated = applyMessageUpdate(existing, action.messageId, (m) => ({
 				...m,
 				parts: appendStreamingDeltaParts(m.parts, action.parts),
@@ -562,10 +542,6 @@ export function reducer(
 			if (!updated) return state;
 			return {
 				...state,
-				lastStreamingSeqByMessage: {
-					...state.lastStreamingSeqByMessage,
-					[key]: action.seq,
-				},
 				sessionsById: {
 					...state.sessionsById,
 					[action.sessionId]: updated,
@@ -631,11 +607,6 @@ export function reducer(
 				state.pendingPermissions;
 			const { [action.sessionId]: _pq, ...restPendingQueues } =
 				state.pendingQueues;
-			const restLastStreamingSeqByMessage = Object.fromEntries(
-				Object.entries(state.lastStreamingSeqByMessage).filter(
-					([key]) => !key.startsWith(`${action.sessionId}:`),
-				),
-			);
 			const { [action.sessionId]: _tu, ...restLatestTokenUsage } =
 				state.latestTokenUsage;
 			const { [action.sessionId]: _rsc, ...restRuntimeSlashCommands } =
@@ -654,7 +625,6 @@ export function reducer(
 				interrupting: restInterrupting,
 				pendingPermissions: restPendingPermissions,
 				pendingQueues: restPendingQueues,
-				lastStreamingSeqByMessage: restLastStreamingSeqByMessage,
 				latestTokenUsage: restLatestTokenUsage,
 				runtimeSlashCommands: restRuntimeSlashCommands,
 				sessionModels: restSessionModels,
@@ -716,7 +686,6 @@ export const INITIAL_STATE: AgentChatState = {
 	sessionPlanModes: {},
 	pendingPermissions: {},
 	pendingQueues: {},
-	lastStreamingSeqByMessage: {},
 	latestTokenUsage: {},
 	runtimeSlashCommands: {},
 	availableModels: [],

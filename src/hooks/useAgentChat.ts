@@ -328,8 +328,6 @@ export function useAgentChat(
 	activeSessionIdRef.current = state.activeSessionId;
 	const sessionsByIdRef = useRef(state.sessionsById);
 	sessionsByIdRef.current = state.sessionsById;
-	const lastStreamingSeqByMessageRef = useRef(state.lastStreamingSeqByMessage);
-	lastStreamingSeqByMessageRef.current = state.lastStreamingSeqByMessage;
 	const sessionsRef = useRef(state.sessions);
 	sessionsRef.current = state.sessions;
 	const permissionModeRef = useRef(state.permissionMode);
@@ -1246,11 +1244,6 @@ export function useAgentChat(
 					error: `パーミッション応答に失敗: ${e}`,
 				});
 			});
-			dispatch({
-				type: "SET_PENDING_PERMISSION",
-				sessionId,
-				request: null,
-			});
 		},
 		[],
 	);
@@ -1322,24 +1315,11 @@ export function useAgentChat(
 		[],
 	);
 
-	const hasMessage = useCallback(
-		(sessionId: string, messageId: string) =>
-			(sessionsByIdRef.current[sessionId]?.messages ?? []).some(
-				(m) => m.id === messageId,
-			),
-		[],
-	);
-	const getLastStreamingSeq = useCallback(
-		(sessionId: string, messageId: string) =>
-			lastStreamingSeqByMessageRef.current[`${sessionId}:${messageId}`] ?? 0,
-		[],
-	);
 	useAgentSdkListeners({
 		dispatch: dispatchWithMessageWindowTracking,
 		viewableRegistry,
 		refreshSessions,
-		hasMessage,
-		getLastStreamingSeq,
+		worktreePath,
 	});
 
 	// activeSession は Main panel が表示している session として実質 viewable。

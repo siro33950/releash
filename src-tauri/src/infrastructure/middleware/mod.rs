@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster;
 use crate::domain::app_config::ConfigRepository;
 use crate::usecase::agent_session::session::AgentStreamResyncReadModel;
+use crate::usecase::agent_session::status::AgentStatusCenter;
 use crate::usecase::pty_session::query_service::PtySessionReplayReader;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -49,6 +50,7 @@ pub(crate) struct WsServerState {
     pty_replay_reader: Arc<dyn PtySessionReplayReader>,
     app_config: Arc<dyn ConfigRepository>,
     stream_resync_read_model: Arc<dyn AgentStreamResyncReadModel>,
+    agent_status_center: Arc<AgentStatusCenter>,
     tls_enabled: bool,
 }
 
@@ -58,6 +60,7 @@ impl WsServerState {
         pty_replay_reader: Arc<dyn PtySessionReplayReader>,
         app_config: Arc<dyn ConfigRepository>,
         stream_resync_read_model: Arc<dyn AgentStreamResyncReadModel>,
+        agent_status_center: Arc<AgentStatusCenter>,
         tls_enabled: bool,
     ) -> Self {
         Self {
@@ -67,6 +70,7 @@ impl WsServerState {
             pty_replay_reader,
             app_config,
             stream_resync_read_model,
+            agent_status_center,
             tls_enabled,
         }
     }

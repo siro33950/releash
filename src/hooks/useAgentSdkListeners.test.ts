@@ -13,13 +13,8 @@ interface TestViewableRegistry extends ViewableSessionRegistry {
 	viewableIds: Set<string>;
 }
 
-type TestRefs = Omit<
-	AgentSdkListenerRefs,
-	"dispatch" | "getLastStreamingSeq" | "hasMessage" | "viewableRegistry"
-> & {
+type TestRefs = Omit<AgentSdkListenerRefs, "dispatch" | "viewableRegistry"> & {
 	dispatch: Mock;
-	getLastStreamingSeq: Mock;
-	hasMessage: Mock;
 	viewableRegistry: TestViewableRegistry;
 };
 
@@ -60,15 +55,25 @@ vi.mock("./useSessionStore", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./useSessionStore")>();
 	return {
 		...actual,
-		getSession: vi.fn().mockResolvedValue(null),
-		resyncStreamingMessage: vi.fn().mockResolvedValue(null),
 		updateSessionAgentInfo: vi.fn().mockResolvedValue(undefined),
-		updateSessionState: vi.fn().mockResolvedValue(undefined),
 	};
 });
 
+const { invoke } = await import("@tauri-apps/api/core");
 const { useAgentSdkListeners } = await import("./useAgentSdkListeners");
-const sessionStore = await import("./useSessionStore");
+const mockInvoke = vi.mocked(invoke);
+const frontendDrivenStreamResyncCommand = [
+	"resync",
+	"streaming",
+	"message",
+].join("_");
+
+function expectNoFrontendStreamingResync(): void {
+	expect(mockInvoke).not.toHaveBeenCalledWith(
+		frontendDrivenStreamResyncCommand,
+		expect.anything(),
+	);
+}
 
 function makeRefs(): TestRefs {
 	const registry: TestViewableRegistry = {
@@ -87,8 +92,6 @@ function makeRefs(): TestRefs {
 		dispatch: vi.fn(),
 		viewableRegistry: registry,
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
-		hasMessage: vi.fn().mockReturnValue(false),
-		getLastStreamingSeq: vi.fn().mockReturnValue(0),
 	};
 }
 
@@ -144,7 +147,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		}
 	});
 
-	it("registers listeners for agent-sdk-message, agent-session-state-changed, agent-streaming-delta, agent-pending-message-consumed, agent-permission-mode-changed, agent-models-updated", () => {
+	it("registers listeners for agent-sdk-message, agent-turn-prepared, agent-session-state-changed, agent-streaming-delta, agent-pending-message-consumed, agent-permission-mode-changed, agent-models-updated", () => {
 		listenResolvers = [];
 		const refs = makeRefs();
 
@@ -152,6 +155,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 
 		const eventNames = listenResolvers.map((r) => r.eventName);
 		expect(eventNames).toContain("agent-sdk-message");
+		expect(eventNames).toContain("agent-turn-prepared");
 		expect(eventNames).toContain("agent-session-state-changed");
 		expect(eventNames).toContain("agent-streaming-delta");
 		expect(eventNames).toContain("agent-pending-message-consumed");
@@ -161,6 +165,124 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		expect(eventNames).not.toContain("agent-backend-models-updated");
 		expect(eventNames).not.toContain("agent-streaming-started");
 		expect(eventNames).not.toContain("agent-query-completed");
+	});
+});
+
+describe("agent-turn-prepared event", () => {
+	it("mirrors prepared session and placeholder messages without viewable gating", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		clearViewable(refs);
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-turn-prepared");
+		expect(cb).toBeDefined();
+
+		await cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				session: {
+					id: "session-1",
+					worktreePath: "/repo",
+					messages: [],
+					state: "active",
+					createdAt: 1,
+					updatedAt: 2,
+					permissionMode: "edit",
+					selectedModel: "",
+				},
+				human_message: {
+					id: "human-1",
+					role: "human",
+					content: "hello",
+					timestamp: 3,
+				},
+				agent_message: {
+					id: "agent-1",
+					role: "agent",
+					content: "",
+					parts: [],
+					timestamp: 4,
+				},
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "UPSERT_SESSION",
+			session: expect.objectContaining({
+				id: "session-1",
+				messages: [],
+				permissionMode: "edit",
+			}),
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "ADD_MESSAGE",
+			sessionId: "session-1",
+			message: {
+				id: "human-1",
+				role: "human",
+				parts: [{ type: "text", content: "hello" }],
+				timestamp: 3,
+				mentions: undefined,
+			},
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "ADD_MESSAGE",
+			sessionId: "session-1",
+			message: {
+				id: "agent-1",
+				role: "agent",
+				parts: [],
+				timestamp: 4,
+				mentions: undefined,
+			},
+		});
+	});
+
+	it("ignores prepared sessions from another worktree", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.worktreePath = "/repo-a";
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-turn-prepared");
+		expect(cb).toBeDefined();
+
+		await cb?.({
+			payload: {
+				chat_session_id: "session-b",
+				session: {
+					id: "session-b",
+					worktreePath: "/repo-b",
+					messages: [],
+					state: "active",
+					createdAt: 1,
+					updatedAt: 2,
+					permissionMode: "edit",
+				},
+				human_message: {
+					id: "human-b",
+					role: "human",
+					content: "hello",
+					timestamp: 3,
+				},
+				agent_message: {
+					id: "agent-b",
+					role: "agent",
+					content: "",
+					parts: [],
+					timestamp: 4,
+				},
+			},
+		});
+
+		expect(refs.dispatch).not.toHaveBeenCalled();
 	});
 });
 
@@ -223,19 +345,18 @@ describe("agent-session-context-carry-updated event", () => {
 });
 
 describe("agent-streaming-delta event", () => {
-	it("dispatches APPLY_STREAMING_DELTA when agent-streaming-delta is received in sequence for a viewable cached message", async () => {
+	it("dispatches APPLY_STREAMING_DELTA for append events from a viewable session", async () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
 		setViewable(refs, "session-1");
-		refs.hasMessage.mockReturnValue(true);
-		refs.getLastStreamingSeq.mockReturnValue(0);
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-streaming-delta");
 		expect(cb).toBeDefined();
+		mockInvoke.mockClear();
 
 		const parts = [
 			{ type: "text", content: "Hello World" },
@@ -247,6 +368,7 @@ describe("agent-streaming-delta event", () => {
 				chat_session_id: "session-1",
 				message_id: "msg-001",
 				seq: 1,
+				snapshot: false,
 				parts,
 			},
 		});
@@ -258,58 +380,95 @@ describe("agent-streaming-delta event", () => {
 			seq: 1,
 			parts,
 		});
+		expectNoFrontendStreamingResync();
 	});
 
-	it("does not resync consecutive deltas that arrive before React state ref reflects the first dispatch", async () => {
+	it("dispatches SET_STREAMING_MESSAGE for snapshot events from a viewable session", async () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
 		setViewable(refs, "session-1");
-		refs.hasMessage.mockReturnValue(true);
-		refs.getLastStreamingSeq.mockReturnValue(0);
-		vi.mocked(sessionStore.resyncStreamingMessage).mockClear();
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-streaming-delta");
 		expect(cb).toBeDefined();
+		mockInvoke.mockClear();
 
-		await cb?.({
-			payload: {
-				chat_session_id: "session-1",
-				message_id: "msg-001",
-				seq: 1,
-				parts: [{ type: "text", content: "Hello" }],
-			},
-		});
+		const parts = [{ type: "text" as const, content: "resynced" }];
 		await cb?.({
 			payload: {
 				chat_session_id: "session-1",
 				message_id: "msg-001",
 				seq: 2,
-				parts: [{ type: "text", content: " World" }],
+				snapshot: true,
+				parts,
 			},
 		});
 
-		expect(sessionStore.resyncStreamingMessage).not.toHaveBeenCalled();
 		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPLY_STREAMING_DELTA",
+			type: "SET_STREAMING_MESSAGE",
 			sessionId: "session-1",
 			messageId: "msg-001",
-			seq: 1,
-			parts: [{ type: "text", content: "Hello" }],
+			parts,
 		});
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPLY_STREAMING_DELTA",
-			sessionId: "session-1",
-			messageId: "msg-001",
-			seq: 2,
-			parts: [{ type: "text", content: " World" }],
-		});
+		expect(refs.dispatch).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "APPLY_STREAMING_DELTA" }),
+		);
+		expectNoFrontendStreamingResync();
 	});
 
-	it("skips APPLY_STREAMING_DELTA when the session is not viewable", async () => {
+	it("does not inspect seq continuity or drop duplicate-looking append events", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		setViewable(refs, "session-1");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-streaming-delta");
+		expect(cb).toBeDefined();
+		mockInvoke.mockClear();
+
+		await cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				message_id: "msg-001",
+				seq: 10,
+				snapshot: false,
+				parts: [{ type: "text", content: "first" }],
+			},
+		});
+		await cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				message_id: "msg-001",
+				seq: 10,
+				snapshot: false,
+				parts: [{ type: "text", content: "duplicate-looking" }],
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "APPLY_STREAMING_DELTA",
+			sessionId: "session-1",
+			messageId: "msg-001",
+			seq: 10,
+			parts: [{ type: "text", content: "first" }],
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "APPLY_STREAMING_DELTA",
+			sessionId: "session-1",
+			messageId: "msg-001",
+			seq: 10,
+			parts: [{ type: "text", content: "duplicate-looking" }],
+		});
+		expectNoFrontendStreamingResync();
+	});
+
+	it("dispatches streaming events even when the session is not viewable", async () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -326,518 +485,16 @@ describe("agent-streaming-delta event", () => {
 				chat_session_id: "session-hidden",
 				message_id: "msg-001",
 				seq: 1,
+				snapshot: true,
 				parts: [{ type: "text", content: "noop" }],
 			},
 		});
 
-		const calls = (refs.dispatch as Mock).mock.calls.map(
-			(call) => (call[0] as { type: string }).type,
-		);
-		expect(calls).not.toContain("APPLY_STREAMING_DELTA");
-		expect(calls).not.toContain("UPSERT_SESSION");
-	});
-
-	it("requests focused resync when a delta seq gap is detected", async () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		setViewable(refs, "session-1");
-		refs.hasMessage.mockReturnValue(true);
-		refs.getLastStreamingSeq.mockReturnValue(1);
-		vi.mocked(sessionStore.resyncStreamingMessage).mockResolvedValueOnce({
-			session_id: "session-1",
-			message_id: "msg-001",
-			seq: 3,
-			parts: [{ type: "text", content: "resynced" }],
-		});
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-streaming-delta");
-		expect(cb).toBeDefined();
-
-		await cb?.({
-			payload: {
-				chat_session_id: "session-1",
-				message_id: "msg-001",
-				seq: 3,
-				parts: [{ type: "text", content: "late" }],
-			},
-		});
-
-		expect(sessionStore.resyncStreamingMessage).toHaveBeenCalledWith(
-			"session-1",
-			"msg-001",
-			1,
-		);
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "SET_STREAMING_MESSAGE",
-			sessionId: "session-1",
+			sessionId: "session-hidden",
 			messageId: "msg-001",
-			seq: 3,
-			parts: [{ type: "text", content: "resynced" }],
-		});
-	});
-
-	it("requests focused resync for an empty in-sequence resync marker", async () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		setViewable(refs, "session-1");
-		refs.hasMessage.mockReturnValue(true);
-		refs.getLastStreamingSeq.mockReturnValue(7);
-		vi.mocked(sessionStore.resyncStreamingMessage).mockResolvedValueOnce({
-			session_id: "session-1",
-			message_id: "msg-001",
-			seq: 8,
-			parts: [
-				{
-					type: "tool_result",
-					content: "preview",
-					isError: false,
-					toolUseId: "tool-1",
-					contentRef: { id: "a".repeat(64), byteSize: 4096 },
-					summary: {
-						lineCount: 200,
-						byteSize: 4096,
-						isError: false,
-						truncated: true,
-					},
-				},
-			],
-		});
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-streaming-delta");
-		expect(cb).toBeDefined();
-
-		await cb?.({
-			payload: {
-				chat_session_id: "session-1",
-				message_id: "msg-001",
-				seq: 8,
-				parts: [],
-			},
-		});
-
-		expect(sessionStore.resyncStreamingMessage).toHaveBeenCalledWith(
-			"session-1",
-			"msg-001",
-			7,
-		);
-		expect(refs.dispatch).not.toHaveBeenCalledWith(
-			expect.objectContaining({ type: "APPLY_STREAMING_DELTA" }),
-		);
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "SET_STREAMING_MESSAGE",
-			sessionId: "session-1",
-			messageId: "msg-001",
-			seq: 8,
-			parts: [
-				{
-					type: "tool_result",
-					content: "preview",
-					isError: false,
-					toolUseId: "tool-1",
-					contentRef: { id: "a".repeat(64), byteSize: 4096 },
-					summary: {
-						lineCount: 200,
-						byteSize: 4096,
-						isError: false,
-						truncated: true,
-					},
-				},
-			],
-		});
-	});
-
-	it("logs resync failures and retries on a later delta", async () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		setViewable(refs, "session-1");
-		refs.hasMessage.mockReturnValue(true);
-		refs.getLastStreamingSeq.mockReturnValue(1);
-		const error = new Error("resync failed");
-		const consoleError = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
-		vi.mocked(sessionStore.resyncStreamingMessage)
-			.mockReset()
-			.mockRejectedValueOnce(error)
-			.mockResolvedValueOnce({
-				session_id: "session-1",
-				message_id: "msg-001",
-				seq: 3,
-				parts: [{ type: "text", content: "resynced" }],
-			});
-
-		try {
-			renderHook(() => useAgentSdkListeners(refs));
-			for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-			const cb = listenCallbacks.get("agent-streaming-delta");
-			expect(cb).toBeDefined();
-
-			const first = cb?.({
-				payload: {
-					chat_session_id: "session-1",
-					message_id: "msg-001",
-					seq: 3,
-					parts: [{ type: "text", content: "late" }],
-				},
-			}) as Promise<void> | undefined;
-			await expect(first).resolves.toBeUndefined();
-			expect(consoleError).toHaveBeenCalledWith(
-				"Failed to resync streaming message:",
-				error,
-			);
-
-			await cb?.({
-				payload: {
-					chat_session_id: "session-1",
-					message_id: "msg-001",
-					seq: 3,
-					parts: [{ type: "text", content: "late retry" }],
-				},
-			});
-
-			expect(sessionStore.resyncStreamingMessage).toHaveBeenCalledTimes(2);
-			expect(sessionStore.resyncStreamingMessage).toHaveBeenNthCalledWith(
-				2,
-				"session-1",
-				"msg-001",
-				1,
-			);
-			expect(refs.dispatch).toHaveBeenCalledWith({
-				type: "SET_STREAMING_MESSAGE",
-				sessionId: "session-1",
-				messageId: "msg-001",
-				seq: 3,
-				parts: [{ type: "text", content: "resynced" }],
-			});
-		} finally {
-			consoleError.mockRestore();
-			vi.mocked(sessionStore.resyncStreamingMessage)
-				.mockReset()
-				.mockResolvedValue(null);
-		}
-	});
-
-	it("applies the next delta after a resync snapshot before React state ref reflects the snapshot seq", async () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		setViewable(refs, "session-1");
-		refs.hasMessage.mockReturnValue(true);
-		refs.getLastStreamingSeq.mockReturnValue(1);
-		vi.mocked(sessionStore.resyncStreamingMessage)
-			.mockReset()
-			.mockResolvedValueOnce({
-				session_id: "session-1",
-				message_id: "msg-001",
-				seq: 3,
-				parts: [{ type: "text", content: "resynced" }],
-			});
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-streaming-delta");
-		expect(cb).toBeDefined();
-
-		await cb?.({
-			payload: {
-				chat_session_id: "session-1",
-				message_id: "msg-001",
-				seq: 3,
-				parts: [{ type: "text", content: "late" }],
-			},
-		});
-		refs.dispatch.mockClear();
-
-		await cb?.({
-			payload: {
-				chat_session_id: "session-1",
-				message_id: "msg-001",
-				seq: 4,
-				parts: [{ type: "text", content: "next" }],
-			},
-		});
-
-		expect(sessionStore.resyncStreamingMessage).toHaveBeenCalledTimes(1);
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPLY_STREAMING_DELTA",
-			sessionId: "session-1",
-			messageId: "msg-001",
-			seq: 4,
-			parts: [{ type: "text", content: "next" }],
-		});
-	});
-
-	it("logs hydration failures and retries hydration on a later delta", async () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		setViewable(refs, "session-1");
-		refs.hasMessage.mockReturnValue(false);
-		refs.getLastStreamingSeq.mockReturnValue(0);
-		const error = new Error("hydrate failed");
-		const consoleError = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
-		vi.mocked(sessionStore.resyncStreamingMessage)
-			.mockReset()
-			.mockResolvedValue(null);
-		vi.mocked(sessionStore.getSession)
-			.mockReset()
-			.mockRejectedValueOnce(error)
-			.mockResolvedValueOnce(null);
-
-		try {
-			renderHook(() => useAgentSdkListeners(refs));
-			for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-			const cb = listenCallbacks.get("agent-streaming-delta");
-			expect(cb).toBeDefined();
-
-			const first = cb?.({
-				payload: {
-					chat_session_id: "session-1",
-					message_id: "msg-001",
-					seq: 1,
-					parts: [{ type: "text", content: "late" }],
-				},
-			}) as Promise<void> | undefined;
-			await expect(first).resolves.toBeUndefined();
-			expect(consoleError).toHaveBeenCalledWith(
-				"Failed to hydrate streaming message:",
-				error,
-			);
-
-			await cb?.({
-				payload: {
-					chat_session_id: "session-1",
-					message_id: "msg-001",
-					seq: 1,
-					parts: [{ type: "text", content: "late retry" }],
-				},
-			});
-
-			expect(sessionStore.getSession).toHaveBeenCalledTimes(2);
-			expect(sessionStore.getSession).toHaveBeenNthCalledWith(2, "session-1");
-			expect(sessionStore.resyncStreamingMessage).toHaveBeenCalledTimes(2);
-		} finally {
-			consoleError.mockRestore();
-			vi.mocked(sessionStore.getSession).mockReset().mockResolvedValue(null);
-			vi.mocked(sessionStore.resyncStreamingMessage)
-				.mockReset()
-				.mockResolvedValue(null);
-		}
-	});
-
-	it("hydrates missing messages per session and leaves seq retryable while uncached", async () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		setViewable(refs, "free-session", "workflow-step-session");
-		refs.hasMessage.mockReturnValue(false);
-		refs.getLastStreamingSeq.mockReturnValue(0);
-		vi.mocked(sessionStore.resyncStreamingMessage)
-			.mockReset()
-			.mockImplementation(async (sessionId, messageId) => ({
-				session_id: sessionId,
-				message_id: messageId,
-				seq: 1,
-				parts: [{ type: "text", content: `snapshot:${sessionId}` }],
-			}));
-		let resolveFreeHydrate: ((value: null) => void) | undefined;
-		vi.mocked(sessionStore.getSession)
-			.mockReset()
-			.mockImplementation((sessionId) => {
-				if (sessionId === "free-session") {
-					return new Promise((resolve) => {
-						resolveFreeHydrate = resolve;
-					});
-				}
-				return Promise.resolve(null);
-			});
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-streaming-delta");
-		expect(cb).toBeDefined();
-
-		const freeFirst = cb?.({
-			payload: {
-				chat_session_id: "free-session",
-				message_id: "msg-free",
-				seq: 1,
-				parts: [{ type: "text", content: "free delta" }],
-			},
-		}) as Promise<void> | undefined;
-		await vi.waitFor(() => {
-			expect(sessionStore.getSession).toHaveBeenCalledWith("free-session");
-		});
-
-		await cb?.({
-			payload: {
-				chat_session_id: "workflow-step-session",
-				message_id: "msg-workflow",
-				seq: 1,
-				parts: [{ type: "text", content: "workflow delta" }],
-			},
-		});
-		expect(sessionStore.getSession).toHaveBeenCalledWith(
-			"workflow-step-session",
-		);
-
-		resolveFreeHydrate?.(null);
-		await freeFirst;
-		expect(refs.dispatch).not.toHaveBeenCalledWith(
-			expect.objectContaining({ type: "SET_STREAMING_MESSAGE" }),
-		);
-		expect(refs.dispatch).not.toHaveBeenCalledWith(
-			expect.objectContaining({ type: "APPLY_STREAMING_DELTA" }),
-		);
-
-		refs.hasMessage.mockReturnValue(true);
-		refs.dispatch.mockClear();
-		await cb?.({
-			payload: {
-				chat_session_id: "free-session",
-				message_id: "msg-free",
-				seq: 1,
-				parts: [{ type: "text", content: "free delta" }],
-			},
-		});
-		await cb?.({
-			payload: {
-				chat_session_id: "workflow-step-session",
-				message_id: "msg-workflow",
-				seq: 1,
-				parts: [{ type: "text", content: "workflow delta" }],
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPLY_STREAMING_DELTA",
-			sessionId: "free-session",
-			messageId: "msg-free",
-			seq: 1,
-			parts: [{ type: "text", content: "free delta" }],
-		});
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPLY_STREAMING_DELTA",
-			sessionId: "workflow-step-session",
-			messageId: "msg-workflow",
-			seq: 1,
-			parts: [{ type: "text", content: "workflow delta" }],
-		});
-	});
-
-	it("runs another resync when a newer delta arrives while resync is in flight", async () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		setViewable(refs, "session-1");
-		refs.hasMessage.mockReturnValue(true);
-		refs.getLastStreamingSeq.mockReturnValue(1);
-
-		let resolveFirst:
-			| ((value: {
-					session_id: string;
-					message_id: string;
-					seq: number;
-					parts: Array<{ type: "text"; content: string }>;
-			  }) => void)
-			| undefined;
-		let resolveSecond:
-			| ((value: {
-					session_id: string;
-					message_id: string;
-					seq: number;
-					parts: Array<{ type: "text"; content: string }>;
-			  }) => void)
-			| undefined;
-		vi.mocked(sessionStore.resyncStreamingMessage)
-			.mockReset()
-			.mockImplementationOnce(
-				() =>
-					new Promise((resolve) => {
-						resolveFirst = resolve;
-					}),
-			)
-			.mockImplementationOnce(
-				() =>
-					new Promise((resolve) => {
-						resolveSecond = resolve;
-					}),
-			);
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-streaming-delta");
-		expect(cb).toBeDefined();
-
-		const first = cb?.({
-			payload: {
-				chat_session_id: "session-1",
-				message_id: "msg-001",
-				seq: 3,
-				parts: [{ type: "text", content: "late" }],
-			},
-		});
-		await vi.waitFor(() => {
-			expect(sessionStore.resyncStreamingMessage).toHaveBeenCalledWith(
-				"session-1",
-				"msg-001",
-				1,
-			);
-		});
-
-		await cb?.({
-			payload: {
-				chat_session_id: "session-1",
-				message_id: "msg-001",
-				seq: 4,
-				parts: [{ type: "text", content: "newer" }],
-			},
-		});
-		expect(sessionStore.resyncStreamingMessage).toHaveBeenCalledTimes(1);
-
-		resolveFirst?.({
-			session_id: "session-1",
-			message_id: "msg-001",
-			seq: 3,
-			parts: [{ type: "text", content: "up to 3" }],
-		});
-		await vi.waitFor(() => {
-			expect(sessionStore.resyncStreamingMessage).toHaveBeenCalledWith(
-				"session-1",
-				"msg-001",
-				3,
-			);
-		});
-		resolveSecond?.({
-			session_id: "session-1",
-			message_id: "msg-001",
-			seq: 4,
-			parts: [{ type: "text", content: "up to 4" }],
-		});
-		await first;
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "SET_STREAMING_MESSAGE",
-			sessionId: "session-1",
-			messageId: "msg-001",
-			seq: 4,
-			parts: [{ type: "text", content: "up to 4" }],
+			parts: [{ type: "text", content: "noop" }],
 		});
 	});
 });
@@ -869,7 +526,43 @@ describe("agent-session-state-changed event", () => {
 		});
 	});
 
-	it("dispatches SET_TURN_PHASE and UPDATE_SESSION_STATE (done) on idle with exit_code", () => {
+	it("mirrors session_state from idle completion payload", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		setViewable(refs, "session-1");
+
+		renderHook(() => useAgentSdkListeners(refs));
+
+		for (const { resolve } of listenResolvers) {
+			resolve(vi.fn());
+		}
+
+		const cb = listenCallbacks.get("agent-session-state-changed");
+		expect(cb).toBeDefined();
+
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				turn_phase: "idle",
+				exit_code: 0,
+				session_state: "done",
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_TURN_PHASE",
+			sessionId: "session-1",
+			turnPhase: "idle",
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "UPDATE_SESSION_STATE",
+			sessionId: "session-1",
+			state: "done",
+		});
+	});
+
+	it("does not derive session state from exit_code when payload omits session_state", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -892,12 +585,7 @@ describe("agent-session-state-changed event", () => {
 			},
 		});
 
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "SET_TURN_PHASE",
-			sessionId: "session-1",
-			turnPhase: "idle",
-		});
-		expect(refs.dispatch).toHaveBeenCalledWith({
+		expect(refs.dispatch).not.toHaveBeenCalledWith({
 			type: "UPDATE_SESSION_STATE",
 			sessionId: "session-1",
 			state: "done",
@@ -926,6 +614,7 @@ describe("agent-session-state-changed event", () => {
 				exit_code: 0,
 				completed_at: 1234,
 				interrupted: true,
+				session_state: "idle",
 			},
 		});
 
@@ -951,7 +640,7 @@ describe("agent-session-state-changed event", () => {
 		});
 	});
 
-	it("dispatches SET_PENDING_PERMISSION when permission_request is received", () => {
+	it("mirrors pending permission request from session state payload", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -962,12 +651,10 @@ describe("agent-session-state-changed event", () => {
 			resolve(vi.fn());
 		}
 
-		const cb = listenCallbacks.get("agent-sdk-message");
+		const cb = listenCallbacks.get("agent-session-state-changed");
 		expect(cb).toBeDefined();
 
 		const request = {
-			type: "permission_request",
-			chat_session_id: "session-1",
 			request_id: "req-001",
 			tool_name: "Edit",
 			input: { file_path: "/src/index.ts" },
@@ -975,21 +662,19 @@ describe("agent-session-state-changed event", () => {
 			title: "Edit file",
 		};
 
-		cb?.({ payload: request });
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				turn_phase: "waiting_permission",
+				exit_code: null,
+				pending_permission_request: request,
+			},
+		});
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "SET_PENDING_PERMISSION",
 			sessionId: "session-1",
-			request: {
-				request_id: "req-001",
-				tool_name: "Edit",
-				input: { file_path: "/src/index.ts" },
-				tool_use_id: "toolu_001",
-				title: "Edit file",
-				display_name: undefined,
-				description: undefined,
-				decision_reason: undefined,
-			},
+			request,
 		});
 	});
 
@@ -1013,6 +698,35 @@ describe("agent-session-state-changed event", () => {
 				chat_session_id: "session-1",
 				turn_phase: "idle",
 				exit_code: 0,
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_PENDING_PERMISSION",
+			sessionId: "session-1",
+			request: null,
+		});
+	});
+
+	it("dispatches SET_PENDING_PERMISSION null when waiting payload omits request", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentSdkListeners(refs));
+
+		for (const { resolve } of listenResolvers) {
+			resolve(vi.fn());
+		}
+
+		const cb = listenCallbacks.get("agent-session-state-changed");
+		expect(cb).toBeDefined();
+
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				turn_phase: "waiting_permission",
+				exit_code: null,
 			},
 		});
 

@@ -1,6 +1,4 @@
-use super::external_agent::{
-    spawn_workflow_turn_complete_notification, ExternalBridgeMessageState,
-};
+use super::external_agent::ExternalBridgeMessageState;
 use super::permission::{
     handle_sdk_permission_mode_notification, run_permission_request_transition_locked,
     PermissionRequestTransition,
@@ -10,8 +8,9 @@ use super::process_registry::{
 };
 use super::recovery::run_bridge_error_transition_locked;
 use super::session_lifecycle::{
-    crash_agent_process_for_context_reinject, run_turn_complete_transition_locked_with_interrupt,
-    take_pending_message, token_usage_from_result_message, TurnCompleteTransition,
+    complete_streaming_turn_post_lock, crash_agent_process_for_context_reinject,
+    run_turn_complete_transition_locked_with_interrupt, token_usage_from_result_message,
+    TurnCompletePostOptions,
 };
 use super::session_persistence::{
     load_persisted_agent_session_id_for_resume, load_post_turn_base_parts_from_store,
@@ -22,14 +21,15 @@ use super::session_persistence::{
 };
 use super::shared::{
     consolidate_parts_from_slice, fallback_prompt_message_id, notify_status_transition,
-    CLAUDE_BACKEND_ID, CODEX_BACKEND_ID,
+    notify_status_transition_with_pending_permission_request, CLAUDE_BACKEND_ID, CODEX_BACKEND_ID,
 };
 use super::skills::supported_commands_from_bridge_message;
 use super::stream_emit::{
-    emit_one_shot_streaming_delta, emit_persisted_tool_output_resync, emit_session_state_changed,
-    emit_streaming_delta, enqueue_pending_delta_with_rollbacks, force_flush_pending_streaming,
-    has_pending_stream_flush, release_completed_turn_streaming_buffer, should_flush_per_delta,
-    spawn_streaming_timer,
+    emit_one_shot_streaming_delta, emit_persisted_tool_output_resync,
+    emit_session_state_changed_with_pending_permission_request, emit_streaming_delta,
+    enqueue_pending_delta_with_rollbacks, force_flush_pending_streaming, has_pending_stream_flush,
+    release_completed_turn_streaming_buffer, should_flush_per_delta, spawn_streaming_timer,
+    OneShotStreamingPayload,
 };
 use super::turn_event_log::{
     append_parts_to_event_log_in_order, clear_post_turn_store_base_untrusted_for_message,
@@ -78,6 +78,15 @@ pub(super) fn bridge_message_is_stale_for_active_turn(
         return false;
     }
     true
+}
+
+async fn should_consume_pending_after_bridge_turn(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+) -> bool {
+    let map = handles.lock().await;
+    map.get(chat_session_id)
+        .is_some_and(|proc| proc.backend_id != CODEX_BACKEND_ID)
 }
 
 pub(super) fn append_to_parts(
@@ -305,11 +314,35 @@ pub(super) async fn apply_persisted_tool_output_refs_to_live_buffer(
 }
 
 /// Returns true if the message should be forwarded as agent-sdk-message.
-/// Non-accumulated messages (meta events) are always forwarded.
-/// permission_request is accumulated (for streaming delta) but ALSO forwarded
-/// for SET_PENDING_PERMISSION dispatch on the frontend.
-pub(super) fn should_forward_sdk_message(accumulated: bool, msg_type: &str) -> bool {
-    !accumulated || msg_type == "permission_request"
+/// Non-accumulated messages (meta events) are always forwarded. Accumulated
+/// messages are represented by backend-owned streaming/session read models.
+pub(super) fn should_forward_sdk_message(accumulated: bool, _msg_type: &str) -> bool {
+    !accumulated
+}
+
+pub(super) fn pending_permission_request_from_sdk_message(
+    msg: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    if msg.get("type").and_then(|v| v.as_str()) != Some("permission_request") {
+        return None;
+    }
+
+    let mut request = serde_json::Map::new();
+    for key in [
+        "request_id",
+        "tool_name",
+        "input",
+        "tool_use_id",
+        "title",
+        "display_name",
+        "description",
+        "decision_reason",
+    ] {
+        if let Some(value) = msg.get(key) {
+            request.insert(key.to_string(), value.clone());
+        }
+    }
+    Some(serde_json::Value::Object(request))
 }
 
 pub(super) struct SdkMessageAccumulation {
@@ -973,7 +1006,7 @@ pub(super) fn accumulate_loaded_post_turn_base_without_streaming_state<F>(
     emit_stream: &mut F,
 ) -> AccumulateStreamMessageEffect
 where
-    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     let old_turn_id = 1;
     let mut old_message_log = TurnEventLog::default();
@@ -1027,9 +1060,13 @@ where
         chat_session_id,
         &base_mid,
         next_seq,
-        delta.clone(),
-        persist_parts.clone(),
-        |seq, parts, snapshot_parts| emit_stream(&base_mid, seq, parts, snapshot_parts),
+        OneShotStreamingPayload::Append {
+            parts: delta.clone(),
+            snapshot_parts: persist_parts.clone(),
+        },
+        |seq, snapshot, parts, snapshot_parts| {
+            emit_stream(&base_mid, seq, snapshot, parts, snapshot_parts)
+        },
     );
 
     log::warn!(
@@ -1057,7 +1094,7 @@ pub(super) fn accumulate_stream_or_post_turn_message_locked<F>(
     post_turn_base: Option<(String, Vec<MessagePart>)>,
 ) -> AccumulateStreamMessageEffect
 where
-    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     let in_streaming = proc.state == BridgeState::Streaming && proc.streaming_message_id.is_some();
     let post_turn = !in_streaming && proc.last_message_id.is_some();
@@ -1224,7 +1261,9 @@ where
                 proc,
                 chat_session_id,
                 mid,
-                |seq, parts, snapshot_parts| emit_stream(mid, seq, parts, snapshot_parts),
+                |seq, snapshot, parts, snapshot_parts| {
+                    emit_stream(mid, seq, snapshot, parts, snapshot_parts)
+                },
             );
         }
     }
@@ -1294,12 +1333,13 @@ pub(super) async fn accumulate_stream_or_post_turn_message<R: tauri::Runtime>(
                     chat_session_id,
                     msg,
                     elapsed_persist_ms,
-                    |mid, seq, parts, snapshot_parts| {
+                    |mid, seq, snapshot, parts, snapshot_parts| {
                         emit_streaming_delta(
                             app,
                             chat_session_id,
                             mid,
                             seq,
+                            snapshot,
                             parts.to_vec(),
                             snapshot_parts,
                         )
@@ -1526,12 +1566,13 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                             exit_code,
                             interrupted.then_some(InterruptReason::Abort),
                             interrupted.then(|| "Turn interrupted by abort".to_string()),
-                            |mid, seq, parts, snapshot_parts| {
+                            |mid, seq, snapshot, parts, snapshot_parts| {
                                 emit_streaming_delta(
                                     app,
                                     chat_session_id,
                                     mid,
                                     seq,
+                                    snapshot,
                                     parts.to_vec(),
                                     snapshot_parts,
                                 )
@@ -1557,95 +1598,24 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             let Some(effect) = effect else {
                 return;
             };
-            let TurnCompleteTransition {
-                turn_completed,
-                final_msg_id,
-                final_parts,
-                final_streaming_seq,
-                workflow_turn_complete,
-                projected_session_state,
-                released_streaming_parts,
-            } = effect;
-            if turn_completed {
+            if effect.turn_completed {
                 if exit_code == 0 && !interrupted {
                     if let Some(sid) = completed_session_id.as_deref() {
                         persist_agent_session_id(app, session_store, chat_session_id, sid);
                     }
                 }
-                if let Some(ref mid) = final_msg_id {
-                    if !final_parts.is_empty() {
-                        let persisted_parts = persist_streaming_parts(
-                            session_store,
-                            app,
-                            chat_session_id,
-                            mid,
-                            &final_parts,
-                            final_streaming_seq,
-                            Some(now_timestamp()),
-                        );
-                        if let Some(persisted) = persisted_parts {
-                            clear_post_turn_store_base_untrusted_for_message(
-                                handles,
-                                chat_session_id,
-                                mid,
-                            )
-                            .await;
-                            emit_persisted_tool_output_resync(
-                                app,
-                                handles,
-                                chat_session_id,
-                                mid,
-                                final_streaming_seq,
-                                &persisted,
-                            )
-                            .await;
-                        }
-                    }
-                }
-                drop(released_streaming_parts);
-                let Some(projected_turn_complete) = workflow_turn_complete.as_ref() else {
-                    return;
-                };
-                emit_session_state_changed(
+                let consume_pending =
+                    should_consume_pending_after_bridge_turn(handles, chat_session_id).await;
+                complete_streaming_turn_post_lock(
                     app,
-                    chat_session_id,
-                    TurnPhase::Idle,
-                    Some(projected_turn_complete.exit_code),
-                    projected_turn_complete.interrupted,
-                );
-                notify_status_transition(
-                    app,
-                    session_store,
-                    chat_session_id,
-                    TurnPhase::Idle,
-                    projected_session_state,
-                );
-                // Codex app-server は独自の pending キュー
-                // (`start_next_app_server_pending_turn`) で follow-up turn を起動するため、
-                // ここでは pending を消費しない（legacy external bridge のみ消費する）。
-                let pending = {
-                    let is_legacy_bridge = {
-                        let map = handles.lock().await;
-                        map.get(chat_session_id)
-                            .is_some_and(|proc| proc.backend_id != CODEX_BACKEND_ID)
-                    };
-                    if is_legacy_bridge {
-                        take_pending_message(handles, chat_session_id).await
-                    } else {
-                        None
-                    }
-                };
-                // Claude(stdout loop) と同じ共通ヘルパーで Workflow Engine へ通知する。
-                // これが無いと Codex の turn 完了が engine に届かずワークフローが進まない。
-                spawn_workflow_turn_complete_notification(
-                    app.clone(),
                     state.branch_diff_context.clone(),
-                    Arc::clone(session_store),
-                    Arc::clone(handles),
-                    chat_session_id.to_string(),
-                    workflow_turn_complete,
-                    pending,
-                );
+                    session_store,
+                    handles,
+                    chat_session_id,
+                    effect,
+                    TurnCompletePostOptions { consume_pending },
+                )
+                .await;
             } else if exit_code != 0 {
                 persist_context_carry_failed_after_init_error(
                     app,
@@ -1670,12 +1640,13 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                                 proc,
                                 chat_session_id,
                                 &msg,
-                                |mid, seq, parts, snapshot_parts| {
+                                |mid, seq, snapshot, parts, snapshot_parts| {
                                     emit_streaming_delta(
                                         app,
                                         chat_session_id,
                                         mid,
                                         seq,
+                                        snapshot,
                                         parts.to_vec(),
                                         snapshot_parts,
                                     )
@@ -1696,74 +1667,18 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             let transition = transition.unwrap_or_default();
             let effect = transition.turn_complete;
             if effect.turn_completed {
-                if let Some(ref mid) = effect.final_msg_id {
-                    if !effect.final_parts.is_empty() {
-                        let persisted_parts = persist_streaming_parts(
-                            session_store,
-                            app,
-                            chat_session_id,
-                            mid,
-                            &effect.final_parts,
-                            effect.final_streaming_seq,
-                            Some(now_timestamp()),
-                        );
-                        if let Some(persisted) = persisted_parts {
-                            clear_post_turn_store_base_untrusted_for_message(
-                                handles,
-                                chat_session_id,
-                                mid,
-                            )
-                            .await;
-                            emit_persisted_tool_output_resync(
-                                app,
-                                handles,
-                                chat_session_id,
-                                mid,
-                                effect.final_streaming_seq,
-                                &persisted,
-                            )
-                            .await;
-                        }
-                    }
-                }
-                let Some(projected_turn_complete) = effect.workflow_turn_complete.as_ref() else {
-                    return;
-                };
-                emit_session_state_changed(
+                let consume_pending =
+                    should_consume_pending_after_bridge_turn(handles, chat_session_id).await;
+                complete_streaming_turn_post_lock(
                     app,
-                    chat_session_id,
-                    TurnPhase::Idle,
-                    Some(projected_turn_complete.exit_code),
-                    projected_turn_complete.interrupted,
-                );
-                notify_status_transition(
-                    app,
-                    session_store,
-                    chat_session_id,
-                    TurnPhase::Idle,
-                    effect.projected_session_state.clone(),
-                );
-                let pending = {
-                    let is_legacy_bridge = {
-                        let map = handles.lock().await;
-                        map.get(chat_session_id)
-                            .is_some_and(|proc| proc.backend_id != CODEX_BACKEND_ID)
-                    };
-                    if is_legacy_bridge {
-                        take_pending_message(handles, chat_session_id).await
-                    } else {
-                        None
-                    }
-                };
-                spawn_workflow_turn_complete_notification(
-                    app.clone(),
                     state.branch_diff_context.clone(),
-                    Arc::clone(session_store),
-                    Arc::clone(handles),
-                    chat_session_id.to_string(),
-                    effect.workflow_turn_complete,
-                    pending,
-                );
+                    session_store,
+                    handles,
+                    chat_session_id,
+                    effect,
+                    TurnCompletePostOptions { consume_pending },
+                )
+                .await;
             } else if transition.was_initializing {
                 notify_status_transition(
                     app,
@@ -1890,6 +1805,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                 }
             }
 
+            let pending_permission_request = pending_permission_request_from_sdk_message(&msg);
             let permission_transition = if msg_type == "permission_request" {
                 let request_id = msg.get("request_id").and_then(|v| v.as_str());
                 let mut map = handles.lock().await;
@@ -1900,12 +1816,13 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                         request_id,
                         permission_request_received_at
                             .expect("permission_request receive time captured after stale check"),
-                        |mid, seq, parts, snapshot_parts| {
+                        |mid, seq, snapshot, parts, snapshot_parts| {
                             emit_streaming_delta(
                                 app,
                                 chat_session_id,
                                 mid,
                                 seq,
+                                snapshot,
                                 parts.to_vec(),
                                 snapshot_parts,
                             )
@@ -1921,20 +1838,23 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
             if should_forward_sdk_message(effect.accumulated, msg_type) {
                 let _ = app.emit("agent-sdk-message", &msg);
             }
-            if permission_transition.did_transition {
-                emit_session_state_changed(
+            if msg_type == "permission_request" {
+                emit_session_state_changed_with_pending_permission_request(
                     app,
                     chat_session_id,
                     TurnPhase::WaitingPermission,
                     None,
                     false,
+                    permission_transition.projected_session_state.clone(),
+                    pending_permission_request.clone(),
                 );
-                notify_status_transition(
+                notify_status_transition_with_pending_permission_request(
                     app,
                     session_store,
                     chat_session_id,
                     TurnPhase::WaitingPermission,
                     permission_transition.projected_session_state,
+                    pending_permission_request,
                 );
             }
         }
@@ -1958,8 +1878,32 @@ mod moved_tests {
     };
 
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use tauri::Listener;
     use tokio::sync::Mutex;
+
+    fn collect_session_state_events(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    ) -> Arc<StdMutex<Vec<serde_json::Value>>> {
+        let received = Arc::new(StdMutex::new(Vec::new()));
+        let received_for_listener = Arc::clone(&received);
+        app.listen("agent-session-state-changed", move |event| {
+            let payload = serde_json::from_str::<serde_json::Value>(event.payload())
+                .expect("session state event payload must be json");
+            received_for_listener.lock().unwrap().push(payload);
+        });
+        received
+    }
+
+    fn pending_request_message(request_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "permission_request",
+            "request_id": request_id,
+            "tool_name": "Edit",
+            "input": { "file_path": "/repo/src/lib.rs" },
+            "tool_use_id": "toolu_001",
+        })
+    }
 
     #[test]
     fn session_ready_message_parsing() {
@@ -1988,7 +1932,7 @@ mod moved_tests {
     }
 
     #[tokio::test]
-    async fn post_turn_reseed_emit_failure_does_not_persist_or_advance_seq() {
+    async fn post_turn_reseed_emit_failure_keeps_snapshot_retry_without_persist_or_seq_advance() {
         let mut proc = make_test_agent_process();
         let base_mid = "agent-message-1".to_string();
         proc.streaming_delta_seq_by_message
@@ -2012,8 +1956,14 @@ mod moved_tests {
             &msg,
             base_mid.clone(),
             base_parts,
-            &mut |mid, seq, parts, snapshot_parts| {
-                emitted.push((mid.to_string(), seq, parts.to_vec(), snapshot_parts()));
+            &mut |mid, seq, snapshot, parts, snapshot_parts| {
+                emitted.push((
+                    mid.to_string(),
+                    seq,
+                    snapshot,
+                    parts.to_vec(),
+                    snapshot_parts(),
+                ));
                 (false, true)
             },
         );
@@ -2024,7 +1974,18 @@ mod moved_tests {
         assert!(effect.persist_parts.is_empty());
         assert_eq!(proc.streaming_delta_seq_by_message.get(&base_mid), Some(&4));
         assert_eq!(proc.streaming_delta_seq, 0);
-        assert!(proc.retry_stream_delta.is_none());
+        let retry = proc.retry_stream_delta.as_ref().expect("one-shot retry");
+        assert_eq!(retry.message_id, base_mid);
+        assert_eq!(retry.seq, 5);
+        assert!(retry.snapshot);
+        assert!(!retry.updates_live_counter);
+        assert_eq!(
+            retry.parts,
+            vec![MessagePart::Text {
+                content: "base delta".to_string(),
+                parent_tool_use_id: None,
+            }]
+        );
         assert_eq!(emitted.len(), 1);
         assert_eq!(emitted[0].1, 5);
         let _ = proc.child.kill().await;
@@ -2054,7 +2015,7 @@ mod moved_tests {
             &msg,
             base_mid.clone(),
             base_parts,
-            &mut |_mid, _seq, _parts, _snapshot_parts| (true, true),
+            &mut |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
         );
 
         assert!(effect.accumulated);
@@ -2068,6 +2029,149 @@ mod moved_tests {
             }]
         );
         let _ = proc.child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn streaming_permission_request_emits_pending_state_event_and_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let center = Arc::new(crate::usecase::agent_session::status::AgentStatusCenter::new());
+        let app = tauri::test::mock_builder()
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
+            .manage(Arc::clone(&center))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let received = collect_session_state_events(app.handle());
+        let store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.backend_id = CLAUDE_BACKEND_ID.to_string();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        proc.streaming_message_id = Some("agent-message-1".to_string());
+        handles.lock().await.insert(session.id.clone(), proc);
+        let mut state = ExternalBridgeMessageState::default();
+
+        handle_external_bridge_message(
+            app.handle(),
+            &store,
+            &handles,
+            &session.id,
+            pending_request_message("req-streaming"),
+            &mut state,
+        )
+        .await;
+
+        let events = received.lock().unwrap();
+        assert!(
+            events.iter().any(|event| {
+                event.get("chat_session_id").and_then(|v| v.as_str()) == Some(session.id.as_str())
+                    && event.get("turn_phase").and_then(|v| v.as_str())
+                        == Some("waiting_permission")
+                    && event
+                        .pointer("/pending_permission_request/request_id")
+                        .and_then(|v| v.as_str())
+                        == Some("req-streaming")
+            }),
+            "permission_request must be mirrored through session state"
+        );
+        drop(events);
+        let status = center
+            .get_session(&session.id)
+            .expect("status notification should update session status");
+        assert!(status.pending_permission);
+        assert_eq!(
+            status
+                .pending_permission_request
+                .as_ref()
+                .and_then(|request| request.get("request_id"))
+                .and_then(|value| value.as_str()),
+            Some("req-streaming")
+        );
+        let removed = handles.lock().await.remove(&session.id);
+        if let Some(mut proc) = removed {
+            assert_eq!(proc.turn_phase, TurnPhase::WaitingPermission);
+            let _ = proc.child.kill().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn non_streaming_permission_request_still_emits_pending_state_event_and_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let center = Arc::new(crate::usecase::agent_session::status::AgentStatusCenter::new());
+        let app = tauri::test::mock_builder()
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
+            .manage(Arc::clone(&center))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let received = collect_session_state_events(app.handle());
+        let store = Arc::new(crate::test_support::build_session_store());
+        let session = create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.backend_id = CLAUDE_BACKEND_ID.to_string();
+        proc.state = BridgeState::Ready;
+        proc.turn_phase = TurnPhase::Idle;
+        handles.lock().await.insert(session.id.clone(), proc);
+        let mut state = ExternalBridgeMessageState::default();
+
+        handle_external_bridge_message(
+            app.handle(),
+            &store,
+            &handles,
+            &session.id,
+            pending_request_message("req-ready"),
+            &mut state,
+        )
+        .await;
+
+        let events = received.lock().unwrap();
+        assert!(
+            events.iter().any(|event| {
+                event.get("chat_session_id").and_then(|v| v.as_str()) == Some(session.id.as_str())
+                    && event.get("turn_phase").and_then(|v| v.as_str())
+                        == Some("waiting_permission")
+                    && event
+                        .pointer("/pending_permission_request/request_id")
+                        .and_then(|v| v.as_str())
+                        == Some("req-ready")
+            }),
+            "non-streaming permission_request must still be mirrored through session state"
+        );
+        drop(events);
+        let status = center
+            .get_session(&session.id)
+            .expect("status notification should update session status");
+        assert!(status.pending_permission);
+        assert_eq!(
+            status
+                .pending_permission_request
+                .as_ref()
+                .and_then(|request| request.get("request_id"))
+                .and_then(|value| value.as_str()),
+            Some("req-ready")
+        );
+        let removed = handles.lock().await.remove(&session.id);
+        if let Some(mut proc) = removed {
+            assert_eq!(proc.turn_phase, TurnPhase::Idle);
+            let _ = proc.child.kill().await;
+        }
     }
 
     #[test]
@@ -2377,8 +2481,28 @@ mod moved_tests {
         // Accumulated → NOT forward (delta emit only)
         assert!(!should_forward_sdk_message(true, "assistant"));
         assert!(!should_forward_sdk_message(true, "stream_event"));
-        // permission_request → accumulated=true but still forward
-        assert!(should_forward_sdk_message(true, "permission_request"));
+        // permission_request is accumulated and mirrored through session state.
+        assert!(!should_forward_sdk_message(true, "permission_request"));
+    }
+
+    #[test]
+    fn test_pending_permission_request_from_sdk_message() {
+        let msg = serde_json::json!({
+            "type": "permission_request",
+            "request_id": "req-1",
+            "tool_name": "Edit",
+            "input": { "file_path": "/tmp/a.txt" },
+            "tool_use_id": "toolu-1",
+            "chat_session_id": "session-1"
+        });
+
+        let request = pending_permission_request_from_sdk_message(&msg).expect("request payload");
+
+        assert_eq!(request["request_id"], "req-1");
+        assert_eq!(request["tool_name"], "Edit");
+        assert_eq!(request["input"]["file_path"], "/tmp/a.txt");
+        assert_eq!(request["tool_use_id"], "toolu-1");
+        assert!(request.get("chat_session_id").is_none());
     }
 
     #[test]

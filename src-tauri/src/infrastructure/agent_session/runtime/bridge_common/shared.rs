@@ -855,6 +855,24 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
     turn_phase: TurnPhase,
     session_state_override: Option<crate::usecase::agent_session::session::SessionState>,
 ) {
+    notify_status_transition_with_pending_permission_request(
+        app,
+        session_store,
+        chat_session_id,
+        turn_phase,
+        session_state_override,
+        None,
+    );
+}
+
+pub(crate) fn notify_status_transition_with_pending_permission_request<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    turn_phase: TurnPhase,
+    session_state_override: Option<crate::usecase::agent_session::session::SessionState>,
+    pending_permission_request: Option<serde_json::Value>,
+) {
     use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
     use crate::usecase::agent_session::status::{
         current_timestamp, AgentStatusCenter, AgentStatusNotifier, SessionStatus, TurnPhaseRepr,
@@ -911,6 +929,9 @@ pub(crate) fn notify_status_transition<R: tauri::Runtime>(
             turn_phase: TurnPhaseRepr::from(status_turn_phase),
             session_state,
             pending_permission: matches!(turn_phase, TurnPhase::WaitingPermission),
+            pending_permission_request: matches!(turn_phase, TurnPhase::WaitingPermission)
+                .then_some(pending_permission_request)
+                .flatten(),
             last_activity_at: current_timestamp(),
             workflow_step: wf_step,
             workflow_execution_state: wf_state,
@@ -1610,9 +1631,9 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
     /// stdout reader uses, instead of mirroring the prepare/apply sequence.
     pub(in crate::infrastructure::agent_session::runtime::bridge_common) fn recording_emit<'a>(
         events: &'a mut Vec<RecordedEmit>,
-    ) -> impl FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool) + 'a
+    ) -> impl FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool) + 'a
     {
-        |_mid, _seq, parts, _snapshot_parts| {
+        |_mid, _seq, _snapshot, parts, _snapshot_parts| {
             events.push(RecordedEmit::StreamingFlush {
                 parts_count: parts.len(),
                 tail_text: match parts.last() {

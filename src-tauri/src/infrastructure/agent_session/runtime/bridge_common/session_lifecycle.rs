@@ -53,6 +53,7 @@ use crate::usecase::agent_session::event_log::InterruptReason;
 use crate::usecase::agent_session::event_log::PromptInput;
 use crate::usecase::agent_session::event_log::WorkflowTurnCompleteInput;
 use crate::usecase::agent_session::session::add_message_internal;
+use crate::usecase::agent_session::session::lifecycle_controller::SessionLifecycleController;
 use crate::usecase::agent_session::session::now_timestamp;
 use crate::usecase::agent_session::session::project_tool_output_parts_for_stream;
 use crate::usecase::agent_session::session::ChatMessage;
@@ -267,6 +268,36 @@ pub(super) fn pending_queue_view(
         .collect()
 }
 
+pub(super) fn persist_completed_turn_session_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    exit_code: i64,
+    interrupted: bool,
+) -> Option<SessionState> {
+    let data_dir = match resolve_data_dir(app) {
+        Ok(data_dir) => data_dir,
+        Err(e) => {
+            log::warn!(
+                "Failed to resolve data dir for completed turn state persist \
+                 (session {chat_session_id}): {e}"
+            );
+            return None;
+        }
+    };
+    let controller = SessionLifecycleController {
+        session_store,
+        data_dir: &data_dir,
+    };
+    match controller.complete_turn_state(chat_session_id, exit_code, interrupted) {
+        Ok(session_state) => Some(session_state),
+        Err(e) => {
+            log::warn!("Failed to persist completed turn state for session {chat_session_id}: {e}");
+            None
+        }
+    }
+}
+
 pub(super) struct TurnCompletePostOptions {
     pub(crate) consume_pending: bool,
 }
@@ -299,7 +330,7 @@ pub(super) fn run_turn_complete_transition_locked<F>(
     emit_stream: F,
 ) -> TurnCompleteTransition
 where
-    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     run_turn_complete_transition_locked_with_interrupt(
         proc,
@@ -320,7 +351,7 @@ pub(super) fn run_turn_complete_transition_locked_with_interrupt<F>(
     emit_stream: F,
 ) -> TurnCompleteTransition
 where
-    F: FnMut(&str, u64, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
 {
     if proc.turn_phase == TurnPhase::Idle && proc.state != BridgeState::Initializing {
         return TurnCompleteTransition::default();
@@ -381,7 +412,7 @@ where
             mark_post_turn_store_base_untrusted(proc, mid);
         }
     }
-    let released_streaming_parts = if exit_code != 0 || !has_pending_stream_flush(proc) {
+    let released_streaming_parts = if !has_pending_stream_flush(proc) {
         release_completed_turn_streaming_buffer(proc)
     } else {
         Vec::new()
@@ -403,7 +434,7 @@ pub(super) async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
-    effect: TurnCompleteTransition,
+    mut effect: TurnCompleteTransition,
     options: TurnCompletePostOptions,
 ) {
     if !effect.turn_completed {
@@ -441,6 +472,15 @@ pub(super) async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
             }
         }
     }
+    drop(std::mem::take(&mut effect.released_streaming_parts));
+
+    let session_state = persist_completed_turn_session_state(
+        app,
+        session_store,
+        chat_session_id,
+        projected_exit_code,
+        interrupted,
+    );
 
     emit_session_state_changed(
         app,
@@ -448,13 +488,14 @@ pub(super) async fn complete_streaming_turn_post_lock<R: tauri::Runtime>(
         TurnPhase::Idle,
         Some(projected_exit_code),
         interrupted,
+        session_state.clone(),
     );
     notify_status_transition(
         app,
         session_store,
         chat_session_id,
         TurnPhase::Idle,
-        effect.projected_session_state.clone(),
+        session_state.or(effect.projected_session_state.clone()),
     );
 
     let pending = if options.consume_pending {
@@ -1238,7 +1279,14 @@ pub(super) async fn start_agent_turn<R: tauri::Runtime>(
     prepend_pending_messages_to_runtime(handles, chat_session_id, preserved_pending_messages).await;
 
     // Emit state change so frontend can track turn phase
-    emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None, false);
+    emit_session_state_changed(
+        app,
+        chat_session_id,
+        TurnPhase::Streaming,
+        None,
+        false,
+        None,
+    );
     notify_status_transition(
         app,
         session_store,
@@ -1341,7 +1389,14 @@ pub(super) async fn start_agent_turn_locked<R: tauri::Runtime>(
     prepend_pending_messages_to_runtime(handles, chat_session_id, preserved_pending_messages).await;
 
     // Emit state change so frontend can track turn phase
-    emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None, false);
+    emit_session_state_changed(
+        app,
+        chat_session_id,
+        TurnPhase::Streaming,
+        None,
+        false,
+        None,
+    );
     notify_status_transition(
         app,
         session_store,
@@ -2229,6 +2284,33 @@ pub struct SendMessageResponse {
     pub sessions: Vec<SessionSummary>,
 }
 
+#[derive(Clone, Serialize)]
+struct AgentTurnPreparedPayload<'a> {
+    chat_session_id: &'a str,
+    session: &'a ChatSession,
+    human_message: &'a ChatMessage,
+    agent_message: &'a ChatMessage,
+}
+
+fn emit_agent_turn_prepared<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    response: &SendMessageResponse,
+) {
+    let Some(agent_message) = response.agent_message.as_ref() else {
+        return;
+    };
+    use tauri::Emitter;
+    let _ = app.emit(
+        "agent-turn-prepared",
+        AgentTurnPreparedPayload {
+            chat_session_id: &response.session.id,
+            session: &response.session,
+            human_message: &response.human_message,
+            agent_message,
+        },
+    );
+}
+
 pub(super) struct PreparedAgentTurn {
     pub(crate) session_id: String,
     pub(crate) backend_id: String,
@@ -2563,8 +2645,8 @@ pub(super) async fn prepare_send_agent_message_internal(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn start_prepared_agent_turn(
-    app: &tauri::AppHandle,
+pub(super) async fn start_prepared_agent_turn<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     session_store: &Arc<SessionStore>,
     registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -2611,6 +2693,24 @@ pub(super) async fn start_prepared_agent_turn(
     .await
 }
 
+fn spawn_prepared_agent_turn_after_response<R: tauri::Runtime + 'static>(
+    app: tauri::AppHandle<R>,
+    session_store: Arc<SessionStore>,
+    registry: Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
+    handles: Arc<Mutex<AgentProcessMap>>,
+    turn: PreparedAgentTurn,
+) {
+    let session_id = turn.session_id.clone();
+    tokio::spawn(async move {
+        tokio::task::yield_now().await;
+        if let Err(e) =
+            start_prepared_agent_turn(&app, &session_store, &registry, &handles, turn).await
+        {
+            log::error!("Failed to start prepared agent turn for session {session_id}: {e}");
+        }
+    });
+}
+
 pub(super) async fn steer_prepared_agent_turn(
     registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
     steer: PreparedAgentSteer,
@@ -2641,8 +2741,8 @@ pub(super) async fn steer_prepared_agent_turn(
 /// Unified command to send a message: handles session creation, message persistence,
 /// turn phase check (interrupt if streaming, start query if idle), and pending message queuing.
 #[allow(clippy::too_many_arguments)]
-pub async fn send_agent_message_internal(
-    app: &tauri::AppHandle,
+pub async fn send_agent_message_internal<R: tauri::Runtime + 'static>(
+    app: &tauri::AppHandle<R>,
     branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     registry: &Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>,
@@ -2672,7 +2772,7 @@ pub async fn send_agent_message_internal(
     let (response, prepared_input) = {
         let _send_guard = acquire_session_runtime_lock(&lock_key).await;
         prepare_send_agent_message_internal(
-            Some(app),
+            None,
             mention_resolver.as_ref(),
             branch_diff_context,
             session_store,
@@ -2713,7 +2813,14 @@ pub async fn send_agent_message_internal(
     if let Some(input) = prepared_input {
         match input {
             PreparedAgentRuntimeInput::Turn(turn) => {
-                start_prepared_agent_turn(app, session_store, registry, handles, turn).await?;
+                emit_agent_turn_prepared(app, &response);
+                spawn_prepared_agent_turn_after_response(
+                    app.clone(),
+                    Arc::clone(session_store),
+                    Arc::clone(registry),
+                    Arc::clone(handles),
+                    turn,
+                );
             }
             PreparedAgentRuntimeInput::Steer(steer) => {
                 steer_prepared_agent_turn(registry, steer).await?;
@@ -2901,7 +3008,10 @@ mod moved_tests {
     use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
     use crate::adaptor::gateway::workflow::test_support::TestRuntimeKernel;
     use crate::infrastructure::agent_session::runtime::runtime_coordinator::clear_pending_turn_starting;
-    use crate::infrastructure::agent_session::runtime::{AgentBackendRegistry, ModelInfo};
+    use crate::infrastructure::agent_session::runtime::{
+        AgentBackend, AgentBackendRegistry, AgentMessage, ModelInfo, PermissionResponse,
+        SessionConfig, SessionHandle,
+    };
     use crate::usecase::agent_session::context::{
         BranchDiffContextChangedFile, BranchDiffContextPort, BranchDiffContextStats,
         BranchDiffContextSummary,
@@ -2916,10 +3026,11 @@ mod moved_tests {
 
     use std::collections::{HashMap, VecDeque};
 
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex as StdMutex};
     use std::time::{Duration, Instant};
 
-    use tokio::sync::Mutex;
+    use tauri::Listener;
+    use tokio::sync::{Mutex, Semaphore};
 
     struct FakeBranchDiffContext;
 
@@ -2942,6 +3053,65 @@ mod moved_tests {
         }
     }
 
+    struct BlockingSendBackend {
+        started: Arc<Semaphore>,
+        release: Arc<Semaphore>,
+        finished: Arc<Semaphore>,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentBackend for BlockingSendBackend {
+        fn id(&self) -> &str {
+            CODEX_BACKEND_ID
+        }
+
+        fn name(&self) -> &str {
+            "BlockingSend"
+        }
+
+        async fn start_session(&self, config: SessionConfig) -> Result<SessionHandle, String> {
+            Ok(SessionHandle {
+                chat_session_id: config.chat_session_id,
+                backend_id: CODEX_BACKEND_ID.to_string(),
+            })
+        }
+
+        async fn send_message(
+            &self,
+            _session: &SessionHandle,
+            _message: AgentMessage,
+        ) -> Result<(), String> {
+            self.started.add_permits(1);
+            let _permit = self
+                .release
+                .acquire()
+                .await
+                .map_err(|_| "release semaphore closed".to_string())?;
+            self.finished.add_permits(1);
+            Ok(())
+        }
+
+        async fn interrupt(&self, _session: &SessionHandle) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn respond_permission(
+            &self,
+            _session: &SessionHandle,
+            _response: PermissionResponse,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn fixed_models(&self) -> Option<Vec<String>> {
+            Some(vec!["mock-model".to_string()])
+        }
+
+        async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
     fn pending_message_for_test(id: &str) -> PendingMessage {
         PendingMessage {
             id: id.to_string(),
@@ -2958,6 +3128,110 @@ mod moved_tests {
             existing_human_message_id: None,
             existing_agent_message_id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn send_agent_message_emits_placeholder_event_before_runtime_send_completes() {
+        let temp = tempfile::tempdir().unwrap();
+        let started = Arc::new(Semaphore::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let finished = Arc::new(Semaphore::new(0));
+
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(BlockingSendBackend {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            finished: Arc::clone(&finished),
+        }));
+        registry.set_default(Some(CODEX_BACKEND_ID.to_string()));
+        let registry = Arc::new(registry);
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mention_resolver: Arc<
+            dyn crate::infrastructure::agent_session::resolver_ports::MentionResolverPort,
+        > = Arc::new(crate::adaptor::controller::wiring::build_code_usecase());
+        let app = tauri::test::mock_builder()
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                temp.path().to_path_buf(),
+            ))
+            .manage(mention_resolver)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        let (prepared_tx, prepared_rx) = tokio::sync::oneshot::channel();
+        let prepared_tx = Arc::new(StdMutex::new(Some(prepared_tx)));
+        let prepared_tx_for_listener = Arc::clone(&prepared_tx);
+        app.listen("agent-turn-prepared", move |event| {
+            let payload = serde_json::from_str::<serde_json::Value>(event.payload())
+                .expect("agent-turn-prepared payload must be json");
+            if let Some(tx) = prepared_tx_for_listener.lock().unwrap().take() {
+                let _ = tx.send(payload);
+            }
+        });
+
+        let response = tokio::time::timeout(
+            Duration::from_millis(200),
+            send_agent_message_internal(
+                app.handle(),
+                None,
+                &session_store,
+                &registry,
+                &handles,
+                None,
+                "/repo".to_string(),
+                "hello".to_string(),
+                crate::domain::agent_session::PermissionMode::Edit,
+                false,
+                Some(CODEX_BACKEND_ID.to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+        .await
+        .expect("send response must not wait for runtime send")
+        .unwrap();
+
+        let agent_message = response
+            .agent_message
+            .expect("new turn response includes agent placeholder");
+        assert_eq!(agent_message.role, MessageRole::Agent);
+        assert!(agent_message
+            .parts
+            .as_ref()
+            .map(Vec::is_empty)
+            .unwrap_or(true));
+
+        let prepared_payload = tokio::time::timeout(Duration::from_secs(1), prepared_rx)
+            .await
+            .expect("agent-turn-prepared should emit before runtime send completes")
+            .expect("agent-turn-prepared channel should stay open");
+        assert_eq!(
+            prepared_payload
+                .get("chat_session_id")
+                .and_then(serde_json::Value::as_str),
+            Some(response.session.id.as_str())
+        );
+        assert_eq!(
+            prepared_payload
+                .get("agent_message")
+                .and_then(|message| message.get("id"))
+                .and_then(serde_json::Value::as_str),
+            Some(agent_message.id.as_str())
+        );
+
+        let _started_permit = tokio::time::timeout(Duration::from_secs(1), started.acquire())
+            .await
+            .expect("background runtime send should start after response")
+            .expect("started semaphore should stay open");
+        release.add_permits(1);
+        let _finished_permit = tokio::time::timeout(Duration::from_secs(1), finished.acquire())
+            .await
+            .expect("background runtime send should finish after release")
+            .expect("finished semaphore should stay open");
     }
 
     #[test]
@@ -3219,12 +3493,16 @@ mod moved_tests {
         proc.streaming_delta_seq_by_message
             .insert(message_id.to_string(), 4);
         proc.retry_stream_delta = Some(PendingStreamDelta {
+            message_id: message_id.to_string(),
             seq: 4,
+            snapshot: false,
             parts: vec![live_part],
+            retry_snapshot_parts: None,
             part_count: 1,
             pending_bytes: "live preview without content ref".len(),
             rollbacks: Vec::new(),
             confirmed_stream_part_len_after_success: 1,
+            updates_live_counter: true,
         });
         let handles = Arc::new(Mutex::new(HashMap::from([(session.id.clone(), proc)])));
 
