@@ -49,6 +49,7 @@ Issue [#1176](https://github.com/siro33950/releash/issues/1176) のスコープ�
 | `WorkflowName` | `WorkflowDefinition.name` | attribute | name 属性として扱う。 |
 | `NodeName` | `NodeDefinition.name` | attribute | name 属性として扱う。 |
 | `WorktreePath` | `Workspace.worktree_ref.path` | attribute | Worktree 参照の path。 |
+| `WorkflowExecution.task` | Artifact (`request`) | legacy_name | 起動時自由文。Task Entity ではなく、初回 Artifact `request` へ移行する。 |
 | `NodeType` | なし | not_adopted | NodeDefinition の構成・参照先・実行内容から判断する。 |
 | `ChildNodeDefinition` | NodeDefinition | legacy_name | fanout 先も通常の NodeDefinition として扱う。 |
 | `WorkflowExecutionState` | `WorkflowExecution.status` | attribute | lifecycle status として扱う。 |
@@ -206,7 +207,6 @@ Issue [#1176](https://github.com/siro33950/releash/issues/1176) のスコープ�
 |---|---|
 | NodeExecution | 未実装。現行は WorkflowExecution 内の step state / history として表現されている。 |
 | Fanout | 未実装。現行は parallel 系語彙で表現されている。 |
-| Task | 未実装。 |
 | Artifact | 未実装。現行は StepOutput / StepHistoryEntry / ChildOutputSnapshot などで部分的に表現されている。 |
 | Workspace | 独立 entity としては未実装。現行は `workspace_id ≒ worktree_path`。 |
 | Command | 未実装。 |

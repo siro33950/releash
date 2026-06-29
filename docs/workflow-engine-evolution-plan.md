@@ -73,15 +73,9 @@ NodeDefinition の一回の実行結果。所属 WorkflowExecution・node・反�
 - 各要素は子の `input` に入る（items 要素型 == child の input 型を load 時に検証）。
 - fanout の `artifact` は子 Artifact の配列。**集約機構（aggregate / all / any）は持たない**。結果でまとめて分岐したい場合は、配列を畳んで boolean を出す Node（command 等）を挟み、通常の rules で分岐する。
 
-### Task
-
-WorkflowExecution 内で NodeExecution 間を跨ぐ作業情報。main / sub の区別を持たない。WorkflowExecution に属する状態として所有する。
-
-固定 schema の global な作業リスト `tasks[]`（要素 `{ id, description, done }`）として持つ。書き込みは CLI のみ、workflow からは read（`fanout` の `items: tasks`）のみ。workflow YAML では定義しない。`tasks` は予約語。`start` の `"<task>"` 文字列は `tasks` には入らず、初回 Artifact `request`（String・予約名）になる。
-
 ### Artifact / Contract
 
-Artifact は NodeExecution の間で生成・参照される判断材料・成果物・中間出力で、状態を持たない。Contract は Artifact の validation 語彙。全 node 種別（command / session / CLI submit）が同一の Contract 機構で検証済み Artifact を出す。routing が見る値は Contract に宣言された boolean / enum であること。起動時の `"<task>"` は初回 Artifact `request`（String・予約名）として扱う。
+Artifact は NodeExecution の間で生成・参照される Object で、状態を持たない。Artifact の意味と schema はユーザーまたは WorkflowDefinition が決める。Contract は Artifact の validation 語彙。全 node 種別（command / session / CLI submit）が同一の Contract 機構で検証済み Artifact を出す。routing が見る値は Contract に宣言された boolean / enum であること。起動時入力は初回 Artifact `request`（String・予約名）として扱う。
 
 ### 状態変更と event log
 
@@ -111,12 +105,13 @@ WorkflowDefinition / NodeDefinition の構文・参照・validation error は li
 | 項目 | 理由 |
 | --- | --- |
 | テンプレート / Skill / Main Agent 仲介 | 不要と判断し採用しない。 |
-| Worktree isolation | Releash は Worktree を選択してから task を渡す設計。workflow 起動時の自動生成は扱わない。 |
+| Worktree isolation | Releash は Worktree を選択してから起動時入力を渡す設計。workflow 起動時の自動生成は扱わない。 |
 | Chat router | 自然文からの workflow 自動選択は不要。CLI で十分。 |
 | PR/Issue の直接 lifecycle 連携 | 直接 API 連携ではなく workflow template の操作として表現する。 |
 | Workflow marketplace / defaults | curated built-in に絞る。 |
 | Per-node MCP | 現在の workflow boundary では不要。 |
 | Workflow map / DAG 表示 | timeline と node 詳細で足りる。loop があり厳密な DAG 表示は誤解を生む。 |
+| WorkflowExecution-owned Task / `tasks[]` | Releash core Entity としては持たない。task 的な配列は Artifact のユーザー定義 field（例: `plan.tasks`）として扱う。 |
 
 ## CLI/API の形
 
@@ -130,7 +125,7 @@ releash workflow status <execution-id>
 releash workflow logs <execution-id>
 
 # 操作（状態変更は typed command 経由）
-releash workflow start <workflow-name> "<task>"
+releash workflow start <workflow-name> "<request>"
 releash workflow approve <execution-id> --node <node-name> --comment "LGTM"
 releash workflow abort <execution-id>
 
@@ -138,11 +133,6 @@ releash workflow abort <execution-id>
 releash workflow output submit <execution-id> --node <node-name> --type <contract> --json '{"key":"value"}'
 releash workflow output validate <execution-id> --node <node-name> --file output.json
 releash workflow output get <execution-id> --node <node-name>
-
-# Task（global 作業リスト・書き込みは CLI のみ）
-releash task list <execution-id>
-releash task add <execution-id> --description "..."
-releash task done <execution-id> --id <task-id>
 ```
 
 CLI は local API 経由で engine を操作する。headless engine（server-client 化）は別系列（GitHub #77/#78/#79）で扱い、後段で統合する。
@@ -180,13 +170,13 @@ main agent は user-facing narrator として残す（進捗報告・承認依�
    - `type:` を廃止し、`command` / `session` / `fanout` の kind block をちょうど1つ持つ schema にする。
    - `session.facets` に `policy` / `knowledge` / `instruction` を集約する。
    - `artifact` / `inputs` / `input` / `rules` を共通フィールドとして扱う。
-   - kind block が0個 / 2個以上、`tasks` など予約語との衝突、未定義 Contract / node 参照は load 時 Diagnostic にする。
+   - kind block が0個 / 2個以上、未定義 Contract / node 参照は load 時 Diagnostic にする。
 
 2. 文法健全性 / Diagnostic front-end を独立させる
 
    - WorkflowDefinition の検証を parse / shape、resolve、typecheck、control-flow の段階に分ける。
    - parse / shape は YAML 構文、unknown field、kind block 個数、kind ごとの許可 field を検査する。
-   - resolve は node 名、Contract 名、Artifact path、予約名（`request` / `tasks` / `item`）を解決する。
+   - resolve は node 名、Contract 名、Artifact path、予約名（`request` / `item`）を解決する。
    - typecheck は `rules.when.on` の boolean、`switch.on` の enum、fanout `items` と child `input` の型一致、`artifact` / `input` の Contract 存在を検査する。
    - control-flow は終端 node、到達不能 node、cycle、`loop_guard`、rules の排他・網羅を検査し、任意の Artifact 値から遷移先が一意に定まることを保証する。
    - Diagnostic は lifecycle state ではなく validation result として返す。UI / CLI は Rust が返す Diagnostic code / span / message を表示するだけにし、frontend に validator を再実装しない。
@@ -209,7 +199,7 @@ main agent は user-facing narrator として残す（進捗報告・承認依�
 5. Artifact 入力と参照規約を実装する
 
    - 旧 `pass_output_from` / `pass_previous_response` / `workflow_variables` 依存の入力注入を `inputs:` に置き換える。
-   - `request` を起動時 `"<task>"` 由来の初回 Artifact として扱う。`request` は Node 名ではなく予約 Artifact 名にする。
+   - `request` を起動時入力由来の初回 Artifact として扱う。`request` は Node 名ではなく予約 Artifact 名にする。
    - fanout child では `item` / `item.<field>` を使えるようにする。
    - template 補間は `{{ request }}` / `{{ node.field }}` / `{{ item.field }}` の参照規約に統一する。
 
@@ -249,19 +239,12 @@ main agent は user-facing narrator として残す（進捗報告・承認依�
 
 11. CLI/API command boundary を新語彙に揃える
 
-    - `releash workflow start <workflow-name> "<task>"` を CLI から起動できるようにする。
+    - `releash workflow start <workflow-name> "<request>"` を CLI から起動できるようにする。
     - `releash workflow executions` / `status <execution-id>` / `logs <execution-id>` を正にする。
     - `output submit|validate|get` は `--node` / `--type` を使い、step 語彙を出さない。
     - UI / CLI / API / Agent action は同じ typed command boundary に落とす。CLI は local API 経由を正とし、file-direct / pending file 経路は必要最小の adapter に縮退する。
 
-12. WorkflowExecution-owned `tasks[]` を実装する
-
-    - 固定 schema の `tasks[]`（`{ id, description, done }`）を WorkflowExecution に属する状態として持つ。
-    - `releash task list|add|done <execution-id>` を追加し、書き込みは CLI に閉じる。
-    - workflow からは read のみ許可し、`fanout.items: tasks` で展開できるようにする。
-    - workflow YAML から `tasks` へ書き込めないこと、Node 名 `tasks` を拒否することを保証する。
-
-13. Resume を abort-only recovery から移行する
+12. Resume を abort-only recovery から移行する
 
     - 中断状態を再開可能な checkpoint として WorkflowExecution / NodeExecution に表現する。
     - event log から最後に確定した NodeExecution までを再構築し、次の NodeExecution から再開できるようにする。
@@ -284,7 +267,7 @@ main agent は user-facing narrator として残す（進捗報告・承認依�
 - Diagnostic front-end: parse / shape、resolve、typecheck、control-flow の各段階が structured Diagnostic（code / span / message）を返すこと。
 - Fixture suite: `valid/` と `invalid/` の YAML fixture を用意し、invalid fixture は期待 Diagnostic code を固定して検証すること。
 - Parse / shape: YAML 構文、unknown field、kind block が0個 / 2個以上、kind ごとの不許可 field、旧 `type:` / `output_contract` / `parallel_children` / `aggregate` / `rules.match` の拒否。
-- Resolve: 予約語 `tasks` の node 名拒否、未定義 node / Contract / Artifact path、`request` / `tasks` / `item` のスコープ違反、fanout child 参照の解決失敗を Diagnostic にすること。
+- Resolve: 未定義 node / Contract / Artifact path、`request` / `item` のスコープ違反、fanout child 参照の解決失敗を Diagnostic にすること。
 - Typecheck: `when.on` が boolean field、`switch.on` が enum field、`artifact` / `input` が既存 Contract、fanout `items` の要素型と child `input` 型が一致すること。
 - Control-flow: 終端 node、到達不能 node、rules の排他・網羅、switch enum の抜け、cycle に到達可能な `loop_guard` が無い場合の拒否、任意の Artifact 値で遷移先が1つに定まること。
 - Session gate: `gate` 必須、`gate: auto` の自動完了、`gate: approval` が承認まで完了しないこと、同じ session で追加指示できること。
@@ -300,8 +283,7 @@ main agent は user-facing narrator として残す（進捗報告・承認依�
 - Property test: 小さな Contract / rules / enum を生成し、validator が valid と判断した workflow では任意の routing 対象値に対して遷移先がちょうど1つになること。
 - Execution projection: WorkflowExecution / NodeExecution / Artifact / Fanout が event log から再構築され、UI / CLI / Remote が同じ read model を読めること。
 - CLI/API naming: `executions` / `execution-id` / `--node` の語彙で status / logs / approve / abort / output が動き、旧 `runs` / `run_id` / `--step` が外部 API に残っていないこと。
-- Start request: `workflow start <workflow-name> "<task>"` が `request` Artifact を作り、`tasks[]` には書かないこと。
-- Task: `releash task list|add|done`、`tasks[]` の `{ id, description, done }` schema、workflow から read-only、`fanout.items: tasks` 展開、workflow YAML からの書き込み不可。
+- Start request: `workflow start <workflow-name> "<request>"` が `request` Artifact を作ること。
 - Resume: crash / stale / explicit stop 後に event log から再構築し、最後に確定した NodeExecution の次から resume できること。orphan recovery で abort / resume を typed command として選べること。
 - Built-in / example: `docs/examples/full-pipeline.yml` と built-in workflow が新 schema で load でき、旧 field を含まないこと。
 - Remote sync: remote workflow state sync が WorkflowExecution / NodeExecution / Artifact read model を配信し、frontend 側で domain decision を再実装していないこと。

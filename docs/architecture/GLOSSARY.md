@@ -16,8 +16,7 @@ Releash のドメイン横断ユビキタス言語を定義する。
 | WorkflowExecution | WorkflowDefinition の一回の実行。 | workflow | WorkflowRun, Run | `status` を持つ。 |
 | NodeExecution | NodeDefinition の一回の実行。 | workflow | StepExecution, WorkflowStep | Session / Command / Fanout を扱うことがある。 |
 | Fanout | 親 NodeExecution から展開された子 NodeExecution 群を束ねる実体。 | workflow | ParallelRun, ParallelChildRun, ParallelStep | `parallel` 系語彙は Fanout に吸収する。 |
-| Task | WorkflowExecution 内で Node 間を跨ぐ作業情報。 | workflow | MainTask, SubTask | main / sub の区別は持たない。 |
-| Artifact | WorkflowExecution / NodeExecution の間で生成・参照される判断材料、成果物、中間出力。 | workflow | StepOutput, ArtifactSnapshot, ArtifactLineage | 状態は持たない。 |
+| Artifact | WorkflowExecution / NodeExecution の間で生成・参照される Object。 | workflow | StepOutput, ArtifactSnapshot, ArtifactLineage | 状態は持たない。意味と schema はユーザーまたは WorkflowDefinition が決める。 |
 | Facet | NodeDefinition から参照される再利用可能な補助部品。 | workflow | ResolvedFacets | 主要 Entity ではない。 |
 | Contract | NodeDefinition の output contract や Artifact/output validation に関わる補助語彙。 | workflow | ContractValidationMetadata | 主要 Entity ではない。 |
 | Diagnostic | 定義や参照の構文・validation error。 | workflow | lifecycle state | lifecycle state ではない。 |
@@ -64,7 +63,6 @@ Workspace
   ├─ targets Worktree
   ├─ Terminal
   ├─ WorkflowExecution
-  │    ├─ Task
   │    ├─ Artifact
   │    └─ NodeExecution
   │         └─ Fanout
@@ -85,11 +83,12 @@ Workspace
 - Workspace は Releash 側の作業コンテキスト。
 - Workspace は Worktree を参照するが、Worktree そのものではない。
 - WorkflowExecution / Session / Command / Terminal / Thread / WorkspaceState は Workspace に属する。
-- Task / Artifact / NodeExecution は WorkflowExecution に属する。
+- Artifact / NodeExecution は WorkflowExecution に属する。
 - Fanout は親 NodeExecution と子 NodeExecution 群を束ねる。
 - PermissionRequest は Turn に属する。
 - Thread は CodeAnchor を参照できるが、CodeAnchor を所有しない。
 - Thread は WorkflowExecution / NodeExecution には属さない。
+- Task は Releash core Entity として持たない。task 的な一覧は Artifact のユーザー定義 field（例: `plan.tasks`）として表現できる。
 
 ### Worktree / Repository / Code
 
@@ -130,7 +129,6 @@ Operation Surface
 - WorkflowExecution
 - NodeExecution
 - Fanout
-- Task
 - Session
 - Turn
 - PermissionRequest

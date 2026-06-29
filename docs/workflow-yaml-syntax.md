@@ -56,6 +56,7 @@
 
 - `child`: 展開する Node の名前。普通の Node を参照する。ただし **child の `rules` は無視される**（child は leaf＝artifact を返すだけで遷移しない）。
 - `items`: 任意。リテラル配列、または前 Node の配列フィールド参照。各要素が子の `input` に入る。
+- `tasks` は予約 global ではない。task 的な配列を展開したい場合は、`plan.tasks` のように前 Node の Artifact field として参照する。
 - 組合せ:
   - `child` 複数 / `items` なし … 別 Node を並列実行
   - `child` 1つ / `items` あり … その Node を配列ぶん展開（件数は実行時に決まる＝動的）
@@ -83,11 +84,12 @@
 - `<node>` … その Node の Artifact 全体（fanout は子 artifact の配列）。
 - `<node>.<field>` … その Artifact のフィールド。
 - `item` / `item.<field>` … fanout で展開された現在の要素。
-- `request` … 起動時の `"<task>"`（**初回 Artifact**・**String**・予約名）。人間が書く自由文字列なので scalar（String）の Artifact を許す（Contract は object に限らない）。node が産むものではないが、他 Artifact と同じく `inputs: [request]` で受け、`{{ request }}` で参照する。
+- `request` … 起動時入力（**初回 Artifact**・**String**・予約名）。人間が書く自由文字列なので scalar（String）の Artifact を許す（Contract は object に限らない）。node が産むものではないが、他 Artifact と同じく `inputs: [request]` で受け、`{{ request }}` で参照する。
 - rules の `on:` / `switch.on:` … **自分の artifact** のフィールドを bare 名で参照（`<this node>.<field>` の略）。
 - テンプレート補間は **二重波括弧 `{{ ... }}`**。パスは参照と同じ（`{{ request }}` / `{{ <node>.<field> }}` / `{{ item.<field> }}`）。二重にするのは、command 本文の literal な単一 `{}`（jq / shell のブレース）と衝突させないため。
 
 参照パスに Contract 名は出さない（Node の artifact は1つなので Node 名がそのまま Artifact）。
+Artifact の field 名はユーザー定義であり、`tasks` のような名前も使用できる。ただし Releash は `Task` Entity や global `tasks[]` を定義しない。
 
 ## rules（遷移）
 
@@ -145,29 +147,6 @@ schemas:
 - `schemas:` で名前付き Contract を宣言する。
 - `artifact: <名前>` でその Contract の Artifact を産出。routing が見る `on` フィールドは Contract に宣言された boolean / enum であること。
 - 配列の要素型を他所（fanout child の `input` など）から参照する場合、要素型は inline でなく**名前付き Contract** にして `items: <名前>` で参照する。同じ型は producer の artifact と consumer の input が同じ名前を参照する（定義は1か所）。
-
-## Task（global 作業リスト）
-
-Task は WorkflowExecution が持つ **global な作業リスト**。固定 schema で、workflow では定義しない。
-
-```text
-tasks[]              # 予約 global 名
-  - id
-  - description
-  - done             # boolean（完了したか）
-```
-
-- **書き込みは CLI のみ**（実行中に agent / 人間が CLI 経由で積む・更新する）。workflow YAML から書かない。
-- **workflow からは read のみ**。`tasks` を fanout の元にできる。
-- `tasks` は予約語（Node を `tasks` と名付けられない）。
-- `releash workflow start <wf> "<task>"` の `"<task>"` は `tasks` には入らない。初回 Artifact `request`（String）になる（Artifact 節参照）。
-
-```yaml
-- name: work_each
-  fanout:
-    child: do_task
-    items: tasks       # global の作業リストを展開
-```
 
 ## 例
 
