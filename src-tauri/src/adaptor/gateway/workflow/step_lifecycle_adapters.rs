@@ -8,7 +8,7 @@ use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::session::{OpenTabRegistry, SessionState, SessionStore};
 use crate::usecase::workflow::step_lifecycle::{
-    release_step_runtime_on_done_with_gateways, ResolvedWorkflowStepSession, WorkflowStepLifecycle,
+    release_step_runtime_on_done_with_gateways, ResolvedWorkflowStepSession,
     WorkflowStepLifecycleError, WorkflowStepRuntimeGateway, WorkflowStepSessionGateway,
 };
 
@@ -170,43 +170,6 @@ pub(crate) fn try_close_step_session_tab_state(
     Ok(true)
 }
 
-struct TauriWorkflowStepSessionGateway<'a, R: tauri::Runtime> {
-    app: &'a tauri::AppHandle<R>,
-    session_store: &'a SessionStore,
-    open_tabs: &'a OpenTabRegistry,
-}
-
-impl<R: tauri::Runtime> WorkflowStepSessionGateway for TauriWorkflowStepSessionGateway<'_, R> {
-    fn resolve_step_session(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
-        let data_dir = resolve_data_dir(self.app).map_err(|e| {
-            WorkflowStepLifecycleError::SessionStore(format!("resolve_data_dir: {e}"))
-        })?;
-        resolve_step_session_with_data_dir(self.session_store, &data_dir, session_id)
-    }
-
-    fn open_step_tab(&self, session_id: &str) -> Result<(), WorkflowStepLifecycleError> {
-        let data_dir = resolve_data_dir(self.app).map_err(|e| {
-            WorkflowStepLifecycleError::SessionStore(format!("resolve_data_dir: {e}"))
-        })?;
-        open_step_session_tab_state(self.session_store, &data_dir, self.open_tabs, session_id)
-    }
-
-    fn close_step_tab(&self, session_id: &str) -> Result<bool, WorkflowStepLifecycleError> {
-        let data_dir = resolve_data_dir(self.app).map_err(|e| {
-            WorkflowStepLifecycleError::SessionStore(format!("resolve_data_dir: {e}"))
-        })?;
-        try_close_step_session_tab_state(
-            self.session_store,
-            &data_dir,
-            Some(self.open_tabs),
-            session_id,
-        )
-    }
-}
-
 struct TauriWorkflowStepRuntimeGateway<'a, R: tauri::Runtime> {
     app: &'a tauri::AppHandle<R>,
     handles: &'a Arc<Mutex<AgentProcessMap>>,
@@ -340,57 +303,6 @@ impl WorkflowStepRuntimeGateway for TauriWorkflowStepLifecycleGateway {
     }
 }
 
-pub(crate) struct TauriWorkflowStepLifecycle<'a, R: tauri::Runtime> {
-    sessions: TauriWorkflowStepSessionGateway<'a, R>,
-    runtime: TauriWorkflowStepRuntimeGateway<'a, R>,
-}
-
-impl<'a, R: tauri::Runtime> TauriWorkflowStepLifecycle<'a, R> {
-    pub(crate) fn new(
-        app: &'a tauri::AppHandle<R>,
-        session_store: &'a SessionStore,
-        handles: &'a Arc<Mutex<AgentProcessMap>>,
-        open_tabs: &'a OpenTabRegistry,
-    ) -> Self {
-        Self {
-            sessions: TauriWorkflowStepSessionGateway {
-                app,
-                session_store,
-                open_tabs,
-            },
-            runtime: TauriWorkflowStepRuntimeGateway { app, handles },
-        }
-    }
-
-    fn usecase(&self) -> WorkflowStepLifecycle<'_> {
-        WorkflowStepLifecycle {
-            sessions: &self.sessions,
-            runtime: &self.runtime,
-        }
-    }
-
-    pub(crate) async fn close_tab_target(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
-        self.usecase().close_tab_target(session_id).await
-    }
-
-    pub(crate) async fn try_open_tab(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
-        self.usecase().try_open_tab(session_id).await
-    }
-
-    pub(crate) async fn open_tab(
-        &self,
-        session_id: &str,
-    ) -> Result<ResolvedWorkflowStepSession, WorkflowStepLifecycleError> {
-        self.usecase().open_tab(session_id).await
-    }
-}
-
 pub(crate) fn mark_started_step_tab_open<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_id: &str,
@@ -424,7 +336,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     use crate::infrastructure::agent_session::runtime::AgentProcessMap;
-    use crate::usecase::agent_session::session::{OpenTabRegistry, SessionState, SessionStore};
+    use crate::usecase::agent_session::session::{OpenTabRegistry, SessionState};
 
     async fn release_step_runtime_on_done_state<F, Fut>(close_runtime: F)
     where

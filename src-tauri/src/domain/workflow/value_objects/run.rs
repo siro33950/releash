@@ -14,13 +14,6 @@ impl RunStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalRunStatus {
-    Completed,
-    Failed,
-    Aborted,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerSource {
     DesktopUi,
     Remote,
@@ -32,7 +25,6 @@ pub enum TriggerSource {
 pub enum RunStatusFilter {
     Active,
     Terminal,
-    All,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +33,7 @@ pub struct RunListFilter {
     pub worktree_path: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowRunRecord {
     pub run_id: String,

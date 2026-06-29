@@ -1,53 +1,6 @@
-import type { WorkflowStatePayload } from "@/types/workflow";
-import type { ContextCarryState, MessagePart } from "./session";
-
-export interface PtyExitMsg {
-	pty_id: number;
-	exit_code: number | null;
-}
-
-export interface PtyEvictedMsg {
-	pty_id: number;
-	session_key: string;
-	reason: "idle" | "cap_exceeded";
-}
-
-export interface WorktreePrEntry {
-	path: string;
-	pr_number: number;
-	pr_url: string;
-}
-
-export interface WorktreePrStatusSync {
-	entries: WorktreePrEntry[];
-}
-
-interface BranchCardMsg {
-	name: string;
-	is_main_worktree: boolean;
-	worktree_path: string | null;
-	dirty_count: number;
-	is_merged: boolean;
-	ahead: number;
-	behind: number;
-	has_upstream: boolean;
-	base_ahead: number;
-}
-
-export interface BranchListSync {
-	branches: BranchCardMsg[];
-}
+import type { ContextCarryState } from "./session";
 
 export type AgentState = "running" | "done" | "error" | "waiting";
-
-export interface AgentStateSync {
-	worktree_path: string;
-	state: AgentState;
-	exit_code: number | null;
-	timestamp: number;
-	session_id: string | null;
-	pty_id?: string | null;
-}
 
 export interface AgentSupportedCommandMsg {
 	name: string;
@@ -65,48 +18,6 @@ export interface AgentSessionContextCarryUpdated {
 	agent_session_id?: string | null;
 	context_carry?: ContextCarryState | null;
 	updated_at: number;
-}
-
-export interface AgentStreamDelta {
-	session_id: string;
-	message_id: string;
-	seq: number;
-	snapshot: boolean;
-	parts: MessagePart[];
-}
-
-export interface ResyncStreamReq {
-	session_id: string;
-	message_id: string;
-	since_seq: number;
-}
-
-export interface WorktreeStepStatusStep {
-	executionId: string;
-	stepName: string;
-	runIndex?: number | null;
-	representative: string;
-}
-
-export interface WorktreeStepStatusWorkflow {
-	executionId: string;
-	representative: string;
-}
-
-export interface WorktreeStepStatusSync {
-	worktreePath: string;
-	version: number;
-	steps: WorktreeStepStatusStep[];
-	workflows: WorktreeStepStatusWorkflow[];
-}
-
-export interface WorktreeStepStatusResyncReq {
-	worktreePath: string;
-}
-
-export interface WorkflowStateSync {
-	worktree_path: string;
-	workflow_state: WorkflowStatePayload;
 }
 
 export type ReviewActorKind = "human" | "agent";
@@ -205,31 +116,3 @@ export type ReviewHistoryEntry =
 			summary: string;
 			at: number;
 	  };
-
-export interface ErrorMsg {
-	code: string;
-	message: string;
-}
-
-export type WsMessage =
-	| { type: "auth_challenge"; payload: { challenge: string } }
-	| { type: "auth_response"; payload: { hmac: string } }
-	| { type: "auth_result"; payload: { success: boolean; message?: string } }
-	| {
-			type: "pty_output";
-			payload: { pty_id: number; data: string; sequence: number };
-	  }
-	| { type: "pty_exit"; payload: PtyExitMsg }
-	| { type: "pty_evicted"; payload: PtyEvictedMsg }
-	| { type: "worktree_pr_status_sync"; payload: WorktreePrStatusSync }
-	| { type: "branch_list_sync"; payload: BranchListSync }
-	| { type: "agent_state_sync"; payload: AgentStateSync }
-	| { type: "workflow_state_sync"; payload: WorkflowStateSync }
-	| { type: "agent_stream_delta"; payload: AgentStreamDelta }
-	| { type: "worktree_step_status_sync"; payload: WorktreeStepStatusSync }
-	| {
-			type: "worktree_step_status_resync";
-			payload: WorktreeStepStatusResyncReq;
-	  }
-	| { type: "resync_stream"; payload: ResyncStreamReq }
-	| { type: "error"; payload: ErrorMsg };

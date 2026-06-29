@@ -183,10 +183,6 @@ mod tests {
             Ok(())
         }
 
-        fn get_pty_size(&self, _pty_id: u64) -> Result<(u16, u16), UsecaseError> {
-            Ok((24, 80))
-        }
-
         fn kill_runtime(&self, _pty_id: u64) -> Result<(), UsecaseError> {
             Ok(())
         }

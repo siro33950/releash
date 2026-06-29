@@ -56,6 +56,7 @@ impl Default for PtySessionRegistry {
 }
 
 impl PtySessionRegistry {
+    #[cfg(test)]
     pub fn with_config(config: PtyLifecycleConfig) -> Self {
         Self {
             config,
@@ -465,7 +466,6 @@ impl PtySessionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::pty_session::PtyKind;
 
     fn session(
         pty_id: u64,
@@ -478,7 +478,6 @@ mod tests {
             session_key.to_string(),
             worktree_path.map(str::to_string),
             label.map(str::to_string),
-            PtyKind::Terminal,
         )
     }
 

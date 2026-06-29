@@ -72,13 +72,6 @@ impl WorkflowStepLifecycleUsecase {
         }
     }
 
-    pub async fn open_tab(
-        &self,
-        session_id: &str,
-    ) -> Result<ResolvedWorkflowStepSession, WorkflowStepLifecycleError> {
-        self.lifecycle().open_tab(session_id).await
-    }
-
     pub async fn try_open_tab(
         &self,
         session_id: &str,
@@ -100,17 +93,6 @@ impl<'a> WorkflowStepLifecycle<'a> {
         session_id: &str,
     ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
         self.sessions.resolve_step_session(session_id)
-    }
-
-    pub async fn open_tab(
-        &self,
-        session_id: &str,
-    ) -> Result<ResolvedWorkflowStepSession, WorkflowStepLifecycleError> {
-        let target = self
-            .resolve_step_session(session_id)?
-            .ok_or_else(|| WorkflowStepLifecycleError::SessionNotFound(session_id.to_string()))?;
-        self.sessions.open_step_tab(&target.session_id)?;
-        Ok(target)
     }
 
     pub async fn try_open_tab(

@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    node_definition_to_domain, node_type_from_domain, parallel_aggregate_to_domain,
-    parallel_step_state_from_domain, step_history_entries_to_domain,
-    step_history_entry_from_domain, step_output_from_domain, step_outputs_to_domain,
-    token_usage_from_domain, token_usage_to_domain, transition_rule_from_domain,
+    node_definition_to_domain, parallel_aggregate_to_domain, parallel_step_state_from_domain,
+    step_history_entries_to_domain, step_history_entry_from_domain, step_output_from_domain,
+    step_outputs_to_domain, token_usage_from_domain, token_usage_to_domain,
     workflow_definition_to_domain, workflow_execution_state_to_domain,
+};
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::domain_mapping::{
+    node_type_from_domain, transition_rule_from_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::{
     workflow_error_to_engine_error, WorkflowEngineError,
@@ -13,9 +16,9 @@ use crate::adaptor::gateway::workflow::engine_error::{
 use crate::adaptor::gateway::workflow::engine_start_guard;
 use crate::adaptor::gateway::workflow::output_submission as workflow_output_submission;
 use crate::adaptor::gateway::workflow::runtime_commit::StepOutcome;
-use crate::adaptor::gateway::workflow::schema::{
-    NodeType, ParallelAggregate, TransitionRule, Workflow,
-};
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::schema::{NodeType, TransitionRule};
+use crate::adaptor::gateway::workflow::schema::{ParallelAggregate, Workflow};
 use crate::adaptor::gateway::workflow::state::{
     ApprovalOperations, StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState,
     WorkflowState,
@@ -553,6 +556,7 @@ impl WorkflowExecution {
     }
 
     /// turn_complete後のアクションを判定する（純粋関数）。
+    #[cfg(test)]
     pub(crate) fn decide_turn_complete_action(&self, exit_code: i64) -> TurnCompleteAction {
         let workflow = workflow_definition_to_domain(&self.workflow);
         let state = workflow_execution_state_to_domain(&self.state);
@@ -613,6 +617,7 @@ impl WorkflowExecution {
     }
 
     /// approvalモードの判定ロジック（純粋関数）。
+    #[cfg(test)]
     pub(crate) fn decide_approval_action(
         &self,
         decision: &ApprovalDecision,
@@ -687,6 +692,7 @@ pub(crate) enum CycleGuardResult {
 
 /// on_turn_complete後のモード別アクション判定結果。
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub(crate) enum TurnCompleteAction {
     /// AgentSessionがエラー終了 → Failed
     SessionError {
@@ -721,6 +727,7 @@ pub(crate) enum ApprovalDecision {
 
 /// approvalモードの判定結果（純粋関数用）。
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub(crate) enum ApprovalAction {
     Advance,
     TransitionTo(String),

@@ -198,7 +198,7 @@ pub(super) fn run_permission_request_transition_locked<F>(
     emit_stream: F,
 ) -> PermissionRequestTransition
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
 {
     if proc.state == BridgeState::Streaming {
         if let Some(request_id) = request_id {
@@ -246,7 +246,7 @@ pub(super) fn apply_respond_permission_locked<F>(
     mut emit_stream: F,
 ) -> PermissionResponseTransition
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
 {
     let did_transition = proc.turn_phase == TurnPhase::WaitingPermission;
     turn_latency::record_permission_wait_latency(&mut proc.turn_latency, request_id);
@@ -443,7 +443,6 @@ pub async fn respond_agent_permission_internal(
                 crate::infrastructure::agent_session::runtime::PermissionResponse {
                     request_id: request_id.clone(),
                     behavior: behavior.clone(),
-                    message: message.clone(),
                     updated_input: updated_input.clone(),
                 },
             )
@@ -594,7 +593,7 @@ mod moved_tests {
             }
         );
         assert_eq!(proc.turn_phase, TurnPhase::Streaming);
-        assert!(proc.pending_stream_parts.len() == 0);
+        assert!(proc.pending_stream_parts.is_empty());
         // Permission part status was updated in place.
         let updated = proc
             .streaming_parts
@@ -629,7 +628,7 @@ mod moved_tests {
             "req-1",
             "allow",
             None,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
         );
 
         assert!(effect.did_transition);
@@ -666,7 +665,7 @@ mod moved_tests {
     #[tokio::test]
     async fn respond_permission_continues_on_emit_failure() {
         // Spec L157「強制配信が失敗しても後続の状態遷移は続行する」:
-        //  emit 失敗 (tauri_ok=false) でも did_transition は true のまま返り、
+        //  emit 失敗でも did_transition は true のまま返り、
         //  呼び出し側 (production: emit_session_state_changed) は続行できる。
         let mut proc = make_process_waiting_for_permission("req-1");
 
@@ -676,7 +675,7 @@ mod moved_tests {
             "req-1",
             "allow",
             None,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| (false, false), // emit failure on both channels
+            |_mid, _seq, _snapshot, _parts, _snapshot_parts| false, // emit failure on both channels
         );
         assert!(
             effect.did_transition,

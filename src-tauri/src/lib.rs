@@ -31,8 +31,6 @@ pub fn run() {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let _ = fix_path_env::fix();
 
-    let ws_broadcaster =
-        Arc::new(adaptor::gateway::shared::ws_broadcaster::WsBroadcaster::default());
     let pty_gateway =
         Arc::new(adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default());
     let pty_read_gateway: Arc<
@@ -41,12 +39,6 @@ pub fn run() {
     let pty_session_read_usecase =
         Arc::new(usecase::pty_session::read_usecase::PtySessionReadUsecase::new(pty_read_gateway));
     let pty_gateway_for_setup = Arc::clone(&pty_gateway);
-    let pty_replay_reader: Arc<dyn usecase::pty_session::query_service::PtySessionReplayReader> =
-        Arc::new(
-            usecase::pty_session::query_service::PtySessionReplayQueryService::new(Arc::clone(
-                &pty_gateway,
-            )),
-        );
     let session_storage = Arc::new(adaptor::gateway::agent_session::FileSessionStorage::default());
     let session_store = Arc::new(usecase::agent_session::session::SessionStore::new(
         session_storage.clone(),
@@ -76,16 +68,13 @@ pub fn run() {
         .manage(session_store)
         .manage(prompt_suggestion_usecase)
         .manage(Arc::clone(&pty_gateway))
-        .manage(pty_replay_reader)
         .manage(infrastructure::file_watcher::FileWatcherManager::default())
-        .manage(Arc::clone(&ws_broadcaster))
         .manage(Arc::new(tokio::sync::Mutex::new(
             infrastructure::agent_session::runtime::AgentProcessMap::new(),
         )))
         .manage(Arc::new(
             usecase::agent_session::session::OpenTabRegistry::default(),
         ))
-        .manage(infrastructure::middleware::WsServerHandle::default())
         .manage(cleanup_gate)
         .manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
             parking_lot::RwLock::new(Vec::new()),
@@ -122,16 +111,6 @@ pub fn run() {
                     >>()
                     .inner()
                     .clone();
-                let stream_resync_read_model: Arc<
-                    dyn usecase::agent_session::session::AgentStreamResyncReadModel,
-                > = Arc::new(
-                    infrastructure::agent_session::runtime_gateway::AgentStreamResyncRuntimeReadModel::new(
-                        session_store_state.clone(),
-                        handles_state.clone(),
-                        data_dir.clone(),
-                    ),
-                );
-                app.manage(stream_resync_read_model);
                 app.manage(Arc::new(
                     adaptor::controller::wiring::build_stored_session_lifecycle_usecase(
                         app.handle().clone(),
@@ -235,7 +214,6 @@ pub fn run() {
                         Arc::new(
                             adaptor::gateway::repository::state::TauriRepositoryStateNotifier::new(
                                 app.handle().clone(),
-                                ws_broadcaster.clone(),
                             ),
                         ),
                         Arc::new(
@@ -321,13 +299,13 @@ pub fn run() {
             // AgentStatusCenter を構築・登録
             let agent_status_center =
                 Arc::new(usecase::agent_session::status::AgentStatusCenter::new());
-            let agent_status_notifier: Arc<dyn usecase::agent_session::status::AgentStatusNotifier> =
-                Arc::new(adaptor::presenter::agent_status::TauriAgentStatusNotifier::new(
+            let agent_status_notifier: Arc<
+                dyn usecase::agent_session::status::AgentStatusNotifier,
+            > = Arc::new(
+                adaptor::presenter::agent_status::TauriAgentStatusNotifier::new(
                     app.handle().clone(),
-                    app.state::<Arc<adaptor::gateway::shared::ws_broadcaster::WsBroadcaster>>()
-                        .inner()
-                        .clone(),
-                ));
+                ),
+            );
             // SessionStore の状態変更通知を購読して、保持している SessionStatus を
             // 最新化＋再集約する。Closed への遷移は aggregate でフィルタされ、
             // Closed → Idle の復帰では再び集約対象に戻る。

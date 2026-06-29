@@ -313,13 +313,6 @@ pub struct StepOutputView {
     pub completed_at: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowStateSync {
-    pub worktree_path: String,
-    pub workflow_state: WorkflowStateView,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

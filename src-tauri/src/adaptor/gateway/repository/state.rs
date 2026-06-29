@@ -6,8 +6,6 @@ use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent};
 use tauri::{Emitter, Runtime};
 
-use crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster;
-use crate::adaptor::protocol::{BranchCardMsg, BranchListSync, WsMessage};
 use crate::usecase::agent_session::context::invalidate_instruction_resolution_cache_for_path;
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
@@ -271,12 +269,11 @@ impl WorktreePathNormalizer for FsWorktreePathNormalizer {
 
 pub struct TauriRepositoryStateNotifier<R: Runtime> {
     app: tauri::AppHandle<R>,
-    ws: Arc<WsBroadcaster>,
 }
 
 impl<R: Runtime> TauriRepositoryStateNotifier<R> {
-    pub fn new(app: tauri::AppHandle<R>, ws: Arc<WsBroadcaster>) -> Self {
-        Self { app, ws }
+    pub fn new(app: tauri::AppHandle<R>) -> Self {
+        Self { app }
     }
 }
 
@@ -304,16 +301,6 @@ impl<R: Runtime> RepositoryStateNotifier for TauriRepositoryStateNotifier<R> {
         }
 
         let _ = self.app.emit("branch-list-sync", ());
-        let branch_msgs: Vec<BranchCardMsg> = notification
-            .snapshot
-            .branch_cards
-            .iter()
-            .cloned()
-            .map(BranchCardMsg::from)
-            .collect();
-        self.ws.try_send(WsMessage::BranchListSync(BranchListSync {
-            branches: branch_msgs,
-        }));
 
         if notification.reason.file_change {
             let path = notification.reason.path.unwrap_or_else(|| {

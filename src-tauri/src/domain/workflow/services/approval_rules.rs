@@ -7,9 +7,10 @@ use serde_json::json;
 use crate::domain::workflow::services::secret_masker;
 use crate::domain::workflow::value_objects::{
     ApprovalDecision, NodeType, StepHistoryEntry, TransitionRule, WorkflowExecutionState,
-    STEP_STATE_COMPLETED,
 };
 use crate::domain::workflow::WorkflowError;
+#[cfg(test)]
+use crate::domain::workflow::STEP_STATE_COMPLETED;
 
 pub const MAX_APPROVAL_COMMENT_CHARS: usize = 8192;
 
@@ -209,6 +210,7 @@ pub fn resolve_approval_target<'a>(
     Ok(snapshot.current_step_name)
 }
 
+#[cfg(test)]
 pub fn validate_approval_target(
     snapshot: ApprovalTargetSnapshot<'_>,
     expected_execution_id: Option<&str>,

@@ -1,3 +1,4 @@
+#[cfg(test)]
 use serde::Deserialize;
 
 use crate::adaptor::gateway::workflow::{
@@ -7,6 +8,7 @@ use crate::domain::workflow as domain;
 use crate::domain::workflow::value_objects::ResolvedFacets;
 use crate::usecase::workflow::ports::WorkflowEventDraft;
 
+#[cfg(test)]
 pub(crate) fn domain_run_record_to_legacy(
     run: &domain::WorkflowRunRecord,
 ) -> legacy_run::WorkflowRun {
@@ -67,7 +69,7 @@ pub(crate) fn domain_run_filter_to_legacy(
     let status = match filter.status {
         Some(domain::RunStatusFilter::Active) => Some(legacy_run::RunStatusFilter::Active),
         Some(domain::RunStatusFilter::Terminal) => Some(legacy_run::RunStatusFilter::Terminal),
-        Some(domain::RunStatusFilter::All) | None => None,
+        None => None,
     };
     legacy_run::RunListFilter {
         status,
@@ -293,6 +295,7 @@ pub(crate) fn legacy_facet_summary_to_domain(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn domain_facet_summary_to_legacy(
     summary: domain::FacetSummary,
 ) -> crate::adaptor::gateway::workflow::schema::FacetSummary {
@@ -304,6 +307,7 @@ pub(crate) fn domain_facet_summary_to_legacy(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn domain_event_draft_to_legacy(
     event: &WorkflowEventDraft,
 ) -> Result<legacy_event::WorkflowEvent, domain::WorkflowError> {
@@ -316,8 +320,6 @@ pub(crate) fn domain_event_draft_to_legacy(
                 workflow_file_stem: String,
                 worktree_path: String,
                 workflow_definition: crate::adaptor::gateway::workflow::schema::Workflow,
-                #[allow(dead_code)]
-                permission_mode: Option<String>,
             }
 
             let payload: Payload = parse_payload(event)?;
@@ -428,6 +430,7 @@ pub(crate) fn legacy_event_to_domain_draft(
     })
 }
 
+#[cfg(test)]
 fn parse_payload<T: for<'de> Deserialize<'de>>(
     event: &WorkflowEventDraft,
 ) -> Result<T, domain::WorkflowError> {
@@ -459,26 +462,6 @@ fn copy_domain_resolved_facets_to_legacy(
     }
 }
 
-fn copy_legacy_resolved_facets_to_domain(
-    workflow: &crate::adaptor::gateway::workflow::schema::Workflow,
-    definition: &mut domain::WorkflowDefinition,
-) {
-    for (source, target) in workflow.nodes.iter().zip(definition.nodes.iter_mut()) {
-        target.resolved_facets = legacy_resolved_facets_to_domain(&source.resolved_facets);
-        if let (Some(source_children), Some(target_children)) = (
-            source.parallel_children.as_ref(),
-            target.parallel_children.as_mut(),
-        ) {
-            for (source_child, target_child) in
-                source_children.iter().zip(target_children.iter_mut())
-            {
-                target_child.resolved_facets =
-                    legacy_resolved_facets_to_domain(&source_child.resolved_facets);
-            }
-        }
-    }
-}
-
 fn domain_resolved_facets_to_legacy(
     resolved: &ResolvedFacets,
 ) -> crate::adaptor::gateway::workflow::schema::ResolvedFacets {
@@ -491,29 +474,17 @@ fn domain_resolved_facets_to_legacy(
     }
 }
 
-fn legacy_resolved_facets_to_domain(
-    resolved: &crate::adaptor::gateway::workflow::schema::ResolvedFacets,
-) -> ResolvedFacets {
-    ResolvedFacets {
-        policy: resolved.policy.clone(),
-        knowledge: resolved.knowledge.clone(),
-        instruction: resolved.instruction.clone(),
-        output_contract: resolved.output_contract.clone(),
-        input_contracts: resolved.input_contracts.clone(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        NodeDefinition, NodeType, RunListFilter, RunStatus, RunStatusFilter, TriggerSource,
+        NodeDefinition, NodeType, RunListFilter, RunStatus, TriggerSource,
     };
 
     #[test]
-    fn run_filter_all_maps_to_legacy_unfiltered_status() {
+    fn run_filter_without_status_maps_to_legacy_unfiltered_status() {
         let legacy = domain_run_filter_to_legacy(RunListFilter {
-            status: Some(RunStatusFilter::All),
+            status: None,
             worktree_path: Some("/repo".to_string()),
         });
         assert_eq!(legacy.status, None);

@@ -1,8 +1,5 @@
-use std::sync::Arc;
 use std::sync::Mutex;
 
-use crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster;
-use crate::adaptor::protocol::{AgentStateSync, WorktreeStepStatusSync, WsMessage};
 use crate::usecase::agent_session::status::{
     AgentStatusCenter, AgentStatusChanges, AgentStatusNotifier, WorktreeStepStatusView,
 };
@@ -12,24 +9,33 @@ static WORKFLOW_STEP_STATUS_EMIT_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) struct TauriAgentStatusNotifier<R: tauri::Runtime> {
     app: tauri::AppHandle<R>,
-    broadcaster: Arc<WsBroadcaster>,
 }
 
 impl<R: tauri::Runtime> TauriAgentStatusNotifier<R> {
-    pub(crate) fn new(app: tauri::AppHandle<R>, broadcaster: Arc<WsBroadcaster>) -> Self {
-        Self { app, broadcaster }
+    pub(crate) fn new(app: tauri::AppHandle<R>) -> Self {
+        Self { app }
     }
 }
 
 impl<R: tauri::Runtime> AgentStatusNotifier for TauriAgentStatusNotifier<R> {
     fn status_changed(&self, changes: AgentStatusChanges) {
-        emit_agent_status_changes(&self.app, Some(&self.broadcaster), changes);
+        emit_agent_status_changes(&self.app, changes);
     }
+}
+
+#[derive(Clone, serde::Serialize)]
+struct AgentStateChangedPayload {
+    worktree_path: String,
+    state: crate::usecase::agent_session::status::AgentState,
+    exit_code: Option<i32>,
+    timestamp: f64,
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pty_id: Option<String>,
 }
 
 pub(crate) fn emit_agent_status_changes<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    broadcaster: Option<&WsBroadcaster>,
     changes: AgentStatusChanges,
 ) {
     if changes.is_empty() {
@@ -42,41 +48,36 @@ pub(crate) fn emit_agent_status_changes<R: tauri::Runtime>(
     if let Some(workspace) = changes.workspace {
         let _ = app.emit("workspace-status-changed", workspace);
     }
-    emit_worktree_step_status_views(app, broadcaster, changes.workflow_step_views);
+    emit_worktree_step_status_views(app, changes.workflow_step_views);
     if let Some(agent_state) = changes.agent_state {
-        let payload = AgentStateSync {
+        let payload = AgentStateChangedPayload {
             worktree_path: agent_state.worktree_path,
-            state: agent_state.state.into(),
+            state: agent_state.state,
             exit_code: None,
             timestamp: agent_state.timestamp,
             session_id: agent_state.session_id,
             pty_id: agent_state.pty_id,
         };
         let _ = app.emit("agent-state-changed", &payload);
-        if let Some(broadcaster) = broadcaster {
-            broadcaster.try_send(WsMessage::AgentStateSync(payload));
-        }
     }
 }
 
 pub(crate) fn emit_worktree_step_status_snapshot<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    broadcaster: Option<&WsBroadcaster>,
     center: &AgentStatusCenter,
     worktree_path: &str,
 ) {
     emit_worktree_step_status_snapshot_with(center, worktree_path, |workflow_step_view| {
-        emit_worktree_step_status_view(app, broadcaster, workflow_step_view);
+        emit_worktree_step_status_view(app, workflow_step_view);
     });
 }
 
 fn emit_worktree_step_status_views<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    broadcaster: Option<&WsBroadcaster>,
     workflow_step_views: Vec<WorktreeStepStatusView>,
 ) {
     emit_worktree_step_status_views_with(workflow_step_views, |workflow_step_view| {
-        emit_worktree_step_status_view(app, broadcaster, workflow_step_view);
+        emit_worktree_step_status_view(app, workflow_step_view);
     });
 }
 
@@ -115,15 +116,9 @@ fn with_workflow_step_status_emit_order<T>(f: impl FnOnce() -> T) -> T {
 
 fn emit_worktree_step_status_view<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    broadcaster: Option<&WsBroadcaster>,
     workflow_step_view: WorktreeStepStatusView,
 ) {
-    let _ = app.emit("workflow-step-status-changed", workflow_step_view.clone());
-    if let Some(broadcaster) = broadcaster {
-        broadcaster.try_send(WsMessage::WorktreeStepStatusSync(
-            WorktreeStepStatusSync::from(workflow_step_view),
-        ));
-    }
+    let _ = app.emit("workflow-step-status-changed", workflow_step_view);
 }
 
 #[cfg(test)]

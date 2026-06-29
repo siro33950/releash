@@ -3,18 +3,22 @@ use std::sync::Arc;
 use crate::domain::workflow::{WorkflowError, WorkflowStateSnapshot};
 
 use super::approval_chat::WorkflowApprovalChatUsecase;
+#[cfg(test)]
+use super::command::ResolvedStartRunCommand;
 use super::command::{
-    AbortRunCommand, ApprovalCommand, ResolvedStartRunCommand, StartRunCommand,
-    SubmitOutputCommand, WorkflowAbortRunUsecase, WorkflowApprovalUsecase,
-    WorkflowPendingRuntimeCommandUsecase, WorkflowRuntimeCommandPreflight, WorkflowStartRunUsecase,
-    WorkflowSubmitOutputUsecase,
+    AbortRunCommand, ApprovalCommand, StartRunCommand, SubmitOutputCommand,
+    WorkflowAbortRunUsecase, WorkflowApprovalUsecase, WorkflowPendingRuntimeCommandUsecase,
+    WorkflowRuntimeCommandPreflight, WorkflowStartRunUsecase, WorkflowSubmitOutputUsecase,
 };
 use super::ports::{
     ApprovalChatTarget, PendingRuntimeCommand, PendingRuntimeCommandOutcome,
+    WorkflowRuntimeCommandGateway, WorkflowRuntimeStateGateway, WorkflowTurnCompleteNotification,
+};
+#[cfg(test)]
+use super::ports::{
     PendingRuntimeCommandPayload, WorkflowAbortRunGateway, WorkflowApprovalChatGateway,
-    WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeCommandGateway,
-    WorkflowRuntimeStateGateway, WorkflowStartRunGateway, WorkflowSubmitOutputGateway,
-    WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnCompleteNotification,
+    WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowStartRunGateway,
+    WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
     WorkflowTurnTokenUsage,
 };
 use super::turn_complete::WorkflowTurnCompleteUsecase;

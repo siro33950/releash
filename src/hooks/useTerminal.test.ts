@@ -147,7 +147,6 @@ describe("useTerminal", () => {
 				sessionKey: null,
 				worktreePath: "",
 				label: null,
-				kind: "terminal",
 			});
 		});
 	});

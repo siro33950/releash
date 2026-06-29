@@ -778,7 +778,7 @@ mod moved_tests {
         )
         .unwrap();
 
-        persist_agent_session_id(&app.handle(), &store, &session.id, "sdk-ready");
+        persist_agent_session_id(app.handle(), &store, &session.id, "sdk-ready");
 
         let loaded = store
             .load_full_session_for_restore(temp.path(), &session.id)
@@ -830,7 +830,7 @@ mod moved_tests {
             .unwrap();
 
         let parts =
-            load_post_turn_base_parts_from_store(&store, &app.handle(), &session.id, &message.id)
+            load_post_turn_base_parts_from_store(&store, app.handle(), &session.id, &message.id)
                 .unwrap();
 
         assert_eq!(parts.len(), 1);
@@ -1022,7 +1022,7 @@ mod moved_tests {
         ready_message[DEFER_AGENT_SESSION_ID_PERSIST_ON_READY] = serde_json::Value::Bool(true);
 
         handle_external_bridge_message(
-            &app.handle(),
+            app.handle(),
             &store,
             &handles,
             &session.id,
@@ -1079,7 +1079,7 @@ mod moved_tests {
         let mut state = ExternalBridgeMessageState::default();
 
         handle_external_bridge_message(
-            &app.handle(),
+            app.handle(),
             &store,
             &handles,
             &session.id,
@@ -1144,7 +1144,7 @@ mod moved_tests {
         let mut state = ExternalBridgeMessageState::default();
 
         handle_external_bridge_message(
-            &app.handle(),
+            app.handle(),
             &store,
             &handles,
             &session.id,
@@ -1205,7 +1205,7 @@ mod moved_tests {
         let mut state = ExternalBridgeMessageState::default();
 
         handle_external_bridge_message(
-            &app.handle(),
+            app.handle(),
             &store,
             &handles,
             &session.id,
@@ -1302,7 +1302,7 @@ mod moved_tests {
                 proc,
                 &session.id,
                 0,
-                |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+                |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
             );
             proc.sdk_session_id = Some("previous-good-session".to_string());
             proc.post_turn_message_token = None;
@@ -1377,7 +1377,7 @@ mod moved_tests {
 
         let mut state = ExternalBridgeMessageState::default();
         handle_external_bridge_message(
-            &app.handle(),
+            app.handle(),
             &store,
             &handles,
             &session.id,
@@ -1406,7 +1406,7 @@ mod moved_tests {
         }
 
         handle_external_bridge_message(
-            &app.handle(),
+            app.handle(),
             &store,
             &handles,
             &session.id,
@@ -1434,7 +1434,7 @@ mod moved_tests {
         }
 
         handle_external_bridge_message(
-            &app.handle(),
+            app.handle(),
             &store,
             &handles,
             &session.id,
@@ -1536,7 +1536,7 @@ mod moved_tests {
         let mut state = ExternalBridgeMessageState::default();
 
         handle_external_bridge_message(
-            &app.handle(),
+            app.handle(),
             &store,
             &handles,
             &session.id,
@@ -1653,7 +1653,7 @@ mod moved_tests {
         };
         assert!(
             requeue_streaming_turn_for_resume_mismatch(
-                &app.handle(),
+                app.handle(),
                 &handles,
                 &store,
                 &session.id,
@@ -1661,8 +1661,8 @@ mod moved_tests {
             )
             .await
         );
-        persist_resume_mismatch_for_reinject(&app.handle(), &store, &session.id);
-        crash_agent_process_for_context_reinject(&app.handle(), &handles, &session.id).await;
+        persist_resume_mismatch_for_reinject(app.handle(), &store, &session.id);
+        crash_agent_process_for_context_reinject(app.handle(), &handles, &session.id).await;
 
         let loaded = store
             .load_full_session_for_restore(temp.path(), &session.id)
@@ -1735,7 +1735,7 @@ mod moved_tests {
             .unwrap();
 
         persist_context_carry_failed_after_init_error(
-            &app.handle(),
+            app.handle(),
             &store,
             &session.id,
             true,
@@ -1791,7 +1791,7 @@ mod moved_tests {
                 generation_matches,
                 proc,
                 &session.id,
-                |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+                |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
             );
             (
                 transition.was_initializing,
@@ -1801,7 +1801,7 @@ mod moved_tests {
         assert!(was_initializing);
         assert!(context_carry_failed_after_init_error);
         persist_context_carry_failed_after_init_error(
-            &app.handle(),
+            app.handle(),
             &store,
             &session.id,
             true,
@@ -1859,7 +1859,7 @@ mod moved_tests {
                 generation_matches,
                 proc,
                 &session.id,
-                |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+                |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
             );
             assert!(transition.was_initializing);
             transition.context_restore_failed_on_init
@@ -1867,7 +1867,7 @@ mod moved_tests {
         assert!(!context_carry_failed_after_init_error);
         if context_carry_failed_after_init_error {
             persist_context_carry_failed_after_init_error(
-                &app.handle(),
+                app.handle(),
                 &store,
                 &session.id,
                 true,

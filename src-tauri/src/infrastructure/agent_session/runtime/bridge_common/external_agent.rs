@@ -38,7 +38,6 @@ use tokio::process::Child;
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex;
 
-#[allow(dead_code)]
 pub(crate) struct ExternalBridgeMessageState {
     pub(crate) last_persist_time: Instant,
     pub(crate) branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
@@ -258,7 +257,6 @@ pub(super) async fn cleanup_unregistered_agent_process(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) async fn close_external_agent_process<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -297,9 +295,7 @@ pub(crate) async fn close_external_agent_process<R: tauri::Runtime>(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(crate) struct ExternalPendingTurn {
-    pub queued_turn_id: String,
     pub worktree_path: String,
     pub permission_mode: String,
     pub plan_mode: bool,
@@ -311,7 +307,6 @@ pub(crate) struct ExternalPendingTurn {
     pub system_prompt: Option<String>,
 }
 
-#[allow(dead_code)]
 pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
@@ -394,7 +389,6 @@ pub(crate) async fn prepare_external_pending_message_turn<R: tauri::Runtime>(
         &pending.mentions,
     );
     Ok(Some(ExternalPendingTurn {
-        queued_turn_id: pending.id,
         worktree_path: pending.worktree_path,
         permission_mode: pending.permission_mode,
         plan_mode: pending.plan_mode,
@@ -418,7 +412,6 @@ async fn requeue_pending_message(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) async fn finish_external_pending_message_turn_start(chat_session_id: &str) {
     clear_pending_turn_starting(chat_session_id).await;
 }
@@ -584,7 +577,7 @@ mod moved_tests {
         handles.lock().await.insert(session.id.clone(), proc);
 
         start_external_agent_turn_state(
-            &app.handle(),
+            app.handle(),
             None,
             &store,
             &handles,
@@ -678,7 +671,7 @@ mod moved_tests {
         let mut state = ExternalBridgeMessageState::default();
 
         handle_external_bridge_message(
-            &app.handle(),
+            app.handle(),
             &store,
             &handles,
             &session.id,
@@ -742,7 +735,7 @@ mod moved_tests {
         let mut state = ExternalBridgeMessageState::default();
 
         handle_external_bridge_message(
-            &app.handle(),
+            app.handle(),
             &store,
             &handles,
             &session.id,
@@ -822,7 +815,7 @@ mod moved_tests {
         let mut state = ExternalBridgeMessageState::default();
 
         handle_external_bridge_message(
-            &app.handle(),
+            app.handle(),
             &store,
             &handles,
             &session.id,
@@ -863,7 +856,7 @@ mod moved_tests {
         );
 
         handle_external_bridge_message(
-            &app.handle(),
+            app.handle(),
             &store,
             &handles,
             &session.id,
@@ -920,7 +913,7 @@ mod moved_tests {
         handles.lock().await.insert(session_id.to_string(), proc);
 
         let err = match prepare_external_pending_message_turn(
-            &app.handle(),
+            app.handle(),
             None,
             &handles,
             &store,
@@ -979,7 +972,7 @@ mod moved_tests {
         handles.lock().await.insert(session.id.clone(), proc);
 
         let pending = prepare_external_pending_message_turn(
-            &app.handle(),
+            app.handle(),
             None,
             &handles,
             &store,

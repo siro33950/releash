@@ -1,9 +1,7 @@
 use std::collections::HashSet;
-use std::sync::Arc;
 
-use crate::domain::pty_session::PtyKind;
 use crate::usecase::pty_session::dto::{
-    GetPtyBufferedOutputResult, PtyReplayOutput, PtySessionAvailability, PtySessionInfo,
+    GetPtyBufferedOutputResult, PtySessionAvailability, PtySessionInfo,
 };
 use crate::usecase::pty_session::error::UsecaseError;
 use crate::usecase::pty_session::ports::PtySessionReadGateway;
@@ -62,48 +60,6 @@ pub fn get_buffered_output(
     })
 }
 
-pub(crate) trait PtySessionReplayReader: Send + Sync {
-    fn replay_outputs(&self) -> Vec<PtyReplayOutput>;
-}
-
-pub(crate) struct PtySessionReplayQueryService<G> {
-    gateway: Arc<G>,
-}
-
-impl<G> PtySessionReplayQueryService<G> {
-    pub(crate) fn new(gateway: Arc<G>) -> Self {
-        Self { gateway }
-    }
-}
-
-impl<G> PtySessionReplayReader for PtySessionReplayQueryService<G>
-where
-    G: PtySessionReadGateway + Send + Sync + 'static,
-{
-    fn replay_outputs(&self) -> Vec<PtyReplayOutput> {
-        replay_outputs(self.gateway.as_ref())
-    }
-}
-
-pub fn replay_outputs(manager: &impl PtySessionReadGateway) -> Vec<PtyReplayOutput> {
-    manager
-        .list_snapshots()
-        .into_iter()
-        .filter(|snapshot| !snapshot.exited && snapshot.kind == PtyKind::Terminal)
-        .filter_map(|snapshot| {
-            let found = manager.find_by_session_key(&snapshot.session_key)?;
-            if found.buffered_output.is_empty() {
-                return None;
-            }
-            Some(PtyReplayOutput {
-                pty_id: snapshot.pty_id,
-                data: found.buffered_output,
-                sequence: found.buffered_output_sequence,
-            })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -142,52 +98,24 @@ mod tests {
         }
     }
 
-    fn snapshot(pty_id: u64, session_key: &str, kind: PtyKind, exited: bool) -> PtySessionSnapshot {
+    fn snapshot(pty_id: u64, session_key: &str, exited: bool) -> PtySessionSnapshot {
         PtySessionSnapshot {
             pty_id,
             session_key: session_key.to_string(),
             worktree_path: Some("/repo".to_string()),
             label: None,
-            kind,
             exited,
             exit_code: None,
         }
     }
 
     #[test]
-    fn replay_outputs_include_only_alive_terminal_sessions_with_buffered_output() {
-        let gateway = MockGateway::new(
-            vec![
-                snapshot(1, "terminal", PtyKind::Terminal, false),
-                snapshot(2, "empty", PtyKind::Terminal, false),
-                snapshot(3, "oneshot", PtyKind::OneShot, false),
-                snapshot(4, "exited", PtyKind::Terminal, true),
-            ],
-            HashMap::from([
-                ("terminal".to_string(), "buffered".to_string()),
-                ("empty".to_string(), String::new()),
-                ("oneshot".to_string(), "ignored".to_string()),
-                ("exited".to_string(), "ignored".to_string()),
-            ]),
-        );
-
-        assert_eq!(
-            replay_outputs(&gateway),
-            vec![PtyReplayOutput {
-                pty_id: 1,
-                data: "buffered".to_string(),
-                sequence: 5,
-            }]
-        );
-    }
-
-    #[test]
     fn reconcile_unavailable_returns_only_referenced_keys_missing_from_live_sessions() {
         let gateway = MockGateway::new(
             vec![
-                snapshot(1, "live-a", PtyKind::Terminal, false),
-                snapshot(2, "live-b", PtyKind::Terminal, false),
-                snapshot(3, "unreferenced-live", PtyKind::Terminal, false),
+                snapshot(1, "live-a", false),
+                snapshot(2, "live-b", false),
+                snapshot(3, "unreferenced-live", false),
             ],
             HashMap::new(),
         );
@@ -211,10 +139,7 @@ mod tests {
     #[test]
     fn reconcile_unavailable_is_empty_when_all_referenced_sessions_are_live() {
         let gateway = MockGateway::new(
-            vec![
-                snapshot(1, "live-a", PtyKind::Terminal, false),
-                snapshot(2, "live-b", PtyKind::Terminal, false),
-            ],
+            vec![snapshot(1, "live-a", false), snapshot(2, "live-b", false)],
             HashMap::new(),
         );
 
@@ -226,10 +151,7 @@ mod tests {
 
     #[test]
     fn reconcile_unavailable_is_empty_without_referenced_sessions() {
-        let gateway = MockGateway::new(
-            vec![snapshot(1, "live-a", PtyKind::Terminal, false)],
-            HashMap::new(),
-        );
+        let gateway = MockGateway::new(vec![snapshot(1, "live-a", false)], HashMap::new());
 
         let availability = reconcile_unavailable(&gateway, &[]);
 
@@ -239,7 +161,7 @@ mod tests {
     #[test]
     fn get_buffered_output_returns_snapshot_for_matching_worktree() {
         let gateway = MockGateway::new(
-            vec![snapshot(7, "terminal", PtyKind::Terminal, false)],
+            vec![snapshot(7, "terminal", false)],
             HashMap::from([("terminal".to_string(), "buffered".to_string())]),
         );
 
@@ -256,7 +178,7 @@ mod tests {
     #[test]
     fn get_buffered_output_rejects_other_worktree() {
         let gateway = MockGateway::new(
-            vec![snapshot(7, "terminal", PtyKind::Terminal, false)],
+            vec![snapshot(7, "terminal", false)],
             HashMap::from([("terminal".to_string(), "buffered".to_string())]),
         );
 

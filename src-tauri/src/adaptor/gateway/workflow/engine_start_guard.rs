@@ -45,18 +45,12 @@ fn domain_validation_to_engine_error(
         }
         domain::WorkflowError::Validation(message) => WorkflowEngineError::InvalidWorkflow(message),
         domain::WorkflowError::InvalidState(message) => WorkflowEngineError::InvalidState(message),
-        domain::WorkflowError::AlreadyActive(message) => {
-            WorkflowEngineError::AlreadyActive(message)
-        }
-        domain::WorkflowError::UnauthorizedWorktree(message) => {
-            WorkflowEngineError::UnauthorizedWorktree(message)
-        }
         domain::WorkflowError::UnauthorizedApprovalTarget(message) => {
             WorkflowEngineError::UnauthorizedApprovalTarget(message)
         }
-        domain::WorkflowError::NotFound(message)
-        | domain::WorkflowError::Rule(message)
-        | domain::WorkflowError::External(message) => WorkflowEngineError::InvalidWorkflow(message),
+        domain::WorkflowError::NotFound(message) | domain::WorkflowError::External(message) => {
+            WorkflowEngineError::InvalidWorkflow(message)
+        }
     }
 }
 

@@ -1,16 +1,7 @@
 use std::collections::VecDeque;
 
-use crate::domain::pty_session::PtyKind;
-
 pub const OUTPUT_BUFFER_CAPACITY: usize = 64 * 1024;
 pub const MAX_PENDING_BYTES: usize = 16 * 1024;
-
-pub fn parse_pty_kind(kind: Option<&str>) -> PtyKind {
-    match kind {
-        Some("one_shot") => PtyKind::OneShot,
-        _ => PtyKind::Terminal,
-    }
-}
 
 pub fn decode_utf8_chunk(raw_chunk: &[u8], pending: &mut Vec<u8>) -> Option<String> {
     pending.extend_from_slice(raw_chunk);
@@ -52,14 +43,6 @@ pub fn append_output_to_ring_buffer(ring: &mut VecDeque<u8>, output: &str, capac
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_kind_defaults_unknown_values_to_terminal() {
-        assert_eq!(parse_pty_kind(Some("one_shot")), PtyKind::OneShot);
-        assert_eq!(parse_pty_kind(Some("terminal")), PtyKind::Terminal);
-        assert_eq!(parse_pty_kind(Some("unknown")), PtyKind::Terminal);
-        assert_eq!(parse_pty_kind(None), PtyKind::Terminal);
-    }
 
     #[test]
     fn decode_utf8_chunk_keeps_incomplete_sequence_pending() {

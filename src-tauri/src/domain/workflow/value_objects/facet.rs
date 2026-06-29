@@ -37,10 +37,6 @@ impl FacetKey {
         }
         Ok(Self(value))
     }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

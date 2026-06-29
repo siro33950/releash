@@ -405,15 +405,15 @@ impl RunMetadataStore {
         remove_metadata_file(self.data_dir.clone(), run_id).await
     }
 
+    #[cfg(test)]
     async fn list_valid(&self) -> Vec<WorkflowRun> {
-        let dir = self.data_dir.clone();
-        match tokio::task::spawn_blocking(move || iter_valid_run_metadata(&dir)).await {
-            Ok(runs) => runs,
-            Err(e) => {
+        let data_dir = self.data_dir.clone();
+        tokio::task::spawn_blocking(move || iter_valid_run_metadata(&data_dir))
+            .await
+            .unwrap_or_else(|e| {
                 log::warn!("RunStore: failed to join metadata listing task: {e}");
                 Vec::new()
-            }
-        }
+            })
     }
 }
 
@@ -783,39 +783,6 @@ impl RunStore {
         runs
     }
 
-    /// 終了済み（completed / failed / aborted）の run を一覧する。
-    /// 検証済み loader（`load_validated_run_file`）を経由するため、ファイル名 stem が
-    /// UUID 形式でない、もしくは metadata.run_id が一致しないエントリは破損として
-    /// warn ログのうえスキップする（Spec issues-1011 line 130 / Rule 7 / finding 11）。
-    ///
-    /// 本メソッドは観測経路の primary entry ではない（spec [05]: production 観測は
-    /// `list_runs` に集約され `project_runs_to_summaries` を経由する）。テストでの
-    /// metadata file 直読を検証するための補助 API として温存する。
-    #[allow(dead_code)]
-    pub async fn list_completed(&self) -> Vec<WorkflowRunSummary> {
-        let Some(store) = self.metadata_store().await.ok().flatten() else {
-            return Vec::new();
-        };
-        let active_ids: std::collections::HashSet<String> = {
-            let inner = self.inner.lock().await;
-            inner.active.keys().cloned().collect()
-        };
-        let metadata_runs = store.list_valid().await;
-        let mut summaries: Vec<WorkflowRunSummary> = metadata_runs
-            .into_iter()
-            .filter(|run| run.status.is_terminal() && !active_ids.contains(&run.run_id))
-            .map(|run| WorkflowRunSummary::from(&run))
-            .collect();
-        summaries.sort_by(|a, b| {
-            let a_key = a.completed_at.unwrap_or(a.started_at);
-            let b_key = b.completed_at.unwrap_or(b.started_at);
-            b_key
-                .partial_cmp(&a_key)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        summaries
-    }
-
     /// テスト専用: worktree_path 限定の active+terminal 一覧（合成順）を返す。
     /// production 経路は `list_runs(RunListFilter { worktree_path: Some(..), .. })` を使う。
     #[cfg(test)]
@@ -823,6 +790,15 @@ impl RunStore {
         self.list_runs(RunListFilter {
             status: None,
             worktree_path: Some(worktree_path.to_string()),
+        })
+        .await
+    }
+
+    #[cfg(test)]
+    pub async fn list_completed(&self) -> Vec<WorkflowRunSummary> {
+        self.list_runs(RunListFilter {
+            status: Some(RunStatusFilter::Terminal),
+            worktree_path: None,
         })
         .await
     }

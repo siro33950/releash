@@ -320,13 +320,15 @@ mod tests {
         }
     }
 
+    type OnScanHook = Box<dyn Fn(usize) + Send + Sync>;
+
     struct FakeScanner {
         scans: AtomicUsize,
         value: parking_lot::Mutex<String>,
         fail: AtomicBool,
         prunes: parking_lot::Mutex<Vec<Vec<String>>>,
         sleep: Duration,
-        on_scan: parking_lot::Mutex<Option<Box<dyn Fn(usize) + Send + Sync>>>,
+        on_scan: parking_lot::Mutex<Option<OnScanHook>>,
     }
 
     impl FakeScanner {

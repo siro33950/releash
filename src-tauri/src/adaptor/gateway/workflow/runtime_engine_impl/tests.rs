@@ -1,5 +1,5 @@
 use super::*;
-use crate::adaptor::gateway::app_config::{
+use crate::adaptor::gateway::app_config::config_models::{
     NotionPropertyMappingModel, NotionRepoConfigModel, ReleashConfig,
 };
 use crate::adaptor::gateway::workflow::approval_runtime::MAX_APPROVAL_COMMENT_CHARS;
@@ -12,7 +12,6 @@ use crate::infrastructure::agent_session::runtime::{
     AgentBackend, AgentBackendRegistry, AgentMessage as BackendAgentMessage, PermissionResponse,
     SessionConfig as BackendSessionConfig, SessionHandle as BackendSessionHandle,
 };
-use crate::usecase::agent_session::session::MessagePart;
 use async_trait::async_trait;
 
 const TEST_PARENT_SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -55,9 +54,6 @@ impl AgentBackend for WorkflowMockBackend {
         _s: &BackendSessionHandle,
         _r: PermissionResponse,
     ) -> Result<(), String> {
-        Ok(())
-    }
-    async fn close_session(&self, _s: &BackendSessionHandle) -> Result<(), String> {
         Ok(())
     }
 }
@@ -2101,7 +2097,6 @@ struct RecordedSessionStart {
     worktree_path: String,
     permission_mode: Option<String>,
     system_prompt: Option<String>,
-    workflow_instruction: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -2112,14 +2107,13 @@ impl SessionStartGate for RecordingSessionStartGate {
         worktree_path: &str,
         permission_mode: Option<String>,
         system_prompt: Option<String>,
-        workflow_instruction: Option<String>,
+        _workflow_instruction: Option<String>,
     ) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
         self.records.lock().unwrap().push(RecordedSessionStart {
             session_id: session_id.to_string(),
             worktree_path: worktree_path.to_string(),
             permission_mode,
             system_prompt,
-            workflow_instruction,
         });
         Ok(())
     }
@@ -6172,9 +6166,6 @@ mod dispatch_boundary_tests {
             _s: &BackendSessionHandle,
             _r: BackendPermissionResponse,
         ) -> Result<(), String> {
-            Ok(())
-        }
-        async fn close_session(&self, _s: &BackendSessionHandle) -> Result<(), String> {
             Ok(())
         }
     }

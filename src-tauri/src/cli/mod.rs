@@ -196,10 +196,8 @@ mod tests {
         source
             .lines()
             .enumerate()
-            .filter_map(|(index, line)| {
-                line_has_workflow_module_dependency(line)
-                    .then(|| (index + 1, line.trim().to_string()))
-            })
+            .filter(|(_, line)| line_has_workflow_module_dependency(line))
+            .map(|(index, line)| (index + 1, line.trim().to_string()))
             .collect()
     }
 

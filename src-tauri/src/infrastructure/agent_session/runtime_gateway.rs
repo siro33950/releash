@@ -1,14 +1,11 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use crate::domain::agent_session::PermissionMode;
 use crate::infrastructure::agent_session::runtime;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
-use crate::usecase::agent_session::session::{
-    AgentStreamResyncReadModel, SessionStore, StreamResyncSnapshot,
-};
+use crate::usecase::agent_session::session::SessionStore;
 
 pub type AgentImageAttachment = runtime::ImageAttachment;
 pub type AgentSendMessageResponse = runtime::SendMessageResponse;
@@ -19,46 +16,6 @@ pub struct AgentRuntimeGateway<'a> {
     pub session_store: &'a Arc<SessionStore>,
     pub registry: &'a Arc<runtime::AgentBackendRegistry>,
     pub handles: &'a Arc<Mutex<runtime::AgentProcessMap>>,
-}
-
-pub struct AgentStreamResyncRuntimeReadModel {
-    session_store: Arc<SessionStore>,
-    handles: Arc<Mutex<runtime::AgentProcessMap>>,
-    data_dir: std::path::PathBuf,
-}
-
-impl AgentStreamResyncRuntimeReadModel {
-    pub fn new(
-        session_store: Arc<SessionStore>,
-        handles: Arc<Mutex<runtime::AgentProcessMap>>,
-        data_dir: std::path::PathBuf,
-    ) -> Self {
-        Self {
-            session_store,
-            handles,
-            data_dir,
-        }
-    }
-}
-
-#[async_trait]
-impl AgentStreamResyncReadModel for AgentStreamResyncRuntimeReadModel {
-    async fn resync_streaming_message(
-        &self,
-        session_id: &str,
-        message_id: &str,
-        since_seq: u64,
-    ) -> Result<Option<StreamResyncSnapshot>, String> {
-        runtime::resync_streaming_message_internal_with_data_dir(
-            &self.session_store,
-            &self.handles,
-            &self.data_dir,
-            session_id,
-            message_id,
-            since_seq,
-        )
-        .await
-    }
 }
 
 pub struct AgentRuntimeSendRequest {

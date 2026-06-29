@@ -13,7 +13,9 @@ pub struct WorkflowEventDraft {
 }
 
 pub trait WorkflowEventRepository: Send + Sync {
+    #[cfg(test)]
     fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError>;
+    #[cfg(test)]
     fn append_batch(&self, events: &[WorkflowEventDraft]) -> Result<(), WorkflowError>;
     fn read(&self, run_id: &RunId) -> Result<Vec<WorkflowEventDraft>, WorkflowError>;
 }
@@ -41,7 +43,9 @@ pub struct PendingWorkflowCommand {
 
 pub trait PendingWorkflowCommandRepository: Send + Sync {
     fn write_pending(&self, command: PendingWorkflowCommand) -> Result<(), WorkflowError>;
+    #[cfg(test)]
     fn list_pending(&self) -> Result<Vec<PendingWorkflowCommand>, WorkflowError>;
+    #[cfg(test)]
     fn mark_processed(&self, command_id: &str) -> Result<(), WorkflowError>;
 }
 

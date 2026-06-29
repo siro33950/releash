@@ -409,7 +409,6 @@ export function useTerminal(
 				sessionKey: effectiveSessionKey,
 				worktreePath: worktreePath ?? "",
 				label: label ?? null,
-				kind: "terminal",
 			});
 
 			// standalone 用: cwd → UUID キャッシュ更新（管理ペインでは不要）

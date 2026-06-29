@@ -47,10 +47,6 @@ vi.mock("@tauri-apps/api/event", () => ({
 	}),
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: vi.fn().mockResolvedValue(undefined),
-}));
-
 vi.mock("./useSessionStore", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./useSessionStore")>();
 	return {
@@ -59,21 +55,7 @@ vi.mock("./useSessionStore", async (importOriginal) => {
 	};
 });
 
-const { invoke } = await import("@tauri-apps/api/core");
 const { useAgentSdkListeners } = await import("./useAgentSdkListeners");
-const mockInvoke = vi.mocked(invoke);
-const frontendDrivenStreamResyncCommand = [
-	"resync",
-	"streaming",
-	"message",
-].join("_");
-
-function expectNoFrontendStreamingResync(): void {
-	expect(mockInvoke).not.toHaveBeenCalledWith(
-		frontendDrivenStreamResyncCommand,
-		expect.anything(),
-	);
-}
 
 function makeRefs(): TestRefs {
 	const registry: TestViewableRegistry = {
@@ -356,7 +338,6 @@ describe("agent-streaming-delta event", () => {
 
 		const cb = listenCallbacks.get("agent-streaming-delta");
 		expect(cb).toBeDefined();
-		mockInvoke.mockClear();
 
 		const parts = [
 			{ type: "text", content: "Hello World" },
@@ -380,7 +361,6 @@ describe("agent-streaming-delta event", () => {
 			seq: 1,
 			parts,
 		});
-		expectNoFrontendStreamingResync();
 	});
 
 	it("dispatches SET_STREAMING_MESSAGE for snapshot events from a viewable session", async () => {
@@ -394,7 +374,6 @@ describe("agent-streaming-delta event", () => {
 
 		const cb = listenCallbacks.get("agent-streaming-delta");
 		expect(cb).toBeDefined();
-		mockInvoke.mockClear();
 
 		const parts = [{ type: "text" as const, content: "resynced" }];
 		await cb?.({
@@ -416,7 +395,6 @@ describe("agent-streaming-delta event", () => {
 		expect(refs.dispatch).not.toHaveBeenCalledWith(
 			expect.objectContaining({ type: "APPLY_STREAMING_DELTA" }),
 		);
-		expectNoFrontendStreamingResync();
 	});
 
 	it("does not inspect seq continuity or drop duplicate-looking append events", async () => {
@@ -430,7 +408,6 @@ describe("agent-streaming-delta event", () => {
 
 		const cb = listenCallbacks.get("agent-streaming-delta");
 		expect(cb).toBeDefined();
-		mockInvoke.mockClear();
 
 		await cb?.({
 			payload: {
@@ -465,7 +442,6 @@ describe("agent-streaming-delta event", () => {
 			seq: 10,
 			parts: [{ type: "text", content: "duplicate-looking" }],
 		});
-		expectNoFrontendStreamingResync();
 	});
 
 	it("dispatches streaming events even when the session is not viewable", async () => {

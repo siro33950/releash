@@ -104,9 +104,9 @@ fn resolve_step_output_contract_from_drafts(
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        FacetSummary, NodeDefinition, NodeType, RunId, RunListFilter, RunStatus, TriggerSource,
-        WorkflowDefinition, WorkflowDefinitionRepository, WorkflowRunRecord, WorkflowRunRepository,
-        WorkflowRunSummary, WorkflowStateSnapshot, WorkflowSummary,
+        FacetSummary, NodeDefinition, NodeType, RunId, RunListFilter, WorkflowDefinition,
+        WorkflowDefinitionRepository, WorkflowRunRecord, WorkflowRunRepository, WorkflowRunSummary,
+        WorkflowStateSnapshot, WorkflowSummary,
     };
     use crate::usecase::workflow::ports::{
         WorkflowEventRepository, WorkflowStateProjectionRepository,
@@ -128,10 +128,6 @@ mod tests {
             _run_id: &RunId,
             _completed: WorkflowRunRecord,
         ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        fn cancel_reservation(&self, _run_id: &RunId) -> Result<(), WorkflowError> {
             Ok(())
         }
 

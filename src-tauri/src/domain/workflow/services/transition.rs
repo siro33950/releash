@@ -111,7 +111,9 @@ pub fn decide_next_node(workflow: &WorkflowDefinition, current_index: usize) -> 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionFailureSignal {
+    #[cfg(test)]
     Timeout,
+    #[cfg(test)]
     BridgeCrash,
     ModelRefusal,
 }
@@ -121,7 +123,9 @@ pub fn classify_session_error(
     signal: Option<SessionFailureSignal>,
 ) -> WorkflowStepFailureKind {
     match signal {
+        #[cfg(test)]
         Some(SessionFailureSignal::Timeout) => WorkflowStepFailureKind::StaleRuntimeTimeout,
+        #[cfg(test)]
         Some(SessionFailureSignal::BridgeCrash) => WorkflowStepFailureKind::InfrastructureCrash,
         Some(SessionFailureSignal::ModelRefusal) => WorkflowStepFailureKind::ModelRefusal,
         None if exit_code == 124 => WorkflowStepFailureKind::StaleRuntimeTimeout,
@@ -159,6 +163,7 @@ pub fn check_cycle_guard(
     }
 }
 
+#[cfg(test)]
 pub fn decide_turn_complete_action(
     workflow: &WorkflowDefinition,
     current_index: usize,
@@ -205,6 +210,7 @@ pub fn decide_turn_complete_action_with_signal(
     }
 }
 
+#[cfg(test)]
 pub fn plan_turn_complete_mutation(
     workflow: &WorkflowDefinition,
     current_index: usize,

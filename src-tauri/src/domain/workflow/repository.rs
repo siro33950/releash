@@ -3,9 +3,11 @@
 //! Implementations live in `adaptor/gateway/workflow/` and preserve the current
 //! `workflow_runs/` JSON and event log shapes through mapper types.
 
+#[cfg(test)]
+use crate::domain::workflow::value_objects::WorkflowRunRecord;
 use crate::domain::workflow::value_objects::{
-    FacetKind, FacetSummary, RunId, RunListFilter, WorkflowDefinition, WorkflowRunRecord,
-    WorkflowRunSummary, WorkflowSummary,
+    FacetKind, FacetSummary, RunId, RunListFilter, WorkflowDefinition, WorkflowRunSummary,
+    WorkflowSummary,
 };
 use crate::domain::workflow::WorkflowError;
 
@@ -18,15 +20,17 @@ pub struct WorkflowRunManualArchiveRecord {
 }
 
 pub trait WorkflowRunRepository: Send + Sync {
+    #[cfg(test)]
     fn register_active(&self, run: WorkflowRunRecord) -> Result<(), WorkflowError>;
+    #[cfg(test)]
     fn complete_run(
         &self,
         run_id: &RunId,
         completed: WorkflowRunRecord,
     ) -> Result<(), WorkflowError>;
-    fn cancel_reservation(&self, run_id: &RunId) -> Result<(), WorkflowError>;
     fn list_runs(&self, filter: RunListFilter) -> Result<Vec<WorkflowRunSummary>, WorkflowError>;
     fn get_run(&self, run_id: &RunId) -> Result<Option<WorkflowRunSummary>, WorkflowError>;
+    #[cfg(test)]
     fn resolve_active_run_by_worktree(
         &self,
         worktree_path: &str,

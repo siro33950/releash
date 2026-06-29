@@ -67,8 +67,10 @@ use crate::adaptor::gateway::workflow::schema::{TransitionRule, Workflow};
 use crate::adaptor::gateway::workflow::secret_source;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::state::ParallelStepState;
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::state::StepHistoryEntry;
 use crate::adaptor::gateway::workflow::state::{
-    StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState, WorkflowState,
+    StepOutput, TokenUsage, WorkflowExecutionState, WorkflowState,
 };
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::step_settings::resolve_step_settings;
@@ -517,7 +519,6 @@ impl WorkflowRuntimeService {
     /// 公開 API は `list_active_runs` / `list_completed_runs` / `run_id_for_worktree` /
     /// `resolve_worktree_by_run` / `set_run_store_data_dir` に集約する。
     #[cfg(test)]
-    #[allow(dead_code)]
     pub fn run_store(&self) -> &Arc<RunStore> {
         &self.run_store
     }

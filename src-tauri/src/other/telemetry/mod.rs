@@ -85,8 +85,6 @@ struct Metrics {
     session_save_bytes: Histogram<f64>,
     operation_status: Counter<u64>,
     orphan_cleanup: Counter<u64>,
-    dropped_stream_frames: Counter<u64>,
-    ws_reconnects: Counter<u64>,
     usage_events: Counter<u64>,
     tool_output_truncated: Counter<u64>,
     tool_output_bytes: Counter<u64>,
@@ -246,12 +244,6 @@ pub(crate) fn install_metrics() {
             .build(),
         operation_status: meter.u64_counter("releash.operation.status").build(),
         orphan_cleanup: meter.u64_counter("releash.startup.orphan_cleanup").build(),
-        dropped_stream_frames: meter
-            .u64_counter("releash.agent_stream.dropped_frames")
-            .build(),
-        ws_reconnects: meter
-            .u64_counter("releash.agent_stream.ws_reconnects")
-            .build(),
         usage_events: meter.u64_counter("releash.usage.events").build(),
         tool_output_truncated: meter
             .u64_counter("releash.tool_output.truncated_count")
@@ -571,28 +563,6 @@ pub(crate) fn record_emit_interval(elapsed: Duration) {
         .record(elapsed.as_secs_f64() * 1000.0, &[]);
 }
 
-pub(crate) fn increment_dropped_stream_frames() {
-    if !is_performance_active() {
-        return;
-    }
-    #[cfg(test)]
-    record_test_metric("releash.agent_stream.dropped_frames", 1.0, &[]);
-    if let Some(metrics) = METRICS.get() {
-        metrics.dropped_stream_frames.add(1, &[]);
-    }
-}
-
-pub(crate) fn increment_ws_reconnects() {
-    if !is_performance_active() {
-        return;
-    }
-    #[cfg(test)]
-    record_test_metric("releash.agent_stream.ws_reconnects", 1.0, &[]);
-    if let Some(metrics) = METRICS.get() {
-        metrics.ws_reconnects.add(1, &[]);
-    }
-}
-
 pub(crate) fn record_startup(metric: StartupMetric, elapsed: Duration) {
     if !is_performance_active() {
         return;
@@ -767,8 +737,6 @@ mod tests {
         record_payload_size(PayloadChannel::TauriEvent, || 128);
         record_session_save_bytes(HotPathMetric::SessionAppend, || 256);
         record_emit_interval(Duration::from_millis(33));
-        increment_dropped_stream_frames();
-        increment_ws_reconnects();
         record_usage_event("settings_saved");
 
         let records = test_metric_records();
@@ -797,12 +765,6 @@ mod tests {
         assert!(records.iter().any(|record| {
             record.name == "releash.agent_stream.emit_interval_ms" && record.value == 33.0
         }));
-        assert!(records
-            .iter()
-            .any(|record| record.name == "releash.agent_stream.dropped_frames"));
-        assert!(records
-            .iter()
-            .any(|record| record.name == "releash.agent_stream.ws_reconnects"));
         assert!(records.iter().any(|record| {
             record.name == "releash.usage.events"
                 && has_attr(record, KEY_USAGE_EVENT, "settings_saved")
@@ -954,8 +916,6 @@ mod tests {
             Duration::from_millis(1),
         );
         record_emit_interval(Duration::from_millis(33));
-        increment_dropped_stream_frames();
-        increment_ws_reconnects();
         record_usage_event("settings_saved");
 
         assert!(test_metric_records().is_empty());

@@ -19,14 +19,6 @@ impl PtyResizer for DirectResizer {
             })
             .map_err(|e| format!("Failed to resize PTY: {}", e))
     }
-
-    fn get_size(&self) -> Result<(u16, u16), String> {
-        let size = self
-            .master
-            .get_size()
-            .map_err(|e| format!("Failed to get PTY size: {}", e))?;
-        Ok((size.cols, size.rows))
-    }
 }
 
 pub struct DirectPtyBackend;
@@ -128,21 +120,11 @@ impl PtyBackend for DirectPtyBackend {
             resizer: Arc::new(Mutex::new(Box::new(resizer))),
         })
     }
-
-    fn backend_name(&self) -> &'static str {
-        "direct"
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_backend_name() {
-        let backend = DirectPtyBackend::new();
-        assert_eq!(backend.backend_name(), "direct");
-    }
 
     #[test]
     fn test_new_creates_instance() {

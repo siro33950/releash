@@ -6,9 +6,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster;
-use crate::adaptor::protocol::pty::{PtyEvictReasonMsg, PtyEvictedMsg, PtyExitMsg, PtyOutputMsg};
-use crate::adaptor::protocol::WsMessage;
 use crate::domain::pty_session::entities::{
     PtySession, PtySessionRegistry, PtySessionSnapshot, PtySpawnReservation,
     PtySpawnReservationError,
@@ -118,7 +115,6 @@ fn spawn_output_reader(
 ) {
     let rt = tokio::runtime::Handle::current();
     std::thread::spawn(move || {
-        let ws = app.try_state::<Arc<WsBroadcaster>>();
         let mut buf = [0u8; 4096];
         let mut pending = Vec::new();
         let mut last_activity_recorded_ms = 0;
@@ -148,15 +144,6 @@ fn spawn_output_reader(
                                 sequence,
                             },
                         );
-                        if let Some(ws) = &ws {
-                            if ws.has_subscriber() {
-                                ws.try_send(WsMessage::PtyOutput(PtyOutputMsg {
-                                    pty_id,
-                                    data: filtered,
-                                    sequence,
-                                }));
-                            }
-                        }
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -174,9 +161,6 @@ fn spawn_output_reader(
         }
 
         let _ = app.emit("pty-exit", PtyExit { pty_id, exit_code });
-        if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
-            ws.try_send(WsMessage::PtyExit(PtyExitMsg { pty_id, exit_code }));
-        }
 
         // Delayed cleanup: remove exited session after 5 minutes.
         let app_cleanup = app.clone();
@@ -193,32 +177,6 @@ fn spawn_output_reader(
 }
 
 impl PtySessionRuntimeGateway {
-    #[allow(dead_code)]
-    pub fn with_backend(backend: Box<dyn PtyBackend>) -> Self {
-        Self {
-            registry: Mutex::new(PtySessionRegistry::default()),
-            runtimes: Mutex::new(HashMap::new()),
-            backend,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn with_backend_and_config(
-        backend: Box<dyn PtyBackend>,
-        config: PtyLifecycleConfig,
-    ) -> Self {
-        Self {
-            registry: Mutex::new(PtySessionRegistry::with_config(config)),
-            runtimes: Mutex::new(HashMap::new()),
-            backend,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn backend_name(&self) -> &'static str {
-        self.backend.backend_name()
-    }
-
     pub fn start_idle_sweeper(self: &Arc<Self>, app: AppHandle) {
         let gateway = Arc::clone(self);
         let interval = gateway.lifecycle_config().sweep_interval;
@@ -482,12 +440,11 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
         snapshot: &PtySessionSnapshot,
         reason: PtyEvictReason,
     ) {
-        let reason_msg = PtyEvictReasonMsg::from(reason);
-        let reason_wire = serde_json::to_value(reason_msg)
-            .expect("PtyEvictReasonMsg should serialize")
-            .as_str()
-            .expect("PtyEvictReasonMsg should serialize to a string")
-            .to_string();
+        let reason_wire = match reason {
+            PtyEvictReason::Idle => "idle",
+            PtyEvictReason::CapExceeded => "cap_exceeded",
+        }
+        .to_string();
         let _ = app.emit(
             "pty-evicted",
             PtyEvicted {
@@ -496,15 +453,6 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
                 reason: reason_wire,
             },
         );
-        if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
-            if ws.has_subscriber() {
-                ws.try_send(WsMessage::PtyEvicted(PtyEvictedMsg {
-                    pty_id: snapshot.pty_id,
-                    session_key: snapshot.session_key.clone(),
-                    reason: reason_msg,
-                }));
-            }
-        }
     }
 
     fn write(&self, pty_id: u64, data: &str) -> Result<(), UsecaseError> {
@@ -541,18 +489,6 @@ impl PtySessionGateway for PtySessionRuntimeGateway {
         result.map_err(UsecaseError::from)?;
         self.record_activity(pty_id, now_ms());
         Ok(())
-    }
-
-    fn get_pty_size(&self, pty_id: u64) -> Result<(u16, u16), UsecaseError> {
-        let resizer = {
-            let runtimes = self.runtimes.lock();
-            let runtime = runtimes
-                .get(&pty_id)
-                .ok_or_else(|| UsecaseError::Gateway(format!("PTY {} not found", pty_id)))?;
-            Arc::clone(&runtime.resizer)
-        };
-        let result = resizer.lock().get_size();
-        result.map_err(UsecaseError::from)
     }
 
     fn kill_runtime(&self, pty_id: u64) -> Result<(), UsecaseError> {
@@ -608,18 +544,11 @@ pub struct PtyEvicted {
 mod tests {
     use super::*;
     use crate::domain::pty_session::services::{MAX_PENDING_BYTES, OUTPUT_BUFFER_CAPACITY};
-    use crate::domain::pty_session::PtyKind;
 
     #[test]
     fn runtime_gateway_default_has_no_sessions() {
         let gateway = PtySessionRuntimeGateway::default();
         assert!(gateway.list_snapshots().is_empty());
-    }
-
-    #[test]
-    fn backend_name_uses_direct_backend_by_default() {
-        let gateway = PtySessionRuntimeGateway::default();
-        assert_eq!(gateway.backend_name(), "direct");
     }
 
     #[test]
@@ -644,14 +573,6 @@ mod tests {
         assert!(gateway.resize(99999, 0, 80).is_ok());
         assert!(gateway.resize(99999, 24, 0).is_ok());
         assert!(gateway.resize(99999, 0, 0).is_ok());
-    }
-
-    #[test]
-    fn get_pty_size_nonexistent_returns_error() {
-        let gateway = PtySessionRuntimeGateway::default();
-        let result = gateway.get_pty_size(99999);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
     #[test]
@@ -823,10 +744,6 @@ mod tests {
             self.cols = cols;
             Ok(())
         }
-
-        fn get_size(&self) -> Result<(u16, u16), String> {
-            Ok((self.cols, self.rows))
-        }
     }
 
     fn insert_test_session(
@@ -835,7 +752,6 @@ mod tests {
         session_key: &str,
         worktree_path: Option<&str>,
         label: Option<&str>,
-        kind: PtyKind,
     ) -> Arc<std::sync::atomic::AtomicBool> {
         let written = Arc::new(Mutex::new(Vec::<u8>::new()));
         let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -851,7 +767,6 @@ mod tests {
                 session_key.to_string(),
                 worktree_path.map(str::to_string),
                 label.map(str::to_string),
-                kind,
             ),
             PtyRuntime {
                 writer: Arc::new(Mutex::new(Box::new(MockWriter(written)))),
@@ -871,29 +786,21 @@ mod tests {
     #[test]
     fn write_success() {
         let gateway = PtySessionRuntimeGateway::default();
-        insert_test_session(&gateway, 1, "key", Some("/repo"), None, PtyKind::Terminal);
+        insert_test_session(&gateway, 1, "key", Some("/repo"), None);
         assert!(gateway.write(1, "hello").is_ok());
     }
 
     #[test]
     fn resize_success() {
         let gateway = PtySessionRuntimeGateway::default();
-        insert_test_session(&gateway, 1, "key", Some("/repo"), None, PtyKind::Terminal);
+        insert_test_session(&gateway, 1, "key", Some("/repo"), None);
         assert!(gateway.resize(1, 30, 100).is_ok());
-        assert_eq!(gateway.get_pty_size(1).unwrap(), (100, 30));
     }
 
     #[test]
     fn find_session_includes_buffered_output() {
         let gateway = PtySessionRuntimeGateway::default();
-        insert_test_session(
-            &gateway,
-            1,
-            "key",
-            Some("/repo"),
-            Some("dev"),
-            PtyKind::Terminal,
-        );
+        insert_test_session(&gateway, 1, "key", Some("/repo"), Some("dev"));
         let found = gateway.find_by_session_key("key").unwrap();
         assert_eq!(found.snapshot.pty_id, 1);
         assert_eq!(found.snapshot.label.as_deref(), Some("dev"));
@@ -904,8 +811,7 @@ mod tests {
     #[test]
     fn lifecycle_usecase_kill_removes_registry_and_runtime() {
         let gateway = PtySessionRuntimeGateway::default();
-        let killed =
-            insert_test_session(&gateway, 1, "key", Some("/repo"), None, PtyKind::Terminal);
+        let killed = insert_test_session(&gateway, 1, "key", Some("/repo"), None);
 
         crate::usecase::pty_session::lifecycle_usecase::kill(&gateway, 1).unwrap();
 
@@ -917,30 +823,9 @@ mod tests {
     #[test]
     fn lifecycle_usecase_kill_by_worktree_uses_registry_selection() {
         let gateway = PtySessionRuntimeGateway::default();
-        insert_test_session(
-            &gateway,
-            1,
-            "key-1",
-            Some("/repo"),
-            Some("dev"),
-            PtyKind::Terminal,
-        );
-        insert_test_session(
-            &gateway,
-            2,
-            "key-2",
-            Some("/repo"),
-            Some("test"),
-            PtyKind::Terminal,
-        );
-        insert_test_session(
-            &gateway,
-            3,
-            "key-3",
-            Some("/other"),
-            None,
-            PtyKind::Terminal,
-        );
+        insert_test_session(&gateway, 1, "key-1", Some("/repo"), Some("dev"));
+        insert_test_session(&gateway, 2, "key-2", Some("/repo"), Some("test"));
+        insert_test_session(&gateway, 3, "key-3", Some("/other"), None);
 
         let mut killed =
             crate::usecase::pty_session::lifecycle_usecase::kill_by_worktree(&gateway, "/repo");
@@ -955,30 +840,9 @@ mod tests {
     #[test]
     fn lifecycle_usecase_gc_keeps_listed_session_keys() {
         let gateway = PtySessionRuntimeGateway::default();
-        insert_test_session(
-            &gateway,
-            1,
-            "key-1",
-            Some("/repo"),
-            Some("dev"),
-            PtyKind::Terminal,
-        );
-        insert_test_session(
-            &gateway,
-            2,
-            "key-2",
-            Some("/repo"),
-            Some("test"),
-            PtyKind::Terminal,
-        );
-        insert_test_session(
-            &gateway,
-            3,
-            "key-3",
-            Some("/other"),
-            None,
-            PtyKind::Terminal,
-        );
+        insert_test_session(&gateway, 1, "key-1", Some("/repo"), Some("dev"));
+        insert_test_session(&gateway, 2, "key-2", Some("/repo"), Some("test"));
+        insert_test_session(&gateway, 3, "key-3", Some("/other"), None);
 
         let killed = crate::usecase::pty_session::lifecycle_usecase::gc_by_worktree(
             &gateway,
@@ -995,7 +859,7 @@ mod tests {
     #[test]
     fn mark_exited_returns_false_after_session_removed() {
         let gateway = PtySessionRuntimeGateway::default();
-        insert_test_session(&gateway, 1, "key-1", Some("/repo"), None, PtyKind::Terminal);
+        insert_test_session(&gateway, 1, "key-1", Some("/repo"), None);
         gateway.remove_session(1);
 
         assert!(!gateway.mark_exited(1, Some(0)));
@@ -1004,8 +868,8 @@ mod tests {
     #[test]
     fn remove_if_exited_only_removes_exited_session() {
         let gateway = PtySessionRuntimeGateway::default();
-        insert_test_session(&gateway, 1, "key-1", Some("/repo"), None, PtyKind::Terminal);
-        insert_test_session(&gateway, 2, "key-2", Some("/repo"), None, PtyKind::Terminal);
+        insert_test_session(&gateway, 1, "key-1", Some("/repo"), None);
+        insert_test_session(&gateway, 2, "key-2", Some("/repo"), None);
         gateway.mark_exited(1, Some(0));
 
         crate::usecase::pty_session::lifecycle_usecase::remove_if_exited(&gateway, 1);

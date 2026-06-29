@@ -15,10 +15,6 @@ impl RunId {
         }
     }
 
-    pub fn unchecked(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -73,10 +69,6 @@ impl NodeName {
         }
         Ok(Self(value))
     }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 impl std::fmt::Display for NodeName {
@@ -95,10 +87,6 @@ impl WorktreePath {
             return Err(WorkflowError::validation("worktree path must not be empty"));
         }
         Ok(Self(value.trim_end_matches('/').to_string()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
     }
 }
 
@@ -148,6 +136,6 @@ mod ids_tests {
     #[test]
     fn test_worktree_path末尾スラッシュを正規化する() {
         let path = WorktreePath::new("/tmp/repo/").unwrap();
-        assert_eq!(path.as_str(), "/tmp/repo");
+        assert_eq!(path.to_string(), "/tmp/repo");
     }
 }

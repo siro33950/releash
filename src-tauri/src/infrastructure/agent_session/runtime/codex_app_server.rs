@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,45 +19,14 @@ pub(crate) const METHOD_THREAD_START: &str = "thread/start";
 pub(crate) const METHOD_THREAD_FORK: &str = "thread/fork";
 pub(crate) const METHOD_THREAD_ARCHIVE: &str = "thread/archive";
 pub(crate) const METHOD_THREAD_UNARCHIVE: &str = "thread/unarchive";
-pub(crate) const METHOD_THREAD_BACKGROUND_TERMINALS_CLEAN: &str =
-    "thread/backgroundTerminals/clean";
-pub(crate) const METHOD_THREAD_COMPACT_START: &str = "thread/compact/start";
-pub(crate) const METHOD_THREAD_GOAL_CLEAR: &str = "thread/goal/clear";
-pub(crate) const METHOD_THREAD_GOAL_GET: &str = "thread/goal/get";
-pub(crate) const METHOD_THREAD_GOAL_SET: &str = "thread/goal/set";
-pub(crate) const METHOD_THREAD_LIST: &str = "thread/list";
-pub(crate) const METHOD_THREAD_READ: &str = "thread/read";
 pub(crate) const METHOD_THREAD_RESUME: &str = "thread/resume";
-pub(crate) const METHOD_THREAD_SEARCH: &str = "thread/search";
 pub(crate) const METHOD_THREAD_NAME_SET: &str = "thread/name/set";
 pub(crate) const METHOD_THREAD_SETTINGS_UPDATE: &str = "thread/settings/update";
-pub(crate) const METHOD_THREAD_SHELL_COMMAND: &str = "thread/shellCommand";
-pub(crate) const METHOD_THREAD_TURNS_ITEMS_LIST: &str = "thread/turns/items/list";
-pub(crate) const METHOD_THREAD_TURNS_LIST: &str = "thread/turns/list";
 pub(crate) const METHOD_TURN_START: &str = "turn/start";
 pub(crate) const METHOD_TURN_STEER: &str = "turn/steer";
 pub(crate) const METHOD_TURN_INTERRUPT: &str = "turn/interrupt";
-pub(crate) const METHOD_MODEL_LIST: &str = "model/list";
 pub(crate) const METHOD_SKILLS_LIST: &str = "skills/list";
-pub(crate) const METHOD_HOOKS_LIST: &str = "hooks/list";
-pub(crate) const METHOD_MCP_SERVER_STATUS_LIST: &str = "mcpServerStatus/list";
-pub(crate) const METHOD_ACCOUNT_READ: &str = "account/read";
-pub(crate) const METHOD_ACCOUNT_USAGE_READ: &str = "account/usage/read";
-pub(crate) const METHOD_ACCOUNT_RATE_LIMITS_READ: &str = "account/rateLimits/read";
-pub(crate) const METHOD_CONFIG_READ: &str = "config/read";
-pub(crate) const METHOD_CONFIG_REQUIREMENTS_READ: &str = "configRequirements/read";
 pub(crate) const METHOD_FUZZY_FILE_SEARCH: &str = "fuzzyFileSearch";
-pub(crate) const METHOD_APP_LIST: &str = "app/list";
-pub(crate) const METHOD_COLLABORATION_MODE_LIST: &str = "collaborationMode/list";
-pub(crate) const METHOD_MODEL_PROVIDER_CAPABILITIES_READ: &str = "modelProvider/capabilities/read";
-pub(crate) const METHOD_PLUGIN_LIST: &str = "plugin/list";
-pub(crate) const METHOD_REVIEW_START: &str = "review/start";
-pub(crate) const METHOD_PERMISSION_PROFILE_LIST: &str = "permissionProfile/list";
-pub(crate) const METHOD_THREAD_REALTIME_APPEND_AUDIO: &str = "thread/realtime/appendAudio";
-pub(crate) const METHOD_THREAD_REALTIME_APPEND_TEXT: &str = "thread/realtime/appendText";
-pub(crate) const METHOD_THREAD_REALTIME_LIST_VOICES: &str = "thread/realtime/listVoices";
-pub(crate) const METHOD_THREAD_REALTIME_START: &str = "thread/realtime/start";
-pub(crate) const METHOD_THREAD_REALTIME_STOP: &str = "thread/realtime/stop";
 pub(crate) const NOTIFY_ACCOUNT_UPDATED: &str = "account/updated";
 pub(crate) const NOTIFY_ACCOUNT_RATE_LIMITS_UPDATED: &str = "account/rateLimits/updated";
 pub(crate) const NOTIFY_THREAD_STARTED: &str = "thread/started";
@@ -87,7 +54,6 @@ pub(crate) const NOTIFY_FILE_CHANGE_PATCH_UPDATED: &str = "item/fileChange/patch
 pub(crate) const REQUEST_COMMAND_APPROVAL: &str = "item/commandExecution/requestApproval";
 pub(crate) const REQUEST_FILE_CHANGE_APPROVAL: &str = "item/fileChange/requestApproval";
 pub(crate) const REQUEST_PERMISSIONS_APPROVAL: &str = "item/permissions/requestApproval";
-pub(crate) const REQUEST_USER_INPUT: &str = "request_user_input";
 const JSONRPC_ERROR_REQUEST_DENIED: i64 = -32001;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1205,86 +1171,6 @@ impl CodexAppServerProcess {
         Ok(id)
     }
 
-    pub(crate) async fn start_thread(
-        &mut self,
-        cwd: &str,
-        model: Option<&str>,
-        permission_mode: Option<&str>,
-        plan_mode: bool,
-        permission_profile_id: Option<&str>,
-        system_prompt: Option<&str>,
-    ) -> Result<u64, String> {
-        let id = self.next_request_id();
-        let request = build_thread_start_request(
-            id,
-            cwd,
-            model,
-            permission_mode,
-            plan_mode,
-            permission_profile_id,
-            system_prompt,
-        )?;
-        self.send(&request).await?;
-        Ok(id)
-    }
-
-    pub(crate) async fn start_turn(
-        &mut self,
-        thread_id: &str,
-        cwd: &str,
-        content: &str,
-        images: &[ImageAttachment],
-        client_user_message_id: Option<&str>,
-    ) -> Result<u64, String> {
-        let id = self.next_request_id();
-        let request = build_turn_start_request(
-            id,
-            thread_id,
-            cwd,
-            content,
-            images,
-            client_user_message_id,
-            None,
-        )?;
-        self.send(&request).await?;
-        Ok(id)
-    }
-
-    pub(crate) async fn steer_turn(
-        &mut self,
-        thread_id: &str,
-        expected_turn_id: &str,
-        cwd: &str,
-        content: &str,
-        images: &[ImageAttachment],
-        client_user_message_id: Option<&str>,
-    ) -> Result<u64, String> {
-        let id = self.next_request_id();
-        let request = build_turn_steer_request(
-            id,
-            thread_id,
-            expected_turn_id,
-            cwd,
-            content,
-            images,
-            client_user_message_id,
-            None,
-        );
-        self.send(&request).await?;
-        Ok(id)
-    }
-
-    pub(crate) async fn interrupt_turn(
-        &mut self,
-        thread_id: &str,
-        turn_id: &str,
-    ) -> Result<u64, String> {
-        let id = self.next_request_id();
-        let request = build_turn_interrupt_request(id, thread_id, turn_id);
-        self.send(&request).await?;
-        Ok(id)
-    }
-
     pub(crate) async fn read_response_result(&mut self, id: u64) -> Result<Value, String> {
         loop {
             let message = timeout(Duration::from_secs(10), self.read_message())
@@ -1528,84 +1414,6 @@ pub(crate) fn build_thread_unarchive_request(id: u64, thread_id: &str) -> Value 
     )
 }
 
-pub(crate) fn build_thread_list_request(id: u64, cwd: &str, cursor: Option<&str>) -> Value {
-    let mut params = json!({
-        "archived": false,
-        "cwd": cwd,
-        "limit": 20,
-        "sortDirection": "desc",
-        "sortKey": "updated_at",
-    });
-    if let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
-        params["cursor"] = Value::String(cursor.to_string());
-    }
-    request(id, METHOD_THREAD_LIST, params)
-}
-
-pub(crate) fn build_thread_search_request(
-    id: u64,
-    search_term: &str,
-    cursor: Option<&str>,
-) -> Value {
-    let mut params = json!({
-        "archived": false,
-        "limit": 20,
-        "searchTerm": search_term,
-        "sortDirection": "desc",
-        "sortKey": "updated_at",
-    });
-    if let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
-        params["cursor"] = Value::String(cursor.to_string());
-    }
-    request(id, METHOD_THREAD_SEARCH, params)
-}
-
-pub(crate) fn build_thread_read_request(id: u64, thread_id: &str, include_turns: bool) -> Value {
-    request(
-        id,
-        METHOD_THREAD_READ,
-        json!({
-            "threadId": thread_id,
-            "includeTurns": include_turns,
-        }),
-    )
-}
-
-pub(crate) fn build_thread_turns_list_request(
-    id: u64,
-    thread_id: &str,
-    cursor: Option<&str>,
-) -> Value {
-    let mut params = json!({
-        "threadId": thread_id,
-        "itemsView": "full",
-        "limit": 20,
-        "sortDirection": "asc",
-    });
-    if let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
-        params["cursor"] = Value::String(cursor.to_string());
-    }
-    request(id, METHOD_THREAD_TURNS_LIST, params)
-}
-
-pub(crate) fn build_thread_turn_items_list_request(
-    id: u64,
-    thread_id: &str,
-    turn_id: &str,
-    cursor: Option<&str>,
-) -> Value {
-    let mut params = json!({
-        "threadId": thread_id,
-        "turnId": turn_id,
-        "limit": 100,
-        "sortDirection": "asc",
-    });
-    if let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
-        params["cursor"] = Value::String(cursor.to_string());
-    }
-    request(id, METHOD_THREAD_TURNS_ITEMS_LIST, params)
-}
-
 fn build_user_input(content: &str, images: &[ImageAttachment]) -> Vec<Value> {
     let mut input = Vec::new();
     if !content.is_empty() || images.is_empty() {
@@ -1768,21 +1576,6 @@ pub(crate) fn build_thread_settings_update_permission_request(
     Ok(request(id, METHOD_THREAD_SETTINGS_UPDATE, params))
 }
 
-pub(crate) fn build_config_read_request(id: u64, cwd: &str, include_layers: bool) -> Value {
-    request(
-        id,
-        METHOD_CONFIG_READ,
-        json!({
-            "cwd": cwd,
-            "includeLayers": include_layers,
-        }),
-    )
-}
-
-pub(crate) fn build_config_requirements_read_request(id: u64) -> Value {
-    request(id, METHOD_CONFIG_REQUIREMENTS_READ, Value::Null)
-}
-
 pub(crate) fn build_fuzzy_file_search_request(id: u64, root: &str, query: &str) -> Value {
     request(
         id,
@@ -1793,54 +1586,6 @@ pub(crate) fn build_fuzzy_file_search_request(id: u64, root: &str, query: &str) 
             "cancellationToken": Value::Null,
         }),
     )
-}
-
-pub(crate) fn build_model_provider_capabilities_read_request(id: u64) -> Value {
-    request(id, METHOD_MODEL_PROVIDER_CAPABILITIES_READ, json!({}))
-}
-
-pub(crate) fn build_collaboration_mode_list_request(id: u64) -> Value {
-    request(id, METHOD_COLLABORATION_MODE_LIST, json!({}))
-}
-
-pub(crate) fn build_app_list_request(
-    id: u64,
-    thread_id: Option<&str>,
-    cursor: Option<&str>,
-) -> Value {
-    let mut params = json!({
-        "limit": 100,
-        "forceRefetch": false,
-    });
-    if let Some(thread_id) = thread_id.filter(|value| !value.trim().is_empty()) {
-        params["threadId"] = json!(thread_id);
-    }
-    if let Some(cursor) = cursor.filter(|value| !value.trim().is_empty()) {
-        params["cursor"] = json!(cursor);
-    }
-    request(id, METHOD_APP_LIST, params)
-}
-
-pub(crate) fn build_plugin_list_request(id: u64, cwd: &str) -> Value {
-    request(
-        id,
-        METHOD_PLUGIN_LIST,
-        json!({
-            "cwds": [cwd],
-            "marketplaceKinds": ["local", "workspace-directory"],
-        }),
-    )
-}
-
-pub(crate) fn build_model_list_request(id: u64, cursor: Option<&str>) -> Value {
-    let mut params = json!({
-        "includeHidden": false,
-        "limit": 100,
-    });
-    if let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
-        params["cursor"] = Value::String(cursor.to_string());
-    }
-    request(id, METHOD_MODEL_LIST, params)
 }
 
 pub(crate) fn build_skills_list_request(id: u64, cwd: &str, force_reload: bool) -> Value {
@@ -2863,67 +2608,12 @@ mod tests {
     }
 
     #[test]
-    fn model_list_request_uses_visible_picker_catalog() {
-        let first = build_model_list_request(5, None);
-        assert_eq!(first["method"], METHOD_MODEL_LIST);
-        assert_eq!(first["params"]["includeHidden"], false);
-        assert_eq!(first["params"]["limit"], 100);
-        assert!(first["params"].get("cursor").is_none());
-
-        let next = build_model_list_request(6, Some("cursor-1"));
-        assert_eq!(next["params"]["cursor"], "cursor-1");
-    }
-
-    #[test]
     fn skills_list_request_uses_worktree_scope() {
         let value = build_skills_list_request(7, "/repo", false);
 
         assert_eq!(value["method"], METHOD_SKILLS_LIST);
         assert_eq!(value["params"]["cwds"], json!(["/repo"]));
         assert_eq!(value["params"]["forceReload"], false);
-    }
-
-    #[test]
-    fn thread_history_requests_use_runtime_thread_pagination() {
-        let list = build_thread_list_request(13, "/repo", None);
-        assert_eq!(list["method"], METHOD_THREAD_LIST);
-        assert_eq!(list["params"]["cwd"], "/repo");
-        assert_eq!(list["params"]["archived"], false);
-        assert_eq!(list["params"]["limit"], 20);
-        assert_eq!(list["params"]["sortKey"], "updated_at");
-        assert!(list["params"].get("cursor").is_none());
-
-        let search = build_thread_search_request(14, "parser", Some("cursor-1"));
-        assert_eq!(search["method"], METHOD_THREAD_SEARCH);
-        assert_eq!(search["params"]["searchTerm"], "parser");
-        assert_eq!(search["params"]["cursor"], "cursor-1");
-    }
-
-    #[test]
-    fn thread_read_request_can_include_turn_history() {
-        let value = build_thread_read_request(15, "thr_123", true);
-        assert_eq!(value["method"], METHOD_THREAD_READ);
-        assert_eq!(value["params"]["threadId"], "thr_123");
-        assert_eq!(value["params"]["includeTurns"], true);
-    }
-
-    #[test]
-    fn thread_turn_pagination_requests_use_full_items_view() {
-        let turns = build_thread_turns_list_request(16, "thr_123", Some("turn-cursor"));
-        assert_eq!(turns["method"], METHOD_THREAD_TURNS_LIST);
-        assert_eq!(turns["params"]["threadId"], "thr_123");
-        assert_eq!(turns["params"]["itemsView"], "full");
-        assert_eq!(turns["params"]["limit"], 20);
-        assert_eq!(turns["params"]["sortDirection"], "asc");
-        assert_eq!(turns["params"]["cursor"], "turn-cursor");
-
-        let items = build_thread_turn_items_list_request(17, "thr_123", "turn_1", None);
-        assert_eq!(items["method"], METHOD_THREAD_TURNS_ITEMS_LIST);
-        assert_eq!(items["params"]["threadId"], "thr_123");
-        assert_eq!(items["params"]["turnId"], "turn_1");
-        assert_eq!(items["params"]["limit"], 100);
-        assert_eq!(items["params"]["sortDirection"], "asc");
-        assert!(items["params"].get("cursor").is_none());
     }
 
     #[test]
@@ -3105,18 +2795,6 @@ mod tests {
     }
 
     #[test]
-    fn config_diagnostics_requests_match_schema() {
-        let config = build_config_read_request(11, "/repo", true);
-        assert_eq!(config["method"], METHOD_CONFIG_READ);
-        assert_eq!(config["params"]["cwd"], "/repo");
-        assert_eq!(config["params"]["includeLayers"], true);
-
-        let requirements = build_config_requirements_read_request(12);
-        assert_eq!(requirements["method"], METHOD_CONFIG_REQUIREMENTS_READ);
-        assert!(requirements["params"].is_null());
-    }
-
-    #[test]
     fn fuzzy_file_search_request_matches_schema() {
         let value = build_fuzzy_file_search_request(13, "/repo", "main");
 
@@ -3124,38 +2802,6 @@ mod tests {
         assert_eq!(value["params"]["query"], "main");
         assert_eq!(value["params"]["roots"], json!(["/repo"]));
         assert!(value["params"]["cancellationToken"].is_null());
-    }
-
-    #[test]
-    fn runtime_inventory_requests_match_schema() {
-        let capabilities = build_model_provider_capabilities_read_request(14);
-        assert_eq!(
-            capabilities["method"],
-            METHOD_MODEL_PROVIDER_CAPABILITIES_READ
-        );
-        assert_eq!(capabilities["params"], json!({}));
-
-        let collaboration_modes = build_collaboration_mode_list_request(15);
-        assert_eq!(
-            collaboration_modes["method"],
-            METHOD_COLLABORATION_MODE_LIST
-        );
-        assert_eq!(collaboration_modes["params"], json!({}));
-
-        let app_list = build_app_list_request(16, Some("thr_123"), Some("cursor-1"));
-        assert_eq!(app_list["method"], METHOD_APP_LIST);
-        assert_eq!(app_list["params"]["threadId"], "thr_123");
-        assert_eq!(app_list["params"]["cursor"], "cursor-1");
-        assert_eq!(app_list["params"]["limit"], 100);
-        assert_eq!(app_list["params"]["forceRefetch"], false);
-
-        let plugins = build_plugin_list_request(17, "/repo");
-        assert_eq!(plugins["method"], METHOD_PLUGIN_LIST);
-        assert_eq!(plugins["params"]["cwds"], json!(["/repo"]));
-        assert_eq!(
-            plugins["params"]["marketplaceKinds"],
-            json!(["local", "workspace-directory"])
-        );
     }
 
     #[test]

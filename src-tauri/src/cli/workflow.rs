@@ -1054,7 +1054,8 @@ mod tests {
         let config_path = data_dir.path().join("releash.toml");
         let mut config = crate::adaptor::gateway::app_config::ReleashConfig::default();
         config.app.last_repo_paths = vec![repo_dir.path().to_string_lossy().to_string()];
-        crate::adaptor::gateway::app_config::write_config(&config_path, &config).unwrap();
+        crate::adaptor::gateway::app_config::repository_impl::write_config(&config_path, &config)
+            .unwrap();
 
         // 末尾スラッシュ / `.` を含む非 canonical 入力で呼び出しても、canonicalize した
         // 絶対パスが返り、その値は worktree_path.canonicalize() と一致する。

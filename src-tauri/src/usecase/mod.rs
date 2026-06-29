@@ -11,7 +11,6 @@ pub(crate) mod hooks;
 pub(crate) mod notification;
 pub(crate) mod notion;
 pub(crate) mod pty_session;
-pub(crate) mod remote_access;
 pub(crate) mod repo_paths_usecase;
 pub(crate) mod repository_dto;
 pub(crate) mod repository_error;
@@ -19,7 +18,5 @@ pub(crate) mod repository_query_service;
 pub(crate) mod repository_state;
 pub(crate) mod repository_usecase;
 pub(crate) mod review_usecase;
-pub(crate) mod workspace_state;
-// #1034 staged workflow migration: controller wiring switches to this module in #1037.
-#[allow(dead_code, unused_imports)]
 pub(crate) mod workflow;
+pub(crate) mod workspace_state;

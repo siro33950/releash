@@ -24,11 +24,8 @@ pub struct BackendSession {
 
 pub trait PtyResizer {
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String>;
-    #[allow(dead_code)]
-    fn get_size(&self) -> Result<(u16, u16), String>;
 }
 
 pub trait PtyBackend: Send + Sync {
     fn spawn(&self, config: SpawnConfig) -> Result<BackendSession, String>;
-    fn backend_name(&self) -> &'static str;
 }

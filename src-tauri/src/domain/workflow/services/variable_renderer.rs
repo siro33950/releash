@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::domain::workflow::value_objects::{
-    NodeDefinition, StepHistoryEntry, StepOutput, STEP_STATE_COMPLETED,
-};
+use crate::domain::workflow::value_objects::{NodeDefinition, StepHistoryEntry, StepOutput};
+#[cfg(test)]
+use crate::domain::workflow::STEP_STATE_COMPLETED;
 
 pub const SYSTEM_TEMPLATE_VARIABLES: &[&str] = &["project_name", "task"];
 pub const PATH_ALIAS_NAMESPACE: &str = "path_alias";

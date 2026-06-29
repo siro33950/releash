@@ -24,10 +24,12 @@ impl WorkflowEventLogRepository {
 }
 
 impl WorkflowEventRepository for WorkflowEventLogRepository {
+    #[cfg(test)]
     fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError> {
         self.append_batch(std::slice::from_ref(event))
     }
 
+    #[cfg(test)]
     fn append_batch(&self, events: &[WorkflowEventDraft]) -> Result<(), WorkflowError> {
         let legacy_events: Vec<_> = events
             .iter()

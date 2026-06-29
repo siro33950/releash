@@ -48,9 +48,7 @@ use crate::usecase::agent_session::session::{
 /// Codex の実行・approval・streaming は `codex app-server` の JSON-RPC に委譲する。
 /// モデル選択肢は `CODEX_FIXED_MODELS` で完全固定する。
 pub struct CodexBackend {
-    #[allow(dead_code)]
     runtime: Option<Arc<dyn CodexBackendRuntime>>,
-    cli_path: Option<String>,
 }
 
 pub(crate) fn configured_cli_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<String> {
@@ -65,13 +63,9 @@ pub(crate) fn configured_cli_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) 
         .filter(|path| !path.trim().is_empty())
 }
 
-#[allow(dead_code)]
 impl CodexBackend {
     pub fn new() -> Self {
-        Self {
-            runtime: None,
-            cli_path: None,
-        }
+        Self { runtime: None }
     }
 
     pub fn with_agent_process_runtime(
@@ -80,8 +74,7 @@ impl CodexBackend {
         session_store: Arc<SessionStore>,
         branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     ) -> Self {
-        let cli_path = configured_cli_path(&app);
-        let resolved_cli_path = cli_path.clone().unwrap_or_else(|| "codex".to_string());
+        let resolved_cli_path = configured_cli_path(&app).unwrap_or_else(|| "codex".to_string());
         Self {
             runtime: Some(Arc::new(AppServerCodexRuntime {
                 app,
@@ -91,7 +84,6 @@ impl CodexBackend {
                 cli_path: resolved_cli_path,
                 sessions: Arc::new(Mutex::new(HashMap::new())),
             })),
-            cli_path,
         }
     }
 
@@ -100,13 +92,8 @@ impl CodexBackend {
             "CodexBackend runtime is not attached; build the registry with app runtime".to_string()
         })
     }
-
-    fn cli_path(&self) -> String {
-        self.cli_path.clone().unwrap_or_else(|| "codex".to_string())
-    }
 }
 
-#[allow(dead_code)]
 #[async_trait]
 trait CodexBackendRuntime: Send + Sync {
     async fn start_session(&self, config: SessionConfig) -> Result<SessionHandle, String>;
@@ -138,14 +125,6 @@ trait CodexBackendRuntime: Send + Sync {
         cwd: &str,
         permission_mode: &str,
     ) -> Result<(), String>;
-    async fn set_permission_profile(
-        &self,
-        session: &SessionHandle,
-        cwd: &str,
-        permission_mode: &str,
-        permission_profile_id: Option<&str>,
-    ) -> Result<(), String>;
-    async fn close_session(&self, session: &SessionHandle) -> Result<(), String>;
 }
 
 struct AppServerSessionState {
@@ -1332,49 +1311,8 @@ impl CodexBackendRuntime for AppServerCodexRuntime {
         )
         .await
     }
-
-    async fn set_permission_profile(
-        &self,
-        session: &SessionHandle,
-        cwd: &str,
-        permission_mode: &str,
-        permission_profile_id: Option<&str>,
-    ) -> Result<(), String> {
-        ensure_codex_session(session)?;
-        let state = self
-            .session_state(&session.chat_session_id)
-            .await
-            .ok_or_else(|| {
-                format!(
-                    "No active Codex app-server session: {}",
-                    session.chat_session_id
-                )
-            })?;
-        let thread_id = Self::wait_for_thread_id(&state, default_startup_timeout())
-            .await
-            .map_err(|error| error.to_string())?;
-        let id = Self::next_request_id(&state).await;
-        self.send_jsonrpc(
-            &session.chat_session_id,
-            build_thread_settings_update_permission_request(
-                id,
-                &thread_id,
-                cwd,
-                permission_mode,
-                permission_profile_id,
-            )?,
-        )
-        .await
-    }
-
-    async fn close_session(&self, session: &SessionHandle) -> Result<(), String> {
-        ensure_codex_session(session)?;
-        self.sessions.lock().await.remove(&session.chat_session_id);
-        close_external_agent_process(&self.app, &self.handles, &session.chat_session_id).await
-    }
 }
 
-#[allow(dead_code)]
 fn ensure_codex_session(session: &SessionHandle) -> Result<(), String> {
     if session.backend_id == CODEX_BACKEND_ID {
         return Ok(());
@@ -1468,24 +1406,8 @@ impl AgentBackend for CodexBackend {
             .await
     }
 
-    async fn set_permission_profile(
-        &self,
-        session: &SessionHandle,
-        cwd: &str,
-        permission_mode: &str,
-        permission_profile_id: Option<&str>,
-    ) -> Result<(), String> {
-        self.runtime()?
-            .set_permission_profile(session, cwd, permission_mode, permission_profile_id)
-            .await
-    }
-
     fn fixed_models(&self) -> Option<Vec<String>> {
         Some(CODEX_FIXED_MODELS.iter().map(|s| s.to_string()).collect())
-    }
-
-    async fn close_session(&self, session: &SessionHandle) -> Result<(), String> {
-        self.runtime()?.close_session(session).await
     }
 }
 
@@ -1660,20 +1582,6 @@ mod tests {
             _cwd: &str,
             _permission_mode: &str,
         ) -> Result<(), String> {
-            Ok(())
-        }
-
-        async fn set_permission_profile(
-            &self,
-            _session: &SessionHandle,
-            _cwd: &str,
-            _permission_mode: &str,
-            _permission_profile_id: Option<&str>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
             Ok(())
         }
     }
@@ -2023,14 +1931,12 @@ mod tests {
             .set_permission_mode(&session, "/repo", "ask")
             .await
             .is_err());
-        assert!(backend.close_session(&session).await.is_err());
     }
 
     #[tokio::test]
     async fn send_message_runtime_preserves_startup_timeout_error() {
         let backend = CodexBackend {
             runtime: Some(Arc::new(StartupTimeoutRuntime)),
-            cli_path: None,
         };
         let session = SessionHandle {
             chat_session_id: "session-1".to_string(),

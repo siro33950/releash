@@ -247,6 +247,7 @@ pub(crate) fn node_type_to_domain(node_type: schema::NodeType) -> domain::NodeTy
     }
 }
 
+#[cfg(test)]
 pub(crate) fn node_type_from_domain(node_type: domain::NodeType) -> schema::NodeType {
     match node_type {
         domain::NodeType::Agent => schema::NodeType::Agent,
