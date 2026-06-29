@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
 
-export type MenuEventId =
+type MenuEventId =
 	| "open-folder"
 	| "theme-dark"
 	| "theme-light"

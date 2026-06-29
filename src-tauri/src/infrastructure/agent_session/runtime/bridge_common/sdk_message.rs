@@ -1006,7 +1006,7 @@ pub(super) fn accumulate_loaded_post_turn_base_without_streaming_state<F>(
     emit_stream: &mut F,
 ) -> AccumulateStreamMessageEffect
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     let old_turn_id = 1;
     let mut old_message_log = TurnEventLog::default();
@@ -1064,9 +1064,7 @@ where
             parts: delta.clone(),
             snapshot_parts: persist_parts.clone(),
         },
-        |seq, snapshot, parts, snapshot_parts| {
-            emit_stream(&base_mid, seq, snapshot, parts, snapshot_parts)
-        },
+        |seq, snapshot, parts| emit_stream(&base_mid, seq, snapshot, parts),
     );
 
     log::warn!(
@@ -1094,7 +1092,7 @@ pub(super) fn accumulate_stream_or_post_turn_message_locked<F>(
     post_turn_base: Option<(String, Vec<MessagePart>)>,
 ) -> AccumulateStreamMessageEffect
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     let in_streaming = proc.state == BridgeState::Streaming && proc.streaming_message_id.is_some();
     let post_turn = !in_streaming && proc.last_message_id.is_some();
@@ -1261,9 +1259,7 @@ where
                 proc,
                 chat_session_id,
                 mid,
-                |seq, snapshot, parts, snapshot_parts| {
-                    emit_stream(mid, seq, snapshot, parts, snapshot_parts)
-                },
+                |seq, snapshot, parts| emit_stream(mid, seq, snapshot, parts),
             );
         }
     }
@@ -1333,7 +1329,7 @@ pub(super) async fn accumulate_stream_or_post_turn_message<R: tauri::Runtime>(
                     chat_session_id,
                     msg,
                     elapsed_persist_ms,
-                    |mid, seq, snapshot, parts, snapshot_parts| {
+                    |mid, seq, snapshot, parts| {
                         emit_streaming_delta(
                             app,
                             chat_session_id,
@@ -1341,7 +1337,6 @@ pub(super) async fn accumulate_stream_or_post_turn_message<R: tauri::Runtime>(
                             seq,
                             snapshot,
                             parts.to_vec(),
-                            snapshot_parts,
                         )
                     },
                     post_turn_base.take(),
@@ -1402,7 +1397,6 @@ async fn streaming_final_seq_for_message(
 ///
 /// facet template に `{{session_id}}` のような動的解決値を持ち込まず、Spec issues-1054 の
 /// `{{vars.<name>}}` 静的値原則を破らない経路で session 固有値を agent に届ける単一責任 helper。
-#[allow(dead_code)]
 pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_store: &Arc<SessionStore>,
@@ -1566,7 +1560,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                             exit_code,
                             interrupted.then_some(InterruptReason::Abort),
                             interrupted.then(|| "Turn interrupted by abort".to_string()),
-                            |mid, seq, snapshot, parts, snapshot_parts| {
+                            |mid, seq, snapshot, parts| {
                                 emit_streaming_delta(
                                     app,
                                     chat_session_id,
@@ -1574,7 +1568,6 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                                     seq,
                                     snapshot,
                                     parts.to_vec(),
-                                    snapshot_parts,
                                 )
                             },
                         );
@@ -1640,7 +1633,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                                 proc,
                                 chat_session_id,
                                 &msg,
-                                |mid, seq, snapshot, parts, snapshot_parts| {
+                                |mid, seq, snapshot, parts| {
                                     emit_streaming_delta(
                                         app,
                                         chat_session_id,
@@ -1648,7 +1641,6 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                                         seq,
                                         snapshot,
                                         parts.to_vec(),
-                                        snapshot_parts,
                                     )
                                 },
                             )),
@@ -1816,7 +1808,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                         request_id,
                         permission_request_received_at
                             .expect("permission_request receive time captured after stale check"),
-                        |mid, seq, snapshot, parts, snapshot_parts| {
+                        |mid, seq, snapshot, parts| {
                             emit_streaming_delta(
                                 app,
                                 chat_session_id,
@@ -1824,7 +1816,6 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                                 seq,
                                 snapshot,
                                 parts.to_vec(),
-                                snapshot_parts,
                             )
                         },
                     )
@@ -1867,9 +1858,7 @@ mod moved_tests {
         make_test_agent_process, AgentProcessMap, BridgeState, TurnPhase,
     };
     use super::super::sdk_message::*;
-    use super::super::session_lifecycle::{
-        get_session_page_internal_with_data_dir, resync_streaming_message_internal_with_data_dir,
-    };
+    use super::super::session_lifecycle::get_session_page_internal_with_data_dir;
     use super::super::session_persistence::persist_streaming_parts;
 
     use crate::usecase::agent_session::session::{
@@ -1956,15 +1945,9 @@ mod moved_tests {
             &msg,
             base_mid.clone(),
             base_parts,
-            &mut |mid, seq, snapshot, parts, snapshot_parts| {
-                emitted.push((
-                    mid.to_string(),
-                    seq,
-                    snapshot,
-                    parts.to_vec(),
-                    snapshot_parts(),
-                ));
-                (false, true)
+            &mut |mid, seq, snapshot, parts| {
+                emitted.push((mid.to_string(), seq, snapshot, parts.to_vec()));
+                false
             },
         );
 
@@ -2015,7 +1998,7 @@ mod moved_tests {
             &msg,
             base_mid.clone(),
             base_parts,
-            &mut |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+            &mut |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert!(effect.accumulated);
@@ -2070,20 +2053,22 @@ mod moved_tests {
         )
         .await;
 
-        let events = received.lock().unwrap();
-        assert!(
-            events.iter().any(|event| {
-                event.get("chat_session_id").and_then(|v| v.as_str()) == Some(session.id.as_str())
-                    && event.get("turn_phase").and_then(|v| v.as_str())
-                        == Some("waiting_permission")
-                    && event
-                        .pointer("/pending_permission_request/request_id")
-                        .and_then(|v| v.as_str())
-                        == Some("req-streaming")
-            }),
-            "permission_request must be mirrored through session state"
-        );
-        drop(events);
+        {
+            let events = received.lock().unwrap();
+            assert!(
+                events.iter().any(|event| {
+                    event.get("chat_session_id").and_then(|v| v.as_str())
+                        == Some(session.id.as_str())
+                        && event.get("turn_phase").and_then(|v| v.as_str())
+                            == Some("waiting_permission")
+                        && event
+                            .pointer("/pending_permission_request/request_id")
+                            .and_then(|v| v.as_str())
+                            == Some("req-streaming")
+                }),
+                "permission_request must be mirrored through session state"
+            );
+        }
         let status = center
             .get_session(&session.id)
             .expect("status notification should update session status");
@@ -2141,20 +2126,22 @@ mod moved_tests {
         )
         .await;
 
-        let events = received.lock().unwrap();
-        assert!(
-            events.iter().any(|event| {
-                event.get("chat_session_id").and_then(|v| v.as_str()) == Some(session.id.as_str())
-                    && event.get("turn_phase").and_then(|v| v.as_str())
-                        == Some("waiting_permission")
-                    && event
-                        .pointer("/pending_permission_request/request_id")
-                        .and_then(|v| v.as_str())
-                        == Some("req-ready")
-            }),
-            "non-streaming permission_request must still be mirrored through session state"
-        );
-        drop(events);
+        {
+            let events = received.lock().unwrap();
+            assert!(
+                events.iter().any(|event| {
+                    event.get("chat_session_id").and_then(|v| v.as_str())
+                        == Some(session.id.as_str())
+                        && event.get("turn_phase").and_then(|v| v.as_str())
+                            == Some("waiting_permission")
+                        && event
+                            .pointer("/pending_permission_request/request_id")
+                            .and_then(|v| v.as_str())
+                            == Some("req-ready")
+                }),
+                "non-streaming permission_request must still be mirrored through session state"
+            );
+        }
         let status = center
             .get_session(&session.id)
             .expect("status notification should update session status");
@@ -3150,7 +3137,7 @@ mod moved_tests {
 
         let persisted = persist_streaming_parts(
             &store,
-            &app.handle(),
+            app.handle(),
             &session.id,
             &agent_message.id,
             &[full_part],
@@ -3214,30 +3201,6 @@ mod moved_tests {
         assert!(!page_json.contains(sentinel));
         assert!(matches!(
             &page.messages[0].parts.as_ref().unwrap()[0],
-            MessagePart::ToolResult {
-                content,
-                content_ref: Some(content_ref),
-                ..
-            } if content.len()
-                <= crate::usecase::agent_session::session::TOOL_OUTPUT_PREVIEW_BYTES
-                && content_ref.byte_size == full_output.len() as u64
-        ));
-
-        let resync = resync_streaming_message_internal_with_data_dir(
-            &store,
-            &handles,
-            temp.path(),
-            &session.id,
-            &agent_message.id,
-            0,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let resync_json = serde_json::to_string(&resync.parts).unwrap();
-        assert!(!resync_json.contains(sentinel));
-        assert!(matches!(
-            &resync.parts[0],
             MessagePart::ToolResult {
                 content,
                 content_ref: Some(content_ref),

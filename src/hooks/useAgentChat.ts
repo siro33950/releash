@@ -56,8 +56,6 @@ import {
 } from "./useSessionStore";
 import { useWorktreeSessionStatuses } from "./useWorktreeSessionStatuses";
 
-export type { ActivityStatus } from "./deriveActivityStatus";
-
 const DEFAULT_SESSION_TITLE = "NewSession";
 
 function dispatchWorkspaceTreeRefresh(worktreePath: string): void {
@@ -70,7 +68,7 @@ function dispatchWorkspaceTreeRefresh(worktreePath: string): void {
 }
 
 type RefreshSessionsOptions = { reconcileActiveSession?: boolean };
-export type SendMessageOptions = {
+type SendMessageOptions = {
 	activateNewSession?: boolean;
 	editorContext?: AgentEditorContext;
 };

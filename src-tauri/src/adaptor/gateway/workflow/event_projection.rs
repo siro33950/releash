@@ -29,6 +29,7 @@ use crate::domain::workflow::{
     ContractValidationResult, STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED,
     STEP_STATE_PENDING, STEP_STATE_RUNNING,
 };
+#[cfg(test)]
 use crate::domain::workflow::{FailureDisposition, WorkflowStepFailureKind};
 
 /// 秒単位の f64 タイムスタンプ（engine 内 `current_timestamp()` 由来）を

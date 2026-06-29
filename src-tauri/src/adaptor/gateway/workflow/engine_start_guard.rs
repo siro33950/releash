@@ -5,7 +5,7 @@ use crate::domain::workflow as domain;
 
 pub(crate) fn validate_workflow_shape(workflow: &Workflow) -> Result<(), WorkflowEngineError> {
     let definition = workflow_definition_to_domain(workflow);
-    domain::WorkflowExecution::validate_workflow_shape(&definition)
+    domain::validation::validate_workflow_shape(&definition)
         .map_err(|err| domain_validation_to_engine_error(err, &definition))
 }
 
@@ -45,18 +45,12 @@ fn domain_validation_to_engine_error(
         }
         domain::WorkflowError::Validation(message) => WorkflowEngineError::InvalidWorkflow(message),
         domain::WorkflowError::InvalidState(message) => WorkflowEngineError::InvalidState(message),
-        domain::WorkflowError::AlreadyActive(message) => {
-            WorkflowEngineError::AlreadyActive(message)
-        }
-        domain::WorkflowError::UnauthorizedWorktree(message) => {
-            WorkflowEngineError::UnauthorizedWorktree(message)
-        }
         domain::WorkflowError::UnauthorizedApprovalTarget(message) => {
             WorkflowEngineError::UnauthorizedApprovalTarget(message)
         }
-        domain::WorkflowError::NotFound(message)
-        | domain::WorkflowError::Rule(message)
-        | domain::WorkflowError::External(message) => WorkflowEngineError::InvalidWorkflow(message),
+        domain::WorkflowError::NotFound(message) | domain::WorkflowError::External(message) => {
+            WorkflowEngineError::InvalidWorkflow(message)
+        }
     }
 }
 

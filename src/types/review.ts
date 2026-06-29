@@ -13,7 +13,7 @@ export interface DiffTreeNode {
 	children: DiffTreeNode[];
 }
 
-export interface ReviewFileEntry {
+interface ReviewFileEntry {
 	fileId: string;
 	path: string;
 	indexStatus: string;
@@ -22,7 +22,7 @@ export interface ReviewFileEntry {
 	deletions: number;
 }
 
-export interface ReviewDiffStat {
+interface ReviewDiffStat {
 	path: string;
 	index_additions: number;
 	index_deletions: number;
@@ -52,18 +52,14 @@ export interface ReviewViewport {
 	endLine: number;
 }
 
-export type ReviewTarget =
-	| { by: "fileId"; value: string }
-	| { by: "path"; value: string };
-
-export type ReviewTextSource = "diff" | "added" | "deleted";
-export type ReviewLimitReason =
+type ReviewTextSource = "diff" | "added" | "deleted";
+type ReviewLimitReason =
 	| "fileSize"
 	| "lineCount"
 	| "hunkCount"
 	| "tokenization";
 
-export interface ReviewTextDiffView {
+interface ReviewTextDiffView {
 	kind: "textDiff";
 	version: number;
 	stale: boolean;
@@ -79,7 +75,7 @@ export interface ReviewTextDiffView {
 	totalLines: number;
 }
 
-export interface ReviewImageView {
+interface ReviewImageView {
 	kind: "image";
 	version: number;
 	stale: boolean;

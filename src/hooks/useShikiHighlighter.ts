@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import type { ThemedToken } from "shiki/core";
 import type { TokenizeRequest, TokenizeResponse } from "@/workers/shiki.worker";
 
-export type { ThemedToken };
-
 export interface TokenizedLine {
 	tokens: ThemedToken[];
 }

@@ -104,7 +104,6 @@ mod tests {
     use crate::domain::pty_session::entities::{
         PtySession, PtySessionSnapshot, PtySpawnReservation, PtySpawnReservationError,
     };
-    use crate::domain::pty_session::PtyKind;
     use crate::usecase::pty_session::dto::FoundPtySession;
     use crate::usecase::pty_session::ports::{PtyBackendSpawnRequest, PtySessionReadGateway};
 
@@ -274,10 +273,6 @@ mod tests {
             Ok(())
         }
 
-        fn get_pty_size(&self, _pty_id: u64) -> Result<(u16, u16), UsecaseError> {
-            Ok((80, 24))
-        }
-
         fn kill_runtime(&self, pty_id: u64) -> Result<(), UsecaseError> {
             self.killed.lock().unwrap().push(pty_id);
             if *self.fail_kill.lock().unwrap() {
@@ -297,7 +292,6 @@ mod tests {
             session_key: "key-1".to_string(),
             worktree_path: Some("/repo".to_string()),
             label: None,
-            kind: PtyKind::Terminal,
             exited: false,
             exit_code: None,
         }

@@ -34,10 +34,6 @@ impl WorkflowExecutionState {
     pub fn is_active(&self) -> bool {
         matches!(self, Self::Running | Self::WaitingApproval)
     }
-
-    pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Completed | Self::Failed { .. } | Self::Aborted)
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -72,16 +68,9 @@ mod state_tests {
     use super::*;
 
     #[test]
-    fn test_execution_state_activeとterminalを判定する() {
+    fn test_execution_state_activeを判定する() {
         assert!(WorkflowExecutionState::Running.is_active());
         assert!(WorkflowExecutionState::WaitingApproval.is_active());
-        assert!(WorkflowExecutionState::Completed.is_terminal());
-        assert!(WorkflowExecutionState::Failed {
-            reason: "boom".to_string(),
-            kind: WorkflowStepFailureKind::InfrastructureCrash,
-            retry_count: None,
-        }
-        .is_terminal());
         assert!(!WorkflowExecutionState::Aborted.is_active());
     }
 }

@@ -1,15 +1,21 @@
+#[cfg(test)]
 use std::fs::{self, OpenOptions};
+#[cfg(test)]
 use std::io::Write;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use crate::adaptor::gateway::workflow::run as legacy_run;
+#[cfg(test)]
+use crate::domain::workflow::WorkflowRunRecord;
 use crate::domain::workflow::{
-    RunId, RunListFilter, WorkflowError, WorkflowRunRecord, WorkflowRunRepository,
-    WorkflowRunSummary,
+    RunId, RunListFilter, WorkflowError, WorkflowRunRepository, WorkflowRunSummary,
 };
 
 use super::mapper;
 
+#[cfg(test)]
 const RUNS_SUBDIR: &str = "workflow_runs";
 
 #[derive(Debug, Clone)]
@@ -24,14 +30,17 @@ impl WorkflowRunFileRepository {
         }
     }
 
+    #[cfg(test)]
     fn runs_dir(&self) -> PathBuf {
         self.data_dir.join(RUNS_SUBDIR)
     }
 
+    #[cfg(test)]
     fn run_file_path(&self, run_id: &RunId) -> PathBuf {
         self.runs_dir().join(format!("{run_id}.json"))
     }
 
+    #[cfg(test)]
     fn persist(&self, run: &WorkflowRunRecord) -> Result<(), WorkflowError> {
         let run_id = RunId::new(run.run_id.clone())?;
         fs::create_dir_all(self.runs_dir()).map_err(|e| {
@@ -48,6 +57,7 @@ impl WorkflowRunFileRepository {
 }
 
 impl WorkflowRunRepository for WorkflowRunFileRepository {
+    #[cfg(test)]
     fn register_active(&self, run: WorkflowRunRecord) -> Result<(), WorkflowError> {
         let run_id = RunId::new(run.run_id.clone())?;
         if run.status.is_terminal() {
@@ -57,7 +67,7 @@ impl WorkflowRunRepository for WorkflowRunFileRepository {
         }
         if let Some(existing) = self.resolve_active_run_by_worktree(&run.worktree_path)? {
             if existing != run_id {
-                return Err(WorkflowError::AlreadyActive(format!(
+                return Err(WorkflowError::invalid_state(format!(
                     "worktree {} already has active run {}",
                     run.worktree_path, existing
                 )));
@@ -66,6 +76,7 @@ impl WorkflowRunRepository for WorkflowRunFileRepository {
         self.persist(&run)
     }
 
+    #[cfg(test)]
     fn complete_run(
         &self,
         run_id: &RunId,
@@ -88,17 +99,6 @@ impl WorkflowRunRepository for WorkflowRunFileRepository {
         self.persist(&completed)
     }
 
-    fn cancel_reservation(&self, run_id: &RunId) -> Result<(), WorkflowError> {
-        let path = self.run_file_path(run_id);
-        match fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(WorkflowError::external(format!(
-                "failed to remove workflow run metadata: {e}"
-            ))),
-        }
-    }
-
     fn list_runs(&self, filter: RunListFilter) -> Result<Vec<WorkflowRunSummary>, WorkflowError> {
         let legacy_filter = mapper::domain_run_filter_to_legacy(filter);
         let runs = legacy_run::iter_valid_run_metadata(&self.data_dir);
@@ -118,6 +118,7 @@ impl WorkflowRunRepository for WorkflowRunFileRepository {
             .find(|run| run.run_id == run_id.as_str()))
     }
 
+    #[cfg(test)]
     fn resolve_active_run_by_worktree(
         &self,
         worktree_path: &str,
@@ -137,6 +138,7 @@ impl WorkflowRunRepository for WorkflowRunFileRepository {
     }
 }
 
+#[cfg(test)]
 fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")

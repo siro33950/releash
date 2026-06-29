@@ -174,17 +174,10 @@ pub(crate) fn workflow_error_to_engine_error(
                 WorkflowEngineError::InvalidWorkflow(message)
             }
         }
-        crate::domain::workflow::WorkflowError::AlreadyActive(message) => {
-            WorkflowEngineError::AlreadyActive(message)
-        }
-        crate::domain::workflow::WorkflowError::UnauthorizedWorktree(message) => {
-            WorkflowEngineError::UnauthorizedWorktree(message)
-        }
         crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(message) => {
             WorkflowEngineError::UnauthorizedApprovalTarget(message)
         }
         crate::domain::workflow::WorkflowError::NotFound(message)
-        | crate::domain::workflow::WorkflowError::Rule(message)
         | crate::domain::workflow::WorkflowError::External(message) => {
             WorkflowEngineError::InvalidWorkflow(message)
         }

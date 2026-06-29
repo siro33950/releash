@@ -2,7 +2,7 @@
 //!
 //! gateway 実装を repository / usecase へ合成する組み立ては controller の責務であり、
 //! gateway 層や各エントリポイントへ漏らさない（依存方向の遵守）。AppState を持つ
-//! Tauri コマンドだけでなく、WebSocket ハンドラ・MCP・watcher・workflow など非 AppState
+//! Tauri コマンドだけでなく、MCP・watcher・workflow など非 AppState
 //! エントリも、ここで構築した usecase を各 State へ注入する形で受け取る。
 //!
 //! repository / code / agent_session / workflow などの usecase builder を一元的に束ね、

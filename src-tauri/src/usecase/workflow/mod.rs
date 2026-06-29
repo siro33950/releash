@@ -1,7 +1,7 @@
 //! Workflow command usecases.
 //!
 //! This layer orchestrates domain aggregates through repository/gateway ports.
-//! Controllers, CLI adapters, WebSocket handlers, and watchers should converge
+//! Controllers, CLI adapters, and watchers should converge
 //! here as the legacy `workflow` module is removed.
 
 pub(crate) mod approval_chat;
@@ -21,10 +21,10 @@ mod workspace_tree;
 use serde_json::Value;
 
 use crate::domain::workflow::{
-    FacetKind, FacetRepository, FacetSummary, ManagedWorktreeGateway, RunId, RunListFilter,
+    FacetKind, FacetRepository, FacetSummary, ManagedWorktreeGateway, RunListFilter,
     RunStatusFilter, SecretSourceGateway, WorkflowDefinition, WorkflowDefinitionRepository,
-    WorkflowError, WorkflowRunArchiveRepository, WorkflowRunManualArchiveRecord,
-    WorkflowRunSummary, WorkflowStateSnapshot, WorkflowSummary,
+    WorkflowError, WorkflowRunArchiveRepository, WorkflowRunSummary, WorkflowStateSnapshot,
+    WorkflowSummary,
 };
 use crate::usecase::workflow::ports::{
     ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDiagnosticsGateway,
@@ -38,7 +38,6 @@ use query_service::WorkflowQueryService;
 pub use query_service::{WorkflowEventView, WorkflowGetOutputResult, WorkflowStepDetailView};
 pub use runtime_command::WorkflowRuntimeUsecase;
 pub(crate) use step_lifecycle::WorkflowStepLifecycleUsecase;
-pub(crate) use step_lifecycle::{ResolvedWorkflowStepSession, WorkflowStepLifecycleError};
 pub(crate) use workspace_tree::{
     WorkspaceSessionGateway, WorkspaceSessionInput, WorkspaceSessionState, WorkspaceTreeNodeDto,
     WorkspaceWorkflowHistoryItemDto, WorkspaceWorkflowStepNodeDto,
@@ -292,8 +291,8 @@ impl WorkflowUsecase {
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        RunId, RunListFilter, RunStatus, RunStatusFilter, TriggerSource, WorkflowRunRecord,
-        WorkflowRunRepository,
+        RunId, RunListFilter, RunStatus, RunStatusFilter, TriggerSource,
+        WorkflowRunManualArchiveRecord, WorkflowRunRecord, WorkflowRunRepository,
     };
     use crate::usecase::workflow::ports::{
         ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDiagnosticsGateway,
@@ -530,10 +529,6 @@ mod tests {
             Ok(())
         }
 
-        fn cancel_reservation(&self, _run_id: &RunId) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
         fn list_runs(
             &self,
             _filter: RunListFilter,
@@ -584,10 +579,6 @@ mod tests {
             Ok(())
         }
 
-        fn cancel_reservation(&self, _run_id: &RunId) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
         fn list_runs(
             &self,
             filter: RunListFilter,
@@ -600,7 +591,7 @@ mod tests {
                 .filter(|run| match filter.status {
                     Some(RunStatusFilter::Active) => !run.status.is_terminal(),
                     Some(RunStatusFilter::Terminal) => run.status.is_terminal(),
-                    Some(RunStatusFilter::All) | None => true,
+                    None => true,
                 })
                 .filter(|run| {
                     filter
@@ -1131,14 +1122,6 @@ mod tests {
                 "handler"
             )],
         );
-
-        assert_no_forbidden_production_patterns(
-            "adaptor/controller/handler",
-            &[
-                concat!("crate", "::", "infrastructure"),
-                concat!("infrastructure", "::"),
-            ],
-        );
     }
 
     #[test]
@@ -1179,6 +1162,7 @@ mod tests {
             "ws_server",
             concat!("ws_server", ".rs"),
             concat!("ws_bridge", ".rs"),
+            "adaptor/controller/handler",
             concat!("agent_status", "_events.rs"),
         ] {
             assert!(

@@ -88,7 +88,7 @@ interface ModelsUpdated {
  * 各 panel が表示開始時に register、unmount/離脱時に cleanup を呼ぶ。listener は本 set に
  * 含まれる session に対してのみ ADD_MESSAGE / SET_STREAMING_MESSAGE 等を dispatch する。
  */
-export interface ViewableSessionRegistry {
+interface ViewableSessionRegistry {
 	register: (sessionId: string) => () => void;
 	getIds: () => Set<string>;
 }

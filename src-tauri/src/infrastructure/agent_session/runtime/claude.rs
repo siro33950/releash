@@ -73,10 +73,6 @@ impl AgentBackend for ClaudeBackend {
             bridge_init_options: serde_json::Map::new(),
         }
     }
-
-    async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]

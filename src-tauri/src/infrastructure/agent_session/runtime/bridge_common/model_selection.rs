@@ -328,7 +328,6 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: CLAUDE_BACKEND_ID.to_string(),
-            models: vec![],
         }));
         registry.set_config(config);
         let registry = Arc::new(registry);
@@ -346,7 +345,6 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: CLAUDE_BACKEND_ID.to_string(),
-            models: vec![],
         }));
         let registry = Arc::new(registry);
         let err = available_models_for_backend(CLAUDE_BACKEND_ID, Some(&registry));

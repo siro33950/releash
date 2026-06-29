@@ -7,7 +7,6 @@ mod prompt_suggestion;
 mod read_paths;
 mod store;
 mod stored_lifecycle;
-mod stream_resync;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -36,9 +35,6 @@ pub use store::{SessionReaderPort, SessionReviewContextReader, SessionStore};
 pub(crate) use stored_lifecycle::{
     AgentSessionRuntimeCloser, CodexThreadForkRequest, CodexThreadLifecycleGateway,
     StoredSessionLifecycleUsecase,
-};
-pub(crate) use stream_resync::{
-    resync_streaming_message, AgentStreamResyncReadModel, StreamResyncSnapshot,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1124,7 +1120,7 @@ pub fn parts_to_legacy(
 /// Internal (non-command) version of create_session, callable from agent_sdk.
 /// `permission_mode` 未指定の経路（ワークフロー engine 起点の step session 等）向けに
 /// `PermissionMode::Edit` を既定値として用いる。検証済み抽象モードを保有する経路
-/// （WS handler / message → 新規 session）は [`create_session_internal_with_permission`] を呼ぶこと。
+/// のテストは [`create_session_internal_with_permission`] を呼ぶこと。
 #[cfg(test)]
 pub fn create_session_internal(
     session_store: &SessionStore,
@@ -1142,9 +1138,8 @@ pub fn create_session_internal(
 }
 
 /// 検証済みの抽象 [`crate::domain::agent_session::PermissionMode`] を初回保存で確定するセッション生成 API。
-/// WS handler や message → 新規 session 経路から呼び、edit デフォルトで保存→update の二段階を回避する
-/// （Spec issues-947: セッション保存層が permission_mode の正典）。
-#[allow(dead_code)]
+/// Spec issues-947 の session 保存層 permission_mode 正典化をテストする。
+#[cfg(test)]
 pub fn create_session_internal_with_permission(
     session_store: &SessionStore,
     data_dir: &std::path::Path,
@@ -1495,7 +1490,7 @@ mod tests {
         assert!(preview.len() <= TOOL_OUTPUT_PREVIEW_BYTES);
         assert!(!preview.contains(secret_tail));
         assert_eq!(summary.byte_size, content.len() as u64);
-        assert_eq!(summary.is_error, true);
+        assert!(summary.is_error);
         assert!(summary.truncated);
     }
 
@@ -1533,7 +1528,7 @@ mod tests {
             } => {
                 assert!(content.len() <= TOOL_OUTPUT_PREVIEW_BYTES);
                 assert_ne!(content, large_content);
-                assert_eq!(is_error, true);
+                assert!(is_error);
                 assert_eq!(tool_use_id.as_deref(), Some("tool-2"));
                 assert!(content_ref.is_none());
                 let summary = summary.expect("large output should keep summary");

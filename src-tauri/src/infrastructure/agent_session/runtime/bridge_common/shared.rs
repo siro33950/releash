@@ -601,12 +601,12 @@ mod stream_delta_tests {
             ],
         ];
         let mut applied = Vec::new();
-        let mut raw_snapshot_parts = Vec::new();
+        let mut raw_snapshot_buf = Vec::new();
         let mut last_seq = 0;
 
         for (index, delta) in deltas.iter().enumerate() {
             let seq = (index + 1) as u64;
-            raw_snapshot_parts.extend_from_slice(delta);
+            raw_snapshot_buf.extend_from_slice(delta);
             assert_eq!(
                 apply_stream_delta_to_parts(&mut applied, &mut last_seq, seq, delta),
                 StreamDeltaApplyResult::Applied
@@ -615,7 +615,7 @@ mod stream_delta_tests {
 
         assert_eq!(
             applied,
-            canonical_stream_parts_from_slice(&raw_snapshot_parts)
+            canonical_stream_parts_from_slice(&raw_snapshot_buf)
         );
         assert_eq!(
             applied,
@@ -1026,43 +1026,19 @@ pub(super) async fn agent_session_has_pending_message(
         .is_some_and(|proc| !proc.pending_messages.is_empty())
 }
 
-pub(super) fn bridge_script_names(
-    backend_id: &str,
-) -> Result<(&'static str, &'static str), String> {
-    match backend_id {
-        CODEX_BACKEND_ID => Err(
-            "Codex uses codex app-server directly; the legacy Node bridge is disabled".to_string(),
-        ),
-        _ => Ok((
-            "claude-sdk-bridge.mjs",
-            "generated/bridges/claude-sdk-bridge.bundled.mjs",
-        )),
-    }
-}
-
-pub(super) fn dev_bridge_path(backend_id: &str) -> Result<PathBuf, String> {
-    let (dev_name, _) = bridge_script_names(backend_id)?;
-    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("resources")
-        .join(dev_name))
-}
+const CLAUDE_BRIDGE_RESOURCE: &str = "generated/bridges/claude-sdk-bridge.bundled.mjs";
 
 pub(super) fn resolve_bridge_script<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     backend_id: &str,
 ) -> Result<PathBuf, String> {
-    #[cfg(debug_assertions)]
-    {
-        let dev_path = dev_bridge_path(backend_id)?;
-        if dev_path.exists() {
-            return Ok(dev_path);
-        }
+    if backend_id != CLAUDE_BACKEND_ID {
+        return Err(format!("Unsupported Node bridge backend: {backend_id}"));
     }
 
-    let (_, bundled_name) = bridge_script_names(backend_id)?;
     app.path()
         .resource_dir()
-        .map(|d| d.join(bundled_name))
+        .map(|d| d.join(CLAUDE_BRIDGE_RESOURCE))
         .map_err(|e| format!("Failed to resolve resource dir: {e}"))
 }
 
@@ -1387,8 +1363,6 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
 
     pub(in crate::infrastructure::agent_session::runtime::bridge_common) struct MockModelBackend {
         pub(in crate::infrastructure::agent_session::runtime::bridge_common) backend_id: String,
-        #[allow(dead_code)]
-        pub(in crate::infrastructure::agent_session::runtime::bridge_common) models: Vec<String>,
     }
 
     #[async_trait]
@@ -1425,10 +1399,6 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
             _session: &SessionHandle,
             _response: PermissionResponse,
         ) -> Result<(), String> {
-            Ok(())
-        }
-
-        async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
             Ok(())
         }
     }
@@ -1524,10 +1494,6 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
             _session: &SessionHandle,
             _response: PermissionResponse,
         ) -> Result<(), String> {
-            Ok(())
-        }
-
-        async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
             Ok(())
         }
     }
@@ -1631,9 +1597,8 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
     /// stdout reader uses, instead of mirroring the prepare/apply sequence.
     pub(in crate::infrastructure::agent_session::runtime::bridge_common) fn recording_emit<'a>(
         events: &'a mut Vec<RecordedEmit>,
-    ) -> impl FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool) + 'a
-    {
-        |_mid, _seq, _snapshot, parts, _snapshot_parts| {
+    ) -> impl FnMut(&str, u64, bool, &[MessagePart]) -> bool + 'a {
+        |_mid, _seq, _snapshot, parts| {
             events.push(RecordedEmit::StreamingFlush {
                 parts_count: parts.len(),
                 tail_text: match parts.last() {
@@ -1643,7 +1608,7 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
                     _ => None,
                 },
             });
-            (true, true)
+            true
         }
     }
 
@@ -1950,11 +1915,9 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: CLAUDE_BACKEND_ID.to_string(),
-            models: vec![],
         }));
         registry.register(Arc::new(MockModelBackend {
             backend_id: CODEX_BACKEND_ID.to_string(),
-            models: vec![],
         }));
         registry.set_config(config);
         Arc::new(registry)
@@ -2166,44 +2129,6 @@ mod moved_tests {
 
         clear_pending_turn_starting("step-pending").await;
         assert!(!is_agent_step_runtime_busy(&handles, "step-pending").await);
-    }
-
-    #[test]
-    fn dev_bridge_path_points_to_src_tauri_resources() {
-        let path = dev_bridge_path(CLAUDE_BACKEND_ID).unwrap();
-        assert!(
-            path.ends_with("src-tauri/resources/claude-sdk-bridge.mjs"),
-            "dev_bridge_path should end with src-tauri/resources/claude-sdk-bridge.mjs, got: {}",
-            path.display()
-        );
-    }
-
-    #[test]
-    fn dev_bridge_path_file_exists() {
-        let path = dev_bridge_path(CLAUDE_BACKEND_ID).unwrap();
-        assert!(
-            path.exists(),
-            "Bridge script should exist at {}, but it does not",
-            path.display()
-        );
-    }
-
-    #[test]
-    fn dev_bridge_path_rejects_codex_legacy_bridge() {
-        let err = dev_bridge_path(CODEX_BACKEND_ID).unwrap_err();
-        assert!(err.contains("app-server"));
-    }
-
-    #[test]
-    fn bridge_script_names_returns_claude_bridge_only() {
-        assert_eq!(
-            bridge_script_names(CLAUDE_BACKEND_ID).unwrap(),
-            (
-                "claude-sdk-bridge.mjs",
-                "generated/bridges/claude-sdk-bridge.bundled.mjs"
-            )
-        );
-        assert!(bridge_script_names(CODEX_BACKEND_ID).is_err());
     }
 
     #[tokio::test]

@@ -249,7 +249,9 @@ where
 }
 
 #[cfg(test)]
-fn validation_error_string(e: crate::domain::workflow::ValidationError) -> String {
+fn validation_error_string(
+    e: crate::domain::workflow::services::validation::ValidationError,
+) -> String {
     format!("validation_error: {e}")
 }
 

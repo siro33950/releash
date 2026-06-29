@@ -1,6 +1,5 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { BreadcrumbSegment } from "./Breadcrumb";
 import { Breadcrumb } from "./Breadcrumb";
 
 vi.mock("@react-symbols/icons/utils", () => ({
@@ -39,7 +38,7 @@ describe("Breadcrumb", () => {
 	});
 
 	it("should render only file name for a single file segment", () => {
-		const segments: BreadcrumbSegment[] = [{ name: "file.ts", isFile: true }];
+		const segments = [{ name: "file.ts", isFile: true }];
 		render(<Breadcrumb segments={segments} />);
 
 		expect(screen.getByText("file.ts")).toBeInTheDocument();
@@ -51,7 +50,7 @@ describe("Breadcrumb", () => {
 	});
 
 	it("should render all segments with ChevronRight separators for nested path", () => {
-		const segments: BreadcrumbSegment[] = [
+		const segments = [
 			{ name: "src", isFile: false },
 			{ name: "components", isFile: false },
 			{ name: "App.tsx", isFile: true },
@@ -74,7 +73,7 @@ describe("Breadcrumb", () => {
 	});
 
 	it("should use FolderIcon for directory segments and FileIcon for the last segment", () => {
-		const segments: BreadcrumbSegment[] = [
+		const segments = [
 			{ name: "lib", isFile: false },
 			{ name: "utils.ts", isFile: true },
 		];
@@ -89,7 +88,7 @@ describe("Breadcrumb", () => {
 	});
 
 	it("should render children in the right area", () => {
-		const segments: BreadcrumbSegment[] = [{ name: "file.ts", isFile: true }];
+		const segments = [{ name: "file.ts", isFile: true }];
 		render(
 			<Breadcrumb segments={segments}>
 				<span data-testid="child-content">Extra</span>

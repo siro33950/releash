@@ -1,7 +1,7 @@
 use crate::domain::workflow::value_objects::{MAX_NODES_PER_WORKFLOW, MAX_PARALLEL_CHILDREN};
 use crate::domain::workflow::{
     NodeDefinition, NodeType, ReduceStrategy, TransitionRule, WorkflowDefinition as Workflow,
-    WorkflowName,
+    WorkflowError, WorkflowName,
 };
 use regex::RegexBuilder;
 use std::collections::HashSet;
@@ -331,6 +331,23 @@ pub fn validate_name(name: &str) -> Result<(), ValidationError> {
             name: name.to_string(),
         }),
     }
+}
+
+pub fn validate_workflow_shape(workflow: &Workflow) -> Result<(), WorkflowError> {
+    if workflow.nodes.is_empty() {
+        return Err(WorkflowError::validation("workflow has no nodes"));
+    }
+    if let Some(node) = workflow
+        .nodes
+        .iter()
+        .find(|node| matches!(node.node_type, NodeType::Bash))
+    {
+        return Err(WorkflowError::validation(format!(
+            "bash node '{}' is not executable in this milestone",
+            node.name
+        )));
+    }
+    Ok(())
 }
 
 /// `workflow.nodes` の top-level node 数と全 `parallel_children` の合算（=DoS ガード対象の総 node 数）。

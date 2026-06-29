@@ -242,10 +242,6 @@ mod tests {
             Ok(())
         }
 
-        fn cancel_reservation(&self, _run_id: &RunId) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
         fn list_runs(
             &self,
             filter: RunListFilter,
@@ -255,7 +251,6 @@ mod tests {
                 runs.retain(|run| match status {
                     RunStatusFilter::Active => !run.status.is_terminal(),
                     RunStatusFilter::Terminal => run.status.is_terminal(),
-                    RunStatusFilter::All => true,
                 });
             }
             if let Some(worktree_path) = filter.worktree_path {

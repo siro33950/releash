@@ -59,17 +59,6 @@ pub enum StepProgress {
 }
 
 impl StepProgress {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Failed => "failed",
-            Self::WaitingApproval => "waiting_approval",
-            Self::Running => "running",
-            Self::Aborted => "aborted",
-            Self::Completed => "completed",
-            Self::Queued => "queued",
-        }
-    }
-
     pub(crate) fn from_status_str(status: &str) -> Self {
         match status {
             "failed" => Self::Failed,

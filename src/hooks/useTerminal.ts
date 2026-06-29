@@ -50,9 +50,9 @@ interface TauriCommandError {
 	message?: unknown;
 }
 
-export const QUEUED_INITIAL_OUTPUT_MAX_ITEMS = 256;
-export const QUEUED_INITIAL_OUTPUT_MAX_BYTES = 64 * 1024;
-export const MAX_INITIAL_REFETCH = 5;
+const QUEUED_INITIAL_OUTPUT_MAX_ITEMS = 256;
+const QUEUED_INITIAL_OUTPUT_MAX_BYTES = 64 * 1024;
+const MAX_INITIAL_REFETCH = 5;
 
 const TERMINAL_CAP_REACHED_CODE = "CAP_REACHED";
 const INITIAL_OUTPUT_RESYNC_FAILED_MESSAGE =
@@ -103,7 +103,7 @@ function getErrorCode(error: unknown): string | null {
 	return null;
 }
 
-export function createBoundedPtyOutputQueue(
+function createBoundedPtyOutputQueue(
 	maxItems = QUEUED_INITIAL_OUTPUT_MAX_ITEMS,
 	maxBytes = QUEUED_INITIAL_OUTPUT_MAX_BYTES,
 ) {
@@ -409,7 +409,6 @@ export function useTerminal(
 				sessionKey: effectiveSessionKey,
 				worktreePath: worktreePath ?? "",
 				label: label ?? null,
-				kind: "terminal",
 			});
 
 			// standalone 用: cwd → UUID キャッシュ更新（管理ペインでは不要）

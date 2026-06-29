@@ -1,12 +1,9 @@
-use crate::domain::pty_session::PtyKind;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PtySession {
     pub pty_id: u64,
     pub session_key: String,
     pub worktree_path: Option<String>,
     pub label: Option<String>,
-    pub kind: PtyKind,
     pub exited: bool,
     pub exit_code: Option<i32>,
 }
@@ -17,14 +14,12 @@ impl PtySession {
         session_key: String,
         worktree_path: Option<String>,
         label: Option<String>,
-        kind: PtyKind,
     ) -> Self {
         Self {
             pty_id,
             session_key,
             worktree_path,
             label,
-            kind,
             exited: false,
             exit_code: None,
         }
@@ -41,7 +36,6 @@ impl PtySession {
             session_key: self.session_key.clone(),
             worktree_path: self.worktree_path.clone(),
             label: self.label.clone(),
-            kind: self.kind,
             exited: self.exited,
             exit_code: self.exit_code,
         }
@@ -54,7 +48,6 @@ pub struct PtySessionSnapshot {
     pub session_key: String,
     pub worktree_path: Option<String>,
     pub label: Option<String>,
-    pub kind: PtyKind,
     pub exited: bool,
     pub exit_code: Option<i32>,
 }

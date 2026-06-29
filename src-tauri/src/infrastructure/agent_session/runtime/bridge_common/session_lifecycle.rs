@@ -14,11 +14,11 @@ use super::session_persistence::{
 };
 use super::shared::{
     build_message_cmd, consolidate_parts_from_slice, fallback_prompt_message_id,
-    notify_status_transition, parts_have_tool_output_ref, resolve_mentions_or_fallback_from_port,
+    notify_status_transition, resolve_mentions_or_fallback_from_port,
     runtime_system_prompt_fingerprint, write_bridge_command, CLAUDE_BACKEND_ID, CODEX_BACKEND_ID,
 };
 use super::stream_emit::{
-    confirmed_streaming_parts, emit_persisted_tool_output_resync, emit_session_state_changed,
+    emit_persisted_tool_output_resync, emit_session_state_changed,
     flush_streaming_before_transition, has_pending_stream_flush,
     release_completed_turn_streaming_buffer, spawn_streaming_timer,
 };
@@ -67,7 +67,6 @@ use crate::usecase::agent_session::session::SessionPage;
 use crate::usecase::agent_session::session::SessionState;
 use crate::usecase::agent_session::session::SessionStore;
 use crate::usecase::agent_session::session::SessionSummary;
-use crate::usecase::agent_session::session::StreamResyncSnapshot;
 use crate::usecase::agent_session::session::TokenUsage;
 use crate::usecase::agent_session::session::INITIAL_SESSION_PAGE_LIMIT;
 use crate::usecase::agent_session::system_prompt::{
@@ -330,7 +329,7 @@ pub(super) fn run_turn_complete_transition_locked<F>(
     emit_stream: F,
 ) -> TurnCompleteTransition
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     run_turn_complete_transition_locked_with_interrupt(
         proc,
@@ -351,7 +350,7 @@ pub(super) fn run_turn_complete_transition_locked_with_interrupt<F>(
     emit_stream: F,
 ) -> TurnCompleteTransition
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     if proc.turn_phase == TurnPhase::Idle && proc.state != BridgeState::Initializing {
         return TurnCompleteTransition::default();
@@ -727,88 +726,6 @@ pub(crate) async fn get_session_page_internal_with_data_dir(
         }
     }
     Ok(Some(page))
-}
-
-pub(crate) async fn resync_streaming_message_internal_with_data_dir(
-    session_store: &Arc<SessionStore>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
-    data_dir: &Path,
-    session_id: &str,
-    message_id: &str,
-    _since_seq: u64,
-) -> Result<Option<StreamResyncSnapshot>, String> {
-    let live_snapshot = {
-        let map = handles.lock().await;
-        map.get(session_id).and_then(|proc| {
-            let targets_current = proc.streaming_message_id.as_deref() == Some(message_id);
-            let targets_last = proc.last_message_id.as_deref() == Some(message_id);
-            let has_live_parts =
-                targets_current || (targets_last && !proc.streaming_parts.is_empty());
-            if !has_live_parts {
-                return None;
-            }
-            let seq = proc
-                .streaming_delta_seq_by_message
-                .get(message_id)
-                .copied()
-                .unwrap_or(proc.streaming_delta_seq);
-            Some((
-                StreamResyncSnapshot {
-                    session_id: session_id.to_string(),
-                    message_id: message_id.to_string(),
-                    seq,
-                    parts: project_tool_output_parts_for_stream(&confirmed_streaming_parts(proc)),
-                },
-                !targets_current && targets_last,
-            ))
-        })
-    };
-    let completed_live_snapshot = match live_snapshot {
-        Some((snapshot, false)) => return Ok(Some(snapshot)),
-        snapshot => snapshot,
-    };
-
-    let Some(session) = session_store.load_full_session_for_restore(data_dir, session_id)? else {
-        return Ok(completed_live_snapshot.map(|(snapshot, _)| snapshot));
-    };
-    let Some(message) = session
-        .messages
-        .iter()
-        .find(|message| message.id == message_id)
-    else {
-        return Ok(completed_live_snapshot.map(|(snapshot, _)| snapshot));
-    };
-    if message.role != MessageRole::Agent {
-        return Ok(completed_live_snapshot.map(|(snapshot, _)| snapshot));
-    };
-    let process_seq = {
-        let map = handles.lock().await;
-        map.get(session_id)
-            .and_then(|proc| proc.streaming_delta_seq_by_message.get(message_id).copied())
-            .or_else(|| {
-                completed_live_snapshot
-                    .as_ref()
-                    .map(|(snapshot, _)| snapshot.seq)
-            })
-    };
-    let persisted_parts = message.parts.clone().unwrap_or_default();
-    let persisted_has_tool_output_ref = parts_have_tool_output_ref(&persisted_parts);
-    let parts = project_tool_output_parts_for_stream(&persisted_parts);
-    let persisted_snapshot = StreamResyncSnapshot {
-        session_id: session_id.to_string(),
-        message_id: message_id.to_string(),
-        seq: process_seq.unwrap_or(message.streaming_final_seq),
-        parts,
-    };
-    if let Some((snapshot, true)) = completed_live_snapshot {
-        let persisted_marker_was_emitted =
-            process_seq.is_some_and(|seq| seq > message.streaming_final_seq);
-        if persisted_has_tool_output_ref && persisted_marker_was_emitted {
-            return Ok(Some(persisted_snapshot));
-        }
-        return Ok(Some(snapshot));
-    }
-    Ok(Some(persisted_snapshot))
 }
 
 pub(super) fn can_change_session_backend_from_meta(
@@ -3076,9 +2993,8 @@ mod moved_tests {
     };
 
     use crate::usecase::agent_session::session::{
-        add_message_internal, create_session_internal, ActivityEntry, AttachmentRef, ChatMessage,
-        ChatSession, MessageMention, MessagePart, MessageRole, SessionStore, ToolOutputRef,
-        ToolOutputSummary, WorkflowStepContextDto,
+        add_message_internal, create_session_internal, AttachmentRef, ChatMessage, ChatSession,
+        MessageMention, MessagePart, MessageRole, SessionStore, WorkflowStepContextDto,
     };
 
     use std::collections::{HashMap, VecDeque};
@@ -3162,10 +3078,6 @@ mod moved_tests {
 
         fn fixed_models(&self) -> Option<Vec<String>> {
             Some(vec!["mock-model".to_string()])
-        }
-
-        async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
-            Ok(())
         }
     }
 
@@ -3551,406 +3463,6 @@ mod moved_tests {
         assert!(system_prompt.contains("local file-neighbor instruction"));
     }
 
-    #[tokio::test]
-    async fn resync_streaming_message_uses_persisted_parts_when_live_buffer_was_released() {
-        let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let mut session =
-            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
-        let message_id = "agent-message-1";
-        let persisted_parts = vec![MessagePart::Text {
-            content: "parts canonical".to_string(),
-            parent_tool_use_id: None,
-        }];
-        session.messages.push(ChatMessage {
-            id: message_id.to_string(),
-            role: MessageRole::Agent,
-            content: "legacy stale text".to_string(),
-            thinking: Some("legacy stale thinking".to_string()),
-            activities: Some(vec![ActivityEntry::ToolResult {
-                content: "legacy stale tool result".to_string(),
-                is_error: false,
-                tool_use_id: None,
-                content_ref: None,
-                summary: None,
-            }]),
-            parts: Some(persisted_parts),
-            streaming_final_seq: 6,
-            timestamp: 1.0,
-            mentions: None,
-        });
-        session_store
-            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
-            .unwrap();
-
-        let mut proc = make_test_agent_process();
-        proc.state = BridgeState::Ready;
-        proc.turn_phase = TurnPhase::Idle;
-        proc.last_message_id = Some(message_id.to_string());
-        proc.streaming_delta_seq_by_message
-            .insert(message_id.to_string(), 6);
-        let handles = Arc::new(Mutex::new(HashMap::from([(session.id.clone(), proc)])));
-
-        let snapshot = resync_streaming_message_internal_with_data_dir(
-            &session_store,
-            &handles,
-            data_dir.path(),
-            &session.id,
-            message_id,
-            3,
-        )
-        .await
-        .unwrap()
-        .expect("snapshot");
-
-        assert_eq!(snapshot.seq, 6);
-        assert_eq!(snapshot.parts.len(), 1);
-        assert!(matches!(
-            &snapshot.parts[0],
-            MessagePart::Text { content, .. }
-                if content == "parts canonical"
-        ));
-        assert!(!snapshot.parts.iter().any(|part| matches!(
-            part,
-            MessagePart::Text { content, .. }
-            | MessagePart::Thinking { content, .. }
-            | MessagePart::ToolResult { content, .. }
-            | MessagePart::Error { content, .. }
-                if content.contains("legacy stale")
-        )));
-
-        let mut proc = {
-            let mut map = handles.lock().await;
-            map.remove(&session.id).unwrap()
-        };
-        let _ = proc.child.kill().await;
-    }
-
-    #[tokio::test]
-    async fn resync_streaming_message_prefers_persisted_tool_output_ref_after_resync_marker() {
-        let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let mut session =
-            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
-        let message_id = "agent-message-with-tool-ref";
-        let content_ref = ToolOutputRef {
-            id: "b".repeat(64),
-            byte_size: 65_536,
-        };
-        let summary = ToolOutputSummary {
-            line_count: 2_000,
-            byte_size: content_ref.byte_size,
-            is_error: false,
-            truncated: true,
-        };
-        let persisted_part = MessagePart::ToolResult {
-            content: "persisted preview".to_string(),
-            is_error: false,
-            tool_use_id: Some("tool-1".to_string()),
-            parent_tool_use_id: None,
-            content_ref: Some(content_ref.clone()),
-            summary: Some(summary.clone()),
-        };
-        session.messages.push(ChatMessage {
-            id: message_id.to_string(),
-            role: MessageRole::Agent,
-            content: "legacy stale tool body".to_string(),
-            thinking: None,
-            activities: None,
-            parts: Some(vec![persisted_part.clone()]),
-            streaming_final_seq: 3,
-            timestamp: 1.0,
-            mentions: None,
-        });
-        session_store
-            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
-            .unwrap();
-
-        let live_part = MessagePart::ToolResult {
-            content: "live preview without content ref".to_string(),
-            is_error: false,
-            tool_use_id: Some("tool-1".to_string()),
-            parent_tool_use_id: None,
-            content_ref: None,
-            summary: None,
-        };
-        let mut proc = make_test_agent_process();
-        proc.state = BridgeState::Ready;
-        proc.turn_phase = TurnPhase::Idle;
-        proc.last_message_id = Some(message_id.to_string());
-        proc.streaming_parts = vec![live_part.clone()];
-        proc.confirmed_stream_part_len = 1;
-        proc.streaming_delta_seq = 4;
-        proc.streaming_delta_seq_by_message
-            .insert(message_id.to_string(), 4);
-        proc.retry_stream_delta = Some(PendingStreamDelta {
-            message_id: message_id.to_string(),
-            seq: 4,
-            snapshot: false,
-            parts: vec![live_part],
-            retry_snapshot_parts: None,
-            part_count: 1,
-            pending_bytes: "live preview without content ref".len(),
-            rollbacks: Vec::new(),
-            confirmed_stream_part_len_after_success: 1,
-            updates_live_counter: true,
-        });
-        let handles = Arc::new(Mutex::new(HashMap::from([(session.id.clone(), proc)])));
-
-        let snapshot = resync_streaming_message_internal_with_data_dir(
-            &session_store,
-            &handles,
-            data_dir.path(),
-            &session.id,
-            message_id,
-            3,
-        )
-        .await
-        .unwrap()
-        .expect("snapshot");
-
-        assert_eq!(snapshot.seq, 4);
-        assert_eq!(snapshot.parts, vec![persisted_part]);
-        assert!(matches!(
-            &snapshot.parts[..],
-            [MessagePart::ToolResult {
-                content,
-                content_ref: Some(snapshot_ref),
-                summary: Some(snapshot_summary),
-                ..
-            }] if content == "persisted preview"
-                && snapshot_ref == &content_ref
-                && snapshot_summary == &summary
-        ));
-
-        let mut proc = {
-            let mut map = handles.lock().await;
-            map.remove(&session.id).unwrap()
-        };
-        let _ = proc.child.kill().await;
-    }
-
-    #[tokio::test]
-    async fn resync_streaming_message_uses_persisted_final_seq_without_live_process() {
-        let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let mut session =
-            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
-        let message_id = "agent-message-final-seq";
-        session.messages.push(ChatMessage {
-            id: message_id.to_string(),
-            role: MessageRole::Agent,
-            content: "legacy".to_string(),
-            thinking: None,
-            activities: None,
-            parts: Some(vec![MessagePart::Text {
-                content: "persisted final".to_string(),
-                parent_tool_use_id: None,
-            }]),
-            streaming_final_seq: 9,
-            timestamp: 1.0,
-            mentions: None,
-        });
-        session_store
-            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
-            .unwrap();
-        let handles = Arc::new(Mutex::new(HashMap::new()));
-
-        let snapshot = resync_streaming_message_internal_with_data_dir(
-            &session_store,
-            &handles,
-            data_dir.path(),
-            &session.id,
-            message_id,
-            123,
-        )
-        .await
-        .unwrap()
-        .expect("snapshot");
-
-        assert_eq!(snapshot.seq, 9);
-        assert_eq!(
-            snapshot.parts,
-            vec![MessagePart::Text {
-                content: "persisted final".to_string(),
-                parent_tool_use_id: None,
-            }]
-        );
-    }
-
-    #[tokio::test]
-    async fn resync_streaming_message_rejects_persisted_non_agent_messages() {
-        let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let mut session =
-            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
-        session.messages.push(ChatMessage {
-            id: "human-image-message".to_string(),
-            role: MessageRole::Human,
-            content: "human prompt".to_string(),
-            thinking: None,
-            activities: None,
-            parts: Some(vec![
-                MessagePart::Text {
-                    content: "human prompt".to_string(),
-                    parent_tool_use_id: None,
-                },
-                MessagePart::Image {
-                    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=".to_string(),
-                    media_type: "image/png".to_string(),
-                },
-            ]),
-            streaming_final_seq: 4,
-            timestamp: 1.0,
-            mentions: None,
-        });
-        session.messages.push(ChatMessage {
-            id: "system-message".to_string(),
-            role: MessageRole::System,
-            content: "system text".to_string(),
-            thinking: None,
-            activities: None,
-            parts: Some(vec![MessagePart::Text {
-                content: "system text".to_string(),
-                parent_tool_use_id: None,
-            }]),
-            streaming_final_seq: 5,
-            timestamp: 2.0,
-            mentions: None,
-        });
-        session_store
-            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
-            .unwrap();
-        let handles = Arc::new(Mutex::new(HashMap::new()));
-
-        for message_id in ["human-image-message", "system-message"] {
-            let snapshot = resync_streaming_message_internal_with_data_dir(
-                &session_store,
-                &handles,
-                data_dir.path(),
-                &session.id,
-                message_id,
-                0,
-            )
-            .await
-            .unwrap();
-            assert!(snapshot.is_none(), "{message_id} must not expose parts");
-        }
-    }
-
-    #[tokio::test]
-    async fn resync_streaming_message_live_snapshot_excludes_unconfirmed_pending_delta() {
-        let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let session =
-            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
-        let message_id = "agent-message-1";
-        let confirmed = MessagePart::Text {
-            content: "confirmed".to_string(),
-            parent_tool_use_id: None,
-        };
-        let pending = MessagePart::Text {
-            content: " pending".to_string(),
-            parent_tool_use_id: None,
-        };
-        let mut proc = make_test_agent_process();
-        proc.state = BridgeState::Streaming;
-        proc.turn_phase = TurnPhase::Streaming;
-        proc.streaming_message_id = Some(message_id.to_string());
-        proc.streaming_parts = vec![confirmed.clone(), pending.clone()];
-        proc.confirmed_stream_part_len = 1;
-        proc.pending_stream_parts = vec![pending.clone()];
-        proc.pending_stream_bytes = " pending".len();
-        proc.streaming_delta_seq = 1;
-        proc.streaming_delta_seq_by_message
-            .insert(message_id.to_string(), 1);
-        let handles = Arc::new(Mutex::new(HashMap::from([(session.id.clone(), proc)])));
-
-        let snapshot = resync_streaming_message_internal_with_data_dir(
-            &session_store,
-            &handles,
-            data_dir.path(),
-            &session.id,
-            message_id,
-            0,
-        )
-        .await
-        .unwrap()
-        .expect("snapshot");
-
-        assert_eq!(snapshot.seq, 1);
-        assert_eq!(snapshot.parts.len(), 1);
-        assert!(matches!(
-            &snapshot.parts[0],
-            MessagePart::Text { content, .. }
-                if content == "confirmed"
-        ));
-
-        let mut proc = {
-            let mut map = handles.lock().await;
-            map.remove(&session.id).unwrap()
-        };
-        let _ = proc.child.kill().await;
-    }
-
-    #[tokio::test]
-    async fn resync_streaming_message_live_snapshot_rolls_back_unconfirmed_in_place_update() {
-        let data_dir = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let session =
-            create_session_internal(&session_store, data_dir.path(), "/repo", None).unwrap();
-        let message_id = "agent-message-1";
-        let previous = MessagePart::TaskStatus {
-            task_tool_use_id: "tool-1".to_string(),
-            status: "started".to_string(),
-            description: None,
-            summary: None,
-        };
-        let pending_update = MessagePart::TaskStatus {
-            task_tool_use_id: "tool-1".to_string(),
-            status: "completed".to_string(),
-            description: None,
-            summary: Some("done".to_string()),
-        };
-        let mut proc = make_test_agent_process();
-        proc.state = BridgeState::Streaming;
-        proc.turn_phase = TurnPhase::Streaming;
-        proc.streaming_message_id = Some(message_id.to_string());
-        proc.streaming_parts = vec![pending_update.clone()];
-        proc.confirmed_stream_part_len = 1;
-        proc.pending_stream_parts = vec![pending_update];
-        proc.pending_stream_part_rollbacks = vec![StreamPartRollback { index: 0, previous }];
-        proc.streaming_delta_seq = 1;
-        proc.streaming_delta_seq_by_message
-            .insert(message_id.to_string(), 1);
-        let handles = Arc::new(Mutex::new(HashMap::from([(session.id.clone(), proc)])));
-
-        let snapshot = resync_streaming_message_internal_with_data_dir(
-            &session_store,
-            &handles,
-            data_dir.path(),
-            &session.id,
-            message_id,
-            0,
-        )
-        .await
-        .unwrap()
-        .expect("snapshot");
-
-        assert_eq!(snapshot.seq, 1);
-        assert!(matches!(
-            &snapshot.parts[..],
-            [MessagePart::TaskStatus { status, summary, .. }]
-                if status == "started" && summary.is_none()
-        ));
-
-        let mut proc = {
-            let mut map = handles.lock().await;
-            map.remove(&session.id).unwrap()
-        };
-        let _ = proc.child.kill().await;
-    }
-
     #[test]
     fn prompt_input_from_human_message_preserves_mentions_and_prompt_parts() {
         let attachment = AttachmentRef {
@@ -4040,7 +3552,7 @@ mod moved_tests {
         .unwrap();
 
         let started_turn_prompt = prompt_input_for_started_turn(
-            Some(&app.handle()),
+            Some(app.handle()),
             Some(&store),
             &session.id,
             &agent_message.id,
@@ -4116,7 +3628,7 @@ mod moved_tests {
 
         storage.reset_message_read_count();
         let started_turn_prompt = prompt_input_for_started_turn(
-            Some(&app.handle()),
+            Some(app.handle()),
             Some(&store),
             &session.id,
             &target_agent.id,
@@ -4159,7 +3671,7 @@ mod moved_tests {
 
         for streaming_message_id in [&agent_without_human.id, "missing-agent"] {
             let started_turn_prompt = prompt_input_for_started_turn(
-                Some(&app.handle()),
+                Some(app.handle()),
                 Some(&store),
                 &session.id,
                 streaming_message_id,
@@ -4206,7 +3718,7 @@ mod moved_tests {
         );
 
         let missing_store = prompt_input_for_started_turn(
-            Some(&app.handle()),
+            Some(app.handle()),
             None,
             "session-1",
             "agent-2",
@@ -4230,7 +3742,7 @@ mod moved_tests {
             .unwrap();
         let broken_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
         let storage_failure = prompt_input_for_started_turn(
-            Some(&broken_app.handle()),
+            Some(broken_app.handle()),
             Some(&broken_store),
             "session-1",
             "agent-3",
@@ -4311,7 +3823,7 @@ mod moved_tests {
 
         storage.reset_message_read_count();
         let started_turn_prompt = prompt_input_for_started_turn(
-            Some(&app.handle()),
+            Some(app.handle()),
             Some(&store),
             &session.id,
             &agent_message.id,
@@ -4331,7 +3843,6 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock".to_string(),
-            models: vec![],
         }));
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -4406,7 +3917,6 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock".to_string(),
-            models: vec![],
         }));
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -4536,7 +4046,6 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock".to_string(),
-            models: vec![],
         }));
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -4818,7 +4327,6 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock".to_string(),
-            models: vec![],
         }));
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -4941,7 +4449,6 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock".to_string(),
-            models: vec![],
         }));
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -5449,7 +4956,6 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: CLAUDE_BACKEND_ID.to_string(),
-            models: vec![],
         }));
         registry.set_config(config);
         let registry = Arc::new(registry);
@@ -5498,11 +5004,9 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: CLAUDE_BACKEND_ID.to_string(),
-            models: vec![],
         }));
         registry.register(Arc::new(MockModelBackend {
             backend_id: CODEX_BACKEND_ID.to_string(),
-            models: vec![],
         }));
         registry.set_config(config);
         let registry = Arc::new(registry);
@@ -5556,11 +5060,9 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock-a".to_string(),
-            models: Vec::new(),
         }));
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock-b".to_string(),
-            models: Vec::new(),
         }));
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -5596,11 +5098,9 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock-a".to_string(),
-            models: Vec::new(),
         }));
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock-b".to_string(),
-            models: Vec::new(),
         }));
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -5632,7 +5132,6 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock-a".to_string(),
-            models: Vec::new(),
         }));
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -5685,7 +5184,6 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock-a".to_string(),
-            models: Vec::new(),
         }));
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
@@ -5852,7 +5350,6 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock-default".to_string(),
-            models: Vec::new(),
         }));
 
         let updated =
@@ -5949,7 +5446,7 @@ mod moved_tests {
             Arc::new(crate::usecase::agent_session::session::OpenTabRegistry::default());
 
         let response = init_agent_sessions_internal(
-            &app.handle(),
+            app.handle(),
             &session_store,
             &registry,
             &handles,
@@ -6261,7 +5758,6 @@ mod moved_tests {
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
             backend_id: "mock".to_string(),
-            models: vec![],
         }));
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));

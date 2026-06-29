@@ -41,7 +41,6 @@ impl PtySessionReadUsecase {
 mod tests {
     use super::*;
     use crate::domain::pty_session::entities::PtySessionSnapshot;
-    use crate::domain::pty_session::PtyKind;
     use crate::usecase::pty_session::dto::FoundPtySession;
 
     struct MockGateway {
@@ -75,7 +74,6 @@ mod tests {
             session_key: session_key.to_string(),
             worktree_path: Some("/repo".to_string()),
             label: None,
-            kind: PtyKind::Terminal,
             exited: false,
             exit_code: None,
         }

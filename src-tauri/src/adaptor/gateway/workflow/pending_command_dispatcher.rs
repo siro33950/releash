@@ -8,8 +8,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::adaptor::gateway::workflow::engine_error::{
-    classify_cli_mutation_rejection_reason, should_commit_rejected_external_request,
-    WorkflowEngineError,
+    should_commit_rejected_external_request, WorkflowEngineError,
 };
 use crate::adaptor::gateway::workflow::event::CliMutationRequestRecord;
 use crate::adaptor::gateway::workflow::pending_command::{
@@ -410,6 +409,7 @@ fn payload_to_runtime_dispatch(payload: PendingCommandPayload) -> PendingRuntime
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptor::gateway::workflow::engine_error::classify_cli_mutation_rejection_reason;
     use crate::adaptor::gateway::workflow::pending_command::CliRequestPayload;
     use std::sync::Mutex as StdMutex;
     use tempfile::TempDir;
@@ -441,11 +441,7 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct AbortRuntimeCall {
-        run_id: String,
-        expected_node_name: Option<String>,
-        commit_context: Option<CommandCommitContext>,
-    }
+    struct AbortRuntimeCall;
 
     #[derive(Debug)]
     struct SubmitRuntimeCall {
@@ -464,10 +460,6 @@ mod tests {
 
         fn reject_next_submit(&self, error: WorkflowEngineError) {
             *self.next_submit_error.lock().unwrap() = Some(error);
-        }
-
-        fn fail_next_append_context(&self, error: WorkflowEngineError) {
-            *self.next_append_context_error.lock().unwrap() = Some(error);
         }
     }
 
@@ -536,11 +528,8 @@ mod tests {
             expected_node_name: Option<&str>,
             commit_context: Option<CommandCommitContext>,
         ) -> Result<(), WorkflowEngineError> {
-            self.abort_calls.lock().unwrap().push(AbortRuntimeCall {
-                run_id: run_id.to_string(),
-                expected_node_name: expected_node_name.map(ToOwned::to_owned),
-                commit_context,
-            });
+            let _ = (run_id, expected_node_name, commit_context);
+            self.abort_calls.lock().unwrap().push(AbortRuntimeCall);
             match self.next_abort_error.lock().unwrap().take() {
                 Some(error) => Err(error),
                 None => Ok(()),

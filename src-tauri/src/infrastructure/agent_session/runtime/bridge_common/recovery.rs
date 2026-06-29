@@ -452,7 +452,7 @@ pub(super) fn run_bridge_eof_crash_transition_locked<F>(
     emit_stream: F,
 ) -> BridgeEofCrashTransition
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     if !generation_matches {
         return BridgeEofCrashTransition::default();
@@ -510,7 +510,7 @@ pub(super) fn finalize_turn_as_timeout_locked<F>(
     emit_stream: F,
 ) -> TurnCompleteTransition
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     if proc.turn_phase == TurnPhase::Idle {
         return TurnCompleteTransition::default();
@@ -545,7 +545,7 @@ pub(super) fn run_bridge_error_transition_locked<F>(
     emit_stream: F,
 ) -> BridgeErrorTransition
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     let was_initializing = proc.state == BridgeState::Initializing;
     if proc.state == BridgeState::Streaming {
@@ -793,16 +793,8 @@ async fn handle_stdout_bridge_error<R: tauri::Runtime>(
                 proc,
                 chat_session_id,
                 msg,
-                |mid, seq, snapshot, parts, snapshot_parts| {
-                    emit_streaming_delta(
-                        app,
-                        chat_session_id,
-                        mid,
-                        seq,
-                        snapshot,
-                        parts.to_vec(),
-                        snapshot_parts,
-                    )
+                |mid, seq, snapshot, parts| {
+                    emit_streaming_delta(app, chat_session_id, mid, seq, snapshot, parts.to_vec())
                 },
             )
         })
@@ -1208,7 +1200,7 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
                     generation_matches,
                     proc,
                     &csid_stdout,
-                    |mid, seq, snapshot, parts, snapshot_parts| {
+                    |mid, seq, snapshot, parts| {
                         emit_streaming_delta(
                             &app_stdout,
                             &csid_stdout,
@@ -1216,7 +1208,6 @@ pub(super) async fn spawn_bridge_process<R: tauri::Runtime>(
                             seq,
                             snapshot,
                             parts.to_vec(),
-                            snapshot_parts,
                         )
                     },
                 );
@@ -1360,7 +1351,7 @@ pub(super) fn run_timeout_finalize_transition_locked<F>(
     emit_stream: F,
 ) -> TimeoutFinalizeTransition
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> (bool, bool),
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     let timeout = match turn_watchdog_decision(proc, captured_gen_id, captured_turn_seq, now) {
         TurnWatchdogDecision::Timeout(timeout) => timeout,
@@ -1427,16 +1418,8 @@ pub(super) async fn finalize_timed_out_turn<R: tauri::Runtime>(
             captured_gen_id,
             captured_turn_seq,
             Instant::now(),
-            |mid, seq, snapshot, parts, snapshot_parts| {
-                emit_streaming_delta(
-                    app,
-                    chat_session_id,
-                    mid,
-                    seq,
-                    snapshot,
-                    parts.to_vec(),
-                    snapshot_parts,
-                )
+            |mid, seq, snapshot, parts| {
+                emit_streaming_delta(app, chat_session_id, mid, seq, snapshot, parts.to_vec())
             },
         );
     }
@@ -2067,7 +2050,7 @@ mod moved_tests {
                     generation_matches,
                     proc,
                     &session_id,
-                    |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+                    |_mid, _seq, _snapshot, _parts| true,
                 );
                 let should_evict = transition.should_evict;
                 assert!(should_evict);
@@ -2127,7 +2110,7 @@ mod moved_tests {
                 generation_matches,
                 proc,
                 &session_id,
-                |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+                |_mid, _seq, _snapshot, _parts| true,
             );
             assert!(transition.should_evict);
             let removed = retire_ready_eof_runtime_locked(&mut map, &session_id);
@@ -2478,14 +2461,14 @@ mod moved_tests {
             &mut proc,
             "csid",
             TurnLivenessTimeout::Stale,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         let effect = run_turn_complete_transition_locked(
             &mut proc,
             "csid",
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert!(!effect.turn_completed);
@@ -2527,7 +2510,7 @@ mod moved_tests {
             true,
             &mut proc,
             "csid",
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert_eq!(
@@ -2608,7 +2591,7 @@ mod moved_tests {
             true,
             &mut proc,
             "csid",
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert_eq!(proc.state, BridgeState::Crashed);
@@ -2643,7 +2626,7 @@ mod moved_tests {
             true,
             &mut proc,
             "csid",
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert_eq!(proc.state, BridgeState::Crashed);
@@ -2665,7 +2648,7 @@ mod moved_tests {
             true,
             &mut proc,
             "csid",
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         // Ready/Idle EOF leaves the state untouched but flags the runtime for eviction.
@@ -2688,7 +2671,7 @@ mod moved_tests {
             false,
             &mut proc,
             "csid",
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| (true, true),
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert_eq!(proc.state, BridgeState::Ready);
@@ -3545,11 +3528,9 @@ mod moved_tests {
             let mut registry = AgentBackendRegistry::new();
             registry.register(Arc::new(MockModelBackend {
                 backend_id: CLAUDE_BACKEND_ID.to_string(),
-                models: Vec::new(),
             }));
             registry.register(Arc::new(MockModelBackend {
                 backend_id: CODEX_BACKEND_ID.to_string(),
-                models: Vec::new(),
             }));
             registry.set_config(config);
             let registry = Arc::new(registry);

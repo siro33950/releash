@@ -120,7 +120,6 @@ pub struct AgentEditorSelection {
 }
 
 /// セッション開始時の共通設定。
-#[allow(dead_code)]
 pub struct SessionConfig {
     pub chat_session_id: String,
     pub cwd: String,
@@ -131,14 +130,12 @@ pub struct SessionConfig {
 }
 
 /// セッションのハンドル。バックエンド操作の識別子。
-#[allow(dead_code)]
 pub struct SessionHandle {
     pub chat_session_id: String,
     pub backend_id: String,
 }
 
 /// ユーザーメッセージ。
-#[allow(dead_code)]
 pub struct AgentMessage {
     pub content: String,
     pub system_prompt: Option<String>,
@@ -199,17 +196,14 @@ impl From<&str> for AgentRuntimeError {
 }
 
 /// ツール実行許可への応答。
-#[allow(dead_code)]
 pub struct PermissionResponse {
     pub request_id: String,
     pub behavior: String,
-    pub message: Option<String>,
     pub updated_input: Option<String>,
 }
 
 /// エージェントバックエンドの共通インターフェース。
 /// 全てのバックエンド実装がこの trait を満たす。
-#[allow(dead_code)]
 #[async_trait]
 pub trait AgentBackend: Send + Sync {
     /// バックエンドの一意識別子。
@@ -299,23 +293,6 @@ pub trait AgentBackend: Send + Sync {
         ))
     }
 
-    /// Runtime-owned named permission profile update for already-started sessions.
-    async fn set_permission_profile(
-        &self,
-        session: &SessionHandle,
-        cwd: &str,
-        permission_mode: &str,
-        permission_profile_id: Option<&str>,
-    ) -> Result<(), String> {
-        let _ = cwd;
-        let _ = permission_mode;
-        let _ = permission_profile_id;
-        Err(format!(
-            "Backend '{}' does not expose runtime permission profiles",
-            session.backend_id
-        ))
-    }
-
     /// バックエンドが選択肢として提供する固定モデル一覧。
     /// `Some` を返すバックエンドは config.toml を参照せず、この一覧を
     /// 表示・検証・モデル解決の供給元とする（完全固定）。
@@ -331,9 +308,6 @@ pub trait AgentBackend: Send + Sync {
     ) -> BackendRuntimeConfig {
         BackendRuntimeConfig::default()
     }
-
-    /// セッションを終了する。
-    async fn close_session(&self, session: &SessionHandle) -> Result<(), String>;
 }
 
 /// バックエンドの登録・取得・一覧を管理するレジストリ。
@@ -587,7 +561,7 @@ pub fn list_agent_backends(registry: State<'_, Arc<AgentBackendRegistry>>) -> Ba
 }
 
 /// config.toml `[agents]` セクションからレジストリを構築する。
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn build_registry(config: Arc<dyn AgentConfigRepository>) -> AgentBackendRegistry {
     build_registry_inner(config, None, None)
 }
@@ -694,9 +668,6 @@ mod tests {
             _session: &SessionHandle,
             _response: PermissionResponse,
         ) -> Result<(), String> {
-            Ok(())
-        }
-        async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
             Ok(())
         }
     }

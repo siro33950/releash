@@ -23,10 +23,9 @@ pub use failure::{
 };
 pub use ids::{NodeName, RunId, WorkflowName, WorktreePath};
 pub use outcome_commit_mode::OutcomeCommitMode;
-pub use run::{
-    RunListFilter, RunStatus, RunStatusFilter, TerminalRunStatus, TriggerSource, WorkflowRunRecord,
-    WorkflowRunSummary,
-};
+#[cfg(test)]
+pub use run::WorkflowRunRecord;
+pub use run::{RunListFilter, RunStatus, RunStatusFilter, TriggerSource, WorkflowRunSummary};
 pub use state::{ApprovalOperations, WorkflowExecutionState, WorkflowStateSnapshot};
 pub use step_output::{
     default_step_entry_state, ChildOutputSnapshot, ParallelStepState, StepHistoryEntry, StepOutput,

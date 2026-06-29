@@ -1,22 +1,30 @@
-//! Workflow execution aggregate.
+//! Test-only workflow execution aggregate plus shared execution projection helpers.
 //!
-//! The aggregate owns execution-state invariants. Runtime effects such as
-//! starting agent sessions, appending logs, broadcasting state, or touching
-//! the filesystem remain outside this module.
+//! The stateful `WorkflowExecution` aggregate in this module is retained for
+//! domain unit tests. Production execution state is owned by the workflow
+//! gateway runtime state; pure validation lives in workflow services.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::domain::workflow::services::{contract, history, parallel, projection};
+#[cfg(test)]
+use crate::domain::workflow::services::{contract, history, parallel, projection, validation};
+#[cfg(test)]
 use crate::domain::workflow::value_objects::{
-    ApprovalOperations, NodeDefinition, NodeType, ParallelAggregate, RunId, StepHistoryEntry,
-    StepOutput, TokenUsage, WorkflowDefinition, WorkflowExecutionState, WorkflowStateSnapshot,
-    WorkflowStepFailureKind, WorktreePath, STEP_STATE_COMPLETED, STEP_STATE_FAILED,
-    STEP_STATE_INTERRUPTED, STEP_STATE_PENDING, STEP_STATE_RUNNING,
+    ApprovalOperations, NodeDefinition, NodeType, RunId, StepOutput, WorkflowStateSnapshot,
+    WorktreePath,
+};
+use crate::domain::workflow::value_objects::{
+    ParallelAggregate, StepHistoryEntry, TokenUsage, WorkflowDefinition, WorkflowExecutionState,
+    WorkflowStepFailureKind, STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_INTERRUPTED,
+    STEP_STATE_PENDING, STEP_STATE_RUNNING,
 };
 use crate::domain::workflow::FailureDisposition;
+#[cfg(test)]
 use crate::domain::workflow::WorkflowError;
 
+/// Test-only stateful aggregate used by domain unit tests.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub struct WorkflowExecution {
     id: RunId,
     workflow: WorkflowDefinition,
@@ -66,6 +74,7 @@ pub enum ParallelChildState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub struct NodeCompletion {
     pub node_name: String,
     pub result: Option<String>,
@@ -78,6 +87,7 @@ pub struct NodeCompletion {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub struct ParallelChildCompletion {
     pub child_node_name: String,
     pub result: Option<String>,
@@ -88,6 +98,7 @@ pub struct ParallelChildCompletion {
     pub completed_at: f64,
 }
 
+#[cfg(test)]
 impl WorkflowExecution {
     pub fn new(
         id: RunId,
@@ -96,7 +107,7 @@ impl WorkflowExecution {
         task: Option<String>,
         started_at: f64,
     ) -> Result<Self, WorkflowError> {
-        Self::validate_workflow_shape(&workflow)?;
+        validation::validate_workflow_shape(&workflow)?;
         let first_step_name = workflow
             .nodes
             .first()
@@ -122,49 +133,8 @@ impl WorkflowExecution {
         })
     }
 
-    pub fn validate_workflow_shape(workflow: &WorkflowDefinition) -> Result<(), WorkflowError> {
-        if workflow.nodes.is_empty() {
-            return Err(WorkflowError::validation("workflow has no nodes"));
-        }
-        if let Some(node) = workflow
-            .nodes
-            .iter()
-            .find(|node| matches!(node.node_type, NodeType::Bash))
-        {
-            return Err(WorkflowError::validation(format!(
-                "bash node '{}' is not executable in this milestone",
-                node.name
-            )));
-        }
-        Ok(())
-    }
-
-    pub fn id(&self) -> &RunId {
-        &self.id
-    }
-
-    pub fn workflow(&self) -> &WorkflowDefinition {
-        &self.workflow
-    }
-
-    pub fn state(&self) -> &WorkflowExecutionState {
-        &self.state
-    }
-
-    pub fn worktree_path(&self) -> &WorktreePath {
-        &self.worktree_path
-    }
-
     pub fn task(&self) -> Option<&str> {
         self.task.as_deref()
-    }
-
-    pub fn is_active(&self) -> bool {
-        self.state.is_active()
-    }
-
-    pub fn is_terminal(&self) -> bool {
-        self.state.is_terminal()
     }
 
     pub fn to_snapshot(&self) -> WorkflowStateSnapshot {
@@ -200,23 +170,6 @@ impl WorkflowExecution {
             started_at: self.started_at,
             updated_at: self.updated_at,
         }
-    }
-
-    pub fn record_node_started(
-        &mut self,
-        node_name: &str,
-        execution_count: u32,
-        timestamp: f64,
-    ) -> Result<(), WorkflowError> {
-        let index = self.node_index(node_name)?;
-        self.current_step_index = index;
-        self.step_execution_counts
-            .insert(node_name.to_string(), execution_count);
-        if matches!(self.state, WorkflowExecutionState::WaitingApproval) {
-            self.state = WorkflowExecutionState::Running;
-        }
-        self.updated_at = timestamp;
-        Ok(())
     }
 
     pub fn record_node_completed(
@@ -259,27 +212,6 @@ impl WorkflowExecution {
         self.state = WorkflowExecutionState::WaitingApproval;
         self.updated_at = timestamp;
         Ok(())
-    }
-
-    pub fn resolve_approval(&mut self, timestamp: f64) {
-        self.updated_at = timestamp;
-    }
-
-    pub fn complete_run(&mut self, total_token_usage: TokenUsage, timestamp: f64) {
-        self.state = WorkflowExecutionState::Completed;
-        self.terminal_total_token_usage = Some(total_token_usage);
-        self.parallel_run = None;
-        self.updated_at = timestamp;
-    }
-
-    pub fn fail_run(&mut self, reason: String, timestamp: f64) {
-        self.state = WorkflowExecutionState::Failed {
-            reason,
-            kind: WorkflowStepFailureKind::InfrastructureCrash,
-            retry_count: None,
-        };
-        self.parallel_run = None;
-        self.updated_at = timestamp;
     }
 
     pub fn abort_run(&mut self, timestamp: f64) {
@@ -416,11 +348,6 @@ impl WorkflowExecution {
             self.current_step_token_usage.add(usage);
         }
         self.updated_at = completion.completed_at;
-    }
-
-    pub fn complete_parallel(&mut self, timestamp: f64) {
-        self.parallel_run = None;
-        self.updated_at = timestamp;
     }
 
     pub fn submit_output(
@@ -569,7 +496,7 @@ mod aggregate_tests {
     use crate::domain::workflow::value_objects::{TransitionRule, WorkflowDefinition};
 
     fn run_id() -> RunId {
-        RunId::unchecked("00000000-0000-4000-8000-000000000001")
+        RunId::new("00000000-0000-4000-8000-000000000001").unwrap()
     }
 
     fn worktree() -> WorktreePath {

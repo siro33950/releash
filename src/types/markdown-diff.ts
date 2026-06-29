@@ -1,4 +1,4 @@
-export type DiffRangeType = "added" | "modified" | "deleted";
+type DiffRangeType = "added" | "modified" | "deleted";
 
 export interface DiffRange {
 	startLine: number;

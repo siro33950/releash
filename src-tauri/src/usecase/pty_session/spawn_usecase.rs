@@ -1,5 +1,5 @@
-use crate::domain::pty_session::{entities::PtySession, PtyEvictReason, PtyKind};
-use crate::usecase::pty_session::dto::{pty_kind_to_wire, GetOrSpawnPtyResult};
+use crate::domain::pty_session::{entities::PtySession, PtyEvictReason};
+use crate::usecase::pty_session::dto::GetOrSpawnPtyResult;
 use crate::usecase::pty_session::error::UsecaseError;
 use crate::usecase::pty_session::ports::{PtyBackendSpawnRequest, PtySessionGateway};
 
@@ -12,7 +12,6 @@ pub fn spawn<G: PtySessionGateway>(
     cwd: Option<String>,
     worktree_path: Option<String>,
     label: Option<String>,
-    kind: PtyKind,
 ) -> Result<(u64, String), UsecaseError> {
     let reservation = manager
         .reserve_spawn_slot(worktree_path.as_deref(), manager.now_ms())
@@ -38,7 +37,7 @@ pub fn spawn<G: PtySessionGateway>(
     };
 
     manager.insert_session(
-        PtySession::new(pty_id, session_key.clone(), worktree_path, label, kind),
+        PtySession::new(pty_id, session_key.clone(), worktree_path, label),
         runtime,
     );
     manager.record_activity(pty_id, manager.now_ms());
@@ -108,7 +107,6 @@ pub fn get_or_spawn<G: PtySessionGateway>(
     session_key: Option<String>,
     worktree_path: String,
     label: Option<String>,
-    kind: PtyKind,
 ) -> Result<GetOrSpawnPtyResult, UsecaseError> {
     if let Some(key) = &session_key {
         if let Some(found) = manager.find_by_session_key(key) {
@@ -129,7 +127,6 @@ pub fn get_or_spawn<G: PtySessionGateway>(
                 is_exited: found.snapshot.exited,
                 exit_code: found.snapshot.exit_code,
                 label: found.snapshot.label,
-                kind: pty_kind_to_wire(found.snapshot.kind).to_string(),
             });
         }
     }
@@ -142,7 +139,6 @@ pub fn get_or_spawn<G: PtySessionGateway>(
         cwd,
         Some(worktree_path),
         label.clone(),
-        kind,
     )?;
 
     Ok(GetOrSpawnPtyResult {
@@ -154,7 +150,6 @@ pub fn get_or_spawn<G: PtySessionGateway>(
         is_exited: false,
         exit_code: None,
         label,
-        kind: pty_kind_to_wire(kind).to_string(),
     })
 }
 
@@ -218,7 +213,6 @@ mod tests {
                 session_key.to_string(),
                 Some(worktree_path.to_string()),
                 None,
-                PtyKind::Terminal,
             ));
             registry.record_activity(pty_id, activity_ms);
             pty_id
@@ -428,10 +422,6 @@ mod tests {
             Ok(())
         }
 
-        fn get_pty_size(&self, _pty_id: u64) -> Result<(u16, u16), UsecaseError> {
-            Ok((80, 24))
-        }
-
         fn kill_runtime(&self, pty_id: u64) -> Result<(), UsecaseError> {
             self.killed.lock().unwrap().push(pty_id);
             if self.fail_kill_runtime.load(Ordering::SeqCst) {
@@ -465,7 +455,6 @@ mod tests {
             None,
             "/repo".to_string(),
             Some("dev".to_string()),
-            PtyKind::Terminal,
         )
         .unwrap();
 
@@ -489,7 +478,6 @@ mod tests {
             None,
             "/repo".to_string(),
             None,
-            PtyKind::Terminal,
         )
         .unwrap();
 
@@ -519,7 +507,6 @@ mod tests {
             None,
             "/repo".to_string(),
             None,
-            PtyKind::Terminal,
         );
 
         assert!(matches!(result, Err(UsecaseError::CapReached(_))));
@@ -545,7 +532,6 @@ mod tests {
             None,
             "/repo".to_string(),
             None,
-            PtyKind::Terminal,
         );
 
         assert!(matches!(result, Err(UsecaseError::CapReached(_))));
@@ -572,7 +558,6 @@ mod tests {
             None,
             "/repo".to_string(),
             None,
-            PtyKind::Terminal,
         );
 
         assert!(matches!(result, Err(UsecaseError::Gateway(_))));
@@ -587,7 +572,6 @@ mod tests {
             None,
             "/repo".to_string(),
             None,
-            PtyKind::Terminal,
         )
         .unwrap();
 
@@ -611,7 +595,6 @@ mod tests {
             None,
             "/repo".to_string(),
             None,
-            PtyKind::Terminal,
         );
 
         assert!(matches!(result, Err(UsecaseError::Gateway(_))));
@@ -638,7 +621,6 @@ mod tests {
             None,
             "/repo".to_string(),
             None,
-            PtyKind::Terminal,
         );
 
         assert!(matches!(result, Err(UsecaseError::Gateway(_))));
@@ -665,7 +647,6 @@ mod tests {
             None,
             "/repo".to_string(),
             None,
-            PtyKind::Terminal,
         );
 
         assert!(matches!(
@@ -701,7 +682,6 @@ mod tests {
             Some("key-1".to_string()),
             "/repo".to_string(),
             None,
-            PtyKind::Terminal,
         )
         .unwrap();
 
@@ -727,7 +707,6 @@ mod tests {
             Some("key-1".to_string()),
             "/other".to_string(),
             None,
-            PtyKind::Terminal,
         );
 
         assert!(matches!(result, Err(UsecaseError::Gateway(_))));

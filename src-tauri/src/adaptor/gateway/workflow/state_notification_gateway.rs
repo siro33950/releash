@@ -4,9 +4,7 @@ use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 
 use crate::adaptor::presenter::workflow::WorkflowStateProjection;
-use crate::adaptor::protocol::workflow::{
-    WorkflowStateSync, WorkflowStateView, WorkflowStepRuntimeState,
-};
+use crate::adaptor::protocol::workflow::{WorkflowStateView, WorkflowStepRuntimeState};
 use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::usecase::agent_session::session::OpenTabRegistry;
 
@@ -29,17 +27,6 @@ fn emit_workflow_state_view<R: tauri::Runtime>(
             workflow_state: view,
         },
     );
-    let broadcaster = app
-        .try_state::<Arc<crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster>>()
-        .map(|state| state.inner().clone());
-    if let Some(broadcaster) = &broadcaster {
-        broadcaster.try_send(crate::adaptor::protocol::WsMessage::WorkflowStateSync(
-            Box::new(WorkflowStateSync {
-                worktree_path: worktree_path.to_string(),
-                workflow_state: view.clone(),
-            }),
-        ));
-    }
 }
 
 async fn collect_runtime_session_sets(
@@ -138,9 +125,6 @@ pub(crate) async fn emit_workflow_state_from_snapshot<R: tauri::Runtime>(
     let updated_at = state.updated_at;
     let view = build_workflow_state_view_from_snapshot(state, handles, open_tabs).await;
     emit_workflow_state_view(app, worktree_path, &view);
-    let broadcaster = app
-        .try_state::<Arc<crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster>>()
-        .map(|state| state.inner().clone());
     if let Some(center) =
         app.try_state::<Arc<crate::usecase::agent_session::status::AgentStatusCenter>>()
     {
@@ -150,11 +134,7 @@ pub(crate) async fn emit_workflow_state_from_snapshot<R: tauri::Runtime>(
             &workflow_execution_state,
             step_session_projections,
         ) {
-            crate::adaptor::presenter::agent_status::emit_agent_status_changes(
-                app,
-                broadcaster.as_deref(),
-                changes,
-            );
+            crate::adaptor::presenter::agent_status::emit_agent_status_changes(app, changes);
         }
         let changes = center.update_workflow_snapshot(
             worktree_path,
@@ -162,11 +142,7 @@ pub(crate) async fn emit_workflow_state_from_snapshot<R: tauri::Runtime>(
             workflow_agent_state,
             updated_at,
         );
-        crate::adaptor::presenter::agent_status::emit_agent_status_changes(
-            app,
-            broadcaster.as_deref(),
-            changes,
-        );
+        crate::adaptor::presenter::agent_status::emit_agent_status_changes(app, changes);
     }
 }
 
@@ -180,9 +156,6 @@ pub(crate) async fn emit_workflow_state_snapshot<R: tauri::Runtime>(
     else {
         return;
     };
-    let broadcaster = app
-        .try_state::<Arc<crate::adaptor::gateway::shared::ws_broadcaster::WsBroadcaster>>()
-        .map(|state| state.inner().clone());
     let handles = app.try_state::<Arc<Mutex<AgentProcessMap>>>();
     let open_tabs = app.try_state::<Arc<OpenTabRegistry>>();
     let (active_sessions, open_sessions) = collect_runtime_session_sets(
@@ -209,11 +182,7 @@ pub(crate) async fn emit_workflow_state_snapshot<R: tauri::Runtime>(
         &workflow_execution_state,
         step_session_projections,
     ) {
-        crate::adaptor::presenter::agent_status::emit_agent_status_changes(
-            app,
-            broadcaster.as_deref(),
-            changes,
-        );
+        crate::adaptor::presenter::agent_status::emit_agent_status_changes(app, changes);
     }
 
     let workflow_agent_state =
@@ -226,9 +195,5 @@ pub(crate) async fn emit_workflow_state_snapshot<R: tauri::Runtime>(
         workflow_agent_state,
         workflow_state.updated_at,
     );
-    crate::adaptor::presenter::agent_status::emit_agent_status_changes(
-        app,
-        broadcaster.as_deref(),
-        changes,
-    );
+    crate::adaptor::presenter::agent_status::emit_agent_status_changes(app, changes);
 }

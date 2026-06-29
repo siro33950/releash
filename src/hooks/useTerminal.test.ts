@@ -1,12 +1,10 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	createBoundedPtyOutputQueue,
-	MAX_INITIAL_REFETCH,
-	QUEUED_INITIAL_OUTPUT_MAX_BYTES,
-	QUEUED_INITIAL_OUTPUT_MAX_ITEMS,
-	useTerminal,
-} from "./useTerminal";
+import { useTerminal } from "./useTerminal";
+
+const MAX_INITIAL_REFETCH = 5;
+const QUEUED_INITIAL_OUTPUT_MAX_BYTES = 64 * 1024;
+const QUEUED_INITIAL_OUTPUT_MAX_ITEMS = 256;
 
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
@@ -147,7 +145,6 @@ describe("useTerminal", () => {
 				sessionKey: null,
 				worktreePath: "",
 				label: null,
-				kind: "terminal",
 			});
 		});
 	});
@@ -625,23 +622,6 @@ describe("useTerminal", () => {
 				"Failed to initialize terminal: PTY cap reached for worktree /repo",
 			);
 		});
-	});
-
-	it("initial output queue is bounded by item count and bytes", () => {
-		const queue = createBoundedPtyOutputQueue();
-		const payload = "x".repeat(1024);
-
-		for (
-			let sequence = 1;
-			sequence <= QUEUED_INITIAL_OUTPUT_MAX_ITEMS * 4;
-			sequence += 1
-		) {
-			queue.enqueue({ pty_id: 1, data: payload, sequence });
-		}
-
-		expect(queue.size()).toBeLessThanOrEqual(QUEUED_INITIAL_OUTPUT_MAX_ITEMS);
-		expect(queue.bytes()).toBeLessThanOrEqual(QUEUED_INITIAL_OUTPUT_MAX_BYTES);
-		expect(queue.hasDropped()).toBe(true);
 	});
 
 	it("ユーザー入力時に write_pty が呼び出される", async () => {

@@ -5,7 +5,6 @@ use tauri::{AppHandle, State};
 
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
-use crate::domain::pty_session::services::parse_pty_kind;
 use crate::usecase::pty_session::dto::{
     GetOrSpawnPtyResult, GetPtyBufferedOutputResult, PtySessionAvailability, PtySessionInfo,
 };
@@ -111,9 +110,7 @@ pub fn get_or_spawn_pty(
     session_key: Option<String>,
     worktree_path: String,
     label: Option<String>,
-    kind: Option<String>,
 ) -> Result<GetOrSpawnPtyResult, PtyCommandError> {
-    let pty_kind = parse_pty_kind(kind.as_deref());
     crate::usecase::pty_session::spawn_usecase::get_or_spawn(
         state.inner().as_ref(),
         &app,
@@ -123,7 +120,6 @@ pub fn get_or_spawn_pty(
         session_key,
         worktree_path,
         label,
-        pty_kind,
     )
     .map_err(PtyCommandError::from)
 }

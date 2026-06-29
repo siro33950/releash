@@ -48,7 +48,6 @@ pub fn sync_worktree_step_statuses(
 ) {
     crate::adaptor::presenter::agent_status::emit_worktree_step_status_snapshot(
         &app,
-        None,
         center.inner().as_ref(),
         &worktree_path,
     );

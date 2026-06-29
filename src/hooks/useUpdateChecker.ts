@@ -2,14 +2,9 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export type UpdateStatus =
-	| "idle"
-	| "checking"
-	| "available"
-	| "downloading"
-	| "error";
+type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "error";
 
-export interface UpdateInfo {
+interface UpdateInfo {
 	version: string;
 	notes: string;
 }

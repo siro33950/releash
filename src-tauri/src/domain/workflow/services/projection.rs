@@ -7,9 +7,11 @@
 use crate::domain::workflow::services::approval_rules;
 use crate::domain::workflow::value_objects::{
     ApprovalOperations, NodeDefinition, ParallelStepState, StepHistoryEntry, TokenUsage,
-    WorkflowExecutionState, STEP_STATE_COMPLETED,
+    WorkflowExecutionState,
 };
 use crate::domain::workflow::ParallelRunState;
+#[cfg(test)]
+use crate::domain::workflow::STEP_STATE_COMPLETED;
 
 pub fn total_token_usage(step_history: &[StepHistoryEntry]) -> TokenUsage {
     let mut usage = TokenUsage::default();

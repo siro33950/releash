@@ -1,12 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { __resetTelemetryForTests } from "@/lib/telemetry";
 import { FrontendErrorBoundary } from "./ErrorBoundary";
 
 describe("FrontendErrorBoundary", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		__resetTelemetryForTests();
 	});
 
 	it("componentDidCatch から react_error をRustへ送る", () => {

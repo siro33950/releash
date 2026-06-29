@@ -142,14 +142,12 @@ impl HotPathMetric {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PayloadChannel {
     TauriEvent,
-    WebSocket,
 }
 
 impl PayloadChannel {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::TauriEvent => "tauri_event",
-            Self::WebSocket => "websocket",
         }
     }
 }
@@ -243,17 +241,14 @@ impl TurnContext {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum WarmPath {
     QueryDirect,
-    Prewarm,
 }
 
 impl WarmPath {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::QueryDirect => "query_direct",
-            Self::Prewarm => "prewarm",
         }
     }
 }

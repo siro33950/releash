@@ -78,34 +78,32 @@ pub(crate) use editor_gateway::NoopWorkflowExternalEditorGateway;
 pub(crate) use editor_gateway::TauriWorkflowExternalEditorGateway;
 pub(crate) use event_repository::WorkflowEventLogRepository;
 pub(crate) use facet_repository::WorkflowFacetFileRepository;
-pub(crate) use mapper::{domain_workflow_to_legacy, legacy_workflow_to_domain};
 pub(crate) use pending_command_watcher::spawn_pending_command_watcher;
 pub(crate) use pending_repository::{
     process_pending_workflow_command_entry, PendingWorkflowCommandFileRepository,
 };
 pub(crate) use run_repository::WorkflowRunFileRepository;
 pub(crate) use runtime_command_gateway::TauriWorkflowRuntimeCommandGateway;
-pub(crate) use runtime_resolver::{
-    AppConfigManagedWorktreeResolver, DefaultWorkflowDefinitionResolver,
-};
 #[cfg(test)]
 pub(crate) use secret_source_gateway::EmptySecretSourceGateway;
 pub(crate) use secret_source_gateway::WorkflowSecretSourceConfigGateway;
+#[cfg(test)]
+pub(crate) use state_notification_gateway::build_workflow_state_projection_from_snapshot;
 pub(crate) use state_notification_gateway::{
-    build_workflow_state_projection_from_snapshot, build_workflow_state_view_from_snapshot,
-    emit_workflow_state_from_snapshot, emit_workflow_state_snapshot,
+    build_workflow_state_view_from_snapshot, emit_workflow_state_from_snapshot,
+    emit_workflow_state_snapshot,
 };
 pub(crate) use state_projection_repository::WorkflowStateProjectionLogRepository;
 pub(crate) use step_detail_projection_repository::WorkflowStepDetailProjectionLogRepository;
 #[cfg(test)]
+pub(crate) use step_lifecycle_adapters::close_step_session_tab_state;
 pub(crate) use step_lifecycle_adapters::{
-    close_resolved_step_tab_state, close_step_session_tab_state,
-    should_release_runtime_on_tab_close, try_close_step_session_tab_state,
-};
-pub(crate) use step_lifecycle_adapters::{
-    hydrate_open_workflow_step_tabs, mark_started_step_tab_open, open_step_session_tab_state,
-    release_step_runtime_on_done, resolve_step_session_with_data_dir, TauriWorkflowStepLifecycle,
+    hydrate_open_workflow_step_tabs, mark_started_step_tab_open, release_step_runtime_on_done,
     TauriWorkflowStepLifecycleGateway,
+};
+#[cfg(test)]
+pub(crate) use step_lifecycle_adapters::{
+    open_step_session_tab_state, resolve_step_session_with_data_dir,
 };
 pub(crate) use workspace_session::StoredWorkspaceSessionGateway;
 #[cfg(test)]

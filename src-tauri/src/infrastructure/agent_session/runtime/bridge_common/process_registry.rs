@@ -63,7 +63,6 @@ pub struct AgentProcess {
     pub sdk_session_id: Option<String>,
     pub system_prompt_fingerprint: Option<String>,
     pub context_carry_on_ready: Option<ContextCarryState>,
-    #[cfg_attr(unix, allow(dead_code))]
     pub child: Child,
     pub generation_id: u64,
     #[cfg(unix)]
@@ -169,6 +168,8 @@ pub(crate) struct PendingStreamDelta {
     pub(crate) seq: u64,
     pub(crate) snapshot: bool,
     pub(crate) parts: Vec<MessagePart>,
+    /// Internal retry snapshot to resend after a failed emit. This is not
+    /// exposed through the Tauri event emission callback boundary.
     pub(crate) retry_snapshot_parts: Option<Vec<MessagePart>>,
     pub(crate) part_count: usize,
     pub(crate) pending_bytes: usize,

@@ -21,16 +21,6 @@ pub struct ResolvedFacets {
     pub input_contracts: Vec<String>,
 }
 
-impl ResolvedFacets {
-    pub fn is_empty(&self) -> bool {
-        self.policy.is_none()
-            && self.knowledge.is_none()
-            && self.instruction.is_none()
-            && self.output_contract.is_none()
-            && self.input_contracts.is_empty()
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum NodeType {
     #[default]

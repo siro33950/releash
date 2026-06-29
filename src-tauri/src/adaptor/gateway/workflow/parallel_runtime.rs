@@ -193,7 +193,6 @@ pub(crate) enum ParallelParentCompletionTransition {
 }
 
 pub(crate) struct ParallelParentCompletionPlan {
-    pub(crate) child_step_names: Vec<String>,
     pub(crate) parent_step_output: StepOutput,
     pub(crate) history_entry: crate::adaptor::gateway::workflow::state::StepHistoryEntry,
     pub(crate) transition: ParallelParentCompletionTransition,
@@ -304,6 +303,7 @@ pub(crate) async fn apply_reduce_transition_by_worktree(
 }
 
 /// aggregate条件を評価する。trueなら`then`、falseなら`else`。
+#[cfg(test)]
 pub(crate) fn evaluate_aggregate(
     aggregate: &ParallelAggregate,
     step_outputs: &HashMap<String, StepOutput>,
@@ -364,7 +364,6 @@ pub(crate) fn plan_parallel_parent_completion(
         },
     };
     ParallelParentCompletionPlan {
-        child_step_names: plan.child_step_names,
         parent_step_output: step_output_from_domain(plan.parent_step_output),
         history_entry: step_history_entry_from_domain(plan.history_entry),
         transition,

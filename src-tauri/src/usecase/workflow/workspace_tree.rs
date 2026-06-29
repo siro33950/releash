@@ -729,10 +729,6 @@ fn workflow_execution_state_representative(
     }
 }
 
-fn normalize_step_status(status: &str) -> &'static str {
-    RepresentativeStatus::from_status_str(status).as_str()
-}
-
 fn compare_session_nodes(
     a: &WorkspaceSessionNodeDto,
     b: &WorkspaceSessionNodeDto,
@@ -780,8 +776,8 @@ mod tests {
     use crate::domain::workflow::{
         ApprovalOperations, ChildOutputSnapshot, NodeDefinition, NodeType, ParallelStepState,
         StepHistoryEntry, TriggerSource, WorkflowDefinition, WorkflowExecutionState,
-        STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_PENDING,
-        STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
+        STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_RUNNING,
+        STEP_STATE_WAITING_APPROVAL,
     };
 
     fn session(id: &str, title: &str, workflow_step_session: bool) -> WorkspaceSessionInput {
@@ -1579,29 +1575,5 @@ mod tests {
         let history = project_workspace_workflow_history(vec![run("run-1", "Manual")], &archives);
         assert_eq!(history[0].run_id, "run-1");
         assert_eq!(history[0].archive_reason, WORKFLOW_ARCHIVE_REASON_MANUAL);
-    }
-
-    #[test]
-    fn normalize_step_status_keeps_known_and_unknown_mappings() {
-        assert_eq!(
-            normalize_step_status(STEP_STATE_RUNNING),
-            STEP_STATE_RUNNING
-        );
-        assert_eq!(
-            normalize_step_status(STEP_STATE_WAITING_APPROVAL),
-            "waiting"
-        );
-        assert_eq!(
-            normalize_step_status(STEP_STATE_COMPLETED),
-            STEP_STATE_COMPLETED
-        );
-        assert_eq!(normalize_step_status(STEP_STATE_FAILED), STEP_STATE_FAILED);
-        assert_eq!(
-            normalize_step_status(STEP_STATE_ABORTED),
-            STEP_STATE_ABORTED
-        );
-        assert_eq!(normalize_step_status(STEP_STATE_PENDING), "queued");
-        assert_eq!(normalize_step_status("queued"), "queued");
-        assert_eq!(normalize_step_status("unexpected"), "queued");
     }
 }

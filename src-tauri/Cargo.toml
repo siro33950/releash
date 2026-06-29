@@ -47,20 +47,11 @@ toml = "1.1"
 serde-saphyr = "0.0"
 rand = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "process"] }
-tokio-tungstenite = "0.29"
-hmac = "0.13.0"
 sha2 = "0.11"
 hex = "0.4"
-hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-http-body-util = "0.1"
 futures-util = "0.3"
 log = "0.4"
-qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 fs2 = "0.4"
-tokio-rustls = { version = "0.26", features = ["ring"] }
-rustls-pemfile = "2"
-rcgen = "0.14"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "blocking"] }
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }

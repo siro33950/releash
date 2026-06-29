@@ -1,6 +1,6 @@
 import type { PermissionMode } from "./session";
 
-export type JsonValue =
+type JsonValue =
 	| string
 	| number
 	| boolean
@@ -8,7 +8,7 @@ export type JsonValue =
 	| JsonValue[]
 	| { [key: string]: JsonValue };
 
-export interface TokenUsage {
+interface TokenUsage {
 	inputTokens: number;
 	outputTokens: number;
 }
@@ -18,15 +18,15 @@ export interface TokenUsage {
  * `"completed"` が既定（旧 ndjson 互換）。`"failed"` は partial child failure、
  * `"aborted"` は `RunAborted` で中断された step / parallel child を表現する。
  */
-export type StepEntryState = "completed" | "failed" | "aborted";
+type StepEntryState = "completed" | "failed" | "aborted";
 
-export type FailureDisposition =
+type FailureDisposition =
 	| "retryable"
 	| "partial"
 	| "terminal"
 	| "user-action-required";
 
-export interface ChildOutputSnapshot {
+interface ChildOutputSnapshot {
 	stepName: string;
 	sessionId?: string;
 	result?: string;
@@ -40,7 +40,7 @@ export interface ChildOutputSnapshot {
 	failureDisposition?: FailureDisposition;
 }
 
-export interface StepHistoryEntry {
+interface StepHistoryEntry {
 	stepName: string;
 	completedAt: number;
 	result: string | null;
@@ -53,7 +53,7 @@ export interface StepHistoryEntry {
 	state?: StepEntryState;
 }
 
-export type WorkflowStepFailureKind =
+type WorkflowStepFailureKind =
 	| "startup_timeout"
 	| "stale_runtime_timeout"
 	| "model_refusal"
@@ -62,7 +62,7 @@ export type WorkflowStepFailureKind =
 	| "user_abort"
 	| "infrastructure_crash";
 
-export type WorkflowExecutionState =
+type WorkflowExecutionState =
 	| { type: "running" }
 	| { type: "waiting_approval" }
 	| { type: "completed" }
@@ -74,19 +74,19 @@ export type WorkflowExecutionState =
 	  }
 	| { type: "aborted" };
 
-export interface TransitionRule {
+interface TransitionRule {
 	match: string;
 	next: string;
 }
 
-export interface CycleGuard {
+interface CycleGuard {
 	max_iterations: number;
 }
 
 // [02] Normalized Workflow: 旧 StepMode は廃止され、NodeType に統合された。
 export type NodeType = "agent" | "bash" | "approval" | "parallel";
 
-export interface AggregateConfig {
+interface AggregateConfig {
 	all_match?: string;
 	any_match?: string;
 	then: string;
@@ -98,7 +98,7 @@ export interface AggregateConfig {
 /// [02] schema 境界: Rust 側 `ChildNodeDefinition` と語彙を一致させるため、子 node には
 /// top-level 専用フィールド（`rules` / `cycle_guard` / `resets_cycle_for` / `collect` /
 /// `parallel_children` / `aggregate` / `command`）を持たせない。
-export interface ChildNodeDefinition {
+interface ChildNodeDefinition {
 	name: string;
 	type: NodeType;
 	policy?: string;
@@ -142,7 +142,7 @@ export interface NodeDefinition {
 	permission?: PermissionMode;
 }
 
-export interface CollectConfig {
+interface CollectConfig {
 	from: string[];
 	reduce: ReduceStrategy;
 }
@@ -161,7 +161,7 @@ export interface Workflow {
 	nodes: NodeDefinition[];
 }
 
-export interface StepOutput {
+interface StepOutput {
 	stepName: string;
 	runIndex: number;
 	sessionId?: string;
@@ -172,7 +172,7 @@ export interface StepOutput {
 	completedAt: number;
 }
 
-export interface ParallelStepState {
+interface ParallelStepState {
 	stepName: string;
 	state: string;
 	sessionId?: string;
@@ -185,7 +185,7 @@ export interface ParallelStepState {
 	failureDisposition?: FailureDisposition;
 }
 
-export interface WorkflowStepRuntimeState {
+interface WorkflowStepRuntimeState {
 	runtimeActive: boolean;
 	tabOpen: boolean;
 }
@@ -212,7 +212,7 @@ export interface WorkflowState {
 	approvalOperations?: ApprovalOperations;
 }
 
-export interface ApprovalOperations {
+interface ApprovalOperations {
 	canReject: boolean;
 }
 
@@ -237,198 +237,6 @@ export interface WorkflowStatePayload {
 	workflowState: WorkflowState;
 }
 
-/// spec issues-1023: backend `WorkflowEventView` の TypeScript 表現。
-///
-/// engine 側 domain `WorkflowEvent.timestamp` は秒単位 f64 だが、frontend 観測経路は
-/// projection 境界で `WorkflowEventView` に変換される（`timestampMs` /
-/// `requestedAtMs` で単位を明示）。`WorkflowEvent` という型名はこの view 型を指す。
-///
-/// NDJSON tag は snake_case（`run_started` / `node_started` 等）。`run_id` を主語とし、
-/// node 識別子は `node_name` で表す。表示用フォーマット以外のロジックはここに追加しない
-/// （rust-first-logic 準拠）。
-export type WorkflowEvent =
-	| {
-			event: "run_started";
-			run_id: string;
-			workflow_name: string;
-			workflow_file_stem: string;
-			worktree_path: string;
-			workflow_definition: Workflow;
-			timestampMs: number;
-	  }
-	| {
-			event: "node_started";
-			run_id: string;
-			workflow_name: string;
-			node_name: string;
-			execution_count: number;
-			timestampMs: number;
-	  }
-	| {
-			event: "step_session_started";
-			run_id: string;
-			workflow_name: string;
-			node_name: string;
-			session_id: string;
-			execution_count: number;
-			timestampMs: number;
-	  }
-	| {
-			event: "node_completed";
-			run_id: string;
-			workflow_name: string;
-			node_name: string;
-			result?: string;
-			session_id?: string;
-			token_usage?: TokenUsage;
-			structured_output?: JsonValue;
-			run_index?: number;
-			timestampMs: number;
-	  }
-	| {
-			event: "node_failed";
-			run_id: string;
-			workflow_name: string;
-			node_name: string;
-			reason: string;
-			failure_kind?: WorkflowStepFailureKind;
-			retry_count?: number;
-			timestampMs: number;
-	  }
-	| {
-			event: "approval_requested";
-			run_id: string;
-			workflow_name: string;
-			node_name: string;
-			timestampMs: number;
-	  }
-	| {
-			event: "approval_resolved";
-			run_id: string;
-			workflow_name: string;
-			node_name: string;
-			decision: "approve" | "reject" | "abort";
-			comment?: string;
-			timestampMs: number;
-	  }
-	| {
-			event: "run_completed";
-			run_id: string;
-			workflow_name: string;
-			total_token_usage: TokenUsage;
-			timestampMs: number;
-	  }
-	| {
-			event: "run_failed";
-			run_id: string;
-			workflow_name: string;
-			reason: string;
-			failure_kind?: WorkflowStepFailureKind;
-			retry_count?: number;
-			timestampMs: number;
-	  }
-	| {
-			event: "run_aborted";
-			run_id: string;
-			workflow_name: string;
-			timestampMs: number;
-	  }
-	| {
-			event: "cli_mutation_requested";
-			run_id: string;
-			workflow_name: string;
-			request_id: string;
-			request: CliMutationRequestRecord;
-			requestedAtMs: number;
-			timestampMs: number;
-	  }
-	| {
-			event: "output_collected";
-			run_id: string;
-			workflow_name: string;
-			node_name: string;
-			node_outputs: CollectedOutputEntry[];
-			reduce_strategy: string;
-			reduce_result?: string;
-			reduce_structured_output?: JsonValue;
-			timestampMs: number;
-	  }
-	| {
-			event: "contract_repair_requested";
-			run_id: string;
-			workflow_name: string;
-			node_name: string;
-			run_index: number;
-			request_id?: string;
-			attempt: number;
-			violation_reason: string;
-			timestampMs: number;
-	  }
-	| {
-			event: "parallel_started";
-			run_id: string;
-			workflow_name: string;
-			parent_node_name: string;
-			child_node_names: string[];
-			timestampMs: number;
-	  }
-	| {
-			event: "parallel_child_started";
-			run_id: string;
-			workflow_name: string;
-			parent_node_name: string;
-			child_node_name: string;
-			session_id: string;
-			execution_count: number;
-			timestampMs: number;
-	  }
-	| {
-			event: "parallel_child_completed";
-			run_id: string;
-			workflow_name: string;
-			parent_node_name: string;
-			child_node_name: string;
-			result?: string;
-			session_id: string;
-			token_usage?: TokenUsage;
-			structured_output?: JsonValue;
-			run_index: number;
-			state?: StepEntryState;
-			failure_kind?: WorkflowStepFailureKind;
-			failure_disposition?: FailureDisposition;
-			timestampMs: number;
-	  }
-	| {
-			event: "parallel_completed";
-			run_id: string;
-			workflow_name: string;
-			parent_node_name: string;
-			aggregate_result: string;
-			timestampMs: number;
-	  };
-
-export type CliMutationRequestRecord =
-	| {
-			kind: "approve";
-			node_name?: string | null;
-			comment?: string | null;
-	  }
-	| {
-			kind: "reject";
-			node_name?: string | null;
-			reason: string;
-	  }
-	| {
-			kind: "abort";
-			node_name?: string | null;
-	  };
-
-export interface CollectedOutputEntry {
-	nodeName: string;
-	result?: string;
-	structuredOutput?: JsonValue;
-}
-
 export type WorkflowSummary = {
 	name: string;
 	description: string;
@@ -445,7 +253,7 @@ export interface FacetSummary {
 	builtin: boolean;
 }
 
-export type DiagnosticSeverity = "error" | "warning" | "info";
+type DiagnosticSeverity = "error" | "warning" | "info";
 
 export interface DiagnosticItem {
 	severity: DiagnosticSeverity;
@@ -463,7 +271,7 @@ export interface DiagnosticSummary {
 	info_count: number;
 }
 
-export interface FacetUsageEntry {
+interface FacetUsageEntry {
 	workflow_name: string;
 	step_name: string;
 	slot: string;

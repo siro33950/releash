@@ -45,6 +45,7 @@ impl PendingWorkflowCommandRepository for PendingWorkflowCommandFileRepository {
             .map_err(|e| WorkflowError::external(e.to_string()))
     }
 
+    #[cfg(test)]
     fn list_pending(&self) -> Result<Vec<PendingWorkflowCommand>, WorkflowError> {
         self.store()
             .list_pending()
@@ -63,6 +64,7 @@ impl PendingWorkflowCommandRepository for PendingWorkflowCommandFileRepository {
             .collect()
     }
 
+    #[cfg(test)]
     fn mark_processed(&self, command_id: &str) -> Result<(), WorkflowError> {
         let store = self.store();
         for entry in store

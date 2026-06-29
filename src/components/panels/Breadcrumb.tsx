@@ -1,7 +1,7 @@
 import { FileIcon, FolderIcon } from "@react-symbols/icons/utils";
 import { ChevronRight } from "lucide-react";
 
-export interface BreadcrumbSegment {
+interface BreadcrumbSegment {
 	name: string;
 	isFile: boolean;
 }

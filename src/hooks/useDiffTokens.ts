@@ -1,7 +1,7 @@
 import type { TokenizedLine } from "@/hooks/useShikiHighlighter";
 import type { Hunk } from "@/lib/computeHunks";
 
-export type DiffLineType = "added" | "deleted" | "context";
+type DiffLineType = "added" | "deleted" | "context";
 
 export interface DiffLine {
 	type: DiffLineType;

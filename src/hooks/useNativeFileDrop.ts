@@ -12,7 +12,7 @@ interface UseNativeFileDropOptions {
 
 export type DropZoneType = "editor" | "agent";
 
-export function resolveZone(
+function resolveZone(
 	zones: Map<DropZoneType, HTMLElement>,
 	target: EventTarget | null,
 ): DropZoneType | null {
@@ -25,9 +25,7 @@ export function resolveZone(
 	return null;
 }
 
-export function hasVisibleZones(
-	zones: Map<DropZoneType, HTMLElement>,
-): boolean {
+function hasVisibleZones(zones: Map<DropZoneType, HTMLElement>): boolean {
 	for (const element of zones.values()) {
 		const rect = element.getBoundingClientRect();
 		if (rect.width > 0 && rect.height > 0) return true;

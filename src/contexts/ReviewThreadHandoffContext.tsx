@@ -24,7 +24,7 @@ export interface ReviewThreadHandoffContextValue {
  * Provider 配下ではない context を差し込めるよう export する (テスト用)。
  * 通常は `ReviewThreadHandoffProvider` を使う。
  */
-export const ReviewThreadHandoffContext =
+const ReviewThreadHandoffContext =
 	createContext<ReviewThreadHandoffContextValue | null>(null);
 
 interface ProviderProps {
