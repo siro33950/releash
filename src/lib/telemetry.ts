@@ -72,16 +72,3 @@ export function installFrontendErrorHandlers(): void {
 	window.addEventListener("error", errorHandler);
 	window.addEventListener("unhandledrejection", rejectionHandler);
 }
-
-export function __resetTelemetryForTests(): void {
-	if (typeof window !== "undefined") {
-		if (errorHandler) window.removeEventListener("error", errorHandler);
-		if (rejectionHandler) {
-			window.removeEventListener("unhandledrejection", rejectionHandler);
-		}
-	}
-	mountedXtermCount = 0;
-	errorHandlersInstalled = false;
-	errorHandler = null;
-	rejectionHandler = null;
-}

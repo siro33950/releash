@@ -2,7 +2,7 @@ import type { ContextCarryState } from "./session";
 
 export type AgentState = "running" | "done" | "error" | "waiting";
 
-export interface AgentSupportedCommandMsg {
+interface AgentSupportedCommandMsg {
 	name: string;
 	description: string;
 	argumentHint?: string;
@@ -21,29 +21,22 @@ export interface AgentSessionContextCarryUpdated {
 }
 
 export type ReviewActorKind = "human" | "agent";
-export type ReviewThreadState = "open" | "resolved";
-export type ReviewErrorCode =
-	| "invalid_input"
-	| "not_found"
-	| "already_resolved"
-	| "permission_denied"
-	| "io"
-	| "serialize";
+type ReviewThreadState = "open" | "resolved";
 
-export interface ReviewActor {
+interface ReviewActor {
 	kind: ReviewActorKind;
 	backendId?: string | null;
 	model?: string | null;
 	displayName: string;
 }
 
-export interface ReviewTarget {
+interface ReviewTarget {
 	filePath?: string | null;
 	lineNumber?: number | null;
 	endLine?: number | null;
 }
 
-export interface ReviewComment {
+interface ReviewComment {
 	id: string;
 	threadId: string;
 	author: ReviewActor;
@@ -51,7 +44,7 @@ export interface ReviewComment {
 	createdAt: number;
 }
 
-export interface ReviewResolveInfo {
+interface ReviewResolveInfo {
 	actor: ReviewActor;
 	outcome: string;
 	summary: string;
@@ -71,48 +64,3 @@ export interface ReviewThread {
 	version: number;
 	canResolve: boolean;
 }
-
-export type AuthorScope = "mine" | "other";
-
-export interface ReviewThreadFilter {
-	file?: string | null;
-	state?: ReviewThreadState | null;
-	author?: AuthorScope | null;
-	unread?: boolean | null;
-	threadId?: string[];
-}
-
-export interface ReviewErrorPayload {
-	code: ReviewErrorCode;
-	message: string;
-}
-
-export type ReviewHistoryEntry =
-	| {
-			kind: "thread_created";
-			id: string;
-			threadId: string;
-			commentId: string;
-			actor: ReviewActor;
-			target: ReviewTarget;
-			content: string;
-			at: number;
-	  }
-	| {
-			kind: "comment_appended";
-			id: string;
-			threadId: string;
-			commentId: string;
-			actor: ReviewActor;
-			content: string;
-			at: number;
-	  }
-	| {
-			kind: "thread_resolved";
-			id: string;
-			threadId: string;
-			actor: ReviewActor;
-			outcome: string;
-			summary: string;
-			at: number;
-	  };

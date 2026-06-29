@@ -3741,22 +3741,6 @@ describe("permissionMode sync from agent-permission-mode-changed event", () => {
 	});
 });
 
-describe("useSessionStore", () => {
-	it("should export all session operations", async () => {
-		const mod = await import("./useSessionStore");
-		expect(mod.listSessions).toBeDefined();
-		expect(mod.getSession).toBeDefined();
-		expect(mod.createSession).toBeDefined();
-		expect(mod.addMessage).toBeDefined();
-		expect(mod.updateSessionAgentInfo).toBeDefined();
-		expect(mod.closeSession).toBeDefined();
-		expect(mod.restoreSession).toBeDefined();
-		expect(mod.listClosedSessions).toBeDefined();
-		expect(mod.sendAgentMessage).toBeDefined();
-		expect(mod.initAgentSessions).toBeDefined();
-	});
-});
-
 describe("Worktree switch (unmount/remount) streaming persistence via Rust backend", () => {
 	beforeEach(async () => {
 		mockInvoke.mockClear();

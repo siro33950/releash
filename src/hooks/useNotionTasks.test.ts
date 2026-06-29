@@ -1,7 +1,9 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { NotionTaskFilters } from "./useNotionTasks";
-import { DEBOUNCE_MS, useNotionTasks } from "./useNotionTasks";
+import { useNotionTasks } from "./useNotionTasks";
+
+const DEBOUNCE_MS = 300;
 
 describe("useNotionTasks", () => {
 	it("should invoke query_notion_tasks on mount", async () => {

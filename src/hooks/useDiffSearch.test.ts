@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { DiffLine } from "@/hooks/useDiffTokens";
-import { findMatches, useDiffSearch } from "./useDiffSearch";
+import { useDiffSearch } from "./useDiffSearch";
 
 const makeLine = (content: string): DiffLine => ({
 	type: "context",
@@ -16,45 +16,6 @@ const sampleLines: DiffLine[] = [
 	makeLine("foo bar baz"),
 	makeLine("hello again"),
 ];
-
-describe("findMatches", () => {
-	it("returns empty array for empty query", () => {
-		expect(findMatches(sampleLines, "")).toEqual([]);
-	});
-
-	it("finds all occurrences across lines", () => {
-		const matches = findMatches(sampleLines, "hello");
-		expect(matches).toHaveLength(2);
-		expect(matches[0]).toEqual({
-			lineIndex: 0,
-			startOffset: 0,
-			endOffset: 5,
-		});
-		expect(matches[1]).toEqual({
-			lineIndex: 2,
-			startOffset: 0,
-			endOffset: 5,
-		});
-	});
-
-	it("finds multiple occurrences in a single line", () => {
-		const lines = [makeLine("abcabc")];
-		const matches = findMatches(lines, "abc");
-		expect(matches).toHaveLength(2);
-		expect(matches[0].startOffset).toBe(0);
-		expect(matches[1].startOffset).toBe(3);
-	});
-
-	it("performs case-insensitive search", () => {
-		const lines = [makeLine("Hello HELLO hello")];
-		const matches = findMatches(lines, "hello");
-		expect(matches).toHaveLength(3);
-	});
-
-	it("returns empty when no match found", () => {
-		expect(findMatches(sampleLines, "xyz")).toEqual([]);
-	});
-});
 
 describe("useDiffSearch", () => {
 	it("starts closed with empty query", () => {

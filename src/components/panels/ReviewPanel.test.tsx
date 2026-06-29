@@ -61,10 +61,6 @@ vi.mock("@/hooks/useReviewPanel", () => ({
 	}),
 }));
 
-vi.mock("@/hooks/useBranchDiffFiles", () => ({
-	useBranchDiffFiles: vi.fn().mockReturnValue({ files: [] }),
-}));
-
 vi.mock("@/hooks/useReviewSnapshot", () => ({
 	useReviewSnapshot: vi.fn().mockReturnValue({
 		files: [],

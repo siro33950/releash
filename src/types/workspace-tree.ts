@@ -48,7 +48,7 @@ export type WorkspaceStepStatus =
 	| "aborted"
 	| "completed";
 
-export type WorkspaceStepType = "agent" | "bash" | "approval" | "parallel";
+type WorkspaceStepType = "agent" | "bash" | "approval" | "parallel";
 
 export interface WorkspaceWorkflowStepNode {
 	kind: "step";
@@ -92,14 +92,14 @@ export type WorkspaceTreeNode = WorkspaceSessionNode | WorkspaceWorkflowNode;
 
 export type WorkspaceSessionHistoryItem = SessionSummary;
 
-export interface WorkflowStepRepresentative {
+interface WorkflowStepRepresentative {
 	executionId: string;
 	stepName: string;
 	runIndex?: number | null;
 	representative: WorkspaceStepStatus;
 }
 
-export interface WorkflowRepresentative {
+interface WorkflowRepresentative {
 	executionId: string;
 	representative: WorkspaceStepStatus;
 }

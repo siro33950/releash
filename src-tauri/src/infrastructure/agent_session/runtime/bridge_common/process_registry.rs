@@ -63,7 +63,6 @@ pub struct AgentProcess {
     pub sdk_session_id: Option<String>,
     pub system_prompt_fingerprint: Option<String>,
     pub context_carry_on_ready: Option<ContextCarryState>,
-    #[cfg_attr(unix, allow(dead_code))]
     pub child: Child,
     pub generation_id: u64,
     #[cfg(unix)]

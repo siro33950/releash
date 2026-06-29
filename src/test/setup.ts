@@ -53,12 +53,6 @@ vi.mock("@xterm/addon-fit", () => {
 	};
 });
 
-vi.mock("@tauri-apps/plugin-fs", () => ({
-	readDir: vi.fn().mockResolvedValue([]),
-	readTextFile: vi.fn().mockResolvedValue(""),
-	readFile: vi.fn().mockResolvedValue(new Uint8Array()),
-}));
-
 vi.mock("@tauri-apps/plugin-dialog", () => ({
 	open: vi.fn().mockResolvedValue(null),
 }));

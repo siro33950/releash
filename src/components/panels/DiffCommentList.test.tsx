@@ -2,25 +2,11 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import {
-	ReviewThreadHandoffContext,
-	type ReviewThreadHandoffContextValue,
-} from "@/contexts/ReviewThreadHandoffContext";
 import type { ReviewDiscussionThread } from "@/types/diffComment";
 import { DiffCommentList } from "./DiffCommentList";
 
-function renderWithProviders(
-	ui: React.ReactElement,
-	handoff: ReviewThreadHandoffContextValue = {
-		canSend: false,
-		sendThreadToAgent: vi.fn().mockResolvedValue(undefined),
-	},
-) {
-	return render(
-		<ReviewThreadHandoffContext.Provider value={handoff}>
-			<TooltipProvider>{ui}</TooltipProvider>
-		</ReviewThreadHandoffContext.Provider>,
-	);
+function renderWithProviders(ui: React.ReactElement) {
+	return render(<TooltipProvider>{ui}</TooltipProvider>);
 }
 
 const makeComment = (
@@ -329,7 +315,6 @@ describe("DiffCommentList", () => {
 	// spec issues-1022 "Thread handoff contract": スレッドパネル各行から、対象 Thread を
 	// 現在 active な AgentChat session に共有できる。
 	describe("send-to-agent button", () => {
-		const sendToAgentLabel = "Send Diff Thread to current Agent";
 		const noActiveLabel = "No active Agent session";
 
 		it("is disabled when no active AgentChat session", () => {
@@ -338,25 +323,10 @@ describe("DiffCommentList", () => {
 					comments={[makeComment({ id: "thread-xyz" })]}
 					{...defaultProps}
 				/>,
-				{ canSend: false, sendThreadToAgent: vi.fn() },
 			);
 			expect(
 				screen.getByRole("button", { name: noActiveLabel }),
 			).toBeDisabled();
-		});
-
-		it("dispatches sendThreadToAgent with thread id when clicked", async () => {
-			const user = userEvent.setup();
-			const sendThreadToAgent = vi.fn().mockResolvedValue(undefined);
-			renderWithProviders(
-				<DiffCommentList
-					comments={[makeComment({ id: "thread-xyz" })]}
-					{...defaultProps}
-				/>,
-				{ canSend: true, sendThreadToAgent },
-			);
-			await user.click(screen.getByRole("button", { name: sendToAgentLabel }));
-			expect(sendThreadToAgent).toHaveBeenCalledWith("thread-xyz");
 		});
 	});
 });

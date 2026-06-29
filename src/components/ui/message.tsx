@@ -106,4 +106,4 @@ function Message({
 	);
 }
 
-export { Message, messageVariants };
+export { Message };

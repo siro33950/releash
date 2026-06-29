@@ -696,7 +696,7 @@ export const INITIAL_STATE: AgentChatState = {
 };
 
 /** sessionsById から指定 session を解決する selector。reducer 外から参照する経路で利用。*/
-export function selectSessionFromState(
+function selectSessionFromState(
 	state: AgentChatState,
 	sessionId: string | null | undefined,
 ): ChatSession | null {

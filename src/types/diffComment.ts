@@ -18,12 +18,6 @@ export function getThreadEndLine(
 	return thread.target.endLine ?? undefined;
 }
 
-export function getThreadPreviewContent(
-	thread: ReviewDiscussionThread,
-): string {
-	return thread.comments[thread.comments.length - 1]?.content ?? "";
-}
-
 export function getThreadInitialContent(
 	thread: ReviewDiscussionThread,
 ): string {

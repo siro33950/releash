@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPanel";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitDirWatcher } from "@/hooks/useGitDirWatcher";
@@ -61,8 +60,6 @@ export function useWorktreeState({
 	const [ready, setReady] = useState(false);
 
 	const { stage, unstage, createBranch } = useGitActions();
-	const terminalRef = useRef<TerminalTabPanelHandle>(null);
-
 	const [git, dispatchGit] = useReducer(gitReducer, {
 		gitError: null,
 		refreshKey: 0,
@@ -148,7 +145,6 @@ export function useWorktreeState({
 		newBranchName,
 		branch,
 		agentState,
-		terminalRef,
 		dispatchUI,
 		dispatchGit,
 		gitActions,

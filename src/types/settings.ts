@@ -93,23 +93,3 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	enableCrashReporting: true,
 	agentMaxConcurrent: 0,
 };
-
-export function buildTerminalCommand(settings: AppSettings): string {
-	const { agent, agentAutoApprove, terminalStartupCommand } = settings;
-
-	if (agent === "none") {
-		return "";
-	}
-
-	if (agent === "custom") {
-		return terminalStartupCommand;
-	}
-
-	const config = AGENT_CONFIGS[agent];
-	let agentCmd = config.command;
-	if (agentAutoApprove && config.bypassFlag) {
-		agentCmd += ` ${config.bypassFlag}`;
-	}
-
-	return agentCmd;
-}
