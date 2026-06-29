@@ -329,7 +329,7 @@ pub(super) fn run_turn_complete_transition_locked<F>(
     emit_stream: F,
 ) -> TurnCompleteTransition
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     run_turn_complete_transition_locked_with_interrupt(
         proc,
@@ -350,7 +350,7 @@ pub(super) fn run_turn_complete_transition_locked_with_interrupt<F>(
     emit_stream: F,
 ) -> TurnCompleteTransition
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     if proc.turn_phase == TurnPhase::Idle && proc.state != BridgeState::Initializing {
         return TurnCompleteTransition::default();

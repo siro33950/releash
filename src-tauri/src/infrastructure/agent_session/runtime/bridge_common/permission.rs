@@ -198,7 +198,7 @@ pub(super) fn run_permission_request_transition_locked<F>(
     emit_stream: F,
 ) -> PermissionRequestTransition
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     if proc.state == BridgeState::Streaming {
         if let Some(request_id) = request_id {
@@ -246,7 +246,7 @@ pub(super) fn apply_respond_permission_locked<F>(
     mut emit_stream: F,
 ) -> PermissionResponseTransition
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     let did_transition = proc.turn_phase == TurnPhase::WaitingPermission;
     turn_latency::record_permission_wait_latency(&mut proc.turn_latency, request_id);
@@ -286,14 +286,9 @@ where
     let emit_msg_id = proc.streaming_message_id.clone();
     if let (Some(mid), Some(part)) = (emit_msg_id, found_part) {
         enqueue_pending_delta_with_rollbacks(proc, std::slice::from_ref(&part), rollbacks);
-        force_flush_pending_streaming(
-            proc,
-            chat_session_id,
-            &mid,
-            |seq, snapshot, parts, snapshot_parts| {
-                emit_stream(&mid, seq, snapshot, parts, snapshot_parts)
-            },
-        );
+        force_flush_pending_streaming(proc, chat_session_id, &mid, |seq, snapshot, parts| {
+            emit_stream(&mid, seq, snapshot, parts)
+        });
     }
     record_permission_resolution_for_current_turn(
         proc,
@@ -477,16 +472,8 @@ pub async fn respond_agent_permission_internal(
                 &request_id,
                 &behavior,
                 answers_value.as_ref(),
-                |mid, seq, snapshot, parts, snapshot_parts| {
-                    emit_streaming_delta(
-                        app,
-                        &chat_session_id,
-                        mid,
-                        seq,
-                        snapshot,
-                        parts.to_vec(),
-                        snapshot_parts,
-                    )
+                |mid, seq, snapshot, parts| {
+                    emit_streaming_delta(app, &chat_session_id, mid, seq, snapshot, parts.to_vec())
                 },
             );
             permission_transition = effect;
@@ -628,7 +615,7 @@ mod moved_tests {
             "req-1",
             "allow",
             None,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert!(effect.did_transition);
@@ -675,7 +662,7 @@ mod moved_tests {
             "req-1",
             "allow",
             None,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| false, // emit failure on both channels
+            |_mid, _seq, _snapshot, _parts| false, // emit failure on both channels
         );
         assert!(
             effect.did_transition,

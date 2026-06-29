@@ -1006,7 +1006,7 @@ pub(super) fn accumulate_loaded_post_turn_base_without_streaming_state<F>(
     emit_stream: &mut F,
 ) -> AccumulateStreamMessageEffect
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     let old_turn_id = 1;
     let mut old_message_log = TurnEventLog::default();
@@ -1064,9 +1064,7 @@ where
             parts: delta.clone(),
             snapshot_parts: persist_parts.clone(),
         },
-        |seq, snapshot, parts, snapshot_parts| {
-            emit_stream(&base_mid, seq, snapshot, parts, snapshot_parts)
-        },
+        |seq, snapshot, parts| emit_stream(&base_mid, seq, snapshot, parts),
     );
 
     log::warn!(
@@ -1094,7 +1092,7 @@ pub(super) fn accumulate_stream_or_post_turn_message_locked<F>(
     post_turn_base: Option<(String, Vec<MessagePart>)>,
 ) -> AccumulateStreamMessageEffect
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     let in_streaming = proc.state == BridgeState::Streaming && proc.streaming_message_id.is_some();
     let post_turn = !in_streaming && proc.last_message_id.is_some();
@@ -1261,9 +1259,7 @@ where
                 proc,
                 chat_session_id,
                 mid,
-                |seq, snapshot, parts, snapshot_parts| {
-                    emit_stream(mid, seq, snapshot, parts, snapshot_parts)
-                },
+                |seq, snapshot, parts| emit_stream(mid, seq, snapshot, parts),
             );
         }
     }
@@ -1333,7 +1329,7 @@ pub(super) async fn accumulate_stream_or_post_turn_message<R: tauri::Runtime>(
                     chat_session_id,
                     msg,
                     elapsed_persist_ms,
-                    |mid, seq, snapshot, parts, snapshot_parts| {
+                    |mid, seq, snapshot, parts| {
                         emit_streaming_delta(
                             app,
                             chat_session_id,
@@ -1341,7 +1337,6 @@ pub(super) async fn accumulate_stream_or_post_turn_message<R: tauri::Runtime>(
                             seq,
                             snapshot,
                             parts.to_vec(),
-                            snapshot_parts,
                         )
                     },
                     post_turn_base.take(),
@@ -1565,7 +1560,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                             exit_code,
                             interrupted.then_some(InterruptReason::Abort),
                             interrupted.then(|| "Turn interrupted by abort".to_string()),
-                            |mid, seq, snapshot, parts, snapshot_parts| {
+                            |mid, seq, snapshot, parts| {
                                 emit_streaming_delta(
                                     app,
                                     chat_session_id,
@@ -1573,7 +1568,6 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                                     seq,
                                     snapshot,
                                     parts.to_vec(),
-                                    snapshot_parts,
                                 )
                             },
                         );
@@ -1639,7 +1633,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                                 proc,
                                 chat_session_id,
                                 &msg,
-                                |mid, seq, snapshot, parts, snapshot_parts| {
+                                |mid, seq, snapshot, parts| {
                                     emit_streaming_delta(
                                         app,
                                         chat_session_id,
@@ -1647,7 +1641,6 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                                         seq,
                                         snapshot,
                                         parts.to_vec(),
-                                        snapshot_parts,
                                     )
                                 },
                             )),
@@ -1815,7 +1808,7 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                         request_id,
                         permission_request_received_at
                             .expect("permission_request receive time captured after stale check"),
-                        |mid, seq, snapshot, parts, snapshot_parts| {
+                        |mid, seq, snapshot, parts| {
                             emit_streaming_delta(
                                 app,
                                 chat_session_id,
@@ -1823,7 +1816,6 @@ pub(crate) async fn handle_external_bridge_message<R: tauri::Runtime>(
                                 seq,
                                 snapshot,
                                 parts.to_vec(),
-                                snapshot_parts,
                             )
                         },
                     )
@@ -1953,14 +1945,8 @@ mod moved_tests {
             &msg,
             base_mid.clone(),
             base_parts,
-            &mut |mid, seq, snapshot, parts, snapshot_parts| {
-                emitted.push((
-                    mid.to_string(),
-                    seq,
-                    snapshot,
-                    parts.to_vec(),
-                    snapshot_parts(),
-                ));
+            &mut |mid, seq, snapshot, parts| {
+                emitted.push((mid.to_string(), seq, snapshot, parts.to_vec()));
                 false
             },
         );
@@ -2012,7 +1998,7 @@ mod moved_tests {
             &msg,
             base_mid.clone(),
             base_parts,
-            &mut |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            &mut |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert!(effect.accumulated);

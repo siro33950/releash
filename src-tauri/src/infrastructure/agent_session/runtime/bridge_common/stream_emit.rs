@@ -84,18 +84,16 @@ pub(super) fn emit_session_state_changed_with_pending_permission_request<R: taur
 }
 
 /// Returns whether the Tauri event emission succeeded.
-pub(super) fn emit_streaming_delta<R, F>(
+pub(super) fn emit_streaming_delta<R>(
     app: &tauri::AppHandle<R>,
     chat_session_id: &str,
     message_id: &str,
     seq: u64,
     snapshot: bool,
     parts: Vec<MessagePart>,
-    _snapshot_parts: F,
 ) -> bool
 where
     R: tauri::Runtime,
-    F: FnOnce() -> Vec<MessagePart>,
 {
     use tauri::Emitter;
     let parts = project_tool_output_parts_for_stream(&parts);
@@ -165,15 +163,13 @@ pub(super) async fn emit_persisted_tool_output_resync<R: tauri::Runtime>(
             }
         }
     }
-    let snapshot_parts = persisted.parts.clone();
     let _ = emit_streaming_delta(
         app,
         chat_session_id,
         message_id,
         seq,
         true,
-        snapshot_parts.clone(),
-        move || snapshot_parts.clone(),
+        persisted.parts.clone(),
     );
 }
 
@@ -195,7 +191,7 @@ fn flush_pending_persisted_tool_output_resync<F>(
     message_id: &str,
     emit: &mut F,
 ) where
-    F: FnMut(u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
+    F: FnMut(u64, bool, &[MessagePart]) -> bool,
 {
     if has_pending_retry_for_message(proc, message_id) {
         return;
@@ -219,7 +215,7 @@ fn flush_pending_persisted_tool_output_resync<F>(
         OneShotStreamingPayload::Snapshot {
             parts: snapshot_parts,
         },
-        |seq, snapshot, parts, snapshot_parts| emit(seq, snapshot, parts, snapshot_parts),
+        |seq, snapshot, parts| emit(seq, snapshot, parts),
     );
     if !emitted && proc.retry_stream_delta.is_none() {
         proc.pending_persisted_tool_output_resyncs.insert(
@@ -340,6 +336,7 @@ pub(super) struct StreamingFlushSnapshot {
     pub(crate) seq: u64,
     pub(crate) snapshot: bool,
     pub(crate) parts: Vec<MessagePart>,
+    /// Internal retry snapshot retained across failed emits.
     retry_snapshot_parts: Option<Vec<MessagePart>>,
     pub(crate) part_count: usize,
     pub(crate) buffer_len: usize,
@@ -585,8 +582,7 @@ pub(super) fn apply_streaming_emit_result(
 /// / apply calls inline (which used to drift from the production path).
 ///
 /// The closure receives the delta seq and `MessagePart` slice destined for the
-/// frontend, plus a lazy cumulative snapshot factory, and returns whether the
-/// event emission succeeded.
+/// frontend, and returns whether the event emission succeeded.
 pub(super) fn force_flush_pending_streaming<F>(
     proc: &mut AgentProcess,
     chat_session_id: &str,
@@ -594,19 +590,13 @@ pub(super) fn force_flush_pending_streaming<F>(
     mut emit: F,
 ) -> bool
 where
-    F: FnMut(u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
+    F: FnMut(u64, bool, &[MessagePart]) -> bool,
 {
     let Some(snapshot) = prepare_streaming_flush(proc) else {
         return true;
     };
-    let overflow_snapshot_parts = || snapshot_parts_after_success(proc, &snapshot);
     let emit_message_id = snapshot.message_id.as_deref().unwrap_or(message_id);
-    let emitted_ok = emit(
-        snapshot.seq,
-        snapshot.snapshot,
-        &snapshot.parts,
-        &overflow_snapshot_parts,
-    );
+    let emitted_ok = emit(snapshot.seq, snapshot.snapshot, &snapshot.parts);
     let emitted = apply_streaming_emit_result(
         proc,
         chat_session_id,
@@ -634,7 +624,7 @@ pub(super) fn emit_one_shot_streaming_delta<F>(
     mut emit: F,
 ) -> bool
 where
-    F: FnMut(u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
+    F: FnMut(u64, bool, &[MessagePart]) -> bool,
 {
     let (snapshot_event, event_parts, snapshot_parts) = match payload {
         OneShotStreamingPayload::Append {
@@ -665,14 +655,8 @@ where
             || proc.last_message_id.as_deref() == Some(message_id),
         source: StreamingFlushSource::OneShot,
     };
-    let overflow_snapshot_parts = || snapshot_parts.clone();
     let emit_message_id = snapshot.message_id.as_deref().unwrap_or(message_id);
-    let emitted_ok = emit(
-        snapshot.seq,
-        snapshot.snapshot,
-        &snapshot.parts,
-        &overflow_snapshot_parts,
-    );
+    let emitted_ok = emit(snapshot.seq, snapshot.snapshot, &snapshot.parts);
     apply_streaming_emit_result(
         proc,
         chat_session_id,
@@ -690,8 +674,7 @@ where
 /// transition ahead of the tail content for the current message.
 ///
 /// The emit closure mirrors `emit_streaming_delta`: it receives the message
-/// id, seq, delta parts, and lazy snapshot fallback parts and returns whether
-/// the event emission succeeded.
+/// id, seq, delta parts, and returns whether the event emission succeeded.
 /// Production callers pass a closure that delegates to `emit_streaming_delta`;
 /// unit tests pass a recording closure to verify the ordering invariant.
 pub(super) fn flush_streaming_before_transition<F>(
@@ -700,20 +683,15 @@ pub(super) fn flush_streaming_before_transition<F>(
     mut emit_stream: F,
 ) -> bool
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     let turn_completed = proc.state == BridgeState::Streaming;
     let Some(mid) = proc.streaming_message_id.clone() else {
         return turn_completed;
     };
-    let _ = force_flush_pending_streaming(
-        proc,
-        chat_session_id,
-        &mid,
-        |seq, snapshot, parts, snapshot_parts| {
-            emit_stream(&mid, seq, snapshot, parts, snapshot_parts)
-        },
-    );
+    let _ = force_flush_pending_streaming(proc, chat_session_id, &mid, |seq, snapshot, parts| {
+        emit_stream(&mid, seq, snapshot, parts)
+    });
     turn_completed
 }
 
@@ -750,7 +728,7 @@ pub(super) fn run_streaming_timer_tick<F>(
     mut emit: F,
 ) -> StreamingTimerTickEffect
 where
-    F: FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool,
+    F: FnMut(&str, u64, bool, &[MessagePart]) -> bool,
 {
     let pending = has_pending_stream_flush(proc);
     let streaming = proc.state == BridgeState::Streaming;
@@ -779,12 +757,10 @@ where
             ..StreamingTimerTickEffect::default()
         };
     };
-    let flushed = force_flush_pending_streaming(
-        proc,
-        chat_session_id,
-        &mid,
-        |seq, snapshot, parts, snapshot_parts| emit(&mid, seq, snapshot, parts, snapshot_parts),
-    );
+    let flushed =
+        force_flush_pending_streaming(proc, chat_session_id, &mid, |seq, snapshot, parts| {
+            emit(&mid, seq, snapshot, parts)
+        });
     if !streaming
         && flushed
         && proc.pending_stream_parts.is_empty()
@@ -892,10 +868,8 @@ pub(super) fn spawn_streaming_timer<R: tauri::Runtime>(
                     }
                     TimerDecision::Continue => {}
                 }
-                let tick_effect = run_streaming_timer_tick(
-                    proc,
-                    &csid_timer,
-                    |mid, seq, snapshot, parts, snapshot_parts| {
+                let tick_effect =
+                    run_streaming_timer_tick(proc, &csid_timer, |mid, seq, snapshot, parts| {
                         emit_streaming_delta(
                             &app_timer,
                             &csid_timer,
@@ -903,10 +877,8 @@ pub(super) fn spawn_streaming_timer<R: tauri::Runtime>(
                             seq,
                             snapshot,
                             parts.to_vec(),
-                            snapshot_parts,
                         )
-                    },
-                );
+                    });
                 if !tick_effect.keep_running {
                     proc.streaming_timer_active = false;
                 }
@@ -1359,7 +1331,7 @@ mod moved_tests {
                 &mut proc,
                 chat_session_id,
                 message_id,
-                |_seq, _snapshot, _parts, _snapshot_parts| false,
+                |_seq, _snapshot, _parts| false,
             );
             assert!(!failed);
             assert!(proc.retry_stream_delta.is_some());
@@ -1394,8 +1366,8 @@ mod moved_tests {
             &mut proc,
             chat_session_id,
             message_id,
-            |seq, snapshot, parts, snapshot_parts| {
-                emissions.push((seq, snapshot, parts.to_vec(), snapshot_parts()));
+            |seq, snapshot, parts| {
+                emissions.push((seq, snapshot, parts.to_vec()));
                 true
             },
         );
@@ -1410,7 +1382,6 @@ mod moved_tests {
         assert_eq!(emissions[1].0, 9);
         assert!(emissions[1].1);
         assert_eq!(emissions[1].2, vec![persisted_part.clone()]);
-        assert_eq!(emissions[1].3, vec![persisted_part]);
         assert_eq!(proc.streaming_delta_seq, 9);
     }
 
@@ -1827,11 +1798,10 @@ mod moved_tests {
                 parts: vec![delta.clone()],
                 snapshot_parts: vec![full_snapshot.clone()],
             },
-            |seq, snapshot, parts, snapshot_parts| {
+            |seq, snapshot, parts| {
                 assert_eq!(seq, 5);
                 assert!(!snapshot);
                 assert_eq!(parts, std::slice::from_ref(&delta));
-                assert_eq!(snapshot_parts(), vec![full_snapshot.clone()]);
                 false
             },
         );
@@ -1847,12 +1817,16 @@ mod moved_tests {
         assert_eq!(retry.seq, 5);
         assert!(retry.snapshot);
         assert_eq!(retry.parts, vec![full_snapshot.clone()]);
+        assert_eq!(
+            retry.retry_snapshot_parts,
+            Some(vec![full_snapshot.clone()])
+        );
         assert!(!retry.updates_live_counter);
 
         proc.state = BridgeState::Ready;
         let mut retry_emissions = Vec::new();
         let tick_effect =
-            run_streaming_timer_tick(&mut proc, "csid", |mid, seq, snapshot, parts, _| {
+            run_streaming_timer_tick(&mut proc, "csid", |mid, seq, snapshot, parts| {
                 retry_emissions.push((mid.to_string(), seq, snapshot, parts.to_vec()));
                 true
             });
@@ -1898,8 +1872,8 @@ mod moved_tests {
             &mut proc,
             "csid",
             message_id,
-            &mut |seq, snapshot, parts, snapshot_parts| {
-                emissions.push((seq, snapshot, parts.to_vec(), snapshot_parts()));
+            &mut |seq, snapshot, parts| {
+                emissions.push((seq, snapshot, parts.to_vec()));
                 false
             },
         );
@@ -1910,41 +1884,25 @@ mod moved_tests {
         assert_eq!(retry.seq, 8);
         assert!(retry.snapshot);
         assert_eq!(retry.parts, vec![persisted_part.clone()]);
+        assert_eq!(
+            retry.retry_snapshot_parts,
+            Some(vec![persisted_part.clone()])
+        );
         assert!(retry.updates_live_counter);
         assert_eq!(proc.streaming_delta_seq, 7);
 
-        let flushed = force_flush_pending_streaming(
-            &mut proc,
-            "csid",
-            message_id,
-            |seq, snapshot, parts, snapshot_parts| {
-                emissions.push((seq, snapshot, parts.to_vec(), snapshot_parts()));
+        let flushed =
+            force_flush_pending_streaming(&mut proc, "csid", message_id, |seq, snapshot, parts| {
+                emissions.push((seq, snapshot, parts.to_vec()));
                 true
-            },
-        );
+            });
 
         assert!(flushed);
         assert!(proc.retry_stream_delta.is_none());
         assert!(proc.pending_persisted_tool_output_resyncs.is_empty());
         assert_eq!(emissions.len(), 2);
-        assert_eq!(
-            emissions[0],
-            (
-                8,
-                true,
-                vec![persisted_part.clone()],
-                vec![persisted_part.clone()]
-            )
-        );
-        assert_eq!(
-            emissions[1],
-            (
-                8,
-                true,
-                vec![persisted_part.clone()],
-                vec![persisted_part.clone()]
-            )
-        );
+        assert_eq!(emissions[0], (8, true, vec![persisted_part.clone()]));
+        assert_eq!(emissions[1], (8, true, vec![persisted_part.clone()]));
         assert_eq!(proc.streaming_delta_seq, 8);
         assert_eq!(
             proc.streaming_delta_seq_by_message.get(message_id),
@@ -2424,14 +2382,11 @@ mod moved_tests {
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
 
         let mut emitted = Vec::new();
-        let tick_effect = run_streaming_timer_tick(
-            &mut proc,
-            "csid",
-            |mid, _seq, _snapshot, parts, _snapshot_parts| {
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |mid, _seq, _snapshot, parts| {
                 emitted.push((mid.to_string(), parts.to_vec()));
                 true
-            },
-        );
+            });
 
         assert!(
             tick_effect.keep_running,
@@ -2464,14 +2419,11 @@ mod moved_tests {
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
 
         let mut emitted = false;
-        let tick_effect = run_streaming_timer_tick(
-            &mut proc,
-            "csid",
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| {
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |_mid, _seq, _snapshot, _parts| {
                 emitted = true;
                 true
-            },
-        );
+            });
         assert!(tick_effect.keep_running);
         assert!(tick_effect.released_streaming_parts.is_empty());
         assert!(!emitted, "interval not elapsed → timer must not flush");
@@ -2487,14 +2439,11 @@ mod moved_tests {
         assert_eq!(proc.pending_stream_parts.len(), 0);
 
         let mut emitted = false;
-        let tick_effect = run_streaming_timer_tick(
-            &mut proc,
-            "csid",
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| {
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |_mid, _seq, _snapshot, _parts| {
                 emitted = true;
                 true
-            },
-        );
+            });
         // pending=0 & still Streaming → continue running but no flush this tick.
         assert!(tick_effect.keep_running);
         assert!(tick_effect.released_streaming_parts.is_empty());
@@ -2511,11 +2460,8 @@ mod moved_tests {
             Some(Instant::now() - Duration::from_millis(STREAMING_EMIT_INTERVAL_MS + 5));
         assert_eq!(proc.pending_stream_parts.len(), 0);
 
-        let tick_effect = run_streaming_timer_tick(
-            &mut proc,
-            "csid",
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
-        );
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |_mid, _seq, _snapshot, _parts| true);
         assert!(
             !tick_effect.keep_running,
             "turn ended (state != Streaming) and buffer empty → timer must exit"
@@ -2539,14 +2485,11 @@ mod moved_tests {
         enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
 
         let mut emitted = 0usize;
-        let tick_effect = run_streaming_timer_tick(
-            &mut proc,
-            "csid",
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| {
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |_mid, _seq, _snapshot, _parts| {
                 emitted += 1;
                 true
-            },
-        );
+            });
         assert!(
             !tick_effect.keep_running,
             "turn ended and pending drained → timer exits immediately"
@@ -2931,7 +2874,7 @@ mod moved_tests {
             &mut proc,
             "csid",
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert!(effect.turn_completed);
@@ -2981,7 +2924,7 @@ mod moved_tests {
             "csid",
             None,
             Instant::now(),
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert!(effect.did_transition);
@@ -3016,7 +2959,7 @@ mod moved_tests {
             &mut proc,
             "csid",
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert_eq!(complete_effect.final_msg_id.as_deref(), Some("m1"));
@@ -3047,7 +2990,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| {
+            |_mid, _seq, _snapshot, _parts| {
                 emitted = true;
                 true
             },
@@ -3082,7 +3025,7 @@ mod moved_tests {
             &mut proc,
             "csid",
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| false,
+            |_mid, _seq, _snapshot, _parts| false,
         );
 
         assert!(effect.turn_completed);
@@ -3100,14 +3043,11 @@ mod moved_tests {
         );
 
         let mut emitted: Vec<(String, Vec<MessagePart>)> = Vec::new();
-        let tick_effect = run_streaming_timer_tick(
-            &mut proc,
-            "csid",
-            |mid, _seq, _snapshot, parts, _snapshot_parts| {
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |mid, _seq, _snapshot, parts| {
                 emitted.push((mid.to_string(), parts.to_vec()));
                 true
-            },
-        );
+            });
 
         assert!(!tick_effect.keep_running);
         assert_eq!(tick_effect.released_streaming_parts, raw_parts.clone());
@@ -3136,7 +3076,7 @@ mod moved_tests {
             &mut proc,
             "csid",
             1,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| {
+            |_mid, _seq, _snapshot, _parts| {
                 emit_attempts += 1;
                 false
             },
@@ -3154,14 +3094,11 @@ mod moved_tests {
         assert_eq!(proc.pending_stream_parts.len(), 0);
         assert!(proc.retry_stream_delta.is_some());
 
-        let tick_effect = run_streaming_timer_tick(
-            &mut proc,
-            "csid",
-            |_mid, _seq, _snapshot, parts, _snapshot_parts| {
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |_mid, _seq, _snapshot, parts| {
                 assert_eq!(parts, consolidate_parts_from_slice(&raw_parts));
                 true
-            },
-        );
+            });
 
         assert!(!tick_effect.keep_running);
         assert_eq!(tick_effect.released_streaming_parts, raw_parts);
@@ -3188,7 +3125,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| {
+            |_mid, _seq, _snapshot, _parts| {
                 emitted = true;
                 true
             },
@@ -3227,7 +3164,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| {
+            |_mid, _seq, _snapshot, _parts| {
                 emitted = true;
                 true
             },
@@ -3287,7 +3224,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _seq, _snapshot, parts, _snapshot_parts| {
+            |_mid, _seq, _snapshot, parts| {
                 emitted.push(parts.to_vec());
                 true
             },
@@ -3349,7 +3286,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _seq, _snapshot, parts, _snapshot_parts| {
+            |_mid, _seq, _snapshot, parts| {
                 emitted_attempts += 1;
                 assert_eq!(parts, expected_delta_parts.as_slice());
                 false
@@ -3373,14 +3310,11 @@ mod moved_tests {
         );
 
         let mut retry_payloads: Vec<(String, bool, Vec<MessagePart>)> = Vec::new();
-        let tick_effect = run_streaming_timer_tick(
-            &mut proc,
-            "csid",
-            |mid, _seq, snapshot, parts, _snapshot_parts| {
+        let tick_effect =
+            run_streaming_timer_tick(&mut proc, "csid", |mid, _seq, snapshot, parts| {
                 retry_payloads.push((mid.to_string(), snapshot, parts.to_vec()));
                 true
-            },
-        );
+            });
 
         assert!(!tick_effect.keep_running);
         assert_eq!(tick_effect.released_streaming_parts, expected_parts.clone());
@@ -3411,7 +3345,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| {
+            |_mid, _seq, _snapshot, _parts| {
                 panic!("first pass must request a store reseed before emitting")
             },
             None,
@@ -3476,7 +3410,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |mid, seq, _snapshot, parts, _snapshot_parts| {
+            |mid, seq, _snapshot, parts| {
                 emitted.push((mid.to_string(), seq, parts.to_vec()));
                 true
             },
@@ -3589,7 +3523,7 @@ mod moved_tests {
             "csid",
             &post_turn_tool_result_message("tool-1", "done"),
             0,
-            |mid, _seq, _snapshot, parts, _snapshot_parts| {
+            |mid, _seq, _snapshot, parts| {
                 emitted.push((mid.to_string(), parts.to_vec()));
                 true
             },
@@ -3668,7 +3602,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
             Some(("old-message".to_string(), base_parts.clone())),
         );
 
@@ -3773,7 +3707,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |mid, _seq, _snapshot, parts, _snapshot_parts| {
+            |mid, _seq, _snapshot, parts| {
                 emitted.push((mid.to_string(), parts.to_vec()));
                 true
             },
@@ -3841,7 +3775,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| {
+            |_mid, _seq, _snapshot, _parts| {
                 emitted = true;
                 true
             },
@@ -4162,7 +4096,7 @@ mod moved_tests {
             "csid",
             &text_delta,
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
             None,
         );
 
@@ -4191,7 +4125,7 @@ mod moved_tests {
             "csid",
             &tool_use,
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
             None,
         );
 
@@ -4218,7 +4152,7 @@ mod moved_tests {
             "csid",
             &retried_tool_use,
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
             None,
         );
 
@@ -4289,7 +4223,7 @@ mod moved_tests {
             &mut proc,
             "csid",
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert!(effect.turn_completed);
@@ -4332,7 +4266,7 @@ mod moved_tests {
             "csid",
             &msg,
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
             None,
         );
         assert!(accumulated.accumulated);
@@ -4341,7 +4275,7 @@ mod moved_tests {
             &mut proc,
             "csid",
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert_eq!(
@@ -4368,7 +4302,7 @@ mod moved_tests {
             &mut proc,
             "csid",
             7,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
         );
         let projected = proc.turn_event_log.project();
 
@@ -4419,7 +4353,7 @@ mod moved_tests {
             &mut proc,
             "csid",
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
         );
 
         assert_eq!(
@@ -4477,7 +4411,7 @@ mod moved_tests {
             &mut proc,
             "csid",
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
         );
         let projected_parts = proc.turn_event_log.project().agent_parts_for_message("m1");
 
@@ -4504,7 +4438,7 @@ mod moved_tests {
             &mut proc,
             "csid",
             0,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
         );
         let projected_parts = proc.turn_event_log.project().agent_parts_for_message("m1");
 
@@ -4532,7 +4466,7 @@ mod moved_tests {
             "csid",
             &text_delta,
             PERSIST_INTERVAL_MS,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
             None,
         );
         assert!(effect.accumulated);
@@ -4565,7 +4499,7 @@ mod moved_tests {
             "csid",
             &tool_use,
             PERSIST_INTERVAL_MS,
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
             None,
         );
 
@@ -4613,7 +4547,7 @@ mod moved_tests {
             &mut proc,
             "csid",
             &serde_json::json!({"type": "error", "message": "bridge failed"}),
-            |_mid, _seq, _snapshot, _parts, _snapshot_parts| true,
+            |_mid, _seq, _snapshot, _parts| true,
         );
         let projected = proc.turn_event_log.project();
         let projected_parts = projected.agent_parts_for_message("m1");

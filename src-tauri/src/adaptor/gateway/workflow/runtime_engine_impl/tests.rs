@@ -5130,7 +5130,7 @@ fn validate_workflow_shape_rejects_empty_and_bash_workflows_without_side_effects
         nodes: vec![],
     };
     assert!(matches!(
-        WorkflowExecution::validate_workflow_shape(&empty),
+        workflow_engine_start_guard::validate_workflow_shape(&empty),
         Err(WorkflowEngineError::InvalidWorkflow(_))
     ));
 
@@ -5147,13 +5147,13 @@ fn validate_workflow_shape_rejects_empty_and_bash_workflows_without_side_effects
         }],
     };
     assert!(matches!(
-        WorkflowExecution::validate_workflow_shape(&bash),
+        workflow_engine_start_guard::validate_workflow_shape(&bash),
         Err(WorkflowEngineError::InvalidWorkflow(_))
     ));
 
     // 正常な workflow は Ok
     let ok = make_minimal_workflow();
-    assert!(WorkflowExecution::validate_workflow_shape(&ok).is_ok());
+    assert!(workflow_engine_start_guard::validate_workflow_shape(&ok).is_ok());
 }
 
 /// G3: `run_id_for_worktree` を Run Store 経由で参照すれば、parent ChatSession 作成より前に

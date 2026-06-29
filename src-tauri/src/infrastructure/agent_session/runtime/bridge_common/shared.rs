@@ -601,12 +601,12 @@ mod stream_delta_tests {
             ],
         ];
         let mut applied = Vec::new();
-        let mut raw_snapshot_parts = Vec::new();
+        let mut raw_snapshot_buf = Vec::new();
         let mut last_seq = 0;
 
         for (index, delta) in deltas.iter().enumerate() {
             let seq = (index + 1) as u64;
-            raw_snapshot_parts.extend_from_slice(delta);
+            raw_snapshot_buf.extend_from_slice(delta);
             assert_eq!(
                 apply_stream_delta_to_parts(&mut applied, &mut last_seq, seq, delta),
                 StreamDeltaApplyResult::Applied
@@ -615,7 +615,7 @@ mod stream_delta_tests {
 
         assert_eq!(
             applied,
-            canonical_stream_parts_from_slice(&raw_snapshot_parts)
+            canonical_stream_parts_from_slice(&raw_snapshot_buf)
         );
         assert_eq!(
             applied,
@@ -1597,9 +1597,8 @@ pub(in crate::infrastructure::agent_session::runtime::bridge_common) mod test_su
     /// stdout reader uses, instead of mirroring the prepare/apply sequence.
     pub(in crate::infrastructure::agent_session::runtime::bridge_common) fn recording_emit<'a>(
         events: &'a mut Vec<RecordedEmit>,
-    ) -> impl FnMut(&str, u64, bool, &[MessagePart], &dyn Fn() -> Vec<MessagePart>) -> bool + 'a
-    {
-        |_mid, _seq, _snapshot, parts, _snapshot_parts| {
+    ) -> impl FnMut(&str, u64, bool, &[MessagePart]) -> bool + 'a {
+        |_mid, _seq, _snapshot, parts| {
             events.push(RecordedEmit::StreamingFlush {
                 parts_count: parts.len(),
                 tail_text: match parts.last() {

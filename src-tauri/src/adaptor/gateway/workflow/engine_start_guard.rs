@@ -5,7 +5,7 @@ use crate::domain::workflow as domain;
 
 pub(crate) fn validate_workflow_shape(workflow: &Workflow) -> Result<(), WorkflowEngineError> {
     let definition = workflow_definition_to_domain(workflow);
-    domain::WorkflowExecution::validate_workflow_shape(&definition)
+    domain::validation::validate_workflow_shape(&definition)
         .map_err(|err| domain_validation_to_engine_error(err, &definition))
 }
 

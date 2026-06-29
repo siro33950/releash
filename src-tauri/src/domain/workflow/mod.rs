@@ -15,7 +15,7 @@ pub mod status_aggregation;
 pub mod value_objects;
 
 pub use entities::workflow_execution::{
-    compute_step_states, ParallelChildRun, ParallelChildState, ParallelRunState, WorkflowExecution,
+    compute_step_states, ParallelChildRun, ParallelChildState, ParallelRunState,
 };
 pub use error::WorkflowError;
 pub use gateway::{ManagedWorktreeGateway, SecretSourceGateway};

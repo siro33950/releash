@@ -1,25 +1,28 @@
-//! Workflow execution aggregate.
+//! Test-only workflow execution aggregate plus shared execution projection helpers.
 //!
-//! The aggregate owns execution-state invariants. Runtime effects such as
-//! starting agent sessions, appending logs, broadcasting state, or touching
-//! the filesystem remain outside this module.
+//! The stateful `WorkflowExecution` aggregate in this module is retained for
+//! domain unit tests. Production execution state is owned by the workflow
+//! gateway runtime state; pure validation lives in workflow services.
 
 use std::collections::{HashMap, HashSet};
 
 #[cfg(test)]
-use crate::domain::workflow::services::{contract, history, parallel, projection};
+use crate::domain::workflow::services::{contract, history, parallel, projection, validation};
 #[cfg(test)]
 use crate::domain::workflow::value_objects::{
-    ApprovalOperations, NodeDefinition, RunId, StepOutput, WorkflowStateSnapshot, WorktreePath,
+    ApprovalOperations, NodeDefinition, NodeType, RunId, StepOutput, WorkflowStateSnapshot,
+    WorktreePath,
 };
 use crate::domain::workflow::value_objects::{
-    NodeType, ParallelAggregate, StepHistoryEntry, TokenUsage, WorkflowDefinition,
-    WorkflowExecutionState, WorkflowStepFailureKind, STEP_STATE_COMPLETED, STEP_STATE_FAILED,
-    STEP_STATE_INTERRUPTED, STEP_STATE_PENDING, STEP_STATE_RUNNING,
+    ParallelAggregate, StepHistoryEntry, TokenUsage, WorkflowDefinition, WorkflowExecutionState,
+    WorkflowStepFailureKind, STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_INTERRUPTED,
+    STEP_STATE_PENDING, STEP_STATE_RUNNING,
 };
 use crate::domain::workflow::FailureDisposition;
+#[cfg(test)]
 use crate::domain::workflow::WorkflowError;
 
+/// Test-only stateful aggregate used by domain unit tests.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg(test)]
 pub struct WorkflowExecution {
@@ -39,28 +42,6 @@ pub struct WorkflowExecution {
     task: Option<String>,
     parallel_run: Option<ParallelRunState>,
     workflow_variables: HashMap<String, String>,
-}
-
-#[cfg(not(test))]
-pub struct WorkflowExecution;
-
-impl WorkflowExecution {
-    pub fn validate_workflow_shape(workflow: &WorkflowDefinition) -> Result<(), WorkflowError> {
-        if workflow.nodes.is_empty() {
-            return Err(WorkflowError::validation("workflow has no nodes"));
-        }
-        if let Some(node) = workflow
-            .nodes
-            .iter()
-            .find(|node| matches!(node.node_type, NodeType::Bash))
-        {
-            return Err(WorkflowError::validation(format!(
-                "bash node '{}' is not executable in this milestone",
-                node.name
-            )));
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,7 +107,7 @@ impl WorkflowExecution {
         task: Option<String>,
         started_at: f64,
     ) -> Result<Self, WorkflowError> {
-        Self::validate_workflow_shape(&workflow)?;
+        validation::validate_workflow_shape(&workflow)?;
         let first_step_name = workflow
             .nodes
             .first()

@@ -169,6 +169,8 @@ pub(crate) struct PendingStreamDelta {
     pub(crate) seq: u64,
     pub(crate) snapshot: bool,
     pub(crate) parts: Vec<MessagePart>,
+    /// Internal retry snapshot to resend after a failed emit. This is not
+    /// exposed through the Tauri event emission callback boundary.
     pub(crate) retry_snapshot_parts: Option<Vec<MessagePart>>,
     pub(crate) part_count: usize,
     pub(crate) pending_bytes: usize,

@@ -140,14 +140,6 @@ impl WorkflowExecution {
         )
     }
 
-    /// workflow 構造の事前検証（純粋関数 / 副作用なし）。
-    ///
-    /// `start_workflow` の Phase 1（副作用なし validation）と、
-    /// executions ロック内の defense-in-depth から共有して呼ぶ。
-    pub(crate) fn validate_workflow_shape(workflow: &Workflow) -> Result<(), WorkflowEngineError> {
-        engine_start_guard::validate_workflow_shape(workflow)
-    }
-
     /// ワークフロー開始の事前条件を検証する（純粋関数）。
     ///
     /// executions ロック内の defense-in-depth で呼ばれる。Run Store の active index と

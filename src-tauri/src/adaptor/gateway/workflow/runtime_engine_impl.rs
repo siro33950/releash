@@ -19,6 +19,7 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
     node_type_to_domain, parallel_aggregate_to_domain, transition_rule_from_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
+use crate::adaptor::gateway::workflow::engine_start_guard as workflow_engine_start_guard;
 use crate::adaptor::gateway::workflow::event::{ApprovalDecisionRecord, WorkflowEvent};
 use crate::adaptor::gateway::workflow::event_log_query::{
     request_event_already_recorded, RequestEventKind, RequestEventLookupError,
@@ -603,7 +604,7 @@ impl WorkflowRuntimeService {
         trigger_source: TriggerSource,
         now: f64,
     ) -> Result<String, WorkflowEngineError> {
-        WorkflowExecution::validate_workflow_shape(&workflow)?;
+        workflow_engine_start_guard::validate_workflow_shape(&workflow)?;
         let run_id = self
             .reserve_workflow_run(&workflow, &worktree_path, task.clone(), trigger_source, now)
             .await?;
@@ -744,7 +745,7 @@ impl WorkflowRuntimeService {
         // を残さない（Spec issues-1011: 起動順序のアトミック化）。
         //
         // 1) workflow 構造の事前検証（空 nodes / 未実装 bash node の拒否）。
-        WorkflowExecution::validate_workflow_shape(&workflow)?;
+        workflow_engine_start_guard::validate_workflow_shape(&workflow)?;
         // 2) model 検証: 各 model から所属 backend を一意に解決する。
         //    registry 未登録自体を InvalidWorkflow として即時失敗にする（検証スキップを避ける）。
         let registry = app

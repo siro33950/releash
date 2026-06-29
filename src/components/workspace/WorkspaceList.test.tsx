@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorktreeBranch } from "@/types/git";
@@ -661,6 +667,50 @@ describe("WorkspaceList", () => {
 		expect(screen.getByText("WorkflowHistory")).toBeInTheDocument();
 		expect(screen.getByText("PR Link")).toBeInTheDocument();
 		expect(screen.getByText("Delete")).toBeInTheDocument();
+	});
+
+	it("deletes a Worktree through the parent confirm callback without killing LSP", async () => {
+		const user = userEvent.setup();
+		renderWorkspaceList();
+
+		await user.click(screen.getByLabelText("Open menu for feature"));
+		await user.click(await screen.findByText("Delete"));
+		const dialog = await screen.findByRole("alertdialog");
+		await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+		await waitFor(() => {
+			expect(mocks.invoke).toHaveBeenCalledWith("remove_worktree", {
+				repoPath: "/repo",
+				worktreePath: "/repo/wt",
+				force: false,
+			});
+		});
+
+		const calls = mocks.invoke.mock.calls;
+		expect(calls).toEqual(
+			expect.arrayContaining([
+				[
+					"kill_ptys_by_worktree",
+					{
+						worktreePath: "/repo/wt",
+					},
+				],
+				[
+					"remove_worktree",
+					{
+						repoPath: "/repo",
+						worktreePath: "/repo/wt",
+						force: false,
+					},
+				],
+			]),
+		);
+		const commands = calls.map(([command]) => command);
+		expect(commands.indexOf("kill_ptys_by_worktree")).toBeLessThan(
+			commands.indexOf("remove_worktree"),
+		);
+		expect(commands).not.toContain("kill_lsp_by_worktree");
+		expect(mocks.refreshWorktrees).toHaveBeenCalled();
 	});
 
 	it("closes a Session from the hover action without selecting the row", async () => {
