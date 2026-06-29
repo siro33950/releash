@@ -264,10 +264,7 @@ type HooksAction =
 	| { type: "SET_COPIED"; copied: boolean }
 	| { type: "COPY_ERROR"; error: string };
 
-export function hooksReducer(
-	state: HooksState,
-	action: HooksAction,
-): HooksState {
+function hooksReducer(state: HooksState, action: HooksAction): HooksState {
 	switch (action.type) {
 		case "LOAD_START":
 			return { ...state, loading: true, error: null, success: false };
@@ -1389,7 +1386,7 @@ type SettingsAction =
 	| { type: "SAVE_END" }
 	| { type: "SAVE_ERROR" };
 
-export function settingsReducer(
+function settingsReducer(
 	state: SettingsState,
 	action: SettingsAction,
 ): SettingsState {

@@ -7,7 +7,6 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { resetAgentEditPreviewPanelStateForTest } from "./AgentEditPreviewPanel";
 import { PermissionDialog } from "./PermissionDialog";
 
 const mockInvoke = vi.fn().mockResolvedValue(null);
@@ -117,7 +116,6 @@ function mockPermissionPresentation(command: string, args: unknown) {
 }
 
 beforeEach(() => {
-	resetAgentEditPreviewPanelStateForTest();
 	mockInvoke.mockClear();
 	mockInvoke.mockImplementation(
 		(command: string, args: unknown) =>

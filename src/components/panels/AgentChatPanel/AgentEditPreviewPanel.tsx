@@ -52,12 +52,6 @@ const editPreviewCache = new Map<string, AgentEditPreviewState>();
 const editPreviewRequests = new Map<string, Promise<AgentEditPreviewState>>();
 const editPreviewExpansionState = new Map<string, boolean>();
 
-export function resetAgentEditPreviewPanelStateForTest() {
-	editPreviewCache.clear();
-	editPreviewRequests.clear();
-	editPreviewExpansionState.clear();
-}
-
 function stableSerialize(value: unknown): string {
 	if (value === null || typeof value !== "object") {
 		return JSON.stringify(value) ?? String(value);

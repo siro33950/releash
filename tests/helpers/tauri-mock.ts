@@ -5,6 +5,30 @@ export interface MockConfig {
 	ipcHandler: Record<string, unknown>;
 }
 
+interface TauriMockInternals {
+	invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+	transformCallback: (cb: (data: unknown) => void, once?: boolean) => number;
+	unregisterCallback: (id: number) => void;
+	runCallback: (id: number, data: unknown) => void;
+	callbacks: Map<number, { cb: (data: unknown) => void; once: boolean }>;
+	metadata: {
+		currentWindow: { label: string };
+		currentWebview: { windowLabel: string; label: string };
+	};
+	convertFileSrc: (path: string) => string;
+}
+
+interface TauriEventPluginInternals {
+	unregisterListener: (event: string, id: number) => void;
+}
+
+declare global {
+	interface Window {
+		__TAURI_INTERNALS__?: TauriMockInternals;
+		__TAURI_EVENT_PLUGIN_INTERNALS__?: TauriEventPluginInternals;
+	}
+}
+
 /**
  * page.addInitScript() で window.__TAURI_INTERNALS__ を注入し、
  * 全 Tauri IPC 呼び出しをモックする。
@@ -104,10 +128,9 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			return null;
 		}
 
-		// @ts-expect-error - グローバルにTauriモック構造を注入
-		window.__TAURI_INTERNALS__ = {
-			invoke,
-			transformCallback,
+			window.__TAURI_INTERNALS__ = {
+				invoke,
+				transformCallback,
 			unregisterCallback,
 			runCallback,
 			callbacks,
@@ -118,10 +141,9 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			convertFileSrc: (path: string) => path,
 		};
 
-		// @ts-expect-error - イベントプラグインの内部構造
-		window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
-			unregisterListener: (_event: string, id: number) =>
-				unregisterCallback(id),
+			window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+				unregisterListener: (_event: string, id: number) =>
+					unregisterCallback(id),
 		};
 	}, config);
 }
@@ -135,11 +157,10 @@ export async function emitTauriEvent(
 	event: string,
 	payload: unknown,
 ) {
-	await page.evaluate(
-		({ event, payload }) => {
-			// @ts-expect-error - __TAURI_INTERNALS__ は setupTauriMock で注入済み
-			const internals = window.__TAURI_INTERNALS__;
-			if (!internals) throw new Error("Tauri mock not initialized");
+		await page.evaluate(
+			({ event, payload }) => {
+				const internals = window.__TAURI_INTERNALS__;
+				if (!internals) throw new Error("Tauri mock not initialized");
 			internals.invoke("plugin:event|emit", { event, payload });
 		},
 		{ event, payload },

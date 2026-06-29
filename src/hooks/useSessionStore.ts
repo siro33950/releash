@@ -9,7 +9,6 @@ import {
 	type LegacyChatMessage,
 	type MentionReference,
 	type MessagePart,
-	type MessageRole,
 	type ModelInfo,
 	normalizePermissionMode,
 	type PermissionMode,
@@ -37,9 +36,9 @@ export interface LegacyChatSession {
 	workflowStepSession?: boolean;
 }
 
-export const INITIAL_SESSION_PAGE_LIMIT = 50;
+const INITIAL_SESSION_PAGE_LIMIT = 50;
 
-export function legacyToParts(msg: LegacyChatMessage): MessagePart[] {
+function legacyToParts(msg: LegacyChatMessage): MessagePart[] {
 	const parts: MessagePart[] = [];
 	if (msg.thinking) {
 		parts.push({ type: "thinking", content: msg.thinking });
@@ -134,7 +133,7 @@ interface RawSessionPage {
 	latestTokenUsage?: TokenUsage | null;
 }
 
-export interface MessagePageMetadata {
+interface MessagePageMetadata {
 	messageId: string;
 	tokenMeta?: unknown;
 	runMeta?: unknown;
@@ -356,19 +355,6 @@ export async function listClosedSessions(
 	return invoke<SessionSummary[]>("list_closed_sessions", { worktreePath });
 }
 
-export async function addMessage(
-	sessionId: string,
-	role: MessageRole,
-	content: string,
-): Promise<ChatMessage> {
-	const raw = await invoke<LegacyChatMessage>("add_message", {
-		sessionId,
-		role,
-		content,
-	});
-	return convertLegacyMessage(raw);
-}
-
 interface RawSendMessageResponse {
 	session: LegacyChatSession;
 	humanMessage: LegacyChatMessage & { parts?: MessagePart[] };
@@ -532,16 +518,6 @@ export async function setSessionBackend(
 		backendId,
 	});
 	return convertRawGetSessionResponse(raw);
-}
-
-export async function updateSessionAgentInfo(
-	sessionId: string,
-	agentSessionId: string | null,
-): Promise<void> {
-	return invoke("update_session_agent_info", {
-		sessionId,
-		agentSessionId,
-	});
 }
 
 export interface BackendListResult {

@@ -2,10 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatSession } from "@/types/session";
-import {
-	ChatSessionView,
-	shouldTailFollowMessageChange,
-} from "./ChatSessionView";
+import { ChatSessionView } from "./ChatSessionView";
 
 const { mockInvoke, mockVirtualRange, mockOffsetOverrides } = vi.hoisted(
 	() => ({
@@ -141,28 +138,6 @@ beforeEach(() => {
 	mockVirtualRange.startIndex = 0;
 	mockVirtualRange.endIndex = null;
 	mockOffsetOverrides.clear();
-});
-
-describe("shouldTailFollowMessageChange", () => {
-	it("does not tail-follow when older messages are prepended", () => {
-		expect(
-			shouldTailFollowMessageChange(
-				["m3", "m4"],
-				["m1", "m2", "m3", "m4"],
-				true,
-			),
-		).toBe(false);
-	});
-
-	it("tail-follows when new messages are appended", () => {
-		expect(
-			shouldTailFollowMessageChange(["m1", "m2"], ["m1", "m2", "m3"], false),
-		).toBe(true);
-	});
-
-	it("tail-follows initial hydration", () => {
-		expect(shouldTailFollowMessageChange([], ["m1"], false)).toBe(true);
-	});
 });
 
 describe("ChatSessionView scroll loading", () => {

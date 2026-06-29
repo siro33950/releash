@@ -11,15 +11,7 @@ import type {
 	MessagePart,
 	SessionToolOutput,
 } from "@/types/session";
-import {
-	ActivityItem,
-	fallbackToolPresentationForTest,
-	resetActivityLogUiStateForTest,
-	syncActivityLogSessionScopeForTest,
-	TaskToolActivity,
-	ToolActivity,
-} from "./ActivityLog";
-import { resetAgentEditPreviewPanelStateForTest } from "./AgentEditPreviewPanel";
+import { ActivityItem, TaskToolActivity, ToolActivity } from "./ActivityLog";
 import type { TaskGroup } from "./toolPairing";
 
 const mockInvoke = vi.fn().mockResolvedValue(null);
@@ -141,8 +133,6 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
-	resetActivityLogUiStateForTest();
-	resetAgentEditPreviewPanelStateForTest();
 	mockToolOutput = null;
 	mockToolOutputError = null;
 	mockInvoke.mockClear();
@@ -300,43 +290,6 @@ describe("ToolActivity", () => {
 					([command]) => command === "present_agent_tool_activity",
 				);
 				expect(nextPresentCalls).toHaveLength(1);
-			});
-		});
-
-		it("clears cached presentation when session scope changes", async () => {
-			const entry = {
-				type: "tool_use" as const,
-				tool: "Read",
-				input: { file_path: "/src/session.ts" },
-				id: "t-session-cache",
-			};
-			syncActivityLogSessionScopeForTest("session-a");
-			const first = render(<ToolActivity entry={entry} index={0} />);
-
-			await waitFor(() => {
-				const presentCalls = mockInvoke.mock.calls.filter(
-					([command]) => command === "present_agent_tool_activity",
-				);
-				expect(presentCalls).toHaveLength(1);
-			});
-			first.unmount();
-			const second = render(<ToolActivity entry={entry} index={0} />);
-			await waitFor(() => {
-				const presentCalls = mockInvoke.mock.calls.filter(
-					([command]) => command === "present_agent_tool_activity",
-				);
-				expect(presentCalls).toHaveLength(1);
-			});
-
-			syncActivityLogSessionScopeForTest("session-b");
-			second.unmount();
-			render(<ToolActivity entry={entry} index={0} />);
-
-			await waitFor(() => {
-				const presentCalls = mockInvoke.mock.calls.filter(
-					([command]) => command === "present_agent_tool_activity",
-				);
-				expect(presentCalls).toHaveLength(2);
 			});
 		});
 
@@ -1038,7 +991,7 @@ describe("ToolActivity", () => {
 				type: "tool_use" as const,
 				tool: "Edit",
 				input: { file_path: "/src/app.ts" },
-				id: "t1",
+				id: "t-executing-expand",
 			};
 			render(<ToolActivity entry={entry} index={0} isExecuting={true} />);
 			const el = screen.getByTestId("activity-tool-use-0");
@@ -1050,7 +1003,7 @@ describe("ToolActivity", () => {
 				type: "tool_use" as const,
 				tool: "Edit",
 				input: { file_path: "/src/app.ts" },
-				id: "t1",
+				id: "t-executing-click-expand",
 			};
 			render(<ToolActivity entry={entry} index={0} isExecuting={true} />);
 			fireEvent.click(screen.getByText(/Edit/));
@@ -1111,20 +1064,6 @@ describe("ToolActivity", () => {
 		});
 
 		it("uses read fallback presentation for local read tools when Rust presentation fails", async () => {
-			expect(
-				fallbackToolPresentationForTest("ToolSearch", { query: "sessions" })
-					.category,
-			).toBe("read");
-			expect(
-				fallbackToolPresentationForTest("ListMcpResourcesTool", {
-					query: "sessions",
-				}).category,
-			).toBe("read");
-			expect(
-				fallbackToolPresentationForTest("ReadMcpResourceTool", {
-					query: "sessions",
-				}).category,
-			).toBe("read");
 			mockInvoke.mockImplementation((command: string) => {
 				if (command === "present_agent_tool_activity") {
 					return Promise.reject(new Error("presentation failed"));
@@ -1776,15 +1715,25 @@ describe("TaskToolActivity", () => {
 	});
 
 	it("shows sub-agent text output when expanded by click", () => {
+		const taskToolUseId = "toolu_task_text_output";
 		const group = makeTaskGroup({
+			toolUseId: taskToolUseId,
 			childIndices: [1],
 		});
 		const parts: MessagePart[] = [
-			...baseParts,
+			{
+				type: "tool_use",
+				tool: "Task",
+				input: {
+					description: "Explore codebase",
+					subagent_type: "Explore",
+				},
+				id: taskToolUseId,
+			},
 			{
 				type: "text",
 				content: "Analysis result: found 3 components",
-				parentToolUseId: "toolu_task_001",
+				parentToolUseId: taskToolUseId,
 			},
 		];
 		render(

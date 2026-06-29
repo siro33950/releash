@@ -5,7 +5,6 @@ import {
 	INITIAL_STATE,
 	reducer,
 	selectActiveSession,
-	selectSessionFromState,
 } from "./agentChatReducer";
 
 function makeSession(overrides?: Partial<ChatSession>): ChatSession {
@@ -1079,20 +1078,6 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("selectors", () => {
-		it("selectSessionFromState returns null when sessionsById has no entry", () => {
-			expect(selectSessionFromState(INITIAL_STATE, "missing")).toBeNull();
-			expect(selectSessionFromState(INITIAL_STATE, null)).toBeNull();
-		});
-
-		it("selectSessionFromState returns the session from sessionsById", () => {
-			const session = makeSession();
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				sessionsById: { [session.id]: session },
-			};
-			expect(selectSessionFromState(state, session.id)).toBe(session);
-		});
-
 		it("selectActiveSession resolves via activeSessionId", () => {
 			const session = makeSession({ id: "active" });
 			const state: AgentChatState = {

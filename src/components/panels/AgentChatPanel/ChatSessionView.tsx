@@ -144,7 +144,7 @@ function isTailAppend(previousIds: string[], nextIds: string[]): boolean {
 	return previousIds.every((id, index) => nextIds[index] === id);
 }
 
-export function shouldTailFollowMessageChange(
+function shouldTailFollowMessageChange(
 	previousIds: string[],
 	nextIds: string[],
 	isNearBottom: boolean,

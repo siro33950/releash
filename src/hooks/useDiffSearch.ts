@@ -98,5 +98,3 @@ export function useDiffSearch(lines: DiffLine[]): DiffSearchState {
 		goToPrev,
 	};
 }
-
-export { findMatches };

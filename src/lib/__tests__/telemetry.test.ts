@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	__resetTelemetryForTests,
 	installFrontendErrorHandlers,
 	reportFrontendError,
 	reportMountedXtermMounted,
@@ -13,7 +12,6 @@ import {
 describe("telemetry", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		__resetTelemetryForTests();
 	});
 
 	it("enabled の場合、Rust の usage event コマンドを呼び出す", () => {

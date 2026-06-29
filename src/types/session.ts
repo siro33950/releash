@@ -47,7 +47,7 @@ export interface ModelInfo {
 	value?: string;
 }
 
-export function getModelInfoModelId(model: ModelInfo): string {
+function getModelInfoModelId(model: ModelInfo): string {
 	return model.modelId ?? model.model_id ?? model.value ?? model.id ?? "";
 }
 
@@ -123,7 +123,7 @@ export type ContextCarryState = "resumed" | "reinjected" | "failed";
 
 export type TurnPhase = "idle" | "streaming" | "waiting_permission";
 
-export interface WorkflowStepContext {
+interface WorkflowStepContext {
 	runId: string;
 	workflowName: string;
 	stepName: string;
@@ -195,7 +195,7 @@ export type MessagePart =
 			attachment: AttachmentRef;
 	  };
 
-export interface AttachmentRef {
+interface AttachmentRef {
 	id: string;
 	mediaType: string;
 	byteSize: number;
@@ -301,13 +301,6 @@ export interface SessionSummary {
 	workflowStepContext?: WorkflowStepContext | null;
 }
 
-export interface SessionSearchResult {
-	session: SessionSummary;
-	matchedMessageId: string;
-	matchedRole: MessageRole;
-	snippet: string;
-}
-
 export interface BackendInfo {
 	id: string;
 	name: string;
@@ -364,8 +357,8 @@ export interface WorkspaceStatus {
 	last_activity_at: number;
 }
 
-export type ImagePart = Extract<MessagePart, { type: "image" }>;
-export type ImageRefPart = Extract<MessagePart, { type: "image_ref" }>;
+type ImagePart = Extract<MessagePart, { type: "image" }>;
+type ImageRefPart = Extract<MessagePart, { type: "image_ref" }>;
 export type DisplayImagePart = ImagePart | ImageRefPart;
 
 export interface ImageAttachment {

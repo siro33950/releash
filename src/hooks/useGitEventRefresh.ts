@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef } from "react";
-import type { FileChangeEvent } from "./useFileWatcher";
+
+interface FileChangeEvent {
+	watcher_id: number;
+	path: string;
+	kind: string;
+}
 
 export function useGitEventRefresh(
 	rootPath: string | null,

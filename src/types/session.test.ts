@@ -4,7 +4,6 @@ import {
 	getModelInfoBackend,
 	getModelInfoDisplayName,
 	getModelInfoId,
-	getModelInfoModelId,
 	getTextContent,
 	normalizeModelSelectionId,
 	normalizePermissionMode,
@@ -76,30 +75,6 @@ describe("normalizePermissionMode", () => {
 });
 
 describe("ModelInfo helpers", () => {
-	describe("getModelInfoModelId", () => {
-		it("uses modelId before model_id, value, and id", () => {
-			expect(
-				getModelInfoModelId({
-					id: "entry-id",
-					value: "legacy-value",
-					model_id: "snake-model",
-					modelId: "camel-model",
-				}),
-			).toBe("camel-model");
-		});
-
-		it("falls back through model_id, value, id, and empty string", () => {
-			expect(getModelInfoModelId({ model_id: "snake-model" })).toBe(
-				"snake-model",
-			);
-			expect(getModelInfoModelId({ value: "legacy-value" })).toBe(
-				"legacy-value",
-			);
-			expect(getModelInfoModelId({ id: "entry-id" })).toBe("entry-id");
-			expect(getModelInfoModelId({})).toBe("");
-		});
-	});
-
 	describe("getModelInfoDisplayName", () => {
 		it("uses displayName before all fallback values", () => {
 			expect(

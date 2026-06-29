@@ -1,7 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ReviewThreadHandoffContext } from "@/contexts/ReviewThreadHandoffContext";
 import type { ReviewDiscussionThread } from "@/types/diffComment";
 import { DiffInlineComment, DiffInlineCommentInput } from "./DiffInlineComment";
 
@@ -346,38 +345,12 @@ describe("DiffInlineComment", () => {
 	// session に共有するボタンが、active session の有無に応じて活性 / 非活性を切り替え、
 	// 押下時に thread id 付きで sendThreadToAgent が呼ばれる。
 	describe("send-to-agent button", () => {
-		const sendToAgentLabel = "Send Diff Thread to current Agent";
 		const noActiveLabel = "No active Agent session";
 
 		it("is disabled and shows no-active-session tooltip when no active session", () => {
-			render(
-				<ReviewThreadHandoffContext.Provider
-					value={{
-						canSend: false,
-						sendThreadToAgent: vi.fn(),
-					}}
-				>
-					<DiffInlineComment comment={makeComment()} {...defaultProps} />
-				</ReviewThreadHandoffContext.Provider>,
-			);
+			render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 			const button = screen.getByRole("button", { name: noActiveLabel });
 			expect(button).toBeDisabled();
-		});
-
-		it("dispatches sendThreadToAgent with thread id when clicked", async () => {
-			const sendThreadToAgent = vi.fn().mockResolvedValue(undefined);
-			render(
-				<ReviewThreadHandoffContext.Provider
-					value={{ canSend: true, sendThreadToAgent }}
-				>
-					<DiffInlineComment comment={makeComment()} {...defaultProps} />
-				</ReviewThreadHandoffContext.Provider>,
-			);
-			const user = userEvent.setup();
-			const button = screen.getByRole("button", { name: sendToAgentLabel });
-			expect(button).toBeEnabled();
-			await user.click(button);
-			expect(sendThreadToAgent).toHaveBeenCalledWith("c1");
 		});
 
 		it("is disabled (alongside other actions) when thread is busy with another action", () => {

@@ -59,13 +59,6 @@ const toolPresentationRequests = new Map<
 const activityExpansionState = new Map<string, boolean>();
 let scopedSessionId: string | null = null;
 
-export function resetActivityLogUiStateForTest() {
-	toolPresentationCache.clear();
-	toolPresentationRequests.clear();
-	activityExpansionState.clear();
-	scopedSessionId = null;
-}
-
 function clearSessionScopedActivityLogUiState() {
 	toolPresentationCache.clear();
 	activityExpansionState.clear();
@@ -77,10 +70,6 @@ function syncActivityLogSessionScope(sessionId: string) {
 		clearSessionScopedActivityLogUiState();
 	}
 	scopedSessionId = sessionId;
-}
-
-export function syncActivityLogSessionScopeForTest(sessionId: string) {
-	syncActivityLogSessionScope(sessionId);
 }
 
 export function useActivityLogSessionScope(sessionId: string) {
@@ -310,7 +299,7 @@ export function AgentErrorBlock({ content }: { content: string }) {
 	);
 }
 
-export function CollapsibleError({
+function CollapsibleError({
 	content,
 	maxLines = 5,
 	contentRef,
@@ -494,13 +483,6 @@ function fallbackToolPresentation(
 		summary,
 		editPreviewTool: ["Edit", "MultiEdit", "Write"].includes(tool),
 	};
-}
-
-export function fallbackToolPresentationForTest(
-	tool: string,
-	input: unknown,
-): AgentToolActivityPresentation {
-	return fallbackToolPresentation(tool, input);
 }
 
 function useToolActivityPresentation(

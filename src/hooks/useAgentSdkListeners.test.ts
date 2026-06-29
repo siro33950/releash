@@ -1,16 +1,15 @@
 import { renderHook } from "@testing-library/react";
 import { describe, expect, it, type Mock, vi } from "vitest";
-import type {
-	AgentSdkListenerRefs,
-	ViewableSessionRegistry,
-} from "./useAgentSdkListeners";
+import type { AgentSdkListenerRefs } from "./useAgentSdkListeners";
 
 type ListenCallback = (event: { payload: unknown }) => void;
 type UnlistenFn = Mock;
 
 /** Test-friendly registry: tests can mutate the viewable id set directly. */
-interface TestViewableRegistry extends ViewableSessionRegistry {
+interface TestViewableRegistry {
 	viewableIds: Set<string>;
+	register: (sessionId: string) => () => void;
+	getIds: () => Set<string>;
 }
 
 type TestRefs = Omit<AgentSdkListenerRefs, "dispatch" | "viewableRegistry"> & {
