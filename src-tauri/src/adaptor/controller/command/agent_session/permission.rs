@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
-
-use crate::infrastructure::agent_session::runtime::{AgentBackendRegistry, AgentProcessMap};
-use crate::usecase::agent_session::session::SessionStore;
+use crate::domain::agent_session::entities::{PermissionResponse, PermissionResponseDecision};
+use crate::domain::agent_session::value_objects::JsonPayload;
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
+use crate::usecase::agent_session::session::{PermissionRequestKindMsg, PermissionRequestMsg};
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -217,39 +217,124 @@ pub(crate) fn present_agent_permission_request_inner(
     }
 }
 
-#[tauri::command]
-pub fn present_agent_permission_request(
-    tool_name: String,
-    input: serde_json::Value,
+fn present_agent_permission_request_from_msg(
+    request: &PermissionRequestMsg,
 ) -> AgentPermissionPresentation {
-    present_agent_permission_request_inner(&tool_name, &input)
+    let input = request
+        .input
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut presentation = present_agent_permission_request_inner(&request.tool_name, &input);
+    match request.kind {
+        PermissionRequestKindMsg::PlanApproval => {
+            presentation.kind = "exit_plan".to_string();
+            presentation.plan = request.plan.clone().unwrap_or_default();
+            presentation.allowed_prompts = request
+                .allowed_prompts
+                .iter()
+                .map(|prompt| AgentPermissionAllowedPrompt {
+                    tool: prompt.tool.clone(),
+                    prompt: prompt.prompt.clone(),
+                })
+                .collect();
+            presentation.has_resolved_detail =
+                !presentation.plan.is_empty() || !presentation.allowed_prompts.is_empty();
+        }
+        PermissionRequestKindMsg::Question => {
+            presentation.kind = "ask_user_question".to_string();
+            presentation.questions = request
+                .questions
+                .iter()
+                .map(|question| AgentPermissionQuestion {
+                    question: question.question.clone(),
+                    header: question.header.clone().unwrap_or_default(),
+                    options: question
+                        .options
+                        .iter()
+                        .map(|option| AgentPermissionQuestionOption {
+                            label: option.label.clone(),
+                            description: option.description.clone().unwrap_or_default(),
+                        })
+                        .collect(),
+                    multi_select: question.multi_select,
+                })
+                .collect();
+            presentation.has_resolved_detail = !presentation.questions.is_empty();
+        }
+        PermissionRequestKindMsg::ToolApproval | PermissionRequestKindMsg::PermissionGrant => {}
+    }
+    presentation
+}
+
+#[tauri::command]
+pub async fn present_agent_permission_request(
+    runtime: tauri::State<'_, Arc<AgentSessionRuntimeUsecase>>,
+    chat_session_id: String,
+    request_id: String,
+) -> Result<AgentPermissionPresentation, String> {
+    let request = runtime
+        .find_permission_request(&chat_session_id, &request_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Permission request not found: {request_id}"))?;
+    Ok(present_agent_permission_request_from_msg(&request))
 }
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn respond_agent_permission(
-    app: tauri::AppHandle,
-    session_store: tauri::State<'_, Arc<SessionStore>>,
-    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
-    registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
+    runtime: tauri::State<'_, Arc<AgentSessionRuntimeUsecase>>,
     chat_session_id: String,
     request_id: String,
     behavior: String,
     message: Option<String>,
     updated_input: Option<String>,
 ) -> Result<(), String> {
-    crate::infrastructure::agent_session::runtime::respond_agent_permission(
-        app,
-        session_store,
-        handles,
-        registry,
-        chat_session_id,
-        request_id,
-        behavior,
-        message,
-        updated_input,
-    )
-    .await
+    let response = permission_response_from_command(request_id, behavior, message, updated_input)?;
+    runtime
+        .respond_permission(&chat_session_id, response)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn permission_response_from_command(
+    request_id: String,
+    behavior: String,
+    message: Option<String>,
+    updated_input: Option<String>,
+) -> Result<PermissionResponse, String> {
+    match behavior.as_str() {
+        "allow" => {
+            let (updated_input, answers) = split_updated_input_and_answers(updated_input)?;
+            Ok(PermissionResponse {
+                request_id,
+                decision: PermissionResponseDecision::Allow {
+                    updated_input,
+                    answers,
+                },
+            })
+        }
+        "deny" => Ok(PermissionResponse {
+            request_id,
+            decision: PermissionResponseDecision::Deny { message },
+        }),
+        other => Err(format!("Unsupported permission behavior: {other}")),
+    }
+}
+
+fn split_updated_input_and_answers(
+    updated_input: Option<String>,
+) -> Result<(Option<JsonPayload>, Option<JsonPayload>), String> {
+    let Some(updated_input) = updated_input else {
+        return Ok((None, None));
+    };
+    let mut value = serde_json::from_str::<serde_json::Value>(&updated_input)
+        .map_err(|error| format!("Invalid updated_input JSON: {error}"))?;
+    let answers = value
+        .as_object_mut()
+        .and_then(|object| object.remove("answers"))
+        .map(|answers| JsonPayload::new_unchecked(answers.to_string()));
+    Ok((Some(JsonPayload::new_unchecked(value.to_string())), answers))
 }
 
 #[cfg(test)]
@@ -337,5 +422,61 @@ mod tests {
         assert_eq!(result.questions[0].question, "Pick one");
         assert!(result.questions[0].multi_select);
         assert!(result.has_resolved_detail);
+    }
+
+    #[test]
+    fn permission_response_allow_splits_answers_from_updated_input() {
+        let response = permission_response_from_command(
+            "req-1".to_string(),
+            "allow".to_string(),
+            None,
+            Some(r#"{"command":"test","answers":{"choice":"yes"}}"#.to_string()),
+        )
+        .unwrap();
+
+        let PermissionResponseDecision::Allow {
+            updated_input,
+            answers,
+        } = response.decision
+        else {
+            panic!("expected allow response");
+        };
+        assert_eq!(response.request_id, "req-1");
+        assert_eq!(updated_input.unwrap().as_str(), r#"{"command":"test"}"#);
+        assert_eq!(answers.unwrap().as_str(), r#"{"choice":"yes"}"#);
+    }
+
+    #[test]
+    fn permission_response_deny_preserves_message() {
+        let response = permission_response_from_command(
+            "req-2".to_string(),
+            "deny".to_string(),
+            Some("no".to_string()),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            response.decision,
+            PermissionResponseDecision::Deny {
+                message: Some("no".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn permission_response_rejects_unsupported_behavior() {
+        let error =
+            permission_response_from_command("req-3".to_string(), "maybe".to_string(), None, None)
+                .unwrap_err();
+
+        assert!(error.contains("Unsupported permission behavior"));
+    }
+
+    #[test]
+    fn split_updated_input_rejects_invalid_json() {
+        let error = split_updated_input_and_answers(Some("{".to_string())).unwrap_err();
+
+        assert!(error.contains("Invalid updated_input JSON"));
     }
 }

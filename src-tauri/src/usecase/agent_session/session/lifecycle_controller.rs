@@ -31,7 +31,7 @@ impl<'a> SessionLifecycleController<'a> {
     }
 
     pub fn completed_turn_session_state(exit_code: i64, interrupted: bool) -> SessionState {
-        if interrupted {
+        if interrupted && exit_code == 0 {
             SessionState::Idle
         } else if exit_code == 0 {
             SessionState::Done
@@ -99,7 +99,7 @@ mod tests {
         );
         assert_eq!(
             SessionLifecycleController::completed_turn_session_state(1, true),
-            SessionState::Idle
+            SessionState::Error
         );
     }
 
@@ -107,8 +107,13 @@ mod tests {
     fn complete_turn_state_updates_session_metadata() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
-        let session =
-            super::super::create_session_internal(&store, temp.path(), "/repo", None).unwrap();
+        let session = super::super::create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
 
         let controller = SessionLifecycleController {
             session_store: &store,
@@ -130,8 +135,13 @@ mod tests {
     fn complete_turn_state_returns_existing_state_when_guard_skips_update() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
-        let mut session =
-            super::super::create_session_internal(&store, temp.path(), "/repo", None).unwrap();
+        let mut session = super::super::create_session_internal(
+            &store,
+            temp.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
         session.workflow_step_session = true;
         session.state = SessionState::Closed;
         store

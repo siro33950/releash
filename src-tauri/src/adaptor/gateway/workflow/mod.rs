@@ -83,12 +83,12 @@ pub(crate) use pending_repository::{
     process_pending_workflow_command_entry, PendingWorkflowCommandFileRepository,
 };
 pub(crate) use run_repository::WorkflowRunFileRepository;
-pub(crate) use runtime_command_gateway::TauriWorkflowRuntimeCommandGateway;
+pub(crate) use runtime_command_gateway::{
+    TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
+};
 #[cfg(test)]
 pub(crate) use secret_source_gateway::EmptySecretSourceGateway;
 pub(crate) use secret_source_gateway::WorkflowSecretSourceConfigGateway;
-#[cfg(test)]
-pub(crate) use state_notification_gateway::build_workflow_state_projection_from_snapshot;
 pub(crate) use state_notification_gateway::{
     build_workflow_state_view_from_snapshot, emit_workflow_state_from_snapshot,
     emit_workflow_state_snapshot,
@@ -98,8 +98,7 @@ pub(crate) use step_detail_projection_repository::WorkflowStepDetailProjectionLo
 #[cfg(test)]
 pub(crate) use step_lifecycle_adapters::close_step_session_tab_state;
 pub(crate) use step_lifecycle_adapters::{
-    hydrate_open_workflow_step_tabs, mark_started_step_tab_open, release_step_runtime_on_done,
-    TauriWorkflowStepLifecycleGateway,
+    mark_started_step_tab_open, release_step_runtime_on_done, TauriWorkflowStepLifecycleGateway,
 };
 #[cfg(test)]
 pub(crate) use step_lifecycle_adapters::{

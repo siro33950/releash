@@ -4,6 +4,7 @@ pub(crate) mod lifecycle_controller;
 mod message_window;
 mod open_tabs;
 mod prompt_suggestion;
+mod read_model;
 mod read_paths;
 mod store;
 mod stored_lifecycle;
@@ -11,14 +12,22 @@ mod stored_lifecycle;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::domain::agent_session::entities::{
+    decide_tool_result_merge, ToolResultMergeDecision, ToolResultUpdate,
+};
 use crate::domain::agent_session::services::{
     DefaultToolOutputExternalizationPolicy, ToolOutputExternalizationPolicy,
+};
+use crate::domain::agent_session::value_objects::{
+    ToolOutputRef as DomainToolOutputRef, ToolOutputSummary as DomainToolOutputSummary,
 };
 use crate::domain::workflow::WorkflowStepContext;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
 
 pub use crate::usecase::agent_session::status::TurnPhase;
-pub(crate) use image_attachment::validate_image_bytes;
+pub(crate) use image_attachment::{
+    prepare_image_attachment_data, prepare_image_attachments_from_paths_usecase, ImageAttachment,
+};
 pub(crate) use message_window::{
     plan_agent_chat_eviction, AgentChatEvictionPlan, AgentChatEvictionPlanRequest,
 };
@@ -27,13 +36,17 @@ pub(crate) use prompt_suggestion::{
     AgentPromptGitStatusGateway, AgentPromptSuggestion, AgentPromptSuggestionUsecase,
     GitSuggestionContext,
 };
+pub(crate) use read_model::{
+    build_agent_task_list_report_from_parts, search_agent_session_messages, search_agent_sessions,
+    AgentTaskListReport, AgentThreadSearchMatch, SessionSearchResult,
+};
 pub(crate) use read_paths::{
     agent_read_paths_from_message, agent_read_paths_from_messages, agent_read_paths_from_parts,
     merge_agent_read_paths,
 };
 pub use store::{SessionReaderPort, SessionReviewContextReader, SessionStore};
 pub(crate) use stored_lifecycle::{
-    AgentSessionRuntimeCloser, CodexThreadForkRequest, CodexThreadLifecycleGateway,
+    AgentSessionBackendLifecycleGateway, AgentSessionRuntimeCloser, BackendSessionLifecycleRequest,
     StoredSessionLifecycleUsecase,
 };
 
@@ -45,12 +58,104 @@ pub struct TodoListItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionAllowedPromptMsg {
+    pub tool: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionQuestionOptionMsg {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionQuestionMsg {
+    pub question: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub header: Option<String>,
+    #[serde(default)]
+    pub options: Vec<PermissionQuestionOptionMsg>,
+    pub multi_select: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionRequestKindMsg {
+    ToolApproval,
+    PlanApproval,
+    Question,
+    PermissionGrant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionPartStatus {
+    Pending,
+    Allowed,
+    Denied,
+    Cancelled,
+}
+
+impl PermissionPartStatus {
+    pub fn from_wire(status: &str) -> Option<Self> {
+        match status {
+            "pending" => Some(Self::Pending),
+            "allowed" | "allow" => Some(Self::Allowed),
+            "denied" | "deny" => Some(Self::Denied),
+            "cancelled" | "canceled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Allowed => "allowed",
+            Self::Denied => "denied",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRequestMsg {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_use_id: Option<String>,
+    pub tool_name: String,
+    pub kind: PermissionRequestKindMsg,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub input: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_prompts: Vec<PermissionAllowedPromptMsg>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<PermissionQuestionMsg>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub decision_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SystemNotificationType {
     Compaction,
 }
 
 impl SystemNotificationType {
+    #[allow(dead_code)] // issues-1301 F-6: retained for system-notification presentation compatibility.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Compaction => "compaction",
@@ -60,6 +165,7 @@ impl SystemNotificationType {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum MessagePart {
     Thinking {
         content: String,
@@ -121,8 +227,8 @@ pub enum MessagePart {
         parent_tool_use_id: Option<String>,
     },
     Permission {
-        request: serde_json::Value,
-        status: String,
+        request: PermissionRequestMsg,
+        status: PermissionPartStatus,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         answers: Option<serde_json::Value>,
         #[serde(
@@ -212,6 +318,7 @@ impl MessageMention {
         }
     }
 
+    #[allow(dead_code)] // issues-1301 F-3/G-1: retained for Rust-owned mention expansion from stored message mentions.
     pub fn into_domain(self) -> crate::domain::code::MentionReference {
         crate::domain::code::MentionReference {
             file_path: self.file_path,
@@ -312,6 +419,7 @@ pub trait SessionBackendResolver {
     fn resolve_backend_id(&self, backend_id: Option<String>) -> Result<String, String>;
     fn default_model_for(&self, backend_id: &str) -> Result<String, String>;
     fn backend_exists(&self, backend_id: &str) -> bool;
+    #[cfg(test)]
     fn resolve_default_id(&self) -> Result<String, String>;
 }
 
@@ -332,6 +440,7 @@ where
         self.as_ref().backend_exists(backend_id)
     }
 
+    #[cfg(test)]
     fn resolve_default_id(&self) -> Result<String, String> {
         self.as_ref().resolve_default_id()
     }
@@ -483,8 +592,7 @@ pub struct SessionMeta {
     pub selected_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub permission_profile_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub backend_id: Option<String>,
+    pub backend_id: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow_step_session: bool,
     /// workflow step session の context（step 名等）。message body と異なり軽量な
@@ -521,7 +629,7 @@ impl From<SessionMeta> for SessionReviewContext {
             worktree_path: meta.worktree_path,
             state: meta.state,
             selected_model: meta.selected_model,
-            backend_id: meta.backend_id,
+            backend_id: Some(meta.backend_id),
         }
     }
 }
@@ -551,55 +659,42 @@ pub struct ToolOutputSummary {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolResultMergeDecision {
-    Merge,
-    Replace,
-    AppendSeparate,
-    Skip,
-}
-
-pub(crate) fn decide_tool_result_merge(
-    existing_content_ref: &Option<ToolOutputRef>,
-    existing_is_error: bool,
-    incoming_content_ref: &Option<ToolOutputRef>,
-    incoming_is_error: bool,
-    incoming_content: &str,
-) -> ToolResultMergeDecision {
-    if existing_is_error && !incoming_is_error && incoming_content_ref.is_none() {
-        ToolResultMergeDecision::Merge
-    } else if existing_content_ref.is_some() && incoming_content_ref.is_none() {
-        if incoming_content.is_empty() {
-            ToolResultMergeDecision::Skip
-        } else {
-            ToolResultMergeDecision::AppendSeparate
+impl From<ToolOutputRef> for DomainToolOutputRef {
+    fn from(value: ToolOutputRef) -> Self {
+        Self {
+            id: value.id,
+            byte_size: value.byte_size,
         }
-    } else if incoming_content_ref.is_some() {
-        ToolResultMergeDecision::Replace
-    } else {
-        ToolResultMergeDecision::Merge
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct ToolResultUpdate {
-    pub content: String,
-    pub is_error: bool,
-    pub tool_use_id: Option<String>,
-    pub parent_tool_use_id: Option<String>,
-    pub content_ref: Option<ToolOutputRef>,
-    pub summary: Option<ToolOutputSummary>,
+impl From<DomainToolOutputRef> for ToolOutputRef {
+    fn from(value: DomainToolOutputRef) -> Self {
+        Self {
+            id: value.id,
+            byte_size: value.byte_size,
+        }
+    }
 }
 
-impl ToolResultUpdate {
-    pub(crate) fn into_part(self) -> MessagePart {
-        MessagePart::ToolResult {
-            content: self.content,
-            is_error: self.is_error,
-            tool_use_id: self.tool_use_id,
-            parent_tool_use_id: self.parent_tool_use_id,
-            content_ref: self.content_ref,
-            summary: self.summary,
+impl From<ToolOutputSummary> for DomainToolOutputSummary {
+    fn from(value: ToolOutputSummary) -> Self {
+        Self {
+            line_count: value.line_count,
+            byte_size: value.byte_size,
+            is_error: value.is_error,
+            truncated: value.truncated,
+        }
+    }
+}
+
+impl From<DomainToolOutputSummary> for ToolOutputSummary {
+    fn from(value: DomainToolOutputSummary) -> Self {
+        Self {
+            line_count: value.line_count,
+            byte_size: value.byte_size,
+            is_error: value.is_error,
+            truncated: value.truncated,
         }
     }
 }
@@ -613,8 +708,19 @@ fn tool_result_delta_from_update(
         is_error: update.is_error,
         tool_use_id: update.tool_use_id.clone(),
         parent_tool_use_id,
-        content_ref: update.content_ref.clone(),
-        summary: update.summary.clone(),
+        content_ref: update.content_ref.clone().map(Into::into),
+        summary: update.summary.clone().map(Into::into),
+    }
+}
+
+fn tool_result_part_from_update(update: ToolResultUpdate) -> MessagePart {
+    MessagePart::ToolResult {
+        content: update.content,
+        is_error: update.is_error,
+        tool_use_id: update.tool_use_id,
+        parent_tool_use_id: update.parent_tool_use_id,
+        content_ref: update.content_ref.map(Into::into),
+        summary: update.summary.map(Into::into),
     }
 }
 
@@ -623,7 +729,7 @@ pub(crate) fn apply_tool_result_update(
     update: ToolResultUpdate,
 ) -> Option<MessagePart> {
     let Some(tool_use_id) = update.tool_use_id.as_deref() else {
-        parts.push(update.into_part());
+        parts.push(tool_result_part_from_update(update));
         return None;
     };
     let Some(existing_index) = parts.iter().rposition(|part| {
@@ -635,7 +741,7 @@ pub(crate) fn apply_tool_result_update(
             } if id == tool_use_id
         )
     }) else {
-        parts.push(update.into_part());
+        parts.push(tool_result_part_from_update(update));
         return None;
     };
 
@@ -651,8 +757,9 @@ pub(crate) fn apply_tool_result_update(
         return None;
     };
 
+    let existing_domain_content_ref = existing_content_ref.clone().map(Into::into);
     let decision = decide_tool_result_merge(
-        existing_content_ref,
+        &existing_domain_content_ref,
         *existing_error,
         &update.content_ref,
         update.is_error,
@@ -661,7 +768,7 @@ pub(crate) fn apply_tool_result_update(
     match decision {
         ToolResultMergeDecision::Skip => None,
         ToolResultMergeDecision::AppendSeparate => {
-            parts.push(update.into_part());
+            parts.push(tool_result_part_from_update(update));
             None
         }
         ToolResultMergeDecision::Replace => {
@@ -670,8 +777,8 @@ pub(crate) fn apply_tool_result_update(
             }
             *existing_content = update.content.clone();
             *existing_error = update.is_error;
-            *existing_content_ref = update.content_ref.clone();
-            *existing_summary = update.summary.clone();
+            *existing_content_ref = update.content_ref.clone().map(Into::into);
+            *existing_summary = update.summary.clone().map(Into::into);
             Some(tool_result_delta_from_update(
                 &update,
                 existing_parent_tool_use_id.clone(),
@@ -690,12 +797,12 @@ pub(crate) fn apply_tool_result_update(
                 if update.content.contains(existing_content.as_str()) || existing_content.is_empty()
                 {
                     *existing_content = update.content.clone();
-                    *existing_summary = update.summary.clone();
+                    *existing_summary = update.summary.clone().map(Into::into);
                 } else {
                     existing_content.push_str(&update.content);
                     *existing_summary = None;
                 }
-                *existing_content_ref = update.content_ref.clone();
+                *existing_content_ref = update.content_ref.clone().map(Into::into);
                 *existing_error = *existing_error || update.is_error;
             }
             Some(tool_result_delta_from_update(
@@ -824,6 +931,7 @@ pub struct GetSessionResponse {
     pub session: ChatSession,
     pub turn_phase: TurnPhase,
     pub available_models: Vec<ModelInfo>,
+    pub can_change_backend: bool,
     pub pending_queue: Vec<QueuedAgentTurn>,
     pub pending_queue_count: usize,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -943,7 +1051,7 @@ impl SessionMeta {
             plan_mode: session.plan_mode,
             selected_model: session.selected_model.clone(),
             permission_profile_id: session.permission_profile_id.clone(),
-            backend_id: session.backend_id.clone(),
+            backend_id: session.backend_id.clone().unwrap_or_default(),
             workflow_step_session: session.is_workflow_step_session(),
             workflow_step_context: session.workflow_step_context.clone(),
             workflow_instructions: Vec::new(),
@@ -969,7 +1077,7 @@ impl SessionMeta {
             plan_mode: self.plan_mode,
             selected_model: self.selected_model.clone(),
             permission_profile_id: self.permission_profile_id.clone(),
-            backend_id: self.backend_id.clone(),
+            backend_id: Some(self.backend_id.clone()),
             workflow_step_session: self.is_workflow_step_session(),
             workflow_step_context: self.workflow_step_context.clone(),
             context_epoch: self.context_epoch.clone(),
@@ -990,7 +1098,7 @@ impl SessionMeta {
             permission_mode: self.permission_mode.clone(),
             plan_mode: self.plan_mode,
             permission_profile_id: self.permission_profile_id.clone(),
-            backend_id: self.backend_id.clone(),
+            backend_id: Some(self.backend_id.clone()),
             workflow_step_session: self.is_workflow_step_session(),
             workflow_step_context: self.workflow_step_context.clone(),
         }
@@ -1075,12 +1183,8 @@ pub fn parts_to_legacy(
                 answers,
                 ..
             } => {
-                if status != "pending" {
-                    let tool_name = request
-                        .get("tool_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                if *status != PermissionPartStatus::Pending {
+                    let tool_name = request.tool_name.clone();
                     let summary = answers
                         .as_ref()
                         .and_then(|a| a.as_object())
@@ -1090,10 +1194,10 @@ pub fn parts_to_legacy(
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         })
-                        .unwrap_or_else(|| status.clone());
+                        .unwrap_or_else(|| status.as_str().to_string());
                     activities.push(ActivityEntry::PermissionResult {
                         tool_name,
-                        status: status.clone(),
+                        status: status.as_str().to_string(),
                         summary,
                     });
                 }
@@ -1376,7 +1480,7 @@ pub(crate) fn update_session_state_in_data_dir(
 /// セッション復元時の backend_id 検証・解決ロジック。
 /// - backend_id が Some かつ registry に存在 → Ok
 /// - backend_id が Some だが registry に不在 → Err
-/// - backend_id が None → デフォルトを代入して Ok
+/// - backend_id が None → Err（既存 invalid session 隔離へ落とす）
 pub fn resolve_session_backend(
     session: &mut ChatSession,
     registry: &impl SessionBackendResolver,
@@ -1389,8 +1493,7 @@ pub fn resolve_session_backend(
             ));
         }
     } else {
-        let default_id = registry.resolve_default_id()?;
-        session.backend_id = Some(default_id);
+        return Err(format!("Session {} is missing backend_id", session.id));
     }
     Ok(())
 }
@@ -1459,6 +1562,7 @@ mod tests {
             self.existing.contains(backend_id)
         }
 
+        #[cfg(test)]
         fn resolve_default_id(&self) -> Result<String, String> {
             self.default_id
                 .clone()
@@ -1650,6 +1754,7 @@ mod tests {
             session,
             turn_phase: TurnPhase::Idle,
             available_models: Vec::new(),
+            can_change_backend: false,
             pending_queue: Vec::new(),
             pending_queue_count: 0,
             initial_page: None,
@@ -1743,7 +1848,7 @@ mod tests {
                 plan_mode: false,
                 permission_profile_id: None,
                 selected_model: None,
-                backend_id: None,
+                backend_id: Some("claude".to_string()),
                 workflow_step_session: false,
                 workflow_step_context: None,
                 context_epoch: None,
@@ -1781,7 +1886,7 @@ mod tests {
             plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
-            backend_id: None,
+            backend_id: Some("claude".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
             context_epoch: None,
@@ -1820,7 +1925,7 @@ mod tests {
             plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
-            backend_id: None,
+            backend_id: Some("claude".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
             context_epoch: None,
@@ -1857,7 +1962,7 @@ mod tests {
             plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
-            backend_id: None,
+            backend_id: Some("claude".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
             context_epoch: None,
@@ -1884,7 +1989,7 @@ mod tests {
             plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
-            backend_id: None,
+            backend_id: Some("claude".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
             context_epoch: None,
@@ -1914,7 +2019,7 @@ mod tests {
             plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
-            backend_id: None,
+            backend_id: Some("claude".to_string()),
             workflow_step_session: true,
             workflow_step_context: None,
             context_epoch: None,
@@ -1974,7 +2079,7 @@ mod tests {
             plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
-            backend_id: None,
+            backend_id: Some("claude".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
             context_epoch: None,
@@ -2042,7 +2147,7 @@ mod tests {
             plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
-            backend_id: None,
+            backend_id: Some("claude".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
             context_epoch: None,
@@ -2197,7 +2302,7 @@ mod tests {
             plan_mode: false,
             permission_profile_id: None,
             selected_model: None,
-            backend_id: None,
+            backend_id: Some("claude".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
             context_epoch: None,
@@ -2233,7 +2338,7 @@ mod tests {
             plan_mode: false,
             permission_profile_id: None,
             selected_model: Some("claude-opus-4-6".to_string()),
-            backend_id: None,
+            backend_id: Some("claude".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
             context_epoch: None,
@@ -2370,8 +2475,21 @@ mod tests {
                 summary: None,
             },
             MessagePart::Permission {
-                request: serde_json::json!({"request_id": "r1", "tool_name": "Bash"}),
-                status: "allowed".to_string(),
+                request: PermissionRequestMsg {
+                    id: "r1".to_string(),
+                    tool_use_id: Some("toolu_1".to_string()),
+                    tool_name: "Bash".to_string(),
+                    kind: PermissionRequestKindMsg::ToolApproval,
+                    input: Some(serde_json::json!({"command": "echo hi"})),
+                    plan: None,
+                    allowed_prompts: Vec::new(),
+                    questions: Vec::new(),
+                    title: None,
+                    display_name: None,
+                    description: None,
+                    decision_reason: None,
+                },
+                status: PermissionPartStatus::Allowed,
                 answers: Some(serde_json::json!({"q1": "yes"})),
                 parent_tool_use_id: None,
             },
@@ -2435,8 +2553,21 @@ mod tests {
     #[test]
     fn message_part_permission_without_answers_serializes() {
         let part = MessagePart::Permission {
-            request: serde_json::json!({"request_id": "r1"}),
-            status: "pending".to_string(),
+            request: PermissionRequestMsg {
+                id: "r1".to_string(),
+                tool_use_id: None,
+                tool_name: "Bash".to_string(),
+                kind: PermissionRequestKindMsg::ToolApproval,
+                input: Some(serde_json::json!({})),
+                plan: None,
+                allowed_prompts: Vec::new(),
+                questions: Vec::new(),
+                title: None,
+                display_name: None,
+                description: None,
+                decision_reason: None,
+            },
+            status: PermissionPartStatus::Pending,
             answers: None,
             parent_tool_use_id: None,
         };
@@ -2709,8 +2840,8 @@ mod tests {
     fn create_session_internal_without_backend_id() {
         let store = crate::test_support::build_session_store();
         let dir = tempfile::tempdir().unwrap();
-        let session = create_session_internal(&store, dir.path(), "/repo", None).unwrap();
-        assert_eq!(session.backend_id, None);
+        let error = create_session_internal(&store, dir.path(), "/repo", None).unwrap_err();
+        assert!(error.contains("Invalid session data"));
     }
 
     // Spec issues-947: セッション開始経路は `create_session_internal_with_permission`
@@ -2746,10 +2877,7 @@ mod tests {
 
     fn test_backend_registry() -> TestBackendResolver {
         TestBackendResolver::default()
-            .with_backend(
-                "claude",
-                crate::domain::agent_session::CLAUDE_FIXED_MODELS[0],
-            )
+            .with_backend("claude", "claude-opus-4-8")
             .with_default("claude")
     }
 
@@ -2815,11 +2943,8 @@ mod tests {
 
     fn fixed_model_registry() -> TestBackendResolver {
         TestBackendResolver::default()
-            .with_backend(
-                "claude",
-                crate::domain::agent_session::CLAUDE_FIXED_MODELS[0],
-            )
-            .with_backend("codex", crate::domain::agent_session::CODEX_FIXED_MODELS[0])
+            .with_backend("claude", "claude-opus-4-8")
+            .with_backend("codex", "gpt-5.5")
             .with_default("claude")
     }
 
@@ -2832,7 +2957,7 @@ mod tests {
         let registry = fixed_model_registry();
 
         // 永続化される selected_model は bare model_id（entry id ではない）。
-        let default_model = crate::domain::agent_session::CLAUDE_FIXED_MODELS[0].to_string();
+        let default_model = "claude-opus-4-8".to_string();
 
         let session = create_session_with_initial_model(
             &store,
@@ -2861,7 +2986,7 @@ mod tests {
         let registry = fixed_model_registry();
 
         // 永続化される selected_model は bare model_id（entry id ではない）。
-        let default_model = crate::domain::agent_session::CODEX_FIXED_MODELS[0].to_string();
+        let default_model = "gpt-5.5".to_string();
 
         let session = create_session_with_initial_model(
             &store,
@@ -2900,10 +3025,10 @@ mod tests {
     }
 
     #[test]
-    fn chat_session_without_backend_id_deserializes() {
-        let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0,"permissionMode":"edit"}"#;
-        let session: ChatSession = serde_json::from_str(json).unwrap();
-        assert_eq!(session.backend_id, None);
+    fn session_meta_without_backend_id_fails_deserialize() {
+        let json = r#"{"id":"s1","worktreePath":"/repo","state":"active","createdAt":1000.0,"updatedAt":1000.0,"permissionMode":"edit","firstMessagePreview":"","messageCount":0,"bodyFormatVersion":1}"#;
+        let result: Result<SessionMeta, _> = serde_json::from_str(json);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2995,10 +3120,7 @@ mod tests {
 
         fn make_registry_with_claude() -> TestBackendResolver {
             TestBackendResolver::default()
-                .with_backend(
-                    "claude",
-                    crate::domain::agent_session::CLAUDE_FIXED_MODELS[0],
-                )
+                .with_backend("claude", "claude-opus-4-8")
                 .with_default("claude")
         }
 
@@ -3021,15 +3143,16 @@ mod tests {
         }
 
         #[test]
-        fn restore_without_backend_id_assigns_default() {
+        fn restore_without_backend_id_returns_error() {
             let registry = make_registry_with_claude();
             let mut session = make_session(None);
             assert_eq!(session.backend_id, None);
 
             let result = resolve_session_backend(&mut session, &registry);
 
-            assert!(result.is_ok());
-            assert_eq!(session.backend_id, Some("claude".to_string()));
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("missing backend_id"));
+            assert_eq!(session.backend_id, None);
         }
     }
 }

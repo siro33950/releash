@@ -204,7 +204,7 @@ describe("MessageInput", () => {
 		expect(screen.getByLabelText("Interrupt agent")).toBeDefined();
 	});
 
-	it("labels streaming Codex sends as active-turn steering", () => {
+	it("labels streaming Codex sends from backend capabilities", () => {
 		render(
 			<MessageInput
 				{...defaultProps}
@@ -214,8 +214,8 @@ describe("MessageInput", () => {
 		);
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "Add this constraint" } });
-		expect(screen.getByText("Steer active turn")).toBeInTheDocument();
-		expect(screen.getByLabelText("Steer active turn")).toBeDefined();
+		expect(screen.getByText("Queue follow-up")).toBeInTheDocument();
+		expect(screen.getByLabelText("Queue message")).toBeDefined();
 		expect(screen.getByLabelText("Interrupt agent")).toBeDefined();
 	});
 
@@ -942,17 +942,15 @@ describe("MessageInput mention popup", () => {
 		expect(mockInvoke).toHaveBeenCalledWith("list_mentionable_files", {
 			worktreePath: "/test/repo",
 			query: "",
+			backendId: undefined,
 		});
 		expect(screen.getByTestId("mention-file-list")).toBeDefined();
 	});
 
-	it("uses Codex runtime fuzzy file search for Codex mention popup", async () => {
+	it("passes Codex backend id to unified mention popup search", async () => {
 		mockInvoke.mockImplementation((command) => {
-			if (command === "read_codex_mentionable_files") {
-				return Promise.resolve(["src/codex.rs"]);
-			}
 			if (command === "list_mentionable_files") {
-				return Promise.resolve(mentionFiles);
+				return Promise.resolve(["src/codex.rs"]);
 			}
 			return Promise.resolve([]);
 		});
@@ -969,24 +967,18 @@ describe("MessageInput mention popup", () => {
 		});
 		await act(() => vi.advanceTimersByTimeAsync(150));
 
-		expect(mockInvoke).toHaveBeenCalledWith("read_codex_mentionable_files", {
+		expect(mockInvoke).toHaveBeenCalledWith("list_mentionable_files", {
 			worktreePath: "/test/repo",
 			query: "cod",
-		});
-		expect(mockInvoke).not.toHaveBeenCalledWith("list_mentionable_files", {
-			worktreePath: "/test/repo",
-			query: "cod",
+			backendId: "codex",
 		});
 		expect(screen.getByText("src/codex.rs")).toBeDefined();
 	});
 
-	it("falls back to local mention scanner when Codex runtime fuzzy search fails", async () => {
+	it("hides Codex mention popup when unified search fails", async () => {
 		mockInvoke.mockImplementation((command) => {
-			if (command === "read_codex_mentionable_files") {
-				return Promise.reject(new Error("codex unavailable"));
-			}
 			if (command === "list_mentionable_files") {
-				return Promise.resolve(["src/fallback.rs"]);
+				return Promise.reject(new Error("codex unavailable"));
 			}
 			return Promise.resolve([]);
 		});
@@ -1003,15 +995,12 @@ describe("MessageInput mention popup", () => {
 		});
 		await act(() => vi.advanceTimersByTimeAsync(150));
 
-		expect(mockInvoke).toHaveBeenCalledWith("read_codex_mentionable_files", {
-			worktreePath: "/test/repo",
-			query: "fall",
-		});
 		expect(mockInvoke).toHaveBeenCalledWith("list_mentionable_files", {
 			worktreePath: "/test/repo",
 			query: "fall",
+			backendId: "codex",
 		});
-		expect(screen.getByText("src/fallback.rs")).toBeDefined();
+		expect(screen.queryByTestId("mention-file-list")).toBeNull();
 	});
 
 	it("does not show mention popup without worktreePath", async () => {
@@ -1099,6 +1088,7 @@ describe("MessageInput mention popup", () => {
 		expect(mockInvoke).toHaveBeenCalledWith("list_mentionable_files", {
 			worktreePath: "/test/repo",
 			query: "main",
+			backendId: undefined,
 		});
 	});
 
@@ -1195,6 +1185,7 @@ describe("MessageInput mention popup", () => {
 		expect(mockInvoke).toHaveBeenCalledWith("list_mentionable_files", {
 			worktreePath: "/test/repo",
 			query: "mai",
+			backendId: undefined,
 		});
 	});
 
@@ -1460,10 +1451,7 @@ describe("MessageInput skill popup", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		mockInvoke.mockImplementation((command, args) => {
-			if (
-				command === "scan_agent_skills" ||
-				command === "read_codex_skill_catalog"
-			) {
+			if (command === "scan_agent_skills") {
 				const query =
 					typeof (args as { query?: unknown })?.query === "string"
 						? String((args as { query?: unknown }).query).toLowerCase()
@@ -1511,7 +1499,7 @@ describe("MessageInput skill popup", () => {
 		expect(screen.getByText("/review")).toBeInTheDocument();
 	});
 
-	it("uses the Codex runtime skill catalog when Codex is selected", async () => {
+	it("passes Codex backend id to unified skill catalog", async () => {
 		render(
 			<MessageInput
 				{...defaultProps}
@@ -1526,8 +1514,9 @@ describe("MessageInput skill popup", () => {
 		});
 		await act(() => vi.advanceTimersByTimeAsync(150));
 
-		expect(mockInvoke).toHaveBeenCalledWith("read_codex_skill_catalog", {
+		expect(mockInvoke).toHaveBeenCalledWith("scan_agent_skills", {
 			cwd: "/test/repo",
+			backendId: "codex",
 			query: "",
 			limit: 20,
 		});

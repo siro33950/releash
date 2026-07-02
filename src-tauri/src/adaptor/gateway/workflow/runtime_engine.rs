@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 
 use super::pending_runtime::PendingCommandRuntime;
 use super::runtime_engine_impl::WorkflowRuntimeService;
@@ -16,9 +15,9 @@ use crate::adaptor::gateway::workflow::schema::Workflow;
 use crate::adaptor::gateway::workflow::state::WorkflowState;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::services::transition::SessionFailureSignal;
-use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
-use crate::usecase::agent_session::session::{MessagePart, SessionStore};
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
+use crate::usecase::agent_session::session::{MessagePart, OpenTabRegistry, SessionStore};
 
 #[allow(clippy::too_many_arguments)]
 #[async_trait]
@@ -41,7 +40,7 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         workflow: Workflow,
         worktree_path: String,
         file_stem: &str,
@@ -54,7 +53,7 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<(), WorkflowEngineError>;
@@ -63,7 +62,7 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         decision: RuntimeApprovalDecision,
         approval_comment: Option<String>,
@@ -76,7 +75,7 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         chat_session_id: &str,
         exit_code: i64,
         failure_signal: Option<SessionFailureSignal>,
@@ -104,11 +103,13 @@ pub(crate) fn new_workflow_runtime_engine(
     workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
     worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
     branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
+    open_tabs: Arc<OpenTabRegistry>,
 ) -> Arc<dyn WorkflowRuntimeEngine> {
     Arc::new(WorkflowRuntimeService::new(
         workflow_resolver,
         worktree_resolver,
         branch_diff_context,
+        open_tabs,
     ))
 }
 
@@ -141,7 +142,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         workflow: Workflow,
         worktree_path: String,
         file_stem: &str,
@@ -153,7 +154,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
             self,
             app,
             session_store,
-            handles,
+            agent_runtime,
             workflow,
             worktree_path,
             file_stem,
@@ -168,7 +169,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
@@ -176,7 +177,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
             self,
             app,
             session_store,
-            handles,
+            agent_runtime,
             run_id,
             expected_node_name,
         )
@@ -187,7 +188,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         decision: RuntimeApprovalDecision,
         approval_comment: Option<String>,
@@ -197,7 +198,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
             self,
             app,
             session_store,
-            handles,
+            agent_runtime,
             run_id,
             decision,
             approval_comment,
@@ -214,7 +215,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         chat_session_id: &str,
         exit_code: i64,
         failure_signal: Option<SessionFailureSignal>,
@@ -225,7 +226,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
             self,
             app,
             session_store,
-            handles,
+            agent_runtime,
             chat_session_id,
             exit_code,
             failure_signal,

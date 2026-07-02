@@ -3,10 +3,15 @@ use std::cell::Cell;
 
 use serde::{Deserialize, Serialize};
 
-use super::events::{AgentSessionEvent, InterruptReason, PromptInput, TurnId};
+use super::events::{AgentSessionEvent, TurnId};
+#[cfg(test)]
+use super::events::{InterruptReason, PromptInput};
+#[cfg(test)]
 use super::finalization::finalize_turn;
+#[cfg(test)]
 use super::part_events::{append_part_events, PartEventMode};
 use super::projector::{project, SessionReadModel};
+#[cfg(test)]
 use crate::usecase::agent_session::session::MessagePart;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -32,14 +37,18 @@ impl TurnEventLog {
         }
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)] // issues-1301 G-3: retained for event-log scenario tests.
     pub fn clear(&mut self) {
         self.events.clear();
     }
 
+    #[cfg(test)]
     pub fn append(&mut self, event: AgentSessionEvent) {
         self.events.push(event);
     }
 
+    #[cfg(test)]
     pub fn append_part_events(
         &mut self,
         turn_id: TurnId,
@@ -50,6 +59,7 @@ impl TurnEventLog {
         append_part_events(&mut self.events, turn_id, message_id, parts, mode)
     }
 
+    #[cfg(test)]
     pub fn begin_turn(
         &mut self,
         turn_id: TurnId,
@@ -82,15 +92,19 @@ impl TurnEventLog {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)] // issues-1301 G-3: retained for projector performance/regression tests.
     pub fn project_call_count(&self) -> usize {
         self.project_call_count.get()
     }
 
     #[cfg(test)]
+    #[allow(dead_code)] // issues-1301 G-3: retained for projector performance/regression tests.
     pub fn reset_project_call_count(&self) {
         self.project_call_count.set(0);
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)] // issues-1301 G-3: retained for event-log finalization scenario tests.
     pub fn finalize(
         &mut self,
         turn_id: TurnId,

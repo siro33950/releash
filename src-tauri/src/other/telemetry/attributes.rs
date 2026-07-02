@@ -4,6 +4,7 @@ use crate::domain::agent_session::{InvalidPermissionMode, PermissionMode};
 
 pub(crate) const KEY_OPERATION: &str = "releash.operation";
 pub(crate) const KEY_STATUS: &str = "releash.status";
+#[allow(dead_code)] // issues-1301 B-6/G-1: retained for turn-latency outcome dimensions while telemetry wiring is completed.
 pub(crate) const KEY_OUTCOME: &str = "releash.outcome";
 pub(crate) const KEY_CHANNEL: &str = "releash.channel";
 pub(crate) const KEY_USAGE_EVENT: &str = "releash.usage_event";
@@ -58,11 +59,12 @@ pub(crate) enum HotPathMetric {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // issues-1301 B-6: retained latency dimensions while full turn-latency telemetry is reconnected.
 pub(crate) enum AgentTurnMetric {
     UiToStart,
-    BridgeSpawn,
+    BackendSpawn,
     QueryInit,
-    FirstSdkEvent,
+    FirstBackendEvent,
     FirstAssistantEvent,
     PermissionWait,
     Complete,
@@ -72,9 +74,9 @@ impl AgentTurnMetric {
     #[cfg(test)]
     pub(crate) const ALL: [Self; 7] = [
         Self::UiToStart,
-        Self::BridgeSpawn,
+        Self::BackendSpawn,
         Self::QueryInit,
-        Self::FirstSdkEvent,
+        Self::FirstBackendEvent,
         Self::FirstAssistantEvent,
         Self::PermissionWait,
         Self::Complete,
@@ -83,9 +85,9 @@ impl AgentTurnMetric {
     pub(crate) fn operation(self) -> &'static str {
         match self {
             Self::UiToStart => "agent.turn.ui_to_start",
-            Self::BridgeSpawn => "agent.turn.bridge_spawn",
+            Self::BackendSpawn => "agent.turn.backend_spawn",
             Self::QueryInit => "agent.turn.query_init",
-            Self::FirstSdkEvent => "agent.turn.first_sdk_event",
+            Self::FirstBackendEvent => "agent.turn.first_backend_event",
             Self::FirstAssistantEvent => "agent.turn.first_assistant_event",
             Self::PermissionWait => "agent.turn.permission_wait",
             Self::Complete => "agent.turn.complete",
@@ -394,9 +396,9 @@ mod tests {
             operations,
             [
                 "agent.turn.ui_to_start",
-                "agent.turn.bridge_spawn",
+                "agent.turn.backend_spawn",
                 "agent.turn.query_init",
-                "agent.turn.first_sdk_event",
+                "agent.turn.first_backend_event",
                 "agent.turn.first_assistant_event",
                 "agent.turn.permission_wait",
                 "agent.turn.complete",

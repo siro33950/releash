@@ -3,7 +3,7 @@ use crate::adaptor::gateway::workflow::resolver::{
     ManagedWorktreeResolverError, WorkflowDefinitionResolverError,
 };
 use crate::domain::workflow::WorkflowStepFailureKind;
-use crate::infrastructure::agent_session::runtime::AgentRuntimeError;
+use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
 
 /// ワークフローエンジンのエラー型。
 #[derive(Debug)]
@@ -237,7 +237,7 @@ pub(crate) fn classify_cli_mutation_rejection_reason(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::event::CliMutationRejectionReason as R;
-    use crate::infrastructure::agent_session::runtime::AgentRuntimeError;
+    use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
 
     #[test]
     fn workflow_failure_kind_preserves_validation_and_infrastructure_boundary() {
@@ -270,7 +270,10 @@ mod tests {
 
     #[test]
     fn workflow_failure_kind_preserves_agent_runtime_metadata() {
-        let error = WorkflowEngineError::from(AgentRuntimeError::startup_timeout(1, 2));
+        let error = WorkflowEngineError::from(AgentRuntimeError::StartupTimeout {
+            retry_count: 1,
+            max_retries: 2,
+        });
 
         assert_eq!(
             error.workflow_failure_kind(),

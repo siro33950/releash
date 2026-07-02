@@ -120,6 +120,7 @@ pub trait BranchBaseResolver: Send + Sync {
     /// 現在ブランチの実効 base 名を解決する（解決した base が local / remote の ref として
     /// 実在し、merge-base が計算できる場合のみ `Some`）。外部入口（agent bridge）が
     /// 「実在する base 名」だけを必要とする用途向け。
+    #[allow(dead_code)] // issues-1301 D-5/G-1: retained for agent child-env base branch propagation.
     fn resolve_effective_base_branch_name(
         &self,
         path_hint: &str,
@@ -147,6 +148,7 @@ pub trait MentionRepository: Send + Sync {
     /// 構造化メンション参照を解決し、本文先頭へ file_context を前置した文字列を返す。
     /// メンションが空、または解決対象が 1 件も読めない場合は本文を変更せず返す。
     /// パストラバーサル等の拒否はエラーとして返し、フォールバック方針は usecase が決める。
+    #[allow(dead_code)] // issues-1301 F-3/G-1: retained for Rust-owned mention expansion from prompt inputs.
     fn resolve_mentions(
         &self,
         worktree_path: &str,

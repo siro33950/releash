@@ -16,7 +16,7 @@ use crate::adaptor::gateway::workflow::storage;
 use crate::adaptor::gateway::workflow::test_support::TestRuntimeKernel;
 use crate::domain::agent_session::PermissionMode;
 #[cfg(test)]
-use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 #[cfg(test)]
 use crate::usecase::agent_session::session::SessionStore;
 #[cfg(test)]
@@ -25,8 +25,6 @@ use std::path::Path;
 use std::sync::Arc;
 #[cfg(test)]
 use tauri::Manager;
-#[cfg(test)]
-use tokio::sync::Mutex;
 
 pub(crate) mod definition;
 pub(crate) mod diagnostics;
@@ -301,7 +299,7 @@ fn parse_workflow_start_permission_mode(
 #[allow(clippy::too_many_arguments)]
 async fn start_workflow_adapter<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
+    handles: &Arc<AgentSessionRuntimeUsecase>,
     session_store: &Arc<SessionStore>,
     engine: &Arc<TestRuntimeKernel>,
     workflow_name: String,
@@ -341,7 +339,7 @@ async fn start_workflow_adapter<R: tauri::Runtime>(
 #[cfg(test)]
 async fn abort_workflow_adapter<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
+    handles: &Arc<AgentSessionRuntimeUsecase>,
     session_store: &Arc<SessionStore>,
     engine: &Arc<TestRuntimeKernel>,
     run_id: String,
@@ -361,7 +359,7 @@ async fn abort_workflow_adapter<R: tauri::Runtime>(
 #[allow(clippy::too_many_arguments)]
 async fn approve_workflow_step_adapter<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
+    handles: &Arc<AgentSessionRuntimeUsecase>,
     session_store: &Arc<SessionStore>,
     engine: &Arc<TestRuntimeKernel>,
     run_id: String,
@@ -574,7 +572,7 @@ mod tests {
         let config_secret_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
             app_config.clone();
         let registry = Arc::new(
-            crate::infrastructure::agent_session::runtime::build_registry(
+            crate::adaptor::controller::wiring::build_agent_backend_registry(
                 agent_config_repository.clone(),
             ),
         );
@@ -599,14 +597,15 @@ mod tests {
             Arc::new(StaticWorkflowResolver),
             Arc::new(TestWorktreeResolver),
             None,
+            Arc::new(crate::usecase::agent_session::session::OpenTabRegistry::default()),
         ))
     }
 
-    fn make_adapter_deps() -> (Arc<SessionStore>, Arc<Mutex<AgentProcessMap>>) {
-        (
-            Arc::new(crate::test_support::build_session_store()),
-            Arc::new(Mutex::new(AgentProcessMap::new())),
-        )
+    fn make_adapter_deps(data_dir: &Path) -> (Arc<SessionStore>, Arc<AgentSessionRuntimeUsecase>) {
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let runtime =
+            crate::test_support::build_agent_runtime_usecase(session_store.clone(), data_dir);
+        (session_store, runtime)
     }
 
     async fn configure_run_store(
@@ -634,7 +633,7 @@ mod tests {
         app: &AdapterTestApp,
         engine: &Arc<TestRuntimeKernel>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        handles: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
     ) -> String {
         start_workflow_adapter(
@@ -656,7 +655,7 @@ mod tests {
         app: &AdapterTestApp,
         engine: &Arc<TestRuntimeKernel>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        handles: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
     ) -> String {
         let resolved_worktree = engine
@@ -757,7 +756,7 @@ mod tests {
         let adapter_app = make_adapter_app();
         let adapter_engine = make_adapter_engine();
         let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
-        let (adapter_store, adapter_handles) = make_adapter_deps();
+        let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
         let adapter_run_id = start_adapter_run(
             &adapter_app,
             &adapter_engine,
@@ -770,7 +769,7 @@ mod tests {
         let direct_app = make_adapter_app();
         let direct_engine = make_adapter_engine();
         let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
-        let (direct_store, direct_handles) = make_adapter_deps();
+        let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
         let direct_run_id = start_direct_run(
             &direct_app,
             &direct_engine,
@@ -801,7 +800,7 @@ mod tests {
         let adapter_app = make_adapter_app();
         let adapter_engine = make_adapter_engine();
         let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
-        let (adapter_store, adapter_handles) = make_adapter_deps();
+        let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
         let adapter_run_id = uuid::Uuid::new_v4().to_string();
         adapter_engine
             .seed_active_execution_for_test(
@@ -816,7 +815,7 @@ mod tests {
         let direct_app = make_adapter_app();
         let direct_engine = make_adapter_engine();
         let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
-        let (direct_store, direct_handles) = make_adapter_deps();
+        let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
         let direct_run_id = uuid::Uuid::new_v4().to_string();
         direct_engine
             .seed_active_execution_for_test(
@@ -877,7 +876,7 @@ mod tests {
         let adapter_app = make_adapter_app();
         let adapter_engine = make_adapter_engine();
         let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
-        let (adapter_store, adapter_handles) = make_adapter_deps();
+        let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
         let adapter_run_id = uuid::Uuid::new_v4().to_string();
         adapter_engine
             .seed_active_execution_for_test(
@@ -892,7 +891,7 @@ mod tests {
         let direct_app = make_adapter_app();
         let direct_engine = make_adapter_engine();
         let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
-        let (direct_store, direct_handles) = make_adapter_deps();
+        let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
         let direct_run_id = uuid::Uuid::new_v4().to_string();
         direct_engine
             .seed_active_execution_for_test(
@@ -955,7 +954,7 @@ mod tests {
         let adapter_app = make_adapter_app();
         let adapter_engine = make_adapter_engine();
         let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
-        let (adapter_store, adapter_handles) = make_adapter_deps();
+        let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
         let adapter_run_id = uuid::Uuid::new_v4().to_string();
         adapter_engine
             .seed_active_execution_for_test(
@@ -970,7 +969,7 @@ mod tests {
         let direct_app = make_adapter_app();
         let direct_engine = make_adapter_engine();
         let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
-        let (direct_store, direct_handles) = make_adapter_deps();
+        let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
         let direct_run_id = uuid::Uuid::new_v4().to_string();
         direct_engine
             .seed_active_execution_for_test(
@@ -1030,7 +1029,7 @@ mod tests {
         let adapter_app = make_adapter_app();
         let adapter_engine = make_adapter_engine();
         let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
-        let (adapter_store, adapter_handles) = make_adapter_deps();
+        let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
         let adapter_run_id = uuid::Uuid::new_v4().to_string();
         adapter_engine
             .seed_active_execution_for_test(
@@ -1045,7 +1044,7 @@ mod tests {
         let direct_app = make_adapter_app();
         let direct_engine = make_adapter_engine();
         let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
-        let (direct_store, direct_handles) = make_adapter_deps();
+        let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
         let direct_run_id = uuid::Uuid::new_v4().to_string();
         direct_engine
             .seed_active_execution_for_test(
@@ -1112,7 +1111,7 @@ mod tests {
         let ui_app = make_adapter_app();
         let ui_engine = make_adapter_engine();
         let ui_data_dir = configure_run_store(&ui_app, &ui_engine).await;
-        let (ui_store, ui_handles) = make_adapter_deps();
+        let (ui_store, ui_handles) = make_adapter_deps(&ui_data_dir);
         let ui_run_id = uuid::Uuid::new_v4().to_string();
         ui_engine
             .seed_active_execution_for_test(
@@ -1127,7 +1126,7 @@ mod tests {
         let cli_app = make_adapter_app();
         let cli_engine = make_adapter_engine();
         let cli_data_dir = configure_run_store(&cli_app, &cli_engine).await;
-        let (cli_store, cli_handles) = make_adapter_deps();
+        let (cli_store, cli_handles) = make_adapter_deps(&cli_data_dir);
         let cli_run_id = uuid::Uuid::new_v4().to_string();
         cli_engine
             .seed_active_execution_for_test(
@@ -1192,7 +1191,7 @@ mod tests {
         let ui_app = make_adapter_app();
         let ui_engine = make_adapter_engine();
         let ui_data_dir = configure_run_store(&ui_app, &ui_engine).await;
-        let (ui_store, ui_handles) = make_adapter_deps();
+        let (ui_store, ui_handles) = make_adapter_deps(&ui_data_dir);
         let ui_run_id = uuid::Uuid::new_v4().to_string();
         ui_engine
             .seed_active_execution_for_test(
@@ -1207,7 +1206,7 @@ mod tests {
         let cli_app = make_adapter_app();
         let cli_engine = make_adapter_engine();
         let cli_data_dir = configure_run_store(&cli_app, &cli_engine).await;
-        let (cli_store, cli_handles) = make_adapter_deps();
+        let (cli_store, cli_handles) = make_adapter_deps(&cli_data_dir);
         let cli_run_id = uuid::Uuid::new_v4().to_string();
         cli_engine
             .seed_active_execution_for_test(
@@ -1272,7 +1271,7 @@ mod tests {
         let ui_app = make_adapter_app();
         let ui_engine = make_adapter_engine();
         let ui_data_dir = configure_run_store(&ui_app, &ui_engine).await;
-        let (ui_store, ui_handles) = make_adapter_deps();
+        let (ui_store, ui_handles) = make_adapter_deps(&ui_data_dir);
         let ui_run_id = uuid::Uuid::new_v4().to_string();
         ui_engine
             .seed_active_execution_for_test(
@@ -1287,7 +1286,7 @@ mod tests {
         let cli_app = make_adapter_app();
         let cli_engine = make_adapter_engine();
         let cli_data_dir = configure_run_store(&cli_app, &cli_engine).await;
-        let (cli_store, cli_handles) = make_adapter_deps();
+        let (cli_store, cli_handles) = make_adapter_deps(&cli_data_dir);
         let cli_run_id = uuid::Uuid::new_v4().to_string();
         cli_engine
             .seed_active_execution_for_test(
@@ -2432,9 +2431,6 @@ mod tests {
             repo_paths_usecase,
             code_usecase,
             review_usecase,
-            agent_session_usecase: Arc::new(
-                crate::adaptor::controller::wiring::build_agent_session_usecase(app.handle().clone()),
-            ),
             notion_usecase,
             workflow_usecase: Arc::new(
                 crate::adaptor::controller::wiring::build_workflow_usecase_with_repository_worktrees(
@@ -2823,7 +2819,7 @@ mod tests {
     }
 
     /// Spec [05] Rule: 指定 run の現在 state を観測する（event log からの純粋投影）。
-    /// 観測結果の露出範囲境界: AgentProcessMap / OpenTabRegistry 由来の runtime_active /
+    /// 観測結果の露出範囲境界: live runtime registry / OpenTabRegistry 由来の runtime_active /
     /// tab_open enrichment は含めない（戻り値の runtime_states は空）。
     #[tokio::test]
     async fn get_workflow_run_state_command_projects_state_without_runtime_enrichment() {

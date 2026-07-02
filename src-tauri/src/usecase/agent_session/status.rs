@@ -4,7 +4,7 @@ use crate::domain::workflow::status_aggregation::{
     aggregate_representative_statuses, session_result, RepresentativeStatus, SessionActivity,
     StepProgress,
 };
-use crate::usecase::agent_session::session::SessionState;
+use crate::usecase::agent_session::session::{PermissionRequestMsg, SessionState};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -50,7 +50,7 @@ pub struct SessionStatus {
     pub turn_phase: TurnPhaseRepr,
     pub session_state: SessionState,
     pub pending_permission: bool,
-    pub pending_permission_request: Option<serde_json::Value>,
+    pub pending_permission_request: Option<PermissionRequestMsg>,
     pub last_activity_at: f64,
     pub workflow_step: Option<String>,
     pub workflow_execution_state: Option<String>,
@@ -1193,6 +1193,23 @@ mod tests {
         session
     }
 
+    fn permission_request_fixture() -> PermissionRequestMsg {
+        PermissionRequestMsg {
+            id: "req-1".to_string(),
+            tool_use_id: Some("toolu-1".to_string()),
+            tool_name: "Edit".to_string(),
+            kind: crate::usecase::agent_session::session::PermissionRequestKindMsg::ToolApproval,
+            input: Some(serde_json::json!({})),
+            plan: None,
+            allowed_prompts: Vec::new(),
+            questions: Vec::new(),
+            title: None,
+            display_name: None,
+            description: None,
+            decision_reason: None,
+        }
+    }
+
     fn projection(
         session_id: Option<&str>,
         step_name: &str,
@@ -1522,12 +1539,7 @@ mod tests {
         // turn_phase / pending_permission を引きずらず正規化される
         let mut streaming = mk_session("a", "/repo", TurnPhase::Streaming, SessionState::Active);
         streaming.pending_permission = true;
-        streaming.pending_permission_request = Some(serde_json::json!({
-            "request_id": "req-1",
-            "tool_name": "Edit",
-            "input": {},
-            "tool_use_id": "toolu-1"
-        }));
+        streaming.pending_permission_request = Some(permission_request_fixture());
         let updated =
             AgentStatusCenter::build_state_transition(&streaming, SessionState::Closed, 42.0)
                 .expect("transition should produce updated session");
@@ -1549,12 +1561,7 @@ mod tests {
             SessionState::Closed,
         );
         closed.pending_permission = true;
-        closed.pending_permission_request = Some(serde_json::json!({
-            "request_id": "req-1",
-            "tool_name": "Edit",
-            "input": {},
-            "tool_use_id": "toolu-1"
-        }));
+        closed.pending_permission_request = Some(permission_request_fixture());
         let updated = AgentStatusCenter::build_state_transition(&closed, SessionState::Idle, 0.0)
             .expect("transition should produce updated session");
         assert_eq!(updated.session_state, SessionState::Idle);

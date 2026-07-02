@@ -14,7 +14,7 @@ const INSTRUCTION_RESOLUTION_CACHE_LIMIT: usize = 64;
 const INSTRUCTION_FILE_READ_CACHE_LIMIT: usize = 4096;
 const FILE_SYSTEM_INSTRUCTION_CACHE_KEY_PREFIX: &str = "file-system";
 
-pub(crate) trait InstructionSourcePort {
+pub(crate) trait InstructionSourcePort: Send + Sync {
     fn read_instruction_file(
         &self,
         path: &Path,

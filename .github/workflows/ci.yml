@@ -120,7 +120,7 @@ jobs:
           cache: pnpm
       - name: Build frontend assets for Tauri
         working-directory: .
-        run: pnpm install --frozen-lockfile && pnpm build:bridge
+        run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy, llvm-tools-preview

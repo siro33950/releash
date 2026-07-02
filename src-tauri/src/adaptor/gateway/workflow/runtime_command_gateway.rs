@@ -10,10 +10,10 @@ use crate::domain::app_config::ConfigRepository;
 use crate::domain::workflow::{
     ApprovalDecision, TriggerSource, WorkflowDefinition, WorkflowError, WorkflowStateSnapshot,
 };
-use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
-use crate::usecase::agent_session::session::{MessagePart, SessionStore};
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
+use crate::usecase::agent_session::session::{MessagePart, OpenTabRegistry, SessionStore};
 use crate::usecase::agent_session::status::current_timestamp;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::command::{
@@ -26,7 +26,6 @@ use crate::usecase::workflow::ports::{
     WorkflowStartRunGateway, WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand,
     WorkflowTurnCompleteGateway, WorkflowTurnFailureSignal,
 };
-use tokio::sync::Mutex;
 
 use super::pending_command_dispatcher::{
     dispatch_pending_command as dispatch_legacy_pending_command, process_pending_command_entry,
@@ -42,7 +41,17 @@ pub(crate) struct TauriWorkflowRuntimeCommandGateway {
     app: tauri::AppHandle,
     engine: Arc<dyn WorkflowRuntimeEngine>,
     session_store: Arc<SessionStore>,
-    handles: Arc<Mutex<AgentProcessMap>>,
+    agent_runtime: Arc<AgentSessionRuntimeUsecase>,
+}
+
+pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
+    pub(crate) repository_usecase: Arc<RepositoryUsecase>,
+    pub(crate) app_config: Arc<dyn ConfigRepository>,
+    pub(crate) session_store: Arc<SessionStore>,
+    pub(crate) agent_runtime: Arc<AgentSessionRuntimeUsecase>,
+    pub(crate) open_tabs: Arc<OpenTabRegistry>,
+    pub(crate) branch_diff_context: Arc<dyn BranchDiffContextPort>,
+    pub(crate) data_dir: Option<PathBuf>,
 }
 
 impl TauriWorkflowRuntimeCommandGateway {
@@ -50,25 +59,29 @@ impl TauriWorkflowRuntimeCommandGateway {
         app: tauri::AppHandle,
         engine: Arc<dyn WorkflowRuntimeEngine>,
         session_store: Arc<SessionStore>,
-        handles: Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: Arc<AgentSessionRuntimeUsecase>,
     ) -> Self {
         Self {
             app,
             engine,
             session_store,
-            handles,
+            agent_runtime,
         }
     }
 
     pub(crate) fn new_with_default_engine(
         app: tauri::AppHandle,
-        repository_usecase: Arc<RepositoryUsecase>,
-        app_config: Arc<dyn ConfigRepository>,
-        session_store: Arc<SessionStore>,
-        handles: Arc<Mutex<AgentProcessMap>>,
-        branch_diff_context: Arc<dyn BranchDiffContextPort>,
-        data_dir: Option<PathBuf>,
+        deps: TauriWorkflowRuntimeCommandGatewayDeps,
     ) -> Self {
+        let TauriWorkflowRuntimeCommandGatewayDeps {
+            repository_usecase,
+            app_config,
+            session_store,
+            agent_runtime,
+            open_tabs,
+            branch_diff_context,
+            data_dir,
+        } = deps;
         let engine = new_workflow_runtime_engine(
             Arc::new(DefaultWorkflowDefinitionResolver),
             Arc::new(AppConfigManagedWorktreeResolver::new(
@@ -76,6 +89,7 @@ impl TauriWorkflowRuntimeCommandGateway {
                 app_config,
             )),
             Some(branch_diff_context),
+            open_tabs,
         );
         if let Some(data_dir) = data_dir {
             let engine_for_init = engine.clone();
@@ -87,7 +101,7 @@ impl TauriWorkflowRuntimeCommandGateway {
                     .await;
             });
         }
-        Self::new(app, engine, session_store, handles)
+        Self::new(app, engine, session_store, agent_runtime)
     }
 
     async fn process_pending_submit_output_pickup(&self, store: &PendingCommandStore) {
@@ -120,7 +134,7 @@ impl TauriWorkflowRuntimeCommandGateway {
                     &self.app,
                     self.engine.as_ref(),
                     &self.session_store,
-                    &self.handles,
+                    &self.agent_runtime,
                     store,
                     entry,
                 )
@@ -165,7 +179,7 @@ impl WorkflowStartRunGateway for TauriWorkflowRuntimeCommandGateway {
             .start_resolved_workflow(
                 &self.app,
                 &self.session_store,
-                &self.handles,
+                &self.agent_runtime,
                 workflow,
                 command.worktree_path,
                 &command.workflow_file_stem,
@@ -185,7 +199,7 @@ impl WorkflowAbortRunGateway for TauriWorkflowRuntimeCommandGateway {
             .abort_workflow_run(
                 &self.app,
                 &self.session_store,
-                &self.handles,
+                &self.agent_runtime,
                 &command.run_id,
                 command.expected_node_name.as_deref(),
             )
@@ -208,7 +222,7 @@ impl WorkflowApprovalGateway for TauriWorkflowRuntimeCommandGateway {
                 .resolve_workflow_approval(
                     &self.app,
                     &self.session_store,
-                    &self.handles,
+                    &self.agent_runtime,
                     &run_id,
                     decision,
                     approval_comment,
@@ -224,7 +238,7 @@ impl WorkflowApprovalGateway for TauriWorkflowRuntimeCommandGateway {
                 .abort_workflow_run(
                     &self.app,
                     &self.session_store,
-                    &self.handles,
+                    &self.agent_runtime,
                     &run_id,
                     expected_node_name.as_deref(),
                 )
@@ -241,7 +255,7 @@ impl WorkflowSubmitOutputGateway for TauriWorkflowRuntimeCommandGateway {
             .submit_workflow_output(
                 &self.app,
                 &self.session_store,
-                &self.handles,
+                &self.agent_runtime,
                 &command.run_id,
                 command.step_name,
                 command.contract,
@@ -270,7 +284,7 @@ impl WorkflowPendingRuntimeCommandGateway for TauriWorkflowRuntimeCommandGateway
             &self.app,
             self.engine.as_ref(),
             &self.session_store,
-            &self.handles,
+            &self.agent_runtime,
             pending,
         )
         .await
@@ -316,7 +330,7 @@ impl WorkflowTurnCompleteGateway for TauriWorkflowRuntimeCommandGateway {
             .on_turn_complete(
                 &self.app,
                 &self.session_store,
-                &self.handles,
+                &self.agent_runtime,
                 &command.chat_session_id,
                 command.exit_code,
                 command.failure_signal.map(|signal| match signal {

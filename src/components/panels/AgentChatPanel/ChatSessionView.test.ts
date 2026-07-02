@@ -111,6 +111,7 @@ function chatSessionViewElement({
 		permissionMode: "edit",
 		planMode: false,
 		availableModels: [],
+		backends: [],
 		selectedModel: "claude:sonnet",
 		pendingQueue: [],
 		selectedBackendId: null,

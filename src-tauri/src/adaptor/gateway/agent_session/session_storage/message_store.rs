@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use super::layout::{
     attachments_dir_in_dir, content_hash, index_file_in_dir, legacy_meta_file, message_file_in_dir,
     messages_dir_in_dir, meta_file_in_dir, session_dir, session_file, sessions_dir,
-    tool_outputs_dir_in_dir, write_json_pretty_atomic,
+    tool_outputs_dir_in_dir, validate_meta, write_json_pretty_atomic,
 };
 use super::private_context::write_private_context_to_dir;
 use super::FileSessionStorage;
@@ -127,7 +127,7 @@ impl FileSessionStorage {
         if let Ok(file) = legacy_meta_file(app_data_dir, &session.id) {
             let _ = std::fs::remove_file(file);
         }
-        let meta = SessionMeta::from_session(session);
+        let meta = validate_meta(SessionMeta::from_session(session), &session.id)?;
         let mut cache = self.cache.write();
         let state_changed = cache.get(&session.id).map(|p| &p.state) != Some(&session.state);
         cache.insert(session.id.clone(), meta);
@@ -678,7 +678,7 @@ impl FileSessionStorage {
             });
         }
         index.sort_by_key(|entry| entry.seq);
-        let mut meta = SessionMeta::from_session(session);
+        let mut meta = validate_meta(SessionMeta::from_session(session), &session.id)?;
         meta.body_format_version = SESSION_BODY_FORMAT_VERSION;
         write_private_context_to_dir(dir, &meta)?;
         write_json_pretty_atomic(&meta_file_in_dir(dir), &meta, "session meta")?;

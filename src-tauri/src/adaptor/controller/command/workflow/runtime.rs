@@ -1,20 +1,16 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::adaptor::controller::agent_session::message_dispatch::AgentMessageDispatchRequest;
 use crate::adaptor::controller::command::workflow::{
     parse_workflow_approval_permission_mode, parse_workflow_start_permission_mode, validate_run_id,
 };
 use crate::adaptor::controller_support::{
-    build_workflow_state_view, dispatch_agent_message_with_runtime, AgentBackendRegistryState,
-    AgentImageAttachment, AgentProcessMapState, AgentSendMessageResponse, OpenTabRegistryState,
-    SessionStoreState,
+    build_workflow_state_view, AgentImageAttachment, AgentSendMessageResponse,
+    AgentSessionRuntimeState, OpenTabRegistryState,
 };
 use crate::adaptor::protocol::workflow::WorkflowStateView;
-use crate::usecase::agent_session::context::BranchDiffContextPort;
+use crate::usecase::agent_session::runtime::SendAgentMessageRequest;
 use crate::usecase::workflow::command::{AbortRunCommand, ApprovalCommand, StartRunCommand};
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
-use tauri::Manager;
 
 fn parse_domain_trigger_source(
     value: Option<String>,
@@ -116,7 +112,7 @@ pub async fn abort_workflow(
 #[tauri::command]
 pub async fn get_workflow_state(
     runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
-    handles: tauri::State<'_, AgentProcessMapState>,
+    agent_runtime: tauri::State<'_, AgentSessionRuntimeState>,
     open_tabs: tauri::State<'_, OpenTabRegistryState>,
     run_id: String,
 ) -> Result<Option<WorkflowStateView>, String> {
@@ -127,7 +123,7 @@ pub async fn get_workflow_state(
         .map_err(|e| e.to_string())?
     {
         Some(state) => Ok(Some(
-            build_workflow_state_view(state, handles.inner(), open_tabs.inner()).await,
+            build_workflow_state_view(state, agent_runtime.inner(), open_tabs.inner()).await,
         )),
         None => Ok(None),
     }
@@ -152,10 +148,8 @@ pub async fn approve_workflow_step(
 #[allow(clippy::too_many_arguments)]
 pub async fn send_workflow_approval_chat_message(
     app: tauri::AppHandle,
-    handles: tauri::State<'_, AgentProcessMapState>,
-    session_store: tauri::State<'_, SessionStoreState>,
-    registry: tauri::State<'_, AgentBackendRegistryState>,
-    branch_diff_context: tauri::State<'_, Arc<dyn BranchDiffContextPort>>,
+    agent_runtime: tauri::State<'_, AgentSessionRuntimeState>,
+    open_tabs: tauri::State<'_, OpenTabRegistryState>,
     runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
     run_id: String,
     content: String,
@@ -163,12 +157,7 @@ pub async fn send_workflow_approval_chat_message(
     plan_mode: Option<bool>,
     images: Option<Vec<AgentImageAttachment>>,
     mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
-    client_sent_at_ms: Option<f64>,
 ) -> Result<AgentSendMessageResponse, String> {
-    let request_received_at_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs_f64() * 1000.0);
     // Spec issues-1011 line 121: 起動以外の workflow 操作 API は run_id を主語に取る。
     // chat_session_id / worktree_path は run_id から workflow runtime usecase が解決する。
     validate_run_id(&run_id)?;
@@ -180,13 +169,8 @@ pub async fn send_workflow_approval_chat_message(
         .await
         .map_err(|e| e.to_string())?;
 
-    let response = dispatch_agent_message_with_runtime(
-        &app,
-        branch_diff_context.inner(),
-        session_store.inner(),
-        registry.inner(),
-        handles.inner(),
-        AgentMessageDispatchRequest {
+    let response = agent_runtime
+        .send_message(SendAgentMessageRequest {
             chat_session_id: Some(approval_target.chat_session_id),
             worktree_path: approval_target.worktree_path,
             content,
@@ -197,16 +181,14 @@ pub async fn send_workflow_approval_chat_message(
             images,
             mentions,
             editor_context: None,
-            client_sent_at_ms,
-            request_received_at_ms,
-        },
-    )
-    .await?;
+        })
+        .await
+        .map_err(|e| e.to_string())?;
     crate::adaptor::controller_support::emit_after_workflow_step_message(
         &app,
         &response.session,
-        handles.inner(),
-        app.state::<OpenTabRegistryState>().inner(),
+        agent_runtime.inner(),
+        open_tabs.inner(),
     )
     .await;
     Ok(response)

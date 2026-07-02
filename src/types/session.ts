@@ -99,14 +99,23 @@ export interface AgentSkill {
 }
 
 export interface PermissionRequest {
-	request_id: string;
-	tool_name: string;
-	input: Record<string, unknown>;
-	tool_use_id: string;
+	id: string;
+	toolUseId?: string | null;
+	toolName: string;
+	kind?: "tool_approval" | "plan_approval" | "question" | "permission_grant";
+	input?: Record<string, unknown> | null;
+	plan?: string | null;
+	allowedPrompts?: Array<{ tool: string; prompt: string }>;
+	questions?: Array<{
+		question: string;
+		header?: string | null;
+		options: Array<{ label: string; description?: string | null }>;
+		multiSelect: boolean;
+	}>;
 	title?: string;
-	display_name?: string;
-	description?: string;
-	decision_reason?: string;
+	displayName?: string;
+	description?: string | null;
+	decisionReason?: string | null;
 }
 
 export type MessageRole = "human" | "agent" | "system";
@@ -156,8 +165,8 @@ export type MessagePart =
 	| {
 			type: "permission";
 			request: PermissionRequest;
-			status: "pending" | "allowed" | "denied";
-			answers?: Record<string, string>;
+			status: "pending" | "allowed" | "denied" | "cancelled";
+			answers?: Record<string, string | string[]>;
 			parentToolUseId?: string;
 	  }
 	| {
@@ -306,6 +315,9 @@ export interface BackendInfo {
 	name: string;
 	available: boolean;
 	availableModels: ModelInfo[];
+	capabilities?: {
+		steering: boolean;
+	};
 }
 
 export interface QueuedAgentTurn {

@@ -186,8 +186,9 @@ function PermissionShell({
 
 interface PermissionDialogProps {
 	request: PermissionRequest;
-	status?: "pending" | "allowed" | "denied";
-	resolvedAnswers?: Record<string, string>;
+	status?: "pending" | "allowed" | "denied" | "cancelled";
+	sessionId?: string;
+	resolvedAnswers?: Record<string, string | string[]>;
 	worktreePath?: string;
 	onOpenDiffFile?: (filePath: string) => void;
 	onAllow: (requestId: string, updatedInput?: Record<string, unknown>) => void;
@@ -202,7 +203,7 @@ function ResolvedDetail({
 }: {
 	request: PermissionRequest;
 	presentation: PermissionPresentation;
-	resolvedAnswers?: Record<string, string>;
+	resolvedAnswers?: Record<string, string | string[]>;
 }) {
 	if (presentation.kind === "exit_plan") {
 		const { plan, allowedPrompts } = presentation;
@@ -220,7 +221,10 @@ function ResolvedDetail({
 		return (
 			<div className="mt-1.5 space-y-2">
 				{questions.map((q) => {
-					const selectedRaw = resolvedAnswers?.[q.question] ?? "";
+					const selectedValue = resolvedAnswers?.[q.question] ?? "";
+					const selectedRaw = Array.isArray(selectedValue)
+						? selectedValue.join(", ")
+						: selectedValue;
 					const selectedLabels = new Set(
 						selectedRaw
 							? q.multiSelect
@@ -292,6 +296,7 @@ function ResolvedDetail({
 export function PermissionDialog({
 	request,
 	status = "pending",
+	sessionId,
 	resolvedAnswers,
 	worktreePath,
 	onOpenDiffFile,
@@ -341,18 +346,23 @@ export function PermissionDialog({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: request.input は inputKey 経由で内容監視している
 	useEffect(() => {
 		let canceled = false;
-		setPresentation(emptyPermissionPresentation());
+		const fallback = emptyPermissionPresentation();
+		setPresentation(fallback);
+		setEditedContentText(fallback.directContent);
+		setMultiEditContentTexts(fallback.multiEditReplacementContents);
 		setPresentationReady(false);
 		void invoke<Partial<PermissionPresentation> | null>(
 			"present_agent_permission_request",
 			{
-				toolName: request.tool_name,
-				input: request.input ?? {},
+				chatSessionId: sessionId ?? "",
+				requestId: request.id,
 			},
 		)
 			.then((nextPresentation) => {
 				if (canceled) return;
-				const normalized = normalizePermissionPresentation(nextPresentation);
+				const normalized = nextPresentation
+					? normalizePermissionPresentation(nextPresentation)
+					: fallback;
 				setPresentation(normalized);
 				setEditedContentText(normalized.directContent);
 				setMultiEditContentTexts(normalized.multiEditReplacementContents);
@@ -368,7 +378,7 @@ export function PermissionDialog({
 		return () => {
 			canceled = true;
 		};
-	}, [inputKey, request.tool_name]);
+	}, [inputKey, request.id, sessionId]);
 	const canEditInput = presentation.canEditInput;
 	const canEditContent = presentation.canEditContent;
 	const canEditMultiEditContent = presentation.canEditMultiEditContent;
@@ -391,12 +401,12 @@ export function PermissionDialog({
 			const updatedInput = await invoke<Record<string, unknown>>(
 				"build_agent_edited_tool_input",
 				{
-					toolName: request.tool_name,
+					toolName: request.toolName,
 					input: editedInput ?? request.input,
 					editedContent: editedContentText,
 				},
 			);
-			onAllow(request.request_id, updatedInput);
+			onAllow(request.id, updatedInput);
 		} catch (err) {
 			setContentEditError(String(err));
 		}
@@ -412,7 +422,7 @@ export function PermissionDialog({
 					editedContent: multiEditContentTexts[editIndex] ?? "",
 				},
 			);
-			onAllow(request.request_id, updatedInput);
+			onAllow(request.id, updatedInput);
 		} catch (err) {
 			setContentEditError(String(err));
 		}
@@ -421,7 +431,7 @@ export function PermissionDialog({
 		if (!canEditContent) return;
 		let canceled = false;
 		invoke<Record<string, unknown>>("build_agent_edited_tool_input", {
-			toolName: request.tool_name,
+			toolName: request.toolName,
 			input: editedInput ?? request.input,
 			editedContent: editedContentText,
 		})
@@ -443,7 +453,7 @@ export function PermissionDialog({
 		editedContentText,
 		editedInput,
 		request.input,
-		request.tool_name,
+		request.toolName,
 	]);
 	useEffect(() => {
 		if (!canEditMultiEditContent || multiEditContentCount === 0) return;
@@ -486,7 +496,7 @@ export function PermissionDialog({
 			}),
 		[multiEditContentCount, presentation.multiEditOldStrings],
 	);
-	const previewInput = editedPreviewInput ?? editedInput ?? request.input;
+	const previewInput = editedPreviewInput ?? editedInput ?? request.input ?? {};
 	// presentation は Rust から非同期取得するため、確定するまでは kind 依存の
 	// 分岐 UI を描画しない。確定前に汎用 UI を出すと、解決後に別 UI へ差し替わって
 	// チラつく（特に仮想化リストの再マウント時）。
@@ -506,7 +516,7 @@ export function PermissionDialog({
 			label = isAllowed ? "Plan approved" : "Plan denied";
 		} else {
 			const toolLabel =
-				request.title || request.display_name || request.tool_name;
+				request.title || request.displayName || request.toolName;
 			label = `${toolLabel} — ${status}`;
 		}
 
@@ -654,7 +664,7 @@ export function PermissionDialog({
 						selected === OTHER_LABEL ? otherTexts[q.question].trim() : selected;
 				}
 			}
-			onAnswer(request.request_id, resolved);
+			onAnswer(request.id, resolved);
 		};
 
 		return (
@@ -811,7 +821,7 @@ export function PermissionDialog({
 					<PlanContent plan={plan} allowedPrompts={allowedPrompts} />
 				</div>
 				<AllowDenyButtons
-					requestId={request.request_id}
+					requestId={request.id}
 					onAllow={onAllow}
 					onDeny={onDeny}
 				/>
@@ -819,7 +829,7 @@ export function PermissionDialog({
 		);
 	}
 
-	const toolLabel = request.title || request.display_name || request.tool_name;
+	const toolLabel = request.title || request.displayName || request.toolName;
 
 	return (
 		<PermissionShell>
@@ -840,7 +850,7 @@ export function PermissionDialog({
 						<div className="mb-2">
 							<AgentEditPreviewPanel
 								worktreePath={worktreePath}
-								toolName={request.tool_name}
+								toolName={request.toolName}
 								input={previewInput}
 								onOpenDiffFile={onOpenDiffFile}
 							/>
@@ -948,7 +958,7 @@ export function PermissionDialog({
 				</>
 			)}
 			<AllowDenyButtons
-				requestId={request.request_id}
+				requestId={request.id}
 				onAllow={onAllow}
 				onDeny={onDeny}
 				editedInput={editedInput ?? undefined}

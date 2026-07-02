@@ -47,6 +47,10 @@ impl FileSessionStorage {
             .cloned())
     }
 
+    pub fn session_titles(&self, app_data_dir: &Path) -> Result<HashMap<String, String>, String> {
+        self.load_session_titles(app_data_dir)
+    }
+
     pub fn write_session_title(
         &self,
         app_data_dir: &Path,

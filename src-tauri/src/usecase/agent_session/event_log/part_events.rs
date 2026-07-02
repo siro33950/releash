@@ -1,5 +1,6 @@
 use super::events::{AgentSessionEvent, PermissionDecision, TurnId};
 use crate::usecase::agent_session::session::MessagePart;
+use crate::usecase::agent_session::session::{PermissionPartStatus, PermissionRequestMsg};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartEventMode {
@@ -124,18 +125,17 @@ pub fn append_part_events(
                 parent_tool_use_id,
             } if mode == PartEventMode::DurableOnly => {
                 let tool_use_id = request
-                    .get("tool_use_id")
-                    .and_then(|value| value.as_str())
+                    .tool_use_id
+                    .clone()
                     .filter(|value| !value.is_empty())
-                    .map(ToString::to_string)
                     .or_else(|| parent_tool_use_id.clone());
-                if status == "pending" {
+                if *status == PermissionPartStatus::Pending {
                     events.push(AgentSessionEvent::PermissionRequested {
                         turn_id,
                         tool_use_id,
                         request: request.clone(),
                     });
-                } else if let Some(decision) = PermissionDecision::from_status(status) {
+                } else if let Some(decision) = PermissionDecision::from_status(status.as_str()) {
                     events.push(AgentSessionEvent::PermissionRequested {
                         turn_id,
                         tool_use_id: tool_use_id.clone(),
@@ -231,18 +231,13 @@ fn next_tool_retry_attempt(
     (prior_starts > 0).then_some(prior_starts.saturating_add(1) as u32)
 }
 
-pub(super) fn permission_request_id(request: &serde_json::Value) -> Option<String> {
-    request
-        .get("request_id")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
+pub(super) fn permission_request_id(request: &PermissionRequestMsg) -> Option<String> {
+    (!request.id.is_empty()).then(|| request.id.clone())
 }
 
-pub(super) fn permission_tool_use_id(request: &serde_json::Value) -> Option<String> {
+pub(super) fn permission_tool_use_id(request: &PermissionRequestMsg) -> Option<String> {
     request
-        .get("tool_use_id")
-        .and_then(|value| value.as_str())
+        .tool_use_id
+        .clone()
         .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
 }

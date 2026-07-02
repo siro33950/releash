@@ -9,7 +9,9 @@ use crate::domain::code::services::mention::{
 };
 use crate::domain::code::{CodeError, MentionReference, MentionRepository};
 
+#[allow(dead_code)] // issues-1301 G-1: used by mention resolution surface once Rust-owned prompt mention expansion is fully wired.
 const DIRECTORY_MENTION_FILE_LIMIT: usize = 40;
+#[allow(dead_code)] // issues-1301 G-1: used by mention resolution surface once Rust-owned prompt mention expansion is fully wired.
 const DIRECTORY_MENTION_TOTAL_BYTES_LIMIT: usize = 100_000;
 
 /// worktree 配下で fuzzy クエリに一致するファイルを列挙する（.gitignore 準拠）。
@@ -74,6 +76,7 @@ pub(crate) fn list_mentionable_files(
     Ok(results)
 }
 
+#[allow(dead_code)] // issues-1301 G-1: helper for MentionRepository::resolve_mentions contract surface.
 fn file_section_for_path(
     canonical_root: &Path,
     canonical_file: &Path,
@@ -105,6 +108,7 @@ fn file_section_for_path(
     )))
 }
 
+#[allow(dead_code)] // issues-1301 G-1: helper for MentionRepository::resolve_mentions contract surface.
 fn directory_section_for_path(
     canonical_root: &Path,
     canonical_dir: &Path,
@@ -183,6 +187,7 @@ fn directory_section_for_path(
 ///
 /// `MentionGateway::resolve_mentions` の内部 helper。`String` エラーは呼び出し側で
 /// `CodeError` へ畳み込む（メッセージ文字列を保持）。
+#[allow(dead_code)] // issues-1301 G-1: helper for MentionRepository::resolve_mentions contract surface.
 fn resolve_from_references(
     worktree_path: &str,
     content: &str,

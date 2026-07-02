@@ -16,7 +16,7 @@ use crate::adaptor::gateway::workflow::state::WorkflowState;
 use crate::domain::workflow::approval_rules as workflow_approval;
 use crate::domain::workflow::ApprovalDecision as DomainApprovalDecision;
 use crate::domain::workflow::WorkflowError;
-use crate::infrastructure::agent_session::runtime::TurnPhase;
+use crate::usecase::agent_session::status::TurnPhase;
 
 #[cfg(test)]
 pub(crate) const MAX_APPROVAL_COMMENT_CHARS: usize = workflow_approval::MAX_APPROVAL_COMMENT_CHARS;

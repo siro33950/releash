@@ -121,7 +121,7 @@ async fn get_workflow_run_log_inner_impl(
 /// NDJSON event log から `reconstruct_state_from_events` で投影する。
 ///
 /// 観測結果の露出範囲境界（spec [05]）に従い、戻り値は engine が一次 owner として
-/// 保持している event log / state の純粋投影のみを含む。`AgentProcessMap` /
+/// 保持している event log / state の純粋投影のみを含む。live runtime registry /
 /// `OpenTabRegistry` 由来の runtime_active / tab_open enrichment は read-only API
 /// 経路では含めない（同種情報は live emission 経路の `WorkflowStateChanged` event を
 /// 通じて UI に届ける）。

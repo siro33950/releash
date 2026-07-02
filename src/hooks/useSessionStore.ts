@@ -63,10 +63,10 @@ function legacyToParts(msg: LegacyChatMessage): MessagePart[] {
 				parts.push({
 					type: "permission",
 					request: {
-						request_id: "",
-						tool_name: a.toolName,
+						id: "",
+						toolName: a.toolName,
+						kind: "tool_approval",
 						input: {},
-						tool_use_id: "",
 					},
 					status: a.status === "allowed" ? "allowed" : "denied",
 				});
@@ -114,6 +114,7 @@ export interface GetSessionResponse {
 	turnPhase: TurnPhase;
 	selectedModel: string;
 	availableModels: ModelInfo[];
+	canChangeBackend: boolean;
 	pendingQueue?: QueuedAgentTurn[];
 	pendingQueueCount?: number;
 	latestTokenUsage?: TokenUsage | null;
@@ -200,6 +201,7 @@ interface RawGetSessionResponse {
 	backendId?: string | null;
 	selectedModel: string;
 	availableModels?: ModelInfo[];
+	canChangeBackend?: boolean;
 	pendingQueue?: QueuedAgentTurn[];
 	pendingQueueCount?: number;
 	latestTokenUsage?: TokenUsage | null;
@@ -234,6 +236,7 @@ function convertRawGetSessionResponse(
 		turnPhase: raw.turnPhase,
 		selectedModel: raw.selectedModel,
 		availableModels: raw.availableModels ?? [],
+		canChangeBackend: raw.canChangeBackend ?? false,
 		pendingQueue: raw.pendingQueue ?? [],
 		pendingQueueCount: raw.pendingQueueCount ?? 0,
 		latestTokenUsage: raw.latestTokenUsage ?? null,
@@ -362,6 +365,7 @@ interface RawSendMessageResponse {
 	queuedTurn?: QueuedAgentTurn | null;
 	pendingQueue?: QueuedAgentTurn[];
 	pendingQueueCount?: number;
+	canChangeBackend?: boolean;
 	sessions: SessionSummary[];
 }
 
@@ -372,6 +376,7 @@ export interface SendMessageResponse {
 	queuedTurn: QueuedAgentTurn | null;
 	pendingQueue: QueuedAgentTurn[];
 	pendingQueueCount: number;
+	canChangeBackend: boolean;
 	sessions: SessionSummary[];
 }
 
@@ -398,7 +403,6 @@ export async function sendAgentMessage(
 		images?: ImageAttachment[];
 		mentions?: MentionReference[];
 		editorContext?: AgentEditorContext;
-		clientSentAtMs: number;
 	} = {
 		chatSessionId,
 		worktreePath,
@@ -409,7 +413,6 @@ export async function sendAgentMessage(
 		modelId: modelId ?? null,
 		images: images && images.length > 0 ? images : undefined,
 		mentions: mentions && mentions.length > 0 ? mentions : undefined,
-		clientSentAtMs: Date.now(),
 	};
 	if (editorContext) {
 		args.editorContext = editorContext;
@@ -424,6 +427,7 @@ export async function sendAgentMessage(
 		queuedTurn: raw.queuedTurn ?? null,
 		pendingQueue: raw.pendingQueue ?? [],
 		pendingQueueCount: raw.pendingQueueCount ?? 0,
+		canChangeBackend: raw.canChangeBackend ?? false,
 		sessions: raw.sessions,
 	};
 }
@@ -445,7 +449,6 @@ export async function sendWorkflowApprovalChatMessage(
 			planMode,
 			images: images && images.length > 0 ? images : undefined,
 			mentions: mentions && mentions.length > 0 ? mentions : undefined,
-			clientSentAtMs: Date.now(),
 		},
 	);
 	return {
@@ -457,6 +460,7 @@ export async function sendWorkflowApprovalChatMessage(
 		queuedTurn: raw.queuedTurn ?? null,
 		pendingQueue: raw.pendingQueue ?? [],
 		pendingQueueCount: raw.pendingQueueCount ?? 0,
+		canChangeBackend: raw.canChangeBackend ?? false,
 		sessions: raw.sessions,
 	};
 }

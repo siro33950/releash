@@ -1,14 +1,11 @@
 use std::sync::Arc;
 
 use tauri::State;
-use tokio::sync::Mutex;
 
 use crate::adaptor::controller_support::WorkflowStepLifecycleUsecaseState;
-use crate::infrastructure::agent_session::runtime::AgentBackendRegistry;
-use crate::infrastructure::agent_session::runtime::{
-    AgentProcessMap, SessionHandle, CODEX_BACKEND_ID,
-};
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
+use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{
     add_message_internal, ChatMessage, ChatSession, MessageRole, OpenTabRegistry,
     RestoreSessionResponse, SessionStore, SessionSummary, StoredSessionLifecycleUsecase,
@@ -115,13 +112,13 @@ pub async fn fork_session(
 #[tauri::command]
 pub async fn set_session_title(
     state: State<'_, Arc<SessionStore>>,
-    registry: State<'_, Arc<AgentBackendRegistry>>,
+    runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
     app: tauri::AppHandle,
     session_id: String,
     title: Option<String>,
 ) -> Result<SessionSummary, String> {
     let data_dir = resolve_data_dir(&app)?;
-    let session = state
+    state
         .get_session_meta(&data_dir, &session_id)?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
     let summary = state.set_session_title(&data_dir, &session_id, title.as_deref())?;
@@ -129,20 +126,12 @@ pub async fn set_session_title(
         .as_deref()
         .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
         .is_some_and(|value| !value.is_empty());
-    if session.backend_id.as_deref() == Some(CODEX_BACKEND_ID) && has_custom_title {
-        if let Some(backend) = registry.get(CODEX_BACKEND_ID) {
-            if let Err(err) = backend
-                .set_thread_name(
-                    &SessionHandle {
-                        chat_session_id: session_id.clone(),
-                        backend_id: CODEX_BACKEND_ID.to_string(),
-                    },
-                    &summary.first_message,
-                )
-                .await
-            {
-                log::debug!("skipped Codex runtime title sync for {session_id}: {err}");
-            }
+    if has_custom_title {
+        if let Err(err) = runtime
+            .set_session_title(&session_id, &summary.first_message)
+            .await
+        {
+            log::debug!("skipped runtime title sync for {session_id}: {err}");
         }
     }
     Ok(summary)
@@ -176,7 +165,7 @@ fn update_session_agent_info_in_store(
 #[tauri::command]
 pub async fn close_session(
     state: State<'_, Arc<SessionStore>>,
-    handles: State<'_, Arc<Mutex<AgentProcessMap>>>,
+    runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
     open_tabs: State<'_, Arc<OpenTabRegistry>>,
     step_lifecycle: State<'_, WorkflowStepLifecycleUsecaseState>,
     app: tauri::AppHandle,
@@ -192,19 +181,17 @@ pub async fn close_session(
         crate::adaptor::controller_support::emit_workflow_step_target_state(
             &app,
             &target,
-            handles.inner(),
+            runtime.inner(),
             open_tabs.inner(),
         )
         .await;
         return Ok(());
     }
 
-    crate::infrastructure::agent_session::runtime::close_agent_session_internal(
-        &app,
-        handles.inner(),
-        &session_id,
-    )
-    .await?;
+    runtime
+        .close_session(&session_id)
+        .await
+        .map_err(|error| error.to_string())?;
     let data_dir = resolve_data_dir(&app)?;
     crate::usecase::agent_session::session::lifecycle_controller::SessionLifecycleController {
         session_store: state.inner(),
@@ -237,7 +224,7 @@ where
 pub async fn restore_session(
     lifecycle: State<'_, Arc<StoredSessionLifecycleUsecase>>,
     registry: State<'_, Arc<AgentBackendRegistry>>,
-    handles: State<'_, Arc<Mutex<AgentProcessMap>>>,
+    runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
     open_tabs: State<'_, Arc<OpenTabRegistry>>,
     step_lifecycle: State<'_, WorkflowStepLifecycleUsecaseState>,
     app: tauri::AppHandle,
@@ -253,7 +240,7 @@ pub async fn restore_session(
         crate::adaptor::controller_support::emit_workflow_step_target_state(
             &app,
             &target,
-            handles.inner(),
+            runtime.inner(),
             open_tabs.inner(),
         )
         .await;
@@ -325,7 +312,7 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
-                crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
+                crate::infrastructure::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
             ),
             workflow_step_session: true,
             workflow_step_context: None,
@@ -338,7 +325,6 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
-        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
@@ -360,7 +346,6 @@ mod tests {
         assert!(response.restored_workflow_step);
         assert_eq!(worktree_path, "/repo");
         assert!(open_tabs.contains(&session_id));
-        assert!(handles.lock().await.is_empty());
         let session = session_store
             .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()

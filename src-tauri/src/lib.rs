@@ -16,7 +16,6 @@ use domain::app_config::{
     AgentConfigRepository, ConfigRepository, ConfigSecretRepository, NotionConfigRepository,
 };
 use tauri::Manager;
-use tokio::sync::Mutex;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -48,12 +47,6 @@ pub fn run() {
     let prompt_suggestion_usecase = Arc::new(
         adaptor::controller::wiring::build_agent_prompt_suggestion_usecase(session_storage),
     );
-    let cleanup_gate = Arc::new(infrastructure::agent_session::runtime::CleanupGate::new(
-        !cfg!(unix),
-    ));
-    #[cfg(unix)]
-    let cleanup_gate_for_setup = Arc::clone(&cleanup_gate);
-
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
@@ -69,19 +62,26 @@ pub fn run() {
         .manage(prompt_suggestion_usecase)
         .manage(Arc::clone(&pty_gateway))
         .manage(infrastructure::file_watcher::FileWatcherManager::default())
-        .manage(Arc::new(tokio::sync::Mutex::new(
-            infrastructure::agent_session::runtime::AgentProcessMap::new(),
-        )))
         .manage(Arc::new(
             usecase::agent_session::session::OpenTabRegistry::default(),
         ))
-        .manage(cleanup_gate)
         .manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
             parking_lot::RwLock::new(Vec::new()),
         ))
         .setup(move |app| {
             pty_gateway_for_setup.start_idle_sweeper(app.handle().clone());
             let data_dir = app.path().app_data_dir()?;
+            let cleanup_report =
+                infrastructure::process::pid_registry::cleanup_orphan_processes(&data_dir);
+            if cleanup_report.scanned > 0 || cleanup_report.failures > 0 {
+                log::info!(
+                    "agent orphan cleanup scanned={} processed={} skipped={} failures={}",
+                    cleanup_report.scanned,
+                    cleanup_report.processed,
+                    cleanup_report.skipped,
+                    cleanup_report.failures
+                );
+            }
             app.manage(Arc::new(
                 adaptor::gateway::workspace_state::WorkspaceStateStore::new(data_dir.clone()),
             ));
@@ -100,26 +100,6 @@ pub fn run() {
                 app.manage(telemetry_guard);
             }
 
-            {
-                let session_store_state = app
-                    .state::<Arc<usecase::agent_session::session::SessionStore>>()
-                    .inner()
-                    .clone();
-                let handles_state =
-                    app.state::<Arc<
-                        tokio::sync::Mutex<infrastructure::agent_session::runtime::AgentProcessMap>,
-                    >>()
-                    .inner()
-                    .clone();
-                app.manage(Arc::new(
-                    adaptor::controller::wiring::build_stored_session_lifecycle_usecase(
-                        app.handle().clone(),
-                        session_store_state,
-                        handles_state,
-                    ),
-                ));
-            }
-
             let app_config = Arc::new(AppConfig::new(config, config_path));
             let config_repository: Arc<dyn ConfigRepository> = app_config.clone();
             let agent_config_repository: Arc<dyn AgentConfigRepository> = app_config.clone();
@@ -130,6 +110,11 @@ pub fn run() {
             app.manage(config_repository.clone());
             app.manage(agent_config_repository.clone());
             app.manage(config_secret_repository.clone());
+            app.manage(Arc::new(
+                adaptor::controller::wiring::build_agent_backend_registry(
+                    agent_config_repository.clone(),
+                ),
+            ));
 
             // Initialize shared repo_paths from config
             let shared_repo_paths = app
@@ -179,21 +164,14 @@ pub fn run() {
                 let code_usecase = Arc::new(
                     adaptor::controller::wiring::build_code_usecase_with_app(app.handle().clone()),
                 );
-                let base_branch_resolver: Arc<
-                    dyn infrastructure::agent_session::resolver_ports::BaseBranchResolverPort,
-                > = code_usecase.clone();
-                let mention_resolver: Arc<
-                    dyn infrastructure::agent_session::resolver_ports::MentionResolverPort,
-                > = code_usecase.clone();
                 let branch_diff_context: Arc<
                     dyn usecase::agent_session::context::BranchDiffContextPort,
-                > = code_usecase.clone();
-                app.manage(base_branch_resolver);
-                app.manage(mention_resolver);
-                app.manage(branch_diff_context);
-                let agent_session_usecase = Arc::new(
-                    adaptor::controller::wiring::build_agent_session_usecase(app.handle().clone()),
+                > = Arc::new(
+                    adaptor::gateway::code::branch_diff_context::CodeBranchDiffContextGateway::new(
+                        code_usecase.clone(),
+                    ),
                 );
+                app.manage(branch_diff_context);
                 let git_host_usecase =
                     Arc::new(adaptor::controller::wiring::build_git_host_usecase());
                 let repository_scanner = Arc::new(
@@ -256,7 +234,6 @@ pub fn run() {
                     repo_paths_usecase,
                     code_usecase,
                     review_usecase,
-                    agent_session_usecase,
                     notion_usecase,
                     workflow_usecase,
                     pty_session_read_usecase,
@@ -320,12 +297,70 @@ pub fn run() {
                     agent_status_notifier.clone(),
                 );
             }
-            app.manage(agent_status_notifier);
-            app.manage(agent_status_center);
+            app.manage(agent_status_notifier.clone());
+            app.manage(agent_status_center.clone());
+            {
+                let runtime_session_store = app
+                    .state::<Arc<usecase::agent_session::session::SessionStore>>()
+                    .inner()
+                    .clone();
+                let runtime_registry = app
+                    .state::<Arc<usecase::agent_session::backend_registry::AgentBackendRegistry>>()
+                    .inner()
+                    .clone();
+                let runtime_notifier: Arc<
+                    dyn usecase::agent_session::runtime::ports::AgentSessionEventNotifier,
+                > = Arc::new(
+                    adaptor::presenter::agent_session::TauriAgentSessionEventNotifier::new(
+                        app.handle().clone(),
+                    ),
+                );
+                let runtime_spawner: Arc<
+                    dyn usecase::agent_session::runtime::ports::AgentTaskSpawner,
+                > = Arc::new(adaptor::gateway::agent_session::TokioAgentTaskSpawner);
+                let runtime_branch_diff_context = app
+                    .state::<Arc<dyn usecase::agent_session::context::BranchDiffContextPort>>()
+                    .inner()
+                    .clone();
+                let runtime_instruction_source: Arc<
+                    dyn usecase::agent_session::context::InstructionSourcePort,
+                > = Arc::new(adaptor::gateway::agent_session::FileSystemInstructionSourceGateway);
+                let runtime_data_dir = app
+                    .path()
+                    .app_data_dir()
+                    .expect("failed to resolve app data directory");
+                app.manage(Arc::new(
+                    usecase::agent_session::runtime::AgentSessionRuntimeUsecase::new(
+                        runtime_session_store.clone(),
+                        runtime_registry,
+                        agent_status_center.clone(),
+                        agent_status_notifier.clone(),
+                        runtime_notifier,
+                        runtime_spawner,
+                        Some(runtime_branch_diff_context),
+                        runtime_instruction_source,
+                        runtime_data_dir,
+                    ),
+                ));
+                let stored_lifecycle_registry = app
+                    .state::<Arc<usecase::agent_session::backend_registry::AgentBackendRegistry>>()
+                    .inner()
+                    .clone();
+                let stored_lifecycle_runtime = app
+                    .state::<Arc<usecase::agent_session::runtime::AgentSessionRuntimeUsecase>>()
+                    .inner()
+                    .clone();
+                app.manage(Arc::new(
+                    adaptor::controller::wiring::build_stored_session_lifecycle_usecase(
+                        runtime_session_store,
+                        stored_lifecycle_registry,
+                        stored_lifecycle_runtime,
+                    ),
+                ));
+            }
             let pending_data_dir = app.path().app_data_dir().ok();
-            // AgentBackendRegistry を構築・登録
-            let agent_handles = app
-                .state::<Arc<Mutex<infrastructure::agent_session::runtime::AgentProcessMap>>>()
+            let agent_runtime = app
+                .state::<Arc<usecase::agent_session::runtime::AgentSessionRuntimeUsecase>>()
                 .inner()
                 .clone();
             let session_store = app
@@ -344,32 +379,30 @@ pub fn run() {
                 adaptor::controller::wiring::build_workflow_step_lifecycle_usecase(
                     app.handle().clone(),
                     session_store.clone(),
-                    agent_handles.clone(),
-                    open_tabs,
+                    agent_runtime.clone(),
+                    open_tabs.clone(),
                 ),
             );
             app.manage(workflow_step_lifecycle_usecase);
             let workflow_runtime_usecase =
                 Arc::new(adaptor::controller::wiring::build_workflow_runtime_usecase(
                     app.handle().clone(),
-                    repository_usecase.clone(),
-                    config_repository.clone(),
-                    session_store.clone(),
-                    agent_handles.clone(),
-                    branch_diff_context.clone(),
-                    pending_data_dir.clone(),
+                    adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGatewayDeps {
+                        repository_usecase: repository_usecase.clone(),
+                        app_config: config_repository.clone(),
+                        session_store: session_store.clone(),
+                        agent_runtime: agent_runtime.clone(),
+                        open_tabs,
+                        branch_diff_context: branch_diff_context.clone(),
+                        data_dir: pending_data_dir.clone(),
+                    },
                 ));
-            app.manage(workflow_runtime_usecase);
-            let registry = Arc::new(
-                infrastructure::agent_session::runtime::build_registry_with_runtime(
-                    agent_config_repository.clone(),
-                    app.handle().clone(),
-                    agent_handles,
-                    session_store,
-                    branch_diff_context,
+            agent_runtime.set_workflow_turn_complete_notifier(Arc::new(
+                adaptor::gateway::agent_session::WorkflowRuntimeTurnCompleteNotifier::new(
+                    workflow_runtime_usecase.clone(),
                 ),
-            );
-            app.manage(registry.clone());
+            ));
+            app.manage(workflow_runtime_usecase);
 
             // [06] CLI mutating CLI 経路の file watcher を起動する。初回 pickup は
             // setup 済みの WorkflowRuntimeUsecase / AgentBackendRegistry を前提に dispatch
@@ -396,10 +429,13 @@ pub fn run() {
             }
 
             infrastructure::platform::menu::setup_menu(app)?;
-            infrastructure::platform::tray::setup_tray(
-                app,
-                adaptor::controller::application_lifecycle::request_application_quit,
-            )?;
+            let tray_agent_runtime = agent_runtime.clone();
+            infrastructure::platform::tray::setup_tray(app, move |app| {
+                adaptor::controller::application_lifecycle::request_application_quit_with_runtime(
+                    app,
+                    tray_agent_runtime.clone(),
+                );
+            })?;
             if let Some(window) = app.get_webview_window("main") {
                 infrastructure::platform::native_drop::install(&window);
             }
@@ -408,17 +444,6 @@ pub fn run() {
                 app.handle(),
                 config_repository.as_ref(),
             );
-
-            // Clean up orphan agent processes from previous crashes in the background.
-            // Agent process spawn paths wait on cleanup_gate just before OS spawn.
-            #[cfg(unix)]
-            {
-                infrastructure::agent_session::startup::spawn_startup_orphan_cleanup(
-                    data_dir.clone(),
-                    Arc::clone(&cleanup_gate_for_setup),
-                    infrastructure::agent_session::runtime::cleanup_orphan_processes,
-                );
-            }
 
             other::telemetry::record_startup_from_origin(other::telemetry::Startup::AppStartup);
 

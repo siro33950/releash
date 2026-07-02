@@ -52,6 +52,7 @@ describe("agentChatReducer", () => {
 			availableModels: [],
 			availableModelsByBackend: {},
 			sessionModels: {},
+			canChangeBackend: {},
 			backends: [],
 			selectedBackendId: null,
 		});
@@ -693,10 +694,10 @@ describe("agentChatReducer", () => {
 	describe("SET_PENDING_PERMISSION", () => {
 		it("sets pending permission request for a session", () => {
 			const request = {
-				request_id: "req-1",
-				tool_name: "Edit",
+				id: "req-1",
+				toolName: "Edit",
 				input: { file_path: "/src/index.ts" },
-				tool_use_id: "toolu_001",
+				toolUseId: "toolu_001",
 				title: "Edit file",
 			};
 			const next = reducer(INITIAL_STATE, {
@@ -709,10 +710,10 @@ describe("agentChatReducer", () => {
 
 		it("clears pending permission with null", () => {
 			const request = {
-				request_id: "req-1",
-				tool_name: "Edit",
+				id: "req-1",
+				toolName: "Edit",
 				input: {},
-				tool_use_id: "toolu_001",
+				toolUseId: "toolu_001",
 			};
 			const state: AgentChatState = {
 				...INITIAL_STATE,
@@ -728,16 +729,16 @@ describe("agentChatReducer", () => {
 
 		it("stores permissions for multiple sessions independently", () => {
 			const req1 = {
-				request_id: "req-1",
-				tool_name: "Edit",
+				id: "req-1",
+				toolName: "Edit",
 				input: {},
-				tool_use_id: "toolu_001",
+				toolUseId: "toolu_001",
 			};
 			const req2 = {
-				request_id: "req-2",
-				tool_name: "Bash",
+				id: "req-2",
+				toolName: "Bash",
 				input: {},
-				tool_use_id: "toolu_002",
+				toolUseId: "toolu_002",
 			};
 			const step1 = reducer(INITIAL_STATE, {
 				type: "SET_PENDING_PERMISSION",
@@ -1190,10 +1191,10 @@ describe("agentChatReducer", () => {
 				turnPhases: { s1: "streaming", s2: "idle" },
 				pendingPermissions: {
 					s1: {
-						request_id: "req-1",
-						tool_name: "Edit",
+						id: "req-1",
+						toolName: "Edit",
 						input: {},
-						tool_use_id: "toolu_001",
+						toolUseId: "toolu_001",
 					},
 				},
 				sessionModels: { s1: "claude-4", s2: "claude-3.5" },

@@ -147,6 +147,7 @@ fn resolve_base_ref_oid(repo: &git2::Repository, base_name: &str) -> Option<git2
 /// 計算できる場合のみ `Some`。移行前 `git::branch_diff::resolve_base_branch_name`
 /// （厳格 open + `find_base_commit` 成功要件）と等価に保つため、`discover` による親
 /// リポジトリへのフォールバックはせず厳格に open し、merge-base 成立まで検証する。
+#[allow(dead_code)] // issues-1301 D-5/G-1: retained for agent child-env base branch propagation.
 pub(crate) fn resolve_effective_base_branch(
     repo_path: &str,
 ) -> Result<Option<String>, RepositoryError> {

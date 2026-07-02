@@ -3,8 +3,9 @@ use super::projector::{project, ProjectedStatus};
 use super::*;
 use crate::usecase::agent_session::event_log::AgentTurnFailureSignal;
 use crate::usecase::agent_session::session::{
-    AttachmentRef, MessageMention, MessagePart, SessionState, SystemNotificationType, TodoListItem,
-    ToolOutputRef, ToolOutputSummary,
+    AttachmentRef, MessageMention, MessagePart, PermissionPartStatus, PermissionRequestKindMsg,
+    PermissionRequestMsg, SessionState, SystemNotificationType, TodoListItem, ToolOutputRef,
+    ToolOutputSummary,
 };
 use crate::usecase::agent_session::status::TurnPhase;
 
@@ -20,6 +21,23 @@ fn start_event() -> AgentSessionEvent {
             parts: Vec::new(),
         },
         at: 10.0,
+    }
+}
+
+fn permission_request_fixture() -> PermissionRequestMsg {
+    PermissionRequestMsg {
+        id: "req-1".to_string(),
+        tool_use_id: Some("tool-1".to_string()),
+        tool_name: "Edit".to_string(),
+        kind: PermissionRequestKindMsg::ToolApproval,
+        input: Some(serde_json::json!({})),
+        plan: None,
+        allowed_prompts: Vec::new(),
+        questions: Vec::new(),
+        title: None,
+        display_name: None,
+        description: None,
+        decision_reason: None,
     }
 }
 
@@ -134,7 +152,7 @@ fn append_events_project_message_page_and_workflow_input() {
     assert_eq!(
         read_model.status,
         ProjectedStatus {
-            session_state: SessionState::Idle,
+            session_state: SessionState::Done,
             turn_phase: TurnPhase::Idle,
         }
     );
@@ -326,7 +344,7 @@ fn later_tool_success_replaces_interrupted_failure_content() {
         AgentSessionEvent::ToolCallFailed {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
-            content: "bridge crash により中断".to_string(),
+            content: "crash により中断".to_string(),
             content_ref: None,
             summary: None,
         },
@@ -867,7 +885,7 @@ fn status_projection_covers_runtime_transition_states() {
         AgentSessionEvent::PermissionRequested {
             turn_id: 1,
             tool_use_id: Some("tool-1".to_string()),
-            request: serde_json::json!({"request_id": "req-1", "tool_use_id": "tool-1"}),
+            request: permission_request_fixture(),
         },
     ]);
     assert_eq!(waiting.status.session_state, SessionState::Active);
@@ -895,8 +913,8 @@ fn terminal_status_projection_marks_nonzero_completed_as_error() {
 }
 
 #[test]
-fn terminal_status_projection_marks_timeout_and_bridge_crash_as_error() {
-    for reason in [InterruptReason::Timeout, InterruptReason::BridgeCrash] {
+fn terminal_status_projection_marks_timeout_and_crash_as_error() {
+    for reason in [InterruptReason::Timeout, InterruptReason::Crash] {
         let read_model = project(&[
             start_event(),
             AgentSessionEvent::TurnInterrupted {
@@ -933,7 +951,7 @@ fn finalization_closes_tools_permissions_and_turn() {
     for reason in [
         InterruptReason::Abort,
         InterruptReason::Timeout,
-        InterruptReason::BridgeCrash,
+        InterruptReason::Crash,
     ] {
         let mut events = vec![
             start_event(),
@@ -947,7 +965,7 @@ fn finalization_closes_tools_permissions_and_turn() {
             AgentSessionEvent::PermissionRequested {
                 turn_id: 1,
                 tool_use_id: Some("tool-1".to_string()),
-                request: serde_json::json!({"request_id": "req-1", "tool_use_id": "tool-1"}),
+                request: permission_request_fixture(),
             },
         ];
 
@@ -972,7 +990,7 @@ fn finalization_closes_tools_permissions_and_turn() {
         )));
         assert!(agent_parts.iter().any(|part| matches!(
             part,
-            MessagePart::Permission { status, .. } if status == "cancelled"
+            MessagePart::Permission { status, .. } if *status == PermissionPartStatus::Cancelled
         )));
         assert_eq!(read_model.status.turn_phase, TurnPhase::Idle);
         assert_eq!(
@@ -994,7 +1012,7 @@ fn finalization_uses_reason_label_when_error_is_none() {
     for (reason, expected) in [
         (InterruptReason::Abort, "abort により中断"),
         (InterruptReason::Timeout, "timeout により中断"),
-        (InterruptReason::BridgeCrash, "bridge crash により中断"),
+        (InterruptReason::Crash, "crash により中断"),
     ] {
         let mut events = vec![
             start_event(),
@@ -1039,7 +1057,7 @@ fn finalization_keeps_existing_interrupted_detail_without_double_suffix() {
         finalize_turn(
             &mut events,
             1,
-            InterruptReason::BridgeCrash,
+            InterruptReason::Crash,
             Some(detail.to_string()),
             -1,
         );

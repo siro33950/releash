@@ -9,11 +9,10 @@ use super::{
     SessionStore,
 };
 
-const CODEX_BACKEND_ID: &str = "codex";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodexThreadForkRequest {
-    pub thread_id: String,
+pub(crate) struct BackendSessionLifecycleRequest {
+    pub backend_id: Option<String>,
+    pub agent_session_id: Option<String>,
     pub cwd: String,
     pub model: Option<String>,
     pub permission_mode: String,
@@ -22,10 +21,19 @@ pub(crate) struct CodexThreadForkRequest {
 }
 
 #[async_trait]
-pub(crate) trait CodexThreadLifecycleGateway: Send + Sync {
-    async fn archive_thread(&self, thread_id: &str) -> Result<(), String>;
-    async fn unarchive_thread(&self, thread_id: &str) -> Result<(), String>;
-    async fn fork_thread(&self, request: CodexThreadForkRequest) -> Result<String, String>;
+pub(crate) trait AgentSessionBackendLifecycleGateway: Send + Sync {
+    async fn archive_backend_session(
+        &self,
+        request: BackendSessionLifecycleRequest,
+    ) -> Result<(), String>;
+    async fn unarchive_backend_session(
+        &self,
+        request: BackendSessionLifecycleRequest,
+    ) -> Result<(), String>;
+    async fn fork_backend_session(
+        &self,
+        request: BackendSessionLifecycleRequest,
+    ) -> Result<Option<String>, String>;
 }
 
 #[async_trait]
@@ -35,19 +43,19 @@ pub(crate) trait AgentSessionRuntimeCloser: Send + Sync {
 
 pub(crate) struct StoredSessionLifecycleUsecase {
     session_store: Arc<SessionStore>,
-    thread_lifecycle: Arc<dyn CodexThreadLifecycleGateway>,
+    backend_lifecycle: Arc<dyn AgentSessionBackendLifecycleGateway>,
     runtime_closer: Arc<dyn AgentSessionRuntimeCloser>,
 }
 
 impl StoredSessionLifecycleUsecase {
     pub(crate) fn new(
         session_store: Arc<SessionStore>,
-        thread_lifecycle: Arc<dyn CodexThreadLifecycleGateway>,
+        backend_lifecycle: Arc<dyn AgentSessionBackendLifecycleGateway>,
         runtime_closer: Arc<dyn AgentSessionRuntimeCloser>,
     ) -> Self {
         Self {
             session_store,
-            thread_lifecycle,
+            backend_lifecycle,
             runtime_closer,
         }
     }
@@ -85,29 +93,24 @@ impl StoredSessionLifecycleUsecase {
             .get_session_shell(data_dir, session_id)?
             .ok_or_else(|| format!("Session not found: {session_id}"))?;
         let mut forked = self.session_store.fork_session(data_dir, session_id)?;
-        let Some(thread_id) = saved_codex_thread_id(&source_session) else {
-            return Ok(forked);
-        };
-
-        let request = CodexThreadForkRequest {
-            thread_id,
-            cwd: source_session.worktree_path.clone(),
-            model: source_session.selected_model.clone(),
-            permission_mode: source_session.permission_mode.clone(),
-            plan_mode: source_session.plan_mode,
-            permission_profile_id: source_session.permission_profile_id.clone(),
-        };
-        match self.thread_lifecycle.fork_thread(request).await {
-            Ok(thread_id) => {
-                forked.agent_session_id = Some(thread_id);
+        match self
+            .backend_lifecycle
+            .fork_backend_session(BackendSessionLifecycleRequest::from_session(
+                &source_session,
+            ))
+            .await
+        {
+            Ok(Some(agent_session_id)) => {
+                forked.agent_session_id = Some(agent_session_id);
                 self.session_store.update_agent_session_id(
                     data_dir,
                     &forked.id,
                     forked.agent_session_id.clone(),
                 )?;
             }
+            Ok(None) => {}
             Err(err) => {
-                log::debug!("skipped Codex runtime thread fork sync for {session_id}: {err}");
+                log::debug!("skipped backend runtime fork sync for {session_id}: {err}");
             }
         }
         Ok(forked)
@@ -137,84 +140,189 @@ impl StoredSessionLifecycleUsecase {
                 session.selected_model.clone(),
             )?;
         }
-        let codex_thread_id = saved_codex_thread_id(&session);
+        let backend_request = BackendSessionLifecycleRequest::from_session(&session);
         let response = SessionLifecycleController {
             session_store: &self.session_store,
             data_dir,
         }
         .restore_session_state(session)?;
-        if let Some(thread_id) = codex_thread_id {
-            if let Err(err) = self.thread_lifecycle.unarchive_thread(&thread_id).await {
-                log::debug!("skipped Codex runtime thread unarchive sync for {session_id}: {err}");
-            }
+        if let Err(err) = self
+            .backend_lifecycle
+            .unarchive_backend_session(backend_request)
+            .await
+        {
+            log::debug!("skipped backend runtime unarchive sync for {session_id}: {err}");
         }
         Ok(response)
     }
 
     async fn sync_archive(&self, data_dir: &Path, session_id: &str, label: &str) {
-        let codex_thread_id = self
+        let backend_request = self
             .session_store
             .get_session_shell(data_dir, session_id)
             .ok()
             .flatten()
-            .and_then(|session| saved_codex_thread_id(&session));
-        if let Some(thread_id) = codex_thread_id {
-            if let Err(err) = self.thread_lifecycle.archive_thread(&thread_id).await {
-                log::debug!("skipped Codex runtime thread {label} sync for {session_id}: {err}");
+            .map(|session| BackendSessionLifecycleRequest::from_session(&session));
+        if let Some(request) = backend_request {
+            if let Err(err) = self
+                .backend_lifecycle
+                .archive_backend_session(request)
+                .await
+            {
+                log::debug!("skipped backend runtime {label} sync for {session_id}: {err}");
             }
         }
     }
 }
 
-pub(crate) fn saved_codex_thread_id(session: &ChatSession) -> Option<String> {
-    if session.backend_id.as_deref() != Some(CODEX_BACKEND_ID) {
-        return None;
+impl BackendSessionLifecycleRequest {
+    pub(crate) fn from_session(session: &ChatSession) -> Self {
+        Self {
+            backend_id: session.backend_id.clone(),
+            agent_session_id: session
+                .agent_session_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            cwd: session.worktree_path.clone(),
+            model: session.selected_model.clone(),
+            permission_mode: session.permission_mode.clone(),
+            plan_mode: session.plan_mode,
+            permission_profile_id: session.permission_profile_id.clone(),
+        }
     }
-    session
-        .agent_session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::agent_session::gateway::{
+        AgentBackend, AgentBackendError, AgentSessionRuntime, ForkSessionRequest, SessionSpec,
+    };
+    use crate::domain::agent_session::value_objects::{
+        BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
+    };
+    use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
     use crate::usecase::agent_session::session::SessionState;
     use parking_lot::Mutex;
+    use std::path::Path;
 
-    struct FakeThreadLifecycle {
-        archived: Mutex<Vec<String>>,
-        unarchived: Mutex<Vec<String>>,
-        forked: Mutex<Vec<CodexThreadForkRequest>>,
-        fork_result: Mutex<Result<String, String>>,
+    struct RegistryMockBackend {
+        id: &'static str,
+        model: &'static str,
     }
 
-    impl FakeThreadLifecycle {
+    #[async_trait]
+    impl AgentBackend for RegistryMockBackend {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn name(&self) -> &str {
+            self.id
+        }
+
+        fn available_models(&self) -> Vec<ModelDescriptor> {
+            vec![ModelDescriptor {
+                id: ModelId::parse(self.model).unwrap(),
+                display_name: self.model.to_string(),
+            }]
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            BackendCapabilities { steering: false }
+        }
+
+        async fn open_session(
+            &self,
+            _spec: SessionSpec,
+        ) -> Result<Box<dyn AgentSessionRuntime>, AgentBackendError> {
+            Err(AgentBackendError::Other("not used".to_string()))
+        }
+
+        async fn archive_session(
+            &self,
+            _backend_session_id: &str,
+            _cwd: &str,
+        ) -> Result<(), AgentBackendError> {
+            Ok(())
+        }
+
+        async fn unarchive_session(
+            &self,
+            _backend_session_id: &str,
+            _cwd: &str,
+        ) -> Result<(), AgentBackendError> {
+            Ok(())
+        }
+
+        async fn fork_session(
+            &self,
+            _req: ForkSessionRequest,
+        ) -> Result<Option<String>, AgentBackendError> {
+            Ok(None)
+        }
+
+        async fn skill_catalog(
+            &self,
+            _cwd: &Path,
+            _query: Option<&str>,
+            _limit: Option<usize>,
+        ) -> Result<Vec<SkillEntry>, AgentBackendError> {
+            Ok(Vec::new())
+        }
+
+        async fn fuzzy_file_search(
+            &self,
+            _root: &Path,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<Option<Vec<String>>, AgentBackendError> {
+            Ok(None)
+        }
+    }
+
+    struct FakeBackendLifecycle {
+        archived: Mutex<Vec<BackendSessionLifecycleRequest>>,
+        unarchived: Mutex<Vec<BackendSessionLifecycleRequest>>,
+        forked: Mutex<Vec<BackendSessionLifecycleRequest>>,
+        fork_result: Mutex<Result<Option<String>, String>>,
+    }
+
+    impl FakeBackendLifecycle {
         fn new() -> Self {
             Self {
                 archived: Mutex::new(Vec::new()),
                 unarchived: Mutex::new(Vec::new()),
                 forked: Mutex::new(Vec::new()),
-                fork_result: Mutex::new(Ok("forked-thread".to_string())),
+                fork_result: Mutex::new(Ok(Some("forked-thread".to_string()))),
             }
         }
     }
 
     #[async_trait]
-    impl CodexThreadLifecycleGateway for FakeThreadLifecycle {
-        async fn archive_thread(&self, thread_id: &str) -> Result<(), String> {
-            self.archived.lock().push(thread_id.to_string());
+    impl AgentSessionBackendLifecycleGateway for FakeBackendLifecycle {
+        async fn archive_backend_session(
+            &self,
+            request: BackendSessionLifecycleRequest,
+        ) -> Result<(), String> {
+            self.archived.lock().push(request);
             Ok(())
         }
 
-        async fn unarchive_thread(&self, thread_id: &str) -> Result<(), String> {
-            self.unarchived.lock().push(thread_id.to_string());
+        async fn unarchive_backend_session(
+            &self,
+            request: BackendSessionLifecycleRequest,
+        ) -> Result<(), String> {
+            self.unarchived.lock().push(request);
             Ok(())
         }
 
-        async fn fork_thread(&self, request: CodexThreadForkRequest) -> Result<String, String> {
+        async fn fork_backend_session(
+            &self,
+            request: BackendSessionLifecycleRequest,
+        ) -> Result<Option<String>, String> {
             self.forked.lock().push(request);
             self.fork_result.lock().clone()
         }
@@ -247,7 +355,7 @@ mod tests {
             plan_mode: false,
             selected_model: Some("gpt-5.1-codex".to_string()),
             permission_profile_id: Some("profile-1".to_string()),
-            backend_id: Some(CODEX_BACKEND_ID.to_string()),
+            backend_id: Some("codex".to_string()),
             workflow_step_session: false,
             workflow_step_context: None,
             context_epoch: None,
@@ -256,17 +364,17 @@ mod tests {
 
     fn usecase(
         store: Arc<SessionStore>,
-        threads: Arc<FakeThreadLifecycle>,
+        backend_lifecycle: Arc<FakeBackendLifecycle>,
         runtime: Arc<FakeRuntimeCloser>,
     ) -> StoredSessionLifecycleUsecase {
-        StoredSessionLifecycleUsecase::new(store, threads, runtime)
+        StoredSessionLifecycleUsecase::new(store, backend_lifecycle, runtime)
     }
 
     #[tokio::test]
     async fn archive_session_updates_store_before_thread_archive() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
-        let threads = Arc::new(FakeThreadLifecycle::new());
+        let backend_lifecycle = Arc::new(FakeBackendLifecycle::new());
         let runtime = Arc::new(FakeRuntimeCloser::default());
         store
             .save_full_session_for_migration_or_restore(
@@ -275,7 +383,7 @@ mod tests {
             )
             .unwrap();
 
-        usecase(store.clone(), threads.clone(), runtime)
+        usecase(store.clone(), backend_lifecycle.clone(), runtime)
             .archive_session(tmp.path(), "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
             .await
             .unwrap();
@@ -285,14 +393,17 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(saved.state, SessionState::Archived);
-        assert_eq!(threads.archived.lock().as_slice(), ["thread-1"]);
+        let archived = backend_lifecycle.archived.lock();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].backend_id.as_deref(), Some("codex"));
+        assert_eq!(archived[0].agent_session_id.as_deref(), Some("thread-1"));
     }
 
     #[tokio::test]
     async fn fork_session_updates_forked_thread_id_after_local_fork() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
-        let threads = Arc::new(FakeThreadLifecycle::new());
+        let backend_lifecycle = Arc::new(FakeBackendLifecycle::new());
         let runtime = Arc::new(FakeRuntimeCloser::default());
         store
             .save_full_session_for_migration_or_restore(
@@ -301,7 +412,7 @@ mod tests {
             )
             .unwrap();
 
-        let forked = usecase(store.clone(), threads.clone(), runtime)
+        let forked = usecase(store.clone(), backend_lifecycle.clone(), runtime)
             .fork_session(tmp.path(), "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
             .await
             .unwrap();
@@ -312,23 +423,76 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(saved.agent_session_id.as_deref(), Some("forked-thread"));
-        assert_eq!(threads.forked.lock()[0].thread_id, "thread-1");
+        let forked_requests = backend_lifecycle.forked.lock();
+        assert_eq!(forked_requests[0].backend_id.as_deref(), Some("codex"));
+        assert_eq!(
+            forked_requests[0].agent_session_id.as_deref(),
+            Some("thread-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_session_restores_idle_state_and_unarchives_selected_backend() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let backend_lifecycle = Arc::new(FakeBackendLifecycle::new());
+        let runtime = Arc::new(FakeRuntimeCloser::default());
+        store
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &codex_session("a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", SessionState::Closed),
+            )
+            .unwrap();
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(RegistryMockBackend {
+            id: "claude",
+            model: "claude-opus-4-8",
+        }));
+        registry.register(Arc::new(RegistryMockBackend {
+            id: "codex",
+            model: "gpt-5.1-codex",
+        }));
+        registry.set_default(Some("claude".to_string()));
+
+        let response = usecase(store.clone(), backend_lifecycle.clone(), runtime)
+            .restore_session(
+                tmp.path(),
+                "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+                &registry,
+            )
+            .await
+            .unwrap();
+
+        assert!(!response.restored_workflow_step);
+        let saved = store
+            .get_session_shell(tmp.path(), "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.state, SessionState::Idle);
+        let unarchived = backend_lifecycle.unarchived.lock();
+        assert_eq!(unarchived.len(), 1);
+        assert_eq!(unarchived[0].backend_id.as_deref(), Some("codex"));
+        assert_eq!(unarchived[0].agent_session_id.as_deref(), Some("thread-1"));
     }
 
     #[test]
-    fn saved_codex_thread_id_requires_codex_backend_and_non_empty_id() {
+    fn backend_lifecycle_request_trims_non_empty_agent_session_id() {
         let mut session = codex_session("session-1", SessionState::Closed);
         session.agent_session_id = Some(" thread-1 ".to_string());
         assert_eq!(
-            saved_codex_thread_id(&session),
+            BackendSessionLifecycleRequest::from_session(&session).agent_session_id,
             Some("thread-1".to_string())
         );
 
         session.backend_id = Some("claude".to_string());
-        assert_eq!(saved_codex_thread_id(&session), None);
+        let request = BackendSessionLifecycleRequest::from_session(&session);
+        assert_eq!(request.backend_id.as_deref(), Some("claude"));
+        assert_eq!(request.agent_session_id.as_deref(), Some("thread-1"));
 
-        session.backend_id = Some(CODEX_BACKEND_ID.to_string());
         session.agent_session_id = Some("   ".to_string());
-        assert_eq!(saved_codex_thread_id(&session), None);
+        assert_eq!(
+            BackendSessionLifecycleRequest::from_session(&session).agent_session_id,
+            None
+        );
     }
 }

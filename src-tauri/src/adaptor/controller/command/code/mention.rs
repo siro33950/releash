@@ -1,39 +1,37 @@
 //! ファイルメンション候補列挙の Tauri コマンド。
 //!
-//! 移行前 `file_mention::list_mentionable_files` は同期コマンドであったため、観測可能な
-//! 振る舞いを保つよう同期コマンドのまま usecase へ委譲する。
-
 use std::collections::HashMap;
+use std::path::Path;
 
 use tauri::State;
 
 use crate::adaptor::controller::state::AppState;
+use crate::adaptor::controller_support::AgentSessionRuntimeState;
 use crate::adaptor::protocol::mention::MentionReferenceInput;
 use crate::other::AppError;
 
 #[tauri::command]
-pub fn list_mentionable_files(
+pub async fn list_mentionable_files(
     state: State<'_, AppState>,
+    runtime: State<'_, AgentSessionRuntimeState>,
     worktree_path: String,
     query: String,
+    backend_id: Option<String>,
 ) -> Result<Vec<String>, AppError> {
+    match runtime
+        .mentionable_files(backend_id.as_deref(), Path::new(&worktree_path), &query, 50)
+        .await
+    {
+        Ok(Some(files)) => return Ok(files),
+        Ok(None) => {}
+        Err(error) => {
+            log::warn!("backend mentionable file search failed; falling back: {error}");
+        }
+    }
     state
         .code_usecase
         .list_mentionable_files(&worktree_path, &query)
         .map_err(AppError::from)
-}
-
-#[tauri::command]
-pub async fn read_codex_mentionable_files(
-    state: State<'_, AppState>,
-    worktree_path: String,
-    query: String,
-) -> Result<Vec<String>, String> {
-    state
-        .code_usecase
-        .read_codex_mentionable_files(&worktree_path, &query, 50)
-        .await
-        .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

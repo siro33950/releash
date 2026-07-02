@@ -1,3 +1,5 @@
+pub mod entities;
+pub mod gateway;
 pub(crate) mod services;
 pub(crate) mod storage;
 pub(crate) mod value_objects;
@@ -10,8 +12,7 @@ pub(crate) use storage::{
     AgentSessionReader, AgentSessionStorage, AgentSessionStorageTypes, AgentSessionWriter,
 };
 pub(crate) use value_objects::{
-    model_entry_for_backend_model, model_entry_id, ContextEpoch, ContextEpochId,
-    ContextEpochIdentity, ContextRevision, ContextSnapshot, ContextSourceKind, ContextSourceState,
-    InstructionOrigin, InvalidPermissionMode, ModelId, PermissionMode, ReplacementAction,
-    ReplacementTrigger, ResolvedInstruction, SkillEntry, CLAUDE_FIXED_MODELS, CODEX_FIXED_MODELS,
+    ContextEpoch, ContextEpochId, ContextEpochIdentity, ContextRevision, ContextSnapshot,
+    ContextSourceKind, ContextSourceState, InstructionOrigin, InvalidPermissionMode, ModelId,
+    PermissionMode, ReplacementAction, ReplacementTrigger, ResolvedInstruction, SkillEntry,
 };

@@ -937,11 +937,27 @@ mod tests {
         assert_eq!(actor.model.as_deref(), Some("fake-model"));
 
         let missing_backend_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &missing_backend_id, None, Some("gpt-5"));
-        assert!(matches!(
-            review_actor(tmp.path(), &missing_backend_id),
-            Err(CliError::InvalidInput(_))
-        ));
+        write_review_session(
+            tmp.path(),
+            &missing_backend_id,
+            Some("codex"),
+            Some("gpt-5"),
+        );
+        let meta_path = tmp
+            .path()
+            .join("sessions")
+            .join(&missing_backend_id)
+            .join("meta.json");
+        let mut meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        meta.as_object_mut().unwrap().remove("backendId");
+        std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+        match review_actor(tmp.path(), &missing_backend_id) {
+            Err(CliError::Other(message)) => {
+                assert!(message.contains("Invalid session data"));
+            }
+            other => panic!("expected invalid isolated session error, got {other:?}"),
+        }
 
         let missing_model_id = uuid::Uuid::new_v4().to_string();
         write_review_session(tmp.path(), &missing_model_id, Some("codex"), None);
@@ -1042,7 +1058,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &session_id, None, None);
+        write_review_session(tmp.path(), &session_id, Some("codex"), None);
         crate::test_support::build_session_store()
             .set_session_state(tmp.path(), &session_id, SessionState::Closed)
             .unwrap();

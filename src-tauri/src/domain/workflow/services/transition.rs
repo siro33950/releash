@@ -114,7 +114,7 @@ pub enum SessionFailureSignal {
     #[cfg(test)]
     Timeout,
     #[cfg(test)]
-    BridgeCrash,
+    Crash,
     ModelRefusal,
 }
 
@@ -126,7 +126,7 @@ pub fn classify_session_error(
         #[cfg(test)]
         Some(SessionFailureSignal::Timeout) => WorkflowStepFailureKind::StaleRuntimeTimeout,
         #[cfg(test)]
-        Some(SessionFailureSignal::BridgeCrash) => WorkflowStepFailureKind::InfrastructureCrash,
+        Some(SessionFailureSignal::Crash) => WorkflowStepFailureKind::InfrastructureCrash,
         Some(SessionFailureSignal::ModelRefusal) => WorkflowStepFailureKind::ModelRefusal,
         None if exit_code == 124 => WorkflowStepFailureKind::StaleRuntimeTimeout,
         None => WorkflowStepFailureKind::InfrastructureCrash,
@@ -470,7 +470,7 @@ mod tests {
             WorkflowStepFailureKind::StaleRuntimeTimeout
         );
         assert_eq!(
-            classify_session_error(-1, Some(SessionFailureSignal::BridgeCrash)),
+            classify_session_error(-1, Some(SessionFailureSignal::Crash)),
             WorkflowStepFailureKind::InfrastructureCrash
         );
         assert_eq!(

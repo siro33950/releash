@@ -155,6 +155,9 @@ pub(super) fn validate_meta(
     if meta.id != expected_id {
         return Err(invalid_session_error_message_with_id(expected_id));
     }
+    if meta.backend_id.trim().is_empty() {
+        return Err(invalid_session_error_message_with_id(expected_id));
+    }
     meta.permission_mode = validate_permission_mode(&meta.permission_mode)
         .map_err(|_| invalid_session_error_message_with_id(expected_id))?;
     if meta.body_format_version == 0 {

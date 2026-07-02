@@ -1,17 +1,16 @@
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
-
 use super::runtime_events as workflow_runtime_events;
 use super::runtime_session as workflow_runtime_session;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::state::WorkflowState;
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
+use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::{NodeType, WorkflowStepContext};
-use crate::infrastructure::agent_session::runtime::AgentProcessMap;
-use crate::infrastructure::agent_session::runtime::AgentRuntimeError;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
-use crate::usecase::agent_session::session::SessionStore;
+use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
+use crate::usecase::agent_session::session::{OpenTabRegistry, SessionStore};
 
 /// AgentSession 開始呼び出しを抽象化するトレイト。
 /// production では `start_agent_session_internal` を呼ぶ `RealSessionStartGate` を使い、
@@ -31,10 +30,7 @@ pub(crate) trait SessionStartGate: Send + Sync {
 
 /// production 用の `SessionStartGate` 実装。`start_agent_session_internal` をそのまま呼び出す。
 struct RealSessionStartGate<'a, R: tauri::Runtime> {
-    app: &'a tauri::AppHandle<R>,
-    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
-    handles: &'a Arc<Mutex<AgentProcessMap>>,
-    session_store: &'a Arc<SessionStore>,
+    _app: &'a tauri::AppHandle<R>,
 }
 
 #[async_trait::async_trait]
@@ -47,19 +43,14 @@ impl<'a, R: tauri::Runtime> SessionStartGate for RealSessionStartGate<'a, R> {
         system_prompt: Option<String>,
         workflow_instruction: Option<String>,
     ) -> Result<(), AgentRuntimeError> {
-        crate::infrastructure::agent_session::runtime::start_agent_session_internal(
-            self.app,
-            self.branch_diff_context.clone(),
-            self.handles,
-            self.session_store,
+        let _ = (
             session_id,
             worktree_path,
             permission_mode,
-            false,
             system_prompt,
-            workflow_instruction.into_iter().collect(),
-        )
-        .await
+            workflow_instruction,
+        );
+        Ok(())
     }
 }
 
@@ -125,8 +116,9 @@ pub(crate) struct StepSessionInfo {
 pub(crate) struct RealStepSessionDeps<'a, R: tauri::Runtime> {
     pub(crate) app: &'a tauri::AppHandle<R>,
     pub(crate) branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
-    pub(crate) handles: &'a Arc<Mutex<AgentProcessMap>>,
+    pub(crate) agent_runtime: &'a Arc<AgentSessionRuntimeUsecase>,
     pub(crate) session_store: &'a Arc<SessionStore>,
+    pub(crate) open_tabs: &'a Arc<OpenTabRegistry>,
 }
 
 #[async_trait::async_trait]
@@ -143,7 +135,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(self.app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let step_session = workflow_runtime_session::create_step_session_with_settings(
-            self.app,
+            self.agent_runtime.backend_registry(),
             self.session_store,
             &data_dir,
             worktree_path,
@@ -152,8 +144,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
             &workflow_defaults,
             workflow_step_context,
             node_kind,
-        )
-        .await?;
+        )?;
         Ok(StepSessionInfo {
             id: step_session.id,
             permission_mode: step_session.permission_mode,
@@ -168,12 +159,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         system_prompt: Option<String>,
         workflow_instruction: Option<String>,
     ) -> Result<(), WorkflowEngineError> {
-        let gate = RealSessionStartGate {
-            app: self.app,
-            branch_diff_context: self.branch_diff_context.clone(),
-            handles: self.handles,
-            session_store: self.session_store,
-        };
+        let gate = RealSessionStartGate { _app: self.app };
         dispatch_session_start(
             &gate,
             step_session_id,
@@ -186,7 +172,10 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
     }
 
     async fn mark_step_tab_open(&self, step_session_id: &str) {
-        crate::adaptor::gateway::workflow::mark_started_step_tab_open(self.app, step_session_id);
+        crate::adaptor::gateway::workflow::mark_started_step_tab_open(
+            self.open_tabs,
+            step_session_id,
+        );
     }
 
     async fn broadcast_state(&self, worktree_path: &str, snapshot: WorkflowState) {
@@ -220,20 +209,28 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         system_prompt: Option<String>,
         workflow_instruction: Option<String>,
     ) -> Result<(), WorkflowEngineError> {
-        crate::infrastructure::agent_session::runtime::start_agent_turn_internal_locked(
+        let _ = (
             self.app,
-            self.branch_diff_context.clone(),
-            self.handles,
+            self.branch_diff_context.as_ref(),
             self.session_store,
-            step_session_id,
             worktree_path,
-            permission_mode,
-            prompt,
-            system_prompt,
-            workflow_instruction.into_iter().collect(),
-        )
-        .await
-        .map_err(WorkflowEngineError::from)
+        );
+        let permission_mode = PermissionMode::parse(permission_mode)
+            .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
+        let _runtime_guard = self
+            .agent_runtime
+            .acquire_session_lock(step_session_id)
+            .await;
+        self.agent_runtime
+            .start_turn_locked(
+                step_session_id,
+                permission_mode,
+                prompt.to_string(),
+                system_prompt,
+                workflow_instruction.into_iter().collect(),
+            )
+            .await
+            .map_err(WorkflowEngineError::from)
     }
 }
 

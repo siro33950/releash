@@ -44,7 +44,6 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "git_stage",
     "git_unstage",
     "list_mentionable_files",
-    "read_codex_mentionable_files",
     "sync_mentions_with_text",
 ];
 
@@ -82,7 +81,6 @@ pub(crate) fn invoke_handler(
         staging::git_stage,
         staging::git_unstage,
         mention::list_mentionable_files,
-        mention::read_codex_mentionable_files,
         mention::sync_mentions_with_text,
     ]
 }

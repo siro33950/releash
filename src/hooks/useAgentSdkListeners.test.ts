@@ -128,14 +128,14 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		}
 	});
 
-	it("registers listeners for agent-sdk-message, agent-turn-prepared, agent-session-state-changed, agent-streaming-delta, agent-pending-message-consumed, agent-permission-mode-changed, agent-models-updated", () => {
+	it("registers listeners for typed agent session events", () => {
 		listenResolvers = [];
 		const refs = makeRefs();
 
 		renderHook(() => useAgentSdkListeners(refs));
 
 		const eventNames = listenResolvers.map((r) => r.eventName);
-		expect(eventNames).toContain("agent-sdk-message");
+		expect(eventNames).toContain("agent-turn-usage-updated");
 		expect(eventNames).toContain("agent-turn-prepared");
 		expect(eventNames).toContain("agent-session-state-changed");
 		expect(eventNames).toContain("agent-streaming-delta");
@@ -630,10 +630,10 @@ describe("agent-session-state-changed event", () => {
 		expect(cb).toBeDefined();
 
 		const request = {
-			request_id: "req-001",
-			tool_name: "Edit",
+			id: "req-001",
+			toolName: "Edit",
 			input: { file_path: "/src/index.ts" },
-			tool_use_id: "toolu_001",
+			toolUseId: "toolu_001",
 			title: "Edit file",
 		};
 
@@ -765,269 +765,10 @@ describe("SET_PERMISSION_MODE from agent-permission-mode-changed event", () => {
 		);
 		expect(permModeCalls).toHaveLength(0);
 	});
-
-	it("does not dispatch SET_PERMISSION_MODE when system message has no permissionMode", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
-				subtype: "init",
-				session_id: "sdk-session-abc",
-			},
-		});
-
-		const syncCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) =>
-				(call[0] as { type: string }).type === "SET_PERMISSION_MODE",
-		);
-		expect(syncCalls).toHaveLength(0);
-	});
-
-	it("dispatches ADD_MESSAGE for system message with message field", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		setViewable(refs, "session-1");
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
-				chat_session_id: "session-1",
-				message: "Not logged in. Please run 'claude login'.",
-			},
-		});
-
-		const addMsgCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
-		);
-		expect(addMsgCalls).toHaveLength(1);
-		const msg = (
-			addMsgCalls[0][0] as {
-				message: {
-					role: string;
-					parts: Array<{ type: string; content: string }>;
-				};
-			}
-		).message;
-		expect(msg.role).toBe("system");
-		expect(msg.parts[0].content).toBe(
-			"Not logged in. Please run 'claude login'.",
-		);
-	});
-
-	it("dispatches ADD_MESSAGE for system message with content field", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		setViewable(refs, "session-1");
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
-				chat_session_id: "session-1",
-				content: "API key expired",
-			},
-		});
-
-		const addMsgCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
-		);
-		expect(addMsgCalls).toHaveLength(1);
-		const msg = (
-			addMsgCalls[0][0] as {
-				message: {
-					role: string;
-					parts: Array<{ type: string; content: string }>;
-				};
-			}
-		).message;
-		expect(msg.role).toBe("system");
-		expect(msg.parts[0].content).toBe("API key expired");
-	});
-
-	it("does not dispatch ADD_MESSAGE for system message without text content", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
-				subtype: "init",
-				chat_session_id: "session-1",
-				session_id: "sdk-session-abc",
-				permissionMode: "ask",
-			},
-		});
-
-		const addMsgCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
-		);
-		expect(addMsgCalls).toHaveLength(0);
-	});
-
-	it("does not dispatch ADD_MESSAGE for task system messages (task_started)", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
-				subtype: "task_started",
-				chat_session_id: "session-1",
-				tool_use_id: "toolu_task_001",
-				description: "Explore codebase",
-			},
-		});
-
-		const addMsgCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
-		);
-		expect(addMsgCalls).toHaveLength(0);
-	});
-
-	it("does not dispatch ADD_MESSAGE for task system messages (task_notification)", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
-				subtype: "task_notification",
-				chat_session_id: "session-1",
-				tool_use_id: "toolu_task_001",
-				status: "completed",
-				summary: "Done",
-			},
-		});
-
-		const addMsgCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
-		);
-		expect(addMsgCalls).toHaveLength(0);
-	});
-
-	it("does not dispatch ADD_MESSAGE for task system messages (task_progress)", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
-				subtype: "task_progress",
-				chat_session_id: "session-1",
-				tool_use_id: "toolu_task_001",
-				description: "Processing files",
-			},
-		});
-
-		const addMsgCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
-		);
-		expect(addMsgCalls).toHaveLength(0);
-	});
-
-	it("does not dispatch ADD_MESSAGE for system message without chat_session_id", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
-				message: "Some system message",
-			},
-		});
-
-		const addMsgCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
-		);
-		expect(addMsgCalls).toHaveLength(0);
-	});
-
-	it("does not dispatch SET_PLAN_MODE_ACTIVE for EnterPlanMode tool_use (removed)", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "assistant",
-				chat_session_id: "session-1",
-				message: {
-					content: [
-						{
-							type: "tool_use",
-							id: "toolu_plan_001",
-							name: "EnterPlanMode",
-							input: {},
-						},
-					],
-				},
-			},
-		});
-
-		const planModeCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) =>
-				(call[0] as { type: string }).type === "SET_PLAN_MODE_ACTIVE",
-		);
-		expect(planModeCalls).toHaveLength(0);
-	});
 });
 
-describe("result error display", () => {
-	it("dispatches latest token usage from result modelUsage", () => {
+describe("agent-turn-usage-updated event", () => {
+	it("dispatches latest token usage from typed Rust event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -1035,25 +776,16 @@ describe("result error display", () => {
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
-		const cb = listenCallbacks.get("agent-sdk-message");
+		const cb = listenCallbacks.get("agent-turn-usage-updated");
 
 		cb?.({
 			payload: {
-				type: "result",
-				chat_session_id: "session-1",
-				modelUsage: {
-					codex: {
-						inputTokens: 12,
-						outputTokens: 34,
-						totalTokens: 46,
-						contextWindowTokens: 200000,
-					},
-					planner: {
-						inputTokens: 3,
-						outputTokens: 4,
-						totalTokens: 7,
-						contextWindowTokens: 128000,
-					},
+				chatSessionId: "session-1",
+				tokenUsage: {
+					inputTokens: 15,
+					outputTokens: 38,
+					totalTokens: 53,
+					contextWindowTokens: 200000,
 				},
 			},
 		});
@@ -1068,92 +800,6 @@ describe("result error display", () => {
 				contextWindowTokens: 200000,
 			},
 		});
-	});
-
-	it("dispatches ADD_MESSAGE when result message has errors", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		setViewable(refs, "session-1");
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "result",
-				subtype: "error_during_execution",
-				chat_session_id: "session-1",
-				errors: ["Authentication failed", "Please log in"],
-			},
-		});
-
-		const addMsgCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
-		);
-		expect(addMsgCalls).toHaveLength(1);
-		const msg = (
-			addMsgCalls[0][0] as {
-				message: {
-					role: string;
-					parts: Array<{ type: string; content: string }>;
-				};
-			}
-		).message;
-		expect(msg.role).toBe("agent");
-		expect(msg.parts[0].type).toBe("error");
-		expect(msg.parts[0].content).toBe("Authentication failed\nPlease log in");
-	});
-
-	it("does not dispatch ADD_MESSAGE when result has no errors", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "result",
-				subtype: "success",
-				chat_session_id: "session-1",
-			},
-		});
-
-		const addMsgCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
-		);
-		expect(addMsgCalls).toHaveLength(0);
-	});
-
-	it("does not dispatch ADD_MESSAGE when result errors is empty array", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "result",
-				subtype: "error_during_execution",
-				chat_session_id: "session-1",
-				errors: [],
-			},
-		});
-
-		const addMsgCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
-		);
-		expect(addMsgCalls).toHaveLength(0);
 	});
 });
 
@@ -1189,28 +835,6 @@ describe("supported_commands handling", () => {
 			sessionId: "session-1",
 			commands,
 		});
-	});
-
-	it("does not treat raw agent-sdk-message supported_commands as slash catalog", async () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "supported_commands",
-				commands: "not-an-array",
-			},
-		});
-
-		expect(refs.dispatch).not.toHaveBeenCalledWith(
-			expect.objectContaining({ type: "SET_RUNTIME_SLASH_COMMANDS" }),
-		);
 	});
 });
 

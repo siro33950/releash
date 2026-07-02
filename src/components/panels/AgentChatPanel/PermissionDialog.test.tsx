@@ -101,12 +101,118 @@ function buildPermissionPresentation({
 	};
 }
 
+const permissionPresentationById = new Map<
+	string,
+	ReturnType<typeof buildPermissionPresentation>
+>();
+
+function setPermissionPresentation(request: {
+	id: string;
+	toolName: string;
+	input?: Record<string, unknown>;
+}) {
+	permissionPresentationById.set(
+		request.id,
+		buildPermissionPresentation(request),
+	);
+}
+
+function fallbackPermissionPresentation(requestId: string) {
+	const exitPlanInputs: Record<string, Record<string, unknown>> = {
+		"req-exitplan-001": {
+			plan: "# My Plan\n\n- Step 1\n- Step 2",
+			planFilePath: "/tmp/plan.md",
+		},
+		"req-exitplan-002": {
+			plan: "Some plan",
+			planFilePath: "/tmp/secret/plan.md",
+		},
+		"req-exitplan-003": {
+			plan: "Plan text",
+			allowedPrompts: [
+				{ tool: "Bash", prompt: "run tests" },
+				{ tool: "Bash", prompt: "install dependencies" },
+			],
+		},
+		"req-exitplan-004": { plan: "Plan only" },
+		"req-exitplan-005": { plan: "Plan" },
+		"req-exitplan-006": { plan: "Plan" },
+	};
+	if (requestId in exitPlanInputs) {
+		return buildPermissionPresentation({
+			toolName: "ExitPlanMode",
+			input: exitPlanInputs[requestId],
+		});
+	}
+	if (requestId === "req-ask-001") {
+		return buildPermissionPresentation({
+			toolName: "AskUserQuestion",
+			input: {
+				questions: [
+					{
+						question: "Which library should we use?",
+						header: "Library",
+						options: [
+							{ label: "React", description: "Popular UI framework" },
+							{ label: "Vue", description: "Progressive framework" },
+						],
+						multiSelect: false,
+					},
+				],
+			},
+		});
+	}
+	if (requestId === "req-ask-multi-001") {
+		return buildPermissionPresentation({
+			toolName: "AskUserQuestion",
+			input: {
+				questions: [
+					{
+						question: "Which features do you want?",
+						header: "Features",
+						options: [
+							{ label: "Auth", description: "Authentication" },
+							{ label: "DB", description: "Database" },
+							{ label: "API", description: "REST API" },
+						],
+						multiSelect: true,
+					},
+				],
+			},
+		});
+	}
+	if (requestId === "req-ask-md-001") {
+		return buildPermissionPresentation({
+			toolName: "AskUserQuestion",
+			input: {
+				questions: [
+					{
+						question: "Use `react-markdown` for rendering?",
+						header: "Choose a `markdown` library",
+						options: [
+							{
+								label: "Yes",
+								description: "Uses `react-markdown` with **remark-gfm**",
+							},
+							{ label: "No", description: "Plain text only" },
+						],
+						multiSelect: false,
+					},
+				],
+			},
+		});
+	}
+	return null;
+}
+
 function mockPermissionPresentation(command: string, args: unknown) {
 	if (command === "present_agent_permission_request") {
+		const { requestId } = args as { requestId?: string };
 		return resolvedInvoke(
-			buildPermissionPresentation(
-				args as { toolName: string; input?: Record<string, unknown> },
-			),
+			requestId
+				? (permissionPresentationById.get(requestId) ??
+						fallbackPermissionPresentation(requestId))
+				: null,
 		);
 	}
 	if (command === "get_language_from_path") {
@@ -116,6 +222,8 @@ function mockPermissionPresentation(command: string, args: unknown) {
 }
 
 beforeEach(() => {
+	permissionPresentationById.clear();
+	setPermissionPresentation(baseRequest);
 	mockInvoke.mockClear();
 	mockInvoke.mockImplementation(
 		(command: string, args: unknown) =>
@@ -124,14 +232,14 @@ beforeEach(() => {
 });
 
 const baseRequest = {
-	request_id: "req-001",
-	tool_name: "Edit",
+	id: "req-001",
+	toolName: "Edit",
 	input: { file_path: "/src/index.ts" },
-	tool_use_id: "toolu_001",
+	toolUseId: "toolu_001",
 };
 
 describe("PermissionDialog", () => {
-	it("displays tool name when no title or display_name", () => {
+	it("displays tool name when no title or displayName", () => {
 		render(
 			<PermissionDialog
 				request={baseRequest}
@@ -140,6 +248,32 @@ describe("PermissionDialog", () => {
 			/>,
 		);
 		expect(screen.getByText("Permission required: Edit")).toBeInTheDocument();
+	});
+
+	it("loads presentation by session and request id without sending request payload", () => {
+		render(
+			<PermissionDialog
+				request={baseRequest}
+				sessionId="session-1"
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"present_agent_permission_request",
+			{
+				chatSessionId: "session-1",
+				requestId: "req-001",
+			},
+		);
+		expect(
+			mockInvoke.mock.calls
+				.filter(([command]) => command === "present_agent_permission_request")
+				.some(([, args]) =>
+					Object.keys(args as Record<string, unknown>).includes("request"),
+				),
+		).toBe(false);
 	});
 
 	it("displays title when provided", () => {
@@ -478,11 +612,16 @@ describe("PermissionDialog", () => {
 				{ old_string: "three", new_string: "four" },
 			],
 		};
+		setPermissionPresentation({
+			...baseRequest,
+			toolName: "MultiEdit",
+			input,
+		});
 		render(
 			<PermissionDialog
 				request={{
 					...baseRequest,
-					tool_name: "MultiEdit",
+					toolName: "MultiEdit",
 					input,
 				}}
 				onAllow={onAllow}
@@ -535,13 +674,13 @@ describe("PermissionDialog — ExitPlanMode", () => {
 		render(
 			<PermissionDialog
 				request={{
-					request_id: "req-exitplan-001",
-					tool_name: "ExitPlanMode",
+					id: "req-exitplan-001",
+					toolName: "ExitPlanMode",
 					input: {
 						plan: "# My Plan\n\n- Step 1\n- Step 2",
 						planFilePath: "/tmp/plan.md",
 					},
-					tool_use_id: "toolu_exit_001",
+					toolUseId: "toolu_exit_001",
 				}}
 				onAllow={vi.fn()}
 				onDeny={vi.fn()}
@@ -557,13 +696,13 @@ describe("PermissionDialog — ExitPlanMode", () => {
 		render(
 			<PermissionDialog
 				request={{
-					request_id: "req-exitplan-002",
-					tool_name: "ExitPlanMode",
+					id: "req-exitplan-002",
+					toolName: "ExitPlanMode",
 					input: {
 						plan: "Some plan",
 						planFilePath: "/tmp/secret/plan.md",
 					},
-					tool_use_id: "toolu_exit_002",
+					toolUseId: "toolu_exit_002",
 				}}
 				onAllow={vi.fn()}
 				onDeny={vi.fn()}
@@ -576,8 +715,8 @@ describe("PermissionDialog — ExitPlanMode", () => {
 		render(
 			<PermissionDialog
 				request={{
-					request_id: "req-exitplan-003",
-					tool_name: "ExitPlanMode",
+					id: "req-exitplan-003",
+					toolName: "ExitPlanMode",
 					input: {
 						plan: "Plan text",
 						allowedPrompts: [
@@ -585,7 +724,7 @@ describe("PermissionDialog — ExitPlanMode", () => {
 							{ tool: "Bash", prompt: "install dependencies" },
 						],
 					},
-					tool_use_id: "toolu_exit_003",
+					toolUseId: "toolu_exit_003",
 				}}
 				onAllow={vi.fn()}
 				onDeny={vi.fn()}
@@ -601,10 +740,10 @@ describe("PermissionDialog — ExitPlanMode", () => {
 		render(
 			<PermissionDialog
 				request={{
-					request_id: "req-exitplan-004",
-					tool_name: "ExitPlanMode",
+					id: "req-exitplan-004",
+					toolName: "ExitPlanMode",
 					input: { plan: "Plan only" },
-					tool_use_id: "toolu_exit_004",
+					toolUseId: "toolu_exit_004",
 				}}
 				onAllow={vi.fn()}
 				onDeny={vi.fn()}
@@ -618,10 +757,10 @@ describe("PermissionDialog — ExitPlanMode", () => {
 		render(
 			<PermissionDialog
 				request={{
-					request_id: "req-exitplan-005",
-					tool_name: "ExitPlanMode",
+					id: "req-exitplan-005",
+					toolName: "ExitPlanMode",
 					input: { plan: "Plan" },
-					tool_use_id: "toolu_exit_005",
+					toolUseId: "toolu_exit_005",
 				}}
 				onAllow={onAllow}
 				onDeny={vi.fn()}
@@ -637,10 +776,10 @@ describe("PermissionDialog — ExitPlanMode", () => {
 		render(
 			<PermissionDialog
 				request={{
-					request_id: "req-exitplan-006",
-					tool_name: "ExitPlanMode",
+					id: "req-exitplan-006",
+					toolName: "ExitPlanMode",
 					input: { plan: "Plan" },
-					tool_use_id: "toolu_exit_006",
+					toolUseId: "toolu_exit_006",
 				}}
 				onAllow={vi.fn()}
 				onDeny={onDeny}
@@ -653,8 +792,8 @@ describe("PermissionDialog — ExitPlanMode", () => {
 });
 
 const askRequest = {
-	request_id: "req-ask-001",
-	tool_name: "AskUserQuestion",
+	id: "req-ask-001",
+	toolName: "AskUserQuestion",
 	input: {
 		questions: [
 			{
@@ -668,7 +807,7 @@ const askRequest = {
 			},
 		],
 	},
-	tool_use_id: "toolu_ask_001",
+	toolUseId: "toolu_ask_001",
 };
 
 describe("PermissionDialog — AskUserQuestion", () => {
@@ -800,6 +939,7 @@ describe("PermissionDialog — AskUserQuestion", () => {
 			},
 		};
 		const onAnswer = vi.fn();
+		setPermissionPresentation(multiRequest);
 		render(
 			<PermissionDialog
 				request={multiRequest}
@@ -968,6 +1108,7 @@ describe("PermissionDialog — AskUserQuestion", () => {
 				],
 			},
 		};
+		setPermissionPresentation(commaRequest);
 		render(
 			<PermissionDialog
 				request={commaRequest}
@@ -991,8 +1132,8 @@ describe("PermissionDialog — AskUserQuestion", () => {
 
 describe("AskUserQuestion — multiSelect", () => {
 	const multiSelectRequest = {
-		request_id: "req-ask-multi-001",
-		tool_name: "AskUserQuestion",
+		id: "req-ask-multi-001",
+		toolName: "AskUserQuestion",
 		input: {
 			questions: [
 				{
@@ -1007,7 +1148,7 @@ describe("AskUserQuestion — multiSelect", () => {
 				},
 			],
 		},
-		tool_use_id: "toolu_ask_multi_001",
+		toolUseId: "toolu_ask_multi_001",
 	};
 
 	it("renders checkboxes for multi-select questions", () => {
@@ -1114,8 +1255,8 @@ describe("AskUserQuestion — multiSelect", () => {
 
 describe("AskUserQuestion — markdown rendering", () => {
 	const mdAskRequest = {
-		request_id: "req-ask-md-001",
-		tool_name: "AskUserQuestion",
+		id: "req-ask-md-001",
+		toolName: "AskUserQuestion",
 		input: {
 			questions: [
 				{
@@ -1132,7 +1273,7 @@ describe("AskUserQuestion — markdown rendering", () => {
 				},
 			],
 		},
-		tool_use_id: "toolu_ask_md_001",
+		toolUseId: "toolu_ask_md_001",
 	};
 
 	it("renders question text markdown as HTML", () => {
@@ -1200,21 +1341,23 @@ describe("AskUserQuestion — markdown rendering", () => {
 	});
 
 	it("renders resolved answer as plain text (no markdown)", () => {
+		const request = {
+			...mdAskRequest,
+			input: {
+				questions: [
+					{
+						question: "Pick one",
+						header: "Choice",
+						options: [{ label: "A", description: "Option A" }],
+						multiSelect: false,
+					},
+				],
+			},
+		};
+		setPermissionPresentation(request);
 		render(
 			<PermissionDialog
-				request={{
-					...mdAskRequest,
-					input: {
-						questions: [
-							{
-								question: "Pick one",
-								header: "Choice",
-								options: [{ label: "A", description: "Option A" }],
-								multiSelect: false,
-							},
-						],
-					},
-				}}
+				request={request}
 				status="allowed"
 				resolvedAnswers={{
 					"Pick one": "Selected `option-A` with **bold**",

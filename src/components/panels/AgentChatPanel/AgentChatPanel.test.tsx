@@ -270,7 +270,10 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		getSessionPlanMode: explicitPlanMode
 			? vi.fn(explicitPlanMode)
 			: vi.fn(() => restOverrides.planMode ?? false),
-		getSessionSelectedModel: vi.fn().mockReturnValue(null),
+		getSessionSelectedModel: vi
+			.fn()
+			.mockReturnValue(restOverrides.selectedModel ?? null),
+		getSessionCanChangeBackend: vi.fn().mockReturnValue(false),
 		getSessionPendingQueue: vi.fn().mockReturnValue([]),
 		getSessionLatestTokenUsage: vi.fn().mockReturnValue(null),
 		getSessionRuntimeSlashCommands: vi.fn().mockReturnValue([]),
@@ -1388,7 +1391,7 @@ describe("AgentChatPanel selection requests", () => {
 		expect(screen.getByTestId("model-selector-trigger")).toBeEnabled();
 	});
 
-	it("falls back to the first model for the active session backend", () => {
+	it("does not fall back to the first model for the active session backend", () => {
 		mockUseAgentChat({
 			activeSession: {
 				id: "codex-s",
@@ -1442,7 +1445,7 @@ describe("AgentChatPanel selection requests", () => {
 		);
 
 		const trigger = screen.getByTestId("model-selector-trigger");
-		expect(trigger).toHaveTextContent("GPT-5.4");
+		expect(trigger).not.toHaveTextContent("GPT-5.4");
 		expect(trigger).not.toHaveTextContent("Opus 4.8");
 	});
 
@@ -1823,10 +1826,10 @@ describe("AgentChatPanel shimmer placeholder", () => {
 							{
 								type: "permission",
 								request: {
-									request_id: "r1",
-									tool_name: "Edit",
+									id: "r1",
+									toolName: "Edit",
 									input: {},
-									tool_use_id: "tu1",
+									toolUseId: "tu1",
 								},
 								status: "pending",
 							},

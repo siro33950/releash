@@ -7,11 +7,16 @@ use crate::adaptor::gateway::workflow::failure_wire::{
     submission_violation_reason, SubmissionViolation,
 };
 use crate::adaptor::gateway::workflow::runtime_state::{ApprovalAction, TurnCompleteAction};
-use crate::domain::workflow::services::transition::ApprovalApplication;
-use crate::infrastructure::agent_session::runtime::{
-    AgentBackend, AgentBackendRegistry, AgentMessage as BackendAgentMessage, PermissionResponse,
-    SessionConfig as BackendSessionConfig, SessionHandle as BackendSessionHandle,
+use crate::domain::agent_session::entities::PermissionResponse;
+use crate::domain::agent_session::gateway::{
+    AgentBackend, AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, ForkSessionRequest,
+    SessionSpec, TurnInput,
 };
+use crate::domain::agent_session::value_objects::{
+    BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
+};
+use crate::domain::workflow::services::transition::ApprovalApplication;
+use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use async_trait::async_trait;
 
 const TEST_PARENT_SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -20,6 +25,7 @@ const TEST_REGULAR_SESSION_ID: &str = "33333333-3333-4333-8333-333333333333";
 
 struct WorkflowMockBackend {
     backend_id: String,
+    models: Vec<String>,
 }
 
 #[async_trait]
@@ -30,54 +36,126 @@ impl AgentBackend for WorkflowMockBackend {
     fn name(&self) -> &str {
         "Mock"
     }
-    async fn start_session(
-        &self,
-        cfg: BackendSessionConfig,
-    ) -> Result<BackendSessionHandle, String> {
-        Ok(BackendSessionHandle {
-            chat_session_id: cfg.chat_session_id,
-            backend_id: self.backend_id.clone(),
-        })
+
+    fn available_models(&self) -> Vec<ModelDescriptor> {
+        self.models
+            .iter()
+            .map(|model| ModelDescriptor {
+                id: ModelId::parse(model).unwrap(),
+                display_name: model.clone(),
+            })
+            .collect()
     }
-    async fn send_message(
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities { steering: false }
+    }
+
+    async fn open_session(
         &self,
-        _s: &BackendSessionHandle,
-        _m: BackendAgentMessage,
-    ) -> Result<(), String> {
+        _spec: SessionSpec,
+    ) -> Result<Box<dyn AgentSessionRuntime>, AgentBackendError> {
+        Ok(Box::new(WorkflowMockRuntime))
+    }
+
+    async fn archive_session(
+        &self,
+        _backend_session_id: &str,
+        _cwd: &str,
+    ) -> Result<(), AgentBackendError> {
         Ok(())
     }
-    async fn interrupt(&self, _s: &BackendSessionHandle) -> Result<(), String> {
+
+    async fn unarchive_session(
+        &self,
+        _backend_session_id: &str,
+        _cwd: &str,
+    ) -> Result<(), AgentBackendError> {
         Ok(())
     }
+
+    async fn fork_session(
+        &self,
+        _req: ForkSessionRequest,
+    ) -> Result<Option<String>, AgentBackendError> {
+        Ok(None)
+    }
+
+    async fn skill_catalog(
+        &self,
+        _cwd: &std::path::Path,
+        _query: Option<&str>,
+        _limit: Option<usize>,
+    ) -> Result<Vec<SkillEntry>, AgentBackendError> {
+        Ok(Vec::new())
+    }
+
+    async fn fuzzy_file_search(
+        &self,
+        _root: &std::path::Path,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Option<Vec<String>>, AgentBackendError> {
+        Ok(None)
+    }
+}
+
+struct WorkflowMockRuntime;
+
+#[async_trait]
+impl AgentSessionRuntime for WorkflowMockRuntime {
+    fn take_events(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = AgentRuntimeEvent> + Send>> {
+        Box::pin(futures_util::stream::empty())
+    }
+
+    async fn start_turn(&self, _input: TurnInput) -> Result<(), AgentBackendError> {
+        Ok(())
+    }
+
+    async fn interrupt(&self) -> Result<(), AgentBackendError> {
+        Ok(())
+    }
+
     async fn respond_permission(
         &self,
-        _s: &BackendSessionHandle,
-        _r: PermissionResponse,
-    ) -> Result<(), String> {
+        _response: PermissionResponse,
+    ) -> Result<(), AgentBackendError> {
         Ok(())
     }
+
+    async fn set_permission_mode(
+        &self,
+        _mode: crate::domain::agent_session::PermissionMode,
+        _plan_mode: bool,
+    ) -> Result<(), AgentBackendError> {
+        Ok(())
+    }
+
+    async fn set_model(&self, _model: &ModelId) -> Result<(), AgentBackendError> {
+        Ok(())
+    }
+
+    async fn close(&self) {}
 }
 
 fn make_workflow_test_registry(
     claude_models: &[&str],
     codex_models: &[&str],
 ) -> AgentBackendRegistry {
-    let mut cfg = crate::adaptor::gateway::app_config::ReleashConfig::default();
-    cfg.agents.claude.models = claude_models.iter().map(|s| s.to_string()).collect();
-    cfg.agents.codex.models = codex_models.iter().map(|s| s.to_string()).collect();
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let app_cfg = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
-        cfg,
-        tmp.path().to_path_buf(),
-    ));
     let mut registry = AgentBackendRegistry::new();
     registry.register(Arc::new(WorkflowMockBackend {
         backend_id: "claude".to_string(),
+        models: claude_models
+            .iter()
+            .map(|model| model.to_string())
+            .collect(),
     }));
     registry.register(Arc::new(WorkflowMockBackend {
         backend_id: "codex".to_string(),
+        models: codex_models.iter().map(|model| model.to_string()).collect(),
     }));
-    registry.set_config(app_cfg);
     registry
 }
 
@@ -123,7 +201,7 @@ fn workflow_resolve_rejects_unknown_model() {
     let err = resolve_step_model_with_registry(&registry, "unknown").unwrap_err();
     match err {
         WorkflowEngineError::InvalidWorkflow(msg) => {
-            assert!(msg.contains("unknown model"));
+            assert!(msg.contains("could not be resolved"));
         }
         other => panic!("expected InvalidWorkflow, got {:?}", other),
     }
@@ -162,7 +240,7 @@ fn chat_session_for_test(
         permission_profile_id: None,
         selected_model: None,
         backend_id: Some(
-            crate::infrastructure::agent_session::runtime::CLAUDE_BACKEND_ID.to_string(),
+            crate::infrastructure::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
         ),
         workflow_step_session,
         workflow_step_context: None,
@@ -171,28 +249,18 @@ fn chat_session_for_test(
 }
 
 async fn insert_ready_agent_process_for_internal_turn_test(
-    handles: &Arc<
-        tokio::sync::Mutex<
-            crate::infrastructure::agent_session::runtime::bridge_common::AgentProcessMap,
-        >,
-    >,
-    session_store: &Arc<SessionStore>,
-    data_dir: &std::path::Path,
+    agent_runtime: &Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
+    _session_store: &Arc<SessionStore>,
+    _data_dir: &std::path::Path,
     session_id: &str,
 ) {
-    let mut proc =
-        crate::infrastructure::agent_session::runtime::bridge_common::make_test_agent_process();
-    proc.system_prompt_fingerprint =
-        crate::infrastructure::agent_session::runtime::bridge_common::internal_turn_system_prompt_fingerprint_for_test(
-            None,
-            session_store,
-            data_dir,
+    agent_runtime
+        .insert_runtime_state_for_test(
             session_id,
-            None,
-            Vec::new(),
+            crate::usecase::agent_session::status::TurnPhase::Idle,
+            false,
         )
-        .unwrap();
-    handles.lock().await.insert(session_id.to_string(), proc);
+        .await;
 }
 
 fn chat_session_with_message_for_test(
@@ -520,7 +588,7 @@ fn make_minimal_approval_exec(
         workflow_variables: HashMap::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
-            backend_id: None,
+            backend_id: Some("claude".to_string()),
             permission_mode: "edit".to_string(),
         },
     }
@@ -2108,7 +2176,7 @@ impl SessionStartGate for RecordingSessionStartGate {
         permission_mode: Option<String>,
         system_prompt: Option<String>,
         _workflow_instruction: Option<String>,
-    ) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
+    ) -> Result<(), crate::usecase::agent_session::runtime::usecase::AgentRuntimeError> {
         self.records.lock().unwrap().push(RecordedSessionStart {
             session_id: session_id.to_string(),
             worktree_path: worktree_path.to_string(),
@@ -2130,8 +2198,13 @@ impl SessionStartGate for StartupTimeoutSessionStartGate {
         _permission_mode: Option<String>,
         _system_prompt: Option<String>,
         _workflow_instruction: Option<String>,
-    ) -> Result<(), crate::infrastructure::agent_session::runtime::AgentRuntimeError> {
-        Err(crate::infrastructure::agent_session::runtime::AgentRuntimeError::startup_timeout(2, 2))
+    ) -> Result<(), crate::usecase::agent_session::runtime::usecase::AgentRuntimeError> {
+        Err(
+            crate::usecase::agent_session::runtime::usecase::AgentRuntimeError::StartupTimeout {
+                retry_count: 2,
+                max_retries: 2,
+            },
+        )
     }
 }
 
@@ -2356,8 +2429,6 @@ struct RecordingStepSessionDeps {
     append_node_session_started_should_fail: std::sync::atomic::AtomicBool,
     broadcast_state_count: std::sync::atomic::AtomicUsize,
     start_agent_turn_count: std::sync::atomic::AtomicUsize,
-    assert_runtime_lock_during_start: std::sync::atomic::AtomicBool,
-    runtime_lock_was_held_during_start: std::sync::atomic::AtomicBool,
     created_contexts: std::sync::Mutex<Vec<WorkflowStepContext>>,
     dispatched_workflow_instructions: std::sync::Mutex<Vec<Option<String>>>,
     started_workflow_instructions: std::sync::Mutex<Vec<Option<String>>>,
@@ -2412,16 +2483,6 @@ impl RecordingStepSessionDeps {
 
     fn started_workflow_instructions(&self) -> Vec<Option<String>> {
         self.started_workflow_instructions.lock().unwrap().clone()
-    }
-
-    fn assert_runtime_lock_during_start(&self) {
-        self.assert_runtime_lock_during_start
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    fn runtime_lock_was_held_during_start(&self) -> bool {
-        self.runtime_lock_was_held_during_start
-            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -2507,20 +2568,7 @@ impl StepSessionDeps for RecordingStepSessionDeps {
             .lock()
             .unwrap()
             .push(workflow_instruction);
-        if self
-            .assert_runtime_lock_during_start
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            let lock_attempt = tokio::time::timeout(
-                std::time::Duration::from_millis(20),
-                crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(
-                    step_session_id,
-                ),
-            )
-            .await;
-            self.runtime_lock_was_held_during_start
-                .store(lock_attempt.is_err(), std::sync::atomic::Ordering::SeqCst);
-        }
+        let _ = step_session_id;
         Ok(())
     }
 }
@@ -2682,7 +2730,6 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
     }
 
     let deps = RecordingStepSessionDeps::default();
-    deps.assert_runtime_lock_during_start();
     engine
         .start_step_session_with_deps(&deps, "/repo")
         .await
@@ -2709,10 +2756,6 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
             startup_max_retries: None,
             stale_timeout_secs: None,
         }]
-    );
-    assert!(
-        deps.runtime_lock_was_held_during_start(),
-        "step session runtime lock must cover the path until start_agent_turn marks it streaming"
     );
 
     // session_workflow_refs に SequentialStep として登録されている
@@ -2828,6 +2871,7 @@ fn make_parallel_step(
 ) -> crate::adaptor::gateway::workflow::schema::ChildNodeDefinition {
     crate::adaptor::gateway::workflow::schema::ChildNodeDefinition {
         name: name.to_string(),
+        permission: Some("edit".to_string()),
         ..crate::adaptor::gateway::workflow::schema::ChildNodeDefinition::default()
     }
 }
@@ -3152,7 +3196,7 @@ async fn validate_approval_target_wrong_worktree_returns_unauthorized_without_mu
 fn validate_approval_turn_phase_rejects_unfinished_turns() {
     assert!(
         workflow_approval_runtime::validate_approval_turn_phase(Some(
-            crate::infrastructure::agent_session::runtime::TurnPhase::Streaming
+            crate::usecase::agent_session::status::TurnPhase::Streaming
         ))
         .unwrap_err()
         .to_string()
@@ -3160,13 +3204,13 @@ fn validate_approval_turn_phase_rejects_unfinished_turns() {
     );
     assert!(
         workflow_approval_runtime::validate_approval_turn_phase(Some(
-            crate::infrastructure::agent_session::runtime::TurnPhase::WaitingPermission
+            crate::usecase::agent_session::status::TurnPhase::WaitingPermission
         ))
         .is_err()
     );
     assert!(
         workflow_approval_runtime::validate_approval_turn_phase(Some(
-            crate::infrastructure::agent_session::runtime::TurnPhase::Idle
+            crate::usecase::agent_session::status::TurnPhase::Idle
         ))
         .is_ok()
     );
@@ -6112,11 +6156,7 @@ mod dispatch_boundary_tests {
         NodeDefinition, NodeType, TransitionRule, Workflow,
     };
     use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
-    use crate::infrastructure::agent_session::runtime::{
-        AgentBackend, AgentBackendRegistry, AgentMessage as BackendAgentMessage,
-        PermissionResponse as BackendPermissionResponse, SessionConfig as BackendSessionConfig,
-        SessionHandle as BackendSessionHandle,
-    };
+    use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
     use crate::usecase::agent_session::session::MessagePart;
     use async_trait::async_trait;
     use tauri::Manager;
@@ -6136,38 +6176,112 @@ mod dispatch_boundary_tests {
         fn id(&self) -> &str {
             &self.backend_id
         }
+
         fn name(&self) -> &str {
             "Mock"
         }
-        fn fixed_models(&self) -> Option<Vec<String>> {
-            Some(self.fixed_models.clone())
+
+        fn available_models(&self) -> Vec<ModelDescriptor> {
+            self.fixed_models
+                .iter()
+                .map(|model| ModelDescriptor {
+                    id: ModelId::parse(model).unwrap(),
+                    display_name: model.clone(),
+                })
+                .collect()
         }
-        async fn start_session(
-            &self,
-            cfg: BackendSessionConfig,
-        ) -> Result<BackendSessionHandle, String> {
-            Ok(BackendSessionHandle {
-                chat_session_id: cfg.chat_session_id,
-                backend_id: self.backend_id.clone(),
-            })
+
+        fn capabilities(&self) -> BackendCapabilities {
+            BackendCapabilities { steering: false }
         }
-        async fn send_message(
+
+        async fn open_session(
             &self,
-            _s: &BackendSessionHandle,
-            _m: BackendAgentMessage,
-        ) -> Result<(), String> {
+            _spec: SessionSpec,
+        ) -> Result<Box<dyn AgentSessionRuntime>, AgentBackendError> {
+            Ok(Box::new(DispatchMockRuntime))
+        }
+
+        async fn archive_session(
+            &self,
+            _backend_session_id: &str,
+            _cwd: &str,
+        ) -> Result<(), AgentBackendError> {
             Ok(())
         }
-        async fn interrupt(&self, _s: &BackendSessionHandle) -> Result<(), String> {
+
+        async fn unarchive_session(
+            &self,
+            _backend_session_id: &str,
+            _cwd: &str,
+        ) -> Result<(), AgentBackendError> {
             Ok(())
         }
+
+        async fn fork_session(
+            &self,
+            _req: ForkSessionRequest,
+        ) -> Result<Option<String>, AgentBackendError> {
+            Ok(None)
+        }
+
+        async fn skill_catalog(
+            &self,
+            _cwd: &std::path::Path,
+            _query: Option<&str>,
+            _limit: Option<usize>,
+        ) -> Result<Vec<SkillEntry>, AgentBackendError> {
+            Ok(Vec::new())
+        }
+
+        async fn fuzzy_file_search(
+            &self,
+            _root: &std::path::Path,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<Option<Vec<String>>, AgentBackendError> {
+            Ok(None)
+        }
+    }
+
+    struct DispatchMockRuntime;
+
+    #[async_trait]
+    impl AgentSessionRuntime for DispatchMockRuntime {
+        fn take_events(
+            &mut self,
+        ) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = AgentRuntimeEvent> + Send>> {
+            Box::pin(futures_util::stream::empty())
+        }
+
+        async fn start_turn(&self, _input: TurnInput) -> Result<(), AgentBackendError> {
+            Ok(())
+        }
+
+        async fn interrupt(&self) -> Result<(), AgentBackendError> {
+            Ok(())
+        }
+
         async fn respond_permission(
             &self,
-            _s: &BackendSessionHandle,
-            _r: BackendPermissionResponse,
-        ) -> Result<(), String> {
+            _response: PermissionResponse,
+        ) -> Result<(), AgentBackendError> {
             Ok(())
         }
+
+        async fn set_permission_mode(
+            &self,
+            _mode: crate::domain::agent_session::PermissionMode,
+            _plan_mode: bool,
+        ) -> Result<(), AgentBackendError> {
+            Ok(())
+        }
+
+        async fn set_model(&self, _model: &ModelId) -> Result<(), AgentBackendError> {
+            Ok(())
+        }
+
+        async fn close(&self) {}
     }
 
     fn dispatch_data_dir(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> std::path::PathBuf {
@@ -6244,7 +6358,7 @@ mod dispatch_boundary_tests {
             parallel_run: None,
             workflow_variables: HashMap::new(),
             workflow_defaults: WorkflowDefaults {
-                backend_id: None,
+                backend_id: Some("claude".to_string()),
                 permission_mode: "edit".to_string(),
             },
         }
@@ -6276,22 +6390,25 @@ mod dispatch_boundary_tests {
         // 供給する mock backend を登録する。builtin workflow が使う claude-opus-4-8 /
         // gpt-5.5 が production と同一経路で解決され、dispatch フロー検証を維持できる。
         let mut registry = AgentBackendRegistry::new();
+        let claude_models = crate::infrastructure::agent_session::claude::ClaudeBackend::new(None)
+            .available_models()
+            .into_iter()
+            .map(|model| model.id.as_str().to_string())
+            .collect();
+        let codex_models = crate::infrastructure::agent_session::codex::CodexBackend::new(None)
+            .available_models()
+            .into_iter()
+            .map(|model| model.id.as_str().to_string())
+            .collect();
         registry.register(Arc::new(DispatchMockBackend {
             backend_id: "claude".to_string(),
-            fixed_models: crate::domain::agent_session::CLAUDE_FIXED_MODELS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            fixed_models: claude_models,
         }));
         registry.register(Arc::new(DispatchMockBackend {
             backend_id: "codex".to_string(),
-            fixed_models: crate::domain::agent_session::CODEX_FIXED_MODELS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            fixed_models: codex_models,
         }));
         registry.set_default(Some("codex".to_string()));
-        registry.set_config(agent_config_repository.clone());
         let registry = Arc::new(registry);
         let data_dir =
             std::env::temp_dir().join(format!("releash-dispatch-{}", uuid::Uuid::new_v4()));
@@ -6360,9 +6477,6 @@ mod dispatch_boundary_tests {
                 repo_paths_usecase,
                 code_usecase,
                 review_usecase,
-                agent_session_usecase: Arc::new(
-                    crate::adaptor::controller::wiring::build_agent_session_usecase_for_tests(),
-                ),
                 notion_usecase,
                 workflow_usecase,
                 pty_session_read_usecase: Arc::new(
@@ -6381,14 +6495,17 @@ mod dispatch_boundary_tests {
         fn notify_changed(&self, _paths: Vec<String>) {}
     }
 
-    fn make_dispatch_deps() -> (
+    fn make_dispatch_deps(
+        data_dir: std::path::PathBuf,
+    ) -> (
         Arc<crate::usecase::agent_session::session::SessionStore>,
-        Arc<Mutex<AgentProcessMap>>,
+        Arc<AgentSessionRuntimeUsecase>,
     ) {
-        (
-            Arc::new(crate::test_support::build_session_store()),
-            Arc::new(Mutex::new(AgentProcessMap::new())),
-        )
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let agent_runtime =
+            crate::test_support::build_agent_runtime_usecase(session_store.clone(), data_dir);
+        (session_store, agent_runtime)
     }
 
     fn workflow_turn_complete_notification_from_typed_refusal(
@@ -6509,7 +6626,7 @@ mod dispatch_boundary_tests {
         let data_dir = dispatch_data_dir(app.handle());
         let engine = WorkflowRuntimeService::new_for_test();
         engine.set_run_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/parallel-prompt-failure";
@@ -6585,7 +6702,7 @@ mod dispatch_boundary_tests {
         let data_dir = dispatch_data_dir(app.handle());
         let engine = WorkflowRuntimeService::new_for_test();
         engine.set_run_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let save_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let save_attempts_for_hook = save_attempts.clone();
         session_store.set_save_hook_for_test(Arc::new(move |session| {
@@ -7196,7 +7313,7 @@ mod dispatch_boundary_tests {
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_run_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let worktree_path = "/wt/engine-node-failure";
         let workflow = make_rejectable_approval_workflow();
@@ -7273,8 +7390,8 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
-        engine.set_run_store_data_dir(data_dir).await;
-        let (session_store, handles) = make_dispatch_deps();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let startup_run_id = uuid::Uuid::new_v4().to_string();
         let startup_worktree_path = "/wt/engine-startup-timeout-telemetry";
@@ -7369,7 +7486,7 @@ mod dispatch_boundary_tests {
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_run_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/stale-policy-terminal";
@@ -7453,7 +7570,7 @@ mod dispatch_boundary_tests {
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_run_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/parallel-child-failure";
@@ -7580,7 +7697,7 @@ mod dispatch_boundary_tests {
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_run_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/parallel-delegated-failure";
@@ -7705,7 +7822,7 @@ mod dispatch_boundary_tests {
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_run_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/parallel-zero-exit-refusal";
@@ -7854,7 +7971,7 @@ mod dispatch_boundary_tests {
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_run_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/parallel-partial-append-failure";
@@ -8013,7 +8130,7 @@ mod dispatch_boundary_tests {
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_run_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let worktree_path = "/wt/append-failure";
 
@@ -8515,7 +8632,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/append-fail";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
@@ -8580,7 +8697,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/abort-append-fail";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
@@ -8643,7 +8760,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(run_store_dir.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let (repo_parent, _worktree_parent, worktree_path) = make_managed_worktree();
         configure_managed_repo(&app, repo_parent.path().join("repo").as_path());
         let stem = crate::adaptor::gateway::workflow::builtin::list_builtin_workflows()
@@ -8700,7 +8817,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(run_store_dir.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let (repo_parent, _worktree_parent, worktree_path) = make_managed_worktree();
         configure_managed_repo(&app, repo_parent.path().join("repo").as_path());
         let worktree = std::fs::canonicalize(&worktree_path)
@@ -8754,7 +8871,7 @@ mod dispatch_boundary_tests {
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_run_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/dispatch-abort";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
@@ -8833,7 +8950,7 @@ mod dispatch_boundary_tests {
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_run_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/dispatch-abort-retry";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
@@ -8997,7 +9114,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/dispatch-approval-abort";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
@@ -9040,7 +9157,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/approval-abort-append-rollback";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
@@ -9088,7 +9205,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let missing_run_id = uuid::Uuid::new_v4().to_string();
 
         let missing = engine
@@ -9180,8 +9297,8 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir = dispatch_data_dir(app.handle());
-        engine.set_run_store_data_dir(data_dir).await;
-        let (session_store, handles) = make_dispatch_deps();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let exec = make_waiting_approval_execution(&run_id, "/wt/released-after-lookup");
@@ -9251,7 +9368,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let missing_run_id = uuid::Uuid::new_v4().to_string();
         let missing = engine
@@ -9384,7 +9501,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/dispatch-approve";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
@@ -9434,7 +9551,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/dispatch-reject-accept";
         let mut exec = make_waiting_approval_execution_with_workflow(
@@ -9495,7 +9612,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/dispatch-reject";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
@@ -9540,7 +9657,7 @@ mod dispatch_boundary_tests {
             engine
                 .set_run_store_data_dir(tmp.path().to_path_buf())
                 .await;
-            let (session_store, handles) = make_dispatch_deps();
+            let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
             let missing_run_id = uuid::Uuid::new_v4().to_string();
             let missing = match command_kind {
@@ -9698,7 +9815,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/reject-append-rollback";
         let mut exec = make_waiting_approval_execution_with_workflow(
@@ -9760,7 +9877,7 @@ mod dispatch_boundary_tests {
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/run-store-sync-rollback";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
@@ -10045,12 +10162,12 @@ mod dispatch_boundary_tests {
         request_id: Option<&str>,
         submitted_at: Option<f64>,
     ) -> Result<(), WorkflowEngineError> {
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, agent_runtime) = make_dispatch_deps(dispatch_data_dir(app));
         submit_output_for_test_with_deps(
             engine,
             app,
             &session_store,
-            &handles,
+            &agent_runtime,
             run_id,
             step_name,
             contract,
@@ -10066,7 +10183,7 @@ mod dispatch_boundary_tests {
         engine: &Arc<WorkflowRuntimeService>,
         app: &tauri::AppHandle<tauri::test::MockRuntime>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: &str,
         contract: &str,
@@ -10083,7 +10200,7 @@ mod dispatch_boundary_tests {
             .submit_workflow_output(
                 app,
                 session_store,
-                handles,
+                agent_runtime,
                 run_id,
                 step_name.to_string(),
                 contract.to_string(),
@@ -10139,7 +10256,7 @@ mod dispatch_boundary_tests {
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        engine.set_run_store_data_dir(data_dir).await;
+        engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
             .seed_active_execution_for_test(
@@ -10237,7 +10354,7 @@ mod dispatch_boundary_tests {
                 .expect("seeded execution")
                 .current_session_id = Some(session_id.to_string());
         }
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         session_store
             .save_full_session_for_migration_or_restore(
                 &data_dir,
@@ -10318,7 +10435,7 @@ mod dispatch_boundary_tests {
                 .expect("seeded execution")
                 .current_session_id = Some(session_id.to_string());
         }
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         session_store
             .save_full_session_for_migration_or_restore(
                 &data_dir,
@@ -10397,7 +10514,7 @@ mod dispatch_boundary_tests {
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        engine.set_run_store_data_dir(data_dir).await;
+        engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
             .seed_active_execution_for_test(
@@ -10435,7 +10552,7 @@ mod dispatch_boundary_tests {
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        engine.set_run_store_data_dir(data_dir).await;
+        engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
 
         let err = submit_output_for_test(
@@ -10461,7 +10578,7 @@ mod dispatch_boundary_tests {
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        engine.set_run_store_data_dir(data_dir).await;
+        engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
             .seed_active_execution_for_test(
@@ -10498,7 +10615,7 @@ mod dispatch_boundary_tests {
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        engine.set_run_store_data_dir(data_dir).await;
+        engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
             .seed_active_execution_for_test(
@@ -10541,7 +10658,7 @@ mod dispatch_boundary_tests {
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        engine.set_run_store_data_dir(data_dir).await;
+        engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
             variables: Default::default(),
@@ -10599,7 +10716,7 @@ mod dispatch_boundary_tests {
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        engine.set_run_store_data_dir(data_dir).await;
+        engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
             variables: Default::default(),
@@ -10685,7 +10802,7 @@ mod dispatch_boundary_tests {
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        engine.set_run_store_data_dir(data_dir).await;
+        engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         engine
             .seed_active_execution_for_test(
@@ -10713,7 +10830,7 @@ mod dispatch_boundary_tests {
             parent_tool_use_id: None,
         }];
 
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         // 自由文経路は prose 抽出を行わないため、step_outputs は変化せず、
         // output_contract がある step は明示的提出なしでは完了しない。
         // [08] handle_auto_complete のエラーを .ok() で握り潰さないこと（review 指摘）。
@@ -10792,7 +10909,7 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         session_store
             .save_full_session_for_migration_or_restore(
@@ -10869,7 +10986,7 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let session_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
         session_store
             .save_full_session_for_migration_or_restore(
@@ -10877,6 +10994,9 @@ mod dispatch_boundary_tests {
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )
             .unwrap();
+        handles
+            .insert_failing_runtime_state_for_test(session_id)
+            .await;
 
         engine
             .handle_missing_required_output(
@@ -10949,10 +11069,13 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let error = WorkflowEngineError::with_agent_runtime_context(
             "contract output repair turn failed to start",
-            crate::infrastructure::agent_session::runtime::AgentRuntimeError::startup_timeout(2, 2),
+            crate::usecase::agent_session::runtime::usecase::AgentRuntimeError::StartupTimeout {
+                retry_count: 2,
+                max_retries: 2,
+            },
         );
 
         engine
@@ -11028,7 +11151,7 @@ mod dispatch_boundary_tests {
             .unwrap();
         }
 
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         engine
             .handle_missing_required_output(
                 app.handle(),
@@ -11098,8 +11221,8 @@ mod dispatch_boundary_tests {
             .unwrap();
         }
 
-        let (session_store, handles) = make_dispatch_deps();
-        let session_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
+        let session_id = "11111111-1111-4111-8111-111111111111";
         session_store
             .save_full_session_for_migration_or_restore(
                 &data_dir,
@@ -11160,7 +11283,7 @@ mod dispatch_boundary_tests {
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        engine.set_run_store_data_dir(data_dir).await;
+        engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
             variables: Default::default(),
