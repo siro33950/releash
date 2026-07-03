@@ -58,7 +58,8 @@ use super::session_state::{
     PendingStreamDelta, RuntimeSessionMap, RuntimeSessionPhase, RuntimeSessionState,
 };
 use super::stale::{
-    remaining_until_stale, stale_timeout_for_session, stale_watchdog_should_continue_waiting,
+    effective_stale_timeout, has_in_flight_tool_use, remaining_until_stale,
+    stale_timeout_for_session, stale_watchdog_should_continue_waiting,
     startup_max_retries_for_session, startup_timeout_for_session, turn_is_stale, STALE_CLOSE_GRACE,
     STALE_TIMEOUT_MESSAGE,
 };
@@ -1517,12 +1518,16 @@ fn spawn_stale_watchdog_task(
                 let Some(state) = sessions.get(&session_id) else {
                     return;
                 };
+                let effective_timeout = effective_stale_timeout(
+                    timeout,
+                    has_in_flight_tool_use(&state.domain_streaming_parts),
+                );
                 if !turn_is_stale(
                     state.phase,
                     generation,
                     state.generation,
                     state.last_progress_at,
-                    timeout,
+                    effective_timeout,
                     std::time::Instant::now(),
                 ) {
                     if !stale_watchdog_should_continue_waiting(
@@ -1537,10 +1542,13 @@ fn spawn_stale_watchdog_task(
                     } else {
                         remaining_until_stale(
                             state.last_progress_at,
-                            timeout,
+                            effective_timeout,
                             std::time::Instant::now(),
                         )
-                        .unwrap_or(timeout)
+                        .unwrap_or(effective_timeout)
+                        // ツール実行中に延長された timeout はツール完了（ToolResult 到着）で
+                        // 基準値へ戻るため、待機は基準 timeout を上限にして再評価する。
+                        .min(timeout)
                     }
                 } else {
                     std::time::Duration::ZERO
@@ -1560,12 +1568,16 @@ fn spawn_stale_watchdog_task(
                 let Some(state) = sessions.get_mut(&session_id) else {
                     return;
                 };
+                let effective_timeout = effective_stale_timeout(
+                    timeout,
+                    has_in_flight_tool_use(&state.domain_streaming_parts),
+                );
                 if !turn_is_stale(
                     state.phase,
                     generation,
                     state.generation,
                     state.last_progress_at,
-                    timeout,
+                    effective_timeout,
                     std::time::Instant::now(),
                 ) {
                     return;
@@ -1894,6 +1906,21 @@ async fn record_first_backend_event_if_needed(ctx: &RuntimeContext, session_id: 
     }
 }
 
+fn runtime_event_kind(event: &AgentRuntimeEvent) -> &'static str {
+    match event {
+        AgentRuntimeEvent::SessionEstablished { .. } => "SessionEstablished",
+        AgentRuntimeEvent::BackendSessionCleared => "BackendSessionCleared",
+        AgentRuntimeEvent::PartsMerged(_) => "PartsMerged",
+        AgentRuntimeEvent::PermissionRequested(_) => "PermissionRequested",
+        AgentRuntimeEvent::PermissionModeChanged(_) => "PermissionModeChanged",
+        AgentRuntimeEvent::SlashCommandsUpdated(_) => "SlashCommandsUpdated",
+        AgentRuntimeEvent::TokenUsageUpdated(_) => "TokenUsageUpdated",
+        AgentRuntimeEvent::KeepAlive => "KeepAlive",
+        AgentRuntimeEvent::TurnCompleted(_) => "TurnCompleted",
+        AgentRuntimeEvent::Fatal { .. } => "Fatal",
+    }
+}
+
 async fn apply_runtime_event(
     ctx: &RuntimeContext,
     session_id: &str,
@@ -1907,6 +1934,10 @@ async fn apply_runtime_event(
             .is_some_and(|state| state.runtime_epoch == runtime_epoch)
     };
     if !is_current_runtime {
+        log::debug!(
+            "dropping {} from stale runtime epoch {runtime_epoch} for {session_id}",
+            runtime_event_kind(&event)
+        );
         return RuntimeEventPostActions::default();
     }
     record_first_backend_event_if_needed(ctx, session_id).await;
@@ -2035,6 +2066,14 @@ async fn apply_runtime_event(
                 }
             }
             ctx.notifier.token_usage_updated(session_id, usage);
+        }
+        AgentRuntimeEvent::KeepAlive => {
+            let mut sessions = ctx.sessions.lock().await;
+            if let Some(state) = sessions.get_mut(session_id) {
+                if state.phase != RuntimeSessionPhase::Idle {
+                    state.last_progress_at = Some(std::time::Instant::now());
+                }
+            }
         }
         AgentRuntimeEvent::TurnCompleted(result) => {
             let workflow_notification = complete_turn(ctx, session_id, None, result).await;
@@ -2619,6 +2658,9 @@ async fn complete_turn(
         })
     };
     if !should_complete {
+        log::debug!(
+            "skipping turn completion for {session_id}: turn already completed or generation mismatch (expected={expected_generation:?})"
+        );
         return None;
     }
     flush_streaming_update(ctx, session_id, true).await;
@@ -3826,6 +3868,7 @@ mod tests {
     };
     use crate::domain::workflow::WorkflowStepContext;
     use crate::test_support::{
+        build_agent_runtime_usecase_with_controller,
         build_agent_runtime_usecase_with_controller_and_notifiers, build_session_store,
         TestRuntimeCallKind,
     };
@@ -5252,6 +5295,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_keep_aliveは_last_progress_atを更新する() {
+        // Given: a streaming turn whose progress clock has gone stale
+        // (e.g. a long-running tool keeps the CLI silent except keep_alive lines).
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store, tmp.path());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id.clone();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Streaming).await;
+        let stale_instant = std::time::Instant::now() - Duration::from_secs(3_600);
+        {
+            let mut sessions = usecase.ctx.sessions.lock().await;
+            sessions.get_mut(&session_id).unwrap().last_progress_at = Some(stale_instant);
+        }
+
+        // When: the backend emits a keep_alive liveness event.
+        controller
+            .emit(&session_id, AgentRuntimeEvent::KeepAlive)
+            .unwrap();
+
+        // Then: the progress clock is refreshed so the stale watchdog does not
+        // interrupt the healthy turn.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                {
+                    let sessions = usecase.ctx.sessions.lock().await;
+                    let last_progress_at =
+                        sessions.get(&session_id).unwrap().last_progress_at.unwrap();
+                    if last_progress_at > stale_instant {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("keep_alive should refresh last_progress_at");
+    }
+
+    #[tokio::test]
     async fn test_streaming_delta_文字deltaを三三msでcoalesceする() {
         // Given: a started turn with a recording notifier.
         let tmp = tempfile::tempdir().unwrap();
@@ -5757,6 +5844,64 @@ mod tests {
         let calls = controller.call_kinds_for(&session.id);
         assert!(calls.contains(&TestRuntimeCallKind::Interrupt));
         assert!(calls.contains(&TestRuntimeCallKind::Close));
+    }
+
+    #[tokio::test]
+    async fn test_stale_watchdogはツール実行中のturnをtimeout終端しない() {
+        // Given: a workflow-step session with a 1-second stale timeout.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: true,
+                workflow_step_context: Some(workflow_step_context(None, None, Some(1))),
+            },
+        )
+        .unwrap();
+
+        // When: a turn starts and a tool call is dispatched whose result has not
+        // arrived (a long-running command keeps the backend silent).
+        usecase
+            .start_turn_locked(
+                &session.id,
+                PermissionMode::Edit,
+                "run".to_string(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::ToolUse {
+                    id: "tool-1".to_string(),
+                    tool: "Bash".to_string(),
+                    input: crate::domain::agent_session::value_objects::JsonPayload::new_unchecked(
+                        "{}".to_string(),
+                    ),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Then: the stale watchdog does not interrupt the healthy tool-in-flight turn.
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .contains(&TestRuntimeCallKind::Interrupt));
     }
 
     #[tokio::test]

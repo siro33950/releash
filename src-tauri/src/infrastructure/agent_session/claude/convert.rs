@@ -80,7 +80,8 @@ pub(crate) fn convert_claude_message(
         Some(TYPE_CONTROL_REQUEST) => convert_control_request(message, state),
         Some(TYPE_CONTROL_RESPONSE) => convert_control_response(message),
         Some(TYPE_RESULT) => convert_result(message, state),
-        Some(TYPE_KEEP_ALIVE) | None => ClaudeConversion::none(),
+        Some(TYPE_KEEP_ALIVE) => ClaudeConversion::events(vec![AgentRuntimeEvent::KeepAlive]),
+        None => ClaudeConversion::none(),
         _ => ClaudeConversion::none(),
     }
 }
@@ -597,6 +598,20 @@ mod tests {
             conversion.events[1],
             AgentRuntimeEvent::SlashCommandsUpdated(_)
         ));
+    }
+
+    #[test]
+    fn test_keep_aliveは_keep_aliveイベントへ変換する() {
+        // Given: the CLI emits a keep_alive liveness line.
+        let mut state = ClaudeConvertState::new(None, ClaudeWireMode::Default);
+
+        // When: converting the message.
+        let conversion = convert_claude_message(&json!({ "type": "keep_alive" }), &mut state);
+
+        // Then: a KeepAlive runtime event is emitted so the executor can refresh
+        // its stale-progress clock.
+        assert_eq!(conversion.events, vec![AgentRuntimeEvent::KeepAlive]);
+        assert!(conversion.auto_responses.is_empty());
     }
 
     #[test]

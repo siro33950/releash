@@ -554,7 +554,8 @@ claude --input-format stream-json --output-format stream-json --verbose \
 | interrupt 後の turn 終端 | interrupt control_response(success) 受信後に result が届いた場合も `TurnCompleted(Interrupted { reason: Abort })` とする（現行 `buildResultTurnCompletion` の wasAborted 優先を踏襲）。result が 10 秒以内に届かなければ `TurnCompleted(Interrupted { Abort })` を合成する |
 | stdout EOF（turn 中、close 起因を除く） | `TurnCompleted(Interrupted { reason: Crash, error })` → `Fatal` |
 | stdout EOF（idle、close 起因を除く） | `Fatal` |
-| `keep_alive` / 未知 type | 無視 |
+| `keep_alive` | `KeepAlive`（生存通知。実行側は stale 監視の progress のみ更新し、part は生成しない。改訂: 当初「無視」だったが、無視すると長時間ツール実行中の健全な turn が §8.4 の stale timeout で誤終端されるため変換対象に変更） |
+| 未知 type | 無視 |
 
 - turn 相関: runtime は turn ごとに内部 token を保持し、破棄済み turn の遅延イベントを捨てる（現行 `turn_token` / `active_turn_token` / `post_turn_message_token` 相当の機構は Claude runtime 内部実装。Entity には露出しない）。
 - `interrupt()`: control_request `interrupt`。`set_model()`: control_request `set_model`。`set_permission_mode()`: control_request `set_permission_mode`（失敗は Err で返すが契約 9 のとおり実行側は継続する）。
@@ -744,7 +745,8 @@ issues-1214 の確定仕様を維持する: `(session_id, message_id)` 単位の
 
 ### 8.4 stale 監視（stale.rs）
 
-- 対象: turn phase = Streaming のみ。`last_progress_at`（イベント到着で更新）からの経過が `stale_timeout`（`SessionMeta.workflow_step_context.stale_timeout_secs`、上限 1800 秒、既定 180 秒）を超えたら Timeout。
+- 対象: turn phase = Streaming のみ。`last_progress_at`（イベント到着で更新。`KeepAlive` 生存通知を含む）からの経過が `stale_timeout`（`SessionMeta.workflow_step_context.stale_timeout_secs`、上限 1800 秒、既定 180 秒）を超えたら Timeout。
+- ツール実行中（ToolResult 未到着の ToolUse が streaming parts に残っている間）は、長時間コマンドの無出力が正常系であるため timeout を上限値（1800 秒）まで延長する（改訂: 当初は一律 `stale_timeout` だったが、`cargo test` 等の長時間ツール実行中に健全な turn を誤終端していたため）。
 - 処理: turn を `Interrupted { Timeout }`（exit 124 相当）で終端（Error part 文言は D14 の中立文言）→ `runtime.interrupt()` を試行 → 10 秒 grace → `runtime.close()` → runtime handle を破棄（pending queue は保全）。次 turn は lazy re-open。
 - これにより watchdog は backend 非依存の実行側方針となり、Claude 形式 `{"type":"interrupt"}` を Codex stdin に書く現行バグ（`recovery.rs:1471-1477`）は構造的に消える。
 

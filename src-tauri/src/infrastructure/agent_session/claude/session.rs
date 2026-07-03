@@ -431,6 +431,10 @@ fn normalize_runtime_event(
             if state.synthetic_abort_pending
                 && state.synthetic_abort_turn_generation == Some(state.turn_generation)
             {
+                log::debug!(
+                    "discarding late turn result for generation {} already terminated by synthetic abort",
+                    state.turn_generation
+                );
                 state.synthetic_abort_pending = false;
                 state.synthetic_abort_turn_generation = None;
                 state
