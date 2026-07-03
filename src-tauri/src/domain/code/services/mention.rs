@@ -19,6 +19,7 @@ pub fn fuzzy_match(haystack: &str, query: &str) -> bool {
 }
 
 /// XML 属性値として安全になるようエスケープする。
+#[allow(dead_code)] // issues-1301 F-3/G-1: helper for Rust-owned mention expansion surface.
 pub fn escape_xml_attr(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('"', "&quot;")
@@ -33,6 +34,7 @@ pub fn escape_xml_attr(s: &str) -> String {
 /// プロンプトインジェクションが成立する。CDATA で包むことでこれを無害化する。
 /// excerpt 内に CDATA 終端マーカー `]]>` が含まれる場合は CDATA が途中終了するため、
 /// `]]>` → `]]]]><![CDATA[>` へ置換してから包む（標準的なエスケープ手順）。
+#[allow(dead_code)] // issues-1301 F-3/G-1: helper for Rust-owned mention expansion surface.
 pub fn wrap_cdata(s: &str) -> String {
     let escaped = s.replace("]]>", "]]]]><![CDATA[>");
     format!("<![CDATA[{escaped}]]>")
@@ -40,6 +42,7 @@ pub fn wrap_cdata(s: &str) -> String {
 
 /// 行範囲（1-origin）に基づきファイル内容から抜粋を抽出する。
 /// 範囲指定が無い場合はファイル内容全体を返す。
+#[allow(dead_code)] // issues-1301 F-3/G-1: helper for Rust-owned mention expansion surface.
 pub fn extract_excerpt(
     file_content: &str,
     start_line: Option<u32>,

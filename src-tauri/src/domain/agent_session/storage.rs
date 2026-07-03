@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 pub trait AgentSessionStorageTypes: Send + Sync {
@@ -20,6 +21,8 @@ pub trait AgentSessionReader: AgentSessionStorageTypes {
         app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<String>, String>;
+
+    fn session_titles(&self, app_data_dir: &Path) -> Result<HashMap<String, String>, String>;
 
     fn get_session_meta(
         &self,
@@ -126,6 +129,13 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         session_id: &str,
         event: &Self::Event,
     ) -> Result<Vec<Self::Event>, String>;
+
+    fn append_session_event_without_projection(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        event: &Self::Event,
+    ) -> Result<(), String>;
 }
 
 pub trait AgentSessionStorage: AgentSessionReader + AgentSessionWriter {}

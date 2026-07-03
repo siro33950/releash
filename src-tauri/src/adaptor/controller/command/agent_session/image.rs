@@ -1,13 +1,15 @@
-use crate::infrastructure::agent_session::runtime::ImageAttachment;
+use crate::usecase::agent_session::session::{
+    prepare_image_attachment_data, prepare_image_attachments_from_paths_usecase, ImageAttachment,
+};
 
 #[tauri::command]
 pub fn prepare_image_attachment(data: Vec<u8>) -> Result<ImageAttachment, String> {
-    crate::infrastructure::agent_session::runtime::prepare_image_attachment(data)
+    prepare_image_attachment_data(data)
 }
 
 #[tauri::command]
 pub async fn prepare_image_attachments_from_paths(
     paths: Vec<String>,
 ) -> Result<Vec<ImageAttachment>, String> {
-    crate::infrastructure::agent_session::runtime::prepare_image_attachments_from_paths(paths).await
+    prepare_image_attachments_from_paths_usecase(paths).await
 }

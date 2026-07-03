@@ -11,7 +11,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::adaptor::gateway::agent_session::{FileSessionStorage, GitAgentPromptSuggestionGateway};
+use crate::adaptor::gateway::agent_session::{
+    FileSessionStorage, GitAgentPromptSuggestionGateway,
+    RegistryAgentSessionBackendLifecycleGateway, RuntimeAgentSessionCloser,
+};
 use crate::adaptor::gateway::code::branch_base::BranchBaseResolverGateway;
 use crate::adaptor::gateway::code::branch_diff::BranchDiffGateway;
 use crate::adaptor::gateway::code::diff_compute::DiffComputerGateway;
@@ -39,34 +42,24 @@ use crate::adaptor::gateway::workflow::{
 use crate::adaptor::gateway::workflow::{
     RepositoryManagedWorktreeGateway, StoredWorkspaceSessionGateway,
     TauriWorkflowExternalEditorGateway, TauriWorkflowRuntimeCommandGateway,
-    TauriWorkflowStepLifecycleGateway, WorkflowConfigPathFileGateway,
-    WorkflowDefinitionFileRepository, WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository,
-    WorkflowFacetFileRepository, WorkflowRunArchiveFileRepository, WorkflowRunFileRepository,
-    WorkflowSecretSourceConfigGateway, WorkflowStateProjectionLogRepository,
-    WorkflowStepDetailProjectionLogRepository,
+    TauriWorkflowRuntimeCommandGatewayDeps, TauriWorkflowStepLifecycleGateway,
+    WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
+    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository, WorkflowFacetFileRepository,
+    WorkflowRunArchiveFileRepository, WorkflowRunFileRepository, WorkflowSecretSourceConfigGateway,
+    WorkflowStateProjectionLogRepository, WorkflowStepDetailProjectionLogRepository,
 };
-#[cfg(test)]
-use crate::domain::agent_session::SkillEntry;
-use crate::domain::app_config::{ConfigRepository, ConfigSecretRepository};
-#[cfg(test)]
-use crate::domain::code::CodeError;
+use crate::domain::app_config::{AgentConfigRepository, ConfigRepository, ConfigSecretRepository};
 use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
-use crate::infrastructure::agent_session::codex_fuzzy_file_search_gateway::TauriCodexFuzzyFileSearchGateway;
-use crate::infrastructure::agent_session::runtime::AgentProcessMap;
-use crate::infrastructure::agent_session::skill_catalog_gateway::TauriCodexSkillCatalogGateway;
-use crate::infrastructure::agent_session::thread_lifecycle_gateway::{
-    CodexThreadLifecycleAppServerGateway, TauriAgentSessionRuntimeCloser,
+use crate::infrastructure::agent_session::{
+    claude::ClaudeBackend as NewClaudeBackend, codex::CodexBackend as NewCodexBackend,
 };
-use crate::usecase::agent_session::context::BranchDiffContextPort;
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{
     AgentPromptSuggestionUsecase, OpenTabRegistry, SessionReaderPort, SessionStore,
     StoredSessionLifecycleUsecase,
 };
-#[cfg(test)]
-use crate::usecase::agent_session::skill_catalog::CodexSkillCatalogGateway;
-use crate::usecase::agent_session::AgentSessionUsecase;
-use crate::usecase::code_query_service::{CodeQueryService, CodexFuzzyFileSearchGateway};
+use crate::usecase::code_query_service::CodeQueryService;
 use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::comment::{
     ReviewClock, ReviewCommentUsecase, ReviewEventStore, ReviewIdGenerator,
@@ -81,7 +74,21 @@ use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::usecase::workflow::{
     WorkflowRuntimeUsecase, WorkflowStepLifecycleUsecase, WorkflowUsecase, WorkspaceSessionGateway,
 };
-use tokio::sync::Mutex;
+
+pub(crate) fn build_agent_backend_registry(
+    config: Arc<dyn AgentConfigRepository>,
+) -> crate::usecase::agent_session::backend_registry::AgentBackendRegistry {
+    let mut registry = crate::usecase::agent_session::backend_registry::AgentBackendRegistry::new();
+    let claude_cli_path = config.cli_path_for("claude").ok().flatten();
+    let codex_cli_path = config.cli_path_for("codex").ok().flatten();
+    registry.register(Arc::new(NewClaudeBackend::new(claude_cli_path)));
+    registry.register(Arc::new(NewCodexBackend::new(codex_cli_path)));
+    match config.default_agent_backend() {
+        Ok(default_id) => registry.set_default(default_id),
+        Err(error) => log::warn!("failed to read default backend from config: {error}"),
+    }
+    registry
+}
 
 /// git ベースの repository usecase を既定の gateway 実装で構築する。
 /// Entity の読み書きは Repository gateway へ、read model 生成は `WorktreeGateway` が実装する
@@ -112,60 +119,13 @@ pub(crate) fn build_git_host_usecase() -> GitHostUsecase {
 /// staging（書き込み）は Command 側 Usecase が、ファイル内容参照・diff バッファ計算・
 /// branch diff・mention 候補列挙（読み取り）は `CodeQueryService` が各 gateway へ委譲する。
 /// いずれの gateway もステートレスのため、起動時に 1 度だけ組み立てて Arc 共有する。
-#[cfg(test)]
-struct UnavailableCodexFuzzyFileSearchGateway;
-
-#[cfg(test)]
-#[async_trait::async_trait]
-impl CodexFuzzyFileSearchGateway for UnavailableCodexFuzzyFileSearchGateway {
-    async fn search_files(
-        &self,
-        _worktree_path: &str,
-        _query: &str,
-        _limit: usize,
-    ) -> Result<Vec<String>, CodeError> {
-        Err(CodeError::External(
-            "Codex fuzzy file search gateway is not configured".to_string(),
-        ))
-    }
-}
-
-#[cfg(test)]
-struct UnavailableCodexSkillCatalogGateway;
-
-#[cfg(test)]
-#[async_trait::async_trait]
-impl CodexSkillCatalogGateway for UnavailableCodexSkillCatalogGateway {
-    async fn list_app_server_skills(
-        &self,
-        _cwd: &str,
-        _query: Option<&str>,
-        _limit: Option<usize>,
-    ) -> Result<Vec<SkillEntry>, String> {
-        Err("Codex skill catalog gateway is not configured".to_string())
-    }
-
-    async fn scan_local_skills(
-        &self,
-        _cwd: &str,
-        _backend_id: Option<&str>,
-        _query: Option<&str>,
-        _limit: Option<usize>,
-    ) -> Result<Vec<SkillEntry>, String> {
-        Err("Codex skill catalog gateway is not configured".to_string())
-    }
-}
-
-fn build_code_usecase_with_fuzzy_gateway(
-    codex_fuzzy_file_search: Arc<dyn CodexFuzzyFileSearchGateway>,
-) -> CodeUsecase {
+fn build_code_usecase_with_gateways() -> CodeUsecase {
     let query = CodeQueryService::new(
         Arc::new(FileContentGateway),
         Arc::new(DiffComputerGateway),
         Arc::new(BranchDiffGateway),
         Arc::new(MentionGateway),
         Arc::new(BranchBaseResolverGateway::new(Arc::new(GitConfigGateway))),
-        codex_fuzzy_file_search,
     );
     CodeUsecase::new(
         Arc::new(StagingGateway),
@@ -176,24 +136,13 @@ fn build_code_usecase_with_fuzzy_gateway(
 
 #[cfg(test)]
 pub(crate) fn build_code_usecase() -> CodeUsecase {
-    build_code_usecase_with_fuzzy_gateway(Arc::new(UnavailableCodexFuzzyFileSearchGateway))
+    build_code_usecase_with_gateways()
 }
 
 pub(crate) fn build_code_usecase_with_app<R: tauri::Runtime + 'static>(
-    app: tauri::AppHandle<R>,
+    _app: tauri::AppHandle<R>,
 ) -> CodeUsecase {
-    build_code_usecase_with_fuzzy_gateway(Arc::new(TauriCodexFuzzyFileSearchGateway::new(app)))
-}
-
-pub(crate) fn build_agent_session_usecase<R: tauri::Runtime + 'static>(
-    app: tauri::AppHandle<R>,
-) -> AgentSessionUsecase {
-    AgentSessionUsecase::new(Arc::new(TauriCodexSkillCatalogGateway::new(app)))
-}
-
-#[cfg(test)]
-pub(crate) fn build_agent_session_usecase_for_tests() -> AgentSessionUsecase {
-    AgentSessionUsecase::new(Arc::new(UnavailableCodexSkillCatalogGateway))
+    build_code_usecase_with_gateways()
 }
 
 #[cfg(test)]
@@ -219,14 +168,14 @@ pub(crate) fn build_review_comment_usecase() -> ReviewCommentUsecase {
 }
 
 pub(crate) fn build_stored_session_lifecycle_usecase(
-    app: tauri::AppHandle,
     session_store: Arc<SessionStore>,
-    handles: Arc<Mutex<AgentProcessMap>>,
+    registry: Arc<crate::usecase::agent_session::backend_registry::AgentBackendRegistry>,
+    runtime: Arc<AgentSessionRuntimeUsecase>,
 ) -> StoredSessionLifecycleUsecase {
     StoredSessionLifecycleUsecase::new(
         session_store,
-        Arc::new(CodexThreadLifecycleAppServerGateway::new(app.clone())),
-        Arc::new(TauriAgentSessionRuntimeCloser::new(app, handles)),
+        Arc::new(RegistryAgentSessionBackendLifecycleGateway::new(registry)),
+        Arc::new(RuntimeAgentSessionCloser::new(runtime)),
     )
 }
 
@@ -352,36 +301,23 @@ fn build_workflow_usecase_with_gateways(
 
 pub(crate) fn build_workflow_runtime_usecase(
     app: tauri::AppHandle,
-    repository_usecase: Arc<RepositoryUsecase>,
-    app_config: Arc<dyn ConfigRepository>,
-    session_store: Arc<SessionStore>,
-    handles: Arc<Mutex<AgentProcessMap>>,
-    branch_diff_context: Arc<dyn BranchDiffContextPort>,
-    data_dir: Option<PathBuf>,
+    deps: TauriWorkflowRuntimeCommandGatewayDeps,
 ) -> WorkflowRuntimeUsecase {
     WorkflowRuntimeUsecase::new(Arc::new(
-        TauriWorkflowRuntimeCommandGateway::new_with_default_engine(
-            app,
-            repository_usecase,
-            app_config,
-            session_store,
-            handles,
-            branch_diff_context,
-            data_dir,
-        ),
+        TauriWorkflowRuntimeCommandGateway::new_with_default_engine(app, deps),
     ))
 }
 
 pub(crate) fn build_workflow_step_lifecycle_usecase(
     app: tauri::AppHandle,
     session_store: Arc<SessionStore>,
-    handles: Arc<Mutex<AgentProcessMap>>,
+    agent_runtime: Arc<AgentSessionRuntimeUsecase>,
     open_tabs: Arc<OpenTabRegistry>,
 ) -> WorkflowStepLifecycleUsecase {
     let gateway = Arc::new(TauriWorkflowStepLifecycleGateway::new(
         app,
         session_store,
-        handles,
+        agent_runtime,
         open_tabs,
     ));
     WorkflowStepLifecycleUsecase::new(gateway.clone(), gateway)

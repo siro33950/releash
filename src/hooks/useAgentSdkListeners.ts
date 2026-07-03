@@ -23,14 +23,6 @@ import {
 	type LegacyChatSession,
 } from "./useSessionStore";
 
-type SdkMessage = {
-	type: string;
-	session_id?: string;
-	chat_session_id?: string;
-	parent_tool_use_id?: string | null;
-	[key: string]: unknown;
-};
-
 interface SessionStateChanged {
 	chat_session_id: string;
 	turn_phase: TurnPhase;
@@ -83,6 +75,11 @@ interface ModelsUpdated {
 	selected_model: string;
 }
 
+interface AgentTurnUsageUpdated {
+	chatSessionId: string;
+	tokenUsage: TokenUsage;
+}
+
 /**
  * SDK listener gating のための「現在 UI 上で表示中の session id 集合」を引く registry。
  * 各 panel が表示開始時に register、unmount/離脱時に cleanup を呼ぶ。listener は本 set に
@@ -107,132 +104,6 @@ function isViewable(
 	return viewableRegistry.getIds().has(sessionId);
 }
 
-function handleSystemMessage(
-	msg: SdkMessage,
-	chatSessionId: string | undefined,
-	dispatch: Dispatch<AgentChatAction>,
-	viewableRegistry: ViewableSessionRegistry,
-): void {
-	if (msg.type !== "system" || !chatSessionId) return;
-	// task subtypes are handled by Rust accumulation
-	const subtype = typeof msg.subtype === "string" ? msg.subtype : undefined;
-	if (
-		subtype === "task_started" ||
-		subtype === "task_notification" ||
-		subtype === "task_progress"
-	)
-		return;
-	// Skip dispatching for sessions not currently shown (Rust persists these)
-	if (!isViewable(chatSessionId, viewableRegistry)) return;
-	const text =
-		typeof msg.message === "string"
-			? msg.message
-			: typeof msg.content === "string"
-				? msg.content
-				: null;
-	if (text) {
-		dispatch({
-			type: "ADD_MESSAGE",
-			sessionId: chatSessionId,
-			message: {
-				id: `system-${Date.now()}`,
-				role: "system",
-				parts: [{ type: "text", content: text }],
-				timestamp: Date.now(),
-			},
-		});
-	}
-}
-
-function handleResultErrors(
-	msg: SdkMessage,
-	chatSessionId: string | undefined,
-	dispatch: Dispatch<AgentChatAction>,
-	viewableRegistry: ViewableSessionRegistry,
-): void {
-	if (msg.type !== "result" || !chatSessionId) return;
-	if (!isViewable(chatSessionId, viewableRegistry)) return;
-	const resultMsg = msg as {
-		type: "result";
-		errors?: string[];
-	};
-	if (resultMsg.errors && resultMsg.errors.length > 0) {
-		dispatch({
-			type: "ADD_MESSAGE",
-			sessionId: chatSessionId,
-			message: {
-				id: `system-error-${Date.now()}`,
-				role: "agent",
-				parts: [{ type: "error", content: resultMsg.errors.join("\n") }],
-				timestamp: Date.now(),
-			},
-		});
-	}
-}
-
-function numberFromUnknown(value: unknown): number | null {
-	return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function tokenUsageFromResultMessage(msg: SdkMessage): TokenUsage | null {
-	if (msg.type !== "result") return null;
-	const modelUsage = msg.modelUsage;
-	if (!modelUsage || typeof modelUsage !== "object") return null;
-
-	let inputTokens = 0;
-	let outputTokens = 0;
-	let totalTokens = 0;
-	let sawExplicitTotal = false;
-	let contextWindowTokens: number | undefined;
-
-	for (const usage of Object.values(modelUsage as Record<string, unknown>)) {
-		if (!usage || typeof usage !== "object") continue;
-		const entry = usage as Record<string, unknown>;
-		const input = numberFromUnknown(entry.inputTokens) ?? 0;
-		const output = numberFromUnknown(entry.outputTokens) ?? 0;
-		inputTokens += input;
-		outputTokens += output;
-		const total = numberFromUnknown(entry.totalTokens);
-		if (total != null) {
-			totalTokens += total;
-			sawExplicitTotal = true;
-		}
-		const window = numberFromUnknown(entry.contextWindowTokens);
-		if (window != null) {
-			contextWindowTokens =
-				contextWindowTokens == null
-					? window
-					: Math.max(contextWindowTokens, window);
-		}
-	}
-
-	if (inputTokens === 0 && outputTokens === 0 && !sawExplicitTotal) {
-		return null;
-	}
-
-	return {
-		inputTokens,
-		outputTokens,
-		totalTokens: sawExplicitTotal ? totalTokens : inputTokens + outputTokens,
-		contextWindowTokens,
-	};
-}
-
-function handleResultTokenUsage(
-	msg: SdkMessage,
-	chatSessionId: string | undefined,
-	dispatch: Dispatch<AgentChatAction>,
-): void {
-	if (!chatSessionId) return;
-	const usage = tokenUsageFromResultMessage(msg);
-	if (!usage) return;
-	dispatch({
-		type: "SET_LATEST_TOKEN_USAGE",
-		sessionId: chatSessionId,
-		usage,
-	});
-}
-
 function toPreparedChatMessage(
 	message: LegacyChatMessage & { parts?: MessagePart[] | null },
 ) {
@@ -245,18 +116,18 @@ function toPreparedChatMessage(
 export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 	const { dispatch, viewableRegistry, refreshSessions, worktreePath } = refs;
 
-	// Listen to SDK messages for meta events that are not part of session state.
+	// Listen to typed turn usage updates emitted by Rust backend.
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;
 		let cancelled = false;
 
-		listen<SdkMessage>("agent-sdk-message", (event) => {
-			const msg = event.payload;
-			const chatSessionId = msg.chat_session_id;
-
-			handleSystemMessage(msg, chatSessionId, dispatch, viewableRegistry);
-			handleResultErrors(msg, chatSessionId, dispatch, viewableRegistry);
-			handleResultTokenUsage(msg, chatSessionId, dispatch);
+		listen<AgentTurnUsageUpdated>("agent-turn-usage-updated", (event) => {
+			const { chatSessionId, tokenUsage } = event.payload;
+			dispatch({
+				type: "SET_LATEST_TOKEN_USAGE",
+				sessionId: chatSessionId,
+				usage: tokenUsage,
+			});
 		}).then((fn) => {
 			if (cancelled) {
 				fn();
@@ -269,7 +140,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, viewableRegistry]);
+	}, [dispatch]);
 
 	// Listen to prepared turn read model emitted before runtime streaming starts.
 	useEffect(() => {

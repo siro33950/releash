@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::{collections::HashMap, path::Path};
 
-use tauri::Manager;
 use tokio::sync::Mutex;
 
 use crate::adaptor::gateway::workflow::domain_mapping::node_type_to_domain;
@@ -27,8 +26,9 @@ use crate::domain::workflow::services::history::{
 use crate::domain::workflow::{
     NodeType, RetryPolicy, TimeoutContext, WorkflowStepContext, WorkflowStepFailureKind,
 };
-use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{ChatSession, OpenTabRegistry, SessionStore};
 
 fn runtime_start_failure_reason(
@@ -104,38 +104,26 @@ pub(crate) async fn load_parallel_start_runtime_inputs(
 /// ステップの model 値から対応するバックエンドIDを解決する。
 /// 形式検証（`ModelId`）と登録判定（`resolve_backend_for_model`）を
 /// 一括で行い、`set_agent_model_internal` と同一の受け入れ基準を適用する。
-pub(crate) async fn resolve_backend_for_step_model<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn resolve_backend_for_step_model(
+    registry: &AgentBackendRegistry,
     model: &str,
 ) -> Result<Option<String>, WorkflowEngineError> {
-    let registry = app
-        .try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>()
-        .ok_or_else(|| {
-            WorkflowEngineError::InvalidWorkflow(format!(
-                "cannot resolve model '{model}': backend registry is unavailable"
-            ))
-        })?;
-    resolve_step_model_with_registry(&registry, model).map(Some)
+    resolve_step_model_with_registry(registry, model).map(Some)
 }
 
 /// 形式検証＋登録判定をレジストリ単体で行う、ワークフロー経路用の解決関数。
 /// `resolve_backend_for_step_model` の実体ロジックで、テストではこちらを直接呼ぶ。
 pub(crate) fn resolve_step_model_with_registry(
-    registry: &crate::infrastructure::agent_session::runtime::AgentBackendRegistry,
+    registry: &AgentBackendRegistry,
     model: &str,
 ) -> Result<String, WorkflowEngineError> {
     crate::domain::agent_session::ModelId::parse(model).map_err(|e| {
         WorkflowEngineError::InvalidWorkflow(format!("invalid model '{model}': {e}"))
     })?;
-    let backend_id = registry
-        .resolve_backend_for_model(model)
-        .map_err(|e| {
-            WorkflowEngineError::InvalidWorkflow(format!(
-                "model '{model}' could not be resolved: {e}"
-            ))
-        })?
-        .ok_or_else(|| WorkflowEngineError::InvalidWorkflow(format!("unknown model: {model}")))?;
-    Ok(backend_id)
+    let entry = registry.resolve_model_entry(model).map_err(|e| {
+        WorkflowEngineError::InvalidWorkflow(format!("model '{model}' could not be resolved: {e}"))
+    })?;
+    Ok(entry.backend)
 }
 
 #[derive(Debug, Clone)]
@@ -145,15 +133,36 @@ struct StepSessionCreationSettings {
     permission_mode: PermissionMode,
 }
 
-async fn resolve_step_session_creation_settings<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+fn resolve_step_session_creation_settings(
+    registry: &AgentBackendRegistry,
     step_model: Option<String>,
     step_permission: Option<String>,
     workflow_defaults: &WorkflowDefaults,
 ) -> Result<StepSessionCreationSettings, WorkflowEngineError> {
-    let resolved_backend_id = match step_model {
-        Some(ref model) => resolve_backend_for_step_model(app, model).await?,
-        None => None,
+    let (step_model, resolved_backend_id) = match step_model {
+        Some(model) => {
+            let backend_id = resolve_backend_for_step_model(registry, &model)?;
+            (Some(model), backend_id)
+        }
+        None => {
+            let backend_id = workflow_defaults
+                .backend_id
+                .clone()
+                .map(Ok)
+                .unwrap_or_else(|| {
+                    registry.resolve_default_id().map_err(|e| {
+                        WorkflowEngineError::InvalidWorkflow(format!(
+                            "default backend could not be resolved: {e}"
+                        ))
+                    })
+                })?;
+            let selected_model = registry.default_model_for(&backend_id).map_err(|e| {
+                WorkflowEngineError::InvalidWorkflow(format!(
+                    "default model for backend '{backend_id}' could not be resolved: {e}"
+                ))
+            })?;
+            (Some(selected_model), Some(backend_id))
+        }
     };
     let settings = resolve_step_settings(
         step_model,
@@ -224,8 +233,8 @@ fn workflow_step_context_with_runtime_timeouts(
 
 /// ステップ設定の解決 → セッション生成 → 解決済み設定の反映 → 保存を一括で行う。
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn create_step_session_with_settings<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn create_step_session_with_settings(
+    registry: &AgentBackendRegistry,
     session_store: &SessionStore,
     data_dir: &Path,
     worktree_path: &str,
@@ -235,9 +244,12 @@ pub(crate) async fn create_step_session_with_settings<R: tauri::Runtime>(
     workflow_step_context: WorkflowStepContext,
     node_kind: NodeType,
 ) -> Result<ChatSession, WorkflowEngineError> {
-    let settings =
-        resolve_step_session_creation_settings(app, step_model, step_permission, workflow_defaults)
-            .await?;
+    let settings = resolve_step_session_creation_settings(
+        registry,
+        step_model,
+        step_permission,
+        workflow_defaults,
+    )?;
     create_step_session_from_resolved_settings(
         session_store,
         data_dir,
@@ -265,7 +277,7 @@ pub(crate) async fn broadcast_state<R: tauri::Runtime>(
 
 pub(crate) async fn emit_workflow_runtime_projection<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
+    runtime: &Arc<AgentSessionRuntimeUsecase>,
     open_tabs: &OpenTabRegistry,
     worktree_path: &str,
     workflow_state: WorkflowState,
@@ -274,47 +286,29 @@ pub(crate) async fn emit_workflow_runtime_projection<R: tauri::Runtime>(
         app,
         worktree_path,
         crate::adaptor::gateway::workflow::state::workflow_state_to_domain_snapshot(workflow_state),
-        handles,
+        runtime.as_ref(),
         open_tabs,
     )
     .await;
 }
 
 /// AgentSessionを中断する。
-pub(crate) async fn interrupt_agent(handles: &Arc<Mutex<AgentProcessMap>>, session_id: &str) {
-    use tokio::io::AsyncWriteExt;
-
-    let stdin = {
-        let map = handles.lock().await;
-        map.get(session_id).map(|proc| Arc::clone(&proc.stdin))
-    };
-    if let Some(stdin) = stdin {
-        let mut stdin = stdin.lock().await;
-        if let Err(e) = stdin.write_all(b"{\"type\":\"interrupt\"}\n").await {
-            log::warn!(
-                "Failed to write interrupt for session '{}': {e}",
-                session_id
-            );
-        }
-        if let Err(e) = stdin.flush().await {
-            log::warn!(
-                "Failed to flush interrupt for session '{}': {e}",
-                session_id
-            );
-        }
+pub(crate) async fn interrupt_agent(runtime: &Arc<AgentSessionRuntimeUsecase>, session_id: &str) {
+    if let Err(e) = runtime.interrupt(session_id).await {
+        log::warn!("Failed to interrupt agent session '{session_id}': {e}");
     }
 }
 
 pub(crate) async fn release_completed_step_session<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_store: &Arc<SessionStore>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
+    runtime: &Arc<AgentSessionRuntimeUsecase>,
     session_id: &str,
 ) {
     crate::adaptor::gateway::workflow::release_step_runtime_on_done(
         app,
         session_store,
-        handles,
+        runtime,
         session_id,
     )
     .await;
@@ -323,17 +317,18 @@ pub(crate) async fn release_completed_step_session<R: tauri::Runtime>(
 pub(crate) async fn release_completed_step_sessions<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_store: &Arc<SessionStore>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
+    runtime: &Arc<AgentSessionRuntimeUsecase>,
     session_ids: &[String],
 ) {
     for session_id in session_ids {
-        release_completed_step_session(app, session_store, handles, session_id).await;
+        release_completed_step_session(app, session_store, runtime, session_id).await;
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare_parallel_child_session_setups<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    registry: &AgentBackendRegistry,
     session_store: &Arc<SessionStore>,
     session_workflow_refs: &Mutex<HashMap<String, SessionWorkflowRef>>,
     worktree_path: &str,
@@ -343,7 +338,7 @@ pub(crate) async fn prepare_parallel_child_session_setups<R: tauri::Runtime>(
     let prompt_plans =
         prepare_parallel_child_prompt_plans(worktree_path, parallel_start, prompt_inputs)?;
     let creation_plans =
-        prepare_parallel_child_creation_plans(app, parallel_start, prompt_plans).await?;
+        prepare_parallel_child_creation_plans(registry, parallel_start, prompt_plans)?;
     let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
         .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
     let mut child_setups = Vec::new();
@@ -458,8 +453,8 @@ fn prepare_parallel_child_prompt_plans(
         .collect()
 }
 
-async fn prepare_parallel_child_creation_plans<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+fn prepare_parallel_child_creation_plans(
+    registry: &AgentBackendRegistry,
     parallel_start: &ParallelStartContext,
     prompt_plans: Vec<ParallelChildPromptPlan>,
 ) -> Result<Vec<ParallelChildCreationPlan>, WorkflowEngineError> {
@@ -467,12 +462,11 @@ async fn prepare_parallel_child_creation_plans<R: tauri::Runtime>(
     for prompt_plan in prompt_plans {
         let ps = &parallel_start.parallel_steps[prompt_plan.step_index];
         let settings = resolve_step_session_creation_settings(
-            app,
+            registry,
             ps.model.clone(),
             ps.permission.clone(),
             &parallel_start.workflow_defaults,
-        )
-        .await?;
+        )?;
         creation_plans.push(ParallelChildCreationPlan {
             step_index: prompt_plan.step_index,
             run_index: prompt_plan.run_index,
@@ -536,9 +530,10 @@ async fn rollback_created_parallel_child_sessions(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn activate_parallel_child_sessions<R: tauri::Runtime, O>(
     app: &tauri::AppHandle<R>,
-    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
+    _branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
+    runtime: &Arc<AgentSessionRuntimeUsecase>,
+    open_tabs: &Arc<OpenTabRegistry>,
     executions: &Mutex<HashMap<String, WorkflowExecution>>,
     worktree_path: &str,
     parallel_start: &ParallelStartContext,
@@ -563,9 +558,10 @@ where
     broadcast_state(app, worktree_path, snapshot.clone()).await;
     start_parallel_child_sessions(
         app,
-        branch_diff_context,
+        None,
         session_store,
-        handles,
+        runtime,
+        open_tabs,
         worktree_path,
         child_setups,
         &child_run_indices,
@@ -588,9 +584,10 @@ pub(crate) trait ParallelChildTurnObserver {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_parallel_child_sessions<R: tauri::Runtime, O>(
     app: &tauri::AppHandle<R>,
-    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
-    session_store: &Arc<SessionStore>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
+    _branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
+    _session_store: &Arc<SessionStore>,
+    runtime: &Arc<AgentSessionRuntimeUsecase>,
+    open_tabs: &Arc<OpenTabRegistry>,
     worktree_path: &str,
     child_setups: &[ParallelChildSessionSetup],
     child_run_indices: &[u32],
@@ -604,65 +601,31 @@ where
     let mut runtime_guards = Vec::new();
 
     for setup in child_setups {
-        let runtime_guard =
-            crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(
-                &setup.session_id,
-            )
-            .await;
-        if let Err(e) = crate::infrastructure::agent_session::runtime::start_agent_session_internal(
-            app,
-            branch_diff_context.clone(),
-            handles,
-            session_store,
-            &setup.session_id,
-            worktree_path,
-            None,
-            false,
-            setup.system_prompt.clone(),
-            setup.workflow_instruction.clone().into_iter().collect(),
-        )
-        .await
-        {
-            for session_id in &created_session_ids {
-                interrupt_agent(handles, session_id).await;
-            }
-            return Err(WorkflowEngineError::with_agent_runtime_context(
-                format!("Failed to start parallel child '{}'", setup.step_name),
-                e,
-            ));
-        }
+        let runtime_guard = runtime.acquire_session_lock(&setup.session_id).await;
         runtime_guards.push(runtime_guard);
-        if let Some(open_tabs) =
-            app.try_state::<Arc<crate::usecase::agent_session::session::OpenTabRegistry>>()
-        {
-            open_tabs.add(&setup.session_id);
-            if let Some(state) = workflow_state_for_projection.clone() {
-                emit_workflow_runtime_projection(app, handles, &open_tabs, worktree_path, state)
-                    .await;
-            }
+        open_tabs.add(&setup.session_id);
+        if let Some(state) = workflow_state_for_projection.clone() {
+            emit_workflow_runtime_projection(app, runtime, open_tabs, worktree_path, state).await;
         }
         created_session_ids.push(setup.session_id.clone());
     }
 
     for (index, setup) in child_setups.iter().enumerate() {
         let runtime_guard = runtime_guards.remove(0);
-        if let Err(e) =
-            crate::infrastructure::agent_session::runtime::start_agent_turn_internal_locked(
-                app,
-                branch_diff_context.clone(),
-                handles,
-                session_store,
+        let permission_mode = PermissionMode::parse(&setup.permission_mode)
+            .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
+        if let Err(e) = runtime
+            .start_turn_locked(
                 &setup.session_id,
-                worktree_path,
-                &setup.permission_mode,
-                &setup.user_message,
+                permission_mode,
+                setup.user_message.clone(),
                 setup.system_prompt.clone(),
                 setup.workflow_instruction.clone().into_iter().collect(),
             )
             .await
         {
             for session_id in &created_session_ids {
-                interrupt_agent(handles, session_id).await;
+                interrupt_agent(runtime, session_id).await;
             }
             return Err(WorkflowEngineError::with_agent_runtime_context(
                 format!(
@@ -691,8 +654,118 @@ mod tests {
         ChildNodeDefinition, NodeDefinition, NodeType, Workflow,
     };
     use crate::adaptor::gateway::workflow::state::{StepOutput, TokenUsage};
+    use crate::domain::agent_session::gateway::{
+        AgentBackend, AgentBackendError, AgentSessionRuntime, ForkSessionRequest, SessionSpec,
+    };
+    use crate::domain::agent_session::value_objects::{
+        BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
+    };
     use crate::domain::workflow::WorkflowStepFailureKind;
-    use crate::infrastructure::agent_session::runtime::AgentRuntimeError;
+    use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
+    use async_trait::async_trait;
+
+    struct RuntimeSessionMockBackend {
+        id: &'static str,
+        models: Vec<&'static str>,
+    }
+
+    #[async_trait]
+    impl AgentBackend for RuntimeSessionMockBackend {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn name(&self) -> &str {
+            self.id
+        }
+
+        fn available_models(&self) -> Vec<ModelDescriptor> {
+            self.models
+                .iter()
+                .map(|model| ModelDescriptor {
+                    id: ModelId::parse(*model).unwrap(),
+                    display_name: (*model).to_string(),
+                })
+                .collect()
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            BackendCapabilities { steering: false }
+        }
+
+        async fn open_session(
+            &self,
+            _spec: SessionSpec,
+        ) -> Result<Box<dyn AgentSessionRuntime>, AgentBackendError> {
+            Err(AgentBackendError::Unavailable("test".to_string()))
+        }
+
+        async fn archive_session(
+            &self,
+            _backend_session_id: &str,
+            _cwd: &str,
+        ) -> Result<(), AgentBackendError> {
+            Ok(())
+        }
+
+        async fn unarchive_session(
+            &self,
+            _backend_session_id: &str,
+            _cwd: &str,
+        ) -> Result<(), AgentBackendError> {
+            Ok(())
+        }
+
+        async fn fork_session(
+            &self,
+            _req: ForkSessionRequest,
+        ) -> Result<Option<String>, AgentBackendError> {
+            Ok(None)
+        }
+
+        async fn skill_catalog(
+            &self,
+            _cwd: &std::path::Path,
+            _query: Option<&str>,
+            _limit: Option<usize>,
+        ) -> Result<Vec<SkillEntry>, AgentBackendError> {
+            Ok(Vec::new())
+        }
+
+        async fn fuzzy_file_search(
+            &self,
+            _root: &std::path::Path,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<Option<Vec<String>>, AgentBackendError> {
+            Ok(None)
+        }
+    }
+
+    fn registry_with_default_backend() -> AgentBackendRegistry {
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(RuntimeSessionMockBackend {
+            id: "codex",
+            models: vec!["gpt-5"],
+        }));
+        registry.set_default(Some("codex".to_string()));
+        registry
+    }
+
+    fn workflow_context_for_test() -> WorkflowStepContext {
+        WorkflowStepContext {
+            run_id: "run-1".to_string(),
+            workflow_name: "workflow".to_string(),
+            step_name: "step".to_string(),
+            run_index: 0,
+            parent_step_name: None,
+            parent_run_index: None,
+            order: 1,
+            startup_timeout_secs: None,
+            startup_max_retries: None,
+            stale_timeout_secs: None,
+        }
+    }
 
     fn workflow_execution_fixture(run_id: &str, worktree_path: &str) -> WorkflowExecution {
         let step_name = "plan".to_string();
@@ -729,6 +802,77 @@ mod tests {
     }
 
     #[test]
+    fn resolve_step_session_creation_settings_without_model_uses_default_backend_and_model() {
+        let registry = registry_with_default_backend();
+
+        let settings = resolve_step_session_creation_settings(
+            &registry,
+            None,
+            None,
+            &WorkflowDefaults {
+                backend_id: None,
+                permission_mode: "edit".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(settings.backend_id.as_deref(), Some("codex"));
+        assert_eq!(settings.selected_model.as_deref(), Some("gpt-5"));
+        assert_eq!(settings.permission_mode, PermissionMode::Edit);
+    }
+
+    #[test]
+    fn resolve_step_session_creation_settings_without_default_backend_errors() {
+        let registry = AgentBackendRegistry::new();
+
+        let error = resolve_step_session_creation_settings(
+            &registry,
+            None,
+            None,
+            &WorkflowDefaults {
+                backend_id: None,
+                permission_mode: "edit".to_string(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, WorkflowEngineError::InvalidWorkflow(_)));
+        assert!(error.to_string().contains("default backend"));
+    }
+
+    #[test]
+    fn create_step_session_without_model_persists_non_empty_backend_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = registry_with_default_backend();
+        let session_store = crate::test_support::build_session_store();
+
+        let session = create_step_session_with_settings(
+            &registry,
+            &session_store,
+            tmp.path(),
+            "/repo",
+            None,
+            None,
+            &WorkflowDefaults {
+                backend_id: None,
+                permission_mode: "edit".to_string(),
+            },
+            workflow_context_for_test(),
+            crate::domain::workflow::NodeType::Agent,
+        )
+        .unwrap();
+
+        assert_eq!(session.backend_id.as_deref(), Some("codex"));
+        assert_eq!(session.selected_model.as_deref(), Some("gpt-5"));
+        let saved = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.backend_id, "codex");
+        assert_eq!(saved.selected_model.as_deref(), Some("gpt-5"));
+    }
+
+    #[test]
     fn post_commit_runtime_start_failure_reasons_match_state_contract() {
         let error = WorkflowEngineError::AgentSession("backend unavailable".to_string());
 
@@ -749,7 +893,10 @@ mod tests {
 
     #[test]
     fn runtime_start_failed_state_preserves_startup_timeout_metadata() {
-        let error = WorkflowEngineError::from(AgentRuntimeError::startup_timeout(2, 2));
+        let error = WorkflowEngineError::from(AgentRuntimeError::StartupTimeout {
+            retry_count: 2,
+            max_retries: 2,
+        });
 
         let state = runtime_start_failed_state(RuntimeStartFailureKind::StepSession, &error);
 
@@ -759,7 +906,7 @@ mod tests {
                 reason,
                 kind: WorkflowStepFailureKind::StartupTimeout,
                 retry_count: Some(2),
-            } if reason.contains("Timed out waiting for Codex app-server thread")
+            } if reason.contains("Timed out waiting for agent session startup")
         ));
     }
 

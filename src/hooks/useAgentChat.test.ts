@@ -72,6 +72,18 @@ vi.mock("./useSessionStore", () => ({
 		backends: [],
 		defaultId: null,
 	}),
+	convertLegacyMessage: vi.fn((message) => ({
+		...message,
+		parts:
+			message.parts ??
+			(typeof message.content === "string"
+				? [{ type: "text", content: message.content }]
+				: []),
+	})),
+	convertLegacySession: vi.fn((session) => ({
+		...session,
+		messages: session.messages ?? [],
+	})),
 	setSessionBackend: vi.fn().mockResolvedValue({
 		session: {
 			id: "s1",
@@ -715,6 +727,7 @@ describe("useAgentChat", () => {
 			pendingQueue: [],
 			pendingQueueCount: 0,
 			queuedTurn: null,
+			canChangeBackend: false,
 		});
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
@@ -1461,26 +1474,40 @@ describe("useAgentChat", () => {
 				await result.current.selectSession("s1");
 			});
 			await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
-			const emitSystemMessage = () =>
-				listenCallbacks.get("agent-sdk-message")?.({
+			const emitPreparedTurn = () =>
+				listenCallbacks.get("agent-turn-prepared")?.({
 					payload: {
-						type: "system",
 						chat_session_id: "s1",
-						message: "background notice",
+						session: {
+							...(result.current.activeSession ?? chatSession("s1", [])),
+							messages: result.current.activeSession?.messages ?? [],
+						},
+						human_message: {
+							id: "prepared-human-1",
+							role: "human",
+							parts: [{ type: "text", content: "background notice" }],
+							timestamp: 12345,
+						},
+						agent_message: {
+							id: "prepared-agent-1",
+							role: "agent",
+							parts: [],
+							timestamp: 12346,
+						},
 					},
 				});
 
 			await act(async () => {
-				emitSystemMessage();
+				emitPreparedTurn();
 			});
 			await waitFor(() =>
-				expect(result.current.activeSession?.messages).toHaveLength(202),
+				expect(result.current.activeSession?.messages).toHaveLength(203),
 			);
 			await act(async () => {
-				emitSystemMessage();
+				emitPreparedTurn();
 			});
 			await waitFor(() =>
-				expect(result.current.activeSession?.messages).toHaveLength(202),
+				expect(result.current.activeSession?.messages).toHaveLength(203),
 			);
 			vi.mocked(sessionStore.planAgentChatEviction).mockClear();
 
@@ -1493,11 +1520,11 @@ describe("useAgentChat", () => {
 			expect(sessionStore.planAgentChatEviction).toHaveBeenCalledWith({
 				active: expect.objectContaining({
 					sessionId: "s1",
-					messageCount: 202,
-					loadedPages: [{ requestCursor: null, count: 202 }],
+					messageCount: 203,
+					loadedPages: [{ requestCursor: null, count: 203 }],
 				}),
 			});
-			expect(result.current.activeSession?.messages).toHaveLength(152);
+			expect(result.current.activeSession?.messages).toHaveLength(153);
 		} finally {
 			dateSpy.mockRestore();
 		}
@@ -1525,16 +1552,30 @@ describe("useAgentChat", () => {
 			vi.mocked(sessionStore.planAgentChatEviction).mockClear();
 
 			await act(async () => {
-				listenCallbacks.get("agent-sdk-message")?.({
+				listenCallbacks.get("agent-turn-prepared")?.({
 					payload: {
-						type: "system",
 						chat_session_id: "s1",
-						message: "new visible message",
+						session: {
+							...(result.current.activeSession ?? chatSession("s1", [])),
+							messages: result.current.activeSession?.messages ?? [],
+						},
+						human_message: {
+							id: "prepared-human-2",
+							role: "human",
+							parts: [{ type: "text", content: "new visible message" }],
+							timestamp: 23456,
+						},
+						agent_message: {
+							id: "prepared-agent-2",
+							role: "agent",
+							parts: [],
+							timestamp: 23457,
+						},
 					},
 				});
 			});
 			await waitFor(() =>
-				expect(result.current.activeSession?.messages).toHaveLength(2),
+				expect(result.current.activeSession?.messages).toHaveLength(3),
 			);
 			await act(async () => {
 				await Promise.resolve();
@@ -1557,11 +1598,25 @@ describe("useAgentChat", () => {
 			vi.mocked(sessionStore.planAgentChatEviction).mockClear();
 
 			await act(async () => {
-				listenCallbacks.get("agent-sdk-message")?.({
+				listenCallbacks.get("agent-turn-prepared")?.({
 					payload: {
-						type: "system",
 						chat_session_id: "s1",
-						message: "first visible message",
+						session: {
+							...(result.current.activeSession ?? chatSession("s1", [])),
+							messages: result.current.activeSession?.messages ?? [],
+						},
+						human_message: {
+							id: "prepared-human-3",
+							role: "human",
+							parts: [{ type: "text", content: "first visible message" }],
+							timestamp: 34567,
+						},
+						agent_message: {
+							id: "prepared-agent-3",
+							role: "agent",
+							parts: [],
+							timestamp: 34568,
+						},
 					},
 				});
 			});
@@ -1571,7 +1626,7 @@ describe("useAgentChat", () => {
 					sessions: expect.arrayContaining([
 						expect.objectContaining({
 							sessionId: "s1",
-							messageCount: 1,
+							messageCount: 2,
 						}),
 					]),
 				});

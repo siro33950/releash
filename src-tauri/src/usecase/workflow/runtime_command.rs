@@ -81,6 +81,7 @@ impl WorkflowRuntimeUsecase {
         self.turn_complete.complete_turn(command).await
     }
 
+    #[allow(dead_code)] // issues-1301 B-3/G-1: retained for workflow step guards around agent turn completion.
     pub async fn is_session_running(&self, chat_session_id: &str) -> bool {
         self.turn_complete.is_session_running(chat_session_id).await
     }

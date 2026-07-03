@@ -25,6 +25,7 @@ import type { DropZoneType } from "@/hooks/useNativeFileDrop";
 import type {
 	AgentEditorContext,
 	AgentEditorSelection,
+	BackendInfo,
 	ChatMessage,
 	ChatSession,
 	DisplayImagePart,
@@ -530,6 +531,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 								key={key}
 								request={part.request}
 								status={part.status}
+								sessionId={sessionId}
 								resolvedAnswers={part.answers}
 								worktreePath={worktreePath}
 								onOpenDiffFile={onOpenDiffFile}
@@ -539,7 +541,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 								onDeny={(id) => respondPermission(id, false)}
 								onAnswer={(id, answers) =>
 									respondPermission(id, true, {
-										...part.request.input,
+										...(part.request.input ?? {}),
 										answers,
 									})
 								}
@@ -584,6 +586,7 @@ export interface ChatSessionViewProps {
 	permissionMode: PermissionMode;
 	planMode: PlanMode;
 	availableModels: ModelInfo[];
+	backends: BackendInfo[];
 	selectedModel: string;
 	pendingQueue: QueuedAgentTurn[];
 	runtimeSlashCommands?: SlashCommand[];
@@ -652,6 +655,7 @@ export function ChatSessionView({
 	permissionMode,
 	planMode,
 	availableModels,
+	backends,
 	selectedModel,
 	pendingQueue,
 	runtimeSlashCommands = [],
@@ -1708,6 +1712,7 @@ export function ChatSessionView({
 					planMode={planMode}
 					onPlanModeChange={onPlanModeChange}
 					models={availableModels}
+					backends={backends}
 					currentModelId={selectedModel}
 					onModelChange={onModelChange}
 					currentBackendId={selectedBackendId}

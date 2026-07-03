@@ -10,7 +10,6 @@ import type {
 	MentionReference,
 	PermissionMode,
 } from "@/types/session";
-import { getModelInfoId } from "@/types/session";
 import { ChatSessionView } from "./ChatSessionView";
 
 interface BoundSessionChatProps {
@@ -70,10 +69,11 @@ export function BoundSessionChat({
 		getSessionTurnPhase,
 		getSessionInterrupting,
 		getSessionSelectedModel,
+		getSessionCanChangeBackend,
 		getSessionPendingQueue = () => [],
 		getSessionRuntimeSlashCommands = () => [],
 		availableModels,
-		availableModelsByBackend,
+		backends,
 		error,
 		sendMessage,
 		interrupt,
@@ -189,23 +189,12 @@ export function BoundSessionChat({
 
 	if (!session) return null;
 
-	// 契約: Rust から届いた後の selected_model は常に非 null。session meta が
-	// 反映される前の transient な null は、デフォルト（固定リスト先頭 = 表示中
-	// backend の available models[0]）に解決して常に string を伝播する。
-	const defaultSelectedModel =
-		session.backendId == null
-			? availableModels[0]
-			: availableModelsByBackend[session.backendId]?.[0];
-	const selectedModel =
-		getSessionSelectedModel(session.id) ??
-		(defaultSelectedModel ? getModelInfoId(defaultSelectedModel) : "");
+	const selectedModel = getSessionSelectedModel(session.id) ?? "";
+	const canChangeBackend = getSessionCanChangeBackend(session.id);
 	const pendingQueue = getSessionPendingQueue(session.id);
 	const runtimeSlashCommands = getSessionRuntimeSlashCommands(session.id);
 	const permissionMode = getSessionPermissionMode(session.id);
 	const planMode = getSessionPlanMode(session.id);
-	const canChangeBackend =
-		session.messages.length === 0 && !session.agentSessionId && !isStreaming;
-
 	return (
 		<ChatSessionView
 			key={session.id}
@@ -217,6 +206,7 @@ export function BoundSessionChat({
 			permissionMode={permissionMode}
 			planMode={planMode}
 			availableModels={availableModels}
+			backends={backends}
 			selectedModel={selectedModel}
 			pendingQueue={pendingQueue}
 			runtimeSlashCommands={runtimeSlashCommands}

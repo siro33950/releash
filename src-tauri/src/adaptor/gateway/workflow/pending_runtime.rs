@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 
 use super::runtime_engine_impl::WorkflowRuntimeService;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::route_context::CommandCommitContext;
 use crate::adaptor::gateway::workflow::runtime_state::ApprovalDecision as RuntimeApprovalDecision;
-use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::SessionStore;
 
 #[allow(clippy::too_many_arguments)]
@@ -38,7 +37,7 @@ pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         decision: RuntimeApprovalDecision,
         approval_comment: Option<String>,
@@ -50,7 +49,7 @@ pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         expected_node_name: Option<&str>,
         commit_context: Option<CommandCommitContext>,
@@ -60,7 +59,7 @@ pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: String,
         contract: String,
@@ -132,7 +131,7 @@ where
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         decision: RuntimeApprovalDecision,
         approval_comment: Option<String>,
@@ -143,7 +142,7 @@ where
             .resolve_workflow_approval_with_commit_context(
                 app,
                 session_store,
-                handles,
+                agent_runtime,
                 run_id,
                 decision,
                 approval_comment,
@@ -157,7 +156,7 @@ where
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         expected_node_name: Option<&str>,
         commit_context: Option<CommandCommitContext>,
@@ -166,7 +165,7 @@ where
             .abort_workflow_run_with_commit_context(
                 app,
                 session_store,
-                handles,
+                agent_runtime,
                 run_id,
                 expected_node_name,
                 commit_context,
@@ -178,7 +177,7 @@ where
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: String,
         contract: String,
@@ -190,7 +189,7 @@ where
             .submit_workflow_output(
                 app,
                 session_store,
-                handles,
+                agent_runtime,
                 run_id,
                 step_name,
                 contract,
@@ -274,7 +273,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         decision: RuntimeApprovalDecision,
         approval_comment: Option<String>,
@@ -285,7 +284,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
             self,
             app,
             session_store,
-            handles,
+            agent_runtime,
             run_id,
             decision,
             approval_comment,
@@ -299,7 +298,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         expected_node_name: Option<&str>,
         commit_context: Option<CommandCommitContext>,
@@ -308,7 +307,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
             self,
             app,
             session_store,
-            handles,
+            agent_runtime,
             run_id,
             expected_node_name,
             commit_context,
@@ -320,7 +319,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: String,
         contract: String,
@@ -332,7 +331,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
             self,
             app,
             session_store,
-            handles,
+            agent_runtime,
             run_id,
             step_name,
             contract,

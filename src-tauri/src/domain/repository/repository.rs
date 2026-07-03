@@ -102,6 +102,7 @@ pub trait GitConfigRepository: Send + Sync {
     /// `RELEASH_BASE_BRANCH` 用）。`resolve_current_base_branch` の解決結果に加え、
     /// base が local/remote ref として実在し、かつ現在 HEAD と merge-base が計算できる
     /// ことを検証する。解決不可・detached・unborn・ref 不在・merge-base 不成立は `None`。
+    #[allow(dead_code)] // issues-1301 D-5/G-1: retained for agent child-env base branch propagation.
     fn resolve_effective_base_branch(
         &self,
         repo_path: &str,

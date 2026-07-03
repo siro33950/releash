@@ -1,0 +1,157 @@
+use std::time::{Duration, Instant};
+
+use super::session_state::RuntimeSessionPhase;
+use crate::usecase::agent_session::session::ChatSession;
+
+const DEFAULT_STALE_TIMEOUT: Duration = Duration::from_secs(180);
+const MAX_STALE_TIMEOUT: Duration = Duration::from_secs(1_800);
+
+pub(crate) const STALE_TIMEOUT_MESSAGE: &str =
+    "エージェントの応答が停止したため中断しました。もう一度お試しください。";
+#[cfg(not(test))]
+pub(crate) const STALE_CLOSE_GRACE: Duration = Duration::from_secs(10);
+#[cfg(test)]
+pub(crate) const STALE_CLOSE_GRACE: Duration = Duration::from_millis(10);
+
+pub(crate) fn stale_timeout_for_session(session: &ChatSession) -> Duration {
+    timeout_from_secs(
+        session
+            .workflow_step_context
+            .as_ref()
+            .and_then(|context| context.stale_timeout_secs),
+    )
+}
+
+pub(crate) fn timeout_from_secs(value: Option<u64>) -> Duration {
+    value
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_STALE_TIMEOUT)
+        .min(MAX_STALE_TIMEOUT)
+}
+
+pub(crate) fn turn_is_stale(
+    phase: RuntimeSessionPhase,
+    expected_generation: u64,
+    actual_generation: u64,
+    last_progress_at: Option<Instant>,
+    timeout: Duration,
+    now: Instant,
+) -> bool {
+    phase == RuntimeSessionPhase::Streaming
+        && expected_generation == actual_generation
+        && last_progress_at
+            .map(|last_progress_at| now.duration_since(last_progress_at) >= timeout)
+            .unwrap_or(false)
+}
+
+pub(crate) fn stale_watchdog_should_continue_waiting(
+    phase: RuntimeSessionPhase,
+    expected_generation: u64,
+    actual_generation: u64,
+) -> bool {
+    expected_generation == actual_generation
+        && matches!(
+            phase,
+            RuntimeSessionPhase::Streaming | RuntimeSessionPhase::WaitingPermission
+        )
+}
+
+pub(crate) fn remaining_until_stale(
+    last_progress_at: Option<Instant>,
+    timeout: Duration,
+    now: Instant,
+) -> Option<Duration> {
+    let elapsed = now.duration_since(last_progress_at?);
+    Some(timeout.saturating_sub(elapsed))
+}
+
+pub(crate) fn startup_timeout_for_session(session: &ChatSession) -> Option<Duration> {
+    session
+        .workflow_step_context
+        .as_ref()
+        .and_then(|context| context.startup_timeout_secs)
+        .map(Duration::from_secs)
+}
+
+pub(crate) fn startup_max_retries_for_session(session: &ChatSession) -> Option<u32> {
+    session
+        .workflow_step_context
+        .as_ref()
+        .and_then(|context| context.startup_max_retries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stale_timeout_未指定は既定値を返す() {
+        // Given: workflow context does not define a stale timeout.
+        // When: resolving the runtime stale timeout.
+        let timeout = timeout_from_secs(None);
+
+        // Then: the design default is used.
+        assert_eq!(timeout, Duration::from_secs(180));
+    }
+
+    #[test]
+    fn test_stale_timeout_上限を超える値は一八〇〇秒へ丸める() {
+        // Given: a workflow context requests a timeout above the cap.
+        // When: resolving the runtime stale timeout.
+        let timeout = timeout_from_secs(Some(9_999));
+
+        // Then: the design cap is applied.
+        assert_eq!(timeout, Duration::from_secs(1_800));
+    }
+
+    #[test]
+    fn test_turn_is_stale_streamingかつ同一世代で超過した場合のみtrue() {
+        // Given: a streaming turn whose last progress is older than the timeout.
+        let last_progress_at = Instant::now() - Duration::from_secs(10);
+
+        // When / Then: only the matching generation streaming turn is stale.
+        assert!(turn_is_stale(
+            RuntimeSessionPhase::Streaming,
+            7,
+            7,
+            Some(last_progress_at),
+            Duration::from_secs(5),
+            Instant::now(),
+        ));
+        assert!(!turn_is_stale(
+            RuntimeSessionPhase::Idle,
+            7,
+            7,
+            Some(last_progress_at),
+            Duration::from_secs(5),
+            Instant::now(),
+        ));
+        assert!(!turn_is_stale(
+            RuntimeSessionPhase::Streaming,
+            7,
+            8,
+            Some(last_progress_at),
+            Duration::from_secs(5),
+            Instant::now(),
+        ));
+    }
+
+    #[test]
+    fn test_stale_watchdog_should_continue_waiting_permission() {
+        assert!(stale_watchdog_should_continue_waiting(
+            RuntimeSessionPhase::WaitingPermission,
+            1,
+            1,
+        ));
+        assert!(!stale_watchdog_should_continue_waiting(
+            RuntimeSessionPhase::Idle,
+            1,
+            1,
+        ));
+        assert!(!stale_watchdog_should_continue_waiting(
+            RuntimeSessionPhase::WaitingPermission,
+            1,
+            2,
+        ));
+    }
+}

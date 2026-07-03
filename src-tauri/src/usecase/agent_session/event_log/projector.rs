@@ -5,9 +5,11 @@ use super::events::{
 };
 use super::finalization::has_unresolved_permissions;
 use super::part_events::{permission_request_id, permission_tool_use_id};
+use crate::domain::agent_session::entities::ToolResultUpdate;
 use crate::usecase::agent_session::session::{
-    apply_tool_result_update, parts_to_legacy, ChatMessage, MessagePart, MessageRole, SessionState,
-    SystemNotificationType, TodoListItem, ToolOutputRef, ToolOutputSummary, ToolResultUpdate,
+    apply_tool_result_update, parts_to_legacy, ChatMessage, MessagePart, MessageRole,
+    PermissionPartStatus, PermissionRequestMsg, SessionState, SystemNotificationType, TodoListItem,
+    ToolOutputRef, ToolOutputSummary,
 };
 use crate::usecase::agent_session::status::TurnPhase;
 
@@ -44,6 +46,8 @@ pub struct SessionReadModel {
     pub messages: Vec<ChatMessage>,
     pub status: ProjectedStatus,
     pub workflow_turn_complete: Option<WorkflowTurnCompleteInput>,
+    #[allow(dead_code)]
+    // issues-1301 B-5/E-1: retry projection is retained for tool retry surface while runtime events are fully migrated.
     pub tool_retries: Vec<ToolRetryProjection>,
 }
 
@@ -258,7 +262,7 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                     push_or_update_permission(
                         &mut turn.assistant_parts,
                         request.clone(),
-                        "pending",
+                        PermissionPartStatus::Pending,
                         None,
                         tool_use_id.clone(),
                     );
@@ -632,8 +636,8 @@ fn push_or_update_tool_result(
             is_error,
             tool_use_id: Some(tool_use_id.to_string()),
             parent_tool_use_id,
-            content_ref,
-            summary,
+            content_ref: content_ref.map(Into::into),
+            summary: summary.map(Into::into),
         },
     );
 }
@@ -651,8 +655,8 @@ fn parent_tool_use_id_for_tool(parts: &[MessagePart], tool_use_id: &str) -> Opti
 
 fn push_or_update_permission(
     parts: &mut Vec<MessagePart>,
-    request: serde_json::Value,
-    status: &str,
+    request: PermissionRequestMsg,
+    status: PermissionPartStatus,
     answers: Option<serde_json::Value>,
     tool_use_id: Option<String>,
 ) {
@@ -669,7 +673,7 @@ fn push_or_update_permission(
     }) {
         *existing = MessagePart::Permission {
             request,
-            status: status.to_string(),
+            status,
             answers,
             parent_tool_use_id: tool_use_id,
         };
@@ -677,7 +681,7 @@ fn push_or_update_permission(
     }
     parts.push(MessagePart::Permission {
         request,
-        status: status.to_string(),
+        status,
         answers,
         parent_tool_use_id: tool_use_id,
     });
@@ -703,7 +707,8 @@ fn resolve_permission(
         }
         _ => false,
     }) {
-        *status = decision.status().to_string();
+        *status = PermissionPartStatus::from_wire(decision.status())
+            .unwrap_or(PermissionPartStatus::Denied);
         *existing_answers = answers;
     }
 }
@@ -823,7 +828,7 @@ fn project_status(
     if let Some(terminal) = terminal_by_turn.get(&turn_id) {
         return match terminal {
             TerminalEvent::Completed { exit_code, .. } if *exit_code == 0 => ProjectedStatus {
-                session_state: SessionState::Idle,
+                session_state: SessionState::Done,
                 turn_phase: TurnPhase::Idle,
             },
             TerminalEvent::Completed { .. } => ProjectedStatus {

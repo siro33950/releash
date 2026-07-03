@@ -177,15 +177,10 @@ describe("session paging", () => {
 		expect(response).toBe(plan);
 	});
 
-	it("sendWorkflowApprovalChatMessage forwards clientSentAtMs", async () => {
+	it("sendWorkflowApprovalChatMessage omits client timing args", async () => {
 		vi.mocked(invoke).mockResolvedValueOnce(makeRawSendMessageResponse());
-		const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_700_000);
 
-		try {
-			await sendWorkflowApprovalChatMessage("run-1", "approve", "edit", false);
-		} finally {
-			nowSpy.mockRestore();
-		}
+		await sendWorkflowApprovalChatMessage("run-1", "approve", "edit", false);
 
 		expect(invoke).toHaveBeenCalledWith("send_workflow_approval_chat_message", {
 			runId: "run-1",
@@ -194,30 +189,24 @@ describe("session paging", () => {
 			planMode: false,
 			images: undefined,
 			mentions: undefined,
-			clientSentAtMs: 1_700_000,
 		});
 	});
 
-	it("sendAgentMessage forwards clientSentAtMs", async () => {
+	it("sendAgentMessage omits client timing args", async () => {
 		vi.mocked(invoke).mockResolvedValueOnce(makeRawSendMessageResponse());
-		const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_700_123);
 
-		try {
-			await sendAgentMessage(
-				"s1",
-				"/repo",
-				"hello",
-				"edit",
-				false,
-				"claude",
-				[],
-				[],
-				undefined,
-				"claude-sonnet-4-6",
-			);
-		} finally {
-			nowSpy.mockRestore();
-		}
+		await sendAgentMessage(
+			"s1",
+			"/repo",
+			"hello",
+			"edit",
+			false,
+			"claude",
+			[],
+			[],
+			undefined,
+			"claude-sonnet-4-6",
+		);
 
 		expect(invoke).toHaveBeenCalledWith("send_agent_message", {
 			chatSessionId: "s1",
@@ -229,7 +218,6 @@ describe("session paging", () => {
 			modelId: "claude-sonnet-4-6",
 			images: undefined,
 			mentions: undefined,
-			clientSentAtMs: 1_700_123,
 		});
 	});
 });

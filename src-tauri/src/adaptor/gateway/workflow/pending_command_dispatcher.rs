@@ -5,8 +5,6 @@
 
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
-
 use crate::adaptor::gateway::workflow::engine_error::{
     should_commit_rejected_external_request, WorkflowEngineError,
 };
@@ -18,7 +16,7 @@ use crate::adaptor::gateway::workflow::route_context::{
     CommandCommitContext, WorkflowMutationContext, WorkflowMutationSource,
 };
 use crate::adaptor::gateway::workflow::runtime_state::ApprovalDecision as RuntimeApprovalDecision;
-use crate::infrastructure::agent_session::runtime::AgentProcessMap;
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::SessionStore;
 
 use super::pending_runtime::PendingCommandRuntime;
@@ -34,7 +32,7 @@ pub(crate) async fn process_pending_command_entry<R, E>(
     app: &tauri::AppHandle<R>,
     engine: &E,
     session_store: &Arc<SessionStore>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
+    agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
     store: &PendingCommandStore,
     entry: PendingCommandEntry,
 ) where
@@ -56,7 +54,7 @@ pub(crate) async fn process_pending_command_entry<R, E>(
         app,
         engine,
         session_store,
-        handles,
+        agent_runtime,
         claimed.entry.command.clone(),
     )
     .await
@@ -96,7 +94,7 @@ pub(crate) async fn dispatch_pending_command<R, E>(
     app: &tauri::AppHandle<R>,
     engine: &E,
     session_store: &Arc<SessionStore>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
+    agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
     pending: PendingCommand,
 ) -> PendingCommandDispatchOutcome
 where
@@ -175,7 +173,7 @@ where
         app,
         engine,
         session_store,
-        handles,
+        agent_runtime,
         &run_id,
         dispatch_payload,
         commit_context.clone(),
@@ -197,7 +195,7 @@ async fn dispatch_runtime_payload<R, E>(
     app: &tauri::AppHandle<R>,
     engine: &E,
     session_store: &Arc<SessionStore>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
+    agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
     run_id: &str,
     payload: PendingRuntimeDispatchPayload,
     commit_context: CommandCommitContext,
@@ -218,7 +216,7 @@ where
                 .resolve_workflow_approval_with_commit_context(
                     app,
                     session_store,
-                    handles,
+                    agent_runtime,
                     run_id,
                     decision,
                     approval_comment,
@@ -232,7 +230,7 @@ where
                 .abort_workflow_run_with_commit_context(
                     app,
                     session_store,
-                    handles,
+                    agent_runtime,
                     run_id,
                     expected_node_name.as_deref(),
                     Some(commit_context),
@@ -248,7 +246,7 @@ where
                 .submit_workflow_output(
                     app,
                     session_store,
-                    handles,
+                    agent_runtime,
                     run_id,
                     step_name,
                     contract,
@@ -496,7 +494,7 @@ mod tests {
             &self,
             _app: &tauri::AppHandle<tauri::test::MockRuntime>,
             _session_store: &Arc<SessionStore>,
-            _handles: &Arc<Mutex<AgentProcessMap>>,
+            _agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
             run_id: &str,
             decision: RuntimeApprovalDecision,
             approval_comment: Option<String>,
@@ -523,7 +521,7 @@ mod tests {
             &self,
             _app: &tauri::AppHandle<tauri::test::MockRuntime>,
             _session_store: &Arc<SessionStore>,
-            _handles: &Arc<Mutex<AgentProcessMap>>,
+            _agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
             run_id: &str,
             expected_node_name: Option<&str>,
             commit_context: Option<CommandCommitContext>,
@@ -540,7 +538,7 @@ mod tests {
             &self,
             _app: &tauri::AppHandle<tauri::test::MockRuntime>,
             _session_store: &Arc<SessionStore>,
-            _handles: &Arc<Mutex<AgentProcessMap>>,
+            _agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
             run_id: &str,
             step_name: String,
             contract: String,
@@ -611,12 +609,17 @@ mod tests {
 
     fn make_dispatch_deps() -> (
         Arc<crate::usecase::agent_session::session::SessionStore>,
-        Arc<Mutex<AgentProcessMap>>,
+        Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
     ) {
-        (
-            Arc::new(crate::test_support::build_session_store()),
-            Arc::new(Mutex::new(AgentProcessMap::new())),
-        )
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let data_dir = std::env::temp_dir().join(format!(
+            "releash-pending-dispatcher-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let runtime =
+            crate::test_support::build_agent_runtime_usecase(session_store.clone(), data_dir);
+        (session_store, runtime)
     }
 
     fn make_pending_store_dir() -> TempDir {
@@ -680,7 +683,7 @@ mod tests {
     async fn dispatch_pending_approve_records_cli_request_after_engine_acceptance() {
         let app = make_dispatch_app();
         let runtime = FakePendingRuntime::default();
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, agent_runtime) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
 
         let pending = PendingCommand::new(
@@ -692,9 +695,14 @@ mod tests {
             900.0,
         );
 
-        let result =
-            dispatch_pending_command(app.handle(), &runtime, &session_store, &handles, pending)
-                .await;
+        let result = dispatch_pending_command(
+            app.handle(),
+            &runtime,
+            &session_store,
+            &agent_runtime,
+            pending,
+        )
+        .await;
         assert_eq!(result, PendingCommandDispatchOutcome::Accepted);
 
         let calls = runtime.approval_calls.lock().unwrap();
@@ -726,7 +734,7 @@ mod tests {
         ));
         let temp_dir = make_pending_store_dir();
         let data_dir = temp_dir.path().to_path_buf();
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, agent_runtime) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
 
         let store = PendingCommandStore::new(&data_dir);
@@ -745,7 +753,7 @@ mod tests {
             app.handle(),
             &runtime,
             &session_store,
-            &handles,
+            &agent_runtime,
             &store,
             entry.clone(),
         )
@@ -759,7 +767,7 @@ mod tests {
             app.handle(),
             &runtime,
             &session_store,
-            &handles,
+            &agent_runtime,
             &store,
             entry,
         )
@@ -776,7 +784,7 @@ mod tests {
         ));
         let temp_dir = make_pending_store_dir();
         let data_dir = temp_dir.path().to_path_buf();
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, agent_runtime) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
 
         let store = PendingCommandStore::new(&data_dir);
@@ -795,7 +803,7 @@ mod tests {
             app.handle(),
             &runtime,
             &session_store,
-            &handles,
+            &agent_runtime,
             &store,
             entry,
         )
@@ -810,7 +818,7 @@ mod tests {
     async fn dispatch_pending_reject_preserves_cli_reason_but_redacts_approval_event_comment() {
         let app = make_dispatch_app();
         let runtime = FakePendingRuntime::default();
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, agent_runtime) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
 
         let raw_reason = "reject because password=secret123".to_string();
@@ -823,9 +831,14 @@ mod tests {
             905.0,
         );
 
-        let result =
-            dispatch_pending_command(app.handle(), &runtime, &session_store, &handles, pending)
-                .await;
+        let result = dispatch_pending_command(
+            app.handle(),
+            &runtime,
+            &session_store,
+            &agent_runtime,
+            pending,
+        )
+        .await;
         assert_eq!(result, PendingCommandDispatchOutcome::Accepted);
 
         let calls = runtime.approval_calls.lock().unwrap();
@@ -856,7 +869,7 @@ mod tests {
     async fn dispatch_pending_submit_output_appends_event_with_caller_metadata() {
         let app = make_dispatch_app();
         let runtime = FakePendingRuntime::default();
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, agent_runtime) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
 
         let pending = PendingCommand::new(
@@ -870,9 +883,14 @@ mod tests {
         );
         let pending_id = pending.id.clone();
 
-        let result =
-            dispatch_pending_command(app.handle(), &runtime, &session_store, &handles, pending)
-                .await;
+        let result = dispatch_pending_command(
+            app.handle(),
+            &runtime,
+            &session_store,
+            &agent_runtime,
+            pending,
+        )
+        .await;
         assert_eq!(result, PendingCommandDispatchOutcome::Accepted);
 
         let calls = runtime.submit_calls.lock().unwrap();
@@ -902,7 +920,7 @@ mod tests {
             "contract mismatch: step 'review' expects 'review-verdict', got 'spec-directory'"
                 .to_string(),
         ));
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, agent_runtime) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
 
         let pending = PendingCommand::new(
@@ -916,9 +934,14 @@ mod tests {
         );
         let pending_id = pending.id.clone();
 
-        let result =
-            dispatch_pending_command(app.handle(), &runtime, &session_store, &handles, pending)
-                .await;
+        let result = dispatch_pending_command(
+            app.handle(),
+            &runtime,
+            &session_store,
+            &agent_runtime,
+            pending,
+        )
+        .await;
         assert!(matches!(
             result,
             PendingCommandDispatchOutcome::RejectedFinal(_)
@@ -953,7 +976,7 @@ mod tests {
         runtime.reject_next_approval(WorkflowEngineError::InvalidState(
             "Step 'review' does not allow reject".to_string(),
         ));
-        let (session_store, handles) = make_dispatch_deps();
+        let (session_store, agent_runtime) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
 
         let pending = PendingCommand::new(
@@ -965,9 +988,14 @@ mod tests {
             970.0,
         );
 
-        let result =
-            dispatch_pending_command(app.handle(), &runtime, &session_store, &handles, pending)
-                .await;
+        let result = dispatch_pending_command(
+            app.handle(),
+            &runtime,
+            &session_store,
+            &agent_runtime,
+            pending,
+        )
+        .await;
         assert!(matches!(
             result,
             PendingCommandDispatchOutcome::RejectedFinal(_)

@@ -1,4 +1,5 @@
 pub(crate) mod context_replacement;
+pub(crate) mod skill_frontmatter;
 
 use super::SkillEntry;
 
@@ -6,6 +7,7 @@ pub(crate) use context_replacement::{
     dedup_instructions, latest_revisions_by_kind, next_epoch_for_identity,
     normalize_path_components, replacement_action, snapshot_is_stale,
 };
+pub(crate) use skill_frontmatter::parse_skill_frontmatter;
 
 /// Maximum image size in bytes (5 MiB).
 /// Anthropic Messages API limits base64-encoded images to roughly 5 MB.

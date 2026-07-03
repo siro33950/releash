@@ -89,21 +89,15 @@ impl AgentConfigRepository for AppConfig {
             .map_err(AppConfigError::Repository)
     }
 
-    fn models_for_backend(&self, backend_id: &str) -> Result<Vec<String>, AppConfigError> {
+    fn cli_path_for(&self, backend_id: &str) -> Result<Option<String>, AppConfigError> {
         let config = self.get_config().map_err(AppConfigError::Repository)?;
         match backend_id {
-            "claude" => Ok(config.agents.claude.models),
-            "codex" => Ok(config.agents.codex.models),
+            "claude" => Ok(config.agents.claude.cli_path),
+            "codex" => Ok(config.agents.codex.cli_path),
             _ => Err(AppConfigError::InvalidInput(format!(
-                "config schema にバックエンド '{backend_id}' のモデル一覧が存在しません"
+                "config schema にバックエンド '{backend_id}' の CLI path が存在しません"
             ))),
         }
-    }
-
-    fn codex_cli_path(&self) -> Result<Option<String>, AppConfigError> {
-        self.get_config()
-            .map(|config| config.agents.codex.cli_path)
-            .map_err(AppConfigError::Repository)
     }
 }
 
@@ -1163,6 +1157,7 @@ token = "existing_token_value_here_with_enough_length_!!"
     fn agents_section_defaults() {
         let agents = AgentsSection::default();
         assert!(agents.default.is_none());
+        assert!(agents.claude.cli_path.is_none());
         assert!(agents.codex.cli_path.is_none());
     }
 
@@ -1200,6 +1195,24 @@ token = "existing_token_value_here_with_enough_length_!!"
     }
 
     #[test]
+    fn agents_claude_cli_path_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.agents.claude.cli_path = Some("/opt/bin/claude".to_string());
+        write_config(&path, &config).unwrap();
+
+        let reloaded = fs::read_to_string(&path).unwrap();
+        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
+        assert_eq!(
+            reloaded.agents.claude.cli_path,
+            Some("/opt/bin/claude".to_string())
+        );
+    }
+
+    #[test]
     fn existing_config_without_agents_gets_defaults() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
@@ -1218,29 +1231,29 @@ token = "existing_token_value_here_with_enough_length_!!"
     }
 
     #[test]
-    fn models_for_backend_returns_persisted_values() {
+    fn legacy_agent_models_fields_deserialize_but_do_not_affect_repository_model_resolution() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
-        let mut config = ReleashConfig::default();
-        config.agents.claude.models = vec!["a".to_string(), "b".to_string()];
-        config.agents.codex.models = vec!["c".to_string()];
+        let config: ReleashConfig = toml::from_str(
+            r#"
+[agents]
+default = "claude"
+
+[agents.claude]
+models = ["legacy-claude"]
+
+[agents.codex]
+models = ["legacy-codex"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.agents.claude.models, vec!["legacy-claude"]);
+        assert_eq!(config.agents.codex.models, vec!["legacy-codex"]);
         let app_config = AppConfig::new(config, path);
 
         assert_eq!(
-            app_config.models_for_backend("claude").unwrap(),
-            vec!["a".to_string(), "b".to_string()]
+            app_config.default_agent_backend().unwrap(),
+            Some("claude".to_string())
         );
-        assert_eq!(
-            app_config.models_for_backend("codex").unwrap(),
-            vec!["c".to_string()]
-        );
-    }
-
-    #[test]
-    fn models_for_backend_errors_for_unknown_backend() {
-        let dir = TempDir::new().unwrap();
-        let path = config_path(&dir);
-        let app_config = AppConfig::new(ReleashConfig::default(), path);
-        assert!(app_config.models_for_backend("unknown").is_err());
     }
 }

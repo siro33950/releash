@@ -2,9 +2,12 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use crate::infrastructure::agent_session::runtime::{AgentBackendRegistry, BackendListResult};
+use crate::usecase::agent_session::backend_registry::BackendListResult;
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 
 #[tauri::command]
-pub fn list_agent_backends(registry: State<'_, Arc<AgentBackendRegistry>>) -> BackendListResult {
-    crate::infrastructure::agent_session::runtime::list_agent_backends(registry)
+pub fn list_agent_backends(
+    runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
+) -> BackendListResult {
+    runtime.list_backends()
 }

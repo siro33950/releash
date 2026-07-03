@@ -235,6 +235,13 @@ mod tests {
             Ok(None)
         }
 
+        fn session_titles(
+            &self,
+            _app_data_dir: &Path,
+        ) -> Result<std::collections::HashMap<String, String>, String> {
+            Ok(std::collections::HashMap::new())
+        }
+
         fn get_session_meta(
             &self,
             _app_data_dir: &Path,
@@ -252,7 +259,7 @@ mod tests {
                 plan_mode: false,
                 selected_model: None,
                 permission_profile_id: None,
-                backend_id: Some("claude".to_string()),
+                backend_id: "claude".to_string(),
                 workflow_step_session: false,
                 workflow_step_context: None,
                 workflow_instructions: Vec::new(),

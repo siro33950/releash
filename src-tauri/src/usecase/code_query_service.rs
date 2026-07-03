@@ -39,16 +39,6 @@ pub trait BranchDiffQuery: Send + Sync {
     ) -> Result<BranchDiffSummaryDto, crate::domain::code::CodeError>;
 }
 
-#[async_trait::async_trait]
-pub trait CodexFuzzyFileSearchGateway: Send + Sync {
-    async fn search_files(
-        &self,
-        worktree_path: &str,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<String>, crate::domain::code::CodeError>;
-}
-
 /// read model 構築・純粋算出を担う読み取りクエリサービス。
 #[derive(Clone)]
 pub struct CodeQueryService {
@@ -57,7 +47,6 @@ pub struct CodeQueryService {
     branch_diff: Arc<dyn BranchDiffQuery>,
     mention: Arc<dyn MentionRepository>,
     branch_base: Arc<dyn BranchBaseResolver>,
-    codex_fuzzy_file_search: Arc<dyn CodexFuzzyFileSearchGateway>,
 }
 
 impl CodeQueryService {
@@ -67,7 +56,6 @@ impl CodeQueryService {
         branch_diff: Arc<dyn BranchDiffQuery>,
         mention: Arc<dyn MentionRepository>,
         branch_base: Arc<dyn BranchBaseResolver>,
-        codex_fuzzy_file_search: Arc<dyn CodexFuzzyFileSearchGateway>,
     ) -> Self {
         Self {
             file_content,
@@ -75,7 +63,6 @@ impl CodeQueryService {
             branch_diff,
             mention,
             branch_base,
-            codex_fuzzy_file_search,
         }
     }
 
@@ -132,6 +119,7 @@ impl CodeQueryService {
     }
 
     /// 現在ブランチの実効 base 名（ref 実在検証あり）。agent bridge の env 伝搬向け。
+    #[allow(dead_code)] // issues-1301 D-5/G-1: retained for agent child-env base branch propagation.
     pub fn resolve_effective_base_branch_name(
         &self,
         path_hint: &str,
@@ -398,20 +386,9 @@ impl CodeQueryService {
         Ok(self.mention.list_mentionable_files(worktree_path, query)?)
     }
 
-    pub async fn read_codex_mentionable_files(
-        &self,
-        worktree_path: &str,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<String>, CodeUsecaseError> {
-        Ok(self
-            .codex_fuzzy_file_search
-            .search_files(worktree_path, query, limit)
-            .await?)
-    }
-
     /// 構造化メンション参照を解決し file_context を前置する。失敗時のフォールバック方針は
     /// 呼び出し元（`CodeUsecase`）が決めるため、ここでは解決結果／エラーをそのまま返す。
+    #[allow(dead_code)] // issues-1301 F-3/G-1: retained for Rust-owned mention expansion from prompt inputs.
     pub fn resolve_mentions(
         &self,
         worktree_path: &str,
@@ -700,19 +677,6 @@ mod code_query_service_tests {
         }
     }
 
-    struct FakeCodexFuzzyFileSearch;
-    #[async_trait::async_trait]
-    impl CodexFuzzyFileSearchGateway for FakeCodexFuzzyFileSearch {
-        async fn search_files(
-            &self,
-            _worktree_path: &str,
-            _query: &str,
-            _limit: usize,
-        ) -> Result<Vec<String>, CodeError> {
-            Ok(vec!["src/main.rs".to_string()])
-        }
-    }
-
     fn service() -> CodeQueryService {
         CodeQueryService::new(
             Arc::new(FakeFileContent),
@@ -720,7 +684,6 @@ mod code_query_service_tests {
             Arc::new(FakeBranchDiff),
             Arc::new(FakeMention),
             Arc::new(FakeBranchBase),
-            Arc::new(FakeCodexFuzzyFileSearch),
         )
     }
 

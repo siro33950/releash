@@ -45,6 +45,7 @@ export interface AgentChatState {
 	pendingQueues: Record<string, QueuedAgentTurn[]>;
 	latestTokenUsage: Record<string, TokenUsage | null>;
 	runtimeSlashCommands: Record<string, SlashCommand[]>;
+	canChangeBackend: Record<string, boolean>;
 	availableModels: ModelInfo[];
 	availableModelsByBackend: Record<string, ModelInfo[]>;
 	sessionModels: Record<string, string>;
@@ -107,6 +108,11 @@ export type AgentChatAction =
 			type: "SET_RUNTIME_SLASH_COMMANDS";
 			sessionId: string;
 			commands: SlashCommand[];
+	  }
+	| {
+			type: "SET_CAN_CHANGE_BACKEND";
+			sessionId: string;
+			value: boolean;
 	  }
 	| {
 			type: "REMOVE_PENDING_QUEUE_ITEM";
@@ -611,6 +617,8 @@ export function reducer(
 				state.latestTokenUsage;
 			const { [action.sessionId]: _rsc, ...restRuntimeSlashCommands } =
 				state.runtimeSlashCommands;
+			const { [action.sessionId]: _cbe, ...restCanChangeBackend } =
+				state.canChangeBackend;
 			const { [action.sessionId]: _sm, ...restSessionModels } =
 				state.sessionModels;
 			const { [action.sessionId]: _perm, ...restSessionPermissionModes } =
@@ -627,6 +635,7 @@ export function reducer(
 				pendingQueues: restPendingQueues,
 				latestTokenUsage: restLatestTokenUsage,
 				runtimeSlashCommands: restRuntimeSlashCommands,
+				canChangeBackend: restCanChangeBackend,
 				sessionModels: restSessionModels,
 				sessionPermissionModes: restSessionPermissionModes,
 				sessionPlanModes: restSessionPlanModes,
@@ -668,6 +677,15 @@ export function reducer(
 				selectedBackendId: action.backendId,
 			};
 		}
+		case "SET_CAN_CHANGE_BACKEND": {
+			return {
+				...state,
+				canChangeBackend: {
+					...state.canChangeBackend,
+					[action.sessionId]: action.value,
+				},
+			};
+		}
 	}
 }
 
@@ -688,6 +706,7 @@ export const INITIAL_STATE: AgentChatState = {
 	pendingQueues: {},
 	latestTokenUsage: {},
 	runtimeSlashCommands: {},
+	canChangeBackend: {},
 	availableModels: [],
 	availableModelsByBackend: {},
 	sessionModels: {},

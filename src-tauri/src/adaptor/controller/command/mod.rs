@@ -307,8 +307,6 @@ mod tests {
             "query_worktree_step_statuses",
             "sync_worktree_step_statuses",
             "query_notion_tasks",
-            "read_codex_mentionable_files",
-            "read_codex_skill_catalog",
             "reconcile_pty_sessions",
             "register_active_terminal",
             "remove_repo_path",

@@ -12,8 +12,7 @@ pub trait ConfigRepository: Send + Sync {
 
 pub trait AgentConfigRepository: Send + Sync {
     fn default_agent_backend(&self) -> Result<Option<String>, AppConfigError>;
-    fn models_for_backend(&self, backend_id: &str) -> Result<Vec<String>, AppConfigError>;
-    fn codex_cli_path(&self) -> Result<Option<String>, AppConfigError>;
+    fn cli_path_for(&self, backend_id: &str) -> Result<Option<String>, AppConfigError>;
 }
 
 pub trait ConfigSecretRepository: Send + Sync {

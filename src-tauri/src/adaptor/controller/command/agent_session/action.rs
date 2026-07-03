@@ -1,31 +1,42 @@
 use tauri::State;
 
-use crate::adaptor::controller::state::AppState;
+use crate::adaptor::controller_support::AgentSessionRuntimeState;
 use crate::domain::agent_session::SkillEntry;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillEntryMsg {
+    pub name: String,
+    pub description: String,
+    pub scope: String,
+}
+
+impl From<SkillEntry> for SkillEntryMsg {
+    fn from(value: SkillEntry) -> Self {
+        Self {
+            name: value.name,
+            description: value.description,
+            scope: value.scope,
+        }
+    }
+}
 
 #[tauri::command]
 pub async fn scan_agent_skills(
-    state: State<'_, AppState>,
+    runtime: State<'_, AgentSessionRuntimeState>,
     cwd: String,
     backend_id: Option<String>,
     query: Option<String>,
     limit: Option<usize>,
-) -> Result<Vec<SkillEntry>, String> {
-    state
-        .agent_session_usecase
-        .scan_agent_skills(cwd, backend_id, query, limit)
+) -> Result<Vec<SkillEntryMsg>, String> {
+    runtime
+        .skill_catalog(
+            backend_id.as_deref(),
+            std::path::Path::new(&cwd),
+            query.as_deref(),
+            limit,
+        )
         .await
-}
-
-#[tauri::command]
-pub async fn read_codex_skill_catalog(
-    state: State<'_, AppState>,
-    cwd: String,
-    query: Option<String>,
-    limit: Option<usize>,
-) -> Result<Vec<SkillEntry>, String> {
-    state
-        .agent_session_usecase
-        .read_codex_skill_catalog(cwd, query, limit)
-        .await
+        .map(|skills| skills.into_iter().map(SkillEntryMsg::from).collect())
+        .map_err(|error| error.to_string())
 }

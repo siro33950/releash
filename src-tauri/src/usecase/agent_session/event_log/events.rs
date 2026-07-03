@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::usecase::agent_session::session::{
-    AttachmentRef, ChatMessage, MessageMention, MessagePart, SystemNotificationType, TodoListItem,
-    ToolOutputRef, ToolOutputSummary,
+    AttachmentRef, ChatMessage, MessageMention, MessagePart, PermissionRequestMsg,
+    SystemNotificationType, TodoListItem, ToolOutputRef, ToolOutputSummary,
 };
 
 pub type TurnId = u64;
@@ -35,39 +35,6 @@ impl PromptInput {
             parts,
         }
     }
-
-    pub fn from_content_images<I>(content: &str, images: I) -> Self
-    where
-        I: IntoIterator<Item = (String, String)>,
-    {
-        let parts = human_parts_from_content_images(content, images);
-        Self {
-            content: content.to_string(),
-            mentions: Vec::new(),
-            attachment_refs: attachment_refs_from_parts(&parts),
-            parts,
-        }
-    }
-}
-
-pub fn human_parts_from_content_images<I>(content: &str, images: I) -> Vec<MessagePart>
-where
-    I: IntoIterator<Item = (String, String)>,
-{
-    let mut images = images.into_iter().peekable();
-    if images.peek().is_none() {
-        return Vec::new();
-    }
-
-    let mut parts = Vec::new();
-    if !content.is_empty() {
-        parts.push(MessagePart::Text {
-            content: content.to_string(),
-            parent_tool_use_id: None,
-        });
-    }
-    parts.extend(images.map(|(data, media_type)| MessagePart::Image { data, media_type }));
-    parts
 }
 
 pub fn attachment_refs_from_parts(parts: &[MessagePart]) -> Vec<AttachmentRef> {
@@ -85,7 +52,7 @@ pub fn attachment_refs_from_parts(parts: &[MessagePart]) -> Vec<AttachmentRef> {
 pub enum InterruptReason {
     Abort,
     Timeout,
-    BridgeCrash,
+    Crash,
 }
 
 impl InterruptReason {
@@ -93,7 +60,7 @@ impl InterruptReason {
         match self {
             Self::Abort => "abort",
             Self::Timeout => "timeout",
-            Self::BridgeCrash => "bridge crash",
+            Self::Crash => "crash",
         }
     }
 }
@@ -225,7 +192,7 @@ pub enum AgentSessionEvent {
         turn_id: TurnId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_use_id: Option<String>,
-        request: serde_json::Value,
+        request: PermissionRequestMsg,
     },
     PermissionResolved {
         turn_id: TurnId,

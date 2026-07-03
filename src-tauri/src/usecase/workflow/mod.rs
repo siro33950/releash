@@ -1127,7 +1127,7 @@ mod tests {
     #[test]
     fn agent_session_runtime_status_notification_uses_usecase_port() {
         assert_no_forbidden_production_patterns_in_file(
-            "infrastructure/agent_session/runtime/bridge_common/shared.rs",
+            "usecase/agent_session/runtime/ports.rs",
             &[
                 concat!("crate", "::", "adaptor", "::", "presenter"),
                 concat!("crate", "::", "adaptor", "::", "gateway"),

@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tauri::Manager;
 use tokio::sync::Mutex;
 
 use super::runtime_session as workflow_runtime_session;
@@ -95,9 +94,9 @@ use crate::domain::workflow::STEP_STATE_RUNNING;
 use crate::domain::workflow::{
     FailureClassification, FailureDisposition, WorkflowStepFailureKind, STEP_STATE_FAILED,
 };
-use crate::infrastructure::agent_session::runtime::AgentProcessMap;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
-use crate::usecase::agent_session::session::SessionStore;
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
+use crate::usecase::agent_session::session::{OpenTabRegistry, SessionStore};
 use crate::usecase::agent_session::status::current_timestamp;
 
 use super::event_projection::reconstruct_state_from_events;
@@ -206,6 +205,7 @@ pub struct WorkflowRuntimeService {
     workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
     worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
     branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
+    open_tabs: Arc<OpenTabRegistry>,
     #[cfg(test)]
     fail_next_required_event_append: AtomicBool,
     #[cfg(test)]
@@ -373,6 +373,7 @@ impl WorkflowRuntimeService {
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
         branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
+        open_tabs: Arc<OpenTabRegistry>,
     ) -> Self {
         Self {
             executions: Mutex::new(HashMap::new()),
@@ -381,6 +382,7 @@ impl WorkflowRuntimeService {
             workflow_resolver,
             worktree_resolver,
             branch_diff_context,
+            open_tabs,
             #[cfg(test)]
             fail_next_required_event_append: AtomicBool::new(false),
             #[cfg(test)]
@@ -394,6 +396,7 @@ impl WorkflowRuntimeService {
             Arc::new(TestWorkflowDefinitionResolver),
             Arc::new(PassthroughManagedWorktreeResolver),
             None,
+            Arc::new(OpenTabRegistry::default()),
         )
     }
 
@@ -731,7 +734,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         workflow: Workflow,
         worktree_path: String,
         file_stem: &str,
@@ -748,19 +751,15 @@ impl WorkflowRuntimeService {
         workflow_engine_start_guard::validate_workflow_shape(&workflow)?;
         // 2) model 検証: 各 model から所属 backend を一意に解決する。
         //    registry 未登録自体を InvalidWorkflow として即時失敗にする（検証スキップを避ける）。
-        let registry = app
-            .try_state::<Arc<crate::infrastructure::agent_session::runtime::AgentBackendRegistry>>()
-            .ok_or_else(|| {
-                WorkflowEngineError::InvalidWorkflow(
-                    "AgentBackendRegistry is not registered".to_string(),
-                )
-            })?;
+        let registry = agent_runtime.backend_registry();
         let workflow_definition =
             crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(
                 &workflow,
             );
         crate::domain::workflow::validation::validate_models(&workflow_definition, |model| {
-            registry.resolve_backend_for_model(model)
+            registry
+                .resolve_model_entry(model)
+                .map(|entry| Some(entry.backend))
         })
         .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
 
@@ -876,14 +875,14 @@ impl WorkflowRuntimeService {
             // 並列ブロック → start_parallel_children を呼ぶ
             // (StepStartedログは書かず、start_parallel_children内でParallelStarted等を記録)
             if let Err(e) = self
-                .start_parallel_children(app, session_store, handles, &worktree_path, true)
+                .start_parallel_children(app, session_store, agent_runtime, &worktree_path, true)
                 .await
             {
                 let _ = self
                     .set_execution_state(
                         app,
                         session_store,
-                        handles,
+                        agent_runtime,
                         &worktree_path,
                         workflow_runtime_session::runtime_start_failed_state(
                             RuntimeStartFailureKind::ParallelChildren,
@@ -901,7 +900,7 @@ impl WorkflowRuntimeService {
             );
 
             if let Err(e) = self
-                .start_step_session(app, handles, session_store, &worktree_path)
+                .start_step_session(app, agent_runtime, session_store, &worktree_path)
                 .await
             {
                 workflow_runtime_session::record_step_session_start_failed_by_run_id(
@@ -914,7 +913,7 @@ impl WorkflowRuntimeService {
                     .set_execution_state(
                         app,
                         session_store,
-                        handles,
+                        agent_runtime,
                         &worktree_path,
                         workflow_runtime_session::runtime_start_failed_state(
                             RuntimeStartFailureKind::StepSession,
@@ -955,7 +954,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         workflow: Workflow,
         worktree_path: String,
         file_stem: &str,
@@ -966,7 +965,7 @@ impl WorkflowRuntimeService {
         self.start_workflow(
             app,
             session_store,
-            handles,
+            agent_runtime,
             workflow,
             worktree_path,
             file_stem,
@@ -1010,7 +1009,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: String,
         contract: String,
@@ -1021,7 +1020,7 @@ impl WorkflowRuntimeService {
         self.handle_submit_output(
             app,
             session_store,
-            handles,
+            agent_runtime,
             run_id,
             step_name,
             contract,
@@ -1037,7 +1036,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: String,
         contract: String,
@@ -1071,7 +1070,7 @@ impl WorkflowRuntimeService {
                     .handle_invalid_submit_output(
                         app,
                         session_store,
-                        handles,
+                        agent_runtime,
                         run_id,
                         &step_name,
                         &contract,
@@ -1137,7 +1136,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: &str,
         contract: &str,
@@ -1160,7 +1159,7 @@ impl WorkflowRuntimeService {
         self.handle_missing_required_output(
             app,
             session_store,
-            handles,
+            agent_runtime,
             &target.worktree_path,
             run_id,
             &target.workflow_name,
@@ -1372,7 +1371,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         session_id: &str,
         exit_code: i64,
         failure_signal: Option<workflow_transition::SessionFailureSignal>,
@@ -1410,7 +1409,7 @@ impl WorkflowRuntimeService {
                 .handle_parallel_child_complete(
                     app,
                     session_store,
-                    handles,
+                    agent_runtime,
                     &session_ref.run_id,
                     &worktree_path,
                     session_id,
@@ -1556,7 +1555,7 @@ impl WorkflowRuntimeService {
                     self.execute_outcome(
                         app,
                         session_store,
-                        handles,
+                        agent_runtime,
                         &worktree_path,
                         commit.outcome,
                         snapshot_before,
@@ -1566,7 +1565,7 @@ impl WorkflowRuntimeService {
                     self.commit_required_turn_events_and_execute_outcome(
                         app,
                         session_store,
-                        handles,
+                        agent_runtime,
                         &worktree_path,
                         commit.outcome,
                         commit.required_events,
@@ -1579,7 +1578,7 @@ impl WorkflowRuntimeService {
                 self.handle_auto_complete(
                     app,
                     session_store,
-                    handles,
+                    agent_runtime,
                     &worktree_path,
                     final_parts,
                     &rules,
@@ -1591,12 +1590,11 @@ impl WorkflowRuntimeService {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     async fn commit_required_turn_events_and_execute_outcome<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         outcome: StepOutcome,
         required_events: Vec<WorkflowEvent>,
@@ -1628,7 +1626,7 @@ impl WorkflowRuntimeService {
         workflow_runtime_session::release_completed_step_sessions(
             app,
             session_store,
-            handles,
+            agent_runtime,
             &completed_step_session_ids,
         )
         .await;
@@ -1638,7 +1636,7 @@ impl WorkflowRuntimeService {
             .dispatch_step_outcome_side_effects(
                 app,
                 session_store,
-                handles,
+                agent_runtime,
                 worktree_path,
                 outcome,
                 OutcomeCommitMode::EmitProgressEvents,
@@ -1694,7 +1692,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         decision: ApprovalDecision,
         approve_comment: Option<String>,
@@ -1703,7 +1701,7 @@ impl WorkflowRuntimeService {
         self.resolve_workflow_approval_with_commit_context(
             app,
             session_store,
-            handles,
+            agent_runtime,
             run_id,
             decision,
             approve_comment,
@@ -1718,7 +1716,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         decision: ApprovalDecision,
         approve_comment: Option<String>,
@@ -1728,7 +1726,7 @@ impl WorkflowRuntimeService {
         self.handle_approval(
             app,
             session_store,
-            handles,
+            agent_runtime,
             run_id,
             decision,
             approve_comment,
@@ -1745,7 +1743,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         decision: ApprovalDecision,
         approve_comment: Option<String>,
@@ -1808,8 +1806,7 @@ impl WorkflowRuntimeService {
 
         if matches!(decision, ApprovalDecision::Approve) {
             let turn_phase = if let Some(ref sid) = current_session_id {
-                let map = handles.lock().await;
-                map.get(sid).map(|p| p.turn_phase)
+                agent_runtime.turn_phase(sid).await
             } else {
                 None
             };
@@ -1824,7 +1821,7 @@ impl WorkflowRuntimeService {
                     self.handle_missing_required_output(
                         app,
                         session_store,
-                        handles,
+                        agent_runtime,
                         &worktree_path,
                         run_id,
                         &workflow_name_for_contract,
@@ -1998,7 +1995,7 @@ impl WorkflowRuntimeService {
         workflow_runtime_session::release_completed_step_sessions(
             app,
             session_store,
-            handles,
+            agent_runtime,
             &completed_step_session_ids,
         )
         .await;
@@ -2008,7 +2005,7 @@ impl WorkflowRuntimeService {
             .dispatch_step_outcome_side_effects(
                 app,
                 session_store,
-                handles,
+                agent_runtime,
                 &worktree_path,
                 outcome,
                 OutcomeCommitMode::ProgressEventsAlreadyCommitted,
@@ -2024,14 +2021,14 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
         self.abort_workflow_run_with_commit_context(
             app,
             session_store,
-            handles,
+            agent_runtime,
             run_id,
             expected_node_name,
             None,
@@ -2044,7 +2041,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         expected_node_name: Option<&str>,
         commit_context: Option<CommandCommitContext>,
@@ -2055,7 +2052,7 @@ impl WorkflowRuntimeService {
             .abort_workflow_by_run_id(
                 app,
                 session_store,
-                handles,
+                agent_runtime,
                 run_id,
                 expected_node_name,
                 commit_context,
@@ -2095,7 +2092,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         expected_node_name: Option<&str>,
         commit_context: Option<CommandCommitContext>,
@@ -2242,17 +2239,17 @@ impl WorkflowRuntimeService {
         //    RunAborted event は append 済み。Run Store / ChatSession は event 後の
         //    projection として同期済み、または warn として観測済み。
         if let Some(ref step_sid) = current_step_session_id {
-            workflow_runtime_session::interrupt_agent(handles, step_sid).await;
+            workflow_runtime_session::interrupt_agent(agent_runtime, step_sid).await;
         }
         if let Some(ref session_ids) = parallel_session_ids {
             for sid in session_ids {
-                workflow_runtime_session::interrupt_agent(handles, sid).await;
+                workflow_runtime_session::interrupt_agent(agent_runtime, sid).await;
             }
         }
         self.finalize_terminal_transition_after_required_append(
             app,
             session_store,
-            handles,
+            agent_runtime,
             run_id,
         )
         .await;
@@ -2273,7 +2270,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
     ) {
         let (snapshot, worktree_path) = {
@@ -2289,7 +2286,7 @@ impl WorkflowRuntimeService {
         workflow_runtime_session::release_completed_step_sessions(
             app,
             session_store,
-            handles,
+            agent_runtime,
             &terminal_session_ids,
         )
         .await;
@@ -2339,7 +2336,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         worktree_path: &str,
         session_id: &str,
@@ -2396,7 +2393,7 @@ impl WorkflowRuntimeService {
             self.handle_missing_required_output(
                 app,
                 session_store,
-                handles,
+                agent_runtime,
                 worktree_path,
                 run_id,
                 &workflow_name,
@@ -2568,7 +2565,7 @@ impl WorkflowRuntimeService {
                     record_failed_snapshot_telemetry(&snapshot);
                     // 他の子ステップをinterrupt
                     for sid in &running_ids {
-                        workflow_runtime_session::interrupt_agent(handles, sid).await;
+                        workflow_runtime_session::interrupt_agent(agent_runtime, sid).await;
                     }
                     let mut cleanup_ids = running_ids;
                     cleanup_ids.push(session_id.to_string());
@@ -2578,7 +2575,7 @@ impl WorkflowRuntimeService {
                         workflow_runtime_session::release_completed_step_session(
                             app,
                             session_store,
-                            handles,
+                            agent_runtime,
                             &sid,
                         )
                         .await;
@@ -2639,7 +2636,7 @@ impl WorkflowRuntimeService {
                 self.commit_required_parallel_progress_events_and_execute_outcome(
                     app,
                     session_store,
-                    handles,
+                    agent_runtime,
                     worktree_path,
                     outcome,
                     snapshot_before,
@@ -2661,7 +2658,7 @@ impl WorkflowRuntimeService {
                 self.execute_outcome(
                     app,
                     session_store,
-                    handles,
+                    agent_runtime,
                     worktree_path,
                     outcome,
                     snapshot_before,
@@ -2673,7 +2670,7 @@ impl WorkflowRuntimeService {
                     self.persist_release_and_broadcast(
                         app,
                         session_store,
-                        handles,
+                        agent_runtime,
                         worktree_path,
                         snapshot,
                         &[session_id.to_string()],
@@ -2691,7 +2688,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         outcome: StepOutcome,
         snapshot_before: WorkflowExecution,
@@ -2741,7 +2738,7 @@ impl WorkflowRuntimeService {
         workflow_runtime_session::release_completed_step_sessions(
             app,
             session_store,
-            handles,
+            agent_runtime,
             &completed_step_session_ids,
         )
         .await;
@@ -2750,7 +2747,7 @@ impl WorkflowRuntimeService {
         self.dispatch_step_outcome_side_effects(
             app,
             session_store,
-            handles,
+            agent_runtime,
             worktree_path,
             outcome,
             OutcomeCommitMode::ProgressEventsAlreadyCommitted,
@@ -2832,7 +2829,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         run_id: &str,
         workflow_name: &str,
@@ -2865,7 +2862,7 @@ impl WorkflowRuntimeService {
                 .fail_missing_required_output(
                     app,
                     session_store,
-                    handles,
+                    agent_runtime,
                     worktree_path,
                     run_id,
                     node_name,
@@ -2886,7 +2883,7 @@ impl WorkflowRuntimeService {
                 .fail_missing_required_output(
                     app,
                     session_store,
-                    handles,
+                    agent_runtime,
                     worktree_path,
                     run_id,
                     node_name,
@@ -2932,19 +2929,14 @@ impl WorkflowRuntimeService {
             contract,
             contract_definition.as_deref(),
         );
-        let _runtime_guard =
-            crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(session_id)
-                .await;
-        let start_result =
-            crate::infrastructure::agent_session::runtime::start_agent_turn_internal_locked(
-                app,
-                self.branch_diff_context.clone(),
-                handles,
-                session_store,
+        let permission_mode = PermissionMode::parse(&session.permission_mode)
+            .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
+        let _runtime_guard = agent_runtime.acquire_session_lock(session_id).await;
+        let start_result = agent_runtime
+            .start_turn_locked(
                 session_id,
-                worktree_path,
-                &session.permission_mode,
-                &prompt,
+                permission_mode,
+                prompt.clone(),
                 None,
                 Vec::new(),
             )
@@ -2958,7 +2950,7 @@ impl WorkflowRuntimeService {
                 .fail_missing_required_output_with_metadata(
                     app,
                     session_store,
-                    handles,
+                    agent_runtime,
                     worktree_path,
                     run_id,
                     node_name,
@@ -2977,7 +2969,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         run_id: &str,
         node_name: &str,
@@ -2987,7 +2979,7 @@ impl WorkflowRuntimeService {
         self.fail_missing_required_output_with_metadata(
             app,
             session_store,
-            handles,
+            agent_runtime,
             worktree_path,
             run_id,
             node_name,
@@ -3004,7 +2996,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         run_id: &str,
         node_name: &str,
@@ -3042,7 +3034,7 @@ impl WorkflowRuntimeService {
         self.execute_outcome(
             app,
             session_store,
-            handles,
+            agent_runtime,
             worktree_path,
             StepOutcome::Persist(snapshot),
             snapshot_before,
@@ -3162,14 +3154,14 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         new_state: WorkflowExecutionState,
     ) -> Result<(), WorkflowEngineError> {
         self.set_execution_state_inner(
             app,
             session_store,
-            handles,
+            agent_runtime,
             ExecutionStateTarget::Worktree(worktree_path.to_string()),
             new_state,
         )
@@ -3183,7 +3175,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         target: ExecutionStateTarget,
         new_state: WorkflowExecutionState,
     ) -> Result<(), WorkflowEngineError> {
@@ -3254,7 +3246,7 @@ impl WorkflowRuntimeService {
             workflow_runtime_session::release_completed_step_sessions(
                 app,
                 session_store,
-                handles,
+                agent_runtime,
                 &terminal_session_ids,
             )
             .await;
@@ -3291,7 +3283,7 @@ impl WorkflowRuntimeService {
             workflow_runtime_session::release_completed_step_sessions(
                 app,
                 session_store,
-                handles,
+                agent_runtime,
                 &terminal_session_ids,
             )
             .await;
@@ -3342,7 +3334,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         final_parts: &[crate::usecase::agent_session::session::MessagePart],
         rules: &[TransitionRule],
@@ -3396,7 +3388,7 @@ impl WorkflowRuntimeService {
                 self.handle_missing_required_output(
                     app,
                     session_store,
-                    handles,
+                    agent_runtime,
                     worktree_path,
                     &run_id,
                     &workflow_name,
@@ -3482,7 +3474,7 @@ impl WorkflowRuntimeService {
         self.execute_outcome(
             app,
             session_store,
-            handles,
+            agent_runtime,
             worktree_path,
             outcome,
             snapshot_before,
@@ -3498,15 +3490,16 @@ impl WorkflowRuntimeService {
     async fn start_step_session<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         session_store: &Arc<SessionStore>,
         worktree_path: &str,
     ) -> Result<(), WorkflowEngineError> {
         let deps = RealStepSessionDeps {
             app,
             branch_diff_context: self.branch_diff_context.clone(),
-            handles,
+            agent_runtime,
             session_store,
+            open_tabs: &self.open_tabs,
         };
         self.start_step_session_with_deps(&deps, worktree_path)
             .await
@@ -3621,12 +3614,6 @@ impl WorkflowRuntimeService {
                 },
             );
         }
-
-        let _runtime_guard =
-            crate::infrastructure::agent_session::runtime::acquire_session_runtime_lock(
-                &step_session_id,
-            )
-            .await;
 
         // 合成済み system_prompt を AgentSession 起動経路へ受け渡す。
         deps.dispatch_session_start(
@@ -3840,7 +3827,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         snapshot: &WorkflowState,
         completed_step_session_ids: &[String],
     ) -> Result<(), WorkflowEngineError> {
@@ -3864,7 +3851,7 @@ impl WorkflowRuntimeService {
         workflow_runtime_session::release_completed_step_sessions(
             app,
             session_store,
-            handles,
+            agent_runtime,
             completed_step_session_ids,
         )
         .await;
@@ -3913,7 +3900,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         snapshot: WorkflowState,
         completed_step_session_ids: &[String],
@@ -3921,7 +3908,7 @@ impl WorkflowRuntimeService {
         self.sync_persist_release(
             app,
             session_store,
-            handles,
+            agent_runtime,
             &snapshot,
             completed_step_session_ids,
         )
@@ -3948,7 +3935,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         outcome: StepOutcome,
         snapshot_before: WorkflowExecution,
@@ -3992,7 +3979,7 @@ impl WorkflowRuntimeService {
             workflow_runtime_session::release_completed_step_sessions(
                 app,
                 session_store,
-                handles,
+                agent_runtime,
                 &completed_step_session_ids,
             )
             .await;
@@ -4001,7 +3988,7 @@ impl WorkflowRuntimeService {
             self.sync_persist_release(
                 app,
                 session_store,
-                handles,
+                agent_runtime,
                 &snapshot_for_commit,
                 &completed_step_session_ids,
             )
@@ -4015,7 +4002,7 @@ impl WorkflowRuntimeService {
         self.dispatch_step_outcome_side_effects(
             app,
             session_store,
-            handles,
+            agent_runtime,
             worktree_path,
             outcome,
             OutcomeCommitMode::ProgressEventsAlreadyCommitted,
@@ -4035,7 +4022,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         outcome: StepOutcome,
         commit_mode: OutcomeCommitMode,
@@ -4051,7 +4038,7 @@ impl WorkflowRuntimeService {
                     return Box::pin(self.resolve_workflow_approval(
                         app,
                         session_store,
-                        handles,
+                        agent_runtime,
                         &run_id,
                         ApprovalDecision::Approve,
                         None,
@@ -4069,7 +4056,7 @@ impl WorkflowRuntimeService {
                     );
                 }
                 if let Err(e) = self
-                    .start_step_session(app, handles, session_store, worktree_path)
+                    .start_step_session(app, agent_runtime, session_store, worktree_path)
                     .await
                 {
                     let failed_state =
@@ -4084,7 +4071,7 @@ impl WorkflowRuntimeService {
                         .set_execution_state(
                             app,
                             session_store,
-                            handles,
+                            agent_runtime,
                             worktree_path,
                             failed_state,
                         )
@@ -4101,7 +4088,7 @@ impl WorkflowRuntimeService {
                     &snapshot,
                 )?;
                 if let Err(e) = self
-                    .start_step_session(app, handles, session_store, worktree_path)
+                    .start_step_session(app, agent_runtime, session_store, worktree_path)
                     .await
                 {
                     let failed_state =
@@ -4116,7 +4103,7 @@ impl WorkflowRuntimeService {
                         .set_execution_state(
                             app,
                             session_store,
-                            handles,
+                            agent_runtime,
                             worktree_path,
                             failed_state,
                         )
@@ -4148,7 +4135,7 @@ impl WorkflowRuntimeService {
                 Box::pin(self.execute_outcome(
                     app,
                     session_store,
-                    handles,
+                    agent_runtime,
                     worktree_path,
                     reduce_transition.next_outcome,
                     reduce_transition.snapshot_before,
@@ -4166,7 +4153,7 @@ impl WorkflowRuntimeService {
                     .start_parallel_children(
                         app,
                         session_store,
-                        handles,
+                        agent_runtime,
                         worktree_path,
                         commit_mode.should_emit_progress_events(),
                     )
@@ -4184,7 +4171,7 @@ impl WorkflowRuntimeService {
                         .set_execution_state(
                             app,
                             session_store,
-                            handles,
+                            agent_runtime,
                             worktree_path,
                             failed_state,
                         )
@@ -4221,7 +4208,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         emit_parallel_started: bool,
     ) -> Result<(), WorkflowEngineError> {
@@ -4242,6 +4229,7 @@ impl WorkflowRuntimeService {
         // Phase 1: セッション生成 + ref登録 + プロンプト構築（AgentSessionはまだ起動しない）
         let child_setups = workflow_runtime_session::prepare_parallel_child_session_setups(
             app,
+            agent_runtime.backend_registry(),
             session_store,
             &self.session_workflow_refs,
             worktree_path,
@@ -4261,7 +4249,8 @@ impl WorkflowRuntimeService {
             app,
             self.branch_diff_context.clone(),
             session_store,
-            handles,
+            agent_runtime,
+            &self.open_tabs,
             &self.executions,
             worktree_path,
             &parallel_start,
@@ -4388,7 +4377,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         snapshot: WorkflowState,
     ) -> Result<(), WorkflowEngineError> {
@@ -4405,7 +4394,7 @@ impl WorkflowRuntimeService {
         self.execute_outcome(
             app,
             session_store,
-            handles,
+            agent_runtime,
             worktree_path,
             StepOutcome::Persist(snapshot),
             snapshot_before,

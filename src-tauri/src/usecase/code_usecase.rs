@@ -325,6 +325,7 @@ impl CodeUsecase {
 
     /// 現在ブランチの実効 base 名（ref 実在検証あり、未解決は `None`）。agent bridge が
     /// gateway 実装へ直接依存せずに base 名を得るための入口。
+    #[allow(dead_code)] // issues-1301 D-5/G-1: retained for agent child-env base branch propagation.
     pub fn resolve_effective_base_branch_name(
         &self,
         path_hint: &str,
@@ -342,19 +343,9 @@ impl CodeUsecase {
         self.query.list_mentionable_files(worktree_path, query)
     }
 
-    pub async fn read_codex_mentionable_files(
-        &self,
-        worktree_path: &str,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<String>, CodeUsecaseError> {
-        self.query
-            .read_codex_mentionable_files(worktree_path, query, limit)
-            .await
-    }
-
     /// 構造化メンション参照を解決し file_context を本文先頭へ前置する。メンションが空、
     /// または解決失敗時は警告ログを出して本文をそのまま返す（移行前のフォールバック挙動を維持）。
+    #[allow(dead_code)] // issues-1301 F-3/G-1: retained for Rust-owned mention expansion from prompt inputs.
     pub fn resolve_mentions_or_fallback(
         &self,
         worktree_path: &str,
@@ -379,7 +370,7 @@ mod code_usecase_tests {
     use crate::domain::code::{
         BranchBaseResolver, CodeError, DiffComputer, FileContentRepository, MentionRepository,
     };
-    use crate::usecase::code_query_service::{BranchDiffQuery, CodexFuzzyFileSearchGateway};
+    use crate::usecase::code_query_service::BranchDiffQuery;
     use std::sync::Mutex;
 
     struct RecordingStaging {
@@ -703,19 +694,6 @@ mod code_usecase_tests {
         }
     }
 
-    struct StubCodexFuzzyFileSearch;
-    #[async_trait::async_trait]
-    impl CodexFuzzyFileSearchGateway for StubCodexFuzzyFileSearch {
-        async fn search_files(
-            &self,
-            _worktree_path: &str,
-            _query: &str,
-            _limit: usize,
-        ) -> Result<Vec<String>, CodeError> {
-            Ok(vec!["src/main.rs".to_string()])
-        }
-    }
-
     fn usecase(staging: Arc<RecordingStaging>) -> CodeUsecase {
         let query = CodeQueryService::new(
             Arc::new(StubFileContent),
@@ -723,7 +701,6 @@ mod code_usecase_tests {
             Arc::new(StubBranchDiff),
             Arc::new(StubMention),
             Arc::new(StubBranchBase),
-            Arc::new(StubCodexFuzzyFileSearch),
         );
         CodeUsecase::new(staging, query, Arc::new(StubBlobUrls))
     }
@@ -735,7 +712,6 @@ mod code_usecase_tests {
             Arc::new(StubBranchDiff),
             Arc::new(StubMention),
             Arc::new(StubBranchBase),
-            Arc::new(StubCodexFuzzyFileSearch),
         );
         CodeUsecase::new(
             Arc::new(RecordingStaging {
@@ -756,7 +732,6 @@ mod code_usecase_tests {
             Arc::new(StubBranchDiff),
             mention,
             Arc::new(StubBranchBase),
-            Arc::new(StubCodexFuzzyFileSearch),
         );
         CodeUsecase::new(
             Arc::new(RecordingStaging {
@@ -862,21 +837,6 @@ mod code_usecase_tests {
         }
 
         assert_eq!(file_content.calls(), expected_calls);
-    }
-
-    #[tokio::test]
-    async fn read_codex_mentionable_files_delegates_to_fuzzy_gateway() {
-        let staging = Arc::new(RecordingStaging {
-            calls: Mutex::new(Vec::new()),
-        });
-        let uc = usecase(staging);
-
-        let files = uc
-            .read_codex_mentionable_files("/repo", "main", 50)
-            .await
-            .unwrap();
-
-        assert_eq!(files, vec!["src/main.rs"]);
     }
 
     // ── mention 参照解決のフォールバック挙動（usecase 層の責務）──

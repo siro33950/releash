@@ -80,10 +80,16 @@ struct Metrics {
     agent_turn_duration: Histogram<f64>,
     hot_path_duration: Histogram<f64>,
     startup_duration: Histogram<f64>,
+    #[allow(dead_code)]
+    // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
     stream_payload_bytes: Histogram<f64>,
+    #[allow(dead_code)]
+    // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
     stream_emit_interval_ms: Histogram<f64>,
     session_save_bytes: Histogram<f64>,
     operation_status: Counter<u64>,
+    #[allow(dead_code)]
+    // issues-1301 D-5: orphan cleanup metrics are retained for infrastructure/process restoration.
     orphan_cleanup: Counter<u64>,
     usage_events: Counter<u64>,
     tool_output_truncated: Counter<u64>,
@@ -507,6 +513,7 @@ where
     metrics.session_save_bytes.record(bytes as f64, &attrs);
 }
 
+#[allow(dead_code)] // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
 pub(crate) fn record_payload_size<F>(channel: PayloadChannel, bytes: F)
 where
     F: FnOnce() -> usize,
@@ -545,6 +552,7 @@ pub(crate) fn record_tool_output_externalized(byte_size: u64) {
     metrics.tool_output_bytes.add(byte_size, &attrs);
 }
 
+#[allow(dead_code)] // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
 pub(crate) fn record_emit_interval(elapsed: Duration) {
     if !is_performance_active() {
         return;
@@ -582,6 +590,7 @@ pub(crate) fn record_startup(metric: StartupMetric, elapsed: Duration) {
         .record(elapsed.as_secs_f64() * 1000.0, &attrs);
 }
 
+#[allow(dead_code)] // issues-1301 D-5: orphan cleanup metrics are retained for infrastructure/process restoration.
 pub(crate) fn orphan_cleanup_status(failures: usize, failed: bool) -> OpStatus {
     if failed || failures > 0 {
         OpStatus::Failure
@@ -590,6 +599,7 @@ pub(crate) fn orphan_cleanup_status(failures: usize, failed: bool) -> OpStatus {
     }
 }
 
+#[allow(dead_code)] // issues-1301 D-5: orphan cleanup metrics are retained for infrastructure/process restoration.
 pub(crate) fn record_orphan_cleanup_counts(
     scanned: usize,
     processed: usize,

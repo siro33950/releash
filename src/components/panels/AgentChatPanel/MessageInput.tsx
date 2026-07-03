@@ -100,6 +100,7 @@ export function MessageInput({
 	onModelChange,
 	currentBackendId,
 	canChangeBackend = true,
+	backends = [],
 	ref,
 	worktreePath,
 	promptSuggestion,
@@ -249,6 +250,9 @@ export function MessageInput({
 		value.trim().length === 0 && attachedImages.length === 0
 			? promptSuggestion?.trim() || null
 			: null;
+	const supportsActiveTurnSteering =
+		backends.find((backend) => backend.id === currentBackendId)?.capabilities
+			?.steering ?? false;
 	const activeSlashArgumentHelp = useMemo(() => {
 		const match = value.match(/^\/([^\s]+)\s*$/);
 		if (!match || !value.endsWith(" ")) return null;
@@ -269,22 +273,11 @@ export function MessageInput({
 
 		let cancelled = false;
 		const timer = setTimeout(() => {
-			const mentionRequest =
-				currentBackendId === "codex"
-					? invoke<string[]>("read_codex_mentionable_files", {
-							worktreePath,
-							query: mentionQuery,
-						}).catch(() =>
-							invoke<string[]>("list_mentionable_files", {
-								worktreePath,
-								query: mentionQuery,
-							}),
-						)
-					: invoke<string[]>("list_mentionable_files", {
-							worktreePath,
-							query: mentionQuery,
-						});
-			mentionRequest
+			invoke<string[]>("list_mentionable_files", {
+				worktreePath,
+				query: mentionQuery,
+				backendId: currentBackendId ?? undefined,
+			})
 				.then((files) => {
 					if (!cancelled) {
 						setMentionFiles(files);
@@ -316,17 +309,11 @@ export function MessageInput({
 		let cancelled = false;
 		const normalizedQuery = skillQuery.trim().toLowerCase();
 		const timer = setTimeout(() => {
-			const command =
-				currentBackendId === "codex"
-					? "read_codex_skill_catalog"
-					: "scan_agent_skills";
-			invoke<AgentSkill[]>(command, {
+			invoke<AgentSkill[]>("scan_agent_skills", {
 				cwd: worktreePath,
 				query: normalizedQuery,
 				limit: 20,
-				...(command === "scan_agent_skills"
-					? { backendId: currentBackendId ?? undefined }
-					: {}),
+				backendId: currentBackendId ?? undefined,
 			})
 				.then((skills) => {
 					if (cancelled) return;
@@ -702,8 +689,9 @@ export function MessageInput({
 	);
 
 	const canSend = value.trim().length > 0 || attachedImages.length > 0;
-	const streamingSubmitLabel =
-		currentBackendId === "codex" ? "Steer active turn" : "Queue message";
+	const streamingSubmitLabel = supportsActiveTurnSteering
+		? "Steer active turn"
+		: "Queue message";
 	const submitLabel = isStreaming ? streamingSubmitLabel : "Send message";
 	const inputRef = useRef<HTMLDivElement>(null);
 
@@ -803,7 +791,7 @@ export function MessageInput({
 					<div className="flex items-center gap-2">
 						{isStreaming && canSend && (
 							<span className="text-xs text-muted-foreground">
-								{currentBackendId === "codex"
+								{supportsActiveTurnSteering
 									? "Steer active turn"
 									: "Queue follow-up"}
 							</span>

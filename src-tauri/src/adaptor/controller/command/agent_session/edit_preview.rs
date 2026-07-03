@@ -242,7 +242,7 @@ fn content_pair_from_unified_diff(diff: &str) -> (String, String) {
     (original, modified)
 }
 
-fn codex_file_change_operation(input: &serde_json::Value) -> String {
+fn diff_file_change_operation(input: &serde_json::Value) -> String {
     match input_str(input, "kind").unwrap_or("update") {
         "add" | "create" => "Add file",
         "delete" | "remove" => "Delete file",
@@ -273,22 +273,18 @@ fn build_agent_edit_preview_inner(
         }));
     };
 
-    if input
-        .get("codex_file_change")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-    {
+    if input.get("diff").is_some() {
         let _resolved_path = resolve_tool_file_path(worktree_path, file_path)?;
         let diff = input_str(input, "diff").unwrap_or_default();
         let (original, modified) = content_pair_from_unified_diff(diff);
         let mut warnings = Vec::new();
         if diff.trim().is_empty() {
-            warnings.push("Codex file change did not include a text diff.".to_string());
+            warnings.push("File change did not include a text diff.".to_string());
         }
         let hunks = build_hunks(Some(file_path), &original, &modified);
         return Ok(Some(AgentEditPreview {
             tool_name: tool.to_string(),
-            operation: codex_file_change_operation(input),
+            operation: diff_file_change_operation(input),
             file_path: Some(file_path.to_string()),
             original_content: original,
             modified_content: modified,
@@ -640,14 +636,13 @@ mod tests {
     }
 
     #[test]
-    fn codex_file_change_rejects_traversal() {
+    fn diff_file_change_rejects_traversal() {
         let temp = tempfile::tempdir().unwrap();
         let err = build_agent_edit_preview_inner(
             temp.path().to_str().unwrap(),
             "Edit",
             &serde_json::json!({
                 "file_path": "../outside.txt",
-                "codex_file_change": true,
                 "diff": "--- a/outside.txt\n+++ b/outside.txt\n@@ -1 +1 @@\n-old\n+new\n"
             }),
         )
@@ -657,14 +652,13 @@ mod tests {
     }
 
     #[test]
-    fn codex_file_change_preserves_data_lines_starting_with_header_markers() {
+    fn diff_file_change_preserves_data_lines_starting_with_header_markers() {
         let temp = tempfile::tempdir().unwrap();
         let preview = build_agent_edit_preview_inner(
             temp.path().to_str().unwrap(),
             "Edit",
             &serde_json::json!({
                 "file_path": "doc.md",
-                "codex_file_change": true,
                 "diff": "--- a/doc.md\n+++ b/doc.md\n@@ -1,3 +1,3 @@\n----title\n++++title\n----\n+---\n context\n"
             }),
         )

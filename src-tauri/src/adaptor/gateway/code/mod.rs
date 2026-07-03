@@ -11,6 +11,7 @@
 
 pub(crate) mod branch_base;
 pub(crate) mod branch_diff;
+pub(crate) mod branch_diff_context;
 pub(crate) mod diff_compute;
 mod error;
 pub(crate) mod file_content;

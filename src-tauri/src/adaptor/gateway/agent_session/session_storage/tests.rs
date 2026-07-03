@@ -48,7 +48,7 @@ fn make_session(id: &str, worktree: &str) -> ChatSession {
         plan_mode: false,
         permission_profile_id: None,
         selected_model: None,
-        backend_id: None,
+        backend_id: Some("claude".to_string()),
         workflow_step_session: false,
         workflow_step_context: None,
         context_epoch: None,
@@ -2123,7 +2123,7 @@ fn list_sessions_ignores_legacy_flat_json_and_sidecar() {
         plan_mode: false,
         selected_model: Some("gpt-5".to_string()),
         permission_profile_id: None,
-        backend_id: Some("codex".to_string()),
+        backend_id: "codex".to_string(),
         workflow_step_session: false,
         workflow_step_context: None,
         workflow_instructions: Vec::new(),
@@ -2215,22 +2215,47 @@ fn save_and_load_session_with_backend_id() {
 }
 
 #[test]
-fn save_and_load_session_with_none_backend_id() {
+fn save_session_with_none_backend_id_is_rejected() {
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
-    let session = make_session(UUID1, "/repo");
+    let mut session = make_session(UUID1, "/repo");
+    session.backend_id = None;
     assert_eq!(session.backend_id, None);
 
-    store
+    let error = store
         .save_full_session_for_migration_or_restore(tmp.path(), &session)
-        .unwrap();
+        .unwrap_err();
+    assert!(error.contains("Invalid session data"));
+}
 
-    let store2 = FileSessionStorage::default();
-    let loaded = store2
-        .load_full_session_for_restore(tmp.path(), UUID1)
-        .unwrap()
-        .unwrap();
-    assert_eq!(loaded.backend_id, None);
+#[test]
+fn load_session_missing_backend_id_is_isolated_as_invalid() {
+    let tmp = TempDir::new().unwrap();
+    write_session_meta_json(
+        tmp.path(),
+        UUID1,
+        &format!(
+            r#"{{
+                "id":"{UUID1}",
+                "worktreePath":"/repo",
+                "state":"active",
+                "createdAt":1000.0,
+                "updatedAt":1000.0,
+                "permissionMode":"edit",
+                "planMode":false,
+                "selectedModel":"claude-4-sonnet",
+                "firstMessagePreview":"",
+                "messageCount":0,
+                "bodyFormatVersion":{SESSION_BODY_FORMAT_VERSION}
+            }}"#
+        ),
+    );
+    let store = FileSessionStorage::default();
+
+    let error = store.get_session_meta(tmp.path(), UUID1).unwrap_err();
+
+    assert!(error.contains("Invalid session data"));
+    assert!(store.invalid_sessions.read().contains_key(UUID1));
 }
 
 #[test]
@@ -2850,7 +2875,7 @@ fn session_meta_json_with_permission(session_id: &str, permission_field: Option<
         None => String::new(),
     };
     format!(
-        r#"{{"id":"{session_id}","worktreePath":"/repo","state":"active","createdAt":1000.0,"updatedAt":1000.0{permission_segment},"workflowStepSession":false,"firstMessagePreview":"","messageCount":0,"bodyFormatVersion":1}}"#
+        r#"{{"id":"{session_id}","worktreePath":"/repo","state":"active","createdAt":1000.0,"updatedAt":1000.0{permission_segment},"workflowStepSession":false,"firstMessagePreview":"","messageCount":0,"bodyFormatVersion":1,"backendId":"claude"}}"#
     )
 }
 
@@ -3010,12 +3035,7 @@ fn save_session_removes_stale_invalid_marker_for_same_id() {
 
 #[test]
 fn ensure_loaded_normalizes_legacy_and_accepts_valid_permission_modes() {
-    for (input, expected) in [
-        ("readonly", "ask"),
-        ("ask", "ask"),
-        ("edit", "edit"),
-        ("full", "full"),
-    ] {
+    for (input, expected) in [("ask", "ask"), ("edit", "edit"), ("full", "full")] {
         let tmp = TempDir::new().unwrap();
         write_session_meta_json(
             tmp.path(),

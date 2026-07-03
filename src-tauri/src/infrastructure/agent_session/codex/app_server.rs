@@ -1,0 +1,146 @@
+use serde_json::Value;
+use std::process::Stdio;
+use std::sync::Arc;
+
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::Mutex;
+
+use crate::infrastructure::process::child_env::AgentChildEnv;
+use crate::infrastructure::process::child_process::{configure_process_group, staged_shutdown};
+use crate::infrastructure::process::child_stderr::drain_child_stderr;
+use crate::infrastructure::process::pid_registry::{
+    save_pgid, wait_for_cleanup_gate, PidRegistration,
+};
+
+#[derive(Clone)]
+pub(crate) struct CodexAppServerHandle {
+    child: Arc<Mutex<Child>>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    pid_registration: Option<PidRegistration>,
+}
+
+impl CodexAppServerHandle {
+    pub(crate) async fn write_json(&self, value: &Value) -> Result<(), String> {
+        #[cfg(test)]
+        if std::env::var_os("RELEASH_TEST_FAIL_CODEX_APP_SERVER_STDIN_WRITE").is_some() {
+            return Err("injected codex app-server stdin write failure".to_string());
+        }
+        let line = encode_jsonl(value)?;
+        let mut stdin = self.stdin.lock().await;
+        let Some(stdin) = stdin.as_mut() else {
+            return Err("codex app-server stdin is closed".to_string());
+        };
+        stdin
+            .write_all(&line)
+            .await
+            .map_err(|error| format!("failed to write codex app-server stdin: {error}"))
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        self.stdin.lock().await.take();
+        let mut child = self.child.lock().await;
+        staged_shutdown(&mut child, "codex app-server").await;
+        if let Some(registration) = &self.pid_registration {
+            registration.remove();
+        }
+    }
+}
+
+pub(crate) struct CodexAppServerProcess {
+    handle: CodexAppServerHandle,
+    stdout: Lines<BufReader<ChildStdout>>,
+}
+
+impl CodexAppServerProcess {
+    pub(crate) async fn spawn(
+        cli_path: &str,
+        session_id: &str,
+        cwd: Option<&str>,
+        base_branch: Option<&str>,
+    ) -> Result<Self, String> {
+        wait_for_cleanup_gate().await;
+
+        let mut command = Command::new(cli_path);
+        command
+            .args(["app-server", "--listen", "stdio://"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        AgentChildEnv::for_session(session_id, base_branch, [], []).apply(&mut command);
+        configure_process_group(&mut command);
+
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("failed to spawn codex app-server: {error}"))?;
+        let pid_registration = child
+            .id()
+            .and_then(|pid| save_pgid(None, session_id, "codex", pid));
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "codex app-server stdin is unavailable".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "codex app-server stdout is unavailable".to_string())?;
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(drain_child_stderr("codex app-server", stderr));
+        }
+        Ok(Self {
+            handle: CodexAppServerHandle {
+                child: Arc::new(Mutex::new(child)),
+                stdin: Arc::new(Mutex::new(Some(stdin))),
+                pid_registration,
+            },
+            stdout: BufReader::new(stdout).lines(),
+        })
+    }
+
+    pub(crate) fn handle(&self) -> CodexAppServerHandle {
+        self.handle.clone()
+    }
+
+    pub(crate) async fn next_json(&mut self) -> Result<Option<Value>, String> {
+        let Some(line) = self
+            .stdout
+            .next_line()
+            .await
+            .map_err(|error| format!("failed to read codex app-server stdout: {error}"))?
+        else {
+            return Ok(None);
+        };
+        decode_jsonrpc_line(&line).map(Some)
+    }
+
+    pub(crate) async fn shutdown(self) {
+        self.handle.shutdown().await;
+    }
+}
+
+pub(crate) fn encode_jsonl(message: &Value) -> Result<Vec<u8>, String> {
+    let mut line = serde_json::to_vec(message).map_err(|e| e.to_string())?;
+    line.push(b'\n');
+    Ok(line)
+}
+
+pub(crate) fn decode_jsonrpc_line(line: &str) -> Result<Value, String> {
+    serde_json::from_str::<Value>(line).map_err(|e| format!("invalid app-server JSON-RPC: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_jsonl_encode_decode() {
+        let line = encode_jsonl(&json!({"id": 1, "result": {}})).unwrap();
+        assert!(line.ends_with(b"\n"));
+        let decoded = decode_jsonrpc_line(std::str::from_utf8(&line).unwrap().trim()).unwrap();
+        assert_eq!(decoded["id"], 1);
+    }
+}

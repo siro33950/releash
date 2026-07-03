@@ -125,6 +125,7 @@ pub struct WorkflowSection {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClaudeAgentSection {
+    pub cli_path: Option<String>,
     /// registry の `fixed_models()` が優先されるため通常未使用（互換用に残す）。
     #[serde(default)]
     pub models: Vec<String>,
@@ -446,6 +447,10 @@ mod config_models_tests {
         assert_eq!(roundtripped.notion.len(), config.notion.len());
         assert_eq!(roundtripped.agents.default, config.agents.default);
         assert_eq!(
+            roundtripped.agents.claude.cli_path,
+            config.agents.claude.cli_path
+        );
+        assert_eq!(
             roundtripped.agents.claude.models,
             config.agents.claude.models
         );
@@ -506,6 +511,7 @@ mod config_models_tests {
             agents: AgentsSection {
                 default: Some("codex".to_string()),
                 claude: ClaudeAgentSection {
+                    cli_path: Some("/opt/bin/claude".to_string()),
                     models: vec!["claude-model".to_string()],
                 },
                 codex: CodexAgentSection {

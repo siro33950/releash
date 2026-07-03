@@ -1,5 +1,5 @@
-use std::path::Path;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -81,12 +81,27 @@ pub type SessionReaderPort = dyn AgentSessionReader<
 /// 検証するために用いる。
 #[cfg(test)]
 pub(crate) type SessionSaveHook = Arc<dyn Fn(&ChatSession) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type SessionAppendMessageHook =
+    Arc<dyn Fn(&str, &ChatMessage) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type SessionPersistPartsHook =
+    Arc<dyn Fn(&str, &str, &[MessagePart]) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type SessionAppendEventHook =
+    Arc<dyn Fn(&str, &AgentSessionEvent) -> Result<(), String> + Send + Sync>;
 
 pub struct SessionStore {
     storage: Arc<dyn SessionStoragePort>,
     state_change_listeners: RwLock<Vec<SessionStateChangeListener>>,
     #[cfg(test)]
     save_hook: RwLock<Option<SessionSaveHook>>,
+    #[cfg(test)]
+    append_message_hook: RwLock<Option<SessionAppendMessageHook>>,
+    #[cfg(test)]
+    persist_parts_hook: RwLock<Option<SessionPersistPartsHook>>,
+    #[cfg(test)]
+    append_event_hook: RwLock<Option<SessionAppendEventHook>>,
 }
 
 fn compact_session_title(title: &str) -> String {
@@ -120,6 +135,10 @@ impl AgentSessionReader for SessionStore {
         session_id: &str,
     ) -> Result<Option<String>, String> {
         self.storage.session_title(app_data_dir, session_id)
+    }
+
+    fn session_titles(&self, app_data_dir: &Path) -> Result<HashMap<String, String>, String> {
+        self.storage.session_titles(app_data_dir)
     }
 
     fn get_session_meta(
@@ -199,12 +218,33 @@ impl SessionStore {
             state_change_listeners: RwLock::new(Vec::new()),
             #[cfg(test)]
             save_hook: RwLock::new(None),
+            #[cfg(test)]
+            append_message_hook: RwLock::new(None),
+            #[cfg(test)]
+            persist_parts_hook: RwLock::new(None),
+            #[cfg(test)]
+            append_event_hook: RwLock::new(None),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn set_save_hook_for_test(&self, hook: SessionSaveHook) {
         *self.save_hook.write() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_append_message_hook_for_test(&self, hook: SessionAppendMessageHook) {
+        *self.append_message_hook.write() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_persist_parts_hook_for_test(&self, hook: SessionPersistPartsHook) {
+        *self.persist_parts_hook.write() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_append_event_hook_for_test(&self, hook: SessionAppendEventHook) {
+        *self.append_event_hook.write() = Some(hook);
     }
 
     pub fn list_sessions(
@@ -273,12 +313,17 @@ impl SessionStore {
         self.set_session_state(app_data_dir, session_id, SessionState::Archived)
     }
 
+    #[allow(dead_code)] // Search uses session_titles() to avoid N+1; single-title lookup is retained for focused callers.
     pub fn session_title(
         &self,
         app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<String>, String> {
         self.storage.session_title(app_data_dir, session_id)
+    }
+
+    pub fn session_titles(&self, app_data_dir: &Path) -> Result<HashMap<String, String>, String> {
+        self.storage.session_titles(app_data_dir)
     }
 
     pub fn set_session_title(
@@ -424,6 +469,10 @@ impl SessionStore {
         session_id: &str,
         event: AgentSessionEvent,
     ) -> Result<SessionState, String> {
+        #[cfg(test)]
+        if let Some(hook) = self.append_event_hook.read().clone() {
+            hook(session_id, &event)?;
+        }
         let events = self
             .storage
             .append_session_event(app_data_dir, session_id, &event)?;
@@ -433,6 +482,20 @@ impl SessionStore {
             .session_state;
         self.set_session_state(app_data_dir, session_id, projected_state.clone())?;
         Ok(projected_state)
+    }
+
+    pub fn append_session_event_without_projection(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        event: AgentSessionEvent,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(hook) = self.append_event_hook.read().clone() {
+            hook(session_id, &event)?;
+        }
+        self.storage
+            .append_session_event_without_projection(app_data_dir, session_id, &event)
     }
 
     pub fn load_previous_human_message_before_agent(
@@ -459,6 +522,7 @@ impl SessionStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn list_worktree_sessions(
         &self,
         app_data_dir: &Path,
@@ -664,7 +728,7 @@ impl SessionStore {
         selected_model: Option<String>,
     ) -> Result<(), String> {
         self.update_meta_only(app_data_dir, session_id, |meta| {
-            meta.backend_id = Some(backend_id);
+            meta.backend_id = backend_id;
             meta.selected_model = selected_model;
             meta.updated_at = now_timestamp();
             Ok(())
@@ -672,6 +736,7 @@ impl SessionStore {
         Ok(())
     }
 
+    #[allow(dead_code)] // issues-1301 G-1: retained for permission profile settings surface; current runtime only reads the stored profile id.
     pub fn update_permission_profile_id(
         &self,
         app_data_dir: &Path,
@@ -710,6 +775,7 @@ impl SessionStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn update_agent_session_id_if_changed(
         &self,
         app_data_dir: &Path,
@@ -802,6 +868,10 @@ impl SessionStore {
         session_id: &str,
         message: &ChatMessage,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(hook) = self.append_message_hook.read().clone() {
+            hook(session_id, message)?;
+        }
         self.storage
             .append_message(app_data_dir, session_id, message)
     }
@@ -835,6 +905,10 @@ impl SessionStore {
         streaming_final_seq: u64,
         completed_at: Option<f64>,
     ) -> Result<Vec<MessagePart>, String> {
+        #[cfg(test)]
+        if let Some(hook) = self.persist_parts_hook.read().clone() {
+            hook(session_id, message_id, parts)?;
+        }
         self.storage.persist_message_parts(
             app_data_dir,
             session_id,

@@ -5,12 +5,12 @@
 //!   split session layout (`meta.json` + `messages/{seq}.json` + `index.json`)
 //!   stores, so the storage format stays compatible.
 //! - issues-1214: live-only deltas are kept out of `AgentSessionEvent`, leaving
-//!   a clear boundary for a future seq-delta streaming protocol. The current
-//!   bridge integration keeps live-only SDK deltas inside the legacy streaming
-//!   accumulator; only durable parts and terminal live blocks are appended here.
-//! - issues-1217: runtime integration remains in `bridge_common.rs`; this
-//!   pure module can move behind a later runtime/stream/persist split without
-//!   changing the event vocabulary.
+//!   a clear boundary for the runtime seq-delta streaming protocol. Live
+//!   buffers stay in `usecase::agent_session::runtime`; only durable parts and
+//!   terminal live blocks are appended here.
+//! - issues-1217: runtime integration is owned by
+//!   `usecase::agent_session::runtime`; this pure module can move behind a
+//!   later runtime/stream/persist split without changing the event vocabulary.
 
 mod events;
 mod finalization;
@@ -19,13 +19,13 @@ mod part_events;
 mod projector;
 
 pub use events::{
-    human_parts_from_content_images, AgentSessionEvent, InterruptReason, PermissionDecision,
-    PromptInput, TurnStopReason, TurnTokenUsage,
+    AgentSessionEvent, InterruptReason, PermissionDecision, PromptInput, TurnStopReason,
+    TurnTokenUsage,
 };
+pub(crate) use finalization::finalize_turn;
 pub use log::TurnEventLog;
+pub(crate) use part_events::append_part_events;
 pub use part_events::PartEventMode;
-#[cfg(test)]
-pub use projector::project;
 pub use projector::{AgentTurnFailureSignal, WorkflowTurnCompleteInput};
 
 #[cfg(test)]

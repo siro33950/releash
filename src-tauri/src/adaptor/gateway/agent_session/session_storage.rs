@@ -73,6 +73,10 @@ impl crate::domain::agent_session::AgentSessionReader for FileSessionStorage {
         FileSessionStorage::session_title(self, app_data_dir, session_id)
     }
 
+    fn session_titles(&self, app_data_dir: &Path) -> Result<HashMap<String, String>, String> {
+        FileSessionStorage::session_titles(self, app_data_dir)
+    }
+
     fn get_session_meta(
         &self,
         app_data_dir: &Path,
@@ -226,5 +230,19 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         event: &Self::Event,
     ) -> Result<Vec<Self::Event>, String> {
         FileSessionStorage::append_session_event(self, app_data_dir, session_id, event)
+    }
+
+    fn append_session_event_without_projection(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        event: &Self::Event,
+    ) -> Result<(), String> {
+        FileSessionStorage::append_session_event_without_projection(
+            self,
+            app_data_dir,
+            session_id,
+            event,
+        )
     }
 }

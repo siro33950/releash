@@ -72,6 +72,7 @@ function setContext(sessionsById: Record<string, ChatSession>) {
 		getSessionPlanMode: (sessionId: string) =>
 			sessionsById[sessionId]?.planMode ?? false,
 		getSessionSelectedModel: vi.fn().mockReturnValue(null),
+		getSessionCanChangeBackend: vi.fn().mockReturnValue(false),
 		getSessionPendingQueue: vi.fn().mockReturnValue([]),
 		getSessionRuntimeSlashCommands: vi.fn().mockReturnValue([]),
 		availableModels: [],

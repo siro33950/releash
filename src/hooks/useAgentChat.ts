@@ -174,6 +174,7 @@ export interface UseAgentChatResult {
 	getSessionPermissionMode: (sessionId: string) => PermissionMode;
 	getSessionPlanMode: (sessionId: string) => PlanMode;
 	getSessionSelectedModel: (sessionId: string) => string | null;
+	getSessionCanChangeBackend: (sessionId: string) => boolean;
 	getSessionPendingQueue: (sessionId: string) => QueuedAgentTurn[];
 	getSessionLatestTokenUsage: (sessionId: string) => TokenUsage | null;
 	getSessionRuntimeSlashCommands: (sessionId: string) => SlashCommand[];
@@ -260,6 +261,7 @@ function dispatchSessionMeta(
 		turnPhase: TurnPhase;
 		selectedModel: string;
 		availableModels: ModelInfo[];
+		canChangeBackend: boolean;
 		pendingQueue?: QueuedAgentTurn[];
 		latestTokenUsage?: TokenUsage | null;
 	},
@@ -292,6 +294,11 @@ function dispatchSessionMeta(
 		type: "SET_AVAILABLE_MODELS",
 		models: response.availableModels ?? [],
 		backendId: response.session.backendId,
+	});
+	dispatch({
+		type: "SET_CAN_CHANGE_BACKEND",
+		sessionId,
+		value: response.canChangeBackend,
 	});
 	dispatch({
 		type: "SET_PENDING_QUEUE",
@@ -875,6 +882,11 @@ export function useAgentChat(
 					sessionId: responseSessionId,
 					queue: response.pendingQueue,
 				});
+				dispatch({
+					type: "SET_CAN_CHANGE_BACKEND",
+					sessionId: responseSessionId,
+					value: response.canChangeBackend,
+				});
 				// 新規作成 session の場合、active を切り替える（既存 sessionId 指定で送った場合は
 				// active を変更しない — Workflow panel から step session に送ったときに Main の
 				// active を上書きしないため）。
@@ -1445,6 +1457,7 @@ export function useAgentChat(
 	const pendingQueuesState = state.pendingQueues;
 	const latestTokenUsageState = state.latestTokenUsage;
 	const runtimeSlashCommandsState = state.runtimeSlashCommands;
+	const canChangeBackendState = state.canChangeBackend;
 	const sessionsByIdState = state.sessionsById;
 	const getSessionTurnPhase = useCallback(
 		(sessionId: string): TurnPhase => turnPhasesState[sessionId] ?? "idle",
@@ -1476,6 +1489,10 @@ export function useAgentChat(
 	const getSessionSelectedModel = useCallback(
 		(sessionId: string): string | null => sessionModelsState[sessionId] ?? null,
 		[sessionModelsState],
+	);
+	const getSessionCanChangeBackend = useCallback(
+		(sessionId: string): boolean => canChangeBackendState[sessionId] ?? false,
+		[canChangeBackendState],
 	);
 	const getSessionPendingQueue = useCallback(
 		(sessionId: string): QueuedAgentTurn[] =>
@@ -1560,6 +1577,7 @@ export function useAgentChat(
 		getSessionPermissionMode,
 		getSessionPlanMode,
 		getSessionSelectedModel,
+		getSessionCanChangeBackend,
 		getSessionPendingQueue,
 		getSessionLatestTokenUsage,
 		getSessionRuntimeSlashCommands,
