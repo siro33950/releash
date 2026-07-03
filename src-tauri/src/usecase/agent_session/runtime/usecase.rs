@@ -1042,6 +1042,20 @@ impl AgentSessionRuntimeUsecase {
         start_next_queued_turn(&self.ctx, session_id).await;
     }
 
+    #[cfg(test)]
+    pub(crate) async fn stream_emit_failure_state_for_test(
+        &self,
+        session_id: &str,
+    ) -> Option<(u32, bool)> {
+        let sessions = self.ctx.sessions.lock().await;
+        sessions.get(session_id).map(|state| {
+            (
+                state.stream_emit_failure_count,
+                state.stream_emit_suppressed,
+            )
+        })
+    }
+
     pub async fn skill_catalog(
         &self,
         backend_id: Option<&str>,
@@ -2297,7 +2311,7 @@ fn spawn_delayed_stream_flush(
 
 async fn flush_streaming_update(ctx: &RuntimeContext, session_id: &str, force_persist: bool) {
     let now = std::time::Instant::now();
-    let (payload, persist_snapshot) = {
+    let (payload, persist_snapshot, emit_suppressed) = {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
             return;
@@ -2338,7 +2352,7 @@ async fn flush_streaming_update(ctx: &RuntimeContext, session_id: &str, force_pe
                     state.last_stream_persist_at = Some(now);
                     state.streaming_parts.clone()
                 });
-        (payload, persist)
+        (payload, persist, state.stream_emit_suppressed)
     };
 
     if let Some(parts) = persist_snapshot {
@@ -2352,6 +2366,10 @@ async fn flush_streaming_update(ctx: &RuntimeContext, session_id: &str, force_pe
         ) {
             log::warn!("failed to persist coalesced streaming parts for {session_id}: {error}");
         }
+    }
+
+    if emit_suppressed {
+        return;
     }
 
     let emitted = ctx.notifier.streaming_delta(AgentStreamingDeltaPayload {
@@ -2371,26 +2389,9 @@ async fn flush_streaming_update(ctx: &RuntimeContext, session_id: &str, force_pe
         if emitted {
             state.streaming_delta_seq = state.streaming_delta_seq.max(payload.seq);
             state.last_stream_emit_at = Some(now);
+            state.stream_emit_failure_count = 0;
         } else {
-            log::warn!(
-                "agent-streaming-delta emit failure: chat_session={} message_id={} seq={} snapshot={} part_count={}",
-                session_id,
-                payload.message_id,
-                payload.seq,
-                payload.snapshot,
-                payload.parts.len()
-            );
-            if state.retry_stream_delta.is_none() {
-                state.retry_stream_delta = Some(PendingStreamDelta {
-                    snapshot: true,
-                    parts: state.streaming_parts.clone(),
-                    ..payload
-                });
-            }
-            if !state.stream_flush_scheduled {
-                state.stream_flush_scheduled = true;
-                retry_delay = Some(super::streaming::STREAMING_EMIT_INTERVAL);
-            }
+            retry_delay = on_stream_emit_failure(state, session_id, &payload);
         }
     };
     if let Some(delay) = retry_delay {
@@ -2403,6 +2404,15 @@ async fn emit_streaming_delta_or_retry(
     session_id: &str,
     payload: PendingStreamDelta,
 ) {
+    {
+        let sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get(session_id) else {
+            return;
+        };
+        if state.stream_emit_suppressed {
+            return;
+        }
+    }
     let now = std::time::Instant::now();
     let emitted = ctx.notifier.streaming_delta(AgentStreamingDeltaPayload {
         chat_session_id: session_id.to_string(),
@@ -2411,38 +2421,75 @@ async fn emit_streaming_delta_or_retry(
         snapshot: payload.snapshot,
         parts: payload.parts.clone(),
     });
-    let mut retry_delay = None;
-    {
+    let retry_delay = {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
             return;
         };
         if emitted {
             state.last_stream_emit_at = Some(now);
+            state.stream_emit_failure_count = 0;
             return;
         }
-        log::warn!(
-            "agent-streaming-delta emit failure: chat_session={} message_id={} seq={} snapshot={} part_count={}",
-            session_id,
-            payload.message_id,
-            payload.seq,
-            payload.snapshot,
-            payload.parts.len()
-        );
-        if state.retry_stream_delta.is_none() {
-            state.retry_stream_delta = Some(PendingStreamDelta {
-                snapshot: true,
-                parts: state.streaming_parts.clone(),
-                ..payload
-            });
-        }
-        if !state.stream_flush_scheduled {
-            state.stream_flush_scheduled = true;
-            retry_delay = Some(super::streaming::STREAMING_EMIT_INTERVAL);
-        }
+        on_stream_emit_failure(state, session_id, &payload)
     };
     if let Some(delay) = retry_delay {
         spawn_delayed_stream_flush(ctx, session_id.to_string(), delay);
+    }
+}
+
+const STREAM_EMIT_FAILURE_FALLBACK_LIMIT: u32 = 5;
+const STREAM_EMIT_FAILURE_STOP_LIMIT: u32 = STREAM_EMIT_FAILURE_FALLBACK_LIMIT * 2;
+
+fn on_stream_emit_failure(
+    state: &mut RuntimeSessionState,
+    session_id: &str,
+    payload: &PendingStreamDelta,
+) -> Option<std::time::Duration> {
+    state.stream_emit_failure_count = state.stream_emit_failure_count.saturating_add(1);
+    let failures = state.stream_emit_failure_count;
+    log::warn!(
+        "agent-streaming-delta emit failure: chat_session={} message_id={} seq={} snapshot={} part_count={} consecutive_failures={}",
+        session_id,
+        payload.message_id,
+        payload.seq,
+        payload.snapshot,
+        payload.parts.len(),
+        failures
+    );
+    if failures >= STREAM_EMIT_FAILURE_STOP_LIMIT {
+        log::error!(
+            "agent-streaming-delta emit failed {failures} consecutive times for chat_session={session_id}; stopping streaming emit until turn end"
+        );
+        state.stream_emit_suppressed = true;
+        state.retry_stream_delta = None;
+        state.pending_stream_snapshot = false;
+        state.pending_stream_parts.clear();
+        state.pending_stream_bytes = 0;
+        return None;
+    }
+    if failures >= STREAM_EMIT_FAILURE_FALLBACK_LIMIT {
+        if failures == STREAM_EMIT_FAILURE_FALLBACK_LIMIT {
+            log::warn!(
+                "agent-streaming-delta emit failed {failures} consecutive times for chat_session={session_id}; falling back to full snapshot resync"
+            );
+        }
+        state.retry_stream_delta = None;
+        state.pending_stream_snapshot = true;
+        state.pending_stream_parts.clear();
+        state.pending_stream_bytes = 0;
+    } else if state.retry_stream_delta.is_none() {
+        state.retry_stream_delta = Some(PendingStreamDelta {
+            snapshot: true,
+            parts: state.streaming_parts.clone(),
+            ..payload.clone()
+        });
+    }
+    if state.stream_flush_scheduled {
+        None
+    } else {
+        state.stream_flush_scheduled = true;
+        Some(super::streaming::STREAMING_EMIT_INTERVAL)
     }
 }
 
@@ -2751,6 +2798,8 @@ async fn complete_turn(
             state.domain_streaming_parts.clear();
             state.streaming_parts.clear();
             state.streaming_delta_seq = 0;
+            state.stream_emit_failure_count = 0;
+            state.stream_emit_suppressed = false;
         }
     };
     let session_state = projected
@@ -4038,6 +4087,7 @@ mod tests {
         permission_modes: Mutex<Vec<(String, String)>>,
         model_updates: Mutex<Vec<(String, Vec<ModelInfo>, String)>>,
         streaming_delta_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+        fail_streaming_delta: Mutex<bool>,
     }
 
     impl RecordingAgentNotifier {
@@ -4060,6 +4110,10 @@ mod tests {
         fn set_streaming_delta_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
             *self.streaming_delta_hook.lock().unwrap() = Some(hook);
         }
+
+        fn set_streaming_delta_failure(&self, fail: bool) {
+            *self.fail_streaming_delta.lock().unwrap() = fail;
+        }
     }
 
     impl AgentSessionEventNotifier for RecordingAgentNotifier {
@@ -4072,7 +4126,7 @@ mod tests {
                 hook();
             }
             self.streaming_deltas.lock().unwrap().push(payload);
-            true
+            !*self.fail_streaming_delta.lock().unwrap()
         }
 
         fn supported_commands_updated(
@@ -4293,6 +4347,47 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if notifier.streaming_deltas().len() >= expected_count {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_stream_emit_failure_state(
+        usecase: &AgentSessionRuntimeUsecase,
+        session_id: &str,
+        predicate: impl Fn(u32, bool) -> bool,
+    ) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some((failures, suppressed)) =
+                    usecase.stream_emit_failure_state_for_test(session_id).await
+                {
+                    if predicate(failures, suppressed) {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_last_stream_delta(
+        notifier: &RecordingAgentNotifier,
+        predicate: impl Fn(&AgentStreamingDeltaPayload) -> bool,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if notifier
+                    .streaming_deltas()
+                    .last()
+                    .is_some_and(|delta| predicate(delta))
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -5482,6 +5577,289 @@ mod tests {
                     parent_tool_use_id: None,
                 },
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_delta_emit失敗五連続で通常再送を打ち切りsnapshotフォールバックへ切り替わる(
+    ) {
+        // Given: a notifier that permanently fails to emit streaming deltas.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        event_notifier.set_streaming_delta_failure(true);
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store,
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id.clone();
+
+        // When: the first delta keeps failing and another delta arrives after the fallback switch.
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "Hel".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_stream_emit_failure_state(&usecase, &session_id, |failures, _| failures >= 5)
+            .await;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "lo".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_stream_emit_failure_state(&usecase, &session_id, |_, suppressed| suppressed).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Then: attempts converge at the failure budget, every attempt is a snapshot resync, and
+        // the fallback attempts carry the current full snapshot instead of the frozen retry.
+        let deltas = event_notifier.streaming_deltas();
+        assert_eq!(deltas.len(), 10);
+        assert!(deltas.iter().all(|delta| delta.snapshot && delta.seq == 1));
+        assert!(deltas.iter().any(|delta| delta.parts
+            == vec![MessagePart::Text {
+                content: "Hello".to_string(),
+                parent_tool_use_id: None,
+            }]));
+        assert_eq!(
+            usecase
+                .stream_emit_failure_state_for_test(&session_id)
+                .await,
+            Some((10, true))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_delta_フォールバック後にnotifier回復でsnapshot再同期しdelta配信を再開する(
+    ) {
+        // Given: streaming emits that fail past the fallback threshold.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        event_notifier.set_streaming_delta_failure(true);
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store,
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id.clone();
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "Hel".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_stream_emit_failure_state(&usecase, &session_id, |failures, _| failures >= 6)
+            .await;
+
+        // When: the notifier recovers while the snapshot fallback is retrying.
+        event_notifier.set_streaming_delta_failure(false);
+        wait_for_stream_emit_failure_state(&usecase, &session_id, |failures, suppressed| {
+            failures == 0 && !suppressed
+        })
+        .await;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "lo".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_last_stream_delta(&event_notifier, |delta| !delta.snapshot).await;
+
+        // Then: the snapshot resync lands with seq 1 and the following delta resumes appends.
+        let deltas = event_notifier.streaming_deltas();
+        let resync = &deltas[deltas.len() - 2];
+        assert!(resync.snapshot);
+        assert_eq!(resync.seq, 1);
+        assert_eq!(
+            resync.parts,
+            vec![MessagePart::Text {
+                content: "Hel".to_string(),
+                parent_tool_use_id: None,
+            }]
+        );
+        let resumed = deltas.last().unwrap();
+        assert!(!resumed.snapshot);
+        assert_eq!(resumed.seq, 2);
+        assert_eq!(
+            resumed.parts,
+            vec![MessagePart::Text {
+                content: "lo".to_string(),
+                parent_tool_use_id: None,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_delta_emit完全停止後もturnは完了し確定messageが保存される() {
+        // Given: streaming emits that fail until the emit stop threshold is reached.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        event_notifier.set_streaming_delta_failure(true);
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id.clone();
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "hello".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_stream_emit_failure_state(&usecase, &session_id, |_, suppressed| suppressed).await;
+        let attempts_after_stop = event_notifier.streaming_deltas().len();
+
+        // When: another delta arrives after emit suppression, then the turn completes.
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: " world".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(event_notifier.streaming_deltas().len(), attempts_after_stop);
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+
+        // Then: no further emit attempts happen, the turn completes, and the final message is
+        // persisted with every accumulated part.
+        assert_eq!(event_notifier.streaming_deltas().len(), attempts_after_stop);
+        let restored = session_store
+            .load_full_session_for_restore(tmp.path(), &session_id)
+            .unwrap()
+            .unwrap();
+        let agent_message = restored
+            .messages
+            .iter()
+            .find(|message| message.role == MessageRole::Agent)
+            .unwrap();
+        assert_eq!(
+            agent_message.parts.as_ref().unwrap(),
+            &vec![MessagePart::Text {
+                content: "hello world".to_string(),
+                parent_tool_use_id: None,
+            }]
+        );
+        assert_eq!(
+            usecase
+                .stream_emit_failure_state_for_test(&session_id)
+                .await,
+            Some((0, false))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_delta_emit成功で連続失敗カウンタをリセットする() {
+        // Given: streaming emits that fail a few times below the fallback threshold.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        event_notifier.set_streaming_delta_failure(true);
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store,
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id.clone();
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "Hel".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_stream_emit_failure_state(&usecase, &session_id, |failures, _| failures >= 2)
+            .await;
+
+        // When: the notifier recovers before the fallback threshold.
+        event_notifier.set_streaming_delta_failure(false);
+
+        // Then: the retry succeeds, the counter resets, and delta delivery continues.
+        wait_for_stream_emit_failure_state(&usecase, &session_id, |failures, suppressed| {
+            failures == 0 && !suppressed
+        })
+        .await;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "lo".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_last_stream_delta(&event_notifier, |delta| !delta.snapshot).await;
+        let resumed = event_notifier.streaming_deltas().pop().unwrap();
+        assert_eq!(resumed.seq, 2);
+        assert_eq!(
+            resumed.parts,
+            vec![MessagePart::Text {
+                content: "lo".to_string(),
+                parent_tool_use_id: None,
+            }]
+        );
+        assert_eq!(
+            usecase
+                .stream_emit_failure_state_for_test(&session_id)
+                .await,
+            Some((0, false))
         );
     }
 

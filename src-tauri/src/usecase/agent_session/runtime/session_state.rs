@@ -39,6 +39,8 @@ pub(crate) struct RuntimeSessionState {
     pub pending_stream_bytes: usize,
     pub pending_stream_snapshot: bool,
     pub retry_stream_delta: Option<PendingStreamDelta>,
+    pub stream_emit_failure_count: u32,
+    pub stream_emit_suppressed: bool,
     pub last_stream_emit_at: Option<Instant>,
     pub last_stream_persist_at: Option<Instant>,
     pub stream_flush_scheduled: bool,
@@ -79,6 +81,8 @@ impl RuntimeSessionState {
             pending_stream_bytes: 0,
             pending_stream_snapshot: false,
             retry_stream_delta: None,
+            stream_emit_failure_count: 0,
+            stream_emit_suppressed: false,
             last_stream_emit_at: None,
             last_stream_persist_at: None,
             stream_flush_scheduled: false,
@@ -113,6 +117,8 @@ impl RuntimeSessionState {
         self.pending_stream_bytes = 0;
         self.pending_stream_snapshot = false;
         self.retry_stream_delta = None;
+        self.stream_emit_failure_count = 0;
+        self.stream_emit_suppressed = false;
         self.last_stream_emit_at = None;
         self.last_stream_persist_at = None;
         self.stream_flush_scheduled = false;
@@ -140,6 +146,8 @@ impl RuntimeSessionState {
         self.pending_stream_bytes = 0;
         self.pending_stream_snapshot = false;
         self.retry_stream_delta = None;
+        self.stream_emit_failure_count = 0;
+        self.stream_emit_suppressed = false;
         self.last_stream_emit_at = None;
         self.last_stream_persist_at = None;
         self.stream_flush_scheduled = false;
