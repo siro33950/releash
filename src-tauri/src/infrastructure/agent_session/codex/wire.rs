@@ -20,6 +20,12 @@
 //!   app-server contract.
 //! - User input server request method is `item/tool/requestUserInput`; the
 //!   dynamic tool name remains `request_user_input`.
+//! - Compaction (`thread/compact/start`) emitted `item/started` /
+//!   `item/completed` with `{ "type": "contextCompaction" }` items inside a
+//!   dedicated turn; the deprecated `thread/compacted` notification was not
+//!   emitted by 0.139.0. A failed compaction surfaces as an `error`
+//!   notification (`params.error.message`) followed by `turn/completed` with
+//!   `turn.status: "failed"` carrying the same `turn.error.message`.
 //! - `thread/settings/update` accepted
 //!   `{ threadId, permissions: null, approvalPolicy, sandboxPolicy }`.
 

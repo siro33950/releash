@@ -4495,6 +4495,71 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_failed終端したturnの後も同一sessionへの次sendは新turnを開始できる() {
+        // Given: a session whose turn ends as Failed (e.g. Codex remote compact failure).
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let compact_error =
+            "Error running remote compact task: stream disconnected before completion".to_string();
+        let first = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = first.session.id.clone();
+        wait_for_start_prompt_count(&controller, &session_id, 1).await;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Error {
+                    content: compact_error.clone(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Failed {
+                    error: compact_error,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+
+        // When: the user sends the next message to the same session.
+        let second = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session_id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "continue".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+
+        // Then: a new turn starts immediately instead of being queued.
+        assert!(second.agent_message.is_some());
+        assert!(second.queued_turn.is_none());
+        wait_for_start_prompt_count(&controller, &session_id, 2).await;
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::Streaming)
+        );
+    }
+
     async fn enqueue_second_turn_for_test(
         usecase: &Arc<AgentSessionRuntimeUsecase>,
         controller: &crate::test_support::TestAgentRuntimeController,
