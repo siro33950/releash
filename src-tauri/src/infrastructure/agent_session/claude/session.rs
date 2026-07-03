@@ -8,7 +8,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::domain::agent_session::entities::{
-    AttachmentPayload, InterruptReason, PermissionResponse, TurnResult,
+    AttachmentPayload, InterruptReason, MessagePart, PermissionResponse, TurnResult,
 };
 use crate::domain::agent_session::gateway::{
     AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, SessionSpec, TurnInput,
@@ -17,7 +17,7 @@ use crate::domain::agent_session::value_objects::{ModelId, PermissionMode};
 
 use super::convert::{convert_claude_message, ClaudeConvertState};
 use super::permission::claude_permission_response;
-use super::process::{ClaudeStdioHandle, ClaudeStdioProcess};
+use super::process::{ClaudeStdioHandle, ClaudeStdioProcess, ClaudeStdoutItem};
 use super::wire::{
     claude_wire_mode, control_request_subtype, initialize_request, interrupt_request, message_type,
     set_model_request, set_permission_mode_request, user_message, ClaudeWireMode,
@@ -68,6 +68,7 @@ struct ClaudeRuntimeState {
     turn_generation: u64,
     synthetic_abort_turn_generation: Option<u64>,
     discarded_synthetic_abort_generations: HashSet<u64>,
+    oversize_dropped_count: u64,
 }
 
 impl ClaudeSessionRuntime {
@@ -143,6 +144,7 @@ impl ClaudeRuntimeState {
             turn_generation: 0,
             synthetic_abort_turn_generation: None,
             discarded_synthetic_abort_generations: HashSet::new(),
+            oversize_dropped_count: 0,
         }
     }
 
@@ -340,7 +342,17 @@ async fn read_loop(
     let mut convert_state = ClaudeConvertState::new(requested_resume_id, initial_wire_mode);
     loop {
         match process.next_json().await {
-            Ok(Some(message)) => {
+            Ok(Some(ClaudeStdoutItem::OversizeDropped { bytes })) => {
+                if closed.load(Ordering::Relaxed) {
+                    break;
+                }
+                let event = {
+                    let mut state = state.lock().await;
+                    record_oversize_drop(&mut state, bytes)
+                };
+                let _ = events_tx.send(event);
+            }
+            Ok(Some(ClaudeStdoutItem::Json(message))) => {
                 if closed.load(Ordering::Relaxed) {
                     break;
                 }
@@ -383,6 +395,15 @@ async fn read_loop(
             }
         }
     }
+}
+
+fn record_oversize_drop(state: &mut ClaudeRuntimeState, bytes: usize) -> AgentRuntimeEvent {
+    state.oversize_dropped_count = state.oversize_dropped_count.saturating_add(1);
+    log::warn!("claude stdout dropped an oversized line: {bytes} bytes");
+    AgentRuntimeEvent::PartsMerged(vec![MessagePart::Error {
+        content: "backend からの応答 1 件がサイズ上限（8MB）を超えたため破棄しました".to_string(),
+        parent_tool_use_id: None,
+    }])
 }
 
 async fn remember_permission_input(message: &Value, state: &Arc<Mutex<ClaudeRuntimeState>>) {
@@ -519,28 +540,31 @@ async fn emit_crash_if_unexpected(
     if closed.load(Ordering::Relaxed) {
         return;
     }
-    let was_turn_active = {
+    let (was_turn_active, aborting, oversize_dropped_count) = {
         let mut state = state.lock().await;
         let was_turn_active = state.turn_active;
         let aborting = state.aborting;
         state.turn_active = false;
         state.aborting = false;
         state.pending_inputs.clear();
-        (was_turn_active, aborting)
+        (was_turn_active, aborting, state.oversize_dropped_count)
     };
-    if was_turn_active.0 {
+    let message = if oversize_dropped_count > 0 {
+        format!("{message}（サイズ超過破棄 {oversize_dropped_count} 件）")
+    } else {
+        message.to_string()
+    };
+    if was_turn_active {
         let _ = events_tx.send(AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
-            reason: if was_turn_active.1 {
+            reason: if aborting {
                 InterruptReason::Abort
             } else {
                 InterruptReason::Crash
             },
-            error: (!was_turn_active.1).then(|| message.to_string()),
+            error: (!aborting).then(|| message.clone()),
         }));
     }
-    let _ = events_tx.send(AgentRuntimeEvent::Fatal {
-        message: message.to_string(),
-    });
+    let _ = events_tx.send(AgentRuntimeEvent::Fatal { message });
 }
 
 fn prepare_start_turn_state(
@@ -555,6 +579,7 @@ fn prepare_start_turn_state(
     state.synthetic_abort_turn_generation = None;
     state.turn_generation = state.turn_generation.saturating_add(1);
     state.turn_active = true;
+    state.oversize_dropped_count = 0;
     let next_wire_mode = claude_wire_mode(input.permission_mode, input.plan_mode);
     let replace_spec = if restart_after_synthetic_abort || state.system_prompt != system_prompt {
         let mut spec = state.session_spec_with_system_prompt(system_prompt);
@@ -797,6 +822,98 @@ exec sleep 30
         assert!(state.turn_active);
         assert!(replace_spec.is_none());
         assert!(mode_update.is_none());
+    }
+
+    #[test]
+    fn test_record_oversize_dropは_error_partを合成しカウントを加算する() {
+        let mut state = test_state();
+
+        let event = record_oversize_drop(&mut state, 9 * 1024 * 1024);
+        let _ = record_oversize_drop(&mut state, 10 * 1024 * 1024);
+
+        assert_eq!(state.oversize_dropped_count, 2);
+        assert_eq!(
+            event,
+            AgentRuntimeEvent::PartsMerged(vec![MessagePart::Error {
+                content: "backend からの応答 1 件がサイズ上限（8MB）を超えたため破棄しました"
+                    .to_string(),
+                parent_tool_use_id: None,
+            }])
+        );
+    }
+
+    #[test]
+    fn test_prepare_start_turn_stateは_サイズ超過破棄カウントをリセットする() {
+        let mut state = test_state();
+        state.oversize_dropped_count = 3;
+
+        let input = TurnInput {
+            prompt: "next".to_string(),
+            images: Vec::new(),
+            system_prompt: state.system_prompt.clone(),
+            permission_mode: state.permission_mode,
+            plan_mode: state.plan_mode,
+            permission_profile_id: None,
+            editor_context: None,
+        };
+        prepare_start_turn_state(&mut state, &input, input.system_prompt.clone());
+
+        assert_eq!(state.oversize_dropped_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_emit_crash_if_unexpectedは_サイズ超過破棄件数を終端メッセージに含める() {
+        let state = Arc::new(Mutex::new(test_state()));
+        {
+            let mut state = state.lock().await;
+            state.turn_active = true;
+            state.oversize_dropped_count = 2;
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let closed = AtomicBool::new(false);
+
+        emit_crash_if_unexpected(&state, &tx, &closed, "boom").await;
+
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                reason: InterruptReason::Crash,
+                error: Some("boom（サイズ超過破棄 2 件）".to_string()),
+            })
+        );
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AgentRuntimeEvent::Fatal {
+                message: "boom（サイズ超過破棄 2 件）".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_emit_crash_if_unexpectedは_超過破棄なしならメッセージを変えない() {
+        let state = Arc::new(Mutex::new(test_state()));
+        {
+            let mut state = state.lock().await;
+            state.turn_active = true;
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let closed = AtomicBool::new(false);
+
+        emit_crash_if_unexpected(&state, &tx, &closed, "boom").await;
+
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                reason: InterruptReason::Crash,
+                error: Some("boom".to_string()),
+            })
+        );
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AgentRuntimeEvent::Fatal {
+                message: "boom".to_string(),
+            }
+        );
     }
 
     #[tokio::test]
