@@ -65,6 +65,9 @@ pub enum AgentRuntimeEvent {
     PermissionModeChanged(PermissionMode),
     SlashCommandsUpdated(Vec<SlashCommand>),
     TokenUsageUpdated(TokenUsage),
+    /// backend が turn 継続中であることを示す生存通知。
+    /// message part を伴わず、stale 監視の progress 更新のみに使う。
+    KeepAlive,
     TurnCompleted(TurnResult),
     Fatal {
         message: String,

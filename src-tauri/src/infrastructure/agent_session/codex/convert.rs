@@ -28,6 +28,7 @@ pub(crate) struct CodexConvertState {
     pub requested_resume_id: Option<String>,
     pub startup_request_id: Option<u64>,
     pub client_response_methods: HashMap<u64, String>,
+    pub compaction_in_progress: bool,
 }
 
 pub(crate) fn convert_jsonrpc_message(
@@ -129,25 +130,41 @@ fn convert_notification(
                 }])
             })
             .unwrap_or_default(),
-        NOTIFY_ITEM_STARTED => parts(item_started_parts(
-            params.get("item").unwrap_or(&Value::Null),
-        )),
-        NOTIFY_ITEM_COMPLETED => parts(item_completed_parts(
-            params.get("item").unwrap_or(&Value::Null),
-        )),
+        NOTIFY_ITEM_STARTED => {
+            let item = params.get("item").unwrap_or(&Value::Null);
+            if is_context_compaction_item(item) {
+                state.compaction_in_progress = true;
+                return parts(vec![compaction_notification(
+                    "in_progress",
+                    "Compacting conversation",
+                )]);
+            }
+            parts(item_started_parts(item))
+        }
+        NOTIFY_ITEM_COMPLETED => {
+            let item = params.get("item").unwrap_or(&Value::Null);
+            if is_context_compaction_item(item) {
+                state.compaction_in_progress = false;
+                return parts(vec![compaction_notification(
+                    "completed",
+                    "Conversation compacted",
+                )]);
+            }
+            parts(item_completed_parts(item))
+        }
         NOTIFY_COMMAND_OUTPUT_DELTA | NOTIFY_FILE_CHANGE_OUTPUT_DELTA => {
             command_output_delta_part(params)
                 .map(parts_one)
                 .unwrap_or_default()
         }
         NOTIFY_FILE_CHANGE_PATCH_UPDATED => parts(file_change_patch_parts(params)),
-        NOTIFY_THREAD_COMPACTED => parts(vec![MessagePart::SystemNotification {
-            notification_type: SystemNotificationType::Compaction,
-            status: "completed".to_string(),
-            label: "Conversation compacted".to_string(),
-            detail: None,
-            hook_id: None,
-        }]),
+        NOTIFY_THREAD_COMPACTED => {
+            state.compaction_in_progress = false;
+            parts(vec![compaction_notification(
+                "completed",
+                "Conversation compacted",
+            )])
+        }
         NOTIFY_THREAD_TOKEN_USAGE_UPDATED => {
             let usage = token_usage_from_value(params);
             state.latest_usage = Some(usage);
@@ -161,14 +178,30 @@ fn convert_notification(
         }]),
         NOTIFY_TURN_COMPLETED => {
             state.turn_id = None;
+            let compaction_was_in_progress = state.compaction_in_progress;
+            state.compaction_in_progress = false;
             let status = get_string(params, &["turn", "status"]).unwrap_or("completed");
             let result = match status {
-                "failed" | "errored" => TurnResult::Failed {
-                    error: get_string(params, &["turn", "error", "message"])
+                "failed" | "errored" => {
+                    let error = get_string(params, &["turn", "error", "message"])
                         .unwrap_or("Codex turn failed")
-                        .to_string(),
-                    token_usage: state.latest_usage,
-                },
+                        .to_string();
+                    let mut failure_parts = Vec::new();
+                    if compaction_was_in_progress {
+                        failure_parts.push(compaction_notification("failed", "Compaction failed"));
+                    }
+                    failure_parts.push(MessagePart::Error {
+                        content: error.clone(),
+                        parent_tool_use_id: None,
+                    });
+                    return vec![
+                        AgentRuntimeEvent::PartsMerged(failure_parts),
+                        AgentRuntimeEvent::TurnCompleted(TurnResult::Failed {
+                            error,
+                            token_usage: state.latest_usage,
+                        }),
+                    ];
+                }
                 "interrupted" => TurnResult::Interrupted {
                     reason: crate::domain::agent_session::entities::InterruptReason::Abort,
                     error: None,
@@ -242,6 +275,20 @@ fn tool_result_part(id: &str, content: String, is_error: bool) -> MessagePart {
         parent_tool_use_id: None,
         content_ref: None,
         summary: None,
+    }
+}
+
+fn is_context_compaction_item(item: &Value) -> bool {
+    get_string(item, &["type"]) == Some("contextCompaction")
+}
+
+fn compaction_notification(status: impl Into<String>, label: impl Into<String>) -> MessagePart {
+    MessagePart::SystemNotification {
+        notification_type: SystemNotificationType::Compaction,
+        status: status.into(),
+        label: label.into(),
+        detail: None,
+        hook_id: None,
     }
 }
 
@@ -805,6 +852,174 @@ mod tests {
                 ..
             }) if tool_name == "CodexPermissions"
         ));
+    }
+
+    #[test]
+    fn test_convert_context_compaction_startedは_in_progress通知へ変換する() {
+        let mut state = CodexConvertState::default();
+        let events = convert_jsonrpc_message(
+            &json!({
+                "method": "item/started",
+                "params": { "item": { "type": "contextCompaction", "id": "compact-1" } }
+            }),
+            &mut state,
+        );
+
+        assert_eq!(
+            events,
+            vec![AgentRuntimeEvent::PartsMerged(vec![
+                MessagePart::SystemNotification {
+                    notification_type: SystemNotificationType::Compaction,
+                    status: "in_progress".to_string(),
+                    label: "Compacting conversation".to_string(),
+                    detail: None,
+                    hook_id: None,
+                }
+            ])]
+        );
+        assert!(state.compaction_in_progress);
+    }
+
+    #[test]
+    fn test_convert_context_compaction_completedは_completed通知で閉じる() {
+        let mut state = CodexConvertState::default();
+        convert_jsonrpc_message(
+            &json!({
+                "method": "item/started",
+                "params": { "item": { "type": "contextCompaction", "id": "compact-1" } }
+            }),
+            &mut state,
+        );
+
+        let events = convert_jsonrpc_message(
+            &json!({
+                "method": "item/completed",
+                "params": { "item": { "type": "contextCompaction", "id": "compact-1" } }
+            }),
+            &mut state,
+        );
+
+        assert_eq!(
+            events,
+            vec![AgentRuntimeEvent::PartsMerged(vec![
+                MessagePart::SystemNotification {
+                    notification_type: SystemNotificationType::Compaction,
+                    status: "completed".to_string(),
+                    label: "Conversation compacted".to_string(),
+                    detail: None,
+                    hook_id: None,
+                }
+            ])]
+        );
+        assert!(!state.compaction_in_progress);
+    }
+
+    #[test]
+    fn test_convert_turn_failedは_error_partと_failed完了へ変換する() {
+        let mut state = CodexConvertState::default();
+        state.turn_id = Some("turn-1".to_string());
+
+        let events = convert_jsonrpc_message(
+            &json!({
+                "method": "turn/completed",
+                "params": {
+                    "turn": {
+                        "id": "turn-1",
+                        "status": "failed",
+                        "error": { "message": "boom" }
+                    }
+                }
+            }),
+            &mut state,
+        );
+
+        assert_eq!(
+            events,
+            vec![
+                AgentRuntimeEvent::PartsMerged(vec![MessagePart::Error {
+                    content: "boom".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Failed {
+                    error: "boom".to_string(),
+                    token_usage: None,
+                }),
+            ]
+        );
+        assert_eq!(state.turn_id, None);
+    }
+
+    #[test]
+    fn test_convert_compact失敗turnは_error_partで構造化しcompaction通知をfailedで閉じる() {
+        let compact_error = "Error running remote compact task: stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses/compact)";
+        let mut state = CodexConvertState::default();
+        let mut events = Vec::new();
+        events.extend(convert_jsonrpc_message(
+            &json!({
+                "method": "item/started",
+                "params": { "item": { "type": "contextCompaction", "id": "compact-1" } }
+            }),
+            &mut state,
+        ));
+        events.extend(convert_jsonrpc_message(
+            &json!({
+                "method": "error",
+                "params": { "error": { "message": compact_error }, "willRetry": false }
+            }),
+            &mut state,
+        ));
+        events.extend(convert_jsonrpc_message(
+            &json!({
+                "method": "turn/completed",
+                "params": {
+                    "turn": { "status": "failed", "error": { "message": compact_error } }
+                }
+            }),
+            &mut state,
+        ));
+
+        assert!(matches!(
+            events.last(),
+            Some(AgentRuntimeEvent::TurnCompleted(TurnResult::Failed { error, .. }))
+                if error == compact_error
+        ));
+
+        let mut merged = Vec::new();
+        for event in &events {
+            if let AgentRuntimeEvent::PartsMerged(parts) = event {
+                for part in parts {
+                    crate::domain::agent_session::entities::merge_part(&mut merged, part.clone());
+                }
+            }
+        }
+        assert!(!merged
+            .iter()
+            .any(|part| matches!(part, MessagePart::Text { .. })));
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|part| matches!(
+                    part,
+                    MessagePart::Error { content, .. } if content == compact_error
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            merged
+                .iter()
+                .filter_map(|part| match part {
+                    MessagePart::SystemNotification {
+                        notification_type: SystemNotificationType::Compaction,
+                        status,
+                        ..
+                    } => Some(status.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["failed"]
+        );
+        assert!(!state.compaction_in_progress);
     }
 
     #[test]

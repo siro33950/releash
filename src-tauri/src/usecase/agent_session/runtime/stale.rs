@@ -1,6 +1,8 @@
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use super::session_state::RuntimeSessionPhase;
+use crate::domain::agent_session::entities::MessagePart;
 use crate::usecase::agent_session::session::ChatSession;
 
 const DEFAULT_STALE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -27,6 +29,33 @@ pub(crate) fn timeout_from_secs(value: Option<u64>) -> Duration {
         .map(Duration::from_secs)
         .unwrap_or(DEFAULT_STALE_TIMEOUT)
         .min(MAX_STALE_TIMEOUT)
+}
+
+/// ToolResult が未到着の ToolUse が残っている（= backend 側でツール実行中）か。
+pub(crate) fn has_in_flight_tool_use(parts: &[MessagePart]) -> bool {
+    let resolved: HashSet<&str> = parts
+        .iter()
+        .filter_map(|part| match part {
+            MessagePart::ToolResult {
+                tool_use_id: Some(id),
+                ..
+            } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    parts.iter().any(
+        |part| matches!(part, MessagePart::ToolUse { id, .. } if !resolved.contains(id.as_str())),
+    )
+}
+
+/// ツール実行中は backend が無出力でも正常（cargo test 等の長時間コマンド）のため、
+/// stale timeout を上限値まで延長する。
+pub(crate) fn effective_stale_timeout(base: Duration, tool_in_flight: bool) -> Duration {
+    if tool_in_flight {
+        base.max(MAX_STALE_TIMEOUT)
+    } else {
+        base
+    }
 }
 
 pub(crate) fn turn_is_stale(
@@ -134,6 +163,69 @@ mod tests {
             Duration::from_secs(5),
             Instant::now(),
         ));
+    }
+
+    #[test]
+    fn test_has_in_flight_tool_use_toolresult未到着のtooluseがあればtrue() {
+        // Given: a tool use whose result has not arrived yet.
+        let running = vec![MessagePart::ToolUse {
+            id: "tool-1".to_string(),
+            tool: "Bash".to_string(),
+            input: crate::domain::agent_session::value_objects::JsonPayload::new_unchecked(
+                "{}".to_string(),
+            ),
+            parent_tool_use_id: None,
+        }];
+
+        // Then: the turn counts as tool-in-flight.
+        assert!(has_in_flight_tool_use(&running));
+
+        // Given: the matching tool result has arrived.
+        let mut finished = running.clone();
+        finished.push(MessagePart::ToolResult {
+            content: "ok".to_string(),
+            is_error: false,
+            tool_use_id: Some("tool-1".to_string()),
+            parent_tool_use_id: None,
+            content_ref: None,
+            summary: None,
+        });
+
+        // Then: the turn is no longer tool-in-flight.
+        assert!(!has_in_flight_tool_use(&finished));
+
+        // Given: text-only parts.
+        let text_only = vec![MessagePart::Text {
+            content: "hello".to_string(),
+            parent_tool_use_id: None,
+        }];
+
+        // Then: no tool is in flight.
+        assert!(!has_in_flight_tool_use(&text_only));
+    }
+
+    #[test]
+    fn test_effective_stale_timeout_ツール実行中は上限まで延長する() {
+        // Given: the default timeout with a tool in flight.
+        // Then: the timeout extends to the cap.
+        assert_eq!(
+            effective_stale_timeout(Duration::from_secs(180), true),
+            Duration::from_secs(1_800)
+        );
+
+        // Given: no tool in flight.
+        // Then: the base timeout is kept.
+        assert_eq!(
+            effective_stale_timeout(Duration::from_secs(180), false),
+            Duration::from_secs(180)
+        );
+
+        // Given: a configured timeout above the cap with a tool in flight.
+        // Then: the larger value wins (no shrink).
+        assert_eq!(
+            effective_stale_timeout(Duration::from_secs(2_000), true),
+            Duration::from_secs(2_000)
+        );
     }
 
     #[test]
