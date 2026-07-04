@@ -9,9 +9,10 @@ pub(crate) const CLAUDE_BACKEND_ID: &str = "claude";
 
 const CLAUDE_FIXED_MODELS: &[(&str, &str)] = &[
     ("claude-opus-4-8", "Opus 4.8"),
+    ("claude-fable-5", "Fable 5"),
     ("claude-opus-4-7", "Opus 4.7"),
     ("opus[1m]", "Opus 1m"),
-    ("claude-sonnet-4-5", "Sonnet 4.5"),
+    ("claude-sonnet-5", "Sonnet 5"),
     ("claude-haiku-4-5-20251001", "Haiku 4.5"),
 ];
 
@@ -130,15 +131,23 @@ mod tests {
             ids,
             vec![
                 "claude-opus-4-8",
+                "claude-fable-5",
                 "claude-opus-4-7",
                 "opus[1m]",
-                "claude-sonnet-4-5",
+                "claude-sonnet-5",
                 "claude-haiku-4-5-20251001",
             ]
         );
         assert_eq!(
             names,
-            vec!["Opus 4.8", "Opus 4.7", "Opus 1m", "Sonnet 4.5", "Haiku 4.5"]
+            vec![
+                "Opus 4.8",
+                "Fable 5",
+                "Opus 4.7",
+                "Opus 1m",
+                "Sonnet 5",
+                "Haiku 4.5"
+            ]
         );
     }
 
