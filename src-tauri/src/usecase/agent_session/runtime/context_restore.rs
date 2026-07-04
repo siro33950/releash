@@ -161,13 +161,41 @@ fn transcript_start_index(rendered: &[String]) -> usize {
     start
 }
 
+fn truncate_on_char_boundary(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
 fn build_restore_context_prompt_prefix(messages: &[RestoreContextMessage]) -> (String, usize) {
-    let rendered = messages
+    let mut rendered = messages
         .iter()
         .map(render_message_element)
         .collect::<Vec<_>>();
     let start = transcript_start_index(&rendered);
     let omitted = start;
+    // transcript_start_index は最新 1 件を必ず保持するため、その 1 件だけで
+    // 上限を超える場合は本文を byte 単位で切り詰めて上限内へ収める。
+    if let [block] = &rendered[start..] {
+        if block.len() > RESTORE_TRANSCRIPT_MAX_BYTES {
+            let message = &messages[start];
+            let overhead = block.len().saturating_sub(message.content.len());
+            let budget = RESTORE_TRANSCRIPT_MAX_BYTES.saturating_sub(overhead);
+            let content = format!(
+                "{}\n[Releash truncated the rest of this message to fit the size limit.]",
+                truncate_on_char_boundary(&message.content, budget)
+            );
+            rendered[start] = render_message_element(&RestoreContextMessage {
+                role: message.role.clone(),
+                content,
+            });
+        }
+    }
     let mut transcript = String::new();
     if omitted > 0 {
         transcript.push_str(&format!(
@@ -496,6 +524,30 @@ mod tests {
         assert!(!payload.prompt_prefix.contains("oldest-marker"));
         assert!(!payload.prompt_prefix.contains("middle-marker"));
         assert!(payload.prompt_prefix.contains("newest-marker"));
+    }
+
+    #[test]
+    fn test_prompt_prefixは最新1件が上限超過でもbyte切り詰めで保持する() {
+        // Given: マルチバイト文字を含む 256KiB 超の最新メッセージ。
+        let huge = "あ".repeat(120 * 1024);
+        let messages = vec![
+            human("m1", "oldest-marker"),
+            human("m2", &format!("newest-head {huge} newest-tail")),
+        ];
+
+        let payload = restore_context_payload(&messages).expect("payload");
+
+        // Then: 全省略にはならず、先頭を保持したまま byte 単位で切り詰められる。
+        assert!(payload.prompt_prefix.contains("newest-head"));
+        assert!(!payload.prompt_prefix.contains("newest-tail"));
+        assert!(payload
+            .prompt_prefix
+            .contains("[Releash truncated the rest of this message to fit the size limit.]"));
+        assert!(payload.prompt_prefix.contains(
+            "[Releash omitted the oldest 1 message(s) from this transcript to fit the size limit.]"
+        ));
+        // transcript 部分が上限近傍に収まっている（固定ヘッダ分の余裕を見て検証）。
+        assert!(payload.prompt_prefix.len() < RESTORE_TRANSCRIPT_MAX_BYTES + 2 * 1024);
     }
 
     #[test]
