@@ -1,6 +1,8 @@
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::run::WorkflowRun;
 use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::state::WorkflowStallObservation;
 use crate::adaptor::gateway::workflow::state::{TokenUsage, WorkflowExecutionState, WorkflowState};
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 
@@ -64,6 +66,7 @@ pub(crate) fn restore_execution_from_projected_state(
         task: run.task,
         parallel_run: None,
         workflow_variables: state.workflow_variables,
+        current_stall_observations: state.stall_observations,
     };
 
     Ok(RestoredExternalExecution {
@@ -118,6 +121,7 @@ mod tests {
             step_outputs: Default::default(),
             active_parallel_steps: Vec::new(),
             workflow_variables: Default::default(),
+            stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 10.0,
             updated_at: 20.0,
@@ -170,10 +174,21 @@ mod tests {
 
     #[test]
     fn restore_execution_from_projected_state_rebuilds_runtime_execution() {
+        let mut state = workflow_state(WorkflowExecutionState::WaitingApproval);
+        state.stall_observations.push(WorkflowStallObservation {
+            session_id: "session-1".to_string(),
+            step_name: "step-1".to_string(),
+            run_index: 1,
+            turn_phase: "streaming".to_string(),
+            idle_secs: 181,
+            signal_count: 1,
+            cap_reached: false,
+            observed_at: 30.0,
+        });
         let restored = restore_execution_from_projected_state(
             "run-1",
             workflow_run(RunStatus::Running),
-            workflow_state(WorkflowExecutionState::WaitingApproval),
+            state,
         )
         .unwrap();
 
@@ -192,6 +207,11 @@ mod tests {
         assert_eq!(
             restored.execution.workflow_defaults.permission_mode,
             crate::domain::agent_session::PermissionMode::EDIT.to_string()
+        );
+        assert_eq!(restored.execution.current_stall_observations.len(), 1);
+        assert_eq!(
+            restored.execution.current_stall_observations[0].session_id,
+            "session-1"
         );
     }
 }

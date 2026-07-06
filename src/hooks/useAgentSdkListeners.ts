@@ -42,6 +42,18 @@ interface StreamingMessageUpdated {
 	parts: MessagePart[];
 }
 
+interface AgentStallObserved {
+	chat_session_id: string;
+	turn_phase: TurnPhase;
+	idle_secs: number;
+	signal_count: number;
+	cap_reached: boolean;
+}
+
+interface AgentStallCleared {
+	chat_session_id: string;
+}
+
 interface AgentTurnPrepared {
 	chat_session_id: string;
 	session: LegacyChatSession;
@@ -196,6 +208,10 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				sessionId: chat_session_id,
 				message: toPreparedChatMessage(agent_message),
 			});
+			dispatch({
+				type: "CLEAR_STALL_OBSERVATION",
+				sessionId: chat_session_id,
+			});
 		}).then((fn) => {
 			if (cancelled) {
 				fn();
@@ -307,6 +323,67 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		};
 	}, [dispatch, viewableRegistry]);
 
+	// Listen to non-terminal stall observations from the Rust runtime.
+	useEffect(() => {
+		let unlisten: UnlistenFn | null = null;
+		let cancelled = false;
+
+		listen<AgentStallObserved>("agent-stall-observed", (event) => {
+			const {
+				chat_session_id,
+				turn_phase,
+				idle_secs,
+				signal_count,
+				cap_reached,
+			} = event.payload;
+			dispatch({
+				type: "SET_STALL_OBSERVATION",
+				sessionId: chat_session_id,
+				observation: {
+					turnPhase: turn_phase,
+					idleSecs: idle_secs,
+					signalCount: signal_count,
+					capReached: cap_reached,
+				},
+			});
+		}).then((fn) => {
+			if (cancelled) {
+				fn();
+			} else {
+				unlisten = fn;
+			}
+		});
+
+		return () => {
+			cancelled = true;
+			unlisten?.();
+		};
+	}, [dispatch]);
+
+	// Listen to backend progress that clears a previously observed stall without a stream delta.
+	useEffect(() => {
+		let unlisten: UnlistenFn | null = null;
+		let cancelled = false;
+
+		listen<AgentStallCleared>("agent-stall-cleared", (event) => {
+			dispatch({
+				type: "CLEAR_STALL_OBSERVATION",
+				sessionId: event.payload.chat_session_id,
+			});
+		}).then((fn) => {
+			if (cancelled) {
+				fn();
+			} else {
+				unlisten = fn;
+			}
+		});
+
+		return () => {
+			cancelled = true;
+			unlisten?.();
+		};
+	}, [dispatch]);
+
 	// Listen to agent-streaming-delta from Rust backend
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;
@@ -323,6 +400,11 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			if (dropReason) {
 				warnDroppedStreamingDelta(dropReason, chat_session_id, message_id, seq);
 			}
+
+			dispatch({
+				type: "CLEAR_STALL_OBSERVATION",
+				sessionId: chat_session_id,
+			});
 
 			if (snapshot) {
 				dispatch({
@@ -392,6 +474,13 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				request: pending_permission_request ?? null,
 				...pendingPermissionStateRevision,
 			});
+
+			if (turn_phase === "idle") {
+				dispatch({
+					type: "CLEAR_STALL_OBSERVATION",
+					sessionId: chat_session_id,
+				});
+			}
 
 			// Turn completed (idle with exit_code): mirror backend state and clear permissions
 			if (turn_phase === "idle" && exit_code != null) {

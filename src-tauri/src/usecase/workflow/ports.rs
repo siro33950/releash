@@ -112,6 +112,16 @@ pub trait WorkflowTurnCompleteGateway: Send + Sync {
 }
 
 #[async_trait::async_trait]
+pub trait WorkflowStallObservedGateway: Send + Sync {
+    async fn observe_stall(
+        &self,
+        command: WorkflowStallObservedCommand,
+    ) -> Result<(), WorkflowError>;
+
+    async fn clear_stall(&self, command: WorkflowStallClearedCommand) -> Result<(), WorkflowError>;
+}
+
+#[async_trait::async_trait]
 pub trait WorkflowRuntimeStateGateway: Send + Sync {
     async fn get_state_by_run_id(
         &self,
@@ -143,6 +153,7 @@ pub trait WorkflowRuntimeCommandGateway:
     + WorkflowSubmitOutputGateway
     + WorkflowPendingRuntimeCommandGateway
     + WorkflowTurnCompleteGateway
+    + WorkflowStallObservedGateway
     + WorkflowRuntimeStateGateway
     + WorkflowApprovalChatGateway
 {
@@ -155,6 +166,7 @@ impl<T> WorkflowRuntimeCommandGateway for T where
         + WorkflowSubmitOutputGateway
         + WorkflowPendingRuntimeCommandGateway
         + WorkflowTurnCompleteGateway
+        + WorkflowStallObservedGateway
         + WorkflowRuntimeStateGateway
         + WorkflowApprovalChatGateway
 {
@@ -194,6 +206,34 @@ pub struct WorkflowTurnCompleteNotification {
     pub failure_signal: Option<WorkflowTurnFailureSignal>,
     pub token_usage: Option<WorkflowTurnTokenUsage>,
     pub interrupted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowStallObservedNotification {
+    pub chat_session_id: String,
+    pub turn_phase: String,
+    pub idle_secs: u64,
+    pub signal_count: u32,
+    pub cap_reached: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowStallClearedNotification {
+    pub chat_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowStallObservedCommand {
+    pub chat_session_id: String,
+    pub turn_phase: String,
+    pub idle_secs: u64,
+    pub signal_count: u32,
+    pub cap_reached: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowStallClearedCommand {
+    pub chat_session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

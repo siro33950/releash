@@ -18,6 +18,7 @@ use crate::domain::agent_session::value_objects::{
 use crate::domain::workflow::services::transition::ApprovalApplication;
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use async_trait::async_trait;
+use tauri::{Listener, Manager};
 
 const TEST_PARENT_SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
 const TEST_STEP_SESSION_ID: &str = "22222222-2222-4222-8222-222222222222";
@@ -586,12 +587,461 @@ fn make_minimal_approval_exec(
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: Some("claude".to_string()),
             permission_mode: "edit".to_string(),
         },
     }
+}
+
+#[test]
+fn current_step_for_stall_observation_ignores_terminal_parallel_children() {
+    let mut exec = make_minimal_approval_exec("run-stall-lookup", "regular-session", "review");
+    exec.current_session_id = None;
+    exec.parallel_run = Some(ParallelRunState {
+        parent_step_name: "parallel-review".to_string(),
+        aggregate: None,
+        children: vec![
+            ParallelChildRun {
+                step_name: "running-child".to_string(),
+                session_id: "running-session".to_string(),
+                state: ParallelChildState::Running,
+                result: None,
+                structured_output: None,
+                output_contract: None,
+                failure_kind: None,
+                failure_disposition: None,
+                token_usage: TokenUsage::default(),
+                run_index: 2,
+            },
+            ParallelChildRun {
+                step_name: "completed-child".to_string(),
+                session_id: "completed-session".to_string(),
+                state: ParallelChildState::Completed,
+                result: Some("ok".to_string()),
+                structured_output: None,
+                output_contract: None,
+                failure_kind: None,
+                failure_disposition: None,
+                token_usage: TokenUsage::default(),
+                run_index: 1,
+            },
+            ParallelChildRun {
+                step_name: "failed-child".to_string(),
+                session_id: "failed-session".to_string(),
+                state: ParallelChildState::Failed,
+                result: Some("model_refusal".to_string()),
+                structured_output: None,
+                output_contract: None,
+                failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
+                failure_disposition: Some(FailureDisposition::Partial),
+                token_usage: TokenUsage::default(),
+                run_index: 1,
+            },
+        ],
+    });
+
+    assert_eq!(
+        current_step_for_stall_observation(&exec, "running-session"),
+        Some(("running-child".to_string(), 2))
+    );
+    assert_eq!(
+        current_step_for_stall_observation(&exec, "completed-session"),
+        None
+    );
+    assert_eq!(
+        current_step_for_stall_observation(&exec, "failed-session"),
+        None
+    );
+}
+
+fn workflow_stall_observation_fixture(
+    session_id: &str,
+    step_name: &str,
+) -> WorkflowStallObservation {
+    WorkflowStallObservation {
+        session_id: session_id.to_string(),
+        step_name: step_name.to_string(),
+        run_index: 1,
+        turn_phase: "streaming".to_string(),
+        idle_secs: 181,
+        signal_count: 1,
+        cap_reached: false,
+        observed_at: 1003.0,
+    }
+}
+
+#[tokio::test]
+async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let data_dir = tempfile::TempDir::new().unwrap();
+    app.manage(Arc::new(
+        crate::usecase::agent_session::status::AgentStatusCenter::new(),
+    ));
+    app.manage(Arc::new(OpenTabRegistry::default()));
+    let runtime_session_store = Arc::new(crate::test_support::build_session_store());
+    let runtime = crate::test_support::build_agent_runtime_usecase(
+        runtime_session_store,
+        data_dir.path().to_path_buf(),
+    );
+    app.manage(runtime);
+    let engine = WorkflowRuntimeService::new_for_test();
+    engine
+        .set_run_store_data_dir(data_dir.path().to_path_buf())
+        .await;
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let session_id = "stall-session";
+    let step_name = "review";
+    let exec = make_minimal_approval_exec(&run_id, session_id, step_name);
+    let workflow = exec.workflow.clone();
+    let log_data_dir =
+        crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle())
+            .expect("mock app data dir must resolve");
+    WorkflowEventLog::new(&log_data_dir)
+        .append_batch(&[
+            WorkflowEvent::RunStarted {
+                run_id: run_id.clone(),
+                workflow_name: workflow.name.clone(),
+                workflow_file_stem: workflow.name.clone(),
+                worktree_path: exec.worktree_path.clone(),
+                workflow_definition: workflow,
+                timestamp: exec.started_at,
+            },
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.clone(),
+                workflow_name: exec.workflow.name.clone(),
+                node_name: step_name.to_string(),
+                execution_count: 1,
+                timestamp: exec.started_at,
+            },
+            WorkflowEvent::StepSessionStarted {
+                run_id: run_id.clone(),
+                workflow_name: exec.workflow.name.clone(),
+                node_name: step_name.to_string(),
+                execution_count: 1,
+                session_id: session_id.to_string(),
+                timestamp: exec.started_at,
+            },
+        ])
+        .unwrap();
+    engine
+        .run_store()
+        .register_active(WorkflowRun {
+            run_id: run_id.clone(),
+            workflow_name: exec.workflow.name.clone(),
+            task: None,
+            status: RunStatus::WaitingApproval,
+            worktree_path: exec.worktree_path.clone(),
+            current_node_name: Some(step_name.to_string()),
+            trigger_source: TriggerSource::Agent,
+            started_at: exec.started_at,
+            updated_at: exec.updated_at,
+            completed_at: None,
+            error_reason: None,
+        })
+        .await
+        .unwrap();
+    engine.executions.lock().await.insert(run_id.clone(), exec);
+    engine.session_workflow_refs.lock().await.insert(
+        session_id.to_string(),
+        SessionWorkflowRef {
+            run_id: run_id.clone(),
+        },
+    );
+
+    engine
+        .on_agent_stall_observed(
+            app.handle(),
+            session_id,
+            "streaming".to_string(),
+            44,
+            1,
+            false,
+        )
+        .await
+        .unwrap();
+
+    let state = engine.get_state_by_run_id(&run_id).await.unwrap();
+    assert!(matches!(
+        state.state,
+        WorkflowExecutionState::WaitingApproval
+    ));
+    assert_eq!(state.current_session_id.as_deref(), Some(session_id));
+    assert_eq!(state.step_history.len(), 0);
+    assert_eq!(state.stall_observations.len(), 1);
+    let observation = &state.stall_observations[0];
+    assert_eq!(observation.session_id, session_id);
+    assert_eq!(observation.step_name, step_name);
+    assert_eq!(observation.run_index, 1);
+    assert_eq!(observation.turn_phase, "streaming");
+    assert_eq!(observation.idle_secs, 44);
+    assert_eq!(observation.signal_count, 1);
+    assert!(!observation.cap_reached);
+
+    let events = WorkflowEventLog::new(&log_data_dir)
+        .read_log(&run_id)
+        .unwrap();
+    assert!(matches!(
+        events.last(),
+        Some(WorkflowEvent::WorkflowStallObserved {
+            run_id: event_run_id,
+            workflow_name,
+            chat_session_id,
+            step_name: event_step_name,
+            run_index: 1,
+            turn_phase,
+            idle_secs: 44,
+            signal_count: 1,
+            cap_reached: false,
+            ..
+        }) if event_run_id == &run_id
+            && workflow_name == "test-workflow"
+            && chat_session_id == session_id
+            && event_step_name == step_name
+            && turn_phase == "streaming"
+    ));
+
+    let projected = reconstruct_state_from_events(&run_id, &events)
+        .unwrap()
+        .unwrap();
+    assert_eq!(projected.stall_observations.len(), 1);
+    assert_eq!(projected.stall_observations[0].session_id, session_id);
+
+    engine
+        .on_agent_stall_observed(
+            app.handle(),
+            session_id,
+            "streaming".to_string(),
+            88,
+            2,
+            true,
+        )
+        .await
+        .unwrap();
+
+    let state = engine.get_state_by_run_id(&run_id).await.unwrap();
+    assert_eq!(state.stall_observations.len(), 1);
+    let observation = &state.stall_observations[0];
+    assert_eq!(observation.session_id, session_id);
+    assert_eq!(observation.idle_secs, 88);
+    assert_eq!(observation.signal_count, 2);
+    assert!(observation.cap_reached);
+    let events = WorkflowEventLog::new(&log_data_dir)
+        .read_log(&run_id)
+        .unwrap();
+    let projected = reconstruct_state_from_events(&run_id, &events)
+        .unwrap()
+        .unwrap();
+    assert_eq!(projected.stall_observations.len(), 1);
+    assert_eq!(projected.stall_observations[0].signal_count, 2);
+
+    engine
+        .on_agent_stall_cleared(app.handle(), session_id)
+        .await
+        .unwrap();
+
+    let state = engine.get_state_by_run_id(&run_id).await.unwrap();
+    assert!(state.stall_observations.is_empty());
+    let events = WorkflowEventLog::new(&log_data_dir)
+        .read_log(&run_id)
+        .unwrap();
+    assert!(matches!(
+        events.last(),
+        Some(WorkflowEvent::WorkflowStallCleared {
+            run_id: event_run_id,
+            workflow_name,
+            chat_session_id,
+            ..
+        }) if event_run_id == &run_id
+            && workflow_name == "test-workflow"
+            && chat_session_id == session_id
+    ));
+    let projected = reconstruct_state_from_events(&run_id, &events)
+        .unwrap()
+        .unwrap();
+    assert!(projected.stall_observations.is_empty());
+}
+
+#[tokio::test]
+async fn agent_stall_observed_append_failure_rolls_back_state_and_run_store() {
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let data_dir = tempfile::TempDir::new().unwrap();
+    app.manage(Arc::new(
+        crate::usecase::agent_session::status::AgentStatusCenter::new(),
+    ));
+    app.manage(Arc::new(OpenTabRegistry::default()));
+    let runtime_session_store = Arc::new(crate::test_support::build_session_store());
+    let runtime = crate::test_support::build_agent_runtime_usecase(
+        runtime_session_store,
+        data_dir.path().to_path_buf(),
+    );
+    app.manage(runtime);
+    let engine = WorkflowRuntimeService::new_for_test();
+    engine
+        .set_run_store_data_dir(data_dir.path().to_path_buf())
+        .await;
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let session_id = "stall-session";
+    let step_name = "review";
+    let exec = make_minimal_approval_exec(&run_id, session_id, step_name);
+    let log_data_dir =
+        crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle())
+            .expect("mock app data dir must resolve");
+    engine
+        .run_store()
+        .register_active(WorkflowRun {
+            run_id: run_id.clone(),
+            workflow_name: exec.workflow.name.clone(),
+            task: None,
+            status: RunStatus::WaitingApproval,
+            worktree_path: exec.worktree_path.clone(),
+            current_node_name: Some(step_name.to_string()),
+            trigger_source: TriggerSource::Agent,
+            started_at: exec.started_at,
+            updated_at: exec.updated_at,
+            completed_at: None,
+            error_reason: None,
+        })
+        .await
+        .unwrap();
+    let stored_before = engine.run_store().get_run(&run_id).await.unwrap();
+    engine.executions.lock().await.insert(run_id.clone(), exec);
+    engine.session_workflow_refs.lock().await.insert(
+        session_id.to_string(),
+        SessionWorkflowRef {
+            run_id: run_id.clone(),
+        },
+    );
+
+    engine.fail_next_required_event_append_for_test();
+    let err = engine
+        .on_agent_stall_observed(
+            app.handle(),
+            session_id,
+            "streaming".to_string(),
+            44,
+            1,
+            false,
+        )
+        .await
+        .expect_err("stall observation must fail when required append fails");
+
+    assert!(
+        format!("{err:?}").contains("workflow stall observed event append failed"),
+        "append failure context must be surfaced; got {err:?}"
+    );
+    let state = engine.get_state_by_run_id(&run_id).await.unwrap();
+    assert!(state.stall_observations.is_empty());
+    let stored_after = engine.run_store().get_run(&run_id).await.unwrap();
+    assert_eq!(stored_after.status, stored_before.status);
+    assert_eq!(
+        stored_after.current_node_name,
+        stored_before.current_node_name
+    );
+    assert_eq!(stored_after.updated_at, stored_before.updated_at);
+
+    let events = WorkflowEventLog::new(&log_data_dir)
+        .read_log(&run_id)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::WorkflowStallObserved { .. })),
+        "failed stall observation must not be appended; got {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn agent_stall_cleared_append_failure_rolls_back_state_and_run_store() {
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let data_dir = tempfile::TempDir::new().unwrap();
+    app.manage(Arc::new(
+        crate::usecase::agent_session::status::AgentStatusCenter::new(),
+    ));
+    app.manage(Arc::new(OpenTabRegistry::default()));
+    let runtime_session_store = Arc::new(crate::test_support::build_session_store());
+    let runtime = crate::test_support::build_agent_runtime_usecase(
+        runtime_session_store,
+        data_dir.path().to_path_buf(),
+    );
+    app.manage(runtime);
+    let engine = WorkflowRuntimeService::new_for_test();
+    engine
+        .set_run_store_data_dir(data_dir.path().to_path_buf())
+        .await;
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let session_id = "stall-session";
+    let step_name = "review";
+    let mut exec = make_minimal_approval_exec(&run_id, session_id, step_name);
+    exec.current_stall_observations =
+        vec![workflow_stall_observation_fixture(session_id, step_name)];
+    let log_data_dir =
+        crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle())
+            .expect("mock app data dir must resolve");
+    engine
+        .run_store()
+        .register_active(WorkflowRun {
+            run_id: run_id.clone(),
+            workflow_name: exec.workflow.name.clone(),
+            task: None,
+            status: RunStatus::WaitingApproval,
+            worktree_path: exec.worktree_path.clone(),
+            current_node_name: Some(step_name.to_string()),
+            trigger_source: TriggerSource::Agent,
+            started_at: exec.started_at,
+            updated_at: exec.updated_at,
+            completed_at: None,
+            error_reason: None,
+        })
+        .await
+        .unwrap();
+    let stored_before = engine.run_store().get_run(&run_id).await.unwrap();
+    engine.executions.lock().await.insert(run_id.clone(), exec);
+    engine.session_workflow_refs.lock().await.insert(
+        session_id.to_string(),
+        SessionWorkflowRef {
+            run_id: run_id.clone(),
+        },
+    );
+
+    engine.fail_next_required_event_append_for_test();
+    let err = engine
+        .on_agent_stall_cleared(app.handle(), session_id)
+        .await
+        .expect_err("stall clear must fail when required append fails");
+
+    assert!(
+        format!("{err:?}").contains("workflow stall cleared event append failed"),
+        "append failure context must be surfaced; got {err:?}"
+    );
+    let state = engine.get_state_by_run_id(&run_id).await.unwrap();
+    assert_eq!(state.stall_observations.len(), 1);
+    assert_eq!(state.stall_observations[0].session_id, session_id);
+    let stored_after = engine.run_store().get_run(&run_id).await.unwrap();
+    assert_eq!(stored_after.status, stored_before.status);
+    assert_eq!(
+        stored_after.current_node_name,
+        stored_before.current_node_name
+    );
+    assert_eq!(stored_after.updated_at, stored_before.updated_at);
+
+    let events = WorkflowEventLog::new(&log_data_dir)
+        .read_log(&run_id)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::WorkflowStallCleared { .. })),
+        "failed stall clear must not be appended; got {events:?}"
+    );
 }
 
 // ---- WorkflowExecution ----
@@ -698,6 +1148,7 @@ fn workflow_execution_to_workflow_state() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -734,6 +1185,7 @@ fn is_active_running() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -760,6 +1212,7 @@ fn is_active_waiting_approval() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -786,6 +1239,7 @@ fn is_active_completed() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -816,6 +1270,7 @@ fn is_active_failed() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -842,6 +1297,7 @@ fn is_active_aborted() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -871,6 +1327,7 @@ fn to_workflow_state_waiting_approval() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -905,6 +1362,7 @@ fn to_workflow_state_waiting_approval_without_reject_rule_disables_reject() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -951,6 +1409,7 @@ fn to_workflow_state_failed() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -988,6 +1447,7 @@ fn to_workflow_state_aborted() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -1016,6 +1476,7 @@ fn to_workflow_state_completed() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -1078,6 +1539,7 @@ fn make_exec(step_index: usize) -> WorkflowExecution {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -2601,6 +3063,7 @@ fn insert_single_step_execution(
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -3022,6 +3485,7 @@ fn make_approval_exec(
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -3599,6 +4063,7 @@ fn reject_comment_flows_through_approval_to_transition_and_history() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -3706,6 +4171,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -3824,6 +4290,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -3971,6 +4438,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -4073,6 +4541,75 @@ fn workflow_approval_auto_approve_disabled_ignores_agent_auto_approve_permission
     );
 }
 
+fn make_normal_step_exec_with_stall_observation() -> WorkflowExecution {
+    let mut exec = WorkflowExecution {
+        id: "normal-stall-clear".to_string(),
+        workflow: Workflow {
+            variables: Default::default(),
+            name: "normal-stall-clear-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![
+                NodeDefinition {
+                    name: "plan".to_string(),
+                    node_type: NodeType::Agent,
+                    instruction: Some("plan".to_string()),
+                    ..NodeDefinition::default()
+                },
+                NodeDefinition {
+                    name: "implement".to_string(),
+                    node_type: NodeType::Agent,
+                    instruction: Some("implement".to_string()),
+                    ..NodeDefinition::default()
+                },
+            ],
+        },
+        state: WorkflowExecutionState::Running,
+        current_step_index: 0,
+        step_execution_counts: HashMap::from([("plan".to_string(), 1)]),
+        step_history: Vec::new(),
+        started_at: 1000.0,
+        updated_at: 1000.0,
+        current_session_id: Some("normal-session".to_string()),
+        current_step_token_usage: TokenUsage::default(),
+        step_outputs: HashMap::new(),
+        task: None,
+        parallel_run: None,
+        workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
+        worktree_path: "/repo".to_string(),
+        workflow_defaults: WorkflowDefaults {
+            backend_id: Some("claude".to_string()),
+            permission_mode: "edit".to_string(),
+        },
+    };
+    exec.current_stall_observations =
+        vec![workflow_stall_observation_fixture("normal-session", "plan")];
+    exec
+}
+
+#[test]
+fn normal_step_completion_retry_and_transition_clear_stall_observations() {
+    let mut completed = make_normal_step_exec_with_stall_observation();
+    let entry = completed.make_step_history_entry(Some("done".to_string()), None, None);
+    completed.step_history.push(entry);
+    assert!(completed.to_workflow_state().stall_observations.is_empty());
+
+    let mut retried = make_normal_step_exec_with_stall_observation();
+    let retry_snapshot = match retried.retry_current_step() {
+        StepOutcome::RetryCurrentStep { snapshot, .. } => snapshot,
+        _ => panic!("unexpected retry outcome"),
+    };
+    assert!(retry_snapshot.stall_observations.is_empty());
+
+    let mut transitioned = make_normal_step_exec_with_stall_observation();
+    let transition_snapshot = match transitioned.apply_transition("implement").unwrap() {
+        StepOutcome::TransitionAndStart(snapshot) => snapshot,
+        _ => panic!("unexpected transition outcome"),
+    };
+    assert!(transition_snapshot.stall_observations.is_empty());
+}
+
 // R4-02: make_step_history_entryがcontract resultをStepOutput.resultに保存する
 #[test]
 fn make_step_history_entry_saves_contract_result_to_step_output() {
@@ -4095,6 +4632,7 @@ fn make_step_history_entry_saves_contract_result_to_step_output() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -4145,6 +4683,7 @@ fn make_step_history_entry_no_structured_output_no_step_output() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -4229,6 +4768,7 @@ fn on_exhausted_transitions_to_fallback_step() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -4273,6 +4813,7 @@ fn on_exhausted_none_fails_workflow() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -4306,6 +4847,7 @@ fn check_cycle_guard_exceeded_with_on_exhausted() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -4346,6 +4888,7 @@ fn resets_cycle_for_clears_execution_count() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -4385,6 +4928,7 @@ fn resets_cycle_for_allows_reloop_after_reset() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -4470,6 +5014,7 @@ fn on_exhausted_chain_transitions() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -4534,6 +5079,7 @@ fn on_exhausted_chain_to_non_exhausted_fails() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -4659,6 +5205,7 @@ fn apply_transition_to_parallel_block_clears_block_and_children() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -4940,6 +5487,7 @@ async fn engine_run_id_consistency_across_execution_and_run_store_metadata() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: worktree_path.to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -5022,6 +5570,7 @@ async fn engine_validate_start_rejects_duplicate_active_run_on_same_worktree() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: worktree_path.to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -5098,6 +5647,7 @@ async fn engine_state_transitions_sync_to_run_store_active_and_completed() {
         step_outputs: HashMap::new(),
         active_parallel_steps: vec![],
         workflow_variables: HashMap::new(),
+        stall_observations: Vec::new(),
         approval_operations: None,
         started_at: 100.0,
         updated_at: 200.0,
@@ -5257,6 +5807,7 @@ async fn handle_auto_complete_fixture_uses_run_id_as_executions_key() {
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: "/wt/auto-complete".to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -5298,6 +5849,7 @@ fn make_exec_with(
         task: None,
         parallel_run: None,
         workflow_variables: HashMap::new(),
+        current_stall_observations: Vec::new(),
         worktree_path: worktree_path.to_string(),
         workflow_defaults: WorkflowDefaults {
             backend_id: None,
@@ -5561,6 +6113,7 @@ async fn run_store_completed_listing_includes_completed_failed_aborted_via_autho
             step_outputs: HashMap::new(),
             active_parallel_steps: vec![],
             workflow_variables: HashMap::new(),
+            stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 100.0,
             updated_at: 200.0,
@@ -5989,6 +6542,7 @@ async fn run_store_terminal_statuses_propagate_status_field_in_completed_listing
             step_outputs: HashMap::new(),
             active_parallel_steps: vec![],
             workflow_variables: HashMap::new(),
+            stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 100.0,
             updated_at: 200.0,
@@ -6357,6 +6911,7 @@ mod dispatch_boundary_tests {
             task: None,
             parallel_run: None,
             workflow_variables: HashMap::new(),
+            current_stall_observations: Vec::new(),
             workflow_defaults: WorkflowDefaults {
                 backend_id: Some("claude".to_string()),
                 permission_mode: "edit".to_string(),
@@ -6506,6 +7061,103 @@ mod dispatch_boundary_tests {
         let agent_runtime =
             crate::test_support::build_agent_runtime_usecase(session_store.clone(), data_dir);
         (session_store, agent_runtime)
+    }
+
+    #[tokio::test]
+    async fn abort_workflow_by_run_id_clears_stall_observations_in_live_and_projection() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir.clone());
+        let received_payloads: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received_for_listener = Arc::clone(&received_payloads);
+        app.listen("workflow-state-changed", move |event| {
+            received_for_listener
+                .lock()
+                .unwrap()
+                .push(event.payload().to_string());
+        });
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/abort-clears-stall";
+        let session_id = "abort-stall-session";
+        let step_name = "review";
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_session_id = Some(session_id.to_string());
+        exec.current_stall_observations =
+            vec![workflow_stall_observation_fixture(session_id, step_name)];
+        WorkflowEventLog::new(&data_dir)
+            .append_batch(&[
+                WorkflowEvent::RunStarted {
+                    run_id: run_id.clone(),
+                    workflow_name: exec.workflow.name.clone(),
+                    workflow_file_stem: exec.workflow.name.clone(),
+                    worktree_path: exec.worktree_path.clone(),
+                    workflow_definition: exec.workflow.clone(),
+                    timestamp: exec.started_at,
+                },
+                WorkflowEvent::NodeStarted {
+                    run_id: run_id.clone(),
+                    workflow_name: exec.workflow.name.clone(),
+                    node_name: step_name.to_string(),
+                    execution_count: 1,
+                    timestamp: exec.started_at,
+                },
+                WorkflowEvent::StepSessionStarted {
+                    run_id: run_id.clone(),
+                    workflow_name: exec.workflow.name.clone(),
+                    node_name: step_name.to_string(),
+                    execution_count: 1,
+                    session_id: session_id.to_string(),
+                    timestamp: exec.started_at,
+                },
+                WorkflowEvent::WorkflowStallObserved {
+                    run_id: run_id.clone(),
+                    workflow_name: exec.workflow.name.clone(),
+                    chat_session_id: session_id.to_string(),
+                    step_name: step_name.to_string(),
+                    run_index: 1,
+                    turn_phase: "streaming".to_string(),
+                    idle_secs: 181,
+                    signal_count: 1,
+                    cap_reached: false,
+                    timestamp: exec.updated_at,
+                },
+            ])
+            .unwrap();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let outcome = engine
+            .abort_workflow_by_run_id(app.handle(), &session_store, &handles, &run_id, None, None)
+            .await
+            .unwrap();
+
+        assert!(matches!(outcome, AbortOutcome::Aborted));
+        let stored_run = engine.run_store().get_run(&run_id).await.unwrap();
+        assert_eq!(stored_run.status, RunStatus::Aborted);
+        let payloads = received_payloads.lock().unwrap().clone();
+        let live_payload = payloads
+            .last()
+            .expect("abort must broadcast workflow-state-changed");
+        let live_json: serde_json::Value = serde_json::from_str(live_payload).unwrap();
+        assert!(
+            live_json["workflowState"]["stallObservations"]
+                .as_array()
+                .is_none_or(Vec::is_empty),
+            "abort broadcast must clear stall observations: {live_json}"
+        );
+
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::RunAborted { .. })));
+        let projected = reconstruct_state_from_events(&run_id, &events)
+            .unwrap()
+            .unwrap();
+        assert!(projected.stall_observations.is_empty());
     }
 
     fn workflow_turn_complete_notification_from_typed_refusal(
@@ -6922,6 +7574,7 @@ mod dispatch_boundary_tests {
             step_outputs: HashMap::new(),
             active_parallel_steps: vec![],
             workflow_variables: HashMap::new(),
+            stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 0.0,
             updated_at: 0.0,
@@ -7692,6 +8345,124 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
+    async fn parallel_child_success_clears_live_stall_observation_for_child() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/parallel-child-stall-success";
+        let completed_child_session_id = "parallel-child-stall-completed-session";
+        let waiting_child_session_id = "parallel-child-stall-waiting-session";
+        let workflow = Workflow {
+            variables: Default::default(),
+            name: "parallel-stall-success-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "parallel-review".to_string(),
+                node_type: NodeType::Parallel,
+                parallel_children: Some(vec![
+                    make_parallel_step("review-a"),
+                    make_parallel_step("review-b"),
+                ]),
+                ..NodeDefinition::default()
+            }],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 0;
+        exec.current_session_id = None;
+        exec.step_execution_counts = HashMap::from([
+            ("parallel-review".to_string(), 1),
+            ("review-a".to_string(), 1),
+            ("review-b".to_string(), 1),
+        ]);
+        exec.current_stall_observations = vec![
+            workflow_stall_observation_fixture(completed_child_session_id, "review-a"),
+            workflow_stall_observation_fixture(waiting_child_session_id, "review-b"),
+        ];
+        exec.parallel_run = Some(ParallelRunState {
+            parent_step_name: "parallel-review".to_string(),
+            aggregate: None,
+            children: vec![
+                ParallelChildRun {
+                    step_name: "review-a".to_string(),
+                    session_id: completed_child_session_id.to_string(),
+                    state: ParallelChildState::Running,
+                    result: None,
+                    structured_output: None,
+                    output_contract: None,
+                    failure_kind: None,
+                    failure_disposition: None,
+                    token_usage: TokenUsage::default(),
+                    run_index: 1,
+                },
+                ParallelChildRun {
+                    step_name: "review-b".to_string(),
+                    session_id: waiting_child_session_id.to_string(),
+                    state: ParallelChildState::Running,
+                    result: None,
+                    structured_output: None,
+                    output_contract: None,
+                    failure_kind: None,
+                    failure_disposition: None,
+                    token_usage: TokenUsage::default(),
+                    run_index: 1,
+                },
+            ],
+        });
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        engine.session_workflow_refs.lock().await.insert(
+            completed_child_session_id.to_string(),
+            SessionWorkflowRef {
+                run_id: run_id.clone(),
+            },
+        );
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                completed_child_session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: "LGTM".to_string(),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let execs = engine.executions.lock().await;
+        let exec = execs.get(&run_id).expect("run must stay active");
+        let observations = &exec.current_stall_observations;
+        assert_eq!(observations.len(), 1);
+        assert_eq!(
+            observations[0].session_id, waiting_child_session_id,
+            "completed child stall observation must be removed while running sibling remains"
+        );
+        let completed_child = exec
+            .parallel_run
+            .as_ref()
+            .expect("parallel run must stay active")
+            .children
+            .iter()
+            .find(|child| child.step_name == "review-a")
+            .expect("completed child");
+        assert!(matches!(
+            completed_child.state,
+            ParallelChildState::Completed
+        ));
+    }
+
+    #[tokio::test]
     async fn parallel_success_after_delegated_failure_completes_parent() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
@@ -7852,6 +8623,10 @@ mod dispatch_boundary_tests {
             ("review-a".to_string(), 1),
             ("review-b".to_string(), 1),
         ]);
+        exec.current_stall_observations = vec![
+            workflow_stall_observation_fixture(refused_child_session_id, "review-a"),
+            workflow_stall_observation_fixture(waiting_child_session_id, "review-b"),
+        ];
         exec.parallel_run = Some(ParallelRunState {
             parent_step_name: "parallel-review".to_string(),
             aggregate: None,
@@ -7941,6 +8716,11 @@ mod dispatch_boundary_tests {
         );
         assert_eq!(child.failure_disposition, Some(FailureDisposition::Partial));
         assert_eq!(child.result.as_deref(), Some("model_refusal"));
+        assert_eq!(exec.current_stall_observations.len(), 1);
+        assert_eq!(
+            exec.current_stall_observations[0].session_id, waiting_child_session_id,
+            "partial failure child stall observation must be removed while running sibling remains"
+        );
         drop(execs);
 
         let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
@@ -8239,6 +9019,7 @@ mod dispatch_boundary_tests {
             step_outputs: HashMap::new(),
             active_parallel_steps: vec![],
             workflow_variables: HashMap::new(),
+            stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 900.0,
             updated_at: 1000.0,
@@ -9078,6 +9859,7 @@ mod dispatch_boundary_tests {
                 ],
             }),
             workflow_variables: HashMap::new(),
+            current_stall_observations: Vec::new(),
             workflow_defaults: WorkflowDefaults {
                 backend_id: None,
                 permission_mode: "edit".to_string(),

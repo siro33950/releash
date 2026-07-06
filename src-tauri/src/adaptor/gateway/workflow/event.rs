@@ -114,6 +114,26 @@ pub enum WorkflowEvent {
         session_id: String,
         timestamp: f64,
     },
+    /// agent session の無出力 timeout を workflow の非終端観測材料として記録した。
+    WorkflowStallObserved {
+        run_id: String,
+        workflow_name: String,
+        chat_session_id: String,
+        step_name: String,
+        run_index: u32,
+        turn_phase: String,
+        idle_secs: u64,
+        signal_count: u32,
+        cap_reached: bool,
+        timestamp: f64,
+    },
+    /// agent session の出力/keepalive/permission resume により無出力観測が解消された。
+    WorkflowStallCleared {
+        run_id: String,
+        workflow_name: String,
+        chat_session_id: String,
+        timestamp: f64,
+    },
     /// node が完了した（approval 経由の completion も含む）。
     NodeCompleted {
         run_id: String,
@@ -432,6 +452,8 @@ impl WorkflowEvent {
             Self::RunStarted { run_id, .. }
             | Self::NodeStarted { run_id, .. }
             | Self::StepSessionStarted { run_id, .. }
+            | Self::WorkflowStallObserved { run_id, .. }
+            | Self::WorkflowStallCleared { run_id, .. }
             | Self::NodeCompleted { run_id, .. }
             | Self::NodeFailed { run_id, .. }
             | Self::ApprovalRequested { run_id, .. }
@@ -690,6 +712,24 @@ mod tests {
                 node_name: "n".to_string(),
                 execution_count: 1,
                 session_id: "s".to_string(),
+                timestamp: 0.0,
+            },
+            WorkflowEvent::WorkflowStallObserved {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                chat_session_id: "s".to_string(),
+                step_name: "n".to_string(),
+                run_index: 1,
+                turn_phase: "streaming".to_string(),
+                idle_secs: 180,
+                signal_count: 1,
+                cap_reached: false,
+                timestamp: 0.0,
+            },
+            WorkflowEvent::WorkflowStallCleared {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                chat_session_id: "s".to_string(),
                 timestamp: 0.0,
             },
             WorkflowEvent::NodeCompleted {

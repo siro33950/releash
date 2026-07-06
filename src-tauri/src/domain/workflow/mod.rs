@@ -36,7 +36,8 @@ pub use value_objects::{
     OutcomeCommitMode, ParallelAggregate, ParallelStepState, ReduceStrategy, RunId, RunListFilter,
     RunStatus, RunStatusFilter, StepHistoryEntry, StepOutput, TimeoutKind, TokenUsage,
     TransitionRule, TriggerSource, WorkflowDefinition, WorkflowExecutionState, WorkflowName,
-    WorkflowRunSummary, WorkflowStateSnapshot, WorkflowStepContext, WorkflowStepFailureKind,
-    WorkflowSummary, WorktreePath, STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED,
-    STEP_STATE_INTERRUPTED, STEP_STATE_PENDING, STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
+    WorkflowRunSummary, WorkflowStallObservation, WorkflowStateSnapshot, WorkflowStepContext,
+    WorkflowStepFailureKind, WorkflowSummary, WorktreePath, STEP_STATE_ABORTED,
+    STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_INTERRUPTED, STEP_STATE_PENDING,
+    STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
 };

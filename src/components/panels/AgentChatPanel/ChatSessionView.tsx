@@ -25,6 +25,7 @@ import type { DropZoneType } from "@/hooks/useNativeFileDrop";
 import type {
 	AgentEditorContext,
 	AgentEditorSelection,
+	AgentStallObservation,
 	BackendInfo,
 	ChatMessage,
 	ChatSession,
@@ -627,6 +628,7 @@ export interface ChatSessionViewProps {
 	selectedModel: string;
 	pendingPermission: PermissionRequest | null;
 	pendingQueue: QueuedAgentTurn[];
+	stallObservation?: AgentStallObservation | null;
 	runtimeSlashCommands?: SlashCommand[];
 	selectedBackendId: string | null;
 	canChangeBackend: boolean;
@@ -697,6 +699,7 @@ export function ChatSessionView({
 	selectedModel,
 	pendingPermission,
 	pendingQueue,
+	stallObservation,
 	runtimeSlashCommands = [],
 	selectedBackendId,
 	canChangeBackend,
@@ -736,6 +739,14 @@ export function ChatSessionView({
 	const [rawScrollback, setRawScrollback] = useState(false);
 	const [nativeCommandNotice, setNativeCommandNotice] =
 		useState<NativeCommandNotice | null>(null);
+	const stallIdleLabel = useMemo(() => {
+		if (!stallObservation) return null;
+		const minutes = Math.floor(stallObservation.idleSecs / 60);
+		const seconds = stallObservation.idleSecs % 60;
+		if (minutes <= 0) return `${seconds}s`;
+		if (seconds === 0) return `${minutes}m`;
+		return `${minutes}m ${seconds}s`;
+	}, [stallObservation]);
 	const [, setSelectedPermissionProfileId] = useState<string | null>(
 		session.permissionProfileId ?? null,
 	);
@@ -1751,6 +1762,19 @@ export function ChatSessionView({
 							<span>
 								Conversation context was not restored. New replies will continue
 								without prior agent memory.
+							</span>
+						</div>
+					</div>
+				)}
+				{isStreaming && stallObservation && stallIdleLabel && (
+					<div className="px-2 pb-2">
+						<div
+							className="flex items-start gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300"
+							role="status"
+						>
+							<AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+							<span>
+								No agent output for {stallIdleLabel}. Session remains active.
 							</span>
 						</div>
 					</div>

@@ -49,6 +49,7 @@ describe("agentChatReducer", () => {
 			pendingPermissionStateRevisions: {},
 			clearedPendingPermissionIds: {},
 			pendingQueues: {},
+			stallObservations: {},
 			latestTokenUsage: {},
 			runtimeSlashCommands: {},
 			availableModels: [],
@@ -68,6 +69,31 @@ describe("agentChatReducer", () => {
 			commands,
 		});
 		expect(next.runtimeSlashCommands.s1).toBe(commands);
+	});
+
+	it("stores and clears stall observations per session", () => {
+		const observed = reducer(INITIAL_STATE, {
+			type: "SET_STALL_OBSERVATION",
+			sessionId: "s1",
+			observation: {
+				turnPhase: "streaming",
+				idleSecs: 180,
+				signalCount: 1,
+				capReached: false,
+			},
+		});
+		expect(observed.stallObservations?.s1).toEqual({
+			turnPhase: "streaming",
+			idleSecs: 180,
+			signalCount: 1,
+			capReached: false,
+		});
+
+		const cleared = reducer(observed, {
+			type: "CLEAR_STALL_OBSERVATION",
+			sessionId: "s1",
+		});
+		expect(cleared.stallObservations?.s1).toBeUndefined();
 	});
 
 	it("stores plan mode globally for the active composer", () => {

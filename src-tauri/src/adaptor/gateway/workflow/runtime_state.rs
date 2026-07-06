@@ -21,7 +21,7 @@ use crate::adaptor::gateway::workflow::schema::{NodeType, TransitionRule};
 use crate::adaptor::gateway::workflow::schema::{ParallelAggregate, Workflow};
 use crate::adaptor::gateway::workflow::state::{
     ApprovalOperations, StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState,
-    WorkflowState,
+    WorkflowStallObservation, WorkflowState,
 };
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::domain::workflow as workflow_domain;
@@ -64,6 +64,8 @@ pub(crate) struct WorkflowExecution {
     pub(crate) parallel_run: Option<ParallelRunState>,
     /// ワークフローレベルの変数（spec-directory等のcontract結果から設定）。
     pub(crate) workflow_variables: HashMap<String, String>,
+    /// 現在実行中の step session で観測した非終端 stall signal。
+    pub(crate) current_stall_observations: Vec<WorkflowStallObservation>,
 }
 
 /// 並列実行中の内部状態。
@@ -190,6 +192,7 @@ impl WorkflowExecution {
             active_parallel_steps,
             workflow_variables: self.workflow_variables.clone(),
             approval_operations: self.build_approval_operations(),
+            stall_observations: self.current_stall_observations.clone(),
             started_at: self.started_at,
             updated_at: self.updated_at,
         }
@@ -344,6 +347,7 @@ impl WorkflowExecution {
         }
 
         self.current_session_id = None;
+        self.current_stall_observations.clear();
         step_history_entry_from_domain(entry)
     }
 
@@ -405,6 +409,7 @@ impl WorkflowExecution {
         *self.step_execution_counts.entry(step_name).or_insert(0) += 1;
         self.current_session_id = None;
         self.current_step_token_usage = TokenUsage::default();
+        self.current_stall_observations.clear();
         self.clear_step_outputs_for_new_execution(step_index);
         self.updated_at = current_timestamp();
         StepOutcome::RetryCurrentStep {
@@ -488,6 +493,7 @@ impl WorkflowExecution {
             .entry(step_name.to_string())
             .or_insert(0) += 1;
         self.current_session_id = None;
+        self.current_stall_observations.clear();
         self.clear_step_outputs_for_new_execution(step_index);
         self.updated_at = current_timestamp();
 

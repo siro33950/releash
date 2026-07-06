@@ -38,6 +38,8 @@ pub struct WorkflowState {
     pub workflow_variables: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_operations: Option<ApprovalOperations>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stall_observations: Vec<WorkflowStallObservation>,
     pub started_at: f64,
     pub updated_at: f64,
 }
@@ -46,6 +48,19 @@ pub struct WorkflowState {
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalOperations {
     pub can_reject: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStallObservation {
+    pub session_id: String,
+    pub step_name: String,
+    pub run_index: u32,
+    pub turn_phase: String,
+    pub idle_secs: u64,
+    pub signal_count: u32,
+    pub cap_reached: bool,
+    pub observed_at: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -227,8 +242,28 @@ pub(crate) fn workflow_state_to_domain_snapshot(
                 can_reject: operations.can_reject,
             }
         }),
+        stall_observations: state
+            .stall_observations
+            .into_iter()
+            .map(workflow_stall_observation_to_domain)
+            .collect(),
         started_at: state.started_at,
         updated_at: state.updated_at,
+    }
+}
+
+fn workflow_stall_observation_to_domain(
+    observation: WorkflowStallObservation,
+) -> crate::domain::workflow::WorkflowStallObservation {
+    crate::domain::workflow::WorkflowStallObservation {
+        session_id: observation.session_id,
+        step_name: observation.step_name,
+        run_index: observation.run_index,
+        turn_phase: observation.turn_phase,
+        idle_secs: observation.idle_secs,
+        signal_count: observation.signal_count,
+        cap_reached: observation.cap_reached,
+        observed_at: observation.observed_at,
     }
 }
 

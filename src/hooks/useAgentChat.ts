@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import type { AgentState } from "@/types/protocol";
 import type {
 	AgentEditorContext,
+	AgentStallObservation,
 	BackendInfo,
 	ChatSession,
 	ImageAttachment,
@@ -178,6 +179,9 @@ export interface UseAgentChatResult {
 	getSessionCanChangeBackend: (sessionId: string) => boolean;
 	getSessionPendingPermission: (sessionId: string) => PermissionRequest | null;
 	getSessionPendingQueue: (sessionId: string) => QueuedAgentTurn[];
+	getSessionStallObservation: (
+		sessionId: string,
+	) => AgentStallObservation | null;
 	getSessionLatestTokenUsage: (sessionId: string) => TokenUsage | null;
 	getSessionRuntimeSlashCommands: (sessionId: string) => SlashCommand[];
 	cancelQueuedTurn: (
@@ -1482,6 +1486,7 @@ export function useAgentChat(
 	const turnPhasesState = state.turnPhases;
 	const sessionModelsState = state.sessionModels;
 	const pendingQueuesState = state.pendingQueues;
+	const stallObservationsState = state.stallObservations ?? {};
 	const latestTokenUsageState = state.latestTokenUsage;
 	const runtimeSlashCommandsState = state.runtimeSlashCommands;
 	const canChangeBackendState = state.canChangeBackend;
@@ -1531,6 +1536,11 @@ export function useAgentChat(
 		(sessionId: string): QueuedAgentTurn[] =>
 			pendingQueuesState[sessionId] ?? [],
 		[pendingQueuesState],
+	);
+	const getSessionStallObservation = useCallback(
+		(sessionId: string): AgentStallObservation | null =>
+			stallObservationsState[sessionId] ?? null,
+		[stallObservationsState],
 	);
 	const getSessionLatestTokenUsage = useCallback(
 		(sessionId: string): TokenUsage | null =>
@@ -1613,6 +1623,7 @@ export function useAgentChat(
 		getSessionCanChangeBackend,
 		getSessionPendingPermission,
 		getSessionPendingQueue,
+		getSessionStallObservation,
 		getSessionLatestTokenUsage,
 		getSessionRuntimeSlashCommands,
 		cancelQueuedTurn,

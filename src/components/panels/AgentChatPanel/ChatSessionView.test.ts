@@ -2,7 +2,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatSession, PermissionRequest } from "@/types/session";
+import type {
+	AgentStallObservation,
+	ChatSession,
+	PermissionRequest,
+} from "@/types/session";
 import { ChatSessionView } from "./ChatSessionView";
 
 const { mockInvoke, mockVirtualRange, mockOffsetOverrides } = vi.hoisted(
@@ -91,6 +95,8 @@ const session: ChatSession = {
 
 interface RenderOptions {
 	testSession?: ChatSession;
+	isStreaming?: boolean;
+	stallObservation?: AgentStallObservation | null;
 	onLoadOlderMessages?: () => Promise<void>;
 	onEvictOlderMessages?: (options: {
 		oldestVisibleIndex?: number;
@@ -106,6 +112,8 @@ interface RenderOptions {
 
 function chatSessionViewElement({
 	testSession = session,
+	isStreaming = false,
+	stallObservation = null,
 	onLoadOlderMessages = vi.fn().mockResolvedValue(undefined),
 	onEvictOlderMessages,
 	pendingPermission = null,
@@ -113,7 +121,7 @@ function chatSessionViewElement({
 }: RenderOptions = {}) {
 	return createElement(ChatSessionView, {
 		session: testSession,
-		isStreaming: false,
+		isStreaming,
 		isInterrupting: false,
 		activityStatus: null,
 		error: null,
@@ -124,6 +132,7 @@ function chatSessionViewElement({
 		selectedModel: "claude:sonnet",
 		pendingPermission,
 		pendingQueue: [],
+		stallObservation,
 		selectedBackendId: null,
 		canChangeBackend: false,
 		worktreePath: "/repo",
@@ -193,6 +202,44 @@ const pendingPermission: PermissionRequest = {
 	input: { command: "echo hi" },
 	title: "Run command",
 };
+
+describe("ChatSessionView stall status", () => {
+	it("shows the active stall observation while streaming", () => {
+		renderChatSessionView({
+			isStreaming: true,
+			stallObservation: {
+				turnPhase: "streaming",
+				idleSecs: 65,
+				signalCount: 1,
+				capReached: false,
+			},
+		});
+
+		expect(
+			screen.getByText("No agent output for 1m 5s. Session remains active."),
+		).toBeInTheDocument();
+	});
+
+	it("hides the stall observation while idle", () => {
+		renderChatSessionView({
+			isStreaming: false,
+			stallObservation: {
+				turnPhase: "streaming",
+				idleSecs: 65,
+				signalCount: 1,
+				capReached: false,
+			},
+		});
+
+		expect(screen.queryByText(/No agent output for/)).not.toBeInTheDocument();
+	});
+
+	it("hides the stall status without an observation", () => {
+		renderChatSessionView({ isStreaming: true, stallObservation: null });
+
+		expect(screen.queryByText(/No agent output for/)).not.toBeInTheDocument();
+	});
+});
 
 describe("ChatSessionView scroll loading", () => {
 	it("calls onLoadOlderMessages when scrollTop is below the threshold", () => {

@@ -23,8 +23,9 @@ use crate::usecase::workflow::ports::{
     ApprovalChatTarget, PendingRuntimeCommand, PendingRuntimeCommandOutcome,
     PendingRuntimeCommandPayload, WorkflowAbortRunGateway, WorkflowApprovalChatGateway,
     WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeStateGateway,
-    WorkflowStartRunGateway, WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand,
-    WorkflowTurnCompleteGateway, WorkflowTurnFailureSignal,
+    WorkflowStallObservedCommand, WorkflowStallObservedGateway, WorkflowStartRunGateway,
+    WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
+    WorkflowTurnFailureSignal,
 };
 
 use super::pending_command_dispatcher::{
@@ -341,6 +342,36 @@ impl WorkflowTurnCompleteGateway for TauriWorkflowRuntimeCommandGateway {
                 &final_parts,
                 token_usage,
             )
+            .await
+            .map_err(|err| WorkflowError::external(err.to_string()))
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkflowStallObservedGateway for TauriWorkflowRuntimeCommandGateway {
+    async fn observe_stall(
+        &self,
+        command: WorkflowStallObservedCommand,
+    ) -> Result<(), WorkflowError> {
+        self.engine
+            .on_agent_stall_observed(
+                &self.app,
+                &command.chat_session_id,
+                command.turn_phase,
+                command.idle_secs,
+                command.signal_count,
+                command.cap_reached,
+            )
+            .await
+            .map_err(|err| WorkflowError::external(err.to_string()))
+    }
+
+    async fn clear_stall(
+        &self,
+        command: crate::usecase::workflow::ports::WorkflowStallClearedCommand,
+    ) -> Result<(), WorkflowError> {
+        self.engine
+            .on_agent_stall_cleared(&self.app, &command.chat_session_id)
             .await
             .map_err(|err| WorkflowError::external(err.to_string()))
     }

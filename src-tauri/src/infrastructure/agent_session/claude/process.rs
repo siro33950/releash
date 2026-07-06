@@ -19,7 +19,6 @@ use crate::infrastructure::process::pid_registry::{
 
 use super::wire::{claude_wire_mode, ClaudeWireMode};
 
-pub(crate) const DEFAULT_STALE_TIMEOUT: Duration = Duration::from_secs(180);
 pub(crate) const MAX_CLAUDE_STDOUT_LINE_BYTES: usize = 8 * 1024 * 1024;
 const CLAUDE_SCRUBBED_ENV: &[&str] = &["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"];
 
@@ -271,12 +270,11 @@ pub(crate) fn build_process_config(
     spec: &SessionSpec,
     system_prompt_file: Option<&std::path::Path>,
 ) -> ClaudeProcessConfig {
-    let stale_timeout = spec.stale_timeout.unwrap_or(DEFAULT_STALE_TIMEOUT);
     ClaudeProcessConfig {
         cli_path: cli_path.into(),
         cwd: PathBuf::from(&spec.cwd),
         args: build_args(spec, system_prompt_file),
-        env: watchdog_env(stale_timeout),
+        env: watchdog_env(spec.stale_timeout),
     }
 }
 
@@ -312,17 +310,27 @@ pub(crate) fn build_args(
     args
 }
 
-pub(crate) fn watchdog_env(stale_timeout: Duration) -> Vec<(String, String)> {
-    vec![
-        (
-            "CLAUDE_STREAM_IDLE_TIMEOUT_MS".to_string(),
-            stale_timeout.as_millis().to_string(),
-        ),
-        ("CLAUDE_ENABLE_STREAM_WATCHDOG".to_string(), "1".to_string()),
-        ("CLAUDE_ENABLE_BYTE_WATCHDOG".to_string(), "1".to_string()),
+pub(crate) fn watchdog_env(stale_timeout: Option<Duration>) -> Vec<(String, String)> {
+    let mut env = vec![
         ("CLAUDE_CODE_MAX_RETRIES".to_string(), "10".to_string()),
         ("API_TIMEOUT_MS".to_string(), "600000".to_string()),
-    ]
+    ];
+    if let Some(stale_timeout) = stale_timeout {
+        env.extend([
+            ("CLAUDE_ENABLE_STREAM_WATCHDOG".to_string(), "1".to_string()),
+            ("CLAUDE_ENABLE_BYTE_WATCHDOG".to_string(), "1".to_string()),
+            (
+                "CLAUDE_STREAM_IDLE_TIMEOUT_MS".to_string(),
+                stale_timeout.as_millis().to_string(),
+            ),
+        ]);
+    } else {
+        env.extend([
+            ("CLAUDE_ENABLE_STREAM_WATCHDOG".to_string(), "0".to_string()),
+            ("CLAUDE_ENABLE_BYTE_WATCHDOG".to_string(), "0".to_string()),
+        ]);
+    }
+    env
 }
 
 pub(crate) fn wire_mode_for_spec(spec: &SessionSpec) -> ClaudeWireMode {
@@ -411,11 +419,25 @@ mod tests {
 
     #[test]
     fn test_watchdog_env_stale_timeout_ms() {
-        let env = watchdog_env(Duration::from_secs(42));
+        let env = watchdog_env(Some(Duration::from_secs(42)));
         assert!(env.contains(&(
             "CLAUDE_STREAM_IDLE_TIMEOUT_MS".to_string(),
             "42000".to_string()
         )));
+        assert!(env.contains(&("CLAUDE_ENABLE_STREAM_WATCHDOG".to_string(), "1".to_string())));
+        assert!(env.contains(&("CLAUDE_ENABLE_BYTE_WATCHDOG".to_string(), "1".to_string())));
+        assert!(env.contains(&("CLAUDE_CODE_MAX_RETRIES".to_string(), "10".to_string())));
+    }
+
+    #[test]
+    fn test_watchdog_env_none_disables_stream_watchdogs() {
+        let env = watchdog_env(None);
+
+        assert!(!env
+            .iter()
+            .any(|(key, _)| key == "CLAUDE_STREAM_IDLE_TIMEOUT_MS"));
+        assert!(env.contains(&("CLAUDE_ENABLE_STREAM_WATCHDOG".to_string(), "0".to_string())));
+        assert!(env.contains(&("CLAUDE_ENABLE_BYTE_WATCHDOG".to_string(), "0".to_string())));
         assert!(env.contains(&("CLAUDE_CODE_MAX_RETRIES".to_string(), "10".to_string())));
     }
 

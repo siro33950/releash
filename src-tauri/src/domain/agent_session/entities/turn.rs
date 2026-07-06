@@ -27,6 +27,8 @@ pub enum TurnStopReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterruptReason {
     Abort,
+    #[allow(dead_code)]
+    // Stale watchdog no longer synthesizes timeout interrupts, but the domain boundary keeps the explicit backend/tool timeout vocabulary.
     Timeout,
     Crash,
 }

@@ -190,6 +190,17 @@ interface WorkflowStepRuntimeState {
 	tabOpen: boolean;
 }
 
+export interface WorkflowStallObservation {
+	chatSessionId: string;
+	stepName: string;
+	runIndex: number;
+	turnPhase: string;
+	idleSecs: number;
+	signalCount: number;
+	capReached: boolean;
+	observedAt: number;
+}
+
 export interface WorkflowState {
 	executionId: string;
 	workflowName: string;
@@ -210,6 +221,7 @@ export interface WorkflowState {
 	startedAt: number;
 	updatedAt: number;
 	approvalOperations?: ApprovalOperations;
+	stallObservations?: WorkflowStallObservation[];
 }
 
 interface ApprovalOperations {

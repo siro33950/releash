@@ -167,6 +167,7 @@ impl WorkflowExecution {
             active_parallel_steps: projection::active_parallel_steps(self.parallel_run.as_ref()),
             workflow_variables: self.workflow_variables.clone(),
             approval_operations: self.build_approval_operations(),
+            stall_observations: Vec::new(),
             started_at: self.started_at,
             updated_at: self.updated_at,
         }

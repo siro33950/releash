@@ -174,6 +174,7 @@ mod tests {
         ApprovalChatTarget, PendingRuntimeCommand, PendingRuntimeCommandOutcome,
         PendingRuntimeCommandPayload, WorkflowAbortRunGateway, WorkflowApprovalChatGateway,
         WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeStateGateway,
+        WorkflowStallClearedCommand, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
         WorkflowStartRunGateway, WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand,
         WorkflowTurnCompleteGateway,
     };
@@ -318,6 +319,23 @@ mod tests {
             Err(WorkflowError::external(
                 "complete_turn is not used by pending watcher tests",
             ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkflowStallObservedGateway for TestWorkflowRuntimeGateway {
+        async fn observe_stall(
+            &self,
+            _command: WorkflowStallObservedCommand,
+        ) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
+        async fn clear_stall(
+            &self,
+            _command: WorkflowStallClearedCommand,
+        ) -> Result<(), WorkflowError> {
+            Ok(())
         }
     }
 

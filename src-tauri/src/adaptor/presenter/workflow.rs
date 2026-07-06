@@ -76,8 +76,28 @@ pub fn workflow_state_to_view(
                 can_reject: operations.can_reject,
             }
         }),
+        stall_observations: state
+            .stall_observations
+            .into_iter()
+            .map(stall_observation_to_view)
+            .collect(),
         started_at: state.started_at,
         updated_at: state.updated_at,
+    }
+}
+
+fn stall_observation_to_view(
+    observation: workflow::WorkflowStallObservation,
+) -> workflow_wire::WorkflowStallObservationView {
+    workflow_wire::WorkflowStallObservationView {
+        chat_session_id: observation.session_id,
+        step_name: observation.step_name,
+        run_index: observation.run_index,
+        turn_phase: observation.turn_phase,
+        idle_secs: observation.idle_secs,
+        signal_count: observation.signal_count,
+        cap_reached: observation.cap_reached,
+        observed_at: observation.observed_at,
     }
 }
 
@@ -367,6 +387,7 @@ mod tests {
             }],
             workflow_variables: HashMap::new(),
             approval_operations: None,
+            stall_observations: Vec::new(),
             started_at: 0.0,
             updated_at: 2.0,
         }
@@ -556,6 +577,7 @@ mod tests {
             active_parallel_steps: vec![],
             workflow_variables: HashMap::new(),
             approval_operations: None,
+            stall_observations: Vec::new(),
             started_at: 999.0,
             updated_at: 1001.0,
         };

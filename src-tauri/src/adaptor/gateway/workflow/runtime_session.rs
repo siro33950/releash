@@ -798,6 +798,7 @@ mod tests {
             task: None,
             parallel_run: None,
             workflow_variables: HashMap::new(),
+            current_stall_observations: Vec::new(),
         }
     }
 

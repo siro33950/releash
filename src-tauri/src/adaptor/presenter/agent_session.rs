@@ -3,7 +3,8 @@ use tauri::Emitter;
 
 use crate::adaptor::protocol::{AgentSupportedCommandMsg, AgentSupportedCommandsUpdated};
 use crate::usecase::agent_session::runtime::ports::{
-    AgentSessionEventNotifier, AgentSessionStateChangedPayload, AgentStreamingDeltaPayload,
+    AgentSessionEventNotifier, AgentSessionStateChangedPayload, AgentStallObservedPayload,
+    AgentStreamingDeltaPayload,
 };
 use crate::usecase::agent_session::session::{
     project_tool_output_parts_for_stream, ChatMessage, ChatSession, ContextCarryState, ModelInfo,
@@ -40,6 +41,20 @@ struct AgentSessionStateChangedEventPayload {
     pending_permission_request: Option<PermissionRequestMsg>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_permission_state_revision: Option<u64>,
+}
+
+#[derive(Clone, Serialize)]
+struct AgentStallObservedEventPayload {
+    chat_session_id: String,
+    turn_phase: TurnPhase,
+    idle_secs: u64,
+    signal_count: u32,
+    cap_reached: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct AgentStallClearedEventPayload<'a> {
+    chat_session_id: &'a str,
 }
 
 #[derive(Clone, Serialize)]
@@ -92,6 +107,28 @@ impl AgentSessionEventNotifier for TauriAgentSessionEventNotifier {
                 session_state: payload.session_state,
                 pending_permission_request: payload.pending_permission_request,
                 pending_permission_state_revision: payload.pending_permission_state_revision,
+            },
+        );
+    }
+
+    fn stall_observed(&self, payload: AgentStallObservedPayload) {
+        let _ = self.app.emit(
+            "agent-stall-observed",
+            AgentStallObservedEventPayload {
+                chat_session_id: payload.chat_session_id,
+                turn_phase: payload.turn_phase,
+                idle_secs: payload.idle_secs,
+                signal_count: payload.signal_count,
+                cap_reached: payload.cap_reached,
+            },
+        );
+    }
+
+    fn stall_cleared(&self, session_id: &str) {
+        let _ = self.app.emit(
+            "agent-stall-cleared",
+            AgentStallClearedEventPayload {
+                chat_session_id: session_id,
             },
         );
     }
@@ -313,6 +350,34 @@ mod tests {
         assert_eq!(value["session_state"], "error");
         assert_eq!(value["pending_permission_request"]["kind"], "tool_approval");
         assert_eq!(value["pending_permission_state_revision"], 7);
+    }
+
+    #[test]
+    fn serializes_stall_observed_payload() {
+        let value = serde_json::to_value(AgentStallObservedEventPayload {
+            chat_session_id: "session-1".to_string(),
+            turn_phase: TurnPhase::Streaming,
+            idle_secs: 180,
+            signal_count: 3,
+            cap_reached: true,
+        })
+        .unwrap();
+
+        assert_eq!(value["chat_session_id"], "session-1");
+        assert_eq!(value["turn_phase"], "streaming");
+        assert_eq!(value["idle_secs"], 180);
+        assert_eq!(value["signal_count"], 3);
+        assert_eq!(value["cap_reached"], true);
+    }
+
+    #[test]
+    fn serializes_stall_cleared_payload() {
+        let value = serde_json::to_value(AgentStallClearedEventPayload {
+            chat_session_id: "session-1",
+        })
+        .unwrap();
+
+        assert_eq!(value["chat_session_id"], "session-1");
     }
 
     #[test]

@@ -64,8 +64,23 @@ pub struct WorkflowStateFieldsView {
     pub workflow_variables: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_operations: Option<ApprovalOperationsView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stall_observations: Vec<WorkflowStallObservationView>,
     pub started_at: f64,
     pub updated_at: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStallObservationView {
+    pub chat_session_id: String,
+    pub step_name: String,
+    pub run_index: u32,
+    pub turn_phase: String,
+    pub idle_secs: u64,
+    pub signal_count: u32,
+    pub cap_reached: bool,
+    pub observed_at: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -341,6 +356,7 @@ mod tests {
             active_parallel_steps: Vec::new(),
             workflow_variables: HashMap::new(),
             approval_operations: None,
+            stall_observations: Vec::new(),
             started_at: 1.0,
             updated_at: 2.0,
         }

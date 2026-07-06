@@ -26,7 +26,9 @@ pub use outcome_commit_mode::OutcomeCommitMode;
 #[cfg(test)]
 pub use run::WorkflowRunRecord;
 pub use run::{RunListFilter, RunStatus, RunStatusFilter, TriggerSource, WorkflowRunSummary};
-pub use state::{ApprovalOperations, WorkflowExecutionState, WorkflowStateSnapshot};
+pub use state::{
+    ApprovalOperations, WorkflowExecutionState, WorkflowStallObservation, WorkflowStateSnapshot,
+};
 pub use step_output::{
     default_step_entry_state, ChildOutputSnapshot, ParallelStepState, StepHistoryEntry, StepOutput,
     TokenUsage, STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED,

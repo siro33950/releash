@@ -17,6 +17,7 @@ use crate::domain::agent_session::gateway::{
 };
 use crate::domain::agent_session::value_objects::{EditorContext, ModelId, PermissionMode};
 use crate::domain::agent_session::{ContextSnapshot, ContextSourceKind};
+use crate::domain::workflow::WorkflowError;
 use crate::usecase::agent_session::backend_registry::{AgentBackendRegistry, BackendListResult};
 use crate::usecase::agent_session::context::{
     BranchDiffContextPort, BuiltSystemContext, InstructionSourcePort, SystemContextEditorInput,
@@ -41,6 +42,7 @@ use crate::usecase::agent_session::system_prompt::{
     SessionSystemPromptBuildRequest,
 };
 use crate::usecase::workflow::ports::{
+    WorkflowStallClearedNotification, WorkflowStallObservedNotification,
     WorkflowTurnCompleteNotification, WorkflowTurnFailureSignal, WorkflowTurnTokenUsage,
 };
 
@@ -51,8 +53,9 @@ use super::event_apply::{
     parts_from_domain, pending_permission_request_msg, token_usage_from_domain,
 };
 use super::ports::{
-    AgentSessionEventNotifier, AgentSessionStateChangedPayload, AgentStreamingDeltaPayload,
-    AgentTaskSpawner, WorkflowTurnCompleteNotifier,
+    AgentSessionEventNotifier, AgentSessionStateChangedPayload, AgentStallObservedPayload,
+    AgentStreamingDeltaPayload, AgentTaskSpawner, WorkflowStallNotifier,
+    WorkflowTurnCompleteNotifier,
 };
 use super::queue::QueuedTurnInput;
 use super::session_state::{
@@ -60,10 +63,9 @@ use super::session_state::{
     RuntimeSessionState,
 };
 use super::stale::{
-    effective_stale_timeout, has_in_flight_tool_use, remaining_until_stale,
-    stale_timeout_for_session, stale_watchdog_should_continue_waiting,
-    startup_max_retries_for_session, startup_timeout_for_session, turn_is_stale, STALE_CLOSE_GRACE,
-    STALE_TIMEOUT_MESSAGE,
+    effective_stale_timeout, has_in_flight_tool_use, recovery_cap_reached, remaining_until_stale,
+    stale_timeout_for_session, stale_watchdog_should_continue_waiting, stall_cap_reached,
+    startup_max_retries_for_session, startup_timeout_for_session, turn_is_stale,
 };
 use super::streaming::{
     merge_streaming_append_delta_parts, parts_can_stream_as_append_delta,
@@ -198,6 +200,12 @@ struct RuntimeContext {
     sessions: Arc<Mutex<RuntimeSessionMap>>,
     session_locks: SessionRuntimeLocks,
     workflow_turn_complete_notifier: Arc<RwLock<Option<Arc<dyn WorkflowTurnCompleteNotifier>>>>,
+    workflow_stall_notifier: Arc<RwLock<Option<Arc<dyn WorkflowStallNotifier>>>>,
+}
+
+#[derive(Clone)]
+struct StalledActiveTurnTarget {
+    runtime: Arc<dyn AgentSessionRuntime>,
 }
 
 pub struct AgentSessionRuntimeUsecase {
@@ -231,6 +239,7 @@ impl AgentSessionRuntimeUsecase {
                 sessions: Arc::new(Mutex::new(RuntimeSessionMap::new())),
                 session_locks: Arc::new(Mutex::new(HashMap::new())),
                 workflow_turn_complete_notifier: Arc::new(RwLock::new(None)),
+                workflow_stall_notifier: Arc::new(RwLock::new(None)),
             },
         }
     }
@@ -242,6 +251,14 @@ impl AgentSessionRuntimeUsecase {
         *self
             .ctx
             .workflow_turn_complete_notifier
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(notifier);
+    }
+
+    pub fn set_workflow_stall_notifier(&self, notifier: Arc<dyn WorkflowStallNotifier>) {
+        *self
+            .ctx
+            .workflow_stall_notifier
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(notifier);
     }
@@ -272,19 +289,59 @@ impl AgentSessionRuntimeUsecase {
         let backend_id = required_backend_id(&session)?;
         self.recover_queued_turn_if_idle_without_runtime(&session_id)
             .await;
-        let human_parts = human_parts(&req.content, &images);
-        let human_message = add_message_internal(
-            &self.ctx.session_store,
-            &self.ctx.data_dir,
-            &session_id,
-            MessageRole::Human,
-            &req.content,
-            (!human_parts.is_empty()).then_some(human_parts),
-            (!mentions.is_empty()).then_some(mentions.clone()),
-        )
-        .map_err(AgentRuntimeError::Other)?;
-
+        let stalled_active_turn = self.stalled_active_turn_target(&session_id).await?;
+        if stalled_active_turn.is_some() && !self.backend_supports_steering(&backend_id) {
+            return Err(AgentRuntimeError::Other(format!(
+                "active-turn steering is not available for backend '{backend_id}'"
+            )));
+        }
         if self.is_turn_busy(&session_id).await {
+            if let Some(target) = stalled_active_turn {
+                target
+                    .runtime
+                    .steer(TurnInput {
+                        prompt: req.content.clone(),
+                        images: images
+                            .iter()
+                            .cloned()
+                            .map(|image| AttachmentPayload {
+                                data: image.data,
+                                media_type: image.media_type,
+                            })
+                            .collect(),
+                        system_prompt: None,
+                        permission_mode: req.permission_mode,
+                        plan_mode: req.plan_mode,
+                        permission_profile_id: session.permission_profile_id.clone(),
+                        editor_context: req.editor_context.clone().map(EditorContext::from),
+                    })
+                    .await
+                    .map_err(AgentRuntimeError::from)?;
+                let human_message = add_human_message_internal(
+                    &self.ctx.session_store,
+                    &self.ctx.data_dir,
+                    &session_id,
+                    &req.content,
+                    &images,
+                    &mentions,
+                )?;
+                return self.send_response(
+                    &session_id,
+                    &session.worktree_path,
+                    human_message,
+                    None,
+                    None,
+                    self.pending_queue(&session_id).await,
+                );
+            }
+            let human_message = add_human_message_internal(
+                &self.ctx.session_store,
+                &self.ctx.data_dir,
+                &session_id,
+                &req.content,
+                &images,
+                &mentions,
+            )?;
             let mut queued = QueuedTurnInput::new(
                 req.content,
                 req.permission_mode,
@@ -315,6 +372,14 @@ impl AgentSessionRuntimeUsecase {
             );
         }
 
+        let human_message = add_human_message_internal(
+            &self.ctx.session_store,
+            &self.ctx.data_dir,
+            &session_id,
+            &req.content,
+            &images,
+            &mentions,
+        )?;
         let agent_message = add_message_internal(
             &self.ctx.session_store,
             &self.ctx.data_dir,
@@ -439,6 +504,7 @@ impl AgentSessionRuntimeUsecase {
             permission_wait_measurement,
             resolved_turn_id,
             pending_permission_state_revision,
+            cleared_stall,
         ) = {
             let mut sessions = self.ctx.sessions.lock().await;
             let Some(state) = sessions.get_mut(session_id) else {
@@ -457,10 +523,11 @@ impl AgentSessionRuntimeUsecase {
                 && pending_in_state_matches)
                 || !pending.from_runtime_state;
             let mut pending_permission_state_revision = None;
+            let mut cleared_stall = false;
             if did_resume_streaming {
                 state.phase = RuntimeSessionPhase::Streaming;
                 pending_permission_state_revision = Some(state.clear_pending_permission_request());
-                state.last_progress_at = Some(std::time::Instant::now());
+                cleared_stall = state.record_progress(std::time::Instant::now());
                 state.permission_wait_diagnostic_emitted = false;
             }
             let permission_wait_measurement = did_resume_streaming
@@ -480,8 +547,14 @@ impl AgentSessionRuntimeUsecase {
                 permission_wait_measurement,
                 resolved_turn_id,
                 pending_permission_state_revision,
+                cleared_stall,
             )
         };
+        if cleared_stall {
+            if let Err(error) = dispatch_stall_cleared_notifications(&self.ctx, session_id).await {
+                log::warn!("workflow stall-cleared notification failed for {session_id}: {error}");
+            }
+        }
         if let Some((elapsed, dims)) = permission_wait_measurement {
             crate::other::telemetry::record_agent_turn_duration(
                 crate::other::telemetry::AgentTurn::PermissionWait,
@@ -1564,6 +1637,32 @@ impl AgentSessionRuntimeUsecase {
             .and_then(|state| state.runtime.clone())
     }
 
+    async fn stalled_active_turn_target(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<StalledActiveTurnTarget>, AgentRuntimeError> {
+        let sessions = self.ctx.sessions.lock().await;
+        let Some(state) = sessions.get(session_id) else {
+            return Ok(None);
+        };
+        if state.phase == RuntimeSessionPhase::Idle || !state.stall_observation_active {
+            return Ok(None);
+        }
+        let runtime = state.runtime.clone().ok_or_else(|| {
+            AgentRuntimeError::Other(format!(
+                "No active agent runtime for stalled session {session_id}"
+            ))
+        })?;
+        Ok(Some(StalledActiveTurnTarget { runtime }))
+    }
+
+    fn backend_supports_steering(&self, backend_id: &str) -> bool {
+        self.ctx
+            .registry
+            .get(backend_id)
+            .is_some_and(|backend| backend.capabilities().steering)
+    }
+
     async fn is_turn_busy(&self, session_id: &str) -> bool {
         let sessions = self.ctx.sessions.lock().await;
         sessions
@@ -1731,7 +1830,7 @@ fn spawn_stale_watchdog_task(
     let spawner = Arc::clone(&ctx.spawner);
     spawner.spawn(Box::pin(async move {
         loop {
-            let delay = {
+            let next = {
                 let _session_guard =
                     acquire_session_runtime_lock(&ctx.session_locks, &session_id).await;
                 let mut sessions = ctx.sessions.lock().await;
@@ -1775,69 +1874,129 @@ fn spawn_stale_watchdog_task(
                         // 基準値へ戻るため、待機は基準 timeout を上限にして再評価する。
                         .min(timeout)
                     }
+                    .max(std::time::Duration::from_millis(1))
                 } else {
                     std::time::Duration::ZERO
                 }
             };
-            if delay.is_zero() {
-                break;
+            if !next.is_zero() {
+                tokio::time::sleep(next).await;
+                continue;
             }
-            tokio::time::sleep(delay).await;
-        }
 
-        let (workflow_notification, runtime) = {
-            let _session_guard =
-                acquire_session_runtime_lock(&ctx.session_locks, &session_id).await;
-            let runtime = {
-                let mut sessions = ctx.sessions.lock().await;
-                let Some(state) = sessions.get_mut(&session_id) else {
-                    return;
+            let observation = {
+                let _session_guard =
+                    acquire_session_runtime_lock(&ctx.session_locks, &session_id).await;
+                let observation = {
+                    let mut sessions = ctx.sessions.lock().await;
+                    let Some(state) = sessions.get_mut(&session_id) else {
+                        return;
+                    };
+                    let effective_timeout = effective_stale_timeout(
+                        timeout,
+                        has_in_flight_tool_use(&state.domain_streaming_parts),
+                    );
+                    if !turn_is_stale(
+                        state.phase,
+                        generation,
+                        state.generation,
+                        state.last_progress_at,
+                        effective_timeout,
+                        std::time::Instant::now(),
+                    ) {
+                        continue;
+                    }
+                    state.stall_observation_active = true;
+                    if stall_cap_reached(state.stall_signal_count)
+                        && (recovery_cap_reached(state.stall_recovery_attempts)
+                            || state.runtime.is_none())
+                    {
+                        return;
+                    }
+
+                    let now = std::time::Instant::now();
+                    let payload = if stall_cap_reached(state.stall_signal_count) {
+                        None
+                    } else {
+                        state.stall_signal_count = state.stall_signal_count.saturating_add(1);
+                        Some(AgentStallObservedPayload {
+                            chat_session_id: session_id.clone(),
+                            turn_phase: TurnPhase::from(state.phase),
+                            idle_secs: state
+                                .last_progress_at
+                                .map(|last_progress_at| {
+                                    now.duration_since(last_progress_at).as_secs()
+                                })
+                                .unwrap_or(0),
+                            signal_count: state.stall_signal_count,
+                            cap_reached: stall_cap_reached(state.stall_signal_count),
+                        })
+                    };
+                    let runtime = if recovery_cap_reached(state.stall_recovery_attempts) {
+                        None
+                    } else {
+                        let runtime = state.runtime.clone();
+                        if runtime.is_some() {
+                            state.stall_recovery_attempts =
+                                state.stall_recovery_attempts.saturating_add(1);
+                        }
+                        runtime
+                    };
+                    let should_rearm = !stall_cap_reached(state.stall_signal_count)
+                        || (!recovery_cap_reached(state.stall_recovery_attempts)
+                            && state.runtime.is_some());
+                    StallObservation {
+                        payload,
+                        runtime,
+                        should_rearm,
+                        rearm_delay: effective_timeout.min(timeout),
+                    }
                 };
-                let effective_timeout = effective_stale_timeout(
-                    timeout,
-                    has_in_flight_tool_use(&state.domain_streaming_parts),
-                );
-                if !turn_is_stale(
-                    state.phase,
-                    generation,
-                    state.generation,
-                    state.last_progress_at,
-                    effective_timeout,
-                    std::time::Instant::now(),
-                ) {
-                    return;
+                if let Some(payload) = observation.payload.clone() {
+                    let workflow_notification = workflow_stall_observed_notification(&payload);
+                    ctx.notifier.stall_observed(payload);
+                    // WorkflowStallObserved dispatch intentionally completes while the
+                    // per-session runtime lock is held. The event pump dispatches
+                    // WorkflowStallCleared for KeepAlive/PartsMerged under the same lock, so
+                    // observe and clear are serialized here; moving this await outside the lock
+                    // would reintroduce the clear-overtakes-observe race fixed in 1d4105e9.
+                    dispatch_workflow_stall_observed_notification(
+                        &ctx.workflow_stall_notifier,
+                        workflow_notification,
+                    )
+                    .await;
                 }
-                state.runtime.take()
+                observation
             };
 
-            let workflow_notification = complete_turn(
-                &ctx,
-                &session_id,
-                Some(generation),
-                TurnResult::Interrupted {
-                    reason: DomainInterruptReason::Timeout,
-                    error: Some(STALE_TIMEOUT_MESSAGE.to_string()),
-                },
-            )
-            .await;
-            (workflow_notification, runtime)
-        };
-
-        if let Some(notification) = workflow_notification {
-            dispatch_workflow_turn_complete_notification(
-                &ctx.workflow_turn_complete_notifier,
-                notification,
-            )
-            .await;
-        }
-        if let Some(runtime) = runtime {
-            if let Err(error) = runtime.interrupt().await {
-                log::warn!("failed to interrupt stale runtime for {session_id}: {error}");
+            if let Some(runtime) = observation.runtime {
+                match runtime.reconnect().await {
+                    Ok(()) => {}
+                    Err(AgentBackendError::Unavailable(message)) => {
+                        log::debug!(
+                            "agent runtime reconnect unavailable for {session_id}: {message}"
+                        );
+                    }
+                    Err(error) => {
+                        log::warn!("agent runtime reconnect failed for {session_id}: {error}");
+                    }
+                }
             }
-            tokio::time::sleep(STALE_CLOSE_GRACE).await;
-            runtime.close().await;
+            if !observation.should_rearm {
+                return;
+            }
+            if !observation.rearm_delay.is_zero() {
+                tokio::time::sleep(observation.rearm_delay).await;
+            }
         }
     }));
+}
+
+struct StallObservation {
+    payload: Option<AgentStallObservedPayload>,
+    runtime: Option<Arc<dyn AgentSessionRuntime>>,
+    should_rearm: bool,
+    rearm_delay: std::time::Duration,
 }
 
 async fn open_runtime_for_session(
@@ -1882,7 +2041,7 @@ async fn open_runtime_for_session(
             base_branch,
             startup_timeout: startup_timeout_for_session(session),
             startup_max_retries: startup_max_retries_for_session(session),
-            stale_timeout: Some(stale_timeout_for_session(session)),
+            stale_timeout: None,
         })
         .await
         .map_err(AgentRuntimeError::from)?;
@@ -2103,6 +2262,55 @@ async fn dispatch_workflow_turn_complete_notification(
     }
 }
 
+async fn dispatch_workflow_stall_observed_notification(
+    workflow_stall_notifier: &Arc<RwLock<Option<Arc<dyn WorkflowStallNotifier>>>>,
+    notification: WorkflowStallObservedNotification,
+) {
+    let workflow_notifier = workflow_stall_notifier
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(workflow_notifier) = workflow_notifier {
+        workflow_notifier.stall_observed(notification).await;
+    }
+}
+
+async fn dispatch_workflow_stall_cleared_notification(
+    workflow_stall_notifier: &Arc<RwLock<Option<Arc<dyn WorkflowStallNotifier>>>>,
+    notification: WorkflowStallClearedNotification,
+) -> Result<(), WorkflowError> {
+    let workflow_notifier = workflow_stall_notifier
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(workflow_notifier) = workflow_notifier {
+        workflow_notifier.stall_cleared(notification).await?;
+    }
+    Ok(())
+}
+
+async fn dispatch_stall_cleared_notifications(
+    ctx: &RuntimeContext,
+    session_id: &str,
+) -> Result<(), WorkflowError> {
+    dispatch_workflow_stall_cleared_notification(
+        &ctx.workflow_stall_notifier,
+        workflow_stall_cleared_notification(session_id),
+    )
+    .await?;
+    let cleared_stall = {
+        let mut sessions = ctx.sessions.lock().await;
+        sessions
+            .get_mut(session_id)
+            .map(|state| state.mark_progress(std::time::Instant::now()))
+            .unwrap_or(false)
+    };
+    if cleared_stall {
+        ctx.notifier.stall_cleared(session_id);
+    }
+    Ok(())
+}
+
 async fn record_first_backend_event_if_needed(ctx: &RuntimeContext, session_id: &str) {
     let measurement = {
         let mut sessions = ctx.sessions.lock().await;
@@ -2299,10 +2507,23 @@ async fn apply_runtime_event(
             ctx.notifier.token_usage_updated(session_id, usage);
         }
         AgentRuntimeEvent::KeepAlive => {
-            let mut sessions = ctx.sessions.lock().await;
-            if let Some(state) = sessions.get_mut(session_id) {
-                if state.phase != RuntimeSessionPhase::Idle {
-                    state.last_progress_at = Some(std::time::Instant::now());
+            let cleared_stall = {
+                let mut sessions = ctx.sessions.lock().await;
+                if let Some(state) = sessions.get_mut(session_id) {
+                    if state.phase != RuntimeSessionPhase::Idle {
+                        state.record_progress(std::time::Instant::now())
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+            if cleared_stall {
+                if let Err(error) = dispatch_stall_cleared_notifications(ctx, session_id).await {
+                    log::warn!(
+                        "workflow stall-cleared notification failed for {session_id}: {error}"
+                    );
                 }
             }
         }
@@ -2345,6 +2566,7 @@ async fn apply_runtime_event(
                 let mut sessions = ctx.sessions.lock().await;
                 if let Some(state) = sessions.get_mut(session_id) {
                     state.phase = RuntimeSessionPhase::Idle;
+                    state.stall_observation_active = false;
                 }
             }
             if !should_complete_crash {
@@ -2420,7 +2642,7 @@ async fn apply_parts(
         }
         return;
     }
-    let (turn_id, message_id, emit_now, schedule_delay) = {
+    let (turn_id, message_id, emit_now, schedule_delay, cleared_stall) = {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
             return;
@@ -2438,7 +2660,7 @@ async fn apply_parts(
                 part.clone(),
             );
         }
-        state.last_progress_at = Some(std::time::Instant::now());
+        let cleared_stall = state.record_progress(std::time::Instant::now());
         let can_append_delta = parts_can_stream_as_append_delta(&delta_parts);
         let requires_snapshot = mode == StreamingApplyMode::Immediate
             || state.streaming_delta_seq == 0
@@ -2495,8 +2717,13 @@ async fn apply_parts(
             }
             StreamingFlushDecision::NotNeeded => false,
         };
-        (turn_id, message_id, emit_now, schedule_delay)
+        (turn_id, message_id, emit_now, schedule_delay, cleared_stall)
     };
+    if cleared_stall {
+        if let Err(error) = dispatch_stall_cleared_notifications(ctx, session_id).await {
+            log::warn!("workflow stall-cleared notification failed for {session_id}: {error}");
+        }
+    }
     if let Some(turn_id) = turn_id {
         append_durable_part_events(
             &ctx.session_store,
@@ -2950,6 +3177,7 @@ async fn complete_turn(
         let pending_permission_state_revision = state.clear_pending_permission_request();
         state.permission_wait_started_at = None;
         state.permission_wait_diagnostic_emitted = false;
+        state.stall_observation_active = false;
         let message_id = state.streaming_message_id.clone();
         state.last_agent_message_id = message_id.clone();
         let usage = match &result {
@@ -3470,6 +3698,27 @@ fn pending_queue_view(state: &RuntimeSessionState) -> Vec<QueuedAgentTurn> {
         .collect()
 }
 
+fn add_human_message_internal(
+    session_store: &SessionStore,
+    data_dir: &Path,
+    session_id: &str,
+    content: &str,
+    images: &[ImageAttachment],
+    mentions: &[crate::domain::code::MentionReference],
+) -> Result<ChatMessage, AgentRuntimeError> {
+    let parts = human_parts(content, images);
+    add_message_internal(
+        session_store,
+        data_dir,
+        session_id,
+        MessageRole::Human,
+        content,
+        (!parts.is_empty()).then_some(parts),
+        (!mentions.is_empty()).then_some(mentions.to_vec()),
+    )
+    .map_err(AgentRuntimeError::Other)
+}
+
 fn human_parts(content: &str, images: &[ImageAttachment]) -> Vec<MessagePart> {
     if images.is_empty() {
         return Vec::new();
@@ -3937,6 +4186,29 @@ fn workflow_turn_complete_notification(
     }
 }
 
+fn workflow_stall_observed_notification(
+    payload: &AgentStallObservedPayload,
+) -> WorkflowStallObservedNotification {
+    WorkflowStallObservedNotification {
+        chat_session_id: payload.chat_session_id.clone(),
+        turn_phase: match payload.turn_phase {
+            TurnPhase::Idle => "idle",
+            TurnPhase::Streaming => "streaming",
+            TurnPhase::WaitingPermission => "waiting_permission",
+        }
+        .to_string(),
+        idle_secs: payload.idle_secs,
+        signal_count: payload.signal_count,
+        cap_reached: payload.cap_reached,
+    }
+}
+
+fn workflow_stall_cleared_notification(session_id: &str) -> WorkflowStallClearedNotification {
+    WorkflowStallClearedNotification {
+        chat_session_id: session_id.to_string(),
+    }
+}
+
 fn emit_session_state_change(
     session_store: &Arc<SessionStore>,
     notifier: &Arc<dyn AgentSessionEventNotifier>,
@@ -4160,7 +4432,8 @@ mod tests {
         TestRuntimeCallKind,
     };
     use crate::usecase::agent_session::runtime::ports::{
-        AgentSessionEventNotifier, AgentSessionStateChangedPayload, AgentStreamingDeltaPayload,
+        AgentSessionEventNotifier, AgentSessionStateChangedPayload, AgentStallObservedPayload,
+        AgentStreamingDeltaPayload, WorkflowStallNotifier,
     };
     use crate::usecase::agent_session::session::{
         create_session_internal_with_attributes, ChatMessage, MessagePart, PermissionPartStatus,
@@ -4168,6 +4441,9 @@ mod tests {
     };
     use crate::usecase::agent_session::status::{
         AgentStatusChanges, AgentStatusNotifier, TurnPhaseRepr,
+    };
+    use crate::usecase::workflow::ports::{
+        WorkflowStallClearedNotification, WorkflowStallObservedNotification,
     };
     use std::future::Future;
     use std::path::Path;
@@ -4321,6 +4597,8 @@ mod tests {
     #[derive(Default)]
     struct RecordingAgentNotifier {
         state_changes: Mutex<Vec<AgentSessionStateChangedPayload>>,
+        stall_observations: Mutex<Vec<AgentStallObservedPayload>>,
+        stall_clears: Mutex<Vec<String>>,
         streaming_deltas: Mutex<Vec<AgentStreamingDeltaPayload>>,
         permission_modes: Mutex<Vec<(String, String)>>,
         model_updates: Mutex<Vec<(String, Vec<ModelInfo>, String)>>,
@@ -4331,6 +4609,14 @@ mod tests {
     impl RecordingAgentNotifier {
         fn state_changes(&self) -> Vec<AgentSessionStateChangedPayload> {
             self.state_changes.lock().unwrap().clone()
+        }
+
+        fn stall_observations(&self) -> Vec<AgentStallObservedPayload> {
+            self.stall_observations.lock().unwrap().clone()
+        }
+
+        fn stall_clears(&self) -> Vec<String> {
+            self.stall_clears.lock().unwrap().clone()
         }
 
         fn streaming_deltas(&self) -> Vec<AgentStreamingDeltaPayload> {
@@ -4357,6 +4643,17 @@ mod tests {
     impl AgentSessionEventNotifier for RecordingAgentNotifier {
         fn session_state_changed(&self, payload: AgentSessionStateChangedPayload) {
             self.state_changes.lock().unwrap().push(payload);
+        }
+
+        fn stall_observed(&self, payload: AgentStallObservedPayload) {
+            self.stall_observations.lock().unwrap().push(payload);
+        }
+
+        fn stall_cleared(&self, session_id: &str) {
+            self.stall_clears
+                .lock()
+                .unwrap()
+                .push(session_id.to_string());
         }
 
         fn streaming_delta(&self, payload: AgentStreamingDeltaPayload) -> bool {
@@ -4471,6 +4768,77 @@ mod tests {
                 })
                 .await;
             self.done.notify_waiters();
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingWorkflowStallNotifier {
+        notifications: Mutex<Vec<WorkflowStallObservedNotification>>,
+        cleared_notifications: Mutex<Vec<WorkflowStallClearedNotification>>,
+        stall_cleared_failures: Mutex<usize>,
+        event_order: Mutex<Vec<&'static str>>,
+        stall_observed_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+        stall_observed_record_delay: Mutex<Option<Duration>>,
+    }
+
+    impl RecordingWorkflowStallNotifier {
+        fn notifications(&self) -> Vec<WorkflowStallObservedNotification> {
+            self.notifications.lock().unwrap().clone()
+        }
+
+        fn cleared_notifications(&self) -> Vec<WorkflowStallClearedNotification> {
+            self.cleared_notifications.lock().unwrap().clone()
+        }
+
+        fn fail_next_stall_cleared(&self) {
+            *self.stall_cleared_failures.lock().unwrap() += 1;
+        }
+
+        fn event_order(&self) -> Vec<&'static str> {
+            self.event_order.lock().unwrap().clone()
+        }
+
+        fn set_stall_observed_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+            *self.stall_observed_hook.lock().unwrap() = Some(hook);
+        }
+
+        fn set_stall_observed_record_delay(&self, delay: Duration) {
+            *self.stall_observed_record_delay.lock().unwrap() = Some(delay);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkflowStallNotifier for RecordingWorkflowStallNotifier {
+        async fn stall_observed(&self, notification: WorkflowStallObservedNotification) {
+            let hook = self.stall_observed_hook.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook();
+            }
+            let delay = *self.stall_observed_record_delay.lock().unwrap();
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
+            self.event_order.lock().unwrap().push("observed");
+            self.notifications.lock().unwrap().push(notification);
+        }
+
+        async fn stall_cleared(
+            &self,
+            notification: WorkflowStallClearedNotification,
+        ) -> Result<(), WorkflowError> {
+            {
+                let mut failures = self.stall_cleared_failures.lock().unwrap();
+                if *failures > 0 {
+                    *failures -= 1;
+                    return Err(WorkflowError::external("injected workflow clear failure"));
+                }
+            }
+            self.event_order.lock().unwrap().push("cleared");
+            self.cleared_notifications
+                .lock()
+                .unwrap()
+                .push(notification);
+            Ok(())
         }
     }
 
@@ -5032,10 +5400,94 @@ mod tests {
         .unwrap();
     }
 
+    async fn wait_for_call_count(
+        controller: &crate::test_support::TestAgentRuntimeController,
+        session_id: &str,
+        expected: TestRuntimeCallKind,
+        expected_count: usize,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let count = controller
+                    .call_kinds_for(session_id)
+                    .iter()
+                    .filter(|kind| *kind == &expected)
+                    .count();
+                if count >= expected_count {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     async fn wait_for_stream_delta_count(notifier: &RecordingAgentNotifier, expected_count: usize) {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if notifier.streaming_deltas().len() >= expected_count {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_stall_observation_count(
+        notifier: &RecordingAgentNotifier,
+        expected_count: usize,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if notifier.stall_observations().len() >= expected_count {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_stall_clear_count(notifier: &RecordingAgentNotifier, expected_count: usize) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if notifier.stall_clears().len() >= expected_count {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_workflow_stall_notification_count(
+        notifier: &RecordingWorkflowStallNotifier,
+        expected_count: usize,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if notifier.notifications().len() >= expected_count {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_workflow_stall_cleared_count(
+        notifier: &RecordingWorkflowStallNotifier,
+        expected_count: usize,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if notifier.cleared_notifications().len() >= expected_count {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -5123,6 +5575,16 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    async fn mark_stall_observation_active_for_test(
+        usecase: &AgentSessionRuntimeUsecase,
+        session_id: &str,
+    ) {
+        let mut sessions = usecase.ctx.sessions.lock().await;
+        let state = sessions.get_mut(session_id).unwrap();
+        state.stall_signal_count = 1;
+        state.stall_observation_active = true;
     }
 
     #[test]
@@ -6032,6 +6494,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let workflow_stall_notifier = Arc::new(RecordingWorkflowStallNotifier::default());
         let status_notifier = Arc::new(RecordingStatusNotifier::default());
         let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
             session_store.clone(),
@@ -6039,6 +6502,7 @@ mod tests {
             event_notifier.clone(),
             status_notifier,
         );
+        usecase.set_workflow_stall_notifier(workflow_stall_notifier.clone());
         let response = usecase
             .send_message(send_request(tmp.path().to_string_lossy().to_string()))
             .await
@@ -6051,6 +6515,7 @@ mod tests {
             )
             .unwrap();
         wait_for_turn_phase(&usecase, &session_id, TurnPhase::WaitingPermission).await;
+        mark_stall_observation_active_for_test(&usecase, &session_id).await;
         let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
         session_store.set_persist_parts_hook_for_test({
             let order = Arc::clone(&order);
@@ -6096,7 +6561,17 @@ mod tests {
             .await
             .unwrap();
 
+        wait_for_workflow_stall_cleared_count(&workflow_stall_notifier, 1).await;
+        wait_for_stall_clear_count(&event_notifier, 1).await;
         assert_eq!(&*order.lock().unwrap(), &["persist", "event", "delta"]);
+        assert_eq!(event_notifier.stall_clears().last(), Some(&session_id));
+        assert_eq!(
+            workflow_stall_notifier
+                .cleared_notifications()
+                .last()
+                .map(|notification| notification.chat_session_id.as_str()),
+            Some(session_id.as_str())
+        );
         assert!(event_notifier
             .streaming_deltas()
             .iter()
@@ -6108,14 +6583,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_waiting_permissionでtimeout超過してもwatchdogは許可後にstale終端する() {
+    async fn test_waiting_permissionでtimeout超過してもwatchdogは許可後も非終端signalに留める() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
-        let (usecase, controller) =
-            crate::test_support::build_agent_runtime_usecase_with_controller(
-                session_store.clone(),
-                tmp.path(),
-            );
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
         let session = create_session_internal_with_attributes(
             &session_store,
             tmp.path(),
@@ -6126,7 +6604,7 @@ mod tests {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
                 workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, Some(1))),
+                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
             },
         )
         .unwrap();
@@ -6164,7 +6642,9 @@ mod tests {
             )
             .unwrap();
         wait_for_turn_phase(&usecase, &session.id, TurnPhase::WaitingPermission).await;
-        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(event_notifier.stall_observations().is_empty());
 
         usecase
             .respond_permission(
@@ -6180,11 +6660,19 @@ mod tests {
             .await
             .unwrap();
         wait_for_turn_phase(&usecase, &session.id, TurnPhase::Streaming).await;
+        wait_for_stall_observation_count(&event_notifier, 1).await;
+        wait_for_call_count(&controller, &session.id, TestRuntimeCallKind::Reconnect, 1).await;
 
-        wait_for_call(&controller, &session.id, TestRuntimeCallKind::Close).await;
-        assert!(controller
-            .call_kinds_for(&session.id)
-            .contains(&TestRuntimeCallKind::Interrupt));
+        let calls = controller.call_kinds_for(&session.id);
+        assert!(!calls.contains(&TestRuntimeCallKind::Interrupt));
+        assert!(!calls.contains(&TestRuntimeCallKind::Close));
+        assert_eq!(
+            event_notifier
+                .stall_observations()
+                .first()
+                .map(|payload| payload.turn_phase),
+            Some(TurnPhase::Streaming)
+        );
     }
 
     #[tokio::test]
@@ -6204,7 +6692,10 @@ mod tests {
         let stale_instant = std::time::Instant::now() - Duration::from_secs(3_600);
         {
             let mut sessions = usecase.ctx.sessions.lock().await;
-            sessions.get_mut(&session_id).unwrap().last_progress_at = Some(stale_instant);
+            let state = sessions.get_mut(&session_id).unwrap();
+            state.last_progress_at = Some(stale_instant);
+            state.stall_signal_count = 1;
+            state.stall_observation_active = true;
         }
 
         // When: the backend emits a keep_alive liveness event.
@@ -6212,15 +6703,14 @@ mod tests {
             .emit(&session_id, AgentRuntimeEvent::KeepAlive)
             .unwrap();
 
-        // Then: the progress clock is refreshed so the stale watchdog does not
-        // interrupt the healthy turn.
+        // Then: the progress clock is refreshed and the active stall observation is cleared.
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 {
                     let sessions = usecase.ctx.sessions.lock().await;
-                    let last_progress_at =
-                        sessions.get(&session_id).unwrap().last_progress_at.unwrap();
-                    if last_progress_at > stale_instant {
+                    let state = sessions.get(&session_id).unwrap();
+                    let last_progress_at = state.last_progress_at.unwrap();
+                    if last_progress_at > stale_instant && !state.stall_observation_active {
                         break;
                     }
                 }
@@ -6229,6 +6719,82 @@ mod tests {
         })
         .await
         .expect("keep_alive should refresh last_progress_at");
+    }
+
+    #[tokio::test]
+    async fn test_workflow_stall_clear失敗時はactive_flagを残し次progressでretryする() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let workflow_stall_notifier = Arc::new(RecordingWorkflowStallNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store,
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        usecase.set_workflow_stall_notifier(workflow_stall_notifier.clone());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id.clone();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Streaming).await;
+        mark_stall_observation_active_for_test(&usecase, &session_id).await;
+        let stale_instant = std::time::Instant::now() - Duration::from_secs(3_600);
+        {
+            let mut sessions = usecase.ctx.sessions.lock().await;
+            let state = sessions.get_mut(&session_id).unwrap();
+            state.last_progress_at = Some(stale_instant);
+        }
+        workflow_stall_notifier.fail_next_stall_cleared();
+
+        controller
+            .emit(&session_id, AgentRuntimeEvent::KeepAlive)
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                {
+                    let sessions = usecase.ctx.sessions.lock().await;
+                    let state = sessions.get(&session_id).unwrap();
+                    if state.last_progress_at.is_some_and(|at| at > stale_instant) {
+                        assert!(state.stall_observation_active);
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("failed clear should still record progress without clearing active flag");
+        assert!(workflow_stall_notifier.cleared_notifications().is_empty());
+        assert!(event_notifier.stall_clears().is_empty());
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "resumed".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_workflow_stall_cleared_count(&workflow_stall_notifier, 1).await;
+        wait_for_stall_clear_count(&event_notifier, 1).await;
+
+        let sessions = usecase.ctx.sessions.lock().await;
+        let state = sessions.get(&session_id).unwrap();
+        assert!(!state.stall_observation_active);
+        assert_eq!(event_notifier.stall_clears().last(), Some(&session_id));
+        assert_eq!(
+            workflow_stall_notifier
+                .cleared_notifications()
+                .last()
+                .map(|notification| notification.chat_session_id.as_str()),
+            Some(session_id.as_str())
+        );
     }
 
     #[tokio::test]
@@ -6908,7 +7474,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_start_turn_locked_workflow_contextのtimeoutを_session_specへ渡す() {
+    async fn test_start_turn_locked_workflow_contextのstale_timeoutは_session_specへ渡さない() {
         // Given: a workflow-step session with explicit startup/stale timeout hints.
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
@@ -6944,28 +7510,34 @@ mod tests {
             .await
             .unwrap();
 
-        // Then: the backend receives the workflow timeout hints through SessionSpec.
+        // Then: startup hints are passed to the backend, but stale timeout remains
+        // owned by the Rust stall watchdog and is not passed to backend stream watchdogs.
         assert!(controller.calls().iter().any(|call| {
             call.session_id == session.id
                 && call.kind
                     == TestRuntimeCallKind::OpenSession {
                         startup_timeout_ms: Some(12_000),
                         startup_max_retries: Some(3),
-                        stale_timeout_ms: Some(44_000),
+                        stale_timeout_ms: None,
                     }
         }));
     }
 
     #[tokio::test]
-    async fn test_stale_watchdog_無進捗turnをtimeout終端してruntimeを閉じる() {
+    async fn test_stale_watchdog_無進捗turnをstall_signalに留めruntimeを閉じない() {
         // Given: a workflow-step session whose stale timeout is immediate for the test.
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
-        let (usecase, controller) =
-            crate::test_support::build_agent_runtime_usecase_with_controller(
-                session_store.clone(),
-                tmp.path(),
-            );
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let workflow_stall_notifier = Arc::new(RecordingWorkflowStallNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        usecase.set_workflow_stall_notifier(workflow_stall_notifier.clone());
         let session = create_session_internal_with_attributes(
             &session_store,
             tmp.path(),
@@ -6980,7 +7552,6 @@ mod tests {
             },
         )
         .unwrap();
-        controller.pause_interrupt();
 
         // When: a turn starts and no runtime progress arrives.
         usecase
@@ -6993,8 +7564,8 @@ mod tests {
             )
             .await
             .unwrap();
-        wait_for_call(&controller, &session.id, TestRuntimeCallKind::Interrupt).await;
-        let send_response = tokio::time::timeout(
+        wait_for_stall_observation_count(&event_notifier, 1).await;
+        let send_error = tokio::time::timeout(
             Duration::from_millis(200),
             usecase.send_message(SendAgentMessageRequest {
                 chat_session_id: Some(session.id.clone()),
@@ -7010,20 +7581,596 @@ mod tests {
             }),
         )
         .await
-        .expect("send_message must not wait for stale runtime interrupt/close")
-        .unwrap();
-        assert!(send_response.agent_message.is_some() || send_response.queued_turn.is_some());
-        controller.release_interrupt();
-        wait_for_call(&controller, &session.id, TestRuntimeCallKind::Close).await;
+        .expect("send_message must not wait for stale recovery")
+        .expect_err("stalled active turn on a non-steering backend must be explicit");
+        wait_for_workflow_stall_notification_count(&workflow_stall_notifier, 1).await;
 
-        // Then: the stale runtime is interrupted/closed after the same session accepted input.
+        // Then: the watchdog only emits a non-terminal signal and tries non-destructive recovery.
+        assert!(
+            format!("{send_error:?}").contains("active-turn steering is not available"),
+            "stalled retry/continue must not be silently queued: {send_error:?}"
+        );
         let calls = controller.call_kinds_for(&session.id);
-        assert!(calls.contains(&TestRuntimeCallKind::Interrupt));
-        assert!(calls.contains(&TestRuntimeCallKind::Close));
+        assert!(calls.contains(&TestRuntimeCallKind::Reconnect));
+        assert!(!calls.contains(&TestRuntimeCallKind::Interrupt));
+        assert!(!calls.contains(&TestRuntimeCallKind::Close));
+        assert_eq!(
+            usecase.turn_phase(&session.id).await,
+            Some(TurnPhase::Streaming)
+        );
+        assert!(usecase.pending_queue(&session.id).await.is_empty());
+        let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert_eq!(loaded.session.state, SessionState::Active);
+        assert!(event_notifier.stall_observations().iter().any(|payload| {
+            payload.chat_session_id == session.id
+                && payload.turn_phase == TurnPhase::Streaming
+                && payload.signal_count >= 1
+        }));
+        assert!(workflow_stall_notifier
+            .notifications()
+            .iter()
+            .any(|payload| {
+                payload.chat_session_id == session.id
+                    && payload.turn_phase == "streaming"
+                    && payload.signal_count >= 1
+            }));
     }
 
     #[tokio::test]
-    async fn test_stale_watchdogはツール実行中のturnをtimeout終端しない() {
+    async fn test_stall_signal後のsend_messageはactive_turnへsteerしqueueしない() {
+        // Given: a stalled workflow-step turn backed by a runtime that supports active-turn steering.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let workflow_stall_notifier = Arc::new(RecordingWorkflowStallNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        usecase.set_workflow_stall_notifier(workflow_stall_notifier.clone());
+        controller.enable_steering();
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: true,
+                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+            },
+        )
+        .unwrap();
+        usecase
+            .start_turn_locked(
+                &session.id,
+                PermissionMode::Edit,
+                "run".to_string(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_for_stall_observation_count(&event_notifier, 1).await;
+
+        // When: retry/continue text is sent after the stall signal.
+        let response = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "continue".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+
+        // Then: the command reaches the active turn through steer and is not trapped behind the queue.
+        assert!(response.agent_message.is_none());
+        assert!(response.queued_turn.is_none());
+        assert_eq!(response.pending_queue_count, 0);
+        assert!(usecase.pending_queue(&session.id).await.is_empty());
+        assert!(controller.call_kinds_for(&session.id).contains(
+            &TestRuntimeCallKind::SteerPrompt {
+                prompt: "continue".to_string(),
+            }
+        ));
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::StartTurnPrompt { .. }))
+                .count(),
+            1,
+            "steered intervention must not start a second turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stall_signal後のsteer失敗はhuman_messageを保存しない() {
+        // Given: a stalled workflow-step turn backed by a runtime that advertises steering.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let workflow_stall_notifier = Arc::new(RecordingWorkflowStallNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        usecase.set_workflow_stall_notifier(workflow_stall_notifier);
+        controller.enable_steering();
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: true,
+                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+            },
+        )
+        .unwrap();
+        usecase
+            .start_turn_locked(
+                &session.id,
+                PermissionMode::Edit,
+                "run".to_string(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_for_stall_observation_count(&event_notifier, 1).await;
+        let before = usecase.get_session(&session.id).await.unwrap().unwrap();
+        let before_message_count = before.session.messages.len();
+        controller.fail_next_steer();
+
+        // When: retry/continue text fails during active-turn steering.
+        let send_error = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "continue".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .expect_err("steer failure must surface to the caller");
+
+        // Then: the failed intervention is neither durable chat history nor a queued turn.
+        assert!(
+            format!("{send_error:?}").contains("injected test steer failure"),
+            "unexpected steer error: {send_error:?}"
+        );
+        assert!(controller.call_kinds_for(&session.id).contains(
+            &TestRuntimeCallKind::SteerPrompt {
+                prompt: "continue".to_string(),
+            }
+        ));
+        assert!(usecase.pending_queue(&session.id).await.is_empty());
+        let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert_eq!(loaded.session.messages.len(), before_message_count);
+        assert!(!loaded
+            .session
+            .messages
+            .iter()
+            .any(|message| message.content == "continue"));
+    }
+
+    #[tokio::test]
+    async fn test_stall_signal後のbackend進捗はsend_messageをqueueへ戻す() {
+        // Given: an active turn whose previous stall signal made intervention routing available.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let workflow_stall_notifier = Arc::new(RecordingWorkflowStallNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        usecase.set_workflow_stall_notifier(workflow_stall_notifier.clone());
+        controller.enable_steering();
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: true,
+                workflow_step_context: Some(workflow_step_context(None, None, None)),
+            },
+        )
+        .unwrap();
+        usecase
+            .start_turn_locked(
+                &session.id,
+                PermissionMode::Edit,
+                "run".to_string(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session.id, TurnPhase::Streaming).await;
+        mark_stall_observation_active_for_test(&usecase, &session.id).await;
+
+        // When: backend output resumes after the stall observation.
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "still running".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_stream_delta_count(&event_notifier, 1).await;
+        wait_for_workflow_stall_cleared_count(&workflow_stall_notifier, 1).await;
+        wait_for_stall_clear_count(&event_notifier, 1).await;
+
+        // Then: the signal counter is retained for the turn cap, but delivery routing is no
+        // longer considered an active stall intervention.
+        {
+            let sessions = usecase.ctx.sessions.lock().await;
+            let state = sessions.get(&session.id).unwrap();
+            assert_eq!(state.stall_signal_count, 1);
+            assert!(!state.stall_observation_active);
+        }
+        assert_eq!(
+            workflow_stall_notifier
+                .cleared_notifications()
+                .last()
+                .map(|notification| notification.chat_session_id.as_str()),
+            Some(session.id.as_str())
+        );
+        assert_eq!(event_notifier.stall_clears().last(), Some(&session.id));
+        let response = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "after progress".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(response.agent_message.is_none());
+        assert!(response.queued_turn.is_some());
+        assert_eq!(response.pending_queue_count, 1);
+        assert!(!controller.call_kinds_for(&session.id).contains(
+            &TestRuntimeCallKind::SteerPrompt {
+                prompt: "after progress".to_string(),
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_stall_signal後のkeepaliveはworkflow_stallをclearする() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let workflow_stall_notifier = Arc::new(RecordingWorkflowStallNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        usecase.set_workflow_stall_notifier(workflow_stall_notifier.clone());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: true,
+                workflow_step_context: Some(workflow_step_context(None, None, None)),
+            },
+        )
+        .unwrap();
+        usecase
+            .start_turn_locked(
+                &session.id,
+                PermissionMode::Edit,
+                "run".to_string(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session.id, TurnPhase::Streaming).await;
+        mark_stall_observation_active_for_test(&usecase, &session.id).await;
+
+        controller
+            .emit(&session.id, AgentRuntimeEvent::KeepAlive)
+            .unwrap();
+        wait_for_workflow_stall_cleared_count(&workflow_stall_notifier, 1).await;
+        wait_for_stall_clear_count(&event_notifier, 1).await;
+
+        let sessions = usecase.ctx.sessions.lock().await;
+        let state = sessions.get(&session.id).unwrap();
+        assert!(!state.stall_observation_active);
+        assert_eq!(event_notifier.stall_clears().last(), Some(&session.id));
+        assert_eq!(
+            workflow_stall_notifier
+                .cleared_notifications()
+                .last()
+                .map(|notification| notification.chat_session_id.as_str()),
+            Some(session.id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stall_signal中のbackend進捗はworkflow_observe後にclearされる() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let workflow_stall_notifier = Arc::new(RecordingWorkflowStallNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier,
+            status_notifier,
+        );
+        usecase.set_workflow_stall_notifier(workflow_stall_notifier.clone());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: true,
+                workflow_step_context: Some(workflow_step_context(None, None, None)),
+            },
+        )
+        .unwrap();
+        workflow_stall_notifier.set_stall_observed_hook({
+            let controller = controller.clone();
+            let session_id = session.id.clone();
+            Arc::new(move || {
+                controller
+                    .emit(&session_id, AgentRuntimeEvent::KeepAlive)
+                    .unwrap();
+            })
+        });
+        workflow_stall_notifier.set_stall_observed_record_delay(Duration::from_millis(50));
+
+        usecase
+            .start_turn_locked(
+                &session.id,
+                PermissionMode::Edit,
+                "run".to_string(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session.id, TurnPhase::Streaming).await;
+        let generation = {
+            let mut sessions = usecase.ctx.sessions.lock().await;
+            let state = sessions.get_mut(&session.id).unwrap();
+            state.last_progress_at = Some(std::time::Instant::now() - Duration::from_secs(1));
+            state.stall_signal_count =
+                crate::usecase::agent_session::runtime::stale::MAX_STALL_SIGNALS - 1;
+            state.stall_recovery_attempts =
+                crate::usecase::agent_session::runtime::stale::MAX_STALL_RECOVERY_ATTEMPTS;
+            state.generation
+        };
+
+        spawn_stale_watchdog_task(
+            &usecase.ctx,
+            session.id.clone(),
+            generation,
+            Duration::from_millis(1),
+        );
+
+        wait_for_workflow_stall_notification_count(&workflow_stall_notifier, 1).await;
+        wait_for_workflow_stall_cleared_count(&workflow_stall_notifier, 1).await;
+
+        assert_eq!(
+            workflow_stall_notifier.event_order(),
+            vec!["observed", "cleared"]
+        );
+        let sessions = usecase.ctx.sessions.lock().await;
+        let state = sessions.get(&session.id).unwrap();
+        assert!(!state.stall_observation_active);
+    }
+
+    #[tokio::test]
+    async fn test_stale_watchdogはreconnect未対応backendでも介入点提示に留める() {
+        // Given: a workflow-step session backed by a runtime whose reconnect capability is unavailable.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let workflow_stall_notifier = Arc::new(RecordingWorkflowStallNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        controller.make_reconnect_unavailable();
+        usecase.set_workflow_stall_notifier(workflow_stall_notifier.clone());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: true,
+                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+            },
+        )
+        .unwrap();
+
+        // When: the turn reaches the stale threshold without backend progress.
+        usecase
+            .start_turn_locked(
+                &session.id,
+                PermissionMode::Edit,
+                "run".to_string(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_for_stall_observation_count(&event_notifier, 1).await;
+        wait_for_workflow_stall_notification_count(&workflow_stall_notifier, 1).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Then: Unavailable reconnect falls back to intervention signaling only.
+        assert!(event_notifier.stall_observations().iter().any(|payload| {
+            payload.chat_session_id == session.id && payload.turn_phase == TurnPhase::Streaming
+        }));
+        assert!(workflow_stall_notifier
+            .notifications()
+            .iter()
+            .any(|payload| payload.chat_session_id == session.id
+                && payload.turn_phase == "streaming"));
+        let calls = controller.call_kinds_for(&session.id);
+        assert!(!calls.contains(&TestRuntimeCallKind::Reconnect));
+        assert!(!calls.contains(&TestRuntimeCallKind::Interrupt));
+        assert!(!calls.contains(&TestRuntimeCallKind::Close));
+        assert_eq!(
+            usecase.turn_phase(&session.id).await,
+            Some(TurnPhase::Streaming)
+        );
+        let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert_eq!(loaded.session.state, SessionState::Active);
+    }
+
+    #[tokio::test]
+    async fn test_stale_watchdogはreconnect_other失敗でも非破壊で上限までretryする() {
+        // Given: a workflow-step session whose reconnect attempts fail with a generic backend
+        // error rather than Unavailable.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let workflow_stall_notifier = Arc::new(RecordingWorkflowStallNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        for _ in 0..crate::usecase::agent_session::runtime::stale::MAX_STALL_RECOVERY_ATTEMPTS {
+            controller.fail_next_reconnect();
+        }
+        usecase.set_workflow_stall_notifier(workflow_stall_notifier.clone());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: true,
+                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+            },
+        )
+        .unwrap();
+
+        usecase
+            .start_turn_locked(
+                &session.id,
+                PermissionMode::Edit,
+                "run".to_string(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_for_stall_observation_count(
+            &event_notifier,
+            crate::usecase::agent_session::runtime::stale::MAX_STALL_SIGNALS as usize,
+        )
+        .await;
+        wait_for_workflow_stall_notification_count(&workflow_stall_notifier, 1).await;
+        wait_for_call_count(
+            &controller,
+            &session.id,
+            TestRuntimeCallKind::Reconnect,
+            crate::usecase::agent_session::runtime::stale::MAX_STALL_RECOVERY_ATTEMPTS as usize,
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(event_notifier.stall_observations().iter().any(|payload| {
+            payload.chat_session_id == session.id && payload.turn_phase == TurnPhase::Streaming
+        }));
+        assert!(workflow_stall_notifier
+            .notifications()
+            .iter()
+            .any(|payload| payload.chat_session_id == session.id
+                && payload.turn_phase == "streaming"));
+        let calls = controller.call_kinds_for(&session.id);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::Reconnect))
+                .count(),
+            crate::usecase::agent_session::runtime::stale::MAX_STALL_RECOVERY_ATTEMPTS as usize
+        );
+        assert!(!calls.contains(&TestRuntimeCallKind::Interrupt));
+        assert!(!calls.contains(&TestRuntimeCallKind::Close));
+        assert_eq!(
+            usecase.turn_phase(&session.id).await,
+            Some(TurnPhase::Streaming)
+        );
+        let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert_eq!(loaded.session.state, SessionState::Active);
+    }
+
+    #[tokio::test]
+    async fn test_stale_watchdogはツール実行中のturnにstall_signalを出さない() {
         // Given: a workflow-step session with a 1-second stale timeout.
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
@@ -7074,23 +8221,29 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        // Then: the stale watchdog does not interrupt the healthy tool-in-flight turn.
+        // Then: the stale watchdog does not interrupt or recover the healthy tool-in-flight turn.
         assert!(!controller
             .call_kinds_for(&session.id)
             .contains(&TestRuntimeCallKind::Interrupt));
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .contains(&TestRuntimeCallKind::Reconnect));
     }
 
     #[tokio::test]
-    async fn test_stale_timeout後の遅延abort完了は_error状態を上書きしない() {
-        // Given: a workflow-step session whose stale timeout completes before the backend
-        // reports its interrupt result.
+    async fn test_stall_signal後のbackend明示abort完了でturnを確定する() {
+        // Given: a workflow-step session whose stale timeout is observed before the backend
+        // reports its explicit interrupt result.
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
-        let (usecase, controller) =
-            crate::test_support::build_agent_runtime_usecase_with_controller(
-                session_store.clone(),
-                tmp.path(),
-            );
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
         let session = create_session_internal_with_attributes(
             &session_store,
             tmp.path(),
@@ -7115,10 +8268,13 @@ mod tests {
             )
             .await
             .unwrap();
-        wait_for_call(&controller, &session.id, TestRuntimeCallKind::Close).await;
+        wait_for_stall_observation_count(&event_notifier, 1).await;
+        assert_eq!(
+            usecase.turn_phase(&session.id).await,
+            Some(TurnPhase::Streaming)
+        );
 
-        // When: the backend reports an abort completion after the stale timeout has already
-        // persisted the terminal Error state.
+        // When: the backend reports an abort completion after the stall signal.
         controller
             .emit(
                 &session.id,
@@ -7128,11 +8284,97 @@ mod tests {
                 }),
             )
             .unwrap();
+        wait_for_turn_phase(&usecase, &session.id, TurnPhase::Idle).await;
+
+        // Then: the explicit backend terminal event, not the stall signal, determines the turn.
+        let calls = controller.call_kinds_for(&session.id);
+        assert!(!calls.contains(&TestRuntimeCallKind::Interrupt));
+        assert!(!calls.contains(&TestRuntimeCallKind::Close));
+        let session = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert_eq!(session.session.state, SessionState::Idle);
+    }
+
+    #[tokio::test]
+    async fn test_stale_watchdogはstall_signalとreconnectを上限で止める() {
+        // Given: a workflow-step session whose stale timeout is immediate for the test.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: true,
+                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+            },
+        )
+        .unwrap();
+
+        // When: a turn starts and remains silent past repeated stale observations.
+        usecase
+            .start_turn_locked(
+                &session.id,
+                PermissionMode::Edit,
+                "run".to_string(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_for_stall_observation_count(
+            &event_notifier,
+            crate::usecase::agent_session::runtime::stale::MAX_STALL_SIGNALS as usize,
+        )
+        .await;
+        wait_for_call_count(
+            &controller,
+            &session.id,
+            TestRuntimeCallKind::Reconnect,
+            crate::usecase::agent_session::runtime::stale::MAX_STALL_RECOVERY_ATTEMPTS as usize,
+        )
+        .await;
         tokio::time::sleep(Duration::from_millis(20)).await;
 
-        // Then: complete_turn treats the delayed completion as stale and leaves Error intact.
-        assert_eq!(usecase.turn_phase(&session.id).await, Some(TurnPhase::Idle));
-        let session = usecase.get_session(&session.id).await.unwrap().unwrap();
-        assert_eq!(session.session.state, SessionState::Error);
+        // Then: signals/reconnects are capped and the session is still live.
+        let observations = event_notifier.stall_observations();
+        assert_eq!(
+            observations.len(),
+            crate::usecase::agent_session::runtime::stale::MAX_STALL_SIGNALS as usize
+        );
+        assert!(observations.last().is_some_and(|payload| {
+            payload.cap_reached
+                && payload.signal_count
+                    == crate::usecase::agent_session::runtime::stale::MAX_STALL_SIGNALS
+        }));
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::Reconnect))
+                .count(),
+            crate::usecase::agent_session::runtime::stale::MAX_STALL_RECOVERY_ATTEMPTS as usize
+        );
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .contains(&TestRuntimeCallKind::Interrupt));
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .contains(&TestRuntimeCallKind::Close));
+        assert_eq!(
+            usecase.turn_phase(&session.id).await,
+            Some(TurnPhase::Streaming)
+        );
     }
 }
