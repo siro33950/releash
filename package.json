@@ -23,7 +23,7 @@
 		"@anthropic-ai/sdk": "^0.110.0",
 		"@lobehub/icons-static-svg": "^1.91.0",
 		"@react-symbols/icons": "^1.4.1",
-		"@shikijs/langs": "^4.2.0",
+		"@shikijs/langs": "^4.3.1",
 		"@shikijs/themes": "^4.2.0",
 		"@tanstack/react-virtual": "^3.14.3",
 		"@tauri-apps/api": "^2.11.1",
