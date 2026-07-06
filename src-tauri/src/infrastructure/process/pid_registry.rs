@@ -251,7 +251,7 @@ fn write_pid_file(path: &Path, file: &PidFileV1) -> Result<(), String> {
         .map_err(|error| format!("failed to rename pid file {}: {error}", path.display()))
 }
 
-fn read_pid_file(path: &Path) -> Result<PidFileV1, String> {
+pub(crate) fn read_pid_file(path: &Path) -> Result<PidFileV1, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|error| format!("failed to read pid file: {error}"))?;
     let file: PidFileV1 =
@@ -288,6 +288,13 @@ enum OwnerStatus {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessStatus {
+    Live,
+    Stale,
+    Unknown,
+}
+
 fn owner_status(file: &PidFileV1) -> OwnerStatus {
     let (Some(owner_pid), Some(owner_start_time)) = (file.owner_app_pid, file.owner_start_time)
     else {
@@ -300,6 +307,44 @@ fn owner_status(file: &PidFileV1) -> OwnerStatus {
         Some(start_time) if start_time == owner_start_time => OwnerStatus::Live,
         Some(_) => OwnerStatus::Stale,
         None => OwnerStatus::Stale,
+    }
+}
+
+pub(crate) fn recorded_pid_status(file: &PidFileV1) -> ProcessStatus {
+    pid_status(file.pid)
+}
+
+pub(crate) fn pid_status(pid: u32) -> ProcessStatus {
+    if pid <= 1 {
+        return ProcessStatus::Unknown;
+    }
+    if process_start_time(pid).is_some() {
+        ProcessStatus::Live
+    } else {
+        ProcessStatus::Stale
+    }
+}
+
+pub(crate) fn process_group_status(pgid: i32) -> ProcessStatus {
+    if pgid <= 1 {
+        return ProcessStatus::Unknown;
+    }
+    #[cfg(unix)]
+    {
+        let result = unsafe { libc::kill(-pgid, 0) };
+        if result == 0 {
+            return ProcessStatus::Live;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ESRCH) => ProcessStatus::Stale,
+            Some(libc::EPERM) => ProcessStatus::Live,
+            _ => ProcessStatus::Unknown,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pgid;
+        ProcessStatus::Unknown
     }
 }
 

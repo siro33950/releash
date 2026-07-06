@@ -445,6 +445,32 @@ impl PendingCommandStore {
         }
         Ok(())
     }
+
+    pub(crate) fn gc_delete_paths_for_run(&self, run_id: &str) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        for dir in [&self.pending_dir, &self.processing_dir, &self.processed_dir] {
+            let Ok(entries) = fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !is_candidate_pending_file(&path) {
+                    continue;
+                }
+                match read_pending_file(&path) {
+                    Ok(command) if command.run_id == run_id => paths.push(path),
+                    Ok(_) => {}
+                    Err(error) => {
+                        log::warn!(
+                            "app data gc skipped unreadable pending workflow command {}: {error}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+        }
+        paths
+    }
 }
 
 fn read_pending_file(path: &Path) -> io::Result<PendingCommand> {

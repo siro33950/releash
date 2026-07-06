@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -35,6 +35,12 @@ struct WorkflowRunArchiveIndex {
 pub(crate) struct WorkflowRunArchiveFileRepository {
     data_dir: PathBuf,
     lock: Mutex<()>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct WorkflowRunArchivePruneResult {
+    pub(crate) records_removed: u64,
+    pub(crate) reclaimed_bytes: u64,
 }
 
 impl WorkflowRunArchiveFileRepository {
@@ -87,6 +93,48 @@ impl WorkflowRunArchiveFileRepository {
         let mut index = self.load_index_unlocked()?;
         update(&mut index);
         self.save_index_unlocked(&index)
+    }
+
+    pub(crate) fn prune_records(
+        &self,
+        run_ids: &HashSet<String>,
+    ) -> Result<WorkflowRunArchivePruneResult, WorkflowError> {
+        if run_ids.is_empty() {
+            return Ok(WorkflowRunArchivePruneResult::default());
+        }
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| WorkflowError::external("workflow run archive lock poisoned"))?;
+        let path = self.archive_index_path();
+        let before = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => metadata.len(),
+            Ok(_) => 0,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => {
+                return Err(WorkflowError::external(format!(
+                    "Failed to read workflow run archives metadata: {error}"
+                )));
+            }
+        };
+        let mut index = self.load_index_unlocked()?;
+        let mut removed = 0;
+        for run_id in run_ids {
+            if index.runs.remove(run_id).is_some() {
+                removed += 1;
+            }
+        }
+        if removed == 0 {
+            return Ok(WorkflowRunArchivePruneResult::default());
+        }
+        self.save_index_unlocked(&index)?;
+        let after = fs::symlink_metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        Ok(WorkflowRunArchivePruneResult {
+            records_removed: removed,
+            reclaimed_bytes: before.saturating_sub(after),
+        })
     }
 }
 
@@ -235,5 +283,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["22222222-2222-4222-8222-222222222222", "slow-run"]
         );
+    }
+
+    #[test]
+    fn prune_records_removes_selected_runs_with_atomic_index_update() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = WorkflowRunArchiveFileRepository::new(temp.path());
+        let keep_run_id = RunId::new("11111111-1111-4111-8111-111111111111".to_string()).unwrap();
+        let prune_run_id = RunId::new("22222222-2222-4222-8222-222222222222".to_string()).unwrap();
+        repo.archive_manual(&keep_run_id, 10.0).unwrap();
+        repo.archive_manual(&prune_run_id, 20.0).unwrap();
+
+        let result = repo
+            .prune_records(&HashSet::from([prune_run_id.to_string()]))
+            .unwrap();
+
+        assert_eq!(result.records_removed, 1);
+        assert!(result.reclaimed_bytes > 0);
+        let index = repo.load_index_unlocked().unwrap();
+        assert!(index.runs.contains_key(keep_run_id.as_str()));
+        assert!(!index.runs.contains_key(prune_run_id.as_str()));
     }
 }

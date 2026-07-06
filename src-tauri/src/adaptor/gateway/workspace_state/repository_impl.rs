@@ -28,8 +28,12 @@ fn state_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("workspace_state")
 }
 
+pub(crate) fn storage_key(worktree_name: &str) -> String {
+    worktree_name.replace(['/', '\\'], "_")
+}
+
 fn state_file(app_data_dir: &Path, worktree_name: &str) -> PathBuf {
-    let safe_name = worktree_name.replace(['/', '\\'], "_");
+    let safe_name = storage_key(worktree_name);
     state_dir(app_data_dir).join(format!("{safe_name}.json"))
 }
 
