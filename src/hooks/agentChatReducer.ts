@@ -42,6 +42,8 @@ export interface AgentChatState {
 	sessionPermissionModes: Record<string, PermissionMode>;
 	sessionPlanModes: Record<string, PlanMode>;
 	pendingPermissions: Record<string, PermissionRequest>;
+	pendingPermissionStateRevisions: Record<string, number>;
+	clearedPendingPermissionIds: Record<string, string>;
 	pendingQueues: Record<string, QueuedAgentTurn[]>;
 	latestTokenUsage: Record<string, TokenUsage | null>;
 	runtimeSlashCommands: Record<string, SlashCommand[]>;
@@ -68,6 +70,8 @@ export type AgentChatAction =
 			type: "SET_TURN_PHASE";
 			sessionId: string;
 			turnPhase: TurnPhase;
+			ignoreIfClearedPendingRequestId?: string | null;
+			pendingPermissionStateRevision?: number | null;
 	  }
 	| { type: "SET_INTERRUPTING"; sessionId: string; value: boolean }
 	| { type: "SET_ERROR"; error: string | null }
@@ -93,6 +97,8 @@ export type AgentChatAction =
 			type: "SET_PENDING_PERMISSION";
 			sessionId: string;
 			request: PermissionRequest | null;
+			ignoreIfCleared?: boolean;
+			pendingPermissionStateRevision?: number | null;
 	  }
 	| {
 			type: "SET_PENDING_QUEUE";
@@ -328,6 +334,50 @@ function applyContextCarryToSummary(
 	};
 }
 
+function normalizePermissionStateRevision(
+	revision: number | null | undefined,
+): number | null {
+	return typeof revision === "number" && Number.isFinite(revision)
+		? revision
+		: null;
+}
+
+function currentPermissionStateRevision(
+	state: AgentChatState,
+	sessionId: string,
+): number {
+	return state.pendingPermissionStateRevisions[sessionId] ?? 0;
+}
+
+function isOlderPermissionStateRevision(
+	state: AgentChatState,
+	sessionId: string,
+	revision: number | null,
+): boolean {
+	return (
+		revision !== null &&
+		revision < currentPermissionStateRevision(state, sessionId)
+	);
+}
+
+function withPermissionStateRevision(
+	state: AgentChatState,
+	sessionId: string,
+	revision: number | null,
+): Pick<AgentChatState, "pendingPermissionStateRevisions"> {
+	if (revision === null) {
+		return {
+			pendingPermissionStateRevisions: state.pendingPermissionStateRevisions,
+		};
+	}
+	return {
+		pendingPermissionStateRevisions: {
+			...state.pendingPermissionStateRevisions,
+			[sessionId]: revision,
+		},
+	};
+}
+
 export function reducer(
 	state: AgentChatState,
 	action: AgentChatAction,
@@ -390,6 +440,21 @@ export function reducer(
 				evictOlderMessages(s, action.count),
 			);
 		case "SET_TURN_PHASE": {
+			const revision = normalizePermissionStateRevision(
+				action.pendingPermissionStateRevision,
+			);
+			if (isOlderPermissionStateRevision(state, action.sessionId, revision)) {
+				return state;
+			}
+			if (
+				action.ignoreIfClearedPendingRequestId &&
+				state.clearedPendingPermissionIds[action.sessionId] ===
+					action.ignoreIfClearedPendingRequestId &&
+				(revision === null ||
+					revision <= currentPermissionStateRevision(state, action.sessionId))
+			) {
+				return state;
+			}
 			// idle に戻ったら interrupting 楽観フラグをクリアする。
 			const nextInterrupting =
 				action.turnPhase === "idle" && state.interrupting[action.sessionId]
@@ -404,6 +469,7 @@ export function reducer(
 					...state.turnPhases,
 					[action.sessionId]: action.turnPhase,
 				},
+				...withPermissionStateRevision(state, action.sessionId, revision),
 				interrupting: nextInterrupting,
 			};
 		}
@@ -472,16 +538,51 @@ export function reducer(
 			}
 			return { ...state, planMode: action.enabled };
 		case "SET_PENDING_PERMISSION": {
-			if (action.request === null) {
-				const { [action.sessionId]: _, ...rest } = state.pendingPermissions;
-				return { ...state, pendingPermissions: rest };
+			const revision = normalizePermissionStateRevision(
+				action.pendingPermissionStateRevision,
+			);
+			if (isOlderPermissionStateRevision(state, action.sessionId, revision)) {
+				return state;
 			}
+			if (action.request === null) {
+				const clearedRequestId = state.pendingPermissions[action.sessionId]?.id;
+				const { [action.sessionId]: _, ...rest } = state.pendingPermissions;
+				if (!clearedRequestId) {
+					return {
+						...state,
+						pendingPermissions: rest,
+						...withPermissionStateRevision(state, action.sessionId, revision),
+					};
+				}
+				return {
+					...state,
+					pendingPermissions: rest,
+					...withPermissionStateRevision(state, action.sessionId, revision),
+					clearedPendingPermissionIds: {
+						...state.clearedPendingPermissionIds,
+						[action.sessionId]: clearedRequestId,
+					},
+				};
+			}
+			if (
+				action.ignoreIfCleared &&
+				state.clearedPendingPermissionIds[action.sessionId] ===
+					action.request.id &&
+				(revision === null ||
+					revision <= currentPermissionStateRevision(state, action.sessionId))
+			) {
+				return state;
+			}
+			const { [action.sessionId]: _, ...restClearedPermissionIds } =
+				state.clearedPendingPermissionIds;
 			return {
 				...state,
 				pendingPermissions: {
 					...state.pendingPermissions,
 					[action.sessionId]: action.request,
 				},
+				...withPermissionStateRevision(state, action.sessionId, revision),
+				clearedPendingPermissionIds: restClearedPermissionIds,
 			};
 		}
 		case "SET_PENDING_QUEUE":
@@ -611,6 +712,12 @@ export function reducer(
 				state.interrupting;
 			const { [action.sessionId]: _pp, ...restPendingPermissions } =
 				state.pendingPermissions;
+			const {
+				[action.sessionId]: _ppr,
+				...restPendingPermissionStateRevisions
+			} = state.pendingPermissionStateRevisions;
+			const { [action.sessionId]: _cpp, ...restClearedPendingPermissionIds } =
+				state.clearedPendingPermissionIds;
 			const { [action.sessionId]: _pq, ...restPendingQueues } =
 				state.pendingQueues;
 			const { [action.sessionId]: _tu, ...restLatestTokenUsage } =
@@ -632,6 +739,8 @@ export function reducer(
 				turnPhases: restTurnPhases,
 				interrupting: restInterrupting,
 				pendingPermissions: restPendingPermissions,
+				pendingPermissionStateRevisions: restPendingPermissionStateRevisions,
+				clearedPendingPermissionIds: restClearedPendingPermissionIds,
 				pendingQueues: restPendingQueues,
 				latestTokenUsage: restLatestTokenUsage,
 				runtimeSlashCommands: restRuntimeSlashCommands,
@@ -703,6 +812,8 @@ export const INITIAL_STATE: AgentChatState = {
 	sessionPermissionModes: {},
 	sessionPlanModes: {},
 	pendingPermissions: {},
+	pendingPermissionStateRevisions: {},
+	clearedPendingPermissionIds: {},
 	pendingQueues: {},
 	latestTokenUsage: {},
 	runtimeSlashCommands: {},

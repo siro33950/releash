@@ -1,4 +1,5 @@
 import {
+	act,
 	fireEvent,
 	render,
 	screen,
@@ -6,7 +7,7 @@ import {
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PermissionDialog } from "./PermissionDialog";
 
 const mockInvoke = vi.fn().mockResolvedValue(null);
@@ -231,6 +232,10 @@ beforeEach(() => {
 	);
 });
 
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
+
 const baseRequest = {
 	id: "req-001",
 	toolName: "Edit",
@@ -273,6 +278,254 @@ describe("PermissionDialog", () => {
 				.some(([, args]) =>
 					Object.keys(args as Record<string, unknown>).includes("request"),
 				),
+		).toBe(false);
+	});
+
+	it("reports pending dialog visibility while mounted", () => {
+		const { unmount } = render(
+			<PermissionDialog
+				request={baseRequest}
+				sessionId="session-1"
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"report_agent_permission_request_observed",
+			{
+				chatSessionId: "session-1",
+				requestId: "req-001",
+				visible: true,
+			},
+		);
+
+		unmount();
+
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"report_agent_permission_request_observed",
+			{
+				chatSessionId: "session-1",
+				requestId: "req-001",
+				visible: false,
+			},
+		);
+	});
+
+	it("reports pending dialog visibility only when intersecting the visibility root", async () => {
+		type ObserverInstance = {
+			callback: IntersectionObserverCallback;
+			options?: IntersectionObserverInit;
+			observe: ReturnType<typeof vi.fn>;
+			disconnect: ReturnType<typeof vi.fn>;
+		};
+		const observers: ObserverInstance[] = [];
+		class MockIntersectionObserver implements IntersectionObserver {
+			readonly root: Element | Document | null;
+			readonly rootMargin = "";
+			readonly scrollMargin = "";
+			readonly thresholds = [0];
+			readonly callback: IntersectionObserverCallback;
+			readonly options?: IntersectionObserverInit;
+			readonly observe = vi.fn();
+			readonly unobserve = vi.fn();
+			readonly disconnect = vi.fn();
+			readonly takeRecords = vi.fn(() => []);
+
+			constructor(
+				callback: IntersectionObserverCallback,
+				options?: IntersectionObserverInit,
+			) {
+				this.callback = callback;
+				this.options = options;
+				this.root = options?.root ?? null;
+				observers.push(this);
+			}
+		}
+		vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+		const visibilityRoot = document.createElement("div");
+
+		render(
+			<PermissionDialog
+				request={baseRequest}
+				sessionId="session-1"
+				visibilityRoot={visibilityRoot}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+
+		await screen.findByText("Permission required: Edit");
+		await waitFor(() => expect(observers.length).toBeGreaterThan(0));
+		const observer = observers[observers.length - 1];
+		expect(observer.options?.root).toBe(visibilityRoot);
+		mockInvoke.mockClear();
+
+		act(() => {
+			observer.callback(
+				[
+					{
+						isIntersecting: false,
+						intersectionRatio: 0,
+					} as IntersectionObserverEntry,
+				],
+				observer as unknown as IntersectionObserver,
+			);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"report_agent_permission_request_observed",
+			{
+				chatSessionId: "session-1",
+				requestId: "req-001",
+				visible: false,
+			},
+		);
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"report_agent_permission_request_observed",
+			{
+				chatSessionId: "session-1",
+				requestId: "req-001",
+				visible: true,
+			},
+		);
+		mockInvoke.mockClear();
+
+		act(() => {
+			observer.callback(
+				[
+					{
+						isIntersecting: true,
+						intersectionRatio: 1,
+					} as IntersectionObserverEntry,
+				],
+				observer as unknown as IntersectionObserver,
+			);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"report_agent_permission_request_observed",
+			{
+				chatSessionId: "session-1",
+				requestId: "req-001",
+				visible: true,
+			},
+		);
+	});
+
+	it("warns when an active hidden visibility report fails", async () => {
+		type ObserverInstance = {
+			callback: IntersectionObserverCallback;
+			observe: ReturnType<typeof vi.fn>;
+			disconnect: ReturnType<typeof vi.fn>;
+		};
+		const observers: ObserverInstance[] = [];
+		class MockIntersectionObserver implements IntersectionObserver {
+			readonly root: Element | Document | null = null;
+			readonly rootMargin = "";
+			readonly scrollMargin = "";
+			readonly thresholds = [0];
+			readonly callback: IntersectionObserverCallback;
+			readonly observe = vi.fn();
+			readonly unobserve = vi.fn();
+			readonly disconnect = vi.fn();
+			readonly takeRecords = vi.fn(() => []);
+
+			constructor(callback: IntersectionObserverCallback) {
+				this.callback = callback;
+				observers.push(this);
+			}
+		}
+		vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+		const reportError = new Error("visibility failed");
+		mockInvoke.mockImplementation((command: string, args: unknown) => {
+			if (command === "report_agent_permission_request_observed") {
+				const { visible } = args as { visible: boolean };
+				if (!visible) return Promise.reject(reportError);
+			}
+			return mockPermissionPresentation(command, args) ?? resolvedInvoke(null);
+		});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		render(
+			<PermissionDialog
+				request={baseRequest}
+				sessionId="session-1"
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+
+		await screen.findByText("Permission required: Edit");
+		await waitFor(() => expect(observers.length).toBeGreaterThan(0));
+		act(() => {
+			observers[observers.length - 1].callback(
+				[
+					{
+						isIntersecting: false,
+						intersectionRatio: 0,
+					} as IntersectionObserverEntry,
+				],
+				observers[observers.length - 1] as unknown as IntersectionObserver,
+			);
+		});
+
+		await waitFor(() => {
+			expect(warnSpy).toHaveBeenCalledWith(
+				"Failed to report permission request observation",
+				expect.objectContaining({
+					chatSessionId: "session-1",
+					requestId: "req-001",
+					visible: false,
+					error: reportError,
+				}),
+			);
+		});
+		warnSpy.mockRestore();
+	});
+
+	it("does not warn when cleanup visibility report fails", async () => {
+		mockInvoke.mockImplementation((command: string, args: unknown) => {
+			if (command === "report_agent_permission_request_observed") {
+				const { visible } = args as { visible: boolean };
+				if (!visible) return Promise.reject(new Error("cleanup failed"));
+			}
+			return mockPermissionPresentation(command, args) ?? resolvedInvoke(null);
+		});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const { unmount } = render(
+			<PermissionDialog
+				request={baseRequest}
+				sessionId="session-1"
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+		await screen.findByText("Permission required: Edit");
+
+		unmount();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(warnSpy).not.toHaveBeenCalled();
+		warnSpy.mockRestore();
+	});
+
+	it("does not report resolved dialog visibility", () => {
+		render(
+			<PermissionDialog
+				request={baseRequest}
+				status="allowed"
+				sessionId="session-1"
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+
+		expect(
+			mockInvoke.mock.calls.some(
+				([command]) => command === "report_agent_permission_request_observed",
+			),
 		).toBe(false);
 	});
 

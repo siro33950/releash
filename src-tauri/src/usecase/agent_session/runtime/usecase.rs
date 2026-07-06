@@ -22,9 +22,10 @@ use crate::usecase::agent_session::context::{
     BranchDiffContextPort, BuiltSystemContext, InstructionSourcePort, SystemContextEditorInput,
 };
 use crate::usecase::agent_session::event_log::{
-    append_part_events, finalize_turn, AgentSessionEvent, InterruptReason as EventInterruptReason,
-    PartEventMode, PromptInput, TurnEventLog, TurnStopReason as EventTurnStopReason,
-    TurnTokenUsage, WorkflowTurnCompleteInput,
+    append_part_events, finalize_turn, latest_unresolved_permission_request, AgentSessionEvent,
+    InterruptReason as EventInterruptReason, PartEventMode, PromptInput, TurnEventLog,
+    TurnStopReason as EventTurnStopReason, TurnTokenUsage, UnresolvedPermissionRequest,
+    WorkflowTurnCompleteInput,
 };
 use crate::usecase::agent_session::session::{
     add_message_internal, apply_tool_result_update, create_session_with_model_and_plan_mode,
@@ -55,7 +56,8 @@ use super::ports::{
 };
 use super::queue::QueuedTurnInput;
 use super::session_state::{
-    PendingStreamDelta, RuntimeSessionMap, RuntimeSessionPhase, RuntimeSessionState,
+    PendingStreamDelta, PermissionRequestVisibility, RuntimeSessionMap, RuntimeSessionPhase,
+    RuntimeSessionState,
 };
 use super::stale::{
     effective_stale_timeout, has_in_flight_tool_use, remaining_until_stale,
@@ -415,23 +417,9 @@ impl AgentSessionRuntimeUsecase {
         response: PermissionResponse,
     ) -> Result<(), AgentRuntimeError> {
         let _session_guard = self.acquire_session_lock(session_id).await;
-        {
-            let sessions = self.ctx.sessions.lock().await;
-            let pending = sessions
-                .get(session_id)
-                .and_then(|state| state.pending_permission_request.as_ref())
-                .ok_or_else(|| {
-                    AgentRuntimeError::Other(format!(
-                        "No pending permission request for session {session_id}"
-                    ))
-                })?;
-            if pending.id != response.request_id {
-                return Err(AgentRuntimeError::Other(format!(
-                    "Permission request id mismatch: pending={}, response={}",
-                    pending.id, response.request_id
-                )));
-            }
-        }
+        let pending = self
+            .pending_permission_for_response(session_id, &response)
+            .await?;
         let runtime = {
             let sessions = self.ctx.sessions.lock().await;
             sessions
@@ -445,21 +433,35 @@ impl AgentSessionRuntimeUsecase {
             .respond_permission(response.clone())
             .await
             .map_err(AgentRuntimeError::from)?;
-        let (patched, did_resume_streaming, permission_wait_measurement) = {
+        let (
+            patched,
+            did_resume_streaming,
+            permission_wait_measurement,
+            resolved_turn_id,
+            pending_permission_state_revision,
+        ) = {
             let mut sessions = self.ctx.sessions.lock().await;
             let Some(state) = sessions.get_mut(session_id) else {
                 return Ok(());
             };
             let patched = patch_permission_response_in_state(state, &response);
-            let did_resume_streaming = state.phase == RuntimeSessionPhase::WaitingPermission
-                && state
-                    .pending_permission_request
-                    .as_ref()
-                    .is_some_and(|pending| pending.id == response.request_id);
+            let resolved_turn_id = patched
+                .as_ref()
+                .map(|(_, _, _, turn_id)| *turn_id)
+                .or(pending.turn_id);
+            let pending_in_state_matches = state
+                .pending_permission_request
+                .as_ref()
+                .is_some_and(|pending| pending.id == response.request_id);
+            let did_resume_streaming = (state.phase == RuntimeSessionPhase::WaitingPermission
+                && pending_in_state_matches)
+                || !pending.from_runtime_state;
+            let mut pending_permission_state_revision = None;
             if did_resume_streaming {
                 state.phase = RuntimeSessionPhase::Streaming;
-                state.pending_permission_request = None;
+                pending_permission_state_revision = Some(state.clear_pending_permission_request());
                 state.last_progress_at = Some(std::time::Instant::now());
+                state.permission_wait_diagnostic_emitted = false;
             }
             let permission_wait_measurement = did_resume_streaming
                 .then(|| {
@@ -472,7 +474,13 @@ impl AgentSessionRuntimeUsecase {
                     Some((started_at.elapsed(), dims))
                 })
                 .flatten();
-            (patched, did_resume_streaming, permission_wait_measurement)
+            (
+                patched,
+                did_resume_streaming,
+                permission_wait_measurement,
+                resolved_turn_id,
+                pending_permission_state_revision,
+            )
         };
         if let Some((elapsed, dims)) = permission_wait_measurement {
             crate::other::telemetry::record_agent_turn_duration(
@@ -510,6 +518,14 @@ impl AgentSessionRuntimeUsecase {
                 },
             )
             .await;
+        } else if let Some(turn_id) = resolved_turn_id {
+            append_permission_resolved_event(
+                &self.ctx.session_store,
+                &self.ctx.data_dir,
+                session_id,
+                turn_id,
+                &response,
+            );
         }
         if did_resume_streaming {
             emit_session_state_change(
@@ -522,6 +538,7 @@ impl AgentSessionRuntimeUsecase {
                 StateChange {
                     turn_phase: TurnPhase::Streaming,
                     pending_permission_request: None,
+                    pending_permission_state_revision,
                     exit_code: None,
                     completed_at: None,
                     interrupted: false,
@@ -530,6 +547,84 @@ impl AgentSessionRuntimeUsecase {
             );
         }
         Ok(())
+    }
+
+    pub async fn report_permission_request_observed(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        visible: bool,
+    ) -> Result<(), AgentRuntimeError> {
+        let mut sessions = self.ctx.sessions.lock().await;
+        let Some(state) = sessions.get_mut(session_id) else {
+            return Ok(());
+        };
+        if visible {
+            let pending_matches = state
+                .pending_permission_request
+                .as_ref()
+                .is_some_and(|pending| pending.id == request_id);
+            if pending_matches {
+                state.permission_request_visibility = Some(PermissionRequestVisibility {
+                    request_id: request_id.to_string(),
+                    last_seen_at: std::time::Instant::now(),
+                });
+            }
+            return Ok(());
+        }
+        if state
+            .permission_request_visibility
+            .as_ref()
+            .is_some_and(|visibility| visibility.request_id == request_id)
+        {
+            state.permission_request_visibility = None;
+        }
+        Ok(())
+    }
+
+    async fn pending_permission_for_response(
+        &self,
+        session_id: &str,
+        response: &PermissionResponse,
+    ) -> Result<PendingPermissionForResponse, AgentRuntimeError> {
+        {
+            let sessions = self.ctx.sessions.lock().await;
+            if let Some((pending, turn_id)) = sessions.get(session_id).and_then(|state| {
+                state.pending_permission_request.as_ref().map(|pending| {
+                    (
+                        pending.clone(),
+                        state.current_turn_id.or(state.last_turn_id),
+                    )
+                })
+            }) {
+                if pending.id != response.request_id {
+                    return Err(AgentRuntimeError::Other(format!(
+                        "Permission request id mismatch: pending={}, response={}",
+                        pending.id, response.request_id
+                    )));
+                }
+                return Ok(PendingPermissionForResponse {
+                    turn_id,
+                    from_runtime_state: true,
+                });
+            }
+        }
+
+        let Some(pending) = self.unresolved_permission_request_from_event_log(session_id) else {
+            return Err(AgentRuntimeError::Other(format!(
+                "No pending permission request for session {session_id}"
+            )));
+        };
+        if pending.request.id != response.request_id {
+            return Err(AgentRuntimeError::Other(format!(
+                "Permission request id mismatch: pending={}, response={}",
+                pending.request.id, response.request_id
+            )));
+        }
+        Ok(PendingPermissionForResponse {
+            turn_id: Some(pending.turn_id),
+            from_runtime_state: false,
+        })
     }
 
     async fn recover_queued_turn_if_idle_without_runtime(&self, session_id: &str) {
@@ -699,29 +794,35 @@ impl AgentSessionRuntimeUsecase {
     ) -> Result<Option<PermissionRequestMsg>, AgentRuntimeError> {
         {
             let sessions = self.ctx.sessions.lock().await;
-            if let Some(request) = sessions
-                .get(session_id)
-                .and_then(|state| permission_request_from_parts(&state.streaming_parts, request_id))
-            {
-                return Ok(Some(request));
+            if let Some(state) = sessions.get(session_id) {
+                if let Some(request) = state
+                    .pending_permission_request
+                    .as_ref()
+                    .filter(|request| request.id == request_id)
+                    .cloned()
+                {
+                    return Ok(Some(request));
+                }
+                if let Some(request) =
+                    permission_request_from_parts(&state.streaming_parts, request_id)
+                {
+                    return Ok(Some(request));
+                }
             }
         }
 
         let mut cursor = None;
-        loop {
-            let Some(page) = self
-                .ctx
-                .session_store
-                .get_session_page(
-                    &self.ctx.data_dir,
-                    session_id,
-                    cursor.clone(),
-                    INITIAL_SESSION_PAGE_LIMIT,
-                )
-                .map_err(AgentRuntimeError::Other)?
-            else {
-                return Ok(None);
-            };
+        while let Some(page) = self
+            .ctx
+            .session_store
+            .get_session_page(
+                &self.ctx.data_dir,
+                session_id,
+                cursor.clone(),
+                INITIAL_SESSION_PAGE_LIMIT,
+            )
+            .map_err(AgentRuntimeError::Other)?
+        {
             if let Some(request) = page
                 .messages
                 .iter()
@@ -732,13 +833,17 @@ impl AgentSessionRuntimeUsecase {
                 return Ok(Some(request));
             }
             if !page.has_more {
-                return Ok(None);
+                break;
             }
             cursor = page.next_cursor;
             if cursor.is_none() {
-                return Ok(None);
+                break;
             }
         }
+        Ok(self
+            .unresolved_permission_request_from_event_log(session_id)
+            .filter(|pending| pending.request.id == request_id)
+            .map(|pending| pending.request))
     }
 
     pub async fn cancel_queued_turn(
@@ -786,17 +891,31 @@ impl AgentSessionRuntimeUsecase {
         else {
             return Ok(None);
         };
-        let (turn_phase, pending_queue, latest_token_usage) = {
+        let (
+            mut turn_phase,
+            pending_queue,
+            latest_token_usage,
+            pending_permission_request,
+            pending_permission_state_revision,
+        ) = {
             let sessions = self.ctx.sessions.lock().await;
             match sessions.get(session_id) {
                 Some(state) => (
                     TurnPhase::from(state.phase),
                     pending_queue_view(state),
                     state.latest_token_usage,
+                    (state.runtime.is_some()
+                        && state.phase == RuntimeSessionPhase::WaitingPermission)
+                        .then(|| state.pending_permission_request.clone())
+                        .flatten(),
+                    state.pending_permission_state_revision,
                 ),
-                None => (TurnPhase::Idle, Vec::new(), None),
+                None => (TurnPhase::Idle, Vec::new(), None, None, 0),
             }
         };
+        if pending_permission_request.is_some() {
+            turn_phase = TurnPhase::WaitingPermission;
+        }
         let available_models = self.available_models_for_session(&session)?;
         let total_count = page.total_count;
         let can_change_backend = session.messages.is_empty()
@@ -809,6 +928,8 @@ impl AgentSessionRuntimeUsecase {
             can_change_backend,
             pending_queue_count: pending_queue.len(),
             pending_queue,
+            pending_permission_request,
+            pending_permission_state_revision,
             initial_page: Some(InitialSessionPage {
                 next_cursor: page.next_cursor,
                 has_more: page.has_more,
@@ -817,6 +938,26 @@ impl AgentSessionRuntimeUsecase {
             latest_token_usage: latest_token_usage.or(page.latest_token_usage),
         };
         Ok(Some(response))
+    }
+
+    fn unresolved_permission_request_from_event_log(
+        &self,
+        session_id: &str,
+    ) -> Option<UnresolvedPermissionRequest> {
+        let events = match self
+            .ctx
+            .session_store
+            .load_session_events(&self.ctx.data_dir, session_id)
+        {
+            Ok(events) => events,
+            Err(error) => {
+                log::warn!(
+                    "failed to load session events for unresolved permission lookup {session_id}: {error}"
+                );
+                return None;
+            }
+        };
+        latest_unresolved_permission_request(&events)
     }
 
     pub async fn init_sessions(
@@ -1290,6 +1431,7 @@ impl AgentSessionRuntimeUsecase {
                     StateChange {
                         turn_phase: TurnPhase::Idle,
                         pending_permission_request: None,
+                        pending_permission_state_revision: None,
                         exit_code: Some(1),
                         completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
                         interrupted: true,
@@ -1334,6 +1476,7 @@ impl AgentSessionRuntimeUsecase {
                     StateChange {
                         turn_phase: TurnPhase::Streaming,
                         pending_permission_request: None,
+                        pending_permission_state_revision: None,
                         exit_code: None,
                         completed_at: None,
                         interrupted: false,
@@ -1382,6 +1525,7 @@ impl AgentSessionRuntimeUsecase {
                     StateChange {
                         turn_phase: TurnPhase::Idle,
                         pending_permission_request: None,
+                        pending_permission_state_revision: None,
                         exit_code: Some(1),
                         completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
                         interrupted: true,
@@ -1515,6 +1659,68 @@ impl AgentSessionRuntimeUsecase {
     }
 }
 
+#[cfg(not(test))]
+const PERMISSION_WAIT_DIAGNOSTIC_THRESHOLD: std::time::Duration =
+    std::time::Duration::from_secs(60);
+#[cfg(test)]
+const PERMISSION_WAIT_DIAGNOSTIC_THRESHOLD: std::time::Duration =
+    std::time::Duration::from_millis(50);
+#[cfg(not(test))]
+const PERMISSION_REQUEST_OBSERVED_TTL: std::time::Duration = std::time::Duration::from_secs(20);
+#[cfg(test)]
+const PERMISSION_REQUEST_OBSERVED_TTL: std::time::Duration = std::time::Duration::from_millis(100);
+
+fn maybe_mark_permission_wait_diagnostic(
+    session_id: &str,
+    state: &mut RuntimeSessionState,
+    now: std::time::Instant,
+) -> bool {
+    if state.phase != RuntimeSessionPhase::WaitingPermission
+        || state.permission_wait_diagnostic_emitted
+    {
+        return false;
+    }
+    let Some(started_at) = state.permission_wait_started_at else {
+        return false;
+    };
+    if now.duration_since(started_at) < PERMISSION_WAIT_DIAGNOSTIC_THRESHOLD {
+        return false;
+    }
+    if pending_permission_request_is_observed(state, now) {
+        return false;
+    }
+    state.permission_wait_diagnostic_emitted = true;
+    let request_id = state
+        .pending_permission_request
+        .as_ref()
+        .map(|request| request.id.as_str())
+        .unwrap_or("<missing>");
+    log::warn!(
+        "agent permission wait diagnostic: chat_session={} request_id={} elapsed_ms={} threshold_ms={} observed=false",
+        session_id,
+        request_id,
+        now.duration_since(started_at).as_millis(),
+        PERMISSION_WAIT_DIAGNOSTIC_THRESHOLD.as_millis()
+    );
+    true
+}
+
+fn pending_permission_request_is_observed(
+    state: &RuntimeSessionState,
+    now: std::time::Instant,
+) -> bool {
+    let Some(pending) = state.pending_permission_request.as_ref() else {
+        return false;
+    };
+    let Some(visibility) = state.permission_request_visibility.as_ref() else {
+        return false;
+    };
+    if visibility.request_id != pending.id {
+        return false;
+    }
+    now.saturating_duration_since(visibility.last_seen_at) <= PERMISSION_REQUEST_OBSERVED_TTL
+}
+
 fn spawn_stale_watchdog_task(
     ctx: &RuntimeContext,
     session_id: String,
@@ -1528,10 +1734,15 @@ fn spawn_stale_watchdog_task(
             let delay = {
                 let _session_guard =
                     acquire_session_runtime_lock(&ctx.session_locks, &session_id).await;
-                let sessions = ctx.sessions.lock().await;
-                let Some(state) = sessions.get(&session_id) else {
+                let mut sessions = ctx.sessions.lock().await;
+                let Some(state) = sessions.get_mut(&session_id) else {
                     return;
                 };
+                maybe_mark_permission_wait_diagnostic(
+                    &session_id,
+                    state,
+                    std::time::Instant::now(),
+                );
                 let effective_timeout = effective_stale_timeout(
                     timeout,
                     has_in_flight_tool_use(&state.domain_streaming_parts),
@@ -1751,6 +1962,7 @@ async fn handle_resume_mismatch(ctx: &RuntimeContext, session_id: &str) -> Runti
         StateChange {
             turn_phase: TurnPhase::Idle,
             pending_permission_request: None,
+            pending_permission_state_revision: None,
             exit_code: None,
             completed_at: None,
             interrupted: false,
@@ -2029,12 +2241,16 @@ async fn apply_runtime_event(
             )
             .await;
             if let Some(pending) = pending {
-                let mut sessions = ctx.sessions.lock().await;
-                if let Some(state) = sessions.get_mut(session_id) {
-                    state.phase = RuntimeSessionPhase::WaitingPermission;
-                    state.pending_permission_request = Some(pending.clone());
-                    state.permission_wait_started_at = Some(std::time::Instant::now());
-                }
+                let pending_permission_state_revision = {
+                    let mut sessions = ctx.sessions.lock().await;
+                    sessions.get_mut(session_id).map(|state| {
+                        state.phase = RuntimeSessionPhase::WaitingPermission;
+                        let revision = state.set_pending_permission_request(pending.clone());
+                        state.permission_wait_started_at = Some(std::time::Instant::now());
+                        state.permission_wait_diagnostic_emitted = false;
+                        revision
+                    })
+                };
                 emit_session_state_change(
                     &ctx.session_store,
                     &ctx.notifier,
@@ -2045,6 +2261,7 @@ async fn apply_runtime_event(
                     StateChange {
                         turn_phase: TurnPhase::WaitingPermission,
                         pending_permission_request: Some(pending),
+                        pending_permission_state_revision,
                         exit_code: None,
                         completed_at: None,
                         interrupted: false,
@@ -2148,6 +2365,7 @@ async fn apply_runtime_event(
                     StateChange {
                         turn_phase: TurnPhase::Idle,
                         pending_permission_request: None,
+                        pending_permission_state_revision: None,
                         exit_code: Some(1),
                         completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
                         interrupted: true,
@@ -2712,7 +2930,15 @@ async fn complete_turn(
     }
     flush_streaming_update(ctx, session_id, true).await;
     let terminal = terminal_projection(&result);
-    let (message_id, parts, seq, turn_id, started_at, telemetry_dims) = {
+    let (
+        message_id,
+        parts,
+        seq,
+        turn_id,
+        started_at,
+        telemetry_dims,
+        pending_permission_state_revision,
+    ) = {
         let mut sessions = ctx.sessions.lock().await;
         let state = sessions.get_mut(session_id)?;
         if state.phase == RuntimeSessionPhase::Idle
@@ -2721,8 +2947,9 @@ async fn complete_turn(
             return None;
         }
         state.phase = RuntimeSessionPhase::Idle;
-        state.pending_permission_request = None;
+        let pending_permission_state_revision = state.clear_pending_permission_request();
         state.permission_wait_started_at = None;
+        state.permission_wait_diagnostic_emitted = false;
         let message_id = state.streaming_message_id.clone();
         state.last_agent_message_id = message_id.clone();
         let usage = match &result {
@@ -2741,7 +2968,6 @@ async fn complete_turn(
         let started_at = state.turn_started_at.take();
         state.streaming_message_id = None;
         state.current_turn_id = None;
-        state.pending_permission_request = None;
         state.current_turn_input = None;
         let telemetry_dims =
             session_telemetry_dimensions(&ctx.session_store, &ctx.data_dir, session_id);
@@ -2752,6 +2978,7 @@ async fn complete_turn(
             turn_id,
             started_at,
             telemetry_dims,
+            pending_permission_state_revision,
         )
     };
     let mut projected = None;
@@ -2837,6 +3064,7 @@ async fn complete_turn(
         StateChange {
             turn_phase: TurnPhase::Idle,
             pending_permission_request: None,
+            pending_permission_state_revision: Some(pending_permission_state_revision),
             exit_code: Some(terminal.exit_code),
             completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
             interrupted: terminal.interrupted,
@@ -2922,6 +3150,7 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
                     StateChange {
                         turn_phase: TurnPhase::Idle,
                         pending_permission_request: None,
+                        pending_permission_state_revision: None,
                         exit_code: Some(1),
                         completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
                         interrupted: true,
@@ -3082,6 +3311,7 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
             StateChange {
                 turn_phase: TurnPhase::Idle,
                 pending_permission_request: None,
+                pending_permission_state_revision: None,
                 exit_code: Some(1),
                 completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
                 interrupted: true,
@@ -3123,6 +3353,7 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
             StateChange {
                 turn_phase: TurnPhase::Streaming,
                 pending_permission_request: None,
+                pending_permission_state_revision: None,
                 exit_code: None,
                 completed_at: None,
                 interrupted: false,
@@ -3333,6 +3564,7 @@ impl From<AgentEditorContext> for EditorContext {
 struct StateChange {
     turn_phase: TurnPhase,
     pending_permission_request: Option<PermissionRequestMsg>,
+    pending_permission_state_revision: Option<u64>,
     exit_code: Option<i64>,
     completed_at: Option<f64>,
     interrupted: bool,
@@ -3369,6 +3601,11 @@ fn next_turn_id(
         .current_turn_id()
         .unwrap_or(0)
         .saturating_add(1))
+}
+
+struct PendingPermissionForResponse {
+    turn_id: Option<u64>,
+    from_runtime_state: bool,
 }
 
 fn append_durable_part_events(
@@ -3717,6 +3954,7 @@ fn emit_session_state_change(
         interrupted: change.interrupted,
         session_state: change.session_state.clone(),
         pending_permission_request: change.pending_permission_request.clone(),
+        pending_permission_state_revision: change.pending_permission_state_revision,
     });
     publish_status_change(
         session_store,
@@ -3926,7 +4164,7 @@ mod tests {
     };
     use crate::usecase::agent_session::session::{
         create_session_internal_with_attributes, ChatMessage, MessagePart, PermissionPartStatus,
-        PermissionRequestKindMsg, SessionCreationAttributes,
+        PermissionRequestKindMsg, PermissionRequestMsg, SessionCreationAttributes,
     };
     use crate::usecase::agent_session::status::{
         AgentStatusChanges, AgentStatusNotifier, TurnPhaseRepr,
@@ -4286,6 +4524,457 @@ mod tests {
             description: None,
             decision_reason: None,
             status: PermissionRequestStatus::Pending,
+        }
+    }
+
+    fn permission_request_msg(id: &str) -> PermissionRequestMsg {
+        pending_permission_request_msg(&permission_request(id)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_session_returns_in_memory_pending_permission_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store,
+                tmp.path(),
+            );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id.clone();
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PermissionRequested(permission_request("perm-1")),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::WaitingPermission).await;
+
+        let loaded = usecase
+            .get_session(&session_id)
+            .await
+            .unwrap()
+            .expect("session");
+
+        assert_eq!(loaded.turn_phase, TurnPhase::WaitingPermission);
+        assert_eq!(
+            loaded
+                .pending_permission_request
+                .as_ref()
+                .map(|r| r.id.as_str()),
+            Some("perm-1")
+        );
+        assert!(loaded.pending_permission_state_revision > 0);
+    }
+
+    #[tokio::test]
+    async fn get_session_ignores_event_log_pending_when_runtime_state_is_clear() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: false,
+                workflow_step_context: None,
+            },
+        )
+        .unwrap();
+        session_store
+            .append_session_event_without_projection(
+                tmp.path(),
+                &session.id,
+                AgentSessionEvent::TurnStarted {
+                    turn_id: 1,
+                    message_id: "human-1".to_string(),
+                    assistant_message_id: Some("agent-1".to_string()),
+                    prompt: PromptInput {
+                        content: "run".to_string(),
+                        mentions: Vec::new(),
+                        attachment_refs: Vec::new(),
+                        parts: Vec::new(),
+                    },
+                    at: 1.0,
+                },
+            )
+            .unwrap();
+        session_store
+            .append_session_event_without_projection(
+                tmp.path(),
+                &session.id,
+                AgentSessionEvent::PermissionRequested {
+                    turn_id: 1,
+                    tool_use_id: Some("toolu-1".to_string()),
+                    request: permission_request_msg("perm-from-log"),
+                },
+            )
+            .unwrap();
+        usecase
+            .insert_runtime_state_for_test(&session.id, TurnPhase::Idle, false)
+            .await;
+
+        let loaded = usecase
+            .get_session(&session.id)
+            .await
+            .unwrap()
+            .expect("session");
+
+        assert_eq!(loaded.turn_phase, TurnPhase::Idle);
+        assert!(loaded.pending_permission_request.is_none());
+        let presented = usecase
+            .find_permission_request(&session.id, "perm-from-log")
+            .await
+            .unwrap()
+            .expect("permission request");
+        assert_eq!(presented.id, "perm-from-log");
+        let sessions = usecase.ctx.sessions.lock().await;
+        let state = sessions.get(&session.id).expect("runtime state");
+        assert_eq!(state.phase, RuntimeSessionPhase::Idle);
+        assert!(state.pending_permission_request.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_session_does_not_publish_event_log_permission_without_live_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: false,
+                workflow_step_context: None,
+            },
+        )
+        .unwrap();
+        session_store
+            .append_session_event_without_projection(
+                tmp.path(),
+                &session.id,
+                AgentSessionEvent::TurnStarted {
+                    turn_id: 1,
+                    message_id: "human-1".to_string(),
+                    assistant_message_id: Some("agent-1".to_string()),
+                    prompt: PromptInput {
+                        content: "run".to_string(),
+                        mentions: Vec::new(),
+                        attachment_refs: Vec::new(),
+                        parts: Vec::new(),
+                    },
+                    at: 1.0,
+                },
+            )
+            .unwrap();
+        session_store
+            .append_session_event_without_projection(
+                tmp.path(),
+                &session.id,
+                AgentSessionEvent::PermissionRequested {
+                    turn_id: 1,
+                    tool_use_id: Some("toolu-1".to_string()),
+                    request: permission_request_msg("perm-from-log"),
+                },
+            )
+            .unwrap();
+
+        let loaded = usecase
+            .get_session(&session.id)
+            .await
+            .unwrap()
+            .expect("session");
+
+        assert_eq!(loaded.turn_phase, TurnPhase::Idle);
+        assert!(loaded.pending_permission_request.is_none());
+    }
+
+    #[tokio::test]
+    async fn respond_permission_resolves_event_log_only_pending_permission() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: false,
+                workflow_step_context: None,
+            },
+        )
+        .unwrap();
+        session_store
+            .append_session_event_without_projection(
+                tmp.path(),
+                &session.id,
+                AgentSessionEvent::TurnStarted {
+                    turn_id: 1,
+                    message_id: "human-1".to_string(),
+                    assistant_message_id: Some("agent-1".to_string()),
+                    prompt: PromptInput {
+                        content: "run".to_string(),
+                        mentions: Vec::new(),
+                        attachment_refs: Vec::new(),
+                        parts: Vec::new(),
+                    },
+                    at: 1.0,
+                },
+            )
+            .unwrap();
+        session_store
+            .append_session_event_without_projection(
+                tmp.path(),
+                &session.id,
+                AgentSessionEvent::PermissionRequested {
+                    turn_id: 1,
+                    tool_use_id: Some("toolu-1".to_string()),
+                    request: permission_request_msg("perm-from-log"),
+                },
+            )
+            .unwrap();
+        usecase
+            .insert_failing_runtime_state_for_test(&session.id)
+            .await;
+
+        usecase
+            .respond_permission(
+                &session.id,
+                PermissionResponse {
+                    request_id: "perm-from-log".to_string(),
+                    decision: PermissionResponseDecision::Allow {
+                        updated_input: None,
+                        answers: None,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+
+        let events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::PermissionResolved {
+                turn_id: 1,
+                request_id: Some(request_id),
+                ..
+            } if request_id == "perm-from-log"
+        )));
+        assert!(latest_unresolved_permission_request(&events).is_none());
+        assert_eq!(
+            usecase.turn_phase(&session.id).await,
+            Some(TurnPhase::Streaming)
+        );
+
+        let loaded = usecase
+            .get_session(&session.id)
+            .await
+            .unwrap()
+            .expect("session");
+        assert_eq!(loaded.turn_phase, TurnPhase::Streaming);
+        assert!(loaded.pending_permission_request.is_none());
+        assert!(loaded.pending_permission_state_revision > 0);
+    }
+
+    #[tokio::test]
+    async fn permission_requested_emits_pending_state_change_when_stream_emit_is_suppressed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store,
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id.clone();
+        {
+            let mut sessions = usecase.ctx.sessions.lock().await;
+            sessions
+                .get_mut(&session_id)
+                .expect("runtime state")
+                .stream_emit_suppressed = true;
+        }
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PermissionRequested(permission_request("perm-suppressed")),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::WaitingPermission).await;
+
+        assert!(event_notifier.state_changes().iter().any(|change| {
+            change.chat_session_id == session_id
+                && change.turn_phase == TurnPhase::WaitingPermission
+                && change
+                    .pending_permission_request
+                    .as_ref()
+                    .is_some_and(|request| request.id == "perm-suppressed")
+                && change.pending_permission_state_revision.is_some()
+        }));
+    }
+
+    #[test]
+    fn permission_wait_diagnostic_is_marked_once_after_threshold() {
+        let mut state = RuntimeSessionState::new("claude".to_string());
+        let now = std::time::Instant::now();
+        state.phase = RuntimeSessionPhase::WaitingPermission;
+        state.pending_permission_request = Some(permission_request_msg("perm-diag"));
+        state.permission_wait_started_at =
+            Some(now - PERMISSION_WAIT_DIAGNOSTIC_THRESHOLD - Duration::from_millis(1));
+
+        assert!(maybe_mark_permission_wait_diagnostic("s1", &mut state, now));
+        assert!(state.permission_wait_diagnostic_emitted);
+        assert!(!maybe_mark_permission_wait_diagnostic(
+            "s1", &mut state, now
+        ));
+    }
+
+    #[test]
+    fn permission_wait_diagnostic_skips_fresh_observed_request() {
+        let mut state = RuntimeSessionState::new("claude".to_string());
+        let now = std::time::Instant::now();
+        state.phase = RuntimeSessionPhase::WaitingPermission;
+        state.pending_permission_request = Some(permission_request_msg("perm-visible"));
+        state.permission_wait_started_at =
+            Some(now - PERMISSION_WAIT_DIAGNOSTIC_THRESHOLD - Duration::from_millis(1));
+        state.permission_request_visibility = Some(PermissionRequestVisibility {
+            request_id: "perm-visible".to_string(),
+            last_seen_at: now,
+        });
+
+        assert!(!maybe_mark_permission_wait_diagnostic(
+            "s1", &mut state, now
+        ));
+        assert!(!state.permission_wait_diagnostic_emitted);
+
+        state.permission_request_visibility = Some(PermissionRequestVisibility {
+            request_id: "perm-visible".to_string(),
+            last_seen_at: now - PERMISSION_REQUEST_OBSERVED_TTL - Duration::from_millis(1),
+        });
+        assert!(maybe_mark_permission_wait_diagnostic("s1", &mut state, now));
+        assert!(state.permission_wait_diagnostic_emitted);
+    }
+
+    #[test]
+    fn permission_wait_diagnostic_treats_mismatched_observation_as_unobserved() {
+        let mut state = RuntimeSessionState::new("claude".to_string());
+        let now = std::time::Instant::now();
+        state.phase = RuntimeSessionPhase::WaitingPermission;
+        state.pending_permission_request = Some(permission_request_msg("perm-pending"));
+        state.permission_wait_started_at =
+            Some(now - PERMISSION_WAIT_DIAGNOSTIC_THRESHOLD - Duration::from_millis(1));
+        state.permission_request_visibility = Some(PermissionRequestVisibility {
+            request_id: "perm-other".to_string(),
+            last_seen_at: now,
+        });
+
+        assert!(maybe_mark_permission_wait_diagnostic("s1", &mut state, now));
+        assert!(state.permission_wait_diagnostic_emitted);
+    }
+
+    #[tokio::test]
+    async fn report_permission_request_observed_tracks_matching_pending_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store,
+                tmp.path(),
+            );
+        usecase
+            .insert_runtime_state_for_test("s1", TurnPhase::WaitingPermission, false)
+            .await;
+        {
+            let mut sessions = usecase.ctx.sessions.lock().await;
+            let state = sessions.get_mut("s1").expect("runtime state");
+            state.pending_permission_request = Some(permission_request_msg("perm-visible"));
+        }
+
+        usecase
+            .report_permission_request_observed("s1", "perm-visible", true)
+            .await
+            .unwrap();
+        {
+            let sessions = usecase.ctx.sessions.lock().await;
+            let visibility = sessions
+                .get("s1")
+                .and_then(|state| state.permission_request_visibility.as_ref())
+                .expect("visibility");
+            assert_eq!(visibility.request_id, "perm-visible");
+        }
+
+        usecase
+            .report_permission_request_observed("s1", "perm-other", false)
+            .await
+            .unwrap();
+        {
+            let sessions = usecase.ctx.sessions.lock().await;
+            assert!(sessions
+                .get("s1")
+                .and_then(|state| state.permission_request_visibility.as_ref())
+                .is_some());
+        }
+
+        usecase
+            .report_permission_request_observed("s1", "perm-visible", false)
+            .await
+            .unwrap();
+        {
+            let sessions = usecase.ctx.sessions.lock().await;
+            assert!(sessions
+                .get("s1")
+                .and_then(|state| state.permission_request_visibility.as_ref())
+                .is_none());
+        }
+
+        usecase
+            .report_permission_request_observed("s1", "perm-other", true)
+            .await
+            .unwrap();
+        {
+            let sessions = usecase.ctx.sessions.lock().await;
+            assert!(sessions
+                .get("s1")
+                .and_then(|state| state.permission_request_visibility.as_ref())
+                .is_none());
         }
     }
 
@@ -5156,6 +5845,50 @@ mod tests {
         assert_eq!(request.id, "perm-old");
         assert_eq!(request.tool_name, "Bash");
         assert_eq!(request.title.as_deref(), Some("Run command"));
+    }
+
+    #[tokio::test]
+    async fn find_permission_request_returns_in_memory_pending_without_message_part() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_step_session: false,
+                workflow_step_context: None,
+            },
+        )
+        .unwrap();
+        usecase
+            .insert_runtime_state_for_test(&session.id, TurnPhase::WaitingPermission, false)
+            .await;
+        {
+            let mut sessions = usecase.ctx.sessions.lock().await;
+            let state = sessions.get_mut(&session.id).expect("runtime state");
+            state.pending_permission_request = Some(permission_request_msg("perm-pending-only"));
+            state.streaming_parts.clear();
+            state.domain_streaming_parts.clear();
+        }
+
+        let request = usecase
+            .find_permission_request(&session.id, "perm-pending-only")
+            .await
+            .unwrap()
+            .expect("permission request");
+
+        assert_eq!(request.id, "perm-pending-only");
+        assert_eq!(request.tool_name, "Bash");
     }
 
     #[tokio::test]

@@ -54,8 +54,17 @@ pub(crate) struct RuntimeSessionState {
     pub turn_started_at: Option<Instant>,
     pub first_backend_event_recorded: bool,
     pub permission_wait_started_at: Option<Instant>,
+    pub permission_wait_diagnostic_emitted: bool,
+    pub permission_request_visibility: Option<PermissionRequestVisibility>,
+    pub pending_permission_state_revision: u64,
     pub generation: u64,
     pub runtime_epoch: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PermissionRequestVisibility {
+    pub request_id: String,
+    pub last_seen_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +105,9 @@ impl RuntimeSessionState {
             turn_started_at: None,
             first_backend_event_recorded: false,
             permission_wait_started_at: None,
+            permission_wait_diagnostic_emitted: false,
+            permission_request_visibility: None,
+            pending_permission_state_revision: 0,
             generation: 0,
             runtime_epoch: 0,
         }
@@ -124,13 +136,15 @@ impl RuntimeSessionState {
         self.stream_flush_scheduled = false;
         self.current_turn_id = Some(turn_id);
         self.last_turn_id = Some(turn_id);
-        self.pending_permission_request = None;
+        self.clear_pending_permission_request();
         self.current_turn_input = None;
         let now = Instant::now();
         self.last_progress_at = Some(now);
         self.turn_started_at = Some(now);
         self.first_backend_event_recorded = false;
         self.permission_wait_started_at = None;
+        self.permission_wait_diagnostic_emitted = false;
+        self.permission_request_visibility = None;
         self.generation = self.generation.saturating_add(1);
     }
 
@@ -138,7 +152,7 @@ impl RuntimeSessionState {
         self.phase = RuntimeSessionPhase::Idle;
         self.streaming_message_id = None;
         self.current_turn_id = None;
-        self.pending_permission_request = None;
+        self.clear_pending_permission_request();
         self.current_turn_input = None;
         self.domain_streaming_parts.clear();
         self.streaming_parts.clear();
@@ -154,6 +168,26 @@ impl RuntimeSessionState {
         self.turn_started_at = None;
         self.first_backend_event_recorded = false;
         self.permission_wait_started_at = None;
+        self.permission_wait_diagnostic_emitted = false;
+        self.permission_request_visibility = None;
+    }
+
+    pub(crate) fn set_pending_permission_request(&mut self, request: PermissionRequestMsg) -> u64 {
+        self.pending_permission_request = Some(request);
+        self.permission_request_visibility = None;
+        self.bump_pending_permission_state_revision()
+    }
+
+    pub(crate) fn clear_pending_permission_request(&mut self) -> u64 {
+        self.pending_permission_request = None;
+        self.permission_request_visibility = None;
+        self.bump_pending_permission_state_revision()
+    }
+
+    fn bump_pending_permission_state_revision(&mut self) -> u64 {
+        self.pending_permission_state_revision =
+            self.pending_permission_state_revision.saturating_add(1);
+        self.pending_permission_state_revision
     }
 }
 

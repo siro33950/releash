@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatSession } from "@/types/session";
+import type { ChatSession, PermissionRequest } from "@/types/session";
 import { ChatSessionView } from "./ChatSessionView";
 
 const { mockInvoke, mockVirtualRange, mockOffsetOverrides } = vi.hoisted(
@@ -95,12 +96,20 @@ interface RenderOptions {
 		oldestVisibleIndex?: number;
 		onEvicted?: (eviction: { count: number; direction: "older" }) => void;
 	}) => void;
+	pendingPermission?: PermissionRequest | null;
+	onRespondPermission?: (
+		requestId: string,
+		allow: boolean,
+		updatedInput?: Record<string, unknown>,
+	) => void;
 }
 
 function chatSessionViewElement({
 	testSession = session,
 	onLoadOlderMessages = vi.fn().mockResolvedValue(undefined),
 	onEvictOlderMessages,
+	pendingPermission = null,
+	onRespondPermission = vi.fn(),
 }: RenderOptions = {}) {
 	return createElement(ChatSessionView, {
 		session: testSession,
@@ -113,6 +122,7 @@ function chatSessionViewElement({
 		availableModels: [],
 		backends: [],
 		selectedModel: "claude:sonnet",
+		pendingPermission,
 		pendingQueue: [],
 		selectedBackendId: null,
 		canChangeBackend: false,
@@ -125,7 +135,7 @@ function chatSessionViewElement({
 		onPermissionModeChange: vi.fn(),
 		onPlanModeChange: vi.fn(),
 		onModelChange: vi.fn(),
-		onRespondPermission: vi.fn(),
+		onRespondPermission,
 	});
 }
 
@@ -133,13 +143,56 @@ function renderChatSessionView(options: RenderOptions = {}) {
 	return render(chatSessionViewElement(options));
 }
 
+function askUserQuestionPresentation() {
+	return {
+		kind: "ask_user_question",
+		canEditInput: false,
+		canEditContent: false,
+		canEditMultiEditContent: false,
+		directContentEditLabel: null,
+		directContent: "",
+		multiEditReplacementContents: [],
+		multiEditOldStrings: [],
+		hasResolvedDetail: true,
+		plan: "",
+		allowedPrompts: [],
+		questions: [
+			{
+				question: "Which library should we use?",
+				header: "Library",
+				options: [
+					{ label: "React", description: "Popular UI framework" },
+					{ label: "Vue", description: "Progressive framework" },
+				],
+				multiSelect: false,
+			},
+		],
+	};
+}
+
 beforeEach(() => {
 	mockInvoke.mockReset();
-	mockInvoke.mockResolvedValue(null);
+	mockInvoke.mockImplementation((command: string, args: unknown) => {
+		if (command === "present_agent_permission_request") {
+			const { requestId } = args as { requestId?: string };
+			return Promise.resolve(
+				requestId === "perm-question-1" ? askUserQuestionPresentation() : null,
+			);
+		}
+		return Promise.resolve(null);
+	});
 	mockVirtualRange.startIndex = 0;
 	mockVirtualRange.endIndex = null;
 	mockOffsetOverrides.clear();
 });
+
+const pendingPermission: PermissionRequest = {
+	id: "perm-1",
+	toolName: "Bash",
+	kind: "tool_approval",
+	input: { command: "echo hi" },
+	title: "Run command",
+};
 
 describe("ChatSessionView scroll loading", () => {
 	it("calls onLoadOlderMessages when scrollTop is below the threshold", () => {
@@ -345,5 +398,116 @@ describe("ChatSessionView scroll loading", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		expect(onEvictOlderMessages).not.toHaveBeenCalled();
+	});
+});
+
+describe("ChatSessionView pending permission fallback", () => {
+	it("renders pending permission when no message permission part exists", async () => {
+		renderChatSessionView({ pendingPermission });
+
+		const dialogs = await screen.findAllByTestId("permission-dialog");
+
+		expect(dialogs).toHaveLength(1);
+		expect(screen.getByText("Permission required: Run command")).toBeTruthy();
+	});
+
+	it("tail-follows when the fallback pending permission appears", async () => {
+		const view = renderChatSessionView();
+		const scroll = screen.getByTestId("chat-session-scroll");
+		Object.defineProperties(scroll, {
+			scrollTop: { configurable: true, writable: true, value: 800 },
+			scrollHeight: { configurable: true, writable: true, value: 1000 },
+			clientHeight: { configurable: true, value: 200 },
+		});
+		fireEvent.scroll(scroll);
+		Object.defineProperty(scroll, "scrollHeight", {
+			configurable: true,
+			writable: true,
+			value: 1200,
+		});
+
+		view.rerender(chatSessionViewElement({ pendingPermission }));
+
+		await waitFor(() => {
+			expect(scroll.scrollTop).toBe(1000);
+		});
+	});
+
+	it("does not render a duplicate when the message already has the permission part", async () => {
+		const testSession: ChatSession = {
+			...session,
+			messages: [
+				...session.messages,
+				{
+					id: "m2",
+					role: "agent",
+					parts: [
+						{
+							type: "permission",
+							request: pendingPermission,
+							status: "pending",
+						},
+					],
+					timestamp: 1002,
+				},
+			],
+		};
+
+		renderChatSessionView({ testSession, pendingPermission });
+
+		const dialogs = await screen.findAllByTestId("permission-dialog");
+
+		expect(dialogs).toHaveLength(1);
+	});
+
+	it("routes fallback Allow through onRespondPermission", async () => {
+		const onRespondPermission = vi.fn();
+		renderChatSessionView({ pendingPermission, onRespondPermission });
+
+		await userEvent.click(await screen.findByText("Allow"));
+
+		expect(onRespondPermission.mock.calls[0]).toEqual([
+			"perm-1",
+			true,
+			undefined,
+		]);
+	});
+
+	it("routes fallback Deny through onRespondPermission", async () => {
+		const onRespondPermission = vi.fn();
+		renderChatSessionView({ pendingPermission, onRespondPermission });
+
+		await userEvent.click(await screen.findByText("Deny"));
+
+		expect(onRespondPermission.mock.calls[0]).toEqual(["perm-1", false]);
+	});
+
+	it("routes fallback AskUserQuestion answers through onRespondPermission with merged input", async () => {
+		const onRespondPermission = vi.fn();
+		const questionPermission: PermissionRequest = {
+			id: "perm-question-1",
+			toolName: "AskUserQuestion",
+			kind: "question",
+			input: { source: "fallback" },
+			title: "Question",
+		};
+		renderChatSessionView({
+			pendingPermission: questionPermission,
+			onRespondPermission,
+		});
+
+		await userEvent.click(await screen.findByText("React"));
+		await userEvent.click(screen.getByText("Submit"));
+
+		expect(onRespondPermission.mock.calls[0]).toEqual([
+			"perm-question-1",
+			true,
+			{
+				source: "fallback",
+				answers: {
+					"Which library should we use?": "React",
+				},
+			},
+		]);
 	});
 });

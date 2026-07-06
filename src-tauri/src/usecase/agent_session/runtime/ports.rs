@@ -31,6 +31,7 @@ pub(crate) struct AgentSessionStateChangedPayload {
     pub interrupted: bool,
     pub session_state: Option<SessionState>,
     pub pending_permission_request: Option<PermissionRequestMsg>,
+    pub pending_permission_state_revision: Option<u64>,
 }
 
 pub(crate) trait AgentSessionEventNotifier: Send + Sync {

@@ -1,6 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatSession, PermissionMode, PlanMode } from "@/types/session";
+import type {
+	ChatSession,
+	PermissionMode,
+	PermissionRequest,
+	PlanMode,
+} from "@/types/session";
 
 const mocks = vi.hoisted(() => ({
 	useAgentChatContext: vi.fn(),
@@ -26,14 +31,38 @@ vi.mock("./ChatSessionView", () => ({
 		session,
 		permissionMode,
 		planMode,
+		pendingPermission,
+		onRespondPermission,
 	}: {
 		session: ChatSession;
 		permissionMode: PermissionMode;
 		planMode: PlanMode;
+		pendingPermission: PermissionRequest | null;
+		onRespondPermission: (
+			requestId: string,
+			allow: boolean,
+			updatedInput?: Record<string, unknown>,
+		) => void;
 	}) => (
 		<div data-testid={`chat-${session.id}`}>
 			<span data-testid={`permission-${session.id}`}>{permissionMode}</span>
 			<span data-testid={`plan-${session.id}`}>{String(planMode)}</span>
+			<span data-testid={`pending-${session.id}`}>
+				{pendingPermission?.id ?? "none"}
+			</span>
+			{pendingPermission && (
+				<button
+					type="button"
+					data-testid={`respond-${session.id}`}
+					onClick={() =>
+						onRespondPermission(pendingPermission.id, true, {
+							answer: "approved",
+						})
+					}
+				>
+					Respond
+				</button>
+			)}
 		</div>
 	),
 }));
@@ -57,7 +86,20 @@ function makeSession(
 	};
 }
 
-function setContext(sessionsById: Record<string, ChatSession>) {
+function makePendingPermission(id: string): PermissionRequest {
+	return {
+		id,
+		toolName: "Bash",
+		kind: "tool_approval",
+		input: { command: "echo hi" },
+		title: "Run command",
+	};
+}
+
+function setContext(
+	sessionsById: Record<string, ChatSession>,
+	pendingPermissions: Record<string, PermissionRequest | null> = {},
+) {
 	mocks.useAgentChatContext.mockReturnValue({
 		getSessionById: (sessionId: string | null | undefined) =>
 			sessionId ? (sessionsById[sessionId] ?? null) : null,
@@ -73,6 +115,8 @@ function setContext(sessionsById: Record<string, ChatSession>) {
 			sessionsById[sessionId]?.planMode ?? false,
 		getSessionSelectedModel: vi.fn().mockReturnValue(null),
 		getSessionCanChangeBackend: vi.fn().mockReturnValue(false),
+		getSessionPendingPermission: (sessionId: string) =>
+			pendingPermissions[sessionId] ?? null,
 		getSessionPendingQueue: vi.fn().mockReturnValue([]),
 		getSessionRuntimeSlashCommands: vi.fn().mockReturnValue([]),
 		availableModels: [],
@@ -122,5 +166,53 @@ describe("BoundSessionChat", () => {
 			"full",
 		);
 		expect(screen.getByTestId("plan-session-b")).toHaveTextContent("true");
+	});
+
+	it("passes each workflow pane its own pending permission and response handler", () => {
+		const permissionA = makePendingPermission("perm-a");
+		const permissionB = makePendingPermission("perm-b");
+		setContext(
+			{
+				"session-a": makeSession("session-a", "ask", false),
+				"session-b": makeSession("session-b", "full", true),
+			},
+			{
+				"session-a": permissionA,
+				"session-b": permissionB,
+			},
+		);
+
+		render(
+			<div>
+				<BoundSessionChat
+					sessionId="session-a"
+					worktreePath="/repo"
+					skipInitialLoad
+				/>
+				<BoundSessionChat
+					sessionId="session-b"
+					worktreePath="/repo"
+					skipInitialLoad
+				/>
+			</div>,
+		);
+
+		expect(screen.getByTestId("pending-session-a")).toHaveTextContent("perm-a");
+		expect(screen.getByTestId("pending-session-b")).toHaveTextContent("perm-b");
+
+		fireEvent.click(screen.getByTestId("respond-session-b"));
+
+		expect(mocks.respondPermission).toHaveBeenCalledWith(
+			"session-b",
+			"perm-b",
+			true,
+			{ answer: "approved" },
+		);
+		expect(mocks.respondPermission).not.toHaveBeenCalledWith(
+			"session-a",
+			"perm-b",
+			true,
+			{ answer: "approved" },
+		);
 	});
 });

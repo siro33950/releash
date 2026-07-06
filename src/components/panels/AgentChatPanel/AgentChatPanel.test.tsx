@@ -274,6 +274,7 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 			.fn()
 			.mockReturnValue(restOverrides.selectedModel ?? null),
 		getSessionCanChangeBackend: vi.fn().mockReturnValue(false),
+		getSessionPendingPermission: vi.fn().mockReturnValue(null),
 		getSessionPendingQueue: vi.fn().mockReturnValue([]),
 		getSessionLatestTokenUsage: vi.fn().mockReturnValue(null),
 		getSessionRuntimeSlashCommands: vi.fn().mockReturnValue([]),

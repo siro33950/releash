@@ -8,7 +8,7 @@ import {
 	X,
 } from "lucide-react";
 import type React from "react";
-import { useEffect, useId, useMemo, useState } from "react";
+import { forwardRef, useEffect, useId, useMemo, useState } from "react";
 import Markdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -19,6 +19,8 @@ import { cn } from "@/lib/utils";
 import type { PermissionRequest } from "@/types/session";
 import { AgentEditPreviewPanel } from "./AgentEditPreviewPanel";
 import { UserMessage } from "./StreamMessage";
+
+const PERMISSION_DIALOG_VISIBILITY_HEARTBEAT_MS = 10_000;
 
 interface AskQuestion {
 	question: string;
@@ -167,22 +169,26 @@ function PermissionKindIcon({
 	return <Icon className="size-3.5 shrink-0" />;
 }
 
-function PermissionShell({
-	children,
-	"data-testid": dataTestId = "permission-dialog",
-}: {
-	children: React.ReactNode;
-	"data-testid"?: string;
-}) {
+const PermissionShell = forwardRef<
+	HTMLDivElement,
+	{
+		children: React.ReactNode;
+		"data-testid"?: string;
+	}
+>(function PermissionShell(
+	{ children, "data-testid": dataTestId = "permission-dialog" },
+	ref,
+) {
 	return (
 		<div
+			ref={ref}
 			data-testid={dataTestId}
 			className="mx-3 my-2 overflow-hidden rounded border border-border bg-background px-2 py-2 text-xs"
 		>
 			{children}
 		</div>
 	);
-}
+});
 
 interface PermissionDialogProps {
 	request: PermissionRequest;
@@ -191,6 +197,7 @@ interface PermissionDialogProps {
 	resolvedAnswers?: Record<string, string | string[]>;
 	worktreePath?: string;
 	onOpenDiffFile?: (filePath: string) => void;
+	visibilityRoot?: Element | null;
 	onAllow: (requestId: string, updatedInput?: Record<string, unknown>) => void;
 	onDeny: (requestId: string) => void;
 	onAnswer?: (requestId: string, answers: Record<string, string>) => void;
@@ -300,10 +307,13 @@ export function PermissionDialog({
 	resolvedAnswers,
 	worktreePath,
 	onOpenDiffFile,
+	visibilityRoot,
 	onAllow,
 	onDeny,
 	onAnswer,
 }: PermissionDialogProps) {
+	const [visibilityElement, setVisibilityElement] =
+		useState<HTMLDivElement | null>(null);
 	const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
 	const [otherTexts, setOtherTexts] = useState<Record<string, string>>({});
 	const [isExpanded, setIsExpanded] = useState(false);
@@ -341,6 +351,69 @@ export function PermissionDialog({
 		setContentEditError(null);
 		setPreviewEditError(null);
 	}, [request.input]);
+	useEffect(() => {
+		if (!sessionId || status !== "pending" || !visibilityElement) return;
+		let active = true;
+		let intervalId: number | null = null;
+		let lastVisible: boolean | null = null;
+		const reportVisibility = (visible: boolean) => {
+			void invoke("report_agent_permission_request_observed", {
+				chatSessionId: sessionId,
+				requestId: request.id,
+				visible,
+			}).catch((error) => {
+				if (active) {
+					console.warn("Failed to report permission request observation", {
+						chatSessionId: sessionId,
+						requestId: request.id,
+						visible,
+						error,
+					});
+				}
+			});
+		};
+		const clearHeartbeat = () => {
+			if (intervalId === null) return;
+			window.clearInterval(intervalId);
+			intervalId = null;
+		};
+		const applyVisible = (visible: boolean) => {
+			if (lastVisible === visible) return;
+			lastVisible = visible;
+			clearHeartbeat();
+			reportVisibility(visible);
+			if (visible) {
+				intervalId = window.setInterval(
+					() => reportVisibility(true),
+					PERMISSION_DIALOG_VISIBILITY_HEARTBEAT_MS,
+				);
+			}
+		};
+		if (typeof IntersectionObserver === "undefined") {
+			applyVisible(true);
+			return () => {
+				active = false;
+				clearHeartbeat();
+				reportVisibility(false);
+			};
+		}
+		const observer = new IntersectionObserver(
+			(entries) => {
+				const visible = entries.some(
+					(entry) => entry.isIntersecting && entry.intersectionRatio > 0,
+				);
+				applyVisible(visible);
+			},
+			{ root: visibilityRoot ?? null, threshold: 0 },
+		);
+		observer.observe(visibilityElement);
+		return () => {
+			active = false;
+			observer.disconnect();
+			clearHeartbeat();
+			reportVisibility(false);
+		};
+	}, [request.id, sessionId, status, visibilityElement, visibilityRoot]);
 	// inputKey は request.input の内容ハッシュ。参照ではなく内容で再取得を判定するため、
 	// request.input そのものではなく inputKey を依存にする（チラつき防止）。
 	// biome-ignore lint/correctness/useExhaustiveDependencies: request.input は inputKey 経由で内容監視している
@@ -502,7 +575,10 @@ export function PermissionDialog({
 	// チラつく（特に仮想化リストの再マウント時）。
 	if (!presentationReady) {
 		return (
-			<PermissionShell data-testid="permission-loading">
+			<PermissionShell
+				ref={setVisibilityElement}
+				data-testid="permission-loading"
+			>
 				<div className="px-2 py-1">
 					<div className="h-4 w-2/3 animate-pulse rounded bg-muted-foreground/10" />
 				</div>
@@ -668,7 +744,7 @@ export function PermissionDialog({
 		};
 
 		return (
-			<PermissionShell>
+			<PermissionShell ref={setVisibilityElement}>
 				<div className="mb-2 flex items-center gap-2 px-2 text-muted-foreground">
 					<PermissionKindIcon kind={presentation.kind} />
 					<span>Question</span>
@@ -812,7 +888,7 @@ export function PermissionDialog({
 		const { plan, allowedPrompts } = presentation;
 
 		return (
-			<PermissionShell>
+			<PermissionShell ref={setVisibilityElement}>
 				<div className="mb-2 flex items-center gap-2 px-2 text-sm font-medium">
 					<PermissionKindIcon kind={presentation.kind} />
 					<span>Plan Review</span>
@@ -832,7 +908,7 @@ export function PermissionDialog({
 	const toolLabel = request.title || request.displayName || request.toolName;
 
 	return (
-		<PermissionShell>
+		<PermissionShell ref={setVisibilityElement}>
 			<div className="mb-1 flex min-w-0 items-center gap-2 px-2 text-sm font-medium">
 				<PermissionKindIcon kind={presentation.kind} />
 				<span className="min-w-0 truncate">

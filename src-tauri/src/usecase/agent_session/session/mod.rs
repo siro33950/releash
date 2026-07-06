@@ -935,6 +935,9 @@ pub struct GetSessionResponse {
     pub pending_queue: Vec<QueuedAgentTurn>,
     pub pending_queue_count: usize,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pending_permission_request: Option<PermissionRequestMsg>,
+    pub pending_permission_state_revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub initial_page: Option<InitialSessionPage>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub latest_token_usage: Option<TokenUsage>,
@@ -1757,6 +1760,8 @@ mod tests {
             can_change_backend: false,
             pending_queue: Vec::new(),
             pending_queue_count: 0,
+            pending_permission_request: None,
+            pending_permission_state_revision: 0,
             initial_page: None,
             latest_token_usage: None,
         };

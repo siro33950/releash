@@ -1,4 +1,4 @@
-use super::finalization::finalize_turn;
+use super::finalization::{finalize_turn, latest_unresolved_permission_request};
 use super::projector::{project, ProjectedStatus};
 use super::*;
 use crate::usecase::agent_session::event_log::AgentTurnFailureSignal;
@@ -10,10 +10,14 @@ use crate::usecase::agent_session::session::{
 use crate::usecase::agent_session::status::TurnPhase;
 
 fn start_event() -> AgentSessionEvent {
+    turn_started_event(1)
+}
+
+fn turn_started_event(turn_id: u64) -> AgentSessionEvent {
     AgentSessionEvent::TurnStarted {
-        turn_id: 1,
-        message_id: "human-1".to_string(),
-        assistant_message_id: Some("agent-1".to_string()),
+        turn_id,
+        message_id: format!("human-{turn_id}"),
+        assistant_message_id: Some(format!("agent-{turn_id}")),
         prompt: PromptInput {
             content: "please read".to_string(),
             mentions: Vec::new(),
@@ -1005,6 +1009,99 @@ fn finalization_closes_tools_permissions_and_turn() {
             })
         );
     }
+}
+
+#[test]
+fn latest_unresolved_permission_request_uses_finalization_key_matching() {
+    let mut second = permission_request_fixture();
+    second.id = "req-2".to_string();
+    second.tool_use_id = Some("tool-2".to_string());
+    let events = vec![
+        start_event(),
+        AgentSessionEvent::PermissionRequested {
+            turn_id: 1,
+            tool_use_id: Some("tool-1".to_string()),
+            request: permission_request_fixture(),
+        },
+        AgentSessionEvent::PermissionResolved {
+            turn_id: 1,
+            tool_use_id: None,
+            request_id: Some("req-1".to_string()),
+            decision: PermissionDecision::Allowed,
+            answers: None,
+        },
+        AgentSessionEvent::PermissionRequested {
+            turn_id: 1,
+            tool_use_id: Some("tool-2".to_string()),
+            request: second,
+        },
+    ];
+
+    let pending = latest_unresolved_permission_request(&events).expect("pending permission");
+
+    assert_eq!(pending.turn_id, 1);
+    assert_eq!(pending.request.id, "req-2");
+}
+
+#[test]
+fn latest_unresolved_permission_request_ignores_terminal_turns() {
+    let events = vec![
+        start_event(),
+        AgentSessionEvent::PermissionRequested {
+            turn_id: 1,
+            tool_use_id: Some("tool-1".to_string()),
+            request: permission_request_fixture(),
+        },
+        AgentSessionEvent::TurnInterrupted {
+            turn_id: 1,
+            reason: InterruptReason::Abort,
+            exit_code: 1,
+            error: None,
+        },
+    ];
+
+    assert!(latest_unresolved_permission_request(&events).is_none());
+}
+
+#[test]
+fn latest_unresolved_permission_request_ignores_previous_turn_after_new_turn_started() {
+    let events = vec![
+        start_event(),
+        AgentSessionEvent::PermissionRequested {
+            turn_id: 1,
+            tool_use_id: Some("tool-1".to_string()),
+            request: permission_request_fixture(),
+        },
+        turn_started_event(2),
+    ];
+
+    assert!(latest_unresolved_permission_request(&events).is_none());
+}
+
+#[test]
+fn latest_unresolved_permission_request_returns_latest_turn_request_only() {
+    let mut second = permission_request_fixture();
+    second.id = "req-2".to_string();
+    second.tool_use_id = Some("tool-2".to_string());
+    let events = vec![
+        start_event(),
+        AgentSessionEvent::PermissionRequested {
+            turn_id: 1,
+            tool_use_id: Some("tool-1".to_string()),
+            request: permission_request_fixture(),
+        },
+        turn_started_event(2),
+        AgentSessionEvent::PermissionRequested {
+            turn_id: 2,
+            tool_use_id: Some("tool-2".to_string()),
+            request: second,
+        },
+    ];
+
+    let pending = latest_unresolved_permission_request(&events).expect("pending permission");
+
+    assert_eq!(pending.turn_id, 2);
+    assert_eq!(pending.request.id, "req-2");
 }
 
 #[test]

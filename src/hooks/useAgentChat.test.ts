@@ -3319,6 +3319,235 @@ describe("useAgentChat", () => {
 		expect(result.current.availableModels).toEqual([{ value: "claude-4" }]);
 	});
 
+	it("initSessions hydrates pending permission from backend response", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const request = {
+			id: "perm-1",
+			toolName: "Bash",
+			kind: "tool_approval" as const,
+			input: { command: "echo hi" },
+		};
+
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [
+				{
+					id: "s1",
+					worktreePath: "/repo",
+					updatedAt: 1000,
+					state: "active",
+					firstMessage: "hi",
+					messageCount: 1,
+					createdAt: 1000,
+				},
+			],
+			activeSession: {
+				session: {
+					id: "s1",
+					worktreePath: "/repo",
+					messages: [],
+					state: "active",
+					createdAt: 1000,
+					updatedAt: 1000,
+					permissionMode: "edit",
+				},
+				turnPhase: "waiting_permission",
+				selectedModel: null,
+				availableModels: [],
+				pendingPermissionRequest: request,
+			},
+		} as never);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		expect(result.current.getSessionPendingPermission("s1")).toBe(request);
+		expect(result.current.getSessionTurnPhase("s1")).toBe("waiting_permission");
+	});
+
+	it("keeps state-change pending permission when a stale getSession hydrate returns null", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const request = {
+			id: "perm-1",
+			toolName: "Bash",
+			kind: "tool_approval" as const,
+			input: { command: "echo hi" },
+		};
+		let resolveGetSession: (
+			value: Awaited<ReturnType<typeof sessionStore.getSession>>,
+		) => void = () => {};
+		const lateHydrate = new Promise<
+			Awaited<ReturnType<typeof sessionStore.getSession>>
+		>((resolve) => {
+			resolveGetSession = resolve;
+		});
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		vi.mocked(sessionStore.getSession).mockReturnValueOnce(lateHydrate);
+		const loadPromise = result.current.loadSession("s1");
+		const stateCb = listenCallbacks.get("agent-session-state-changed");
+		expect(stateCb).toBeDefined();
+
+		await act(async () => {
+			stateCb?.({
+				payload: {
+					chat_session_id: "s1",
+					turn_phase: "waiting_permission",
+					pending_permission_request: request,
+					pending_permission_state_revision: 2,
+				},
+			});
+		});
+		expect(result.current.getSessionPendingPermission("s1")).toBe(request);
+
+		await act(async () => {
+			resolveGetSession({
+				...(sessionResponse(chatSession("s1", []), {
+					nextCursor: null,
+					hasMore: false,
+					totalCount: 0,
+				}) as Record<string, unknown>),
+				pendingPermissionStateRevision: 1,
+			} as never);
+			await loadPromise;
+		});
+
+		expect(result.current.getSessionPendingPermission("s1")).toBe(request);
+		expect(result.current.getSessionTurnPhase("s1")).toBe("waiting_permission");
+	});
+
+	it("does not restore a stale getSession pending permission after state-change clears it", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const request = {
+			id: "perm-1",
+			toolName: "Bash",
+			kind: "tool_approval" as const,
+			input: { command: "echo hi" },
+		};
+		let resolveGetSession: (
+			value: Awaited<ReturnType<typeof sessionStore.getSession>>,
+		) => void = () => {};
+		const lateHydrate = new Promise<
+			Awaited<ReturnType<typeof sessionStore.getSession>>
+		>((resolve) => {
+			resolveGetSession = resolve;
+		});
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		const stateCb = listenCallbacks.get("agent-session-state-changed");
+		expect(stateCb).toBeDefined();
+
+		await act(async () => {
+			stateCb?.({
+				payload: {
+					chat_session_id: "s1",
+					turn_phase: "waiting_permission",
+					pending_permission_request: request,
+					pending_permission_state_revision: 2,
+				},
+			});
+		});
+		expect(result.current.getSessionPendingPermission("s1")).toBe(request);
+
+		vi.mocked(sessionStore.getSession).mockReturnValueOnce(lateHydrate);
+		const loadPromise = result.current.loadSession("s1");
+
+		await act(async () => {
+			stateCb?.({
+				payload: {
+					chat_session_id: "s1",
+					turn_phase: "streaming",
+					pending_permission_request: null,
+					pending_permission_state_revision: 3,
+				},
+			});
+		});
+		expect(result.current.getSessionPendingPermission("s1")).toBeNull();
+
+		await act(async () => {
+			resolveGetSession({
+				...(sessionResponse(chatSession("s1", []), {
+					nextCursor: null,
+					hasMore: false,
+					totalCount: 0,
+				}) as Record<string, unknown>),
+				turnPhase: "waiting_permission",
+				pendingPermissionRequest: request,
+				pendingPermissionStateRevision: 2,
+			} as never);
+			await loadPromise;
+		});
+
+		expect(result.current.getSessionPendingPermission("s1")).toBeNull();
+		expect(result.current.getSessionTurnPhase("s1")).toBe("streaming");
+	});
+
+	it("clears stale local pending permission when fresh getSession hydrate returns null", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const request = {
+			id: "perm-1",
+			toolName: "Bash",
+			kind: "tool_approval" as const,
+			input: { command: "echo hi" },
+		};
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		const stateCb = listenCallbacks.get("agent-session-state-changed");
+		expect(stateCb).toBeDefined();
+
+		await act(async () => {
+			stateCb?.({
+				payload: {
+					chat_session_id: "s1",
+					turn_phase: "waiting_permission",
+					pending_permission_request: request,
+					pending_permission_state_revision: 2,
+				},
+			});
+		});
+		expect(result.current.getSessionPendingPermission("s1")).toBe(request);
+
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			...(sessionResponse(chatSession("s1", []), {
+				nextCursor: null,
+				hasMore: false,
+				totalCount: 0,
+			}) as Record<string, unknown>),
+			turnPhase: "streaming",
+			pendingPermissionRequest: null,
+			pendingPermissionStateRevision: 3,
+		} as never);
+
+		await act(async () => {
+			await result.current.loadSession("s1");
+		});
+
+		expect(result.current.getSessionPendingPermission("s1")).toBeNull();
+		expect(result.current.getSessionTurnPhase("s1")).toBe("streaming");
+	});
+
 	it("restores permissionMode and planMode from Rust response when worktree changes", async () => {
 		const { renderHook, waitFor } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");

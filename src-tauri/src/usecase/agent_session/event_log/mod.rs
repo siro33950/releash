@@ -22,7 +22,9 @@ pub use events::{
     AgentSessionEvent, InterruptReason, PermissionDecision, PromptInput, TurnStopReason,
     TurnTokenUsage,
 };
-pub(crate) use finalization::finalize_turn;
+pub(crate) use finalization::{
+    finalize_turn, latest_unresolved_permission_request, UnresolvedPermissionRequest,
+};
 pub use log::TurnEventLog;
 pub(crate) use part_events::append_part_events;
 pub use part_events::PartEventMode;

@@ -34,6 +34,7 @@ import type {
 	MessagePart,
 	ModelInfo,
 	PermissionMode,
+	PermissionRequest,
 	PlanMode,
 	QueuedAgentTurn,
 	SlashCommand,
@@ -67,6 +68,12 @@ type TodoListSnapshotPart = Extract<
 	MessagePart,
 	{ type: "todo_list_snapshot" }
 >;
+type PermissionPart = Extract<MessagePart, { type: "permission" }>;
+type RespondPermission = (
+	id: string,
+	allow: boolean,
+	updatedInput?: Record<string, unknown>,
+) => void;
 
 interface ThreadSearchMatch {
 	messageId: string;
@@ -375,11 +382,48 @@ interface AgentMessagePartsProps {
 	showThinkingContent: boolean;
 	rawScrollback: boolean;
 	onOpenDiffFile?: (filePath: string) => void;
-	respondPermission: (
-		id: string,
-		allow: boolean,
-		updatedInput?: Record<string, unknown>,
-	) => void;
+	permissionVisibilityRoot?: Element | null;
+	respondPermission: RespondPermission;
+}
+
+function PermissionDialogSlot({
+	request,
+	status,
+	sessionId,
+	resolvedAnswers,
+	worktreePath,
+	onOpenDiffFile,
+	visibilityRoot,
+	respondPermission,
+}: {
+	request: PermissionRequest;
+	status: PermissionPart["status"];
+	sessionId: string;
+	resolvedAnswers?: Record<string, string | string[]>;
+	worktreePath: string;
+	onOpenDiffFile?: (filePath: string) => void;
+	visibilityRoot?: Element | null;
+	respondPermission: RespondPermission;
+}) {
+	return (
+		<PermissionDialog
+			request={request}
+			status={status}
+			sessionId={sessionId}
+			resolvedAnswers={resolvedAnswers}
+			worktreePath={worktreePath}
+			onOpenDiffFile={onOpenDiffFile}
+			visibilityRoot={visibilityRoot}
+			onAllow={(id, updatedInput) => respondPermission(id, true, updatedInput)}
+			onDeny={(id) => respondPermission(id, false)}
+			onAnswer={(id, answers) =>
+				respondPermission(id, true, {
+					...(request.input ?? {}),
+					answers,
+				})
+			}
+		/>
+	);
 }
 
 const AgentMessageParts = React.memo(function AgentMessageParts({
@@ -390,6 +434,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 	showThinkingContent,
 	rawScrollback,
 	onOpenDiffFile,
+	permissionVisibilityRoot,
 	respondPermission,
 }: AgentMessagePartsProps) {
 	const {
@@ -527,7 +572,7 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 					}
 					case "permission":
 						return (
-							<PermissionDialog
+							<PermissionDialogSlot
 								key={key}
 								request={part.request}
 								status={part.status}
@@ -535,16 +580,8 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 								resolvedAnswers={part.answers}
 								worktreePath={worktreePath}
 								onOpenDiffFile={onOpenDiffFile}
-								onAllow={(id, updatedInput) =>
-									respondPermission(id, true, updatedInput)
-								}
-								onDeny={(id) => respondPermission(id, false)}
-								onAnswer={(id, answers) =>
-									respondPermission(id, true, {
-										...(part.request.input ?? {}),
-										answers,
-									})
-								}
+								visibilityRoot={permissionVisibilityRoot}
+								respondPermission={respondPermission}
 							/>
 						);
 					case "system_notification":
@@ -588,6 +625,7 @@ export interface ChatSessionViewProps {
 	availableModels: ModelInfo[];
 	backends: BackendInfo[];
 	selectedModel: string;
+	pendingPermission: PermissionRequest | null;
 	pendingQueue: QueuedAgentTurn[];
 	runtimeSlashCommands?: SlashCommand[];
 	selectedBackendId: string | null;
@@ -657,6 +695,7 @@ export function ChatSessionView({
 	availableModels,
 	backends,
 	selectedModel,
+	pendingPermission,
 	pendingQueue,
 	runtimeSlashCommands = [],
 	selectedBackendId,
@@ -727,6 +766,12 @@ export function ChatSessionView({
 	const searchInputRef = useRef<HTMLInputElement>(null);
 	const messageRefs = useRef(new Map<string, HTMLDivElement>());
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const [permissionVisibilityRoot, setPermissionVisibilityRoot] =
+		useState<HTMLDivElement | null>(null);
+	const setScrollElement = useCallback((node: HTMLDivElement | null) => {
+		scrollRef.current = node;
+		setPermissionVisibilityRoot(node);
+	}, []);
 	const pendingScrollCompensationRef = useRef(0);
 	const lastMessageSnapshotRef = useRef<{
 		sessionId: string;
@@ -742,6 +787,22 @@ export function ChatSessionView({
 		() => taskListRevision(session.messages),
 		[session.messages],
 	);
+	const messagePermissionRequestIds = useMemo(() => {
+		const ids = new Set<string>();
+		for (const message of session.messages) {
+			for (const part of message.parts) {
+				if (part.type === "permission" && part.request.id) {
+					ids.add(part.request.id);
+				}
+			}
+		}
+		return ids;
+	}, [session.messages]);
+	const fallbackPendingPermission =
+		pendingPermission && !messagePermissionRequestIds.has(pendingPermission.id)
+			? pendingPermission
+			: null;
+	const fallbackPendingPermissionId = fallbackPendingPermission?.id ?? null;
 
 	// Register agent drop zone for native file drop (image attachment)
 	const handleDrop = useCallback(async (paths: string[]) => {
@@ -983,6 +1044,14 @@ export function ChatSessionView({
 		virtualRowCount,
 		messageVirtualizer,
 	]);
+
+	useEffect(() => {
+		if (!fallbackPendingPermissionId || !isNearBottomRef.current) return;
+		const el = scrollRef.current;
+		if (!el) return;
+		el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+		isNearBottomRef.current = true;
+	}, [fallbackPendingPermissionId]);
 
 	const promptSuggestionRequest = useMemo(
 		() => ({
@@ -1336,7 +1405,7 @@ export function ChatSessionView({
 				</div>
 			)}
 			<div
-				ref={scrollRef}
+				ref={setScrollElement}
 				onScroll={handleScroll}
 				data-testid="chat-session-scroll"
 				className="flex-1 min-h-0 overflow-auto select-text"
@@ -1440,6 +1509,7 @@ export function ChatSessionView({
 									showThinkingContent={showThinkingContent}
 									rawScrollback={rawScrollback}
 									onOpenDiffFile={onOpenDiffFile}
+									permissionVisibilityRoot={permissionVisibilityRoot}
 									respondPermission={onRespondPermission}
 								/>
 								<AgentMessageMeta
@@ -1450,6 +1520,17 @@ export function ChatSessionView({
 						);
 					})}
 				</div>
+				{fallbackPendingPermission && (
+					<PermissionDialogSlot
+						request={fallbackPendingPermission}
+						status="pending"
+						sessionId={session.id}
+						worktreePath={worktreePath}
+						onOpenDiffFile={onOpenDiffFile}
+						visibilityRoot={permissionVisibilityRoot}
+						respondPermission={onRespondPermission}
+					/>
+				)}
 			</div>
 			<div className="shrink-0">
 				{nativeCommandNotice && (

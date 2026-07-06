@@ -9,6 +9,7 @@ import type {
 	MentionReference,
 	ModelInfo,
 	PermissionMode,
+	PermissionRequest,
 	PlanMode,
 	QueuedAgentTurn,
 	SessionSummary,
@@ -175,6 +176,7 @@ export interface UseAgentChatResult {
 	getSessionPlanMode: (sessionId: string) => PlanMode;
 	getSessionSelectedModel: (sessionId: string) => string | null;
 	getSessionCanChangeBackend: (sessionId: string) => boolean;
+	getSessionPendingPermission: (sessionId: string) => PermissionRequest | null;
 	getSessionPendingQueue: (sessionId: string) => QueuedAgentTurn[];
 	getSessionLatestTokenUsage: (sessionId: string) => TokenUsage | null;
 	getSessionRuntimeSlashCommands: (sessionId: string) => SlashCommand[];
@@ -263,6 +265,8 @@ function dispatchSessionMeta(
 		availableModels: ModelInfo[];
 		canChangeBackend: boolean;
 		pendingQueue?: QueuedAgentTurn[];
+		pendingPermissionRequest?: PermissionRequest | null;
+		pendingPermissionStateRevision?: number | null;
 		latestTokenUsage?: TokenUsage | null;
 	},
 ) {
@@ -270,6 +274,9 @@ function dispatchSessionMeta(
 		type: "SET_TURN_PHASE",
 		sessionId,
 		turnPhase: response.turnPhase,
+		ignoreIfClearedPendingRequestId: response.pendingPermissionRequest?.id,
+		pendingPermissionStateRevision:
+			response.pendingPermissionStateRevision ?? null,
 	});
 	if (response.session.permissionMode) {
 		dispatch({
@@ -304,6 +311,14 @@ function dispatchSessionMeta(
 		type: "SET_PENDING_QUEUE",
 		sessionId,
 		queue: response.pendingQueue ?? [],
+	});
+	dispatch({
+		type: "SET_PENDING_PERMISSION",
+		sessionId,
+		request: response.pendingPermissionRequest ?? null,
+		ignoreIfCleared: response.pendingPermissionRequest != null,
+		pendingPermissionStateRevision:
+			response.pendingPermissionStateRevision ?? null,
 	});
 	dispatch({
 		type: "SET_LATEST_TOKEN_USAGE",
@@ -1325,10 +1340,22 @@ export function useAgentChat(
 		[],
 	);
 
+	const getStreamingDeltaDropReason = useCallback(
+		(sessionId: string, messageId: string) => {
+			const session = sessionsByIdRef.current[sessionId];
+			if (!session) return "missing_session";
+			return session.messages.some((message) => message.id === messageId)
+				? null
+				: "missing_message";
+		},
+		[],
+	);
+
 	useAgentSdkListeners({
 		dispatch: dispatchWithMessageWindowTracking,
 		viewableRegistry,
 		refreshSessions,
+		getStreamingDeltaDropReason,
 		worktreePath,
 	});
 
@@ -1494,6 +1521,12 @@ export function useAgentChat(
 		(sessionId: string): boolean => canChangeBackendState[sessionId] ?? false,
 		[canChangeBackendState],
 	);
+	const pendingPermissionsState = state.pendingPermissions;
+	const getSessionPendingPermission = useCallback(
+		(sessionId: string): PermissionRequest | null =>
+			pendingPermissionsState[sessionId] ?? null,
+		[pendingPermissionsState],
+	);
 	const getSessionPendingQueue = useCallback(
 		(sessionId: string): QueuedAgentTurn[] =>
 			pendingQueuesState[sessionId] ?? [],
@@ -1578,6 +1611,7 @@ export function useAgentChat(
 		getSessionPlanMode,
 		getSessionSelectedModel,
 		getSessionCanChangeBackend,
+		getSessionPendingPermission,
 		getSessionPendingQueue,
 		getSessionLatestTokenUsage,
 		getSessionRuntimeSlashCommands,

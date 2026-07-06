@@ -12,6 +12,7 @@ import {
 	type ModelInfo,
 	normalizePermissionMode,
 	type PermissionMode,
+	type PermissionRequest,
 	type QueuedAgentTurn,
 	type SessionState,
 	type SessionSummary,
@@ -117,6 +118,8 @@ export interface GetSessionResponse {
 	canChangeBackend: boolean;
 	pendingQueue?: QueuedAgentTurn[];
 	pendingQueueCount?: number;
+	pendingPermissionRequest?: PermissionRequest | null;
+	pendingPermissionStateRevision?: number | null;
 	latestTokenUsage?: TokenUsage | null;
 	initialPage?: {
 		nextCursor: string | null;
@@ -204,6 +207,8 @@ interface RawGetSessionResponse {
 	canChangeBackend?: boolean;
 	pendingQueue?: QueuedAgentTurn[];
 	pendingQueueCount?: number;
+	pendingPermissionRequest?: PermissionRequest | null;
+	pendingPermissionStateRevision?: number | null;
 	latestTokenUsage?: TokenUsage | null;
 	workflowStepSession?: boolean;
 	turnPhase: TurnPhase;
@@ -239,6 +244,8 @@ function convertRawGetSessionResponse(
 		canChangeBackend: raw.canChangeBackend ?? false,
 		pendingQueue: raw.pendingQueue ?? [],
 		pendingQueueCount: raw.pendingQueueCount ?? 0,
+		pendingPermissionRequest: raw.pendingPermissionRequest ?? null,
+		pendingPermissionStateRevision: raw.pendingPermissionStateRevision ?? 0,
 		latestTokenUsage: raw.latestTokenUsage ?? null,
 		initialPage: raw.initialPage
 			? {

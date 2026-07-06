@@ -312,6 +312,7 @@ mod tests {
             "remove_repo_path",
             "remove_worktree",
             "render_facet_preview",
+            "report_agent_permission_request_observed",
             "report_frontend_error",
             "report_mounted_xterm_count",
             "report_usage_event",
