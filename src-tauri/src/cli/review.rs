@@ -580,23 +580,6 @@ mod tests {
         rest[..end].trim().to_string()
     }
 
-    /// 実際の出力 JSON から数値リテラルをそのまま抜き出す。
-    /// `serde_json` は既定で float の parse round-trip を保証しないため、
-    /// `Value` へ戻して再直列化すると末尾桁が変わりうる。実時刻由来の
-    /// タイムスタンプを golden 比較する際はこの生表現を使う。
-    fn json_raw_number(json: &str, key: &str) -> String {
-        let needle = format!("\"{key}\": ");
-        let start = json
-            .find(&needle)
-            .unwrap_or_else(|| panic!("missing raw JSON number for key: {key}"))
-            + needle.len();
-        let rest = &json[start..];
-        let end = rest
-            .find([',', '\n'])
-            .unwrap_or_else(|| panic!("unterminated JSON number for key: {key}"));
-        rest[..end].trim().to_string()
-    }
-
     #[test]
     fn review_list_get_handler_outputs_match_split_before_golden() {
         let tmp = TempDir::new().unwrap();
