@@ -228,6 +228,7 @@ mod tests {
             }],
             workflow_variables: HashMap::new(),
             approval_operations: None,
+            stall_observations: Vec::new(),
             started_at: 0.0,
             updated_at: 2.0,
         }
@@ -384,6 +385,7 @@ mod tests {
             active_parallel_steps: vec![],
             workflow_variables: HashMap::new(),
             approval_operations: None,
+            stall_observations: Vec::new(),
             started_at: 0.0,
             updated_at: 2.0,
         };

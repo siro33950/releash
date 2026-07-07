@@ -20,7 +20,7 @@ use crate::adaptor::gateway::workflow::event::{
 use crate::adaptor::gateway::workflow::schema::{NodeType, Workflow};
 use crate::adaptor::gateway::workflow::state::{
     ChildOutputSnapshot, ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage,
-    WorkflowExecutionState, WorkflowState,
+    WorkflowExecutionState, WorkflowStallObservation, WorkflowState,
 };
 use crate::domain::workflow::services::{
     contract as workflow_contract, parallel as workflow_parallel,
@@ -235,6 +235,26 @@ pub enum WorkflowEventView {
         node_name: String,
         execution_count: u32,
         session_id: String,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    WorkflowStallObserved {
+        run_id: String,
+        workflow_name: String,
+        chat_session_id: String,
+        step_name: String,
+        run_index: u32,
+        turn_phase: String,
+        idle_secs: u64,
+        signal_count: u32,
+        cap_reached: bool,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    WorkflowStallCleared {
+        run_id: String,
+        workflow_name: String,
+        chat_session_id: String,
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
     },
@@ -461,6 +481,40 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 node_name,
                 execution_count,
                 session_id,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::WorkflowStallObserved {
+                run_id,
+                workflow_name,
+                chat_session_id,
+                step_name,
+                run_index,
+                turn_phase,
+                idle_secs,
+                signal_count,
+                cap_reached,
+                timestamp,
+            } => WorkflowEventView::WorkflowStallObserved {
+                run_id,
+                workflow_name,
+                chat_session_id,
+                step_name,
+                run_index,
+                turn_phase,
+                idle_secs,
+                signal_count,
+                cap_reached,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::WorkflowStallCleared {
+                run_id,
+                workflow_name,
+                chat_session_id,
+                timestamp,
+            } => WorkflowEventView::WorkflowStallCleared {
+                run_id,
+                workflow_name,
+                chat_session_id,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
             WorkflowEvent::NodeCompleted {
@@ -1059,6 +1113,7 @@ pub(crate) fn reconstruct_state_from_events(
     let mut current_session_id: Option<String> = None;
     let mut workflow_name = String::new();
     let mut active_parallel_steps: Vec<ParallelStepState> = Vec::new();
+    let mut stall_observations: Vec<WorkflowStallObservation> = Vec::new();
 
     for event in events {
         match event {
@@ -1087,6 +1142,7 @@ pub(crate) fn reconstruct_state_from_events(
                 // 新しい node が始まった時点では session 起動前。
                 // `StepSessionStarted` が後続で観測されるまで current_session_id は None。
                 current_session_id = None;
+                stall_observations.clear();
                 // [04] approval を経て次 node が開始した場合に exec_state を
                 // Running へ復元する。ApprovalRequested で WaitingApproval に
                 // 切り替わったまま NodeStarted が来ると、復元 state が承認待ち
@@ -1114,6 +1170,38 @@ pub(crate) fn reconstruct_state_from_events(
                 if matches!(exec_state, WorkflowExecutionState::WaitingApproval) {
                     exec_state = WorkflowExecutionState::Running;
                 }
+                updated_at = *timestamp;
+            }
+            WorkflowEvent::WorkflowStallObserved {
+                chat_session_id,
+                step_name,
+                run_index,
+                turn_phase,
+                idle_secs,
+                signal_count,
+                cap_reached,
+                timestamp,
+                ..
+            } => {
+                stall_observations.retain(|observation| observation.session_id != *chat_session_id);
+                stall_observations.push(WorkflowStallObservation {
+                    session_id: chat_session_id.clone(),
+                    step_name: step_name.clone(),
+                    run_index: *run_index,
+                    turn_phase: turn_phase.clone(),
+                    idle_secs: *idle_secs,
+                    signal_count: *signal_count,
+                    cap_reached: *cap_reached,
+                    observed_at: *timestamp,
+                });
+                updated_at = *timestamp;
+            }
+            WorkflowEvent::WorkflowStallCleared {
+                chat_session_id,
+                timestamp,
+                ..
+            } => {
+                stall_observations.retain(|observation| observation.session_id != *chat_session_id);
                 updated_at = *timestamp;
             }
             WorkflowEvent::NodeCompleted {
@@ -1174,6 +1262,7 @@ pub(crate) fn reconstruct_state_from_events(
                     total_token_usage.add(usage);
                 }
                 current_session_id = None;
+                stall_observations.clear();
                 updated_at = *timestamp;
             }
             WorkflowEvent::NodeFailed {
@@ -1194,6 +1283,7 @@ pub(crate) fn reconstruct_state_from_events(
                     retry_count: *retry_count,
                 };
                 current_session_id = None;
+                stall_observations.clear();
                 updated_at = *timestamp;
             }
             WorkflowEvent::ApprovalRequested {
@@ -1231,6 +1321,7 @@ pub(crate) fn reconstruct_state_from_events(
                 // 並列子を表示しないよう projection 側でも同じ不変条件を担保する。
                 active_parallel_steps.clear();
                 current_session_id = None;
+                stall_observations.clear();
                 updated_at = *timestamp;
             }
             WorkflowEvent::RunFailed {
@@ -1247,6 +1338,7 @@ pub(crate) fn reconstruct_state_from_events(
                 };
                 active_parallel_steps.clear();
                 current_session_id = None;
+                stall_observations.clear();
                 updated_at = *timestamp;
             }
             WorkflowEvent::RunAborted {
@@ -1348,6 +1440,7 @@ pub(crate) fn reconstruct_state_from_events(
 
                 active_parallel_steps.clear();
                 current_session_id = None;
+                stall_observations.clear();
                 updated_at = *timestamp;
             }
             WorkflowEvent::OutputCollected { timestamp, .. } => {
@@ -1475,6 +1568,7 @@ pub(crate) fn reconstruct_state_from_events(
                 if let Some(ref usage) = token_usage {
                     total_token_usage.add(usage);
                 }
+                stall_observations.retain(|observation| observation.session_id != *session_id);
                 updated_at = *timestamp;
             }
             WorkflowEvent::ParallelCompleted {
@@ -1575,6 +1669,7 @@ pub(crate) fn reconstruct_state_from_events(
                     });
                 }
                 active_parallel_steps.clear();
+                stall_observations.clear();
                 updated_at = *timestamp;
             }
             WorkflowEvent::ContractRepairRequested { timestamp, .. } => {
@@ -1666,6 +1761,7 @@ pub(crate) fn reconstruct_state_from_events(
         active_parallel_steps,
         workflow_variables,
         approval_operations: None,
+        stall_observations,
         started_at,
         updated_at,
     }))
@@ -1706,6 +1802,30 @@ mod tests {
         }
     }
 
+    fn stall_observed(run_id: &str, session_id: &str, step_name: &str) -> WorkflowEvent {
+        WorkflowEvent::WorkflowStallObserved {
+            run_id: run_id.to_string(),
+            workflow_name: "wf".to_string(),
+            chat_session_id: session_id.to_string(),
+            step_name: step_name.to_string(),
+            run_index: 1,
+            turn_phase: "streaming".to_string(),
+            idle_secs: 181,
+            signal_count: 1,
+            cap_reached: false,
+            timestamp: 1003.0,
+        }
+    }
+
+    fn stall_cleared(run_id: &str, session_id: &str) -> WorkflowEvent {
+        WorkflowEvent::WorkflowStallCleared {
+            run_id: run_id.to_string(),
+            workflow_name: "wf".to_string(),
+            chat_session_id: session_id.to_string(),
+            timestamp: 1004.0,
+        }
+    }
+
     /// [04] schema 境界: 復元に使う Workflow は `RunStarted.workflow_definition` snapshot
     /// から取り出し、関数 API は外部から Workflow を受け取らない。RunStarted を含まない
     /// events 列は `Ok(None)` を返す（empty / 異常入力の取り扱い）。
@@ -1723,6 +1843,380 @@ mod tests {
             result.is_none(),
             "RunStarted を含まない events 列は復元対象外"
         );
+    }
+
+    #[test]
+    fn projection_restores_workflow_stall_observations() {
+        let run_id = "exec-stall";
+        let workflow = workflow_with_nodes("wf", vec!["review"]);
+        let events = vec![
+            run_started(run_id, workflow),
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::StepSessionStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                session_id: "session-1".to_string(),
+                timestamp: 1002.0,
+            },
+            WorkflowEvent::WorkflowStallObserved {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                chat_session_id: "session-1".to_string(),
+                step_name: "review".to_string(),
+                run_index: 1,
+                turn_phase: "streaming".to_string(),
+                idle_secs: 181,
+                signal_count: 2,
+                cap_reached: false,
+                timestamp: 1003.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(state.current_session_id.as_deref(), Some("session-1"));
+        assert_eq!(state.stall_observations.len(), 1);
+        let observation = &state.stall_observations[0];
+        assert_eq!(observation.session_id, "session-1");
+        assert_eq!(observation.step_name, "review");
+        assert_eq!(observation.run_index, 1);
+        assert_eq!(observation.turn_phase, "streaming");
+        assert_eq!(observation.idle_secs, 181);
+        assert_eq!(observation.signal_count, 2);
+        assert!(!observation.cap_reached);
+        assert_eq!(observation.observed_at, 1003.0);
+        assert_eq!(state.updated_at, 1003.0);
+    }
+
+    #[test]
+    fn projection_replaces_duplicate_workflow_stall_observation_for_session() {
+        let run_id = "exec-stall-replace";
+        let workflow = workflow_with_nodes("wf", vec!["review"]);
+        let events = vec![
+            run_started(run_id, workflow),
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::StepSessionStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                session_id: "session-1".to_string(),
+                timestamp: 1002.0,
+            },
+            stall_observed(run_id, "session-1", "review"),
+            WorkflowEvent::WorkflowStallObserved {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                chat_session_id: "session-1".to_string(),
+                step_name: "review".to_string(),
+                run_index: 1,
+                turn_phase: "streaming".to_string(),
+                idle_secs: 240,
+                signal_count: 2,
+                cap_reached: true,
+                timestamp: 1005.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(state.stall_observations.len(), 1);
+        let observation = &state.stall_observations[0];
+        assert_eq!(observation.session_id, "session-1");
+        assert_eq!(observation.idle_secs, 240);
+        assert_eq!(observation.signal_count, 2);
+        assert!(observation.cap_reached);
+        assert_eq!(observation.observed_at, 1005.0);
+    }
+
+    #[test]
+    fn projection_clears_workflow_stall_observation_on_progress_clear_event() {
+        let run_id = "exec-stall-clear";
+        let workflow = workflow_with_nodes("wf", vec!["review"]);
+        let events = vec![
+            run_started(run_id, workflow),
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::StepSessionStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                session_id: "session-1".to_string(),
+                timestamp: 1002.0,
+            },
+            stall_observed(run_id, "session-1", "review"),
+            stall_cleared(run_id, "session-1"),
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+
+        assert!(state.stall_observations.is_empty());
+        assert_eq!(state.current_session_id.as_deref(), Some("session-1"));
+        assert_eq!(state.updated_at, 1004.0);
+    }
+
+    #[test]
+    fn projection_clears_workflow_stall_observations_on_step_completion() {
+        let run_id = "exec-stall-complete";
+        let workflow = workflow_with_nodes("wf", vec!["review"]);
+        let events = vec![
+            run_started(run_id, workflow),
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::StepSessionStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                session_id: "session-1".to_string(),
+                timestamp: 1002.0,
+            },
+            stall_observed(run_id, "session-1", "review"),
+            WorkflowEvent::NodeCompleted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                result: Some("ok".to_string()),
+                session_id: Some("session-1".to_string()),
+                token_usage: None,
+                structured_output: None,
+                run_index: Some(1),
+                timestamp: 1004.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+
+        assert!(state.stall_observations.is_empty());
+        assert_eq!(state.current_session_id, None);
+    }
+
+    #[test]
+    fn projection_clears_workflow_stall_observations_on_next_step_start() {
+        let run_id = "exec-stall-next-step";
+        let workflow = workflow_with_nodes("wf", vec!["plan", "review"]);
+        let events = vec![
+            run_started(run_id, workflow),
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                execution_count: 1,
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::StepSessionStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                execution_count: 1,
+                session_id: "session-plan".to_string(),
+                timestamp: 1002.0,
+            },
+            stall_observed(run_id, "session-plan", "plan"),
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                timestamp: 1004.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+
+        assert!(state.stall_observations.is_empty());
+        assert_eq!(state.current_step_name, "review");
+        assert_eq!(state.current_session_id, None);
+    }
+
+    #[test]
+    fn projection_clears_workflow_stall_observations_on_run_terminal_event() {
+        let run_id = "exec-stall-terminal";
+        let workflow = workflow_with_nodes("wf", vec!["review"]);
+        let events = vec![
+            run_started(run_id, workflow),
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::StepSessionStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                session_id: "session-1".to_string(),
+                timestamp: 1002.0,
+            },
+            stall_observed(run_id, "session-1", "review"),
+            WorkflowEvent::RunCompleted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                total_token_usage: TokenUsage::default(),
+                timestamp: 1004.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+
+        assert!(state.stall_observations.is_empty());
+        assert_eq!(state.current_session_id, None);
+        assert_eq!(state.state, WorkflowExecutionState::Completed);
+    }
+
+    #[test]
+    fn projection_clears_workflow_stall_observations_on_parallel_completion() {
+        let run_id = "exec-stall-parallel";
+        let workflow = workflow_with_nodes("wf", vec!["parallel-review"]);
+        let events = vec![
+            run_started(run_id, workflow),
+            WorkflowEvent::ParallelStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_names: vec!["review-a".to_string(), "review-b".to_string()],
+                timestamp: 1001.0,
+            },
+            stall_observed(run_id, "session-review-a", "review-a"),
+            WorkflowEvent::ParallelCompleted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                aggregate_result: "advance".to_string(),
+                timestamp: 1004.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+
+        assert!(state.stall_observations.is_empty());
+        assert!(state.active_parallel_steps.is_empty());
+    }
+
+    #[test]
+    fn projection_clears_workflow_stall_observation_on_parallel_child_completion() {
+        let run_id = "exec-stall-parallel-child";
+        let workflow = workflow_with_nodes("wf", vec!["parallel-review"]);
+        let base_events = vec![
+            run_started(run_id, workflow),
+            WorkflowEvent::ParallelStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_names: vec!["review-a".to_string(), "review-b".to_string()],
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::ParallelChildStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "review-a".to_string(),
+                session_id: "session-review-a".to_string(),
+                execution_count: 1,
+                timestamp: 1002.0,
+            },
+            WorkflowEvent::ParallelChildStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "review-b".to_string(),
+                session_id: "session-review-b".to_string(),
+                execution_count: 1,
+                timestamp: 1002.0,
+            },
+            stall_observed(run_id, "session-review-a", "review-a"),
+            stall_observed(run_id, "session-review-b", "review-b"),
+            WorkflowEvent::ParallelChildCompleted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "review-a".to_string(),
+                session_id: "session-review-a".to_string(),
+                run_index: 1,
+                result: Some("LGTM".to_string()),
+                token_usage: None,
+                structured_output: None,
+                state: STEP_STATE_COMPLETED.to_string(),
+                failure_kind: None,
+                failure_disposition: None,
+                timestamp: 1004.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &base_events)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(state.stall_observations.len(), 1);
+        assert_eq!(state.stall_observations[0].session_id, "session-review-b");
+
+        let mut events = base_events;
+        events.push(WorkflowEvent::ParallelChildCompleted {
+            run_id: run_id.to_string(),
+            workflow_name: "wf".to_string(),
+            parent_node_name: "parallel-review".to_string(),
+            child_node_name: "review-b".to_string(),
+            session_id: "session-review-b".to_string(),
+            run_index: 1,
+            result: Some("model_refusal".to_string()),
+            token_usage: None,
+            structured_output: Some(serde_json::json!({
+                "failureKind": "model_refusal",
+                "disposition": "partial",
+                "exitCode": 1,
+            })),
+            state: STEP_STATE_FAILED.to_string(),
+            failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
+            failure_disposition: Some(FailureDisposition::Partial),
+            timestamp: 1005.0,
+        });
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+
+        assert!(state.stall_observations.is_empty());
     }
 
     #[test]

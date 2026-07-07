@@ -420,6 +420,7 @@ mod tests {
             task: Some("ship it".to_string()),
             parallel_run: None,
             workflow_variables: HashMap::new(),
+            current_stall_observations: Vec::new(),
         }
     }
 

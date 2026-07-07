@@ -164,6 +164,13 @@ pub trait AgentSessionRuntime: Send + Sync {
         ))
     }
 
+    #[allow(dead_code)]
+    async fn reconnect(&self) -> Result<(), AgentBackendError> {
+        Err(AgentBackendError::Unavailable(
+            "session reconnect is not available for this backend".to_string(),
+        ))
+    }
+
     async fn interrupt(&self) -> Result<(), AgentBackendError>;
     async fn respond_permission(
         &self,

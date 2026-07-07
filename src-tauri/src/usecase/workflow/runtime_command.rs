@@ -12,7 +12,9 @@ use super::command::{
 };
 use super::ports::{
     ApprovalChatTarget, PendingRuntimeCommand, PendingRuntimeCommandOutcome,
-    WorkflowRuntimeCommandGateway, WorkflowRuntimeStateGateway, WorkflowTurnCompleteNotification,
+    WorkflowRuntimeCommandGateway, WorkflowRuntimeStateGateway, WorkflowStallClearedCommand,
+    WorkflowStallClearedNotification, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
+    WorkflowStallObservedNotification, WorkflowTurnCompleteNotification,
 };
 #[cfg(test)]
 use super::ports::{
@@ -26,6 +28,7 @@ use super::turn_complete::WorkflowTurnCompleteUsecase;
 #[derive(Clone)]
 pub struct WorkflowRuntimeUsecase {
     runtime: Arc<dyn WorkflowRuntimeStateGateway>,
+    stall_observed: Arc<dyn WorkflowStallObservedGateway>,
     start_run: WorkflowStartRunUsecase,
     abort_run: WorkflowAbortRunUsecase,
     approval: WorkflowApprovalUsecase,
@@ -40,6 +43,7 @@ impl WorkflowRuntimeUsecase {
     pub fn new(runtime: Arc<dyn WorkflowRuntimeCommandGateway>) -> Self {
         Self {
             runtime: runtime.clone(),
+            stall_observed: runtime.clone(),
             start_run: WorkflowStartRunUsecase::new(runtime.clone()),
             abort_run: WorkflowAbortRunUsecase::new(runtime.clone()),
             approval: WorkflowApprovalUsecase::new(runtime.clone()),
@@ -79,6 +83,34 @@ impl WorkflowRuntimeUsecase {
         command: WorkflowTurnCompleteNotification,
     ) -> Result<(), WorkflowError> {
         self.turn_complete.complete_turn(command).await
+    }
+
+    pub async fn observe_stall(
+        &self,
+        command: WorkflowStallObservedNotification,
+    ) -> Result<(), WorkflowError> {
+        self.preflight.validate_stall_observed(&command)?;
+        self.stall_observed
+            .observe_stall(WorkflowStallObservedCommand {
+                chat_session_id: command.chat_session_id,
+                turn_phase: command.turn_phase,
+                idle_secs: command.idle_secs,
+                signal_count: command.signal_count,
+                cap_reached: command.cap_reached,
+            })
+            .await
+    }
+
+    pub async fn clear_stall(
+        &self,
+        command: WorkflowStallClearedNotification,
+    ) -> Result<(), WorkflowError> {
+        self.preflight.validate_stall_cleared(&command)?;
+        self.stall_observed
+            .clear_stall(WorkflowStallClearedCommand {
+                chat_session_id: command.chat_session_id,
+            })
+            .await
     }
 
     #[allow(dead_code)] // issues-1301 B-3/G-1: retained for workflow step guards around agent turn completion.
@@ -203,6 +235,25 @@ mod tests {
             _command: WorkflowTurnCompleteCommand,
         ) -> Result<(), WorkflowError> {
             self.calls.lock().unwrap().push("complete_turn");
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkflowStallObservedGateway for FakeRuntimeGateway {
+        async fn observe_stall(
+            &self,
+            _command: WorkflowStallObservedCommand,
+        ) -> Result<(), WorkflowError> {
+            self.calls.lock().unwrap().push("observe_stall");
+            Ok(())
+        }
+
+        async fn clear_stall(
+            &self,
+            _command: WorkflowStallClearedCommand,
+        ) -> Result<(), WorkflowError> {
+            self.calls.lock().unwrap().push("clear_stall");
             Ok(())
         }
     }
@@ -363,6 +414,76 @@ mod tests {
             .unwrap();
 
         assert_eq!(gateway.calls.lock().unwrap().as_slice(), ["is_running"]);
+    }
+
+    #[tokio::test]
+    async fn observe_stall_validates_and_delegates_to_gateway() {
+        let gateway = Arc::new(FakeRuntimeGateway::default());
+        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
+
+        usecase
+            .observe_stall(WorkflowStallObservedNotification {
+                chat_session_id: "chat".to_string(),
+                turn_phase: "streaming".to_string(),
+                idle_secs: 44,
+                signal_count: 1,
+                cap_reached: false,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(gateway.calls.lock().unwrap().as_slice(), ["observe_stall"]);
+    }
+
+    #[tokio::test]
+    async fn observe_stall_rejects_empty_session_id() {
+        let gateway = Arc::new(FakeRuntimeGateway::default());
+        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
+
+        let err = usecase
+            .observe_stall(WorkflowStallObservedNotification {
+                chat_session_id: " ".to_string(),
+                turn_phase: "streaming".to_string(),
+                idle_secs: 44,
+                signal_count: 1,
+                cap_reached: false,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, WorkflowError::Validation(_)));
+        assert!(gateway.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn clear_stall_validates_and_delegates_to_gateway() {
+        let gateway = Arc::new(FakeRuntimeGateway::default());
+        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
+
+        usecase
+            .clear_stall(WorkflowStallClearedNotification {
+                chat_session_id: "chat".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(gateway.calls.lock().unwrap().as_slice(), ["clear_stall"]);
+    }
+
+    #[tokio::test]
+    async fn clear_stall_rejects_empty_session_id() {
+        let gateway = Arc::new(FakeRuntimeGateway::default());
+        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
+
+        let err = usecase
+            .clear_stall(WorkflowStallClearedNotification {
+                chat_session_id: " ".to_string(),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, WorkflowError::Validation(_)));
+        assert!(gateway.calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -70,7 +70,7 @@ use crate::adaptor::gateway::workflow::state::ParallelStepState;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::state::StepHistoryEntry;
 use crate::adaptor::gateway::workflow::state::{
-    StepOutput, TokenUsage, WorkflowExecutionState, WorkflowState,
+    StepOutput, TokenUsage, WorkflowExecutionState, WorkflowStallObservation, WorkflowState,
 };
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::step_settings::resolve_step_settings;
@@ -365,6 +365,51 @@ impl<R: tauri::Runtime> workflow_runtime_session::ParallelChildTurnObserver
     }
 }
 
+fn current_step_for_stall_observation(
+    exec: &WorkflowExecution,
+    session_id: &str,
+) -> Option<(String, u32)> {
+    if let Some(parallel_run) = exec.parallel_run.as_ref() {
+        if let Some(child) = parallel_run.children.iter().find(|child| {
+            child.session_id == session_id && child.state == ParallelChildState::Running
+        }) {
+            return Some((child.step_name.clone(), child.run_index));
+        }
+    }
+    if exec.current_session_id.as_deref() != Some(session_id) {
+        return None;
+    }
+    let step_name = exec
+        .workflow
+        .nodes
+        .get(exec.current_step_index)?
+        .name
+        .clone();
+    let run_index = exec
+        .step_execution_counts
+        .get(&step_name)
+        .copied()
+        .unwrap_or(1);
+    Some((step_name, run_index))
+}
+
+fn clear_stall_observations_for_session(
+    observations: &mut Vec<WorkflowStallObservation>,
+    session_id: &str,
+) -> bool {
+    let before = observations.len();
+    observations.retain(|observation| observation.session_id != session_id);
+    observations.len() != before
+}
+
+fn upsert_stall_observation(
+    observations: &mut Vec<WorkflowStallObservation>,
+    observation: WorkflowStallObservation,
+) {
+    clear_stall_observations_for_session(observations, &observation.session_id);
+    observations.push(observation);
+}
+
 // [08] `lookup_step_output_contract` は domain の contract service に移動済み。
 // engine と CLI の双方が同じ domain service を参照するため、本モジュールではメモのみ残す。
 
@@ -473,6 +518,7 @@ impl WorkflowRuntimeService {
                 task: None,
                 parallel_run: None,
                 workflow_variables: HashMap::new(),
+                current_stall_observations: Vec::new(),
             },
         );
     }
@@ -587,6 +633,7 @@ impl WorkflowRuntimeService {
             task,
             parallel_run: None,
             workflow_variables: HashMap::new(),
+            current_stall_observations: Vec::new(),
             worktree_path: worktree_path.clone(),
         };
 
@@ -1359,6 +1406,190 @@ impl WorkflowRuntimeService {
                 },
             );
         }
+        Ok(())
+    }
+
+    /// AgentSession の無出力 timeout 到達を非終端 signal として workflow state に反映する。
+    pub async fn on_agent_stall_observed<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: &str,
+        turn_phase: String,
+        idle_secs: u64,
+        signal_count: u32,
+        cap_reached: bool,
+    ) -> Result<(), WorkflowEngineError> {
+        let Some(session_ref) = self.resolve_session_ref(session_id).await else {
+            return Ok(());
+        };
+        let (snapshot, snapshot_before, worktree_path, run_id, stall_event) = {
+            let mut execs = self.executions.lock().await;
+            let Some(exec) = execs.get_mut(&session_ref.run_id) else {
+                return Ok(());
+            };
+            if !exec.is_active() {
+                return Ok(());
+            }
+
+            let Some((step_name, run_index)) = current_step_for_stall_observation(exec, session_id)
+            else {
+                return Ok(());
+            };
+            let snapshot_before = exec.clone();
+            let observed_at = current_timestamp();
+            let observation = WorkflowStallObservation {
+                session_id: session_id.to_string(),
+                step_name,
+                run_index,
+                turn_phase,
+                idle_secs,
+                signal_count,
+                cap_reached,
+                observed_at,
+            };
+            upsert_stall_observation(&mut exec.current_stall_observations, observation.clone());
+            exec.updated_at = observed_at;
+            let stall_event = WorkflowEvent::WorkflowStallObserved {
+                run_id: exec.id.clone(),
+                workflow_name: exec.workflow.name.clone(),
+                chat_session_id: observation.session_id,
+                step_name: observation.step_name,
+                run_index: observation.run_index,
+                turn_phase: observation.turn_phase,
+                idle_secs: observation.idle_secs,
+                signal_count: observation.signal_count,
+                cap_reached: observation.cap_reached,
+                timestamp: observation.observed_at,
+            };
+            (
+                exec.to_workflow_state(),
+                snapshot_before,
+                exec.worktree_path.clone(),
+                exec.id.clone(),
+                stall_event,
+            )
+        };
+
+        self.commit_stall_event(
+            app,
+            &run_id,
+            snapshot,
+            snapshot_before,
+            self.run_store.active_run_snapshot(&run_id).await,
+            worktree_path,
+            stall_event,
+            "workflow stall observed event append failed",
+        )
+        .await
+    }
+
+    /// AgentSession の無出力 timeout 観測が backend progress により解消されたことを workflow state に反映する。
+    pub async fn on_agent_stall_cleared<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        let Some(session_ref) = self.resolve_session_ref(session_id).await else {
+            return Ok(());
+        };
+        let (snapshot, snapshot_before, worktree_path, run_id, clear_event) = {
+            let mut execs = self.executions.lock().await;
+            let Some(exec) = execs.get_mut(&session_ref.run_id) else {
+                return Ok(());
+            };
+            if !exec.is_active() {
+                return Ok(());
+            }
+            let snapshot_before = exec.clone();
+            if !clear_stall_observations_for_session(
+                &mut exec.current_stall_observations,
+                session_id,
+            ) {
+                return Ok(());
+            }
+            let cleared_at = current_timestamp();
+            exec.updated_at = cleared_at;
+            let clear_event = WorkflowEvent::WorkflowStallCleared {
+                run_id: exec.id.clone(),
+                workflow_name: exec.workflow.name.clone(),
+                chat_session_id: session_id.to_string(),
+                timestamp: cleared_at,
+            };
+            (
+                exec.to_workflow_state(),
+                snapshot_before,
+                exec.worktree_path.clone(),
+                exec.id.clone(),
+                clear_event,
+            )
+        };
+
+        self.commit_stall_event(
+            app,
+            &run_id,
+            snapshot,
+            snapshot_before,
+            self.run_store.active_run_snapshot(&run_id).await,
+            worktree_path,
+            clear_event,
+            "workflow stall cleared event append failed",
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_stall_event<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        run_id: &str,
+        snapshot: WorkflowState,
+        snapshot_before: WorkflowExecution,
+        run_store_snapshot_before: Option<WorkflowRun>,
+        worktree_path: String,
+        event: WorkflowEvent,
+        append_error_context: &'static str,
+    ) -> Result<(), WorkflowEngineError> {
+        if let Err(error) = workflow_runtime_commit::sync_run_store_from_snapshot(
+            &self.run_store,
+            run_id,
+            &snapshot,
+        )
+        .await
+        {
+            let mut execs = self.executions.lock().await;
+            if let Some(exec) = execs.get_mut(run_id) {
+                *exec = snapshot_before;
+            }
+            drop(execs);
+            let _ = workflow_runtime_commit::restore_run_store_active_snapshot(
+                &self.run_store,
+                run_store_snapshot_before,
+            )
+            .await;
+            return Err(error);
+        }
+        if let Err(error) = self.write_log_required(app, event) {
+            let mut execs = self.executions.lock().await;
+            if let Some(exec) = execs.get_mut(run_id) {
+                *exec = snapshot_before;
+            }
+            drop(execs);
+            if let Err(rollback_error) = workflow_runtime_commit::restore_run_store_active_snapshot(
+                &self.run_store,
+                run_store_snapshot_before,
+            )
+            .await
+            {
+                return Err(WorkflowEngineError::SessionStore(format!(
+                    "{append_error_context}: {error}; {rollback_error}"
+                )));
+            }
+            return Err(WorkflowEngineError::SessionStore(format!(
+                "{append_error_context}: {error}"
+            )));
+        }
+        record_failed_snapshot_telemetry(&snapshot);
+        workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
         Ok(())
     }
 
@@ -2187,6 +2418,7 @@ impl WorkflowRuntimeService {
             }
 
             exec.state = WorkflowExecutionState::Aborted;
+            exec.current_stall_observations.clear();
             exec.updated_at = timestamp;
             let snapshot_state = exec.to_workflow_state();
             (
@@ -2434,6 +2666,7 @@ impl WorkflowRuntimeService {
             if pr.parent_step_name != parent_step_name {
                 return Ok(());
             }
+            let parent_node_name = pr.parent_step_name.clone();
 
             // 対象の子ステップを見つけて更新
             let Some(child) = pr.children.iter_mut().find(|c| c.session_id == session_id) else {
@@ -2484,10 +2717,14 @@ impl WorkflowRuntimeService {
                             completed_at: current_timestamp(),
                         },
                     );
+                    clear_stall_observations_for_session(
+                        &mut exec.current_stall_observations,
+                        session_id,
+                    );
                     let progress_events = vec![WorkflowEvent::ParallelChildCompleted {
                         run_id: exec.id.clone(),
                         workflow_name: exec.workflow.name.clone(),
-                        parent_node_name: pr.parent_step_name.clone(),
+                        parent_node_name: parent_node_name.clone(),
                         child_node_name: child_name,
                         result: child.result.clone(),
                         session_id: session_id.to_string(),
@@ -2521,6 +2758,7 @@ impl WorkflowRuntimeService {
                         })
                         .collect();
 
+                    exec.current_stall_observations.clear();
                     exec.state = WorkflowExecutionState::Failed {
                         reason: format!(
                             "Parallel child '{}' failed (exit_code: {})",
@@ -2605,7 +2843,7 @@ impl WorkflowRuntimeService {
             let progress_events = vec![WorkflowEvent::ParallelChildCompleted {
                 run_id: exec.id.clone(),
                 workflow_name: exec.workflow.name.clone(),
-                parent_node_name: pr.parent_step_name.clone(),
+                parent_node_name,
                 child_node_name: child_name,
                 result: child_result.clone(),
                 session_id: session_id.to_string(),
@@ -2617,6 +2855,7 @@ impl WorkflowRuntimeService {
                 failure_disposition: None,
                 timestamp: current_timestamp(),
             }];
+            clear_stall_observations_for_session(&mut exec.current_stall_observations, session_id);
 
             finalize_child_terminal_state(exec, exec_snapshot_before, progress_events, false, None)?
         };
@@ -4559,6 +4798,7 @@ impl WorkflowRuntimeService {
             task: None,
             parallel_run: None,
             workflow_variables: HashMap::new(),
+            current_stall_observations: Vec::new(),
             worktree_path: worktree_path.to_string(),
             workflow_defaults: WorkflowDefaults {
                 backend_id: None,

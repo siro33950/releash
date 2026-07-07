@@ -574,6 +574,8 @@ pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
         WorkflowEvent::RunStarted { timestamp, .. }
         | WorkflowEvent::NodeStarted { timestamp, .. }
         | WorkflowEvent::StepSessionStarted { timestamp, .. }
+        | WorkflowEvent::WorkflowStallObserved { timestamp, .. }
+        | WorkflowEvent::WorkflowStallCleared { timestamp, .. }
         | WorkflowEvent::NodeCompleted { timestamp, .. }
         | WorkflowEvent::NodeFailed { timestamp, .. }
         | WorkflowEvent::ApprovalRequested { timestamp, .. }
@@ -598,6 +600,8 @@ pub(crate) fn set_workflow_event_timestamp(event: &mut WorkflowEvent, commit_tim
         WorkflowEvent::RunStarted { timestamp, .. }
         | WorkflowEvent::NodeStarted { timestamp, .. }
         | WorkflowEvent::StepSessionStarted { timestamp, .. }
+        | WorkflowEvent::WorkflowStallObserved { timestamp, .. }
+        | WorkflowEvent::WorkflowStallCleared { timestamp, .. }
         | WorkflowEvent::NodeCompleted { timestamp, .. }
         | WorkflowEvent::NodeFailed { timestamp, .. }
         | WorkflowEvent::ApprovalRequested { timestamp, .. }
@@ -650,6 +654,7 @@ mod tests {
             step_outputs: HashMap::new(),
             active_parallel_steps: Vec::new(),
             workflow_variables: HashMap::new(),
+            stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 1.0,
             updated_at: 42.0,

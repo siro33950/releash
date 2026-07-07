@@ -83,6 +83,22 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError>;
 
+    async fn on_agent_stall_observed(
+        &self,
+        app: &tauri::AppHandle,
+        session_id: &str,
+        turn_phase: String,
+        idle_secs: u64,
+        signal_count: u32,
+        cap_reached: bool,
+    ) -> Result<(), WorkflowEngineError>;
+
+    async fn on_agent_stall_cleared(
+        &self,
+        app: &tauri::AppHandle,
+        session_id: &str,
+    ) -> Result<(), WorkflowEngineError>;
+
     async fn get_state_by_run_id(&self, run_id: &str) -> Option<WorkflowState>;
 
     async fn get_state(&self, worktree_path: &str) -> Option<WorkflowState>;
@@ -234,6 +250,35 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
             token_usage,
         )
         .await
+    }
+
+    async fn on_agent_stall_observed(
+        &self,
+        app: &tauri::AppHandle,
+        session_id: &str,
+        turn_phase: String,
+        idle_secs: u64,
+        signal_count: u32,
+        cap_reached: bool,
+    ) -> Result<(), WorkflowEngineError> {
+        WorkflowRuntimeService::on_agent_stall_observed(
+            self,
+            app,
+            session_id,
+            turn_phase,
+            idle_secs,
+            signal_count,
+            cap_reached,
+        )
+        .await
+    }
+
+    async fn on_agent_stall_cleared(
+        &self,
+        app: &tauri::AppHandle,
+        session_id: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        WorkflowRuntimeService::on_agent_stall_cleared(self, app, session_id).await
     }
 
     async fn get_state_by_run_id(&self, run_id: &str) -> Option<WorkflowState> {

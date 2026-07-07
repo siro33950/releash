@@ -906,6 +906,7 @@ mod tests {
             }],
             workflow_variables: HashMap::new(),
             approval_operations: None,
+            stall_observations: Vec::new(),
             started_at: 1.0,
             updated_at: 2.0,
         }

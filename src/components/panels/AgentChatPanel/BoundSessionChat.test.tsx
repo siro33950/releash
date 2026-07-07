@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+	AgentStallObservation,
 	ChatSession,
 	PermissionMode,
 	PermissionRequest,
@@ -33,6 +34,7 @@ vi.mock("./ChatSessionView", () => ({
 		planMode,
 		pendingPermission,
 		onRespondPermission,
+		stallObservation,
 	}: {
 		session: ChatSession;
 		permissionMode: PermissionMode;
@@ -43,6 +45,7 @@ vi.mock("./ChatSessionView", () => ({
 			allow: boolean,
 			updatedInput?: Record<string, unknown>,
 		) => void;
+		stallObservation?: AgentStallObservation | null;
 	}) => (
 		<div data-testid={`chat-${session.id}`}>
 			<span data-testid={`permission-${session.id}`}>{permissionMode}</span>
@@ -63,6 +66,11 @@ vi.mock("./ChatSessionView", () => ({
 					Respond
 				</button>
 			)}
+			<span data-testid={`stall-${session.id}`}>
+				{stallObservation
+					? `${stallObservation.turnPhase}:${stallObservation.idleSecs}`
+					: "none"}
+			</span>
 		</div>
 	),
 }));
@@ -99,6 +107,7 @@ function makePendingPermission(id: string): PermissionRequest {
 function setContext(
 	sessionsById: Record<string, ChatSession>,
 	pendingPermissions: Record<string, PermissionRequest | null> = {},
+	stallObservations: Record<string, AgentStallObservation | null> = {},
 ) {
 	mocks.useAgentChatContext.mockReturnValue({
 		getSessionById: (sessionId: string | null | undefined) =>
@@ -118,6 +127,8 @@ function setContext(
 		getSessionPendingPermission: (sessionId: string) =>
 			pendingPermissions[sessionId] ?? null,
 		getSessionPendingQueue: vi.fn().mockReturnValue([]),
+		getSessionStallObservation: (sessionId: string) =>
+			stallObservations[sessionId] ?? null,
 		getSessionRuntimeSlashCommands: vi.fn().mockReturnValue([]),
 		availableModels: [],
 		availableModelsByBackend: {},
@@ -213,6 +224,35 @@ describe("BoundSessionChat", () => {
 			"perm-b",
 			true,
 			{ answer: "approved" },
+		);
+	});
+
+	it("passes the selected session stall observation to ChatSessionView", () => {
+		setContext(
+			{
+				"session-a": makeSession("session-a", "edit", false),
+			},
+			{},
+			{
+				"session-a": {
+					turnPhase: "streaming",
+					idleSecs: 181,
+					signalCount: 2,
+					capReached: false,
+				},
+			},
+		);
+
+		render(
+			<BoundSessionChat
+				sessionId="session-a"
+				worktreePath="/repo"
+				skipInitialLoad
+			/>,
+		);
+
+		expect(screen.getByTestId("stall-session-a")).toHaveTextContent(
+			"streaming:181",
 		);
 	});
 });

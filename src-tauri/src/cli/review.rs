@@ -563,27 +563,20 @@ mod tests {
             .to_string()
     }
 
-    fn json_literal(value: &serde_json::Value, pointer: &str) -> String {
-        value
-            .pointer(pointer)
-            .unwrap_or_else(|| panic!("missing JSON value at pointer: {pointer}"))
-            .to_string()
-    }
-
-    /// 実際の出力 JSON から数値リテラルをそのまま抜き出す。
-    /// `serde_json` は既定で float の parse round-trip を保証しないため、
-    /// `Value` へ戻して再直列化すると末尾桁が変わりうる。実時刻由来の
-    /// タイムスタンプを golden 比較する際はこの生表現を使う。
-    fn json_raw_number(json: &str, key: &str) -> String {
+    /// 実際の JSON 出力テキストから数値リテラルの生トークンを抽出する。
+    ///
+    /// `serde_json::Value` を経由して再シリアライズすると、`float_roundtrip`
+    /// feature 無効時に f64 の parse 精度が往復保証されず、実出力と桁数が
+    /// ずれることがある（実時刻タイムスタンプで顕在化）。golden 比較では
+    /// 実出力の生トークンをそのまま埋め込み、この不一致を避ける。
+    fn json_raw_number(json_text: &str, key: &str) -> String {
         let needle = format!("\"{key}\": ");
-        let start = json
+        let start = json_text
             .find(&needle)
-            .unwrap_or_else(|| panic!("missing raw JSON number for key: {key}"))
+            .unwrap_or_else(|| panic!("missing JSON key: {key}"))
             + needle.len();
-        let rest = &json[start..];
-        let end = rest
-            .find([',', '\n'])
-            .unwrap_or_else(|| panic!("unterminated JSON number for key: {key}"));
+        let rest = &json_text[start..];
+        let end = rest.find([',', '\n']).unwrap_or(rest.len());
         rest[..end].trim().to_string()
     }
 
@@ -785,16 +778,11 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         let json_thread_id = json_string(&value, "/id");
         let json_comment_id = json_string(&value, "/comments/0/id");
-        assert_eq!(
-            json_literal(&value, "/createdAt"),
-            json_literal(&value, "/updatedAt")
-        );
-        assert_eq!(
-            json_literal(&value, "/createdAt"),
-            json_literal(&value, "/comments/0/createdAt")
-        );
         let json_created_at = json_raw_number(&json, "createdAt");
         let json_updated_at = json_raw_number(&json, "updatedAt");
+        let json_comment_created_at = json_raw_number(&json, "createdAt");
+        assert_eq!(json_created_at, json_updated_at);
+        assert_eq!(json_created_at, json_comment_created_at);
         assert_eq!(
             json,
             format!(

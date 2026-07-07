@@ -42,6 +42,18 @@ pub struct ApprovalOperations {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct WorkflowStallObservation {
+    pub session_id: String,
+    pub step_name: String,
+    pub run_index: u32,
+    pub turn_phase: String,
+    pub idle_secs: u64,
+    pub signal_count: u32,
+    pub cap_reached: bool,
+    pub observed_at: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowStateSnapshot {
     pub execution_id: String,
     pub workflow_name: String,
@@ -59,6 +71,7 @@ pub struct WorkflowStateSnapshot {
     pub active_parallel_steps: Vec<ParallelStepState>,
     pub workflow_variables: HashMap<String, String>,
     pub approval_operations: Option<ApprovalOperations>,
+    pub stall_observations: Vec<WorkflowStallObservation>,
     pub started_at: f64,
     pub updated_at: f64,
 }

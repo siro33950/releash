@@ -1,3 +1,11 @@
+//! Stale detection and stall signaling are related but distinct concerns.
+//!
+//! A turn is stale when the watchdog observes that the runtime has produced no
+//! relevant progress past the configured threshold. A stall is the non-terminal
+//! workflow/agent signal emitted when that stale threshold is reached. In other
+//! words, stale detection causes stall observation, but stale is the timeout
+//! condition/watchdog boundary while stall is the active intervention signal.
+
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -8,12 +16,8 @@ use crate::usecase::agent_session::session::ChatSession;
 const DEFAULT_STALE_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_STALE_TIMEOUT: Duration = Duration::from_secs(1_800);
 
-pub(crate) const STALE_TIMEOUT_MESSAGE: &str =
-    "エージェントの応答が停止したため中断しました。もう一度お試しください。";
-#[cfg(not(test))]
-pub(crate) const STALE_CLOSE_GRACE: Duration = Duration::from_secs(10);
-#[cfg(test)]
-pub(crate) const STALE_CLOSE_GRACE: Duration = Duration::from_millis(10);
+pub(crate) const MAX_STALL_SIGNALS: u32 = 3;
+pub(crate) const MAX_STALL_RECOVERY_ATTEMPTS: u32 = 3;
 
 pub(crate) fn stale_timeout_for_session(session: &ChatSession) -> Duration {
     timeout_from_secs(
@@ -92,6 +96,14 @@ pub(crate) fn remaining_until_stale(
 ) -> Option<Duration> {
     let elapsed = now.duration_since(last_progress_at?);
     Some(timeout.saturating_sub(elapsed))
+}
+
+pub(crate) fn stall_cap_reached(signal_count: u32) -> bool {
+    signal_count >= MAX_STALL_SIGNALS
+}
+
+pub(crate) fn recovery_cap_reached(recovery_attempts: u32) -> bool {
+    recovery_attempts >= MAX_STALL_RECOVERY_ATTEMPTS
 }
 
 pub(crate) fn startup_timeout_for_session(session: &ChatSession) -> Option<Duration> {
@@ -245,5 +257,19 @@ mod tests {
             1,
             2,
         ));
+    }
+
+    #[test]
+    fn test_stall_cap_reached_上限到達以上でtrue() {
+        assert!(!stall_cap_reached(MAX_STALL_SIGNALS - 1));
+        assert!(stall_cap_reached(MAX_STALL_SIGNALS));
+        assert!(stall_cap_reached(MAX_STALL_SIGNALS + 1));
+    }
+
+    #[test]
+    fn test_recovery_cap_reached_上限到達以上でtrue() {
+        assert!(!recovery_cap_reached(MAX_STALL_RECOVERY_ATTEMPTS - 1));
+        assert!(recovery_cap_reached(MAX_STALL_RECOVERY_ATTEMPTS));
+        assert!(recovery_cap_reached(MAX_STALL_RECOVERY_ATTEMPTS + 1));
     }
 }

@@ -218,6 +218,7 @@ mod tests {
             step_outputs: HashMap::new(),
             active_parallel_steps: Vec::new(),
             workflow_variables: HashMap::new(),
+            stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 1.0,
             updated_at: 2.0,

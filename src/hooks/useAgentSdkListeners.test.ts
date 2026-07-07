@@ -138,6 +138,8 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		expect(eventNames).toContain("agent-turn-usage-updated");
 		expect(eventNames).toContain("agent-turn-prepared");
 		expect(eventNames).toContain("agent-session-state-changed");
+		expect(eventNames).toContain("agent-stall-observed");
+		expect(eventNames).toContain("agent-stall-cleared");
 		expect(eventNames).toContain("agent-streaming-delta");
 		expect(eventNames).toContain("agent-pending-message-consumed");
 		expect(eventNames).toContain("agent-permission-mode-changed");
@@ -146,6 +148,69 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		expect(eventNames).not.toContain("agent-backend-models-updated");
 		expect(eventNames).not.toContain("agent-streaming-started");
 		expect(eventNames).not.toContain("agent-query-completed");
+	});
+});
+
+describe("agent-stall-observed event", () => {
+	it("dispatches SET_STALL_OBSERVATION without changing turn phase", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-stall-observed");
+		expect(cb).toBeDefined();
+
+		await cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				turn_phase: "streaming",
+				idle_secs: 180,
+				signal_count: 2,
+				cap_reached: false,
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_STALL_OBSERVATION",
+			sessionId: "session-1",
+			observation: {
+				turnPhase: "streaming",
+				idleSecs: 180,
+				signalCount: 2,
+				capReached: false,
+			},
+		});
+		expect(refs.dispatch).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "SET_TURN_PHASE" }),
+		);
+	});
+});
+
+describe("agent-stall-cleared event", () => {
+	it("clears the session stall observation", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-stall-cleared");
+		expect(cb).toBeDefined();
+
+		await cb?.({
+			payload: {
+				chat_session_id: "session-1",
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "CLEAR_STALL_OBSERVATION",
+			sessionId: "session-1",
+		});
 	});
 });
 
@@ -220,6 +285,10 @@ describe("agent-turn-prepared event", () => {
 				timestamp: 4,
 				mentions: undefined,
 			},
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "CLEAR_STALL_OBSERVATION",
+			sessionId: "session-1",
 		});
 	});
 

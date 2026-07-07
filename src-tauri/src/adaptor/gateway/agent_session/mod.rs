@@ -9,5 +9,5 @@ pub(crate) use lifecycle::{
     RegistryAgentSessionBackendLifecycleGateway, RuntimeAgentSessionCloser,
 };
 pub(crate) use prompt_suggestion::GitAgentPromptSuggestionGateway;
-pub(crate) use runtime_driver::{TokioAgentTaskSpawner, WorkflowRuntimeTurnCompleteNotifier};
+pub(crate) use runtime_driver::{TokioAgentTaskSpawner, WorkflowRuntimeAgentSessionNotifier};
 pub(crate) use session_storage::FileSessionStorage;

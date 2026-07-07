@@ -18,8 +18,8 @@ use crate::domain::agent_session::value_objects::{
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::context::InstructionSourcePort;
 use crate::usecase::agent_session::runtime::ports::{
-    AgentSessionEventNotifier, AgentSessionStateChangedPayload, AgentStreamingDeltaPayload,
-    AgentTaskSpawner,
+    AgentSessionEventNotifier, AgentSessionStateChangedPayload, AgentStallObservedPayload,
+    AgentStreamingDeltaPayload, AgentTaskSpawner,
 };
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::SessionStore;
@@ -123,9 +123,12 @@ pub(crate) struct TestAgentRuntimeController {
     senders: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<AgentRuntimeEvent>>>>,
     calls: Arc<Mutex<Vec<TestRuntimeCall>>>,
     start_turn_gate: Arc<Mutex<Option<Arc<Notify>>>>,
-    interrupt_gate: Arc<Mutex<Option<Arc<Notify>>>>,
     start_turn_failures: Arc<Mutex<usize>>,
     respond_permission_failures: Arc<Mutex<usize>>,
+    steer_failures: Arc<Mutex<usize>>,
+    steering_available: Arc<Mutex<bool>>,
+    reconnect_unavailable: Arc<Mutex<bool>>,
+    reconnect_failures: Arc<Mutex<usize>>,
 }
 
 impl TestAgentRuntimeController {
@@ -200,20 +203,6 @@ impl TestAgentRuntimeController {
         self.start_turn_gate.lock().unwrap().clone()
     }
 
-    pub(crate) fn pause_interrupt(&self) {
-        *self.interrupt_gate.lock().unwrap() = Some(Arc::new(Notify::new()));
-    }
-
-    pub(crate) fn release_interrupt(&self) {
-        if let Some(gate) = self.interrupt_gate.lock().unwrap().take() {
-            gate.notify_waiters();
-        }
-    }
-
-    fn interrupt_gate(&self) -> Option<Arc<Notify>> {
-        self.interrupt_gate.lock().unwrap().clone()
-    }
-
     pub(crate) fn fail_next_respond_permission(&self) {
         *self.respond_permission_failures.lock().unwrap() += 1;
     }
@@ -225,6 +214,48 @@ impl TestAgentRuntimeController {
         }
         *failures -= 1;
         true
+    }
+
+    pub(crate) fn fail_next_steer(&self) {
+        *self.steer_failures.lock().unwrap() += 1;
+    }
+
+    fn should_fail_steer(&self) -> bool {
+        let mut failures = self.steer_failures.lock().unwrap();
+        if *failures == 0 {
+            return false;
+        }
+        *failures -= 1;
+        true
+    }
+
+    pub(crate) fn make_reconnect_unavailable(&self) {
+        *self.reconnect_unavailable.lock().unwrap() = true;
+    }
+
+    fn reconnect_is_unavailable(&self) -> bool {
+        *self.reconnect_unavailable.lock().unwrap()
+    }
+
+    pub(crate) fn fail_next_reconnect(&self) {
+        *self.reconnect_failures.lock().unwrap() += 1;
+    }
+
+    fn should_fail_reconnect(&self) -> bool {
+        let mut failures = self.reconnect_failures.lock().unwrap();
+        if *failures == 0 {
+            return false;
+        }
+        *failures -= 1;
+        true
+    }
+
+    pub(crate) fn enable_steering(&self) {
+        *self.steering_available.lock().unwrap() = true;
+    }
+
+    fn steering_is_available(&self) -> bool {
+        *self.steering_available.lock().unwrap()
     }
 }
 
@@ -245,6 +276,10 @@ pub(crate) enum TestRuntimeCallKind {
     StartTurnPrompt {
         prompt: String,
     },
+    SteerPrompt {
+        prompt: String,
+    },
+    Reconnect,
     Interrupt,
     RespondPermission {
         request_id: String,
@@ -282,7 +317,9 @@ impl AgentBackend for TestAgentBackend {
     }
 
     fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities { steering: false }
+        BackendCapabilities {
+            steering: self.controller.steering_is_available(),
+        }
     }
 
     async fn open_session(
@@ -392,8 +429,41 @@ impl AgentSessionRuntime for TestAgentRuntime {
     async fn interrupt(&self) -> Result<(), AgentBackendError> {
         self.controller
             .record(self.session_id.clone(), TestRuntimeCallKind::Interrupt);
-        if let Some(gate) = self.controller.interrupt_gate() {
-            gate.notified().await;
+        Ok(())
+    }
+
+    async fn steer(&self, input: TurnInput) -> Result<(), AgentBackendError> {
+        if !self.controller.steering_is_available() {
+            return Err(AgentBackendError::Unavailable(
+                "injected test steering unavailable".to_string(),
+            ));
+        }
+        self.controller.record(
+            self.session_id.clone(),
+            TestRuntimeCallKind::SteerPrompt {
+                prompt: input.prompt,
+            },
+        );
+        if self.controller.should_fail_steer() {
+            return Err(AgentBackendError::Other(
+                "injected test steer failure".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn reconnect(&self) -> Result<(), AgentBackendError> {
+        if self.controller.reconnect_is_unavailable() {
+            return Err(AgentBackendError::Unavailable(
+                "injected test reconnect unavailable".to_string(),
+            ));
+        }
+        self.controller
+            .record(self.session_id.clone(), TestRuntimeCallKind::Reconnect);
+        if self.controller.should_fail_reconnect() {
+            return Err(AgentBackendError::Other(
+                "injected test reconnect failure".to_string(),
+            ));
         }
         Ok(())
     }
@@ -459,6 +529,10 @@ struct NoopAgentSessionEventNotifier;
 
 impl AgentSessionEventNotifier for NoopAgentSessionEventNotifier {
     fn session_state_changed(&self, _payload: AgentSessionStateChangedPayload) {}
+
+    fn stall_observed(&self, _payload: AgentStallObservedPayload) {}
+
+    fn stall_cleared(&self, _session_id: &str) {}
 
     fn streaming_delta(&self, _payload: AgentStreamingDeltaPayload) -> bool {
         true

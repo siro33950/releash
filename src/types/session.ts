@@ -132,6 +132,13 @@ export type ContextCarryState = "resumed" | "reinjected" | "failed";
 
 export type TurnPhase = "idle" | "streaming" | "waiting_permission";
 
+export interface AgentStallObservation {
+	turnPhase: TurnPhase;
+	idleSecs: number;
+	signalCount: number;
+	capReached: boolean;
+}
+
 interface WorkflowStepContext {
 	runId: string;
 	workflowName: string;

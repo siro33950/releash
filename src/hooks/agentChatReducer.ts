@@ -1,4 +1,5 @@
 import type {
+	AgentStallObservation,
 	BackendInfo,
 	ChatMessage,
 	ChatSession,
@@ -45,6 +46,7 @@ export interface AgentChatState {
 	pendingPermissionStateRevisions: Record<string, number>;
 	clearedPendingPermissionIds: Record<string, string>;
 	pendingQueues: Record<string, QueuedAgentTurn[]>;
+	stallObservations?: Record<string, AgentStallObservation>;
 	latestTokenUsage: Record<string, TokenUsage | null>;
 	runtimeSlashCommands: Record<string, SlashCommand[]>;
 	canChangeBackend: Record<string, boolean>;
@@ -104,6 +106,15 @@ export type AgentChatAction =
 			type: "SET_PENDING_QUEUE";
 			sessionId: string;
 			queue: QueuedAgentTurn[];
+	  }
+	| {
+			type: "SET_STALL_OBSERVATION";
+			sessionId: string;
+			observation: AgentStallObservation;
+	  }
+	| {
+			type: "CLEAR_STALL_OBSERVATION";
+			sessionId: string;
 	  }
 	| {
 			type: "SET_LATEST_TOKEN_USAGE";
@@ -593,6 +604,20 @@ export function reducer(
 					[action.sessionId]: action.queue,
 				},
 			};
+		case "SET_STALL_OBSERVATION":
+			return {
+				...state,
+				stallObservations: {
+					...(state.stallObservations ?? {}),
+					[action.sessionId]: action.observation,
+				},
+			};
+		case "CLEAR_STALL_OBSERVATION": {
+			const current = state.stallObservations ?? {};
+			if (!current[action.sessionId]) return state;
+			const { [action.sessionId]: _drop, ...rest } = current;
+			return { ...state, stallObservations: rest };
+		}
 		case "SET_LATEST_TOKEN_USAGE":
 			return {
 				...state,
@@ -720,6 +745,8 @@ export function reducer(
 				state.clearedPendingPermissionIds;
 			const { [action.sessionId]: _pq, ...restPendingQueues } =
 				state.pendingQueues;
+			const { [action.sessionId]: _so, ...restStallObservations } =
+				state.stallObservations ?? {};
 			const { [action.sessionId]: _tu, ...restLatestTokenUsage } =
 				state.latestTokenUsage;
 			const { [action.sessionId]: _rsc, ...restRuntimeSlashCommands } =
@@ -742,6 +769,7 @@ export function reducer(
 				pendingPermissionStateRevisions: restPendingPermissionStateRevisions,
 				clearedPendingPermissionIds: restClearedPendingPermissionIds,
 				pendingQueues: restPendingQueues,
+				stallObservations: restStallObservations,
 				latestTokenUsage: restLatestTokenUsage,
 				runtimeSlashCommands: restRuntimeSlashCommands,
 				canChangeBackend: restCanChangeBackend,
@@ -815,6 +843,7 @@ export const INITIAL_STATE: AgentChatState = {
 	pendingPermissionStateRevisions: {},
 	clearedPendingPermissionIds: {},
 	pendingQueues: {},
+	stallObservations: {},
 	latestTokenUsage: {},
 	runtimeSlashCommands: {},
 	canChangeBackend: {},

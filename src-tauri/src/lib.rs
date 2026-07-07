@@ -397,11 +397,14 @@ pub fn run() {
                         data_dir: pending_data_dir.clone(),
                     },
                 ));
-            agent_runtime.set_workflow_turn_complete_notifier(Arc::new(
-                adaptor::gateway::agent_session::WorkflowRuntimeTurnCompleteNotifier::new(
+            let workflow_runtime_agent_notifier = Arc::new(
+                adaptor::gateway::agent_session::WorkflowRuntimeAgentSessionNotifier::new(
                     workflow_runtime_usecase.clone(),
                 ),
-            ));
+            );
+            agent_runtime
+                .set_workflow_turn_complete_notifier(workflow_runtime_agent_notifier.clone());
+            agent_runtime.set_workflow_stall_notifier(workflow_runtime_agent_notifier);
             app.manage(workflow_runtime_usecase);
 
             // [06] CLI mutating CLI 経路の file watcher を起動する。初回 pickup は

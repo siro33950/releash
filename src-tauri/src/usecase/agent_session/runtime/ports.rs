@@ -2,12 +2,16 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::domain::agent_session::gateway::AgentRuntimeEvent;
+use crate::domain::workflow::WorkflowError;
 use crate::usecase::agent_session::session::{
     ChatMessage, ChatSession, ContextCarryState, ModelInfo, PermissionRequestMsg, SessionState,
     TokenUsage,
 };
 use crate::usecase::agent_session::status::TurnPhase;
-use crate::usecase::workflow::ports::WorkflowTurnCompleteNotification;
+use crate::usecase::workflow::ports::{
+    WorkflowStallClearedNotification, WorkflowStallObservedNotification,
+    WorkflowTurnCompleteNotification,
+};
 
 pub(crate) trait AgentTaskSpawner: Send + Sync {
     fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
@@ -34,8 +38,21 @@ pub(crate) struct AgentSessionStateChangedPayload {
     pub pending_permission_state_revision: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct AgentStallObservedPayload {
+    pub chat_session_id: String,
+    pub turn_phase: TurnPhase,
+    pub idle_secs: u64,
+    pub signal_count: u32,
+    pub cap_reached: bool,
+}
+
 pub(crate) trait AgentSessionEventNotifier: Send + Sync {
     fn session_state_changed(&self, payload: AgentSessionStateChangedPayload);
+
+    fn stall_observed(&self, payload: AgentStallObservedPayload);
+
+    fn stall_cleared(&self, session_id: &str);
 
     fn streaming_delta(&self, payload: AgentStreamingDeltaPayload) -> bool;
 
@@ -85,4 +102,14 @@ pub(crate) trait AgentSessionEventNotifier: Send + Sync {
 #[async_trait::async_trait]
 pub(crate) trait WorkflowTurnCompleteNotifier: Send + Sync {
     async fn turn_completed(&self, notification: WorkflowTurnCompleteNotification);
+}
+
+#[async_trait::async_trait]
+pub(crate) trait WorkflowStallNotifier: Send + Sync {
+    async fn stall_observed(&self, notification: WorkflowStallObservedNotification);
+
+    async fn stall_cleared(
+        &self,
+        notification: WorkflowStallClearedNotification,
+    ) -> Result<(), WorkflowError>;
 }

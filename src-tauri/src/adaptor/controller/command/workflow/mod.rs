@@ -689,6 +689,8 @@ mod tests {
                 WorkflowEvent::RunStarted { .. } => "RunStarted",
                 WorkflowEvent::NodeStarted { .. } => "NodeStarted",
                 WorkflowEvent::StepSessionStarted { .. } => "StepSessionStarted",
+                WorkflowEvent::WorkflowStallObserved { .. } => "WorkflowStallObserved",
+                WorkflowEvent::WorkflowStallCleared { .. } => "WorkflowStallCleared",
                 WorkflowEvent::NodeCompleted { .. } => "NodeCompleted",
                 WorkflowEvent::NodeFailed { .. } => "NodeFailed",
                 WorkflowEvent::ApprovalRequested { .. } => "ApprovalRequested",

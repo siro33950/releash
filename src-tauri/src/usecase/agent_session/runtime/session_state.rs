@@ -57,6 +57,9 @@ pub(crate) struct RuntimeSessionState {
     pub permission_wait_diagnostic_emitted: bool,
     pub permission_request_visibility: Option<PermissionRequestVisibility>,
     pub pending_permission_state_revision: u64,
+    pub stall_signal_count: u32,
+    pub stall_recovery_attempts: u32,
+    pub stall_observation_active: bool,
     pub generation: u64,
     pub runtime_epoch: u64,
 }
@@ -108,6 +111,9 @@ impl RuntimeSessionState {
             permission_wait_diagnostic_emitted: false,
             permission_request_visibility: None,
             pending_permission_state_revision: 0,
+            stall_signal_count: 0,
+            stall_recovery_attempts: 0,
+            stall_observation_active: false,
             generation: 0,
             runtime_epoch: 0,
         }
@@ -145,7 +151,22 @@ impl RuntimeSessionState {
         self.permission_wait_started_at = None;
         self.permission_wait_diagnostic_emitted = false;
         self.permission_request_visibility = None;
+        self.stall_signal_count = 0;
+        self.stall_recovery_attempts = 0;
+        self.stall_observation_active = false;
         self.generation = self.generation.saturating_add(1);
+    }
+
+    pub(crate) fn mark_progress(&mut self, at: Instant) -> bool {
+        self.record_progress(at);
+        let had_active_stall_observation = self.stall_observation_active;
+        self.stall_observation_active = false;
+        had_active_stall_observation
+    }
+
+    pub(crate) fn record_progress(&mut self, at: Instant) -> bool {
+        self.last_progress_at = Some(at);
+        self.stall_observation_active
     }
 
     pub(crate) fn rollback_started_turn(&mut self) {
@@ -170,6 +191,9 @@ impl RuntimeSessionState {
         self.permission_wait_started_at = None;
         self.permission_wait_diagnostic_emitted = false;
         self.permission_request_visibility = None;
+        self.stall_signal_count = 0;
+        self.stall_recovery_attempts = 0;
+        self.stall_observation_active = false;
     }
 
     pub(crate) fn set_pending_permission_request(&mut self, request: PermissionRequestMsg) -> u64 {
