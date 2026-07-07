@@ -570,6 +570,23 @@ mod tests {
             .to_string()
     }
 
+    /// 実際の出力 JSON から数値リテラルをそのまま抜き出す。
+    /// `serde_json` は既定で float の parse round-trip を保証しないため、
+    /// `Value` へ戻して再直列化すると末尾桁が変わりうる。実時刻由来の
+    /// タイムスタンプを golden 比較する際はこの生表現を使う。
+    fn json_raw_number(json: &str, key: &str) -> String {
+        let needle = format!("\"{key}\": ");
+        let start = json
+            .find(&needle)
+            .unwrap_or_else(|| panic!("missing raw JSON number for key: {key}"))
+            + needle.len();
+        let rest = &json[start..];
+        let end = rest
+            .find([',', '\n'])
+            .unwrap_or_else(|| panic!("unterminated JSON number for key: {key}"));
+        rest[..end].trim().to_string()
+    }
+
     #[test]
     fn review_list_get_handler_outputs_match_split_before_golden() {
         let tmp = TempDir::new().unwrap();
@@ -768,11 +785,16 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         let json_thread_id = json_string(&value, "/id");
         let json_comment_id = json_string(&value, "/comments/0/id");
-        let json_created_at = json_literal(&value, "/createdAt");
-        let json_updated_at = json_literal(&value, "/updatedAt");
-        let json_comment_created_at = json_literal(&value, "/comments/0/createdAt");
-        assert_eq!(json_created_at, json_updated_at);
-        assert_eq!(json_created_at, json_comment_created_at);
+        assert_eq!(
+            json_literal(&value, "/createdAt"),
+            json_literal(&value, "/updatedAt")
+        );
+        assert_eq!(
+            json_literal(&value, "/createdAt"),
+            json_literal(&value, "/comments/0/createdAt")
+        );
+        let json_created_at = json_raw_number(&json, "createdAt");
+        let json_updated_at = json_raw_number(&json, "updatedAt");
         assert_eq!(
             json,
             format!(
