@@ -31,6 +31,7 @@ interface SessionStateChanged {
 	interrupted?: boolean;
 	session_state?: SessionState | null;
 	pending_permission_request?: PermissionRequest | null;
+	pending_permission_state_revision?: number | null;
 }
 
 interface StreamingMessageUpdated {
@@ -90,10 +91,16 @@ interface ViewableSessionRegistry {
 	getIds: () => Set<string>;
 }
 
+type StreamingDeltaDropReason = "missing_session" | "missing_message";
+
 export interface AgentSdkListenerRefs {
 	dispatch: Dispatch<AgentChatAction>;
 	viewableRegistry: ViewableSessionRegistry;
 	refreshSessions: () => Promise<unknown>;
+	getStreamingDeltaDropReason?: (
+		sessionId: string,
+		messageId: string,
+	) => StreamingDeltaDropReason | null;
 	worktreePath?: string;
 }
 
@@ -113,8 +120,32 @@ function toPreparedChatMessage(
 	});
 }
 
+function warnDroppedStreamingDelta(
+	reason: StreamingDeltaDropReason,
+	sessionId: string,
+	messageId: string,
+	seq: number,
+): void {
+	console.warn(
+		reason === "missing_session"
+			? "Dropped agent-streaming-delta for missing session"
+			: "Dropped agent-streaming-delta for missing message",
+		{
+			sessionId,
+			messageId,
+			seq,
+		},
+	);
+}
+
 export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
-	const { dispatch, viewableRegistry, refreshSessions, worktreePath } = refs;
+	const {
+		dispatch,
+		viewableRegistry,
+		refreshSessions,
+		getStreamingDeltaDropReason,
+		worktreePath,
+	} = refs;
 
 	// Listen to typed turn usage updates emitted by Rust backend.
 	useEffect(() => {
@@ -285,6 +316,14 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			const { chat_session_id, message_id, seq, snapshot, parts } =
 				event.payload;
 
+			const dropReason = getStreamingDeltaDropReason?.(
+				chat_session_id,
+				message_id,
+			);
+			if (dropReason) {
+				warnDroppedStreamingDelta(dropReason, chat_session_id, message_id, seq);
+			}
+
 			if (snapshot) {
 				dispatch({
 					type: "SET_STREAMING_MESSAGE",
@@ -314,7 +353,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch]);
+	}, [dispatch, getStreamingDeltaDropReason]);
 
 	// Listen to agent-session-state-changed (unified state event from Rust)
 	useEffect(() => {
@@ -330,18 +369,28 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				interrupted,
 				session_state,
 				pending_permission_request,
+				pending_permission_state_revision,
 			} = event.payload;
+			const pendingPermissionStateRevision =
+				typeof pending_permission_state_revision === "number" &&
+				Number.isFinite(pending_permission_state_revision)
+					? {
+							pendingPermissionStateRevision: pending_permission_state_revision,
+						}
+					: {};
 
 			dispatch({
 				type: "SET_TURN_PHASE",
 				sessionId: chat_session_id,
 				turnPhase: turn_phase,
+				...pendingPermissionStateRevision,
 			});
 
 			dispatch({
 				type: "SET_PENDING_PERMISSION",
 				sessionId: chat_session_id,
 				request: pending_permission_request ?? null,
+				...pendingPermissionStateRevision,
 			});
 
 			// Turn completed (idle with exit_code): mirror backend state and clear permissions

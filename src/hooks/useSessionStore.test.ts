@@ -63,6 +63,14 @@ describe("session paging", () => {
 				hasMore: true,
 				totalCount: 10,
 			},
+			pendingPermissionRequest: {
+				id: "perm-1",
+				toolName: "Bash",
+				kind: "tool_approval",
+				input: { command: "echo hi" },
+				toolUseId: "toolu-1",
+			},
+			pendingPermissionStateRevision: 4,
 			latestTokenUsage: { inputTokens: 1, outputTokens: 2 },
 		});
 
@@ -86,6 +94,14 @@ describe("session paging", () => {
 			hasMore: true,
 			totalCount: 10,
 		});
+		expect(response?.pendingPermissionRequest).toEqual({
+			id: "perm-1",
+			toolName: "Bash",
+			kind: "tool_approval",
+			input: { command: "echo hi" },
+			toolUseId: "toolu-1",
+		});
+		expect(response?.pendingPermissionStateRevision).toBe(4);
 		expect(response?.latestTokenUsage).toEqual({
 			inputTokens: 1,
 			outputTokens: 2,

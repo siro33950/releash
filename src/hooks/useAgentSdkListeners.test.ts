@@ -362,6 +362,89 @@ describe("agent-streaming-delta event", () => {
 		});
 	});
 
+	it("warns before dispatching append deltas for a missing session", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.getStreamingDeltaDropReason = vi
+			.fn()
+			.mockReturnValue("missing_session");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-streaming-delta");
+		expect(cb).toBeDefined();
+
+		await cb?.({
+			payload: {
+				chat_session_id: "missing-session",
+				message_id: "msg-001",
+				seq: 1,
+				snapshot: false,
+				parts: [{ type: "text", content: "Hello" }],
+			},
+		});
+
+		expect(refs.getStreamingDeltaDropReason).toHaveBeenCalledWith(
+			"missing-session",
+			"msg-001",
+		);
+		expect(warn).toHaveBeenCalledWith(
+			"Dropped agent-streaming-delta for missing session",
+			{
+				sessionId: "missing-session",
+				messageId: "msg-001",
+				seq: 1,
+			},
+		);
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "APPLY_STREAMING_DELTA",
+			sessionId: "missing-session",
+			messageId: "msg-001",
+			seq: 1,
+			parts: [{ type: "text", content: "Hello" }],
+		});
+		warn.mockRestore();
+	});
+
+	it("warns before dispatching append deltas for a missing message", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.getStreamingDeltaDropReason = vi
+			.fn()
+			.mockReturnValue("missing_message");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-streaming-delta");
+		expect(cb).toBeDefined();
+
+		await cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				message_id: "missing-message",
+				seq: 2,
+				snapshot: false,
+				parts: [{ type: "text", content: "Hello" }],
+			},
+		});
+
+		expect(warn).toHaveBeenCalledWith(
+			"Dropped agent-streaming-delta for missing message",
+			{
+				sessionId: "session-1",
+				messageId: "missing-message",
+				seq: 2,
+			},
+		);
+		warn.mockRestore();
+	});
+
 	it("dispatches SET_STREAMING_MESSAGE for snapshot events from a viewable session", async () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
@@ -394,6 +477,53 @@ describe("agent-streaming-delta event", () => {
 		expect(refs.dispatch).not.toHaveBeenCalledWith(
 			expect.objectContaining({ type: "APPLY_STREAMING_DELTA" }),
 		);
+	});
+
+	it("warns before dispatching snapshot deltas for a missing message", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.getStreamingDeltaDropReason = vi
+			.fn()
+			.mockReturnValue("missing_message");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-streaming-delta");
+		expect(cb).toBeDefined();
+
+		const parts = [{ type: "text" as const, content: "resynced" }];
+		await cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				message_id: "missing-message",
+				seq: 3,
+				snapshot: true,
+				parts,
+			},
+		});
+
+		expect(refs.getStreamingDeltaDropReason).toHaveBeenCalledWith(
+			"session-1",
+			"missing-message",
+		);
+		expect(warn).toHaveBeenCalledWith(
+			"Dropped agent-streaming-delta for missing message",
+			{
+				sessionId: "session-1",
+				messageId: "missing-message",
+				seq: 3,
+			},
+		);
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_STREAMING_MESSAGE",
+			sessionId: "session-1",
+			messageId: "missing-message",
+			parts,
+		});
+		warn.mockRestore();
 	});
 
 	it("does not inspect seq continuity or drop duplicate-looking append events", async () => {
@@ -643,13 +773,21 @@ describe("agent-session-state-changed event", () => {
 				turn_phase: "waiting_permission",
 				exit_code: null,
 				pending_permission_request: request,
+				pending_permission_state_revision: 5,
 			},
 		});
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_TURN_PHASE",
+			sessionId: "session-1",
+			turnPhase: "waiting_permission",
+			pendingPermissionStateRevision: 5,
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "SET_PENDING_PERMISSION",
 			sessionId: "session-1",
 			request,
+			pendingPermissionStateRevision: 5,
 		});
 	});
 

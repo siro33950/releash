@@ -46,6 +46,8 @@ describe("agentChatReducer", () => {
 			sessionPermissionModes: {},
 			sessionPlanModes: {},
 			pendingPermissions: {},
+			pendingPermissionStateRevisions: {},
+			clearedPendingPermissionIds: {},
 			pendingQueues: {},
 			latestTokenUsage: {},
 			runtimeSlashCommands: {},
@@ -725,6 +727,186 @@ describe("agentChatReducer", () => {
 				request: null,
 			});
 			expect(next.pendingPermissions.s1).toBeUndefined();
+			expect(next.clearedPendingPermissionIds.s1).toBe("req-1");
+		});
+
+		it("ignores stale null hydrate with an older permission state revision", () => {
+			const request = {
+				id: "req-1",
+				toolName: "Edit",
+				input: {},
+				toolUseId: "toolu_001",
+			};
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				pendingPermissions: { s1: request },
+				pendingPermissionStateRevisions: { s1: 2 },
+			};
+			const next = reducer(state, {
+				type: "SET_PENDING_PERMISSION",
+				sessionId: "s1",
+				request: null,
+				pendingPermissionStateRevision: 1,
+			});
+			expect(next.pendingPermissions.s1).toBe(request);
+			expect(next.pendingPermissionStateRevisions.s1).toBe(2);
+		});
+
+		it("clears pending permission when a fresh null hydrate has a newer revision", () => {
+			const request = {
+				id: "req-1",
+				toolName: "Edit",
+				input: {},
+				toolUseId: "toolu_001",
+			};
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				pendingPermissions: { s1: request },
+				pendingPermissionStateRevisions: { s1: 2 },
+			};
+			const next = reducer(state, {
+				type: "SET_PENDING_PERMISSION",
+				sessionId: "s1",
+				request: null,
+				pendingPermissionStateRevision: 3,
+			});
+			expect(next.pendingPermissions.s1).toBeUndefined();
+			expect(next.pendingPermissionStateRevisions.s1).toBe(3);
+			expect(next.clearedPendingPermissionIds.s1).toBe("req-1");
+		});
+
+		it("ignores stale turn phase hydrate with an older permission state revision", () => {
+			const request = {
+				id: "req-1",
+				toolName: "Edit",
+				input: {},
+				toolUseId: "toolu_001",
+			};
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				turnPhases: { s1: "waiting_permission" },
+				pendingPermissions: { s1: request },
+				pendingPermissionStateRevisions: { s1: 2 },
+			};
+			const next = reducer(state, {
+				type: "SET_TURN_PHASE",
+				sessionId: "s1",
+				turnPhase: "idle",
+				pendingPermissionStateRevision: 1,
+			});
+			expect(next.turnPhases.s1).toBe("waiting_permission");
+		});
+
+		it("ignores stale hydrate pending permission after the same request was cleared", () => {
+			const request = {
+				id: "req-1",
+				toolName: "Edit",
+				input: {},
+				toolUseId: "toolu_001",
+			};
+			const cleared = reducer(
+				{
+					...INITIAL_STATE,
+					pendingPermissions: { s1: request },
+					pendingPermissionStateRevisions: { s1: 1 },
+				},
+				{
+					type: "SET_PENDING_PERMISSION",
+					sessionId: "s1",
+					request: null,
+					pendingPermissionStateRevision: 2,
+				},
+			);
+			const hydrated = reducer(cleared, {
+				type: "SET_PENDING_PERMISSION",
+				sessionId: "s1",
+				request,
+				ignoreIfCleared: true,
+				pendingPermissionStateRevision: 1,
+			});
+			expect(hydrated.pendingPermissions.s1).toBeUndefined();
+			expect(hydrated.clearedPendingPermissionIds.s1).toBe("req-1");
+		});
+
+		it("ignores stale hydrate turn phase after the same request was cleared", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				turnPhases: { s1: "streaming" },
+				clearedPendingPermissionIds: { s1: "req-1" },
+				pendingPermissionStateRevisions: { s1: 2 },
+			};
+			const next = reducer(state, {
+				type: "SET_TURN_PHASE",
+				sessionId: "s1",
+				turnPhase: "waiting_permission",
+				ignoreIfClearedPendingRequestId: "req-1",
+				pendingPermissionStateRevision: 1,
+			});
+			expect(next.turnPhases.s1).toBe("streaming");
+		});
+
+		it("ignores same-revision hydrate pending permission and turn phase after the same request was cleared", () => {
+			const request = {
+				id: "req-1",
+				toolName: "Edit",
+				input: {},
+				toolUseId: "toolu_001",
+			};
+			const cleared = reducer(
+				{
+					...INITIAL_STATE,
+					turnPhases: { s1: "streaming" },
+					pendingPermissions: { s1: request },
+					pendingPermissionStateRevisions: { s1: 1 },
+				},
+				{
+					type: "SET_PENDING_PERMISSION",
+					sessionId: "s1",
+					request: null,
+					pendingPermissionStateRevision: 2,
+				},
+			);
+
+			const hydratedPending = reducer(cleared, {
+				type: "SET_PENDING_PERMISSION",
+				sessionId: "s1",
+				request,
+				ignoreIfCleared: true,
+				pendingPermissionStateRevision: 2,
+			});
+			const hydratedTurnPhase = reducer(hydratedPending, {
+				type: "SET_TURN_PHASE",
+				sessionId: "s1",
+				turnPhase: "waiting_permission",
+				ignoreIfClearedPendingRequestId: "req-1",
+				pendingPermissionStateRevision: 2,
+			});
+
+			expect(hydratedPending.pendingPermissions.s1).toBeUndefined();
+			expect(hydratedPending.clearedPendingPermissionIds.s1).toBe("req-1");
+			expect(hydratedTurnPhase.turnPhases.s1).toBe("streaming");
+			expect(hydratedTurnPhase.pendingPermissions.s1).toBeUndefined();
+			expect(hydratedTurnPhase.clearedPendingPermissionIds.s1).toBe("req-1");
+		});
+
+		it("allows a backend state-change to republish a cleared permission", () => {
+			const request = {
+				id: "req-1",
+				toolName: "Edit",
+				input: {},
+				toolUseId: "toolu_001",
+			};
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				clearedPendingPermissionIds: { s1: "req-1" },
+			};
+			const next = reducer(state, {
+				type: "SET_PENDING_PERMISSION",
+				sessionId: "s1",
+				request,
+			});
+			expect(next.pendingPermissions.s1).toBe(request);
+			expect(next.clearedPendingPermissionIds.s1).toBeUndefined();
 		});
 
 		it("stores permissions for multiple sessions independently", () => {
@@ -1197,6 +1379,7 @@ describe("agentChatReducer", () => {
 						toolUseId: "toolu_001",
 					},
 				},
+				pendingPermissionStateRevisions: { s1: 4 },
 				sessionModels: { s1: "claude-4", s2: "claude-3.5" },
 				latestTokenUsage: {
 					s1: { inputTokens: 100, outputTokens: 25 },
@@ -1209,6 +1392,7 @@ describe("agentChatReducer", () => {
 			});
 			expect(next.turnPhases).toEqual({ s2: "idle" });
 			expect(next.pendingPermissions).toEqual({});
+			expect(next.pendingPermissionStateRevisions).toEqual({});
 			expect(next.sessionModels).toEqual({ s2: "claude-3.5" });
 			expect(next.latestTokenUsage).toEqual({
 				s2: { inputTokens: 7, outputTokens: 3 },

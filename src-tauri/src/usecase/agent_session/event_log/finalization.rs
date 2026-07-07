@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use super::events::{AgentSessionEvent, InterruptReason, PermissionDecision, TurnId};
 use super::part_events::permission_request_id;
+use crate::usecase::agent_session::session::PermissionRequestMsg;
 
 pub fn finalize_turn(
     events: &mut Vec<AgentSessionEvent>,
@@ -25,7 +26,7 @@ pub fn finalize_turn(
         });
     }
 
-    for permission in unresolved_permissions(events, turn_id) {
+    for permission in unresolved_permissions_for_turn(events, turn_id) {
         events.push(AgentSessionEvent::PermissionResolved {
             turn_id,
             tool_use_id: permission.tool_use_id,
@@ -44,7 +45,32 @@ pub fn finalize_turn(
 }
 
 pub(super) fn has_unresolved_permissions(events: &[AgentSessionEvent], turn_id: TurnId) -> bool {
-    !unresolved_permissions(events, turn_id).is_empty()
+    !unresolved_permissions_for_turn(events, turn_id).is_empty()
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct UnresolvedPermissionRequest {
+    pub turn_id: TurnId,
+    pub request: PermissionRequestMsg,
+}
+
+pub(crate) fn latest_unresolved_permission_request(
+    events: &[AgentSessionEvent],
+) -> Option<UnresolvedPermissionRequest> {
+    let turn_id = events.iter().rev().find_map(|event| match event {
+        AgentSessionEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
+        _ => None,
+    })?;
+    if has_turn_terminal(events, turn_id) {
+        return None;
+    }
+
+    unresolved_permissions_for_turn(events, turn_id)
+        .pop()
+        .map(|permission| UnresolvedPermissionRequest {
+            turn_id: permission.turn_id,
+            request: permission.request,
+        })
 }
 
 fn interruption_content(reason: InterruptReason, error: Option<&str>) -> String {
@@ -106,7 +132,27 @@ struct PermissionKey {
     request_id: Option<String>,
 }
 
-fn unresolved_permissions(events: &[AgentSessionEvent], turn_id: TurnId) -> Vec<PermissionKey> {
+#[derive(Debug, Clone)]
+struct UnresolvedPermission {
+    turn_id: TurnId,
+    tool_use_id: Option<String>,
+    request_id: Option<String>,
+    request: PermissionRequestMsg,
+}
+
+impl UnresolvedPermission {
+    fn key(&self) -> PermissionKey {
+        PermissionKey {
+            tool_use_id: self.tool_use_id.clone(),
+            request_id: self.request_id.clone(),
+        }
+    }
+}
+
+fn unresolved_permissions_for_turn(
+    events: &[AgentSessionEvent],
+    turn_id: TurnId,
+) -> Vec<UnresolvedPermission> {
     let mut requested = Vec::new();
     let mut resolved = HashSet::new();
     for event in events {
@@ -115,9 +161,11 @@ fn unresolved_permissions(events: &[AgentSessionEvent], turn_id: TurnId) -> Vec<
                 turn_id: id,
                 tool_use_id,
                 request,
-            } if *id == turn_id => requested.push(PermissionKey {
+            } if *id == turn_id => requested.push(UnresolvedPermission {
+                turn_id: *id,
                 tool_use_id: tool_use_id.clone(),
                 request_id: permission_request_id(request),
+                request: request.clone(),
             }),
             AgentSessionEvent::PermissionResolved {
                 turn_id: id,
@@ -135,8 +183,9 @@ fn unresolved_permissions(events: &[AgentSessionEvent], turn_id: TurnId) -> Vec<
     }
     requested
         .into_iter()
-        .filter(|key| {
-            !resolved.contains(key)
+        .filter(|permission| {
+            let key = permission.key();
+            !resolved.contains(&key)
                 && !resolved.iter().any(|resolved_key| {
                     key.request_id.is_some() && key.request_id == resolved_key.request_id
                         || key.tool_use_id.is_some() && key.tool_use_id == resolved_key.tool_use_id

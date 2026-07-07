@@ -281,6 +281,19 @@ pub async fn present_agent_permission_request(
 }
 
 #[tauri::command]
+pub async fn report_agent_permission_request_observed(
+    runtime: tauri::State<'_, Arc<AgentSessionRuntimeUsecase>>,
+    chat_session_id: String,
+    request_id: String,
+    visible: bool,
+) -> Result<(), String> {
+    runtime
+        .report_permission_request_observed(&chat_session_id, &request_id, visible)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn respond_agent_permission(
     runtime: tauri::State<'_, Arc<AgentSessionRuntimeUsecase>>,

@@ -70,6 +70,7 @@ export function BoundSessionChat({
 		getSessionInterrupting,
 		getSessionSelectedModel,
 		getSessionCanChangeBackend,
+		getSessionPendingPermission,
 		getSessionPendingQueue = () => [],
 		getSessionRuntimeSlashCommands = () => [],
 		availableModels,
@@ -191,6 +192,7 @@ export function BoundSessionChat({
 
 	const selectedModel = getSessionSelectedModel(session.id) ?? "";
 	const canChangeBackend = getSessionCanChangeBackend(session.id);
+	const pendingPermission = getSessionPendingPermission(session.id);
 	const pendingQueue = getSessionPendingQueue(session.id);
 	const runtimeSlashCommands = getSessionRuntimeSlashCommands(session.id);
 	const permissionMode = getSessionPermissionMode(session.id);
@@ -208,6 +210,7 @@ export function BoundSessionChat({
 			availableModels={availableModels}
 			backends={backends}
 			selectedModel={selectedModel}
+			pendingPermission={pendingPermission}
 			pendingQueue={pendingQueue}
 			runtimeSlashCommands={runtimeSlashCommands}
 			selectedBackendId={session.backendId ?? null}
