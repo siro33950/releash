@@ -118,13 +118,13 @@ impl LiveWorktreeResolution {
         let normalized = worktree_path.key();
         self.unresolved_repo_paths
             .iter()
-            .any(|repo_path| normalized.starts_with(repo_path))
+            .any(|repo_path| prefix_matches_at_boundary(normalized, repo_path, &['/', '\\']))
     }
 
     pub(super) fn workspace_state_key_may_be_unresolved(&self, key: &str) -> bool {
         self.unresolved_workspace_state_key_prefixes
             .iter()
-            .any(|prefix| key.starts_with(prefix))
+            .any(|prefix| prefix_matches_at_boundary(key, prefix, &['_']))
     }
 
     pub(super) fn has_unresolved_repos(&self) -> bool {
@@ -263,10 +263,58 @@ pub(super) fn worktree_path_key(path: &str) -> String {
     trim_path_separators(path.trim())
 }
 
+fn prefix_matches_at_boundary(value: &str, prefix: &str, boundary_chars: &[char]) -> bool {
+    if value == prefix {
+        return true;
+    }
+    if prefix.is_empty() {
+        return false;
+    }
+    value
+        .strip_prefix(prefix)
+        .and_then(|suffix| suffix.chars().next())
+        .is_some_and(|ch| boundary_chars.contains(&ch))
+}
+
 fn trim_path_separators(path: &str) -> String {
     let mut value = path.to_string();
     while value.len() > 1 && (value.ends_with('/') || value.ends_with('\\')) {
         value.pop();
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn unresolved_worktree_path_matching_requires_path_boundary() {
+        let resolution = LiveWorktreeResolution::new(
+            LiveWorktreeSet::default(),
+            vec!["/repo".to_string()],
+            HashSet::new(),
+        );
+
+        assert!(resolution.worktree_path_may_be_unresolved(&GcWorktreePath::not_found("/repo")));
+        assert!(resolution
+            .worktree_path_may_be_unresolved(&GcWorktreePath::not_found("/repo/worktree")));
+        assert!(resolution
+            .worktree_path_may_be_unresolved(&GcWorktreePath::not_found("/repo\\worktree")));
+        assert!(!resolution.worktree_path_may_be_unresolved(&GcWorktreePath::not_found("/repo2")));
+    }
+
+    #[test]
+    fn unresolved_workspace_state_key_matching_requires_key_boundary() {
+        let resolution = LiveWorktreeResolution::new(
+            LiveWorktreeSet::default(),
+            Vec::new(),
+            HashSet::from(["_repo".to_string()]),
+        );
+
+        assert!(resolution.workspace_state_key_may_be_unresolved("_repo"));
+        assert!(resolution.workspace_state_key_may_be_unresolved("_repo_worktree"));
+        assert!(!resolution.workspace_state_key_may_be_unresolved("_repo2"));
+    }
 }

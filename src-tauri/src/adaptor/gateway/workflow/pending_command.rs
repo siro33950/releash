@@ -13,6 +13,7 @@
 //! 担当しない: engine 内部 state mutation、runtime primitive 呼び出し、
 //! event 発行（これらは dispatcher adapter / engine 側）。
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
@@ -446,6 +447,7 @@ impl PendingCommandStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn gc_delete_paths_for_run(&self, run_id: &str) -> Vec<PathBuf> {
         let mut paths = Vec::new();
         for dir in [&self.pending_dir, &self.processing_dir, &self.processed_dir] {
@@ -470,6 +472,33 @@ impl PendingCommandStore {
             }
         }
         paths
+    }
+
+    pub(crate) fn gc_delete_paths_by_run(&self) -> HashMap<String, Vec<PathBuf>> {
+        let mut paths_by_run: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        for dir in [&self.pending_dir, &self.processing_dir, &self.processed_dir] {
+            let Ok(entries) = fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !is_candidate_pending_file(&path) {
+                    continue;
+                }
+                match read_pending_file(&path) {
+                    Ok(command) => {
+                        paths_by_run.entry(command.run_id).or_default().push(path);
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "app data gc skipped unreadable pending workflow command {}: {error}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+        }
+        paths_by_run
     }
 }
 

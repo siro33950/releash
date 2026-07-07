@@ -347,6 +347,8 @@ fn validate_session_gc_meta_shape(value: &serde_json::Value) -> Result<(), Strin
     }
     validate_optional_string_field(value, "id")?;
     validate_optional_string_field(value, "worktreePath")?;
+    validate_optional_session_state_field(value, "state")?;
+    validate_optional_number_field(value, "updatedAt")?;
     Ok(())
 }
 
@@ -356,6 +358,31 @@ fn validate_optional_string_field(value: &serde_json::Value, field: &str) -> Res
         .is_some_and(|value| !value.is_string() && !value.is_null())
     {
         return Err(format!("session meta field {field} must be a string"));
+    }
+    Ok(())
+}
+
+fn validate_optional_session_state_field(
+    value: &serde_json::Value,
+    field: &str,
+) -> Result<(), String> {
+    let Some(field_value) = value.get(field) else {
+        return Ok(());
+    };
+    if field_value.is_null() {
+        return Ok(());
+    }
+    serde_json::from_value::<SessionState>(field_value.clone())
+        .map_err(|_| format!("session meta field {field} must be a valid session state"))?;
+    Ok(())
+}
+
+fn validate_optional_number_field(value: &serde_json::Value, field: &str) -> Result<(), String> {
+    if value
+        .get(field)
+        .is_some_and(|value| !value.is_number() && !value.is_null())
+    {
+        return Err(format!("session meta field {field} must be a number"));
     }
     Ok(())
 }
@@ -380,4 +407,94 @@ fn session_gc_meta_from_value(value: &serde_json::Value, fallback_id: &str) -> S
 
 fn legacy_meta_file_in_sessions_dir(sessions_dir: &Path, session_id: &str) -> PathBuf {
     sessions_dir.join(format!("{session_id}.meta.json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_meta_validation_rejects_invalid_state_and_updated_at_types() {
+        assert!(validate_session_gc_meta_shape(&serde_json::json!({
+            "state": "not_a_state"
+        }))
+        .is_err());
+        assert!(validate_session_gc_meta_shape(&serde_json::json!({
+            "state": true
+        }))
+        .is_err());
+        assert!(validate_session_gc_meta_shape(&serde_json::json!({
+            "updatedAt": "100"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn strict_meta_validation_accepts_valid_state_updated_at_and_nulls() {
+        validate_session_gc_meta_shape(&serde_json::json!({
+            "state": "active",
+            "updatedAt": 100.5
+        }))
+        .unwrap();
+        validate_session_gc_meta_shape(&serde_json::json!({
+            "state": null,
+            "updatedAt": null
+        }))
+        .unwrap();
+    }
+
+    #[test]
+    fn protection_meta_scan_marks_invalid_meta_incomplete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        std::fs::create_dir_all(sessions_dir.join("invalid-state")).unwrap();
+        std::fs::write(
+            sessions_dir.join("invalid-state/meta.json"),
+            serde_json::json!({
+                "id": "invalid-state",
+                "state": "not_a_state"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(sessions_dir.join("invalid-updated-at")).unwrap();
+        std::fs::write(
+            sessions_dir.join("invalid-updated-at/meta.json"),
+            serde_json::json!({
+                "id": "invalid-updated-at",
+                "updatedAt": "100"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let scan = FileSessionStorage::default().list_gc_session_protection_meta(tmp.path());
+
+        assert!(!scan.is_complete);
+        assert!(scan.items.is_empty());
+    }
+
+    #[test]
+    fn default_meta_policy_keeps_lenient_state_and_updated_at_behavior() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        std::fs::create_dir_all(sessions_dir.join("session")).unwrap();
+        std::fs::write(
+            sessions_dir.join("session/meta.json"),
+            serde_json::json!({
+                "id": "session",
+                "state": "not_a_state",
+                "updatedAt": "100"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let records = FileSessionStorage::default().list_gc_session_records(tmp.path());
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "session");
+        assert_eq!(records[0].state, None);
+        assert_eq!(records[0].updated_at, None);
+    }
 }

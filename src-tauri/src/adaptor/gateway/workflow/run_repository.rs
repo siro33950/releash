@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 #[cfg(test)]
 use std::fs::{self, OpenOptions};
 #[cfg(test)]
@@ -7,6 +8,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
+#[cfg(test)]
 use crate::adaptor::gateway::workflow::pending_command::PendingCommandStore;
 use crate::adaptor::gateway::workflow::run as legacy_run;
 #[cfg(test)]
@@ -43,6 +45,7 @@ impl WorkflowRunFileRepository {
         legacy_run::read_valid_run_metadata(&self.data_dir, run_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn gc_delete_paths(&self, run_id: &str) -> Vec<PathBuf> {
         let mut paths = vec![legacy_run::workflow_run_metadata_path(
             &self.data_dir,
@@ -51,6 +54,23 @@ impl WorkflowRunFileRepository {
         paths.extend(WorkflowEventLog::new(&self.data_dir).gc_delete_paths(run_id));
         paths.extend(legacy_workflow_artifact_paths(&self.data_dir, run_id));
         paths.extend(PendingCommandStore::new(&self.data_dir).gc_delete_paths_for_run(run_id));
+        paths
+    }
+
+    pub(crate) fn gc_delete_paths_with_pending_index(
+        &self,
+        run_id: &str,
+        pending_paths_by_run: &HashMap<String, Vec<PathBuf>>,
+    ) -> Vec<PathBuf> {
+        let mut paths = vec![legacy_run::workflow_run_metadata_path(
+            &self.data_dir,
+            run_id,
+        )];
+        paths.extend(WorkflowEventLog::new(&self.data_dir).gc_delete_paths(run_id));
+        paths.extend(legacy_workflow_artifact_paths(&self.data_dir, run_id));
+        if let Some(pending_paths) = pending_paths_by_run.get(run_id) {
+            paths.extend(pending_paths.iter().cloned());
+        }
         paths
     }
 

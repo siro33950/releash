@@ -12,8 +12,8 @@ pub(crate) trait GcFileSystem {
     fn is_file(&self, path: &Path) -> bool;
     fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>, GcFileSystemError>;
     fn read_to_string(&self, path: &Path) -> Result<String, GcFileSystemError>;
-    fn remove_path(&self, path: &Path) -> Result<bool, String>;
-    fn recursive_size(&self, path: &Path) -> Result<u64, String>;
+    fn remove_path(&self, path: &Path) -> Result<bool, GcFileSystemError>;
+    fn recursive_size(&self, path: &Path) -> Result<u64, GcFileSystemError>;
 }
 
 pub(crate) trait WorkflowArchivePruner {
@@ -21,7 +21,7 @@ pub(crate) trait WorkflowArchivePruner {
         &self,
         app_data_dir: &Path,
         run_ids: &std::collections::HashSet<String>,
-    ) -> Result<WorkflowArchivePruneResult, String>;
+    ) -> Result<WorkflowArchivePruneResult, GcFileSystemError>;
 }
 
 #[derive(Debug, Clone, PartialEq)]

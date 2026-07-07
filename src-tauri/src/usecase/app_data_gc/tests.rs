@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -980,6 +981,34 @@ fn sweep_revalidation_keeps_candidate_that_enters_runtime_protection() {
     assert!(session.exists());
 }
 
+#[test]
+fn sweep_collects_runtime_protection_once_per_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let live = tempfile::tempdir().unwrap();
+    let deleted = tmp.path().join("deleted-worktree");
+    write_session(tmp.path(), "session", &deleted, "idle", NOW);
+    write_workflow_run(tmp.path(), "workflow-run", &deleted, "completed");
+    fs::create_dir_all(tmp.path().join("workspace_state")).unwrap();
+    fs::write(tmp.path().join("workspace_state/deleted.json"), "{}").unwrap();
+    fs::create_dir_all(tmp.path().join("review-comments")).unwrap();
+    fs::write(tmp.path().join("review-comments/deleted.events.json"), "[]").unwrap();
+    let request = startup_gc_request(
+        tmp.path(),
+        Some(full_resolution(live_set(&[("live", live.path())]))),
+        RuntimeProtection::default(),
+        Vec::new(),
+        NOW,
+    );
+    let reader = CountingRuntimeProtectionReader {
+        runtime_protection: RuntimeProtection::default(),
+        calls: Cell::new(0),
+    };
+
+    run_startup_gc(request, &TestFs, &TestArchivePruner, &reader);
+
+    assert_eq!(reader.calls.get(), 1);
+}
+
 struct RuntimeProtectionTestReader {
     runtime_protection: RuntimeProtection,
 }
@@ -990,6 +1019,38 @@ impl GcRevalidationReader for RuntimeProtectionTestReader {
         _app_data_dir: &std::path::Path,
         _process_records: &[ProcessRecord],
     ) -> RuntimeProtection {
+        self.runtime_protection.clone()
+    }
+
+    fn session_state(
+        &self,
+        app_data_dir: &std::path::Path,
+        session_id: &str,
+    ) -> RevalidationRead<CurrentSessionState> {
+        TestRevalidationReader.session_state(app_data_dir, session_id)
+    }
+
+    fn workflow_run_state(
+        &self,
+        app_data_dir: &std::path::Path,
+        run_id: &str,
+    ) -> RevalidationRead<CurrentWorkflowRunState> {
+        TestRevalidationReader.workflow_run_state(app_data_dir, run_id)
+    }
+}
+
+struct CountingRuntimeProtectionReader {
+    runtime_protection: RuntimeProtection,
+    calls: Cell<usize>,
+}
+
+impl GcRevalidationReader for CountingRuntimeProtectionReader {
+    fn runtime_protection(
+        &self,
+        _app_data_dir: &std::path::Path,
+        _process_records: &[ProcessRecord],
+    ) -> RuntimeProtection {
+        self.calls.set(self.calls.get() + 1);
         self.runtime_protection.clone()
     }
 

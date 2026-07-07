@@ -35,22 +35,22 @@ impl GcFileSystem for StdGcFileSystem {
         std::fs::read_to_string(path).map_err(gc_file_system_error)
     }
 
-    fn remove_path(&self, path: &Path) -> Result<bool, String> {
+    fn remove_path(&self, path: &Path) -> Result<bool, GcFileSystemError> {
         let metadata = match std::fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(error.to_string()),
+            Err(error) => return Err(gc_file_system_error(error)),
         };
         if metadata.file_type().is_dir() {
-            std::fs::remove_dir_all(path).map_err(|error| error.to_string())?;
+            std::fs::remove_dir_all(path).map_err(gc_file_system_error)?;
         } else {
-            std::fs::remove_file(path).map_err(|error| error.to_string())?;
+            std::fs::remove_file(path).map_err(gc_file_system_error)?;
         }
         Ok(true)
     }
 
-    fn recursive_size(&self, path: &Path) -> Result<u64, String> {
-        let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    fn recursive_size(&self, path: &Path) -> Result<u64, GcFileSystemError> {
+        let metadata = std::fs::symlink_metadata(path).map_err(gc_file_system_error)?;
         if metadata.file_type().is_file() || metadata.file_type().is_symlink() {
             return Ok(metadata.len());
         }
@@ -58,7 +58,7 @@ impl GcFileSystem for StdGcFileSystem {
             return Ok(0);
         }
         let mut size = 0;
-        for entry in self.read_dir(path).map_err(|error| error.to_string())? {
+        for entry in self.read_dir(path)? {
             size += self.recursive_size(&entry)?;
         }
         Ok(size)
@@ -72,10 +72,10 @@ impl WorkflowArchivePruner for StdWorkflowArchivePruner {
         &self,
         app_data_dir: &Path,
         run_ids: &HashSet<String>,
-    ) -> Result<WorkflowArchivePruneResult, String> {
+    ) -> Result<WorkflowArchivePruneResult, GcFileSystemError> {
         let result = WorkflowRunArchiveFileRepository::new(app_data_dir)
             .prune_records(run_ids)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| GcFileSystemError::other(error.to_string()))?;
         Ok(WorkflowArchivePruneResult {
             records_removed: result.records_removed,
             reclaimed_bytes: result.reclaimed_bytes,

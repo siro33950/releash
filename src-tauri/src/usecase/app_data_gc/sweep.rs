@@ -21,6 +21,8 @@ pub(super) fn sweep(
     let mut report = GcReport::default();
     let mut failed_workflow_run_deletions: BTreeMap<GcCategory, HashSet<String>> = BTreeMap::new();
     let mut workflow_revalidation = HashMap::new();
+    let runtime_protection =
+        revalidation_reader.runtime_protection(&request.app_data_dir, &request.process_records);
     for candidate in plan.candidates {
         if !candidate_is_contained(&plan.app_data_dir, &candidate.path) {
             mark_workflow_candidate_failed(&candidate, &mut failed_workflow_run_deletions);
@@ -34,6 +36,7 @@ pub(super) fn sweep(
             &candidate,
             request,
             revalidation_reader,
+            &runtime_protection,
             &mut workflow_revalidation,
         ) {
             mark_workflow_candidate_failed(&candidate, &mut failed_workflow_run_deletions);
@@ -138,32 +141,25 @@ fn candidate_still_valid(
     candidate: &DeletionCandidate,
     request: &StartupGcRequest,
     reader: &dyn GcRevalidationReader,
+    runtime: &RuntimeProtection,
     workflow_revalidation: &mut HashMap<String, RevalidationRead<CurrentWorkflowRunState>>,
 ) -> bool {
     match &candidate.revalidation {
         DeletionRevalidation::None => true,
         DeletionRevalidation::Session { session_id } => {
-            let runtime =
-                reader.runtime_protection(&request.app_data_dir, &request.process_records);
-            session_candidate_still_valid(candidate.category, session_id, request, &runtime, reader)
+            session_candidate_still_valid(candidate.category, session_id, request, runtime, reader)
         }
         DeletionRevalidation::WorkflowRun { run_id } => {
-            let runtime =
-                reader.runtime_protection(&request.app_data_dir, &request.process_records);
             let state = workflow_revalidation
                 .entry(run_id.clone())
                 .or_insert_with(|| reader.workflow_run_state(&request.app_data_dir, run_id));
-            workflow_candidate_still_valid(candidate.category, run_id, request, &runtime, state)
+            workflow_candidate_still_valid(candidate.category, run_id, request, runtime, state)
         }
         DeletionRevalidation::WorkspaceState { key } => {
-            let runtime =
-                reader.runtime_protection(&request.app_data_dir, &request.process_records);
-            workspace_state_candidate_still_valid(key, request.live_worktrees.as_ref(), &runtime)
+            workspace_state_candidate_still_valid(key, request.live_worktrees.as_ref(), runtime)
         }
         DeletionRevalidation::ReviewComment { key } => {
-            let runtime =
-                reader.runtime_protection(&request.app_data_dir, &request.process_records);
-            review_comment_candidate_still_valid(key, request.live_worktrees.as_ref(), &runtime)
+            review_comment_candidate_still_valid(key, request.live_worktrees.as_ref(), runtime)
         }
     }
 }

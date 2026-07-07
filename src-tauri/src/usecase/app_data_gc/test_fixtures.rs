@@ -4,7 +4,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use crate::adaptor::gateway::workflow::run::RunStatus;
 use crate::domain::app_data_gc::{GcReport, RetentionPolicy};
 use crate::domain::workflow::WORKFLOW_ARCHIVE_REASON_MANUAL;
 use crate::usecase::agent_session::session::{ChatMessage, MessagePart, MessageRole, SessionState};
@@ -38,24 +37,24 @@ impl GcFileSystem for TestFs {
         fs::read_to_string(path).map_err(gc_file_system_error)
     }
 
-    fn remove_path(&self, path: &Path) -> Result<bool, String> {
+    fn remove_path(&self, path: &Path) -> Result<bool, GcFileSystemError> {
         if !path.exists() {
             return Ok(false);
         }
         if path.is_dir() {
-            fs::remove_dir_all(path).map_err(|error| error.to_string())?;
+            fs::remove_dir_all(path).map_err(gc_file_system_error)?;
         } else {
-            fs::remove_file(path).map_err(|error| error.to_string())?;
+            fs::remove_file(path).map_err(gc_file_system_error)?;
         }
         Ok(true)
     }
 
-    fn recursive_size(&self, path: &Path) -> Result<u64, String> {
+    fn recursive_size(&self, path: &Path) -> Result<u64, GcFileSystemError> {
         if path.is_file() {
-            return Ok(path.metadata().map_err(|error| error.to_string())?.len());
+            return Ok(path.metadata().map_err(gc_file_system_error)?.len());
         }
         let mut size = 0;
-        for entry in self.read_dir(path).map_err(|error| error.to_string())? {
+        for entry in self.read_dir(path)? {
             size += self.recursive_size(&entry)?;
         }
         Ok(size)
@@ -69,15 +68,15 @@ impl WorkflowArchivePruner for TestArchivePruner {
         &self,
         app_data_dir: &Path,
         run_ids: &HashSet<String>,
-    ) -> Result<WorkflowArchivePruneResult, String> {
+    ) -> Result<WorkflowArchivePruneResult, GcFileSystemError> {
         let path = app_data_dir.join("workflow_run_archives.json");
         if !path.exists() {
             return Ok(WorkflowArchivePruneResult::default());
         }
-        let before = path.metadata().map_err(|error| error.to_string())?.len();
-        let content = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-        let mut value: serde_json::Value =
-            serde_json::from_str(&content).map_err(|error| error.to_string())?;
+        let before = path.metadata().map_err(gc_file_system_error)?.len();
+        let content = fs::read_to_string(&path).map_err(gc_file_system_error)?;
+        let mut value: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|error| GcFileSystemError::other(error.to_string()))?;
         let Some(runs) = value.get_mut("runs").and_then(|runs| runs.as_object_mut()) else {
             return Ok(WorkflowArchivePruneResult::default());
         };
@@ -90,9 +89,10 @@ impl WorkflowArchivePruner for TestArchivePruner {
         if removed == 0 {
             return Ok(WorkflowArchivePruneResult::default());
         }
-        let json = serde_json::to_string(&value).map_err(|error| error.to_string())?;
-        fs::write(&path, json).map_err(|error| error.to_string())?;
-        let after = path.metadata().map_err(|error| error.to_string())?.len();
+        let json = serde_json::to_string(&value)
+            .map_err(|error| GcFileSystemError::other(error.to_string()))?;
+        fs::write(&path, json).map_err(gc_file_system_error)?;
+        let after = path.metadata().map_err(gc_file_system_error)?.len();
         Ok(WorkflowArchivePruneResult {
             records_removed: removed,
             reclaimed_bytes: before.saturating_sub(after),
@@ -124,11 +124,11 @@ impl GcFileSystem for FailingReadDirFs {
         TestFs.read_to_string(path)
     }
 
-    fn remove_path(&self, path: &Path) -> Result<bool, String> {
+    fn remove_path(&self, path: &Path) -> Result<bool, GcFileSystemError> {
         TestFs.remove_path(path)
     }
 
-    fn recursive_size(&self, path: &Path) -> Result<u64, String> {
+    fn recursive_size(&self, path: &Path) -> Result<u64, GcFileSystemError> {
         TestFs.recursive_size(path)
     }
 }
@@ -157,11 +157,11 @@ impl GcFileSystem for FailingReadFileFs {
         TestFs.read_to_string(path)
     }
 
-    fn remove_path(&self, path: &Path) -> Result<bool, String> {
+    fn remove_path(&self, path: &Path) -> Result<bool, GcFileSystemError> {
         TestFs.remove_path(path)
     }
 
-    fn recursive_size(&self, path: &Path) -> Result<u64, String> {
+    fn recursive_size(&self, path: &Path) -> Result<u64, GcFileSystemError> {
         TestFs.recursive_size(path)
     }
 }
@@ -187,14 +187,14 @@ impl GcFileSystem for FailingRemoveFs {
         TestFs.read_to_string(path)
     }
 
-    fn remove_path(&self, path: &Path) -> Result<bool, String> {
+    fn remove_path(&self, path: &Path) -> Result<bool, GcFileSystemError> {
         if path == self.failing_path {
-            return Err("permission denied".to_string());
+            return Err(GcFileSystemError::other("permission denied"));
         }
         TestFs.remove_path(path)
     }
 
-    fn recursive_size(&self, path: &Path) -> Result<u64, String> {
+    fn recursive_size(&self, path: &Path) -> Result<u64, GcFileSystemError> {
         TestFs.recursive_size(path)
     }
 }
@@ -463,8 +463,27 @@ fn collect_test_workflow_runs(app_data_dir: &Path) -> Vec<WorkflowRunGcRecord> {
 #[serde(rename_all = "camelCase")]
 struct TestWorkflowRunMeta {
     run_id: String,
-    status: RunStatus,
+    status: TestWorkflowRunStatus,
     worktree_path: String,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TestWorkflowRunStatus {
+    Running,
+    WaitingApproval,
+    Completed,
+    Failed,
+    Aborted,
+}
+
+impl TestWorkflowRunStatus {
+    fn is_terminal(self) -> bool {
+        match self {
+            Self::Completed | Self::Failed | Self::Aborted => true,
+            Self::Running | Self::WaitingApproval => false,
+        }
+    }
 }
 
 fn test_manual_archive_times(app_data_dir: &Path) -> HashMap<String, f64> {
@@ -552,6 +571,11 @@ fn collect_test_workspace_state_records(app_data_dir: &Path) -> Vec<WorkspaceSta
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
+            if !path.is_file()
+                || path.extension().and_then(|extension| extension.to_str()) != Some("json")
+            {
+                return None;
+            }
             let key = path.file_stem().and_then(|stem| stem.to_str())?.to_string();
             Some(WorkspaceStateGcRecord { path, key })
         })
