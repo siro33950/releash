@@ -1,32 +1,35 @@
 name: 04_review-fix-policy
 description: フルレビューで残った Open Thread の修正方針を決定し、承認済み方針の整合性を確認する。
 builtin: true
-
 nodes:
-  - name: decide_policy
-    type: approval
+- name: decide_policy
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: review-fix-decide-policy
-    policy: triage
-    knowledge: releash-thread-cli
-
-  - name: policy_consistency_review
-    type: agent
+    gate: approval
+    facets:
+      policy: triage
+      knowledge: releash-thread-cli
+      instruction: review-fix-decide-policy
+- name: policy_consistency_review
+  session:
     model: gpt-5.5
     permission: full
-    instruction: review-fix-policy-consistency
-    policy: reviewing
-    knowledge: releash-thread-cli
-    rules:
-      - match: NEEDS_FIX
-        next: decide_policy
-      - match: LGTM
-        next: summary
-
-  - name: summary
-    type: approval
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-fix-policy-consistency
+  rules:
+  - match: NEEDS_FIX
+    next: decide_policy
+  - match: LGTM
+    next: summary
+- name: summary
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: review-fix-policy-summary
-    knowledge: releash-thread-cli
+    gate: approval
+    facets:
+      knowledge: releash-thread-cli
+      instruction: review-fix-policy-summary

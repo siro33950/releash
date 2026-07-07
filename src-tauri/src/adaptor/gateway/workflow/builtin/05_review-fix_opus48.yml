@@ -1,40 +1,43 @@
 name: 05_review-fix_opus48
 description: フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針と実装差分を確認して不足を Task 化し、Claude 系モデルで Task を実装するループで方針との合致を保証する。最後に人間が承認した Thread を resolve する。
 builtin: true
-
 nodes:
-  - name: check_and_make_tasks
-    type: agent
+- name: check_and_make_tasks
+  session:
     model: gpt-5.5
     permission: full
-    instruction: review-fix-check-tasks
-    output_contract: review-fix-tasks
-    policy: reviewing
-    knowledge: releash-thread-cli
-    rules:
-      - match: NEEDS_FIX
-        next: implement_tasks
-      - match: LGTM
-        next: report
-
-  - name: implement_tasks
-    type: agent
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-fix-check-tasks
+  output_contract: review-fix-tasks
+  rules:
+  - match: NEEDS_FIX
+    next: implement_tasks
+  - match: LGTM
+    next: report
+- name: implement_tasks
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: review-fix
-    policy: coding
-    pass_output_from:
-      - check_and_make_tasks
-    rules:
-      - match: ".*"
-        next: check_and_make_tasks
-    cycle_guard:
-      max_iterations: 5
-      on_exhausted: report
-
-  - name: report
-    type: approval
+    gate: auto
+    facets:
+      policy: coding
+      instruction: review-fix
+  pass_output_from:
+  - check_and_make_tasks
+  rules:
+  - match: ".*"
+    next: check_and_make_tasks
+  cycle_guard:
+    max_iterations: 5
+    on_exhausted: report
+- name: report
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: review-fix-report
-    knowledge: releash-thread-cli
+    gate: approval
+    facets:
+      knowledge: releash-thread-cli
+      instruction: review-fix-report

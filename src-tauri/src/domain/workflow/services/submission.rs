@@ -1,6 +1,6 @@
 //! Structured output submission rules.
 
-use crate::domain::workflow::value_objects::{NodeType, WorkflowDefinition};
+use crate::domain::workflow::value_objects::WorkflowDefinition;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubmissionParallelChildState {
@@ -31,7 +31,7 @@ pub fn is_accepting_submission_target(
     let Some(current) = workflow.nodes.get(current_step_index) else {
         return false;
     };
-    if current.name == step_name && current.node_type != NodeType::Parallel {
+    if current.name == step_name && !current.is_fanout() {
         return true;
     }
     if let Some(parallel_run) = parallel_run {
@@ -52,7 +52,8 @@ pub fn step_output_keys_to_clear_for_new_execution(
         return Vec::new();
     };
     let mut keys = vec![step.name.clone()];
-    if let Some(children) = step.parallel_children.as_ref() {
+    if let Some(fanout) = step.fanout() {
+        let children = &fanout.parallel_children;
         keys.extend(children.iter().map(|child| child.name.clone()));
     }
     keys
@@ -61,12 +62,25 @@ pub fn step_output_keys_to_clear_for_new_execution(
 #[cfg(test)]
 mod submission_tests {
     use super::*;
-    use crate::domain::workflow::value_objects::{NodeDefinition, WorkflowDefinition};
+    use crate::domain::workflow::value_objects::{
+        FanoutSpec, InterimChild, NodeDefinition, NodeKind, SessionSpec, WorkflowDefinition,
+    };
 
-    fn node(name: &str, node_type: NodeType) -> NodeDefinition {
+    fn session_node(name: &str) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
-            node_type,
+            kind: NodeKind::Session(SessionSpec::default()),
+            ..Default::default()
+        }
+    }
+
+    fn fanout_node(name: &str, children: Vec<InterimChild>) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Fanout(FanoutSpec {
+                parallel_children: children,
+                aggregate: None,
+            }),
             ..Default::default()
         }
     }
@@ -83,10 +97,7 @@ mod submission_tests {
 
     #[test]
     fn accepts_current_non_parallel_node() {
-        let workflow = workflow(vec![
-            node("draft", NodeType::Agent),
-            node("review", NodeType::Approval),
-        ]);
+        let workflow = workflow(vec![session_node("draft"), session_node("review")]);
 
         assert!(is_accepting_submission_target(&workflow, 0, None, "draft"));
         assert!(!is_accepting_submission_target(
@@ -96,7 +107,7 @@ mod submission_tests {
 
     #[test]
     fn accepts_running_child_of_current_parallel_parent_only() {
-        let workflow = workflow(vec![node("parallel-review", NodeType::Parallel)]);
+        let workflow = workflow(vec![fanout_node("parallel-review", Vec::new())]);
         let children = [
             SubmissionParallelChild {
                 step_name: "quality",
@@ -134,25 +145,27 @@ mod submission_tests {
 
     #[test]
     fn rejects_out_of_range_current_step() {
-        let workflow = workflow(vec![node("draft", NodeType::Agent)]);
+        let workflow = workflow(vec![session_node("draft")]);
 
         assert!(!is_accepting_submission_target(&workflow, 1, None, "draft"));
     }
 
     #[test]
     fn output_keys_to_clear_include_parallel_parent_and_children() {
-        let mut parallel = node("parallel-review", NodeType::Parallel);
-        parallel.parallel_children = Some(vec![
-            crate::domain::workflow::value_objects::ChildNodeDefinition {
-                name: "quality".to_string(),
-                ..Default::default()
-            },
-            crate::domain::workflow::value_objects::ChildNodeDefinition {
-                name: "security".to_string(),
-                ..Default::default()
-            },
-        ]);
-        let workflow = workflow(vec![node("draft", NodeType::Agent), parallel]);
+        let parallel = fanout_node(
+            "parallel-review",
+            vec![
+                InterimChild {
+                    name: "quality".to_string(),
+                    ..Default::default()
+                },
+                InterimChild {
+                    name: "security".to_string(),
+                    ..Default::default()
+                },
+            ],
+        );
+        let workflow = workflow(vec![session_node("draft"), parallel]);
 
         assert_eq!(
             step_output_keys_to_clear_for_new_execution(&workflow, 1),

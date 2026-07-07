@@ -13,9 +13,10 @@ mod workflow_step_context;
 pub use approval_decision::ApprovalDecision;
 pub use contract::{ContractType, ContractValidationResult, ContractViolation};
 pub use definition::{
-    ChildNodeDefinition, CollectConfig, CycleGuard, NodeDefinition, NodeType, ParallelAggregate,
-    ReduceStrategy, ResolvedFacets, TransitionRule, WorkflowDefinition, WorkflowSummary,
-    MAX_NODES_PER_WORKFLOW, MAX_PARALLEL_CHILDREN,
+    CollectConfig, CommandSpec, CycleGuard, FacetRefs, FanoutSpec, InterimChild, NodeDefinition,
+    NodeKind, NodeKindName, ParallelAggregate, ReduceStrategy, ResolvedFacets, SessionGate,
+    SessionSpec, TransitionRule, WorkflowDefinition, WorkflowSummary, MAX_NODES_PER_WORKFLOW,
+    MAX_PARALLEL_CHILDREN,
 };
 pub use facet::{FacetKey, FacetKind, FacetSummary};
 pub use failure::{

@@ -22,73 +22,187 @@ pub struct ResolvedFacets {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum NodeType {
+pub enum NodeKindName {
+    Command,
     #[default]
-    Agent,
-    Bash,
+    Session,
+    Fanout,
+}
+
+impl NodeKindName {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Session => "session",
+            Self::Fanout => "fanout",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeKind {
+    Command(CommandSpec),
+    Session(SessionSpec),
+    Fanout(FanoutSpec),
+}
+
+impl Default for NodeKind {
+    fn default() -> Self {
+        Self::Session(SessionSpec::default())
+    }
+}
+
+impl NodeKind {
+    pub fn name(&self) -> NodeKindName {
+        match self {
+            Self::Command(_) => NodeKindName::Command,
+            Self::Session(_) => NodeKindName::Session,
+            Self::Fanout(_) => NodeKindName::Fanout,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandSpec {
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionGate {
+    #[default]
+    Auto,
     Approval,
-    Parallel,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FacetRefs {
+    pub policy: Option<String>,
+    pub knowledge: Option<String>,
+    pub instruction: Option<String>,
+}
+
+impl FacetRefs {
+    pub fn is_empty(&self) -> bool {
+        self.policy.is_none() && self.knowledge.is_none() && self.instruction.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SessionSpec {
+    pub model: Option<String>,
+    pub permission: Option<String>,
+    pub gate: SessionGate,
+    pub facets: FacetRefs,
+    pub resolved_facets: ResolvedFacets,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FanoutSpec {
+    pub parallel_children: Vec<InterimChild>,
+    pub aggregate: Option<ParallelAggregate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NodeDefinition {
     pub name: String,
-    pub node_type: NodeType,
-    pub policy: Option<String>,
-    pub knowledge: Option<String>,
-    pub instruction: Option<String>,
+    pub kind: NodeKind,
+    pub artifact: Option<String>,
+    pub input: Option<String>,
+    pub inputs: Vec<String>,
     pub output_contract: Option<String>,
     pub input_contracts: Option<Vec<String>>,
     pub pass_previous_response: Option<bool>,
     pub pass_output_from: Option<Vec<String>>,
-    pub inline_prompt: Option<String>,
     pub collect: Option<CollectConfig>,
-    pub command: Option<String>,
-    pub parallel_children: Option<Vec<ChildNodeDefinition>>,
-    pub aggregate: Option<ParallelAggregate>,
     pub transition_rules: Vec<TransitionRule>,
     pub cycle_guard: Option<CycleGuard>,
     pub resets_cycle_for: Option<Vec<String>>,
-    pub model: Option<String>,
-    pub permission: Option<String>,
-    pub resolved_facets: ResolvedFacets,
 }
 
 impl NodeDefinition {
     pub fn has_facet_refs(&self) -> bool {
-        self.policy.is_some()
-            || self.knowledge.is_some()
-            || self.instruction.is_some()
+        self.session()
+            .is_some_and(|session| !session.facets.is_empty())
             || self.output_contract.is_some()
             || self.input_contracts.as_ref().is_some_and(|v| !v.is_empty())
     }
 
-    pub fn is_parallel(&self) -> bool {
-        matches!(self.node_type, NodeType::Parallel)
+    pub fn kind_name(&self) -> NodeKindName {
+        self.kind.name()
+    }
+
+    pub fn is_command(&self) -> bool {
+        matches!(self.kind, NodeKind::Command(_))
+    }
+
+    pub fn is_session(&self) -> bool {
+        matches!(self.kind, NodeKind::Session(_))
+    }
+
+    pub fn is_approval_session(&self) -> bool {
+        self.session()
+            .is_some_and(|session| session.gate == SessionGate::Approval)
+    }
+
+    pub fn is_fanout(&self) -> bool {
+        matches!(self.kind, NodeKind::Fanout(_))
+    }
+
+    pub fn command(&self) -> Option<&str> {
+        match &self.kind {
+            NodeKind::Command(spec) => Some(spec.command.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn session(&self) -> Option<&SessionSpec> {
+        match &self.kind {
+            NodeKind::Session(spec) => Some(spec),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn session_mut(&mut self) -> Option<&mut SessionSpec> {
+        match &mut self.kind {
+            NodeKind::Session(spec) => Some(spec),
+            _ => None,
+        }
+    }
+
+    pub fn fanout(&self) -> Option<&FanoutSpec> {
+        match &self.kind {
+            NodeKind::Fanout(spec) => Some(spec),
+            _ => None,
+        }
+    }
+
+    pub fn model(&self) -> Option<&str> {
+        self.session().and_then(|session| session.model.as_deref())
+    }
+
+    pub fn permission(&self) -> Option<&str> {
+        self.session()
+            .and_then(|session| session.permission.as_deref())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct ChildNodeDefinition {
+pub struct InterimChild {
     pub name: String,
-    pub node_type: NodeType,
-    pub policy: Option<String>,
-    pub knowledge: Option<String>,
-    pub instruction: Option<String>,
+    pub model: Option<String>,
+    pub permission: Option<String>,
+    pub facets: FacetRefs,
     pub output_contract: Option<String>,
     pub input_contracts: Option<Vec<String>>,
     pub pass_previous_response: Option<bool>,
     pub pass_output_from: Option<Vec<String>>,
-    pub model: Option<String>,
-    pub permission: Option<String>,
     pub resolved_facets: ResolvedFacets,
 }
 
-impl ChildNodeDefinition {
+impl InterimChild {
     pub fn has_facet_refs(&self) -> bool {
-        self.policy.is_some()
-            || self.knowledge.is_some()
-            || self.instruction.is_some()
+        !self.facets.is_empty()
             || self.output_contract.is_some()
             || self.input_contracts.as_ref().is_some_and(|v| !v.is_empty())
     }

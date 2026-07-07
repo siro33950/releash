@@ -45,8 +45,9 @@ use crate::adaptor::gateway::workflow::{
     TauriWorkflowExternalEditorGateway, TauriWorkflowRuntimeCommandGateway,
     TauriWorkflowRuntimeCommandGatewayDeps, TauriWorkflowStepLifecycleGateway,
     WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
-    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository, WorkflowFacetFileRepository,
-    WorkflowRunArchiveFileRepository, WorkflowRunFileRepository, WorkflowSecretSourceConfigGateway,
+    WorkflowDefinitionFileSourceGateway, WorkflowDiagnosticsFileGateway,
+    WorkflowEventLogRepository, WorkflowFacetFileRepository, WorkflowRunArchiveFileRepository,
+    WorkflowRunFileRepository, WorkflowSecretSourceConfigGateway,
     WorkflowStateProjectionLogRepository, WorkflowStepDetailProjectionLogRepository,
 };
 use crate::domain::app_config::{AgentConfigRepository, ConfigRepository, ConfigSecretRepository};
@@ -269,6 +270,10 @@ fn build_workflow_usecase_with_gateways(
         workflows_dir.clone(),
         facets_base_dir.clone(),
     ));
+    let definition_sources = Arc::new(WorkflowDefinitionFileSourceGateway::new(
+        workflows_dir.clone(),
+        facets_base_dir.clone(),
+    ));
     let facets = Arc::new(WorkflowFacetFileRepository::new(facets_base_dir.clone()));
     let events = Arc::new(WorkflowEventLogRepository::new(data_dir.clone()));
     let state_projection = Arc::new(WorkflowStateProjectionLogRepository::new(data_dir.clone()));
@@ -281,6 +286,7 @@ fn build_workflow_usecase_with_gateways(
     let query = WorkflowQueryService::new(
         runs,
         definitions.clone(),
+        definition_sources.clone(),
         facets.clone(),
         events,
         state_projection,
@@ -289,6 +295,7 @@ fn build_workflow_usecase_with_gateways(
     WorkflowUsecase::new(
         query,
         definitions,
+        definition_sources,
         facets,
         worktrees,
         editors,

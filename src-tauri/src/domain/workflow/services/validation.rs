@@ -1,6 +1,6 @@
 use crate::domain::workflow::value_objects::{MAX_NODES_PER_WORKFLOW, MAX_PARALLEL_CHILDREN};
 use crate::domain::workflow::{
-    NodeDefinition, NodeType, ReduceStrategy, TransitionRule, WorkflowDefinition as Workflow,
+    NodeDefinition, NodeKindName, ReduceStrategy, TransitionRule, WorkflowDefinition as Workflow,
     WorkflowError, WorkflowName,
 };
 use regex::RegexBuilder;
@@ -34,18 +34,9 @@ pub enum ValidationError {
         step: String,
         reference: String,
     },
-    /// 並列子stepが agent 以外の node_type
-    ParallelChildNotAuto {
-        parent: String,
-        child: String,
-    },
     /// 並列子step名がグローバル名前空間で重複
     ParallelChildNameConflict {
         child: String,
-    },
-    /// aggregate が parallel なしで指定されている
-    AggregateWithoutParallel {
-        step: String,
     },
     /// aggregate 設定が不正（all_match/any_match 排他違反等）
     AggregateInvalidConfig {
@@ -101,19 +92,15 @@ pub enum ValidationError {
     MissingPermissionMode {
         step: String,
     },
-    /// bash 種別 node に `command` が指定されていない
-    MissingCommand {
-        step: String,
-    },
     /// bash 種別 node の `command` が空文字
     EmptyCommand {
         step: String,
     },
     /// node 種別ごとに許可されないフィールドが指定されている
-    DisallowedFieldForNodeType {
+    DisallowedFieldForKind {
         step: String,
         field: &'static str,
-        node_type: &'static str,
+        kind: &'static str,
     },
     /// `nodes` の総数が DoS 防御の上限を超えた
     TooManyNodes {
@@ -173,7 +160,7 @@ impl fmt::Display for ValidationError {
             Self::MissingFacet { step } => {
                 write!(
                     f,
-                    "ステップ '{step}' にはファセット参照またはinline_promptが必要です（collectステップのみ両方省略可）"
+                    "ステップ '{step}' にはファセット参照が必要です（collectステップのみ省略可）"
                 )
             }
             Self::UnknownOutputFrom { step, reference } => write!(
@@ -184,20 +171,8 @@ impl fmt::Display for ValidationError {
                 f,
                 "ステップ '{step}' のcollect.fromが存在しないステップ '{reference}' を参照しています"
             ),
-            Self::ParallelChildNotAuto { parent, child } => {
-                write!(
-                    f,
-                    "parallelブロック '{parent}' の子node '{child}' は `type: agent` のみ許可されています"
-                )
-            }
             Self::ParallelChildNameConflict { child } => {
                 write!(f, "並列子ステップ名 '{child}' が他のステップ名と重複しています")
-            }
-            Self::AggregateWithoutParallel { step } => {
-                write!(
-                    f,
-                    "ステップ '{step}' にaggregateが定義されていますがparallelがありません"
-                )
             }
             Self::AggregateInvalidConfig { step, reason } => {
                 write!(f, "ステップ '{step}' のaggregate設定が不正です: {reason}")
@@ -265,25 +240,19 @@ impl fmt::Display for ValidationError {
                 f,
                 "ステップ '{step}' の parallel_children の数 {count} が上限 {max} を超えています"
             ),
-            Self::MissingCommand { step } => {
-                write!(
-                    f,
-                    "bashステップ '{step}' には command が必要です"
-                )
-            }
             Self::EmptyCommand { step } => {
                 write!(
                     f,
                     "bashステップ '{step}' の command は空にできません"
                 )
             }
-            Self::DisallowedFieldForNodeType {
+            Self::DisallowedFieldForKind {
                 step,
                 field,
-                node_type,
+                kind,
             } => write!(
                 f,
-                "ステップ '{step}' ({node_type}) には '{field}' を指定できません"
+                "ステップ '{step}' ({kind}) には '{field}' を指定できません"
             ),
             Self::UnknownModel { step, value } => {
                 write!(
@@ -337,13 +306,9 @@ pub fn validate_workflow_shape(workflow: &Workflow) -> Result<(), WorkflowError>
     if workflow.nodes.is_empty() {
         return Err(WorkflowError::validation("workflow has no nodes"));
     }
-    if let Some(node) = workflow
-        .nodes
-        .iter()
-        .find(|node| matches!(node.node_type, NodeType::Bash))
-    {
+    if let Some(node) = workflow.nodes.iter().find(|node| node.is_command()) {
         return Err(WorkflowError::validation(format!(
-            "bash node '{}' is not executable in this milestone",
+            "command node '{}' is not executable in this milestone",
             node.name
         )));
     }
@@ -353,7 +318,10 @@ pub fn validate_workflow_shape(workflow: &Workflow) -> Result<(), WorkflowError>
 /// `workflow.nodes` の top-level node 数と全 `parallel_children` の合算（=DoS ガード対象の総 node 数）。
 fn total_node_count(workflow: &Workflow) -> usize {
     workflow.nodes.iter().fold(0usize, |acc, n| {
-        let child_count = n.parallel_children.as_ref().map(|c| c.len()).unwrap_or(0);
+        let child_count = n
+            .fanout()
+            .map(|fanout| fanout.parallel_children.len())
+            .unwrap_or(0);
         acc + 1 + child_count
     })
 }
@@ -380,7 +348,8 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
         }
         referenceable_step_names.insert(step.name.as_str());
         // 並列子step名は参照可能名前空間にのみ追加（遷移先には不可）
-        if let Some(ref children) = step.parallel_children {
+        if let Some(fanout) = step.fanout() {
+            let children = &fanout.parallel_children;
             for child in children {
                 if !referenceable_step_names.insert(child.name.as_str()) {
                     return Err(ValidationError::ParallelChildNameConflict {
@@ -395,35 +364,25 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
     let mut preceding_step_names: HashSet<&str> = HashSet::new();
 
     for step in &workflow.nodes {
-        validate_node_type_fields(step)?;
-        if step.is_parallel() {
+        validate_node_kind_fields(step)?;
+        if step.is_fanout() {
             // --- parallel block 固有のバリデーション ---
             // [02] では node_type=Parallel が型レベルで mode を排除するため、
             // 旧 schema の「parallel に mode 指定」エラーは存在しない。
 
-            let children = step.parallel_children.as_ref().ok_or_else(|| {
-                ValidationError::AggregateInvalidConfig {
-                    step: step.name.clone(),
-                    reason: "parallelブロックには parallel_children が必要です".to_string(),
-                }
-            })?;
+            let children = &step
+                .fanout()
+                .expect("is_fanout checked above")
+                .parallel_children;
             if children.is_empty() {
                 return Err(ValidationError::AggregateInvalidConfig {
                     step: step.name.clone(),
-                    reason: "parallelブロックには1つ以上の子ステップが必要です".to_string(),
+                    reason: "fanoutブロックには1つ以上の子ステップが必要です".to_string(),
                 });
             }
             let child_names: HashSet<&str> = children.iter().map(|c| c.name.as_str()).collect();
 
             for child in children {
-                // 子step は auto のみ
-                if child.node_type != NodeType::Agent {
-                    return Err(ValidationError::ParallelChildNotAuto {
-                        parent: step.name.clone(),
-                        child: child.name.clone(),
-                    });
-                }
-
                 // 子step にはファセット参照が必要
                 if !child.has_facet_refs() {
                     return Err(ValidationError::ParallelChildMissingFacet {
@@ -458,7 +417,7 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
             }
 
             // aggregate バリデーション
-            if let Some(ref agg) = step.aggregate {
+            if let Some(agg) = step.fanout().and_then(|fanout| fanout.aggregate.as_ref()) {
                 // all_match と any_match の排他チェック
                 match (&agg.all_match, &agg.any_match) {
                     (Some(_), Some(_)) => {
@@ -518,21 +477,16 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
             }
         } else {
             // --- 通常step のバリデーション ---
-            // 新 schema では node_type が型レベルで必須・列挙のため、
+            // 新 schema では kind が型レベルで必須・列挙のため、
             // 旧 schema の MissingMode / InteractiveModeNotAllowed 検査は
             // YAML deserialize 段階で吸収される（[02] 範囲外）。
-            if step.node_type == NodeType::Approval {
+            if step.is_approval_session() {
                 validate_approval_rules(&step.name, &step.transition_rules)?;
             }
 
             // permission の妥当性チェック（必須）
-            validate_required_permission(&step.name, step.permission.as_deref())?;
-
-            // aggregate が parallel なしで指定されている場合はエラー
-            if step.aggregate.is_some() {
-                return Err(ValidationError::AggregateWithoutParallel {
-                    step: step.name.clone(),
-                });
+            if step.is_session() {
+                validate_required_permission(&step.name, step.permission())?;
             }
 
             if let Some(err) = check_missing_facet(step) {
@@ -581,7 +535,7 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                     for r in &collect.from {
                         let referenced_step = workflow.nodes.iter().find(|s| s.name == *r);
                         if let Some(rs) = referenced_step {
-                            if rs.transition_rules.is_empty() && !rs.is_parallel() {
+                            if rs.transition_rules.is_empty() && !rs.is_fanout() {
                                 log::warn!(
                                     "collect step '{}' uses {:?} reducer but source step '{}' has no rules defined (result may be None)",
                                     step.name,
@@ -632,7 +586,8 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
         // 次のステップのvalidationで使えるよう、このステップ名を追加
         preceding_step_names.insert(&step.name);
         // parallel blockの子step名も追加（後続parallel blockの子stepから参照可能にするため）
-        if let Some(ref children) = step.parallel_children {
+        if let Some(fanout) = step.fanout() {
+            let children = &fanout.parallel_children;
             for child in children {
                 preceding_step_names.insert(&child.name);
             }
@@ -721,7 +676,8 @@ where
             node.input_contracts.as_deref(),
             &contract_exists,
         )?;
-        if let Some(children) = node.parallel_children.as_ref() {
+        if let Some(fanout) = node.fanout() {
+            let children = &fanout.parallel_children;
             for child in children {
                 check(
                     &child.name,
@@ -754,7 +710,8 @@ fn collect_node_count_errors(workflow: &Workflow) -> Vec<ValidationError> {
         return errors;
     }
     for step in &workflow.nodes {
-        if let Some(ref children) = step.parallel_children {
+        if let Some(fanout) = step.fanout() {
+            let children = &fanout.parallel_children;
             if children.len() > MAX_PARALLEL_CHILDREN {
                 errors.push(ValidationError::TooManyParallelChildren {
                     step: step.name.clone(),
@@ -767,17 +724,13 @@ fn collect_node_count_errors(workflow: &Workflow) -> Vec<ValidationError> {
     errors
 }
 
-/// agent/approval step (collect なし) に facet 参照も inline_prompt も無い場合に
-/// `MissingFacet` を返す。bash step は `command` を持つため facet/inline_prompt が
-/// 不要であり、この検査の対象外（必須フィールドは `validate_node_type_fields` で検証済み）。
+/// session (collect なし) に facet 参照が無い場合に
+/// `MissingFacet` を返す。command node は `command` を持つため facet が
+/// 不要であり、この検査の対象外（必須フィールドは `validate_node_kind_fields` で検証済み）。
 ///
 /// `validate` / `validate_all` の両経路で同じ判定を行うため共通化する。
 fn check_missing_facet(step: &NodeDefinition) -> Option<ValidationError> {
-    if step.node_type != NodeType::Bash
-        && step.collect.is_none()
-        && !step.has_facet_refs()
-        && step.inline_prompt.is_none()
-    {
+    if step.is_session() && step.collect.is_none() && !step.has_facet_refs() {
         Some(ValidationError::MissingFacet {
             step: step.name.clone(),
         })
@@ -786,78 +739,42 @@ fn check_missing_facet(step: &NodeDefinition) -> Option<ValidationError> {
     }
 }
 
-/// node 種別ごとの許可フィールドを検証する（[02] schema 境界）。
-///
-/// - `Bash`: `command` 必須・空文字禁止。`facet refs` / `inline_prompt` /
-///   `collect` / `parallel_children` / `aggregate` は不許可。
-/// - `Agent` / `Approval`: `command` / `parallel_children` / `aggregate` は不許可。
-/// - `Parallel`: `command` / `facet refs` / `inline_prompt` / `collect` は不許可
-///   （`parallel_children` 自体は required で別経路の `AggregateInvalidConfig` で検証）。
-fn validate_node_type_fields(step: &NodeDefinition) -> Result<(), ValidationError> {
-    let node_type_name = match step.node_type {
-        NodeType::Agent => "agent",
-        NodeType::Bash => "bash",
-        NodeType::Approval => "approval",
-        NodeType::Parallel => "parallel",
-    };
-    let disallow = |field: &'static str| ValidationError::DisallowedFieldForNodeType {
+/// node kind ごとの許可フィールドを検証する。
+fn validate_node_kind_fields(step: &NodeDefinition) -> Result<(), ValidationError> {
+    let kind_name = step.kind_name().as_str();
+    let disallow = |field: &'static str| ValidationError::DisallowedFieldForKind {
         step: step.name.clone(),
         field,
-        node_type: node_type_name,
+        kind: kind_name,
     };
 
-    match step.node_type {
-        NodeType::Bash => {
-            let command =
-                step.command
-                    .as_deref()
-                    .ok_or_else(|| ValidationError::MissingCommand {
-                        step: step.name.clone(),
-                    })?;
+    match step.kind_name() {
+        NodeKindName::Command => {
+            let command = step
+                .command()
+                .expect("command node must expose command spec");
             if command.trim().is_empty() {
                 return Err(ValidationError::EmptyCommand {
                     step: step.name.clone(),
                 });
             }
-            if step.has_facet_refs() {
-                return Err(disallow(
-                    "policy/knowledge/instruction/output_contract/input_contracts",
-                ));
+            if step.output_contract.is_some() {
+                return Err(disallow("output_contract"));
             }
-            if step.inline_prompt.is_some() {
-                return Err(disallow("inline_prompt"));
+            if step.input_contracts.as_ref().is_some_and(|v| !v.is_empty()) {
+                return Err(disallow("input_contracts"));
             }
             if step.collect.is_some() {
                 return Err(disallow("collect"));
             }
-            if step.parallel_children.is_some() {
-                return Err(disallow("parallel_children"));
-            }
-            if step.aggregate.is_some() {
-                return Err(disallow("aggregate"));
-            }
         }
-        NodeType::Agent | NodeType::Approval => {
-            if step.command.is_some() {
-                return Err(disallow("command"));
+        NodeKindName::Session => {}
+        NodeKindName::Fanout => {
+            if step.output_contract.is_some() {
+                return Err(disallow("output_contract"));
             }
-            if step.parallel_children.is_some() {
-                return Err(disallow("parallel_children"));
-            }
-            // aggregate は呼び出し側の AggregateWithoutParallel 経路で検証されるため
-            // ここでは除外する。
-        }
-        NodeType::Parallel => {
-            if step.command.is_some() {
-                return Err(disallow("command"));
-            }
-            if step.has_facet_refs() {
-                return Err(disallow(
-                    "policy/knowledge/instruction/output_contract/input_contracts",
-                ));
-            }
-            if step.inline_prompt.is_some() {
-                return Err(disallow("inline_prompt"));
+            if step.input_contracts.as_ref().is_some_and(|v| !v.is_empty()) {
+                return Err(disallow("input_contracts"));
             }
             if step.collect.is_some() {
                 return Err(disallow("collect"));
@@ -917,11 +834,12 @@ where
     F: FnMut(&str) -> Result<Option<String>, String>,
 {
     for step in &workflow.nodes {
-        if let Some(ref model) = step.model {
+        if let Some(model) = step.model() {
             validate_model_format(&step.name, model)?;
             validate_model_registered(&step.name, model, &mut resolve_model)?;
         }
-        if let Some(ref children) = step.parallel_children {
+        if let Some(fanout) = step.fanout() {
+            let children = &fanout.parallel_children;
             for child in children {
                 if let Some(ref model) = child.model {
                     validate_model_format(&child.name, model)?;
@@ -1006,7 +924,8 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
             has_dup = true;
         }
         referenceable_step_names.insert(step.name.as_str());
-        if let Some(ref children) = step.parallel_children {
+        if let Some(fanout) = step.fanout() {
+            let children = &fanout.parallel_children;
             for child in children {
                 if !referenceable_step_names.insert(child.name.as_str()) {
                     errors.push(ValidationError::ParallelChildNameConflict {
@@ -1025,33 +944,23 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
     let mut preceding_step_names: HashSet<&str> = HashSet::new();
 
     for step in &workflow.nodes {
-        if let Err(e) = validate_node_type_fields(step) {
+        if let Err(e) = validate_node_kind_fields(step) {
             errors.push(e);
         }
-        if step.is_parallel() {
-            // 新 schema では node_type=Parallel が型レベルで mode を排除する。
-            let Some(children) = step.parallel_children.as_ref() else {
-                errors.push(ValidationError::AggregateInvalidConfig {
-                    step: step.name.clone(),
-                    reason: "parallelブロックには parallel_children が必要です".to_string(),
-                });
-                continue;
-            };
+        if step.is_fanout() {
+            let children = &step
+                .fanout()
+                .expect("is_fanout checked above")
+                .parallel_children;
             if children.is_empty() {
                 errors.push(ValidationError::AggregateInvalidConfig {
                     step: step.name.clone(),
-                    reason: "parallelブロックには1つ以上の子ステップが必要です".to_string(),
+                    reason: "fanoutブロックには1つ以上の子ステップが必要です".to_string(),
                 });
             }
             let child_names: HashSet<&str> = children.iter().map(|c| c.name.as_str()).collect();
 
             for child in children {
-                if child.node_type != NodeType::Agent {
-                    errors.push(ValidationError::ParallelChildNotAuto {
-                        parent: step.name.clone(),
-                        child: child.name.clone(),
-                    });
-                }
                 if !child.has_facet_refs() {
                     errors.push(ValidationError::ParallelChildMissingFacet {
                         parent: step.name.clone(),
@@ -1082,7 +991,7 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
                 }
             }
 
-            if let Some(ref agg) = step.aggregate {
+            if let Some(agg) = step.fanout().and_then(|fanout| fanout.aggregate.as_ref()) {
                 match (&agg.all_match, &agg.any_match) {
                     (Some(_), Some(_)) => {
                         errors.push(ValidationError::AggregateInvalidConfig {
@@ -1136,20 +1045,17 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
                 }
             }
         } else {
-            // 新 schema では node_type が型レベルで必須・列挙のため、旧 schema の
+            // 新 schema では kind が型レベルで必須・列挙のため、旧 schema の
             // MissingMode / InteractiveModeNotAllowed 検査は YAML deserialize 段階で吸収される。
-            if step.node_type == NodeType::Approval {
+            if step.is_approval_session() {
                 if let Err(e) = validate_approval_rules(&step.name, &step.transition_rules) {
                     errors.push(e);
                 }
             }
-            if let Err(e) = validate_required_permission(&step.name, step.permission.as_deref()) {
-                errors.push(e);
-            }
-            if step.aggregate.is_some() {
-                errors.push(ValidationError::AggregateWithoutParallel {
-                    step: step.name.clone(),
-                });
+            if step.is_session() {
+                if let Err(e) = validate_required_permission(&step.name, step.permission()) {
+                    errors.push(e);
+                }
             }
             if let Some(err) = check_missing_facet(step) {
                 errors.push(err);
@@ -1218,7 +1124,8 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
         }
 
         preceding_step_names.insert(&step.name);
-        if let Some(ref children) = step.parallel_children {
+        if let Some(fanout) = step.fanout() {
+            let children = &fanout.parallel_children;
             for child in children {
                 preceding_step_names.insert(&child.name);
             }
@@ -1260,8 +1167,16 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ChildNodeDefinition, CollectConfig, CycleGuard, ParallelAggregate,
+        CollectConfig, CommandSpec, CycleGuard, FacetRefs, FanoutSpec, InterimChild, NodeKind,
+        ParallelAggregate, SessionGate, SessionSpec,
     };
+
+    #[derive(Clone, Copy)]
+    enum TestKind {
+        Session,
+        ApprovalSession,
+    }
+
     fn make_workflow(nodes: Vec<NodeDefinition>) -> Workflow {
         Workflow {
             variables: Default::default(),
@@ -1276,39 +1191,94 @@ mod tests {
         Ok(valid.contains(model).then(|| "backend".to_string()))
     }
 
-    fn make_step(name: &str, node_type: NodeType, rules: Vec<TransitionRule>) -> NodeDefinition {
+    fn make_step(name: &str, kind: TestKind, rules: Vec<TransitionRule>) -> NodeDefinition {
+        let node_kind = match kind {
+            TestKind::Session => NodeKind::Session(SessionSpec {
+                permission: Some("edit".to_string()),
+                facets: FacetRefs {
+                    instruction: Some("implement".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            TestKind::ApprovalSession => NodeKind::Session(SessionSpec {
+                permission: Some("edit".to_string()),
+                gate: SessionGate::Approval,
+                facets: FacetRefs {
+                    instruction: Some("implement".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        };
         NodeDefinition {
             name: name.to_string(),
-            node_type,
-            instruction: Some("implement".to_string()),
+            kind: node_kind,
             transition_rules: rules,
-            permission: Some("edit".to_string()),
             ..NodeDefinition::default()
         }
     }
 
-    fn make_parallel_step(name: &str) -> ChildNodeDefinition {
-        ChildNodeDefinition {
+    fn make_parallel_step(name: &str) -> InterimChild {
+        InterimChild {
             name: name.to_string(),
-            node_type: NodeType::Agent,
-            instruction: Some("review".to_string()),
+            facets: FacetRefs {
+                instruction: Some("review".to_string()),
+                ..Default::default()
+            },
             permission: Some("edit".to_string()),
-            ..ChildNodeDefinition::default()
+            ..InterimChild::default()
         }
     }
 
     fn make_parallel_block(
         name: &str,
-        children: Vec<ChildNodeDefinition>,
+        children: Vec<InterimChild>,
         aggregate: Option<ParallelAggregate>,
     ) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
-            node_type: NodeType::Parallel,
-            parallel_children: Some(children),
-            aggregate,
-            permission: Some("edit".to_string()),
+            kind: NodeKind::Fanout(FanoutSpec {
+                parallel_children: children,
+                aggregate,
+            }),
             ..NodeDefinition::default()
+        }
+    }
+
+    fn with_session_facets(mut node: NodeDefinition, facets: FacetRefs) -> NodeDefinition {
+        node.session_mut()
+            .expect("test node must be session")
+            .facets = facets;
+        node
+    }
+
+    fn without_session_facets(node: NodeDefinition) -> NodeDefinition {
+        with_session_facets(node, FacetRefs::default())
+    }
+
+    fn with_session_permission(
+        mut node: NodeDefinition,
+        permission: Option<&str>,
+    ) -> NodeDefinition {
+        node.session_mut()
+            .expect("test node must be session")
+            .permission = permission.map(str::to_string);
+        node
+    }
+
+    fn with_session_model(mut node: NodeDefinition, model: Option<&str>) -> NodeDefinition {
+        node.session_mut().expect("test node must be session").model = model.map(str::to_string);
+        node
+    }
+
+    fn command_step(name: &str, command: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Command(CommandSpec {
+                command: command.to_string(),
+            }),
+            ..Default::default()
         }
     }
 
@@ -1317,7 +1287,7 @@ mod tests {
     #[test]
     fn valid_workflow_passes() {
         let wf = make_workflow(vec![
-            make_step("plan", NodeType::Approval, vec![]),
+            make_step("plan", TestKind::ApprovalSession, vec![]),
             NodeDefinition {
                 cycle_guard: Some(CycleGuard {
                     max_iterations: 3,
@@ -1327,22 +1297,22 @@ mod tests {
                     r#match: "DONE".to_string(),
                     next: "plan".to_string(),
                 }],
-                ..make_step("implement", NodeType::Agent, vec![])
+                ..make_step("implement", TestKind::Session, vec![])
             },
         ]);
         assert!(validate(&wf).is_ok());
     }
 
-    // [02]: Interactive 概念が廃止された（StepMode 削除 + NodeType に Interactive 無し）ため、
+    // [02]: Interactive 概念が廃止されたため、
     // 旧テスト `interactive_mode_fails_validation` は削除した。
 
     #[test]
     fn approval_step_allows_single_reject_rule() {
         let wf = make_workflow(vec![
-            make_step("fix", NodeType::Agent, vec![]),
+            make_step("fix", TestKind::Session, vec![]),
             make_step(
                 "approval",
-                NodeType::Approval,
+                TestKind::ApprovalSession,
                 vec![TransitionRule {
                     r#match: "reject".to_string(),
                     next: "fix".to_string(),
@@ -1355,10 +1325,10 @@ mod tests {
     #[test]
     fn approval_step_rejects_non_reject_rule() {
         let wf = make_workflow(vec![
-            make_step("fix", NodeType::Agent, vec![]),
+            make_step("fix", TestKind::Session, vec![]),
             make_step(
                 "approval",
-                NodeType::Approval,
+                TestKind::ApprovalSession,
                 vec![TransitionRule {
                     r#match: "NEEDS_FIX".to_string(),
                     next: "fix".to_string(),
@@ -1374,10 +1344,10 @@ mod tests {
     #[test]
     fn approval_step_rejects_multiple_reject_rules() {
         let wf = make_workflow(vec![
-            make_step("fix", NodeType::Agent, vec![]),
+            make_step("fix", TestKind::Session, vec![]),
             make_step(
                 "approval",
-                NodeType::Approval,
+                TestKind::ApprovalSession,
                 vec![
                     TransitionRule {
                         r#match: "reject".to_string(),
@@ -1403,7 +1373,7 @@ mod tests {
                 r#match: "DONE".to_string(),
                 next: "nonexistent".to_string(),
             }],
-            ..make_step("plan", NodeType::Agent, vec![])
+            ..make_step("plan", TestKind::Session, vec![])
         }]);
         let result = validate(&wf);
         assert!(result.is_err());
@@ -1459,8 +1429,8 @@ mod tests {
     #[test]
     fn duplicate_step_names_fails() {
         let wf = make_workflow(vec![
-            make_step("plan", NodeType::Approval, vec![]),
-            make_step("plan", NodeType::Agent, vec![]),
+            make_step("plan", TestKind::ApprovalSession, vec![]),
+            make_step("plan", TestKind::Session, vec![]),
         ]);
         let result = validate(&wf);
         assert!(matches!(
@@ -1471,10 +1441,11 @@ mod tests {
 
     #[test]
     fn missing_facet_without_collect_fails() {
-        let wf = make_workflow(vec![NodeDefinition {
-            instruction: None,
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![without_session_facets(make_step(
+            "step1",
+            TestKind::Session,
+            vec![],
+        ))]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
             ValidationError::MissingFacet { ref step } if step == "step1"
@@ -1483,25 +1454,27 @@ mod tests {
 
     #[test]
     fn facet_only_step_passes() {
-        let wf = make_workflow(vec![NodeDefinition {
-            policy: Some("coding".to_string()),
-            instruction: Some("implement".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_facets(
+            make_step("step1", TestKind::Session, vec![]),
+            FacetRefs {
+                policy: Some("coding".to_string()),
+                instruction: Some("implement".to_string()),
+                ..Default::default()
+            },
+        )]);
         assert!(validate(&wf).is_ok());
     }
 
     #[test]
     fn collect_step_without_facets_passes() {
         let wf = make_workflow(vec![
-            make_step("review_a", NodeType::Agent, vec![]),
+            make_step("review_a", TestKind::Session, vec![]),
             NodeDefinition {
-                instruction: None,
                 collect: Some(CollectConfig {
                     from: vec!["review_a".to_string()],
                     reduce: ReduceStrategy::Concat,
                 }),
-                ..make_step("collect_reviews", NodeType::Agent, vec![])
+                ..without_session_facets(make_step("collect_reviews", TestKind::Session, vec![]))
             },
         ]);
         assert!(validate(&wf).is_ok());
@@ -1511,7 +1484,7 @@ mod tests {
     fn unknown_output_from_fails() {
         let wf = make_workflow(vec![NodeDefinition {
             pass_output_from: Some(vec!["nonexistent".to_string()]),
-            ..make_step("step1", NodeType::Agent, vec![])
+            ..make_step("step1", TestKind::Session, vec![])
         }]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
@@ -1522,12 +1495,11 @@ mod tests {
     #[test]
     fn unknown_collect_from_fails() {
         let wf = make_workflow(vec![NodeDefinition {
-            instruction: None,
             collect: Some(CollectConfig {
                 from: vec!["nonexistent".to_string()],
                 reduce: ReduceStrategy::Concat,
             }),
-            ..make_step("step1", NodeType::Agent, vec![])
+            ..without_session_facets(make_step("step1", TestKind::Session, vec![]))
         }]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
@@ -1538,10 +1510,10 @@ mod tests {
     #[test]
     fn valid_pass_output_from_passes() {
         let wf = make_workflow(vec![
-            make_step("step_a", NodeType::Agent, vec![]),
+            make_step("step_a", TestKind::Session, vec![]),
             NodeDefinition {
                 pass_output_from: Some(vec!["step_a".to_string()]),
-                ..make_step("step_b", NodeType::Agent, vec![])
+                ..make_step("step_b", TestKind::Session, vec![])
             },
         ]);
         assert!(validate(&wf).is_ok());
@@ -1552,7 +1524,7 @@ mod tests {
     #[test]
     fn valid_parallel_block_passes() {
         let wf = make_workflow(vec![
-            make_step("implement", NodeType::Agent, vec![]),
+            make_step("implement", TestKind::Session, vec![]),
             make_parallel_block(
                 "parallel-review",
                 vec![
@@ -1566,7 +1538,7 @@ mod tests {
                     r#else: "implement".to_string(),
                 }),
             ),
-            make_step("report", NodeType::Agent, vec![]),
+            make_step("report", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -1574,7 +1546,7 @@ mod tests {
     #[test]
     fn parallel_block_without_aggregate_passes() {
         let wf = make_workflow(vec![
-            make_step("implement", NodeType::Agent, vec![]),
+            make_step("implement", TestKind::Session, vec![]),
             make_parallel_block(
                 "parallel-review",
                 vec![
@@ -1583,7 +1555,7 @@ mod tests {
                 ],
                 None,
             ),
-            make_step("report", NodeType::Agent, vec![]),
+            make_step("report", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -1592,26 +1564,9 @@ mod tests {
     // 旧テスト `parallel_block_with_mode_fails` は廃止された（[02] 範囲）。
 
     #[test]
-    fn parallel_child_not_auto_fails() {
-        let wf = make_workflow(vec![make_parallel_block(
-            "par",
-            vec![ChildNodeDefinition {
-                node_type: NodeType::Approval,
-                ..make_parallel_step("child1")
-            }],
-            None,
-        )]);
-        assert!(matches!(
-            validate(&wf).unwrap_err(),
-            ValidationError::ParallelChildNotAuto { ref parent, ref child }
-                if parent == "par" && child == "child1"
-        ));
-    }
-
-    #[test]
     fn parallel_child_name_conflict_fails() {
         let wf = make_workflow(vec![
-            make_step("conflict", NodeType::Agent, vec![]),
+            make_step("conflict", TestKind::Session, vec![]),
             make_parallel_block("par", vec![make_parallel_step("conflict")], None),
         ]);
         assert!(matches!(
@@ -1621,26 +1576,9 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_without_parallel_fails() {
-        let wf = make_workflow(vec![NodeDefinition {
-            aggregate: Some(ParallelAggregate {
-                all_match: Some("LGTM".to_string()),
-                any_match: None,
-                then: "implement".to_string(),
-                r#else: "implement".to_string(),
-            }),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
-        assert!(matches!(
-            validate(&wf).unwrap_err(),
-            ValidationError::AggregateWithoutParallel { ref step } if step == "step1"
-        ));
-    }
-
-    #[test]
     fn aggregate_both_match_fails() {
         let wf = make_workflow(vec![
-            make_step("target", NodeType::Agent, vec![]),
+            make_step("target", TestKind::Session, vec![]),
             make_parallel_block(
                 "par",
                 vec![make_parallel_step("child1")],
@@ -1661,7 +1599,7 @@ mod tests {
     #[test]
     fn aggregate_no_match_fails() {
         let wf = make_workflow(vec![
-            make_step("target", NodeType::Agent, vec![]),
+            make_step("target", TestKind::Session, vec![]),
             make_parallel_block(
                 "par",
                 vec![make_parallel_step("child1")],
@@ -1703,7 +1641,7 @@ mod tests {
             "par",
             vec![
                 make_parallel_step("child1"),
-                ChildNodeDefinition {
+                InterimChild {
                     pass_output_from: Some(vec!["child1".to_string()]),
                     ..make_parallel_step("child2")
                 },
@@ -1721,8 +1659,8 @@ mod tests {
     fn parallel_child_missing_facet_fails() {
         let wf = make_workflow(vec![make_parallel_block(
             "par",
-            vec![ChildNodeDefinition {
-                instruction: None,
+            vec![InterimChild {
+                facets: FacetRefs::default(),
                 ..make_parallel_step("child1")
             }],
             None,
@@ -1740,10 +1678,10 @@ mod tests {
     #[test]
     fn parallel_child_pass_output_from_valid_global_step() {
         let wf = make_workflow(vec![
-            make_step("plan", NodeType::Agent, vec![]),
+            make_step("plan", TestKind::Session, vec![]),
             make_parallel_block(
                 "par",
-                vec![ChildNodeDefinition {
+                vec![InterimChild {
                     pass_output_from: Some(vec!["plan".to_string()]),
                     ..make_parallel_step("child1")
                 }],
@@ -1770,12 +1708,11 @@ mod tests {
                 }),
             ),
             NodeDefinition {
-                instruction: None,
                 collect: Some(CollectConfig {
                     from: vec!["arch-review".to_string(), "security-review".to_string()],
                     reduce: ReduceStrategy::Concat,
                 }),
-                ..make_step("report", NodeType::Agent, vec![])
+                ..without_session_facets(make_step("report", TestKind::Session, vec![]))
             },
         ]);
         assert!(validate(&wf).is_ok());
@@ -1784,9 +1721,9 @@ mod tests {
     #[test]
     fn empty_parallel_children_fails() {
         let wf = make_workflow(vec![
-            make_step("implement", NodeType::Agent, vec![]),
+            make_step("implement", TestKind::Session, vec![]),
             make_parallel_block("parallel-review", vec![], None),
-            make_step("report", NodeType::Agent, vec![]),
+            make_step("report", TestKind::Session, vec![]),
         ]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
@@ -1799,7 +1736,7 @@ mod tests {
     #[test]
     fn invalid_regex_all_match_fails() {
         let wf = make_workflow(vec![
-            make_step("implement", NodeType::Agent, vec![]),
+            make_step("implement", TestKind::Session, vec![]),
             make_parallel_block(
                 "parallel-review",
                 vec![
@@ -1813,7 +1750,7 @@ mod tests {
                     r#else: "implement".to_string(),
                 }),
             ),
-            make_step("report", NodeType::Agent, vec![]),
+            make_step("report", TestKind::Session, vec![]),
         ]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
@@ -1826,7 +1763,7 @@ mod tests {
     #[test]
     fn invalid_regex_any_match_fails() {
         let wf = make_workflow(vec![
-            make_step("implement", NodeType::Agent, vec![]),
+            make_step("implement", TestKind::Session, vec![]),
             make_parallel_block(
                 "parallel-review",
                 vec![
@@ -1840,7 +1777,7 @@ mod tests {
                     r#else: "implement".to_string(),
                 }),
             ),
-            make_step("report", NodeType::Agent, vec![]),
+            make_step("report", TestKind::Session, vec![]),
         ]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
@@ -1853,7 +1790,7 @@ mod tests {
     #[test]
     fn valid_regex_aggregate_passes() {
         let wf = make_workflow(vec![
-            make_step("implement", NodeType::Agent, vec![]),
+            make_step("implement", TestKind::Session, vec![]),
             make_parallel_block(
                 "parallel-review",
                 vec![
@@ -1867,7 +1804,7 @@ mod tests {
                     r#else: "implement".to_string(),
                 }),
             ),
-            make_step("report", NodeType::Agent, vec![]),
+            make_step("report", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -1877,16 +1814,16 @@ mod tests {
         // parallel block より後に定義されたステップへの後方参照は許可される
         // （出力が未生成の場合は空として扱われる）
         let wf = make_workflow(vec![
-            make_step("plan", NodeType::Agent, vec![]),
+            make_step("plan", TestKind::Session, vec![]),
             make_parallel_block(
                 "par",
-                vec![ChildNodeDefinition {
+                vec![InterimChild {
                     pass_output_from: Some(vec!["report".to_string()]),
                     ..make_parallel_step("child1")
                 }],
                 None,
             ),
-            make_step("report", NodeType::Agent, vec![]),
+            make_step("report", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -1895,17 +1832,17 @@ mod tests {
     fn parallel_child_pass_output_from_preceding_step_passes() {
         // parallel block より前に定義されたステップへの参照はOK
         let wf = make_workflow(vec![
-            make_step("plan", NodeType::Agent, vec![]),
-            make_step("implement", NodeType::Agent, vec![]),
+            make_step("plan", TestKind::Session, vec![]),
+            make_step("implement", TestKind::Session, vec![]),
             make_parallel_block(
                 "par",
-                vec![ChildNodeDefinition {
+                vec![InterimChild {
                     pass_output_from: Some(vec!["plan".to_string(), "implement".to_string()]),
                     ..make_parallel_step("child1")
                 }],
                 None,
             ),
-            make_step("report", NodeType::Agent, vec![]),
+            make_step("report", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -1924,7 +1861,7 @@ mod tests {
             ),
             make_parallel_block(
                 "par2",
-                vec![ChildNodeDefinition {
+                vec![InterimChild {
                     pass_output_from: Some(vec!["review-a".to_string()]),
                     ..make_parallel_step("summarize")
                 }],
@@ -1948,9 +1885,9 @@ mod tests {
                     r#match: ".*".to_string(),
                     next: "approval".to_string(),
                 }],
-                ..make_step("fix", NodeType::Agent, vec![])
+                ..make_step("fix", TestKind::Session, vec![])
             },
-            make_step("approval", NodeType::Approval, vec![]),
+            make_step("approval", TestKind::ApprovalSession, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -1962,7 +1899,7 @@ mod tests {
                 max_iterations: 2,
                 on_exhausted: Some("nonexistent".to_string()),
             }),
-            ..make_step("fix", NodeType::Agent, vec![])
+            ..make_step("fix", TestKind::Session, vec![])
         }]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
@@ -1980,14 +1917,14 @@ mod tests {
                     max_iterations: 2,
                     on_exhausted: Some("step_b".to_string()),
                 }),
-                ..make_step("step_a", NodeType::Agent, vec![])
+                ..make_step("step_a", TestKind::Session, vec![])
             },
             NodeDefinition {
                 cycle_guard: Some(CycleGuard {
                     max_iterations: 2,
                     on_exhausted: Some("step_a".to_string()),
                 }),
-                ..make_step("step_b", NodeType::Agent, vec![])
+                ..make_step("step_b", TestKind::Session, vec![])
             },
         ]);
         let err = validate(&wf).unwrap_err();
@@ -2004,11 +1941,11 @@ mod tests {
                     max_iterations: 3,
                     on_exhausted: None,
                 }),
-                ..make_step("fix", NodeType::Agent, vec![])
+                ..make_step("fix", TestKind::Session, vec![])
             },
             NodeDefinition {
                 resets_cycle_for: Some(vec!["fix".to_string()]),
-                ..make_step("approval", NodeType::Approval, vec![])
+                ..make_step("approval", TestKind::ApprovalSession, vec![])
             },
         ]);
         assert!(validate(&wf).is_ok());
@@ -2018,7 +1955,7 @@ mod tests {
     fn resets_cycle_for_unknown_target_fails() {
         let wf = make_workflow(vec![NodeDefinition {
             resets_cycle_for: Some(vec!["nonexistent".to_string()]),
-            ..make_step("approval", NodeType::Approval, vec![])
+            ..make_step("approval", TestKind::ApprovalSession, vec![])
         }]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
@@ -2031,10 +1968,10 @@ mod tests {
     #[test]
     fn resets_cycle_for_non_guarded_step_fails() {
         let wf = make_workflow(vec![
-            make_step("fix", NodeType::Agent, vec![]),
+            make_step("fix", TestKind::Session, vec![]),
             NodeDefinition {
                 resets_cycle_for: Some(vec!["fix".to_string()]),
-                ..make_step("approval", NodeType::Approval, vec![])
+                ..make_step("approval", TestKind::ApprovalSession, vec![])
             },
         ]);
         let err = validate(&wf).unwrap_err();
@@ -2053,20 +1990,10 @@ mod tests {
         let wf = make_workflow(vec![
             NodeDefinition {
                 pass_output_from: Some(vec!["step_b".to_string()]),
-                ..make_step("step_a", NodeType::Agent, vec![])
+                ..make_step("step_a", TestKind::Session, vec![])
             },
-            make_step("step_b", NodeType::Agent, vec![]),
+            make_step("step_b", TestKind::Session, vec![]),
         ]);
-        assert!(validate(&wf).is_ok());
-    }
-
-    #[test]
-    fn inline_prompt_step_without_facets_passes() {
-        let wf = make_workflow(vec![NodeDefinition {
-            instruction: None,
-            inline_prompt: Some("Do analysis".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
         assert!(validate(&wf).is_ok());
     }
 
@@ -2074,38 +2001,38 @@ mod tests {
 
     #[test]
     fn valid_permission_ask_passes() {
-        let wf = make_workflow(vec![NodeDefinition {
-            permission: Some("ask".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_permission(
+            make_step("step1", TestKind::Session, vec![]),
+            Some("ask"),
+        )]);
         assert!(validate(&wf).is_ok());
     }
 
     #[test]
     fn valid_permission_edit_passes() {
-        let wf = make_workflow(vec![NodeDefinition {
-            permission: Some("edit".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_permission(
+            make_step("step1", TestKind::Session, vec![]),
+            Some("edit"),
+        )]);
         assert!(validate(&wf).is_ok());
     }
 
     #[test]
     fn valid_permission_full_passes() {
-        let wf = make_workflow(vec![NodeDefinition {
-            permission: Some("full".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_permission(
+            make_step("step1", TestKind::Session, vec![]),
+            Some("full"),
+        )]);
         assert!(validate(&wf).is_ok());
     }
 
     #[test]
     fn legacy_permission_accept_edits_rejected() {
         for legacy in ["acceptEdits", "bypassPermissions", "plan", "default"] {
-            let wf = make_workflow(vec![NodeDefinition {
-                permission: Some(legacy.to_string()),
-                ..make_step("step1", NodeType::Agent, vec![])
-            }]);
+            let wf = make_workflow(vec![with_session_permission(
+                make_step("step1", TestKind::Session, vec![]),
+                Some(legacy),
+            )]);
             let err = validate(&wf).unwrap_err();
             assert!(matches!(
                 err,
@@ -2121,10 +2048,10 @@ mod tests {
 
     #[test]
     fn invalid_permission_fails() {
-        let wf = make_workflow(vec![NodeDefinition {
-            permission: Some("invalid-mode".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_permission(
+            make_step("step1", TestKind::Session, vec![]),
+            Some("invalid-mode"),
+        )]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
             err,
@@ -2136,10 +2063,10 @@ mod tests {
 
     #[test]
     fn empty_permission_fails() {
-        let wf = make_workflow(vec![NodeDefinition {
-            permission: Some(String::new()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_permission(
+            make_step("step1", TestKind::Session, vec![]),
+            Some(""),
+        )]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
             err,
@@ -2153,7 +2080,7 @@ mod tests {
     fn invalid_permission_on_parallel_child_fails() {
         let wf = make_workflow(vec![make_parallel_block(
             "par",
-            vec![ChildNodeDefinition {
+            vec![InterimChild {
                 permission: Some("acceptEdits".to_string()),
                 ..make_parallel_step("child1")
             }],
@@ -2171,7 +2098,7 @@ mod tests {
     fn valid_permission_on_parallel_child_passes() {
         let wf = make_workflow(vec![make_parallel_block(
             "par",
-            vec![ChildNodeDefinition {
+            vec![InterimChild {
                 permission: Some("full".to_string()),
                 ..make_parallel_step("child1")
             }],
@@ -2182,10 +2109,10 @@ mod tests {
 
     #[test]
     fn step_without_permission_fails() {
-        let wf = make_workflow(vec![NodeDefinition {
-            permission: None,
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_permission(
+            make_step("step1", TestKind::Session, vec![]),
+            None,
+        )]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
             err,
@@ -2198,7 +2125,7 @@ mod tests {
     fn parallel_child_without_permission_fails() {
         let wf = make_workflow(vec![make_parallel_block(
             "par",
-            vec![ChildNodeDefinition {
+            vec![InterimChild {
                 permission: None,
                 ..make_parallel_step("child1")
             }],
@@ -2213,17 +2140,14 @@ mod tests {
 
     #[test]
     fn parallel_block_without_permission_passes_when_children_have_permission() {
-        let wf = make_workflow(vec![NodeDefinition {
-            permission: None,
-            ..make_parallel_block(
-                "par",
-                vec![ChildNodeDefinition {
-                    permission: Some("edit".to_string()),
-                    ..make_parallel_step("child1")
-                }],
-                None,
-            )
-        }]);
+        let wf = make_workflow(vec![make_parallel_block(
+            "par",
+            vec![InterimChild {
+                permission: Some("edit".to_string()),
+                ..make_parallel_step("child1")
+            }],
+            None,
+        )]);
         assert!(validate(&wf).is_ok());
     }
 
@@ -2231,20 +2155,20 @@ mod tests {
 
     #[test]
     fn validate_models_valid_model_passes() {
-        let wf = make_workflow(vec![NodeDefinition {
-            model: Some("haiku".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_model(
+            make_step("step1", TestKind::Session, vec![]),
+            Some("haiku"),
+        )]);
         let valid = HashSet::from(["haiku".to_string(), "opus-4".to_string()]);
         assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_ok());
     }
 
     #[test]
     fn validate_models_unknown_model_fails() {
-        let wf = make_workflow(vec![NodeDefinition {
-            model: Some("unknown-model".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_model(
+            make_step("step1", TestKind::Session, vec![]),
+            Some("unknown-model"),
+        )]);
         let valid = HashSet::from(["haiku".to_string(), "opus-4".to_string()]);
         let err = validate_models(&wf, |model| resolve_from_set(&valid, model)).unwrap_err();
         assert!(matches!(
@@ -2259,7 +2183,7 @@ mod tests {
     fn validate_models_unknown_model_on_parallel_child_fails() {
         let wf = make_workflow(vec![make_parallel_block(
             "par",
-            vec![ChildNodeDefinition {
+            vec![InterimChild {
                 model: Some("unknown-model".to_string()),
                 ..make_parallel_step("child1")
             }],
@@ -2276,10 +2200,10 @@ mod tests {
 
     #[test]
     fn validate_models_rejects_ambiguous_model_from_resolver() {
-        let wf = make_workflow(vec![NodeDefinition {
-            model: Some("shared".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_model(
+            make_step("step1", TestKind::Session, vec![]),
+            Some("shared"),
+        )]);
         let err = validate_models(&wf, |model| {
             Err(format!(
                 "モデル '{model}' が複数のバックエンドに登録されています"
@@ -2295,7 +2219,7 @@ mod tests {
 
     #[test]
     fn validate_models_no_model_specified_passes() {
-        let wf = make_workflow(vec![make_step("step1", NodeType::Agent, vec![])]);
+        let wf = make_workflow(vec![make_step("step1", TestKind::Session, vec![])]);
         let valid = HashSet::from(["haiku".to_string()]);
         assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_ok());
     }
@@ -2304,7 +2228,7 @@ mod tests {
     fn validate_models_valid_model_on_parallel_child_passes() {
         let wf = make_workflow(vec![make_parallel_block(
             "par",
-            vec![ChildNodeDefinition {
+            vec![InterimChild {
                 model: Some("haiku".to_string()),
                 ..make_parallel_step("child1")
             }],
@@ -2318,10 +2242,10 @@ mod tests {
     fn validate_models_rejects_empty_model_before_registry_check() {
         // 形式不正（空文字）は registry に含まれるかにかかわらず拒否される。
         // 未登録（UnknownModel）と区別するため InvalidModelFormat として報告される。
-        let wf = make_workflow(vec![NodeDefinition {
-            model: Some(String::new()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_model(
+            make_step("step1", TestKind::Session, vec![]),
+            Some(""),
+        )]);
         // valid_models に空文字を含めても形式検証で先に弾く
         let valid = HashSet::from([String::new(), "haiku".to_string()]);
         let err = validate_models(&wf, |model| resolve_from_set(&valid, model)).unwrap_err();
@@ -2334,63 +2258,35 @@ mod tests {
 
     #[test]
     fn validate_models_rejects_whitespace_only_model() {
-        let wf = make_workflow(vec![NodeDefinition {
-            model: Some("   ".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_model(
+            make_step("step1", TestKind::Session, vec![]),
+            Some("   "),
+        )]);
         let valid = HashSet::from(["   ".to_string()]);
         assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_err());
     }
 
     #[test]
     fn validate_models_rejects_control_character_model() {
-        let wf = make_workflow(vec![NodeDefinition {
-            model: Some("a\u{0001}b".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
+        let wf = make_workflow(vec![with_session_model(
+            make_step("step1", TestKind::Session, vec![]),
+            Some("a\u{0001}b"),
+        )]);
         let valid = HashSet::from(["a\u{0001}b".to_string()]);
         assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_err());
     }
 
-    // ---- [02] bash 種別の専用 validation ----
+    // ---- command kind validation ----
 
     #[test]
-    fn bash_node_with_command_passes_when_facets_absent() {
-        let wf = make_workflow(vec![NodeDefinition {
-            node_type: NodeType::Bash,
-            command: Some("cargo build".to_string()),
-            instruction: None,
-            permission: Some("edit".to_string()),
-            ..NodeDefinition::default()
-        }
-        .into_named("build")]);
+    fn command_node_with_command_passes_when_facets_absent() {
+        let wf = make_workflow(vec![command_step("build", "cargo build")]);
         assert!(validate(&wf).is_ok());
     }
 
     #[test]
-    fn bash_node_without_command_fails() {
-        let wf = make_workflow(vec![NodeDefinition {
-            name: "build".to_string(),
-            node_type: NodeType::Bash,
-            command: None,
-            permission: Some("edit".to_string()),
-            ..NodeDefinition::default()
-        }]);
-        assert!(matches!(
-            validate(&wf).unwrap_err(),
-            ValidationError::MissingCommand { ref step } if step == "build"
-        ));
-    }
-
-    #[test]
-    fn bash_node_with_empty_command_fails() {
-        let wf = make_workflow(vec![NodeDefinition {
-            name: "build".to_string(),
-            node_type: NodeType::Bash,
-            command: Some("   ".to_string()),
-            permission: Some("edit".to_string()),
-            ..NodeDefinition::default()
-        }]);
+    fn command_node_with_empty_command_fails() {
+        let wf = make_workflow(vec![command_step("build", "   ")]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
             ValidationError::EmptyCommand { ref step } if step == "build"
@@ -2398,89 +2294,57 @@ mod tests {
     }
 
     #[test]
-    fn bash_node_with_facet_refs_fails() {
-        let wf = make_workflow(vec![NodeDefinition {
-            name: "build".to_string(),
-            node_type: NodeType::Bash,
-            command: Some("cargo build".to_string()),
-            policy: Some("coding".to_string()),
-            permission: Some("edit".to_string()),
-            ..NodeDefinition::default()
-        }]);
+    fn command_node_rejects_contract_fields() {
+        let mut output_contract = command_step("build", "cargo build");
+        output_contract.output_contract = Some("build-output".to_string());
+        let wf = make_workflow(vec![output_contract]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::DisallowedFieldForNodeType { ref step, .. } if step == "build"
+            ValidationError::DisallowedFieldForKind { ref step, field, kind }
+                if step == "build" && field == "output_contract" && kind == "command"
         ));
-    }
 
-    #[test]
-    fn bash_node_with_inline_prompt_fails() {
-        let wf = make_workflow(vec![NodeDefinition {
-            name: "build".to_string(),
-            node_type: NodeType::Bash,
-            command: Some("cargo build".to_string()),
-            inline_prompt: Some("hello".to_string()),
-            permission: Some("edit".to_string()),
-            ..NodeDefinition::default()
-        }]);
+        let mut input_contracts = command_step("test", "cargo test");
+        input_contracts.input_contracts = Some(vec!["test-input".to_string()]);
+        let wf = make_workflow(vec![input_contracts]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::DisallowedFieldForNodeType { ref step, .. } if step == "build"
+            ValidationError::DisallowedFieldForKind { ref step, field, kind }
+                if step == "test" && field == "input_contracts" && kind == "command"
         ));
     }
 
     #[test]
-    fn agent_node_with_command_fails() {
-        let wf = make_workflow(vec![NodeDefinition {
-            command: Some("cargo build".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
-        }]);
-        let err = validate(&wf).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::DisallowedFieldForNodeType { ref step, field, .. }
-                if step == "step1" && field == "command"
-        ));
-    }
-
-    #[test]
-    fn parallel_node_with_command_fails() {
-        let wf = make_workflow(vec![make_parallel_block(
-            "par",
-            vec![make_parallel_step("child1")],
-            Some(ParallelAggregate {
-                all_match: Some("LGTM".to_string()),
-                any_match: None,
-                then: "par".to_string(),
-                r#else: "par".to_string(),
-            }),
-        )]);
-        let mut wf_mut = wf;
-        wf_mut.nodes[0].command = Some("echo".to_string());
-        let err = validate(&wf_mut).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::DisallowedFieldForNodeType { field, .. } if field == "command"
-        ));
-    }
-
-    #[test]
-    fn parallel_node_with_facet_refs_on_block_fails() {
-        let mut wf = make_workflow(vec![make_parallel_block(
-            "par",
-            vec![make_parallel_step("child1")],
-            Some(ParallelAggregate {
-                all_match: Some("LGTM".to_string()),
-                any_match: None,
-                then: "par".to_string(),
-                r#else: "par".to_string(),
-            }),
-        )]);
-        wf.nodes[0].policy = Some("coding".to_string());
+    fn fanout_node_rejects_contract_fields() {
+        let mut output_contract =
+            make_parallel_block("review", vec![make_parallel_step("review-a")], None);
+        output_contract.output_contract = Some("review-output".to_string());
+        let wf = make_workflow(vec![output_contract]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::DisallowedFieldForNodeType { .. }
+            ValidationError::DisallowedFieldForKind { ref step, field, kind }
+                if step == "review" && field == "output_contract" && kind == "fanout"
         ));
+
+        let mut input_contracts =
+            make_parallel_block("aggregate", vec![make_parallel_step("aggregate-a")], None);
+        input_contracts.input_contracts = Some(vec!["aggregate-input".to_string()]);
+        let wf = make_workflow(vec![input_contracts]);
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::DisallowedFieldForKind { ref step, field, kind }
+                if step == "aggregate" && field == "input_contracts" && kind == "fanout"
+        ));
+    }
+
+    #[test]
+    fn session_node_allows_contract_fields() {
+        let mut session = make_step("review", TestKind::Session, vec![]);
+        session.output_contract = Some("review-output".to_string());
+        session.input_contracts = Some(vec!["review-input".to_string()]);
+        let wf = make_workflow(vec![session]);
+
+        assert!(validate(&wf).is_ok());
     }
 
     // ---- DoS ガードのテスト ----
@@ -2488,7 +2352,7 @@ mod tests {
     #[test]
     fn too_many_nodes_fails() {
         let nodes: Vec<NodeDefinition> = (0..MAX_NODES_PER_WORKFLOW + 1)
-            .map(|i| make_step(&format!("step{i}"), NodeType::Agent, vec![]))
+            .map(|i| make_step(&format!("step{i}"), TestKind::Session, vec![]))
             .collect();
         let wf = make_workflow(nodes);
         assert!(matches!(
@@ -2502,7 +2366,7 @@ mod tests {
     fn too_many_nodes_counts_parallel_children() {
         // top-level: parallel block 1 + agent 1 = 2 nodes。
         // parallel_children を MAX_NODES_PER_WORKFLOW 個に積むことで合算で上限超過する。
-        let children: Vec<ChildNodeDefinition> = (0..MAX_NODES_PER_WORKFLOW)
+        let children: Vec<InterimChild> = (0..MAX_NODES_PER_WORKFLOW)
             .take(MAX_PARALLEL_CHILDREN)
             .map(|i| make_parallel_step(&format!("c{i}")))
             .collect();
@@ -2511,7 +2375,7 @@ mod tests {
         let need_blocks = (MAX_NODES_PER_WORKFLOW + 1).div_ceil(MAX_PARALLEL_CHILDREN) + 1;
         let mut nodes: Vec<NodeDefinition> = Vec::new();
         for b in 0..need_blocks {
-            let block_children: Vec<ChildNodeDefinition> = children
+            let block_children: Vec<InterimChild> = children
                 .iter()
                 .enumerate()
                 .map(|(i, _)| make_parallel_step(&format!("blk{b}c{i}")))
@@ -2541,7 +2405,7 @@ mod tests {
 
     #[test]
     fn too_many_parallel_children_fails() {
-        let children: Vec<ChildNodeDefinition> = (0..MAX_PARALLEL_CHILDREN + 1)
+        let children: Vec<InterimChild> = (0..MAX_PARALLEL_CHILDREN + 1)
             .map(|i| make_parallel_step(&format!("c{i}")))
             .collect();
         let wf = make_workflow(vec![make_parallel_block(
@@ -2560,17 +2424,6 @@ mod tests {
         ));
     }
 
-    trait IntoNamed {
-        fn into_named(self, name: &str) -> Self;
-    }
-
-    impl IntoNamed for NodeDefinition {
-        fn into_named(mut self, name: &str) -> Self {
-            self.name = name.to_string();
-            self
-        }
-    }
-
     // ---- validate_facet_refs ----
 
     #[test]
@@ -2581,7 +2434,7 @@ mod tests {
                 "input-contract-a".to_string(),
                 "input-contract-b".to_string(),
             ]),
-            ..make_step("step1", NodeType::Agent, vec![])
+            ..make_step("step1", TestKind::Session, vec![])
         }]);
         let known: HashSet<&str> =
             HashSet::from(["output-contract", "input-contract-a", "input-contract-b"]);
@@ -2592,7 +2445,7 @@ mod tests {
     fn validate_facet_refs_detects_missing_output_contract() {
         let wf = make_workflow(vec![NodeDefinition {
             output_contract: Some("nonexistent".to_string()),
-            ..make_step("step1", NodeType::Agent, vec![])
+            ..make_step("step1", TestKind::Session, vec![])
         }]);
         let err = validate_facet_refs(&wf, |_| false).unwrap_err();
         assert!(matches!(
@@ -2606,7 +2459,7 @@ mod tests {
     fn validate_facet_refs_detects_missing_input_contract() {
         let wf = make_workflow(vec![NodeDefinition {
             input_contracts: Some(vec!["unknown-key".to_string()]),
-            ..make_step("step1", NodeType::Agent, vec![])
+            ..make_step("step1", TestKind::Session, vec![])
         }]);
         let err = validate_facet_refs(&wf, |_| false).unwrap_err();
         assert!(matches!(
@@ -2618,7 +2471,7 @@ mod tests {
 
     #[test]
     fn validate_facet_refs_inspects_parallel_children() {
-        let child = ChildNodeDefinition {
+        let child = InterimChild {
             input_contracts: Some(vec!["nope".to_string()]),
             ..make_parallel_step("child1")
         };

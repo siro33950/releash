@@ -27,7 +27,8 @@ use crate::domain::workflow::{
     WorkflowSummary,
 };
 use crate::usecase::workflow::ports::{
-    ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDiagnosticsGateway,
+    ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDefinitionSourceGateway,
+    WorkflowDiagnosticsGateway,
 };
 
 use definition::WorkflowDefinitionUsecase;
@@ -62,6 +63,7 @@ impl WorkflowUsecase {
     pub fn new(
         query: WorkflowQueryService,
         definitions: std::sync::Arc<dyn WorkflowDefinitionRepository>,
+        definition_sources: std::sync::Arc<dyn WorkflowDefinitionSourceGateway>,
         facets: std::sync::Arc<dyn FacetRepository>,
         worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
         editors: std::sync::Arc<dyn ExternalEditorGateway>,
@@ -71,7 +73,7 @@ impl WorkflowUsecase {
         sessions: std::sync::Arc<dyn WorkspaceSessionGateway>,
         archive_runs: std::sync::Arc<dyn WorkflowRunArchiveRepository>,
     ) -> Self {
-        let definition_commands = WorkflowDefinitionUsecase::new(definitions);
+        let definition_commands = WorkflowDefinitionUsecase::new(definitions, definition_sources);
         let facet_commands = WorkflowFacetUsecase::new(facets.clone());
         let output = WorkflowOutputUsecase::new(query.clone(), facets, secrets);
         Self {
@@ -162,6 +164,10 @@ impl WorkflowUsecase {
         self.query.get_workflow(file_stem)
     }
 
+    pub fn get_workflow_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
+        self.query.get_workflow_source(file_stem)
+    }
+
     pub fn get_run_log(&self, run_id: &str) -> Result<Vec<WorkflowEventView>, WorkflowError> {
         self.query.get_run_log(run_id)
     }
@@ -197,13 +203,13 @@ impl WorkflowUsecase {
         self.query.list_facet_summaries(kind)
     }
 
-    pub fn save_workflow(
+    pub fn save_workflow_source(
         &self,
-        definition: WorkflowDefinition,
+        source: &str,
         original_name: Option<&str>,
-    ) -> Result<(), WorkflowError> {
+    ) -> Result<WorkflowDefinition, WorkflowError> {
         self.definition_commands
-            .save_workflow(definition, original_name)
+            .save_workflow_source(source, original_name)
     }
 
     pub fn delete_workflow(&self, name: &str) -> Result<(), WorkflowError> {
@@ -665,6 +671,22 @@ mod tests {
         }
     }
 
+    struct NoopDefinitionSourceGateway;
+
+    impl WorkflowDefinitionSourceGateway for NoopDefinitionSourceGateway {
+        fn get_source(&self, _file_stem: &str) -> Result<Option<String>, WorkflowError> {
+            Ok(None)
+        }
+
+        fn save_source(
+            &self,
+            _source: &str,
+            _original_name: Option<&str>,
+        ) -> Result<WorkflowDefinition, WorkflowError> {
+            Err(WorkflowError::external("not used"))
+        }
+    }
+
     #[derive(Default)]
     struct FakeFacetRepository {
         facets: Mutex<HashMap<(FacetKind, String), String>>,
@@ -869,12 +891,14 @@ mod tests {
 
         fn with_runs(runs: Arc<dyn WorkflowRunRepository>) -> Self {
             let definitions = Arc::new(FakeDefinitionRepository::default());
+            let definition_sources = Arc::new(NoopDefinitionSourceGateway);
             let facets = Arc::new(FakeFacetRepository::default());
             let events = Arc::new(FakeEventRepository::default());
             let editors = Arc::new(FakeExternalEditorGateway::default());
             let query = WorkflowQueryService::new(
                 runs,
                 definitions.clone(),
+                definition_sources.clone(),
                 facets.clone(),
                 events.clone(),
                 Arc::new(NoopStateProjectionRepository),
@@ -883,6 +907,7 @@ mod tests {
             let usecase = WorkflowUsecase::new(
                 query,
                 definitions.clone(),
+                definition_sources,
                 facets.clone(),
                 Arc::new(FakeManagedWorktreeGateway),
                 editors.clone(),

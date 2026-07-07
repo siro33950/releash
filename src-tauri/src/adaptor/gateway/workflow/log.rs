@@ -313,7 +313,9 @@ mod tests {
 
     /// テスト用の最小 Workflow。
     fn minimal_workflow_for_log(name: &str) -> Workflow {
-        use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType};
+        use crate::adaptor::gateway::workflow::schema::{
+            FacetRefs, NodeDefinition, NodeKind, SessionSpec,
+        };
         Workflow {
             variables: Default::default(),
             name: name.to_string(),
@@ -321,8 +323,13 @@ mod tests {
             builtin: false,
             nodes: vec![NodeDefinition {
                 name: "step1".to_string(),
-                node_type: NodeType::Agent,
-                instruction: Some("do".to_string()),
+                kind: NodeKind::Session(SessionSpec {
+                    facets: FacetRefs {
+                        instruction: Some("do".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 ..NodeDefinition::default()
             }],
         }
@@ -822,11 +829,18 @@ mod tests {
         name: &str,
         instruction: &str,
     ) -> crate::adaptor::gateway::workflow::schema::NodeDefinition {
-        use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType};
+        use crate::adaptor::gateway::workflow::schema::{
+            FacetRefs, NodeDefinition, NodeKind, SessionSpec,
+        };
         NodeDefinition {
             name: name.to_string(),
-            node_type: NodeType::Agent,
-            instruction: Some(instruction.to_string()),
+            kind: NodeKind::Session(SessionSpec {
+                facets: FacetRefs {
+                    instruction: Some(instruction.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
             ..NodeDefinition::default()
         }
     }
@@ -835,11 +849,19 @@ mod tests {
         name: &str,
         instruction: &str,
     ) -> crate::adaptor::gateway::workflow::schema::NodeDefinition {
-        use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType};
+        use crate::adaptor::gateway::workflow::schema::{
+            FacetRefs, NodeDefinition, NodeKind, SessionGate, SessionSpec,
+        };
         NodeDefinition {
             name: name.to_string(),
-            node_type: NodeType::Approval,
-            instruction: Some(instruction.to_string()),
+            kind: NodeKind::Session(SessionSpec {
+                gate: SessionGate::Approval,
+                facets: FacetRefs {
+                    instruction: Some(instruction.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
             ..NodeDefinition::default()
         }
     }
@@ -1057,31 +1079,33 @@ mod tests {
     #[test]
     fn reconstruct_state_parallel_block_no_duplicate_history() {
         use crate::adaptor::gateway::workflow::schema::{
-            NodeDefinition, NodeType, ParallelAggregate,
+            FacetRefs, FanoutSpec, InterimChild, NodeDefinition, NodeKind, ParallelAggregate,
         };
 
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
 
-        use crate::adaptor::gateway::workflow::schema::ChildNodeDefinition;
-        let make_child = |name: &str, instruction: &str| ChildNodeDefinition {
+        let make_child = |name: &str, instruction: &str| InterimChild {
             name: name.to_string(),
-            node_type: NodeType::Agent,
-            instruction: Some(instruction.to_string()),
-            ..ChildNodeDefinition::default()
+            facets: FacetRefs {
+                instruction: Some(instruction.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
         };
         let parallel_review = NodeDefinition {
             name: "parallel-review".to_string(),
-            node_type: NodeType::Parallel,
-            parallel_children: Some(vec![
-                make_child("arch-review", "arch"),
-                make_child("security-review", "security"),
-            ]),
-            aggregate: Some(ParallelAggregate {
-                all_match: Some("LGTM".to_string()),
-                any_match: None,
-                then: "_complete".to_string(),
-                r#else: "_complete".to_string(),
+            kind: NodeKind::Fanout(FanoutSpec {
+                parallel_children: vec![
+                    make_child("arch-review", "arch"),
+                    make_child("security-review", "security"),
+                ],
+                aggregate: Some(ParallelAggregate {
+                    all_match: Some("LGTM".to_string()),
+                    any_match: None,
+                    then: "_complete".to_string(),
+                    r#else: "_complete".to_string(),
+                }),
             }),
             ..NodeDefinition::default()
         };
@@ -1348,7 +1372,7 @@ mod tests {
     /// projection のバグ「WaitingApproval が固定される」回帰防止。
     #[test]
     fn reconstruct_state_node_started_after_approval_resets_to_running() {
-        use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType, TransitionRule};
+        use crate::adaptor::gateway::workflow::schema::TransitionRule;
 
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
@@ -1363,15 +1387,7 @@ mod tests {
             name: "approval-then-next".to_string(),
             description: "".to_string(),
             builtin: false,
-            nodes: vec![
-                review,
-                NodeDefinition {
-                    name: "ship".to_string(),
-                    node_type: NodeType::Agent,
-                    instruction: Some("ship".to_string()),
-                    ..NodeDefinition::default()
-                },
-            ],
+            nodes: vec![review, make_agent_node("ship", "ship")],
         };
 
         log.append(&WorkflowEvent::RunStarted {

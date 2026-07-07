@@ -139,7 +139,7 @@ impl std::error::Error for BuiltinError {}
 /// 共通 load パイプライン: parse → builtin flag 設定 → validation → facet 解決。
 ///
 /// [02] schema 境界: built-in と user-authored YAML の load 経路を統一する。
-/// 解決済み facet (`ResolvedFacets`) を `NodeDefinition` / `ChildNodeDefinition` に
+/// 解決済み facet (`ResolvedFacets`) を node / fanout child definition に
 /// 流し込み、engine は未解決 ref を経由しない。
 ///
 /// `base_facets_dir` には builtin 用に `facets_base_dir()` を渡せば、user-side で
@@ -438,6 +438,13 @@ pub fn is_builtin_workflow(name: &str) -> bool {
         .any(|e| e.filename.strip_suffix(".yml") == Some(name))
 }
 
+pub fn builtin_workflow_source(name: &str) -> Option<&'static str> {
+    BUILTINS
+        .iter()
+        .find(|e| e.filename.strip_suffix(".yml") == Some(name))
+        .map(|e| e.content)
+}
+
 pub fn is_builtin_facet(kind: FacetKind, key: &str) -> bool {
     BUILTIN_FACETS
         .iter()
@@ -490,21 +497,26 @@ mod tests {
         );
 
         for node in &wf.nodes {
+            let session = node
+                .session()
+                .unwrap_or_else(|| panic!("node '{}' must be a session", node.name));
             assert_eq!(
-                node.node_type,
-                crate::adaptor::gateway::workflow::schema::NodeType::Approval,
+                session.gate,
+                crate::adaptor::gateway::workflow::schema::SessionGate::Approval,
                 "node '{}' must write the document and wait for human review",
                 node.name
             );
             assert!(
-                node.instruction
+                session
+                    .facets
+                    .instruction
                     .as_deref()
                     .is_some_and(|instruction| instruction.starts_with("spec-authoring-draft-")),
                 "node '{}' must use draft-review instruction facets",
                 node.name
             );
             assert_eq!(
-                node.model.as_deref(),
+                session.model.as_deref(),
                 Some("claude-opus-4-8"),
                 "node '{}' must use opus-4-8 model",
                 node.name
@@ -691,25 +703,28 @@ mod tests {
 
         let mut top_resolved_count = 0;
         for node in &wf.nodes {
-            if node.policy.is_some() {
+            let Some(session) = node.session() else {
+                continue;
+            };
+            if session.facets.policy.is_some() {
                 assert!(
-                    node.resolved_facets.policy.is_some(),
+                    session.resolved_facets.policy.is_some(),
                     "node '{}' has policy ref but resolved_facets.policy is None",
                     node.name
                 );
                 top_resolved_count += 1;
             }
-            if node.knowledge.is_some() {
+            if session.facets.knowledge.is_some() {
                 assert!(
-                    node.resolved_facets.knowledge.is_some(),
+                    session.resolved_facets.knowledge.is_some(),
                     "node '{}' has knowledge ref but resolved_facets.knowledge is None",
                     node.name
                 );
                 top_resolved_count += 1;
             }
-            if node.instruction.is_some() {
+            if session.facets.instruction.is_some() {
                 assert!(
-                    node.resolved_facets.instruction.is_some(),
+                    session.resolved_facets.instruction.is_some(),
                     "node '{}' has instruction ref but resolved_facets.instruction is None",
                     node.name
                 );
@@ -717,7 +732,7 @@ mod tests {
             }
             if node.output_contract.is_some() {
                 assert!(
-                    node.resolved_facets.output_contract.is_some(),
+                    session.resolved_facets.output_contract.is_some(),
                     "node '{}' has output_contract ref but resolved_facets.output_contract is None",
                     node.name
                 );
@@ -725,12 +740,12 @@ mod tests {
             }
             if let Some(ref refs) = node.input_contracts {
                 assert_eq!(
-                    node.resolved_facets.input_contracts.len(),
+                    session.resolved_facets.input_contracts.len(),
                     refs.len(),
                     "node '{}' has {} input_contracts refs but resolved_facets.input_contracts.len() = {}",
                     node.name,
                     refs.len(),
-                    node.resolved_facets.input_contracts.len()
+                    session.resolved_facets.input_contracts.len()
                 );
                 top_resolved_count += refs.len();
             }
@@ -742,15 +757,15 @@ mod tests {
 
         // parallel child を含む workflow では、子の resolved_facets も必ず populated される
         // ことを検証する。parallel を持たない workflow（例: spec-implement）はスキップ。
-        let has_parallel = wf.nodes.iter().any(|n| n.parallel_children.is_some());
+        let has_parallel = wf.nodes.iter().any(|n| n.is_fanout());
         if has_parallel {
             let mut child_resolved_count = 0;
             for node in &wf.nodes {
-                let Some(children) = node.parallel_children.as_ref() else {
+                let Some(fanout) = node.fanout() else {
                     continue;
                 };
-                for child in children {
-                    if child.policy.is_some() {
+                for child in &fanout.parallel_children {
+                    if child.facets.policy.is_some() {
                         assert!(
                             child.resolved_facets.policy.is_some(),
                             "child '{}/{}' has policy ref but resolved_facets.policy is None",
@@ -759,7 +774,7 @@ mod tests {
                         );
                         child_resolved_count += 1;
                     }
-                    if child.knowledge.is_some() {
+                    if child.facets.knowledge.is_some() {
                         assert!(
                             child.resolved_facets.knowledge.is_some(),
                             "child '{}/{}' has knowledge ref but resolved_facets.knowledge is None",
@@ -768,7 +783,7 @@ mod tests {
                         );
                         child_resolved_count += 1;
                     }
-                    if child.instruction.is_some() {
+                    if child.facets.instruction.is_some() {
                         assert!(
                             child.resolved_facets.instruction.is_some(),
                             "child '{}/{}' has instruction ref but resolved_facets.instruction is None",
@@ -840,7 +855,10 @@ mod tests {
                     &HashMap::new(),
                 )
                 .expect("build_step_prompt must succeed");
-                let resolved_inputs = &node.resolved_facets.input_contracts;
+                let resolved_inputs = &node
+                    .resolved_facets()
+                    .expect("input contract node must be a session")
+                    .input_contracts;
                 let declared_len = node.input_contracts.as_ref().map_or(0, |v| v.len());
 
                 assert_eq!(
@@ -889,11 +907,11 @@ mod tests {
                 .unwrap_or_else(|err| panic!("builtin '{name}' load must succeed: {err}"))
                 .unwrap_or_else(|| panic!("builtin '{name}' must exist"));
 
-            for node in wf
-                .nodes
-                .iter()
-                .filter(|n| n.input_contracts.is_none() && n.instruction.is_some())
-            {
+            for node in wf.nodes.iter().filter(|n| {
+                n.input_contracts.is_none()
+                    && n.session()
+                        .is_some_and(|session| session.facets.instruction.is_some())
+            }) {
                 let (_sys, prompt) = prompt_rendering::build_step_prompt(
                     node,
                     "00000000-0000-0000-0000-000000000000",

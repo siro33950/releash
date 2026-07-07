@@ -15,8 +15,8 @@ use crate::domain::workflow::{
 
 use super::event_draft;
 use super::ports::{
-    WorkflowEventDraft, WorkflowEventRepository, WorkflowStateProjectionRepository,
-    WorkflowStepDetailProjectionRepository,
+    WorkflowDefinitionSourceGateway, WorkflowEventDraft, WorkflowEventRepository,
+    WorkflowStateProjectionRepository, WorkflowStepDetailProjectionRepository,
 };
 
 pub type WorkflowEventView = Value;
@@ -38,6 +38,7 @@ pub enum WorkflowGetOutputResult {
 pub struct WorkflowQueryService {
     runs: Arc<dyn WorkflowRunRepository>,
     definitions: Arc<dyn WorkflowDefinitionRepository>,
+    definition_sources: Arc<dyn WorkflowDefinitionSourceGateway>,
     facets: Arc<dyn FacetRepository>,
     events: Arc<dyn WorkflowEventRepository>,
     state_projection: Arc<dyn WorkflowStateProjectionRepository>,
@@ -48,6 +49,7 @@ impl WorkflowQueryService {
     pub fn new(
         runs: Arc<dyn WorkflowRunRepository>,
         definitions: Arc<dyn WorkflowDefinitionRepository>,
+        definition_sources: Arc<dyn WorkflowDefinitionSourceGateway>,
         facets: Arc<dyn FacetRepository>,
         events: Arc<dyn WorkflowEventRepository>,
         state_projection: Arc<dyn WorkflowStateProjectionRepository>,
@@ -56,6 +58,7 @@ impl WorkflowQueryService {
         Self {
             runs,
             definitions,
+            definition_sources,
             facets,
             events,
             state_projection,
@@ -93,6 +96,11 @@ impl WorkflowQueryService {
     ) -> Result<Option<WorkflowDefinition>, WorkflowError> {
         let name = WorkflowName::new(file_stem.to_string())?;
         self.definitions.get(name.as_str())
+    }
+
+    pub fn get_workflow_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
+        let name = WorkflowName::new(file_stem.to_string())?;
+        self.definition_sources.get_source(name.as_str())
     }
 
     pub(in crate::usecase::workflow) fn read_events(
@@ -212,8 +220,8 @@ fn latest_output_submitted_from_drafts(
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        NodeDefinition, NodeType, RunStatus, RunStatusFilter, TriggerSource,
-        WorkflowExecutionState, WorkflowRunRecord,
+        FacetRefs, NodeDefinition, NodeKind, RunStatus, RunStatusFilter, SessionGate, SessionSpec,
+        TriggerSource, WorkflowExecutionState, WorkflowRunRecord,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -314,6 +322,24 @@ mod tests {
 
         fn delete(&self, _name: &str) -> Result<(), WorkflowError> {
             Ok(())
+        }
+    }
+
+    struct FakeDefinitionSourceGateway {
+        workflow_source: Option<String>,
+    }
+
+    impl WorkflowDefinitionSourceGateway for FakeDefinitionSourceGateway {
+        fn get_source(&self, _file_stem: &str) -> Result<Option<String>, WorkflowError> {
+            Ok(self.workflow_source.clone())
+        }
+
+        fn save_source(
+            &self,
+            _source: &str,
+            _original_name: Option<&str>,
+        ) -> Result<WorkflowDefinition, WorkflowError> {
+            Err(WorkflowError::external("not used"))
         }
     }
 
@@ -472,6 +498,9 @@ mod tests {
             let definitions = Arc::new(FakeDefinitionRepository {
                 workflow: workflow(),
             });
+            let definition_sources = Arc::new(FakeDefinitionSourceGateway {
+                workflow_source: None,
+            });
             let facets = Arc::new(FakeFacetRepository::default());
             let events = Arc::new(FakeEventRepository::default());
             let states = Arc::new(FakeStateProjectionRepository::default());
@@ -479,6 +508,7 @@ mod tests {
             let service = WorkflowQueryService::new(
                 runs.clone(),
                 definitions,
+                definition_sources,
                 facets.clone(),
                 events.clone(),
                 states.clone(),
@@ -503,7 +533,14 @@ mod tests {
             variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "review".to_string(),
-                node_type: NodeType::Approval,
+                kind: NodeKind::Session(SessionSpec {
+                    gate: SessionGate::Approval,
+                    facets: FacetRefs {
+                        instruction: Some("implement".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 ..Default::default()
             }],
         }

@@ -3,12 +3,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { FacetSubTab, useAutomation } from "@/hooks/useAutomation";
-import type { FacetKind, NodeType, Workflow } from "@/types/workflow";
+import type { FacetKind } from "@/types/workflow";
 import { FacetDetail } from "./automation/FacetDetail";
 import { FacetEditor } from "./automation/FacetEditor";
 import { FacetList } from "./automation/FacetList";
 import { NameInputDialog } from "./automation/NameInputDialog";
-import type { FacetSlot } from "./automation/StepEditor";
 import { facetKindToDirName } from "./automation/utils";
 import { WorkflowDetail } from "./automation/WorkflowDetail";
 import { WorkflowEditor } from "./automation/WorkflowEditor";
@@ -35,12 +34,13 @@ export function AutomationSection({
 		externalChangeDetected,
 		clearExternalChange,
 		selectedWorkflow,
+		selectedWorkflowSource,
 		selectedFacetContent,
 		selectedFacetKey,
 		selectedFacetKind,
 		fetchFacets,
 		selectWorkflow,
-		saveWorkflow,
+		saveWorkflowSource,
 		deleteWorkflow,
 		duplicateWorkflow,
 		openWorkflowInEditor,
@@ -49,7 +49,6 @@ export function AutomationSection({
 		deleteFacet,
 		duplicateFacet,
 		openFacetInEditor,
-		loadAllFacetKeys,
 		renderFacetPreview,
 		setSelectedFacetContent,
 		setSelectedFacetKey,
@@ -71,16 +70,6 @@ export function AutomationSection({
 		kind?: FacetKind;
 	} | null>(null);
 
-	// Facet keys for workflow editor
-	const [allFacetKeys, setAllFacetKeys] = useState<Record<FacetSlot, string[]>>(
-		{
-			policy: [],
-			knowledge: [],
-			instruction: [],
-			output_contract: [],
-		},
-	);
-
 	// Load facets when switching to facets tab or changing sub-tab
 	useEffect(() => {
 		if (tab === "facets") {
@@ -88,18 +77,14 @@ export function AutomationSection({
 		}
 	}, [tab, facetSubTab, fetchFacets]);
 
-	const handleEditWorkflow = useCallback(async () => {
-		const keys = await loadAllFacetKeys();
-		if (keys) {
-			setAllFacetKeys(keys);
-		}
+	const handleEditWorkflow = useCallback(() => {
 		setEditingWorkflow(true);
-	}, [loadAllFacetKeys]);
+	}, []);
 
-	const handleSaveWorkflow = useCallback(
-		async (wf: Workflow, originalName?: string) => {
+	const handleSaveWorkflowSource = useCallback(
+		async (source: string, originalName?: string) => {
 			// 実行中の workflow を編集する場合は警告を表示
-			const targetName = originalName ?? wf.name;
+			const targetName = originalName ?? selectedWorkflow?.name ?? "";
 			const isRunning = workflows.some(
 				(w) => w.name === targetName && w.is_running,
 			);
@@ -111,14 +96,14 @@ export function AutomationSection({
 					return { ok: false as const, error: "cancelled" };
 				}
 			}
-			const result = await saveWorkflow(wf, originalName);
+			const result = await saveWorkflowSource(source, originalName);
 			if (result.ok) {
 				setEditingWorkflow(false);
-				selectWorkflow(wf.name);
+				selectWorkflow(result.workflow.name);
 			}
 			return result;
 		},
-		[saveWorkflow, selectWorkflow, workflows],
+		[saveWorkflowSource, selectWorkflow, selectedWorkflow, workflows],
 	);
 
 	const handleEditFacet = useCallback(() => {
@@ -146,26 +131,25 @@ export function AutomationSection({
 
 	const handleCreateWorkflow = useCallback(
 		async (name: string) => {
-			const newWorkflow: Workflow = {
-				name,
-				description: "",
-				builtin: false,
-				nodes: [
-					{
-						name: "step-1",
-						type: "agent" as NodeType,
-						inline_prompt: "TODO: describe what this step should do",
-						rules: [],
-					},
-				],
-			};
-			const result = await saveWorkflow(newWorkflow);
+			const source = [
+				`name: ${name}`,
+				'description: ""',
+				"nodes:",
+				"  - name: step-1",
+				"    session:",
+				"      permission: edit",
+				"      facets:",
+				"        instruction: implement",
+				"    rules: []",
+				"",
+			].join("\n");
+			const result = await saveWorkflowSource(source);
 			if (result.ok) {
 				selectWorkflow(name);
 			}
 			return result;
 		},
-		[saveWorkflow, selectWorkflow],
+		[saveWorkflowSource, selectWorkflow],
 	);
 
 	const handleCreateFacet = useCallback(
@@ -327,8 +311,9 @@ export function AutomationSection({
 									<WorkflowEditor
 										key={selectedWorkflow.name}
 										workflow={selectedWorkflow}
-										allFacetKeys={allFacetKeys}
-										onSave={handleSaveWorkflow}
+										source={selectedWorkflowSource ?? ""}
+										report={report}
+										onSave={handleSaveWorkflowSource}
 										onCancel={() => setEditingWorkflow(false)}
 									/>
 								) : (

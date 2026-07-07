@@ -154,22 +154,40 @@ fn workflow_definition_to_view(
 fn workflow_node_to_view(
     node: workflow::NodeDefinition,
 ) -> workflow_wire::WorkflowNodeDefinitionView {
+    let (kind, command, session, fanout) = match node.kind {
+        workflow::NodeKind::Command(spec) => (
+            workflow_wire::WorkflowNodeKindView::Command,
+            Some(spec.command),
+            None,
+            None,
+        ),
+        workflow::NodeKind::Session(spec) => (
+            workflow_wire::WorkflowNodeKindView::Session,
+            None,
+            Some(session_spec_to_view(spec)),
+            None,
+        ),
+        workflow::NodeKind::Fanout(spec) => (
+            workflow_wire::WorkflowNodeKindView::Fanout,
+            None,
+            None,
+            Some(fanout_spec_to_view(spec)),
+        ),
+    };
     workflow_wire::WorkflowNodeDefinitionView {
         name: node.name,
-        node_type: node_type_to_view(node.node_type),
-        policy: node.policy,
-        knowledge: node.knowledge,
-        instruction: node.instruction,
+        kind,
+        command,
+        session,
+        fanout,
+        artifact: node.artifact,
+        input: node.input,
+        inputs: node.inputs,
         output_contract: node.output_contract,
+        input_contracts: node.input_contracts,
         pass_previous_response: node.pass_previous_response,
         pass_output_from: node.pass_output_from,
-        inline_prompt: node.inline_prompt,
         collect: node.collect.map(collect_config_to_view),
-        command: node.command,
-        parallel_children: node
-            .parallel_children
-            .map(|children| children.into_iter().map(child_node_to_view).collect()),
-        aggregate: node.aggregate.map(aggregate_config_to_view),
         rules: node
             .transition_rules
             .into_iter()
@@ -177,34 +195,54 @@ fn workflow_node_to_view(
             .collect(),
         cycle_guard: node.cycle_guard.map(cycle_guard_to_view),
         resets_cycle_for: node.resets_cycle_for,
-        model: node.model,
-        permission: node.permission,
     }
 }
 
-fn child_node_to_view(
-    child: workflow::ChildNodeDefinition,
-) -> workflow_wire::WorkflowChildNodeDefinitionView {
-    workflow_wire::WorkflowChildNodeDefinitionView {
+fn session_spec_to_view(spec: workflow::SessionSpec) -> workflow_wire::WorkflowSessionSpecView {
+    workflow_wire::WorkflowSessionSpecView {
+        model: spec.model,
+        permission: spec.permission,
+        gate: session_gate_to_view(spec.gate),
+        facets: facet_refs_to_view(spec.facets),
+    }
+}
+
+fn fanout_spec_to_view(spec: workflow::FanoutSpec) -> workflow_wire::WorkflowFanoutSpecView {
+    workflow_wire::WorkflowFanoutSpecView {
+        parallel_children: spec
+            .parallel_children
+            .into_iter()
+            .map(interim_child_to_view)
+            .collect(),
+        aggregate: spec.aggregate.map(aggregate_config_to_view),
+    }
+}
+
+fn interim_child_to_view(child: workflow::InterimChild) -> workflow_wire::WorkflowInterimChildView {
+    workflow_wire::WorkflowInterimChildView {
         name: child.name,
-        node_type: node_type_to_view(child.node_type),
-        policy: child.policy,
-        knowledge: child.knowledge,
-        instruction: child.instruction,
-        output_contract: child.output_contract,
-        pass_previous_response: child.pass_previous_response,
-        pass_output_from: child.pass_output_from,
         model: child.model,
         permission: child.permission,
+        facets: facet_refs_to_view(child.facets),
+        output_contract: child.output_contract,
+        input_contracts: child.input_contracts,
+        pass_previous_response: child.pass_previous_response,
+        pass_output_from: child.pass_output_from,
     }
 }
 
-fn node_type_to_view(node_type: workflow::NodeType) -> workflow_wire::WorkflowNodeTypeView {
-    match node_type {
-        workflow::NodeType::Agent => workflow_wire::WorkflowNodeTypeView::Agent,
-        workflow::NodeType::Bash => workflow_wire::WorkflowNodeTypeView::Bash,
-        workflow::NodeType::Approval => workflow_wire::WorkflowNodeTypeView::Approval,
-        workflow::NodeType::Parallel => workflow_wire::WorkflowNodeTypeView::Parallel,
+fn session_gate_to_view(gate: workflow::SessionGate) -> workflow_wire::WorkflowSessionGateView {
+    match gate {
+        workflow::SessionGate::Auto => workflow_wire::WorkflowSessionGateView::Auto,
+        workflow::SessionGate::Approval => workflow_wire::WorkflowSessionGateView::Approval,
+    }
+}
+
+fn facet_refs_to_view(facets: workflow::FacetRefs) -> workflow_wire::WorkflowFacetRefsView {
+    workflow_wire::WorkflowFacetRefsView {
+        policy: facets.policy,
+        knowledge: facets.knowledge,
+        instruction: facets.instruction,
     }
 }
 
@@ -327,8 +365,8 @@ fn step_output_to_view(output: workflow::StepOutput) -> workflow_wire::StepOutpu
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ChildOutputSnapshot, NodeDefinition, NodeType, ParallelStepState, StepHistoryEntry,
-        TokenUsage, WorkflowDefinition, WorkflowExecutionState,
+        ChildOutputSnapshot, FacetRefs, NodeDefinition, NodeKind, ParallelStepState, SessionGate,
+        SessionSpec, StepHistoryEntry, TokenUsage, WorkflowDefinition, WorkflowExecutionState,
     };
 
     fn state() -> WorkflowStateSnapshot {
@@ -496,15 +534,31 @@ mod tests {
 
     // ---- WorkflowState wire view serde ----
 
-    fn make_session_test_node(
-        name: &str,
-        node_type: NodeType,
-        instruction: &str,
-    ) -> NodeDefinition {
+    fn make_session_test_node(name: &str, instruction: &str) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
-            node_type,
-            instruction: Some(instruction.to_string()),
+            kind: NodeKind::Session(SessionSpec {
+                facets: FacetRefs {
+                    instruction: Some(instruction.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..NodeDefinition::default()
+        }
+    }
+
+    fn make_approval_test_node(name: &str, instruction: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Session(SessionSpec {
+                gate: SessionGate::Approval,
+                facets: FacetRefs {
+                    instruction: Some(instruction.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
             ..NodeDefinition::default()
         }
     }
@@ -516,15 +570,10 @@ mod tests {
             description: "Test".to_string(),
             builtin: false,
             nodes: vec![
-                make_session_test_node("plan", NodeType::Agent, "plan"),
-                make_session_test_node("implement", NodeType::Agent, "implement"),
-                make_session_test_node("review", NodeType::Agent, "review"),
-                NodeDefinition {
-                    name: "report".to_string(),
-                    node_type: NodeType::Approval,
-                    instruction: Some("report".to_string()),
-                    ..NodeDefinition::default()
-                },
+                make_session_test_node("plan", "plan"),
+                make_session_test_node("implement", "implement"),
+                make_session_test_node("review", "review"),
+                make_approval_test_node("report", "report"),
             ],
         }
     }

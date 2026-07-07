@@ -112,7 +112,9 @@ fn parse_editor_facet_kind(kind: &str) -> Result<facet::FacetKind, WorkflowError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType, Workflow};
+    use crate::adaptor::gateway::workflow::schema::{
+        FacetRefs, NodeDefinition, NodeKind, SessionSpec, Workflow,
+    };
     use tempfile::TempDir;
 
     #[test]
@@ -125,9 +127,14 @@ mod tests {
             variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "step".to_string(),
-                node_type: NodeType::Agent,
-                inline_prompt: Some("run".to_string()),
-                permission: Some("edit".to_string()),
+                kind: NodeKind::Session(SessionSpec {
+                    permission: Some("edit".to_string()),
+                    facets: FacetRefs {
+                        instruction: Some("implement".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 ..NodeDefinition::default()
             }],
         };

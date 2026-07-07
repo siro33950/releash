@@ -406,8 +406,8 @@ pub(crate) fn parallel_started_event_for_snapshot(
         .nodes
         .get(snapshot.current_step_index)?;
     let child_node_names: Vec<String> = node
+        .fanout()?
         .parallel_children
-        .as_ref()?
         .iter()
         .map(|child| child.name.clone())
         .collect();

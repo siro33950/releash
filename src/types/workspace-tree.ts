@@ -48,7 +48,7 @@ export type WorkspaceStepStatus =
 	| "aborted"
 	| "completed";
 
-type WorkspaceStepType = "agent" | "bash" | "approval" | "parallel";
+type WorkspaceStepType = "command" | "session" | "fanout";
 
 export interface WorkspaceWorkflowStepNode {
 	kind: "step";

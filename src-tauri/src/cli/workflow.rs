@@ -921,9 +921,10 @@ mod tests {
             "description: list test\n",
             "nodes:\n",
             "  - name: step1\n",
-            "    type: agent\n",
-            "    instruction: do thing\n",
-            "    permission: edit\n",
+            "    session:\n",
+            "      permission: edit\n",
+            "      facets:\n",
+            "        instruction: do thing\n",
         );
         std::fs::write(workflows_dir.join("api-cli-list.yml"), yaml).unwrap();
 
@@ -980,7 +981,9 @@ mod tests {
     /// （spec L92-96 / L160-162）。
     #[tokio::test]
     async fn engine_running_workflow_names_matches_cli_file_direct_after_register_active() {
-        use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType, Workflow};
+        use crate::adaptor::gateway::workflow::schema::{
+            NodeDefinition, NodeKind, SessionSpec, Workflow,
+        };
         use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
         use crate::adaptor::gateway::workflow::test_support::TestRuntimeKernel;
 
@@ -997,7 +1000,7 @@ mod tests {
             builtin: false,
             nodes: vec![NodeDefinition {
                 name: "step1".to_string(),
-                node_type: NodeType::Agent,
+                kind: NodeKind::Session(SessionSpec::default()),
                 ..Default::default()
             }],
         };
@@ -1087,9 +1090,10 @@ mod tests {
             "description: api-cli-inner test\n",
             "nodes:\n",
             "  - name: step1\n",
-            "    type: agent\n",
-            "    instruction: do thing\n",
-            "    permission: edit\n",
+            "    session:\n",
+            "      permission: edit\n",
+            "      facets:\n",
+            "        instruction: do thing\n",
         );
         std::fs::write(workflows_dir.join("api-cli-inner.yml"), yaml).unwrap();
 
