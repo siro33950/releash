@@ -28,6 +28,9 @@ export function useAutomation(open: boolean) {
 	const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(
 		null,
 	);
+	const [selectedWorkflowSource, setSelectedWorkflowSource] = useState<
+		string | null
+	>(null);
 	const [selectedFacetContent, setSelectedFacetContent] = useState<
 		string | null
 	>(null);
@@ -85,6 +88,7 @@ export function useAutomation(open: boolean) {
 		}
 		return () => {
 			setSelectedWorkflow(null);
+			setSelectedWorkflowSource(null);
 			setSelectedFacetContent(null);
 			setSelectedFacetKey(null);
 			setSelectedFacetKind(null);
@@ -146,27 +150,34 @@ export function useAutomation(open: boolean) {
 
 	const selectWorkflow = useCallback(async (name: string) => {
 		try {
-			const wf = await invoke<Workflow>("get_workflow", { name });
+			const [wf, source] = await Promise.all([
+				invoke<Workflow>("get_workflow", { name }),
+				invoke<string>("get_workflow_source", { name }),
+			]);
 			setSelectedWorkflow(wf);
+			setSelectedWorkflowSource(source);
 		} catch (e) {
 			setError(String(e));
 		}
 	}, []);
 
-	const saveWorkflow = useCallback(
-		async (workflow: Workflow, originalName?: string) => {
+	const saveWorkflowSource = useCallback(
+		async (source: string, originalName?: string) => {
 			try {
-				await invoke("save_workflow", {
-					workflow,
+				const workflow = await invoke<Workflow>("save_workflow_source", {
+					source,
 					originalName: originalName ?? null,
 				});
+				setSelectedWorkflow(workflow);
+				setSelectedWorkflowSource(source);
 				await fetchAll();
-				return { ok: true as const };
+				return { ok: true as const, workflow };
 			} catch (e) {
+				await refreshDiagnostics();
 				return { ok: false as const, error: String(e) };
 			}
 		},
-		[fetchAll],
+		[fetchAll, refreshDiagnostics],
 	);
 
 	const deleteWorkflow = useCallback(
@@ -175,6 +186,7 @@ export function useAutomation(open: boolean) {
 				await invoke("delete_workflow", { name });
 				if (selectedWorkflow?.name === name) {
 					setSelectedWorkflow(null);
+					setSelectedWorkflowSource(null);
 				}
 				await fetchAll();
 			} catch (e) {
@@ -284,37 +296,6 @@ export function useAutomation(open: boolean) {
 		[],
 	);
 
-	const loadAllFacetKeys = useCallback(async () => {
-		try {
-			const [policies, knowledge, instructions, contracts] = await Promise.all([
-				invoke<FacetSummary[]>("list_facet_summaries", {
-					kind: "policy",
-				}),
-				invoke<FacetSummary[]>("list_facet_summaries", {
-					kind: "knowledge",
-				}),
-				invoke<FacetSummary[]>("list_facet_summaries", {
-					kind: "instruction",
-				}),
-				invoke<FacetSummary[]>("list_facet_summaries", {
-					kind: "contract",
-				}),
-			]);
-			return {
-				policy: policies.map((f) => f.key),
-				knowledge: knowledge.map((f) => f.key),
-				instruction: instructions.map((f) => f.key),
-				// facet kind は "contract" だが、StepEditor の FacetSlot 名
-				// （schema フィールド名 output_contract）に合わせてキー名を保持する。
-				// input_contracts 編集 UI 導入時に統一する想定（別タスク）。
-				output_contract: contracts.map((f) => f.key),
-			};
-		} catch (e) {
-			setError(String(e));
-			return null;
-		}
-	}, []);
-
 	const renderFacetPreview = useCallback(
 		async (content: string, sampleValues: Record<string, string>) => {
 			try {
@@ -343,6 +324,7 @@ export function useAutomation(open: boolean) {
 		clearExternalChange,
 
 		selectedWorkflow,
+		selectedWorkflowSource,
 		selectedFacetContent,
 		selectedFacetKey,
 		selectedFacetKind,
@@ -352,7 +334,7 @@ export function useAutomation(open: boolean) {
 		refreshDiagnostics,
 
 		selectWorkflow,
-		saveWorkflow,
+		saveWorkflowSource,
 		deleteWorkflow,
 		duplicateWorkflow,
 		openWorkflowInEditor,
@@ -362,10 +344,10 @@ export function useAutomation(open: boolean) {
 		deleteFacet,
 		duplicateFacet,
 		openFacetInEditor,
-		loadAllFacetKeys,
 		renderFacetPreview,
 
 		setSelectedWorkflow,
+		setSelectedWorkflowSource,
 		setSelectedFacetContent,
 		setSelectedFacetKey,
 		setSelectedFacetKind,

@@ -3,7 +3,6 @@ use std::{collections::HashMap, path::Path};
 
 use tokio::sync::Mutex;
 
-use crate::adaptor::gateway::workflow::domain_mapping::node_type_to_domain;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::execution_registry::{
     find_by_worktree, find_by_worktree_mut,
@@ -24,12 +23,31 @@ use crate::domain::workflow::services::history::{
     self as workflow_history, RuntimeStartFailureKind,
 };
 use crate::domain::workflow::{
-    NodeType, RetryPolicy, TimeoutContext, WorkflowStepContext, WorkflowStepFailureKind,
+    NodeKindName, RetryPolicy, TimeoutContext, WorkflowStepContext, WorkflowStepFailureKind,
 };
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{ChatSession, OpenTabRegistry, SessionStore};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StepRuntimeKindContext {
+    node_kind: NodeKindName,
+    approval_gate: bool,
+}
+
+impl StepRuntimeKindContext {
+    pub(crate) fn new(node_kind: NodeKindName, approval_gate: bool) -> Self {
+        Self {
+            node_kind,
+            approval_gate,
+        }
+    }
+
+    pub(crate) fn session() -> Self {
+        Self::new(NodeKindName::Session, false)
+    }
+}
 
 fn runtime_start_failure_reason(
     failure: RuntimeStartFailureKind,
@@ -191,10 +209,10 @@ fn create_step_session_from_resolved_settings(
     worktree_path: &str,
     settings: StepSessionCreationSettings,
     workflow_step_context: WorkflowStepContext,
-    node_kind: NodeType,
+    kind_context: StepRuntimeKindContext,
 ) -> Result<ChatSession, WorkflowEngineError> {
     let workflow_step_context =
-        workflow_step_context_with_runtime_timeouts(&settings, workflow_step_context, node_kind);
+        workflow_step_context_with_runtime_timeouts(&settings, workflow_step_context, kind_context);
     crate::usecase::agent_session::session::create_session_internal_with_attributes(
         session_store,
         data_dir,
@@ -214,13 +232,14 @@ fn create_step_session_from_resolved_settings(
 fn workflow_step_context_with_runtime_timeouts(
     settings: &StepSessionCreationSettings,
     mut workflow_step_context: WorkflowStepContext,
-    node_kind: NodeType,
+    kind_context: StepRuntimeKindContext,
 ) -> WorkflowStepContext {
     let timeout_context = TimeoutContext::new(
         settings.selected_model.clone(),
-        node_kind,
+        kind_context.node_kind,
         Some(workflow_step_context.workflow_name.clone()),
-    );
+    )
+    .with_approval_gate(kind_context.approval_gate);
     let policy = workflow_runtime_timeout_policy();
     workflow_step_context.startup_timeout_secs =
         Some(policy.startup_timeout(&timeout_context).as_secs());
@@ -242,7 +261,7 @@ pub(crate) fn create_step_session_with_settings(
     step_permission: Option<String>,
     workflow_defaults: &WorkflowDefaults,
     workflow_step_context: WorkflowStepContext,
-    node_kind: NodeType,
+    kind_context: StepRuntimeKindContext,
 ) -> Result<ChatSession, WorkflowEngineError> {
     let settings = resolve_step_session_creation_settings(
         registry,
@@ -256,7 +275,7 @@ pub(crate) fn create_step_session_with_settings(
         worktree_path,
         settings,
         workflow_step_context,
-        node_kind,
+        kind_context,
     )
 }
 
@@ -352,7 +371,7 @@ pub(crate) async fn prepare_parallel_child_session_setups<R: tauri::Runtime>(
             worktree_path,
             creation_plan.settings,
             creation_plan.workflow_step_context,
-            creation_plan.node_kind,
+            creation_plan.kind_context,
         ) {
             Ok(session) => session,
             Err(err) => {
@@ -411,7 +430,7 @@ struct ParallelChildCreationPlan {
     workflow_instruction: Option<String>,
     settings: StepSessionCreationSettings,
     workflow_step_context: WorkflowStepContext,
-    node_kind: NodeType,
+    kind_context: StepRuntimeKindContext,
 }
 
 fn prepare_parallel_child_prompt_plans(
@@ -485,7 +504,7 @@ fn prepare_parallel_child_creation_plans(
                 startup_max_retries: None,
                 stale_timeout_secs: None,
             },
-            node_kind: node_type_to_domain(ps.node_type),
+            kind_context: StepRuntimeKindContext::session(),
             workflow_instruction: prompt_plan.workflow_instruction,
         });
     }
@@ -651,7 +670,7 @@ where
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
-        ChildNodeDefinition, NodeDefinition, NodeType, Workflow,
+        FanoutSpec, InterimChild, NodeDefinition, NodeKind, Workflow,
     };
     use crate::adaptor::gateway::workflow::state::{StepOutput, TokenUsage};
     use crate::domain::agent_session::gateway::{
@@ -660,7 +679,7 @@ mod tests {
     use crate::domain::agent_session::value_objects::{
         BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
     };
-    use crate::domain::workflow::WorkflowStepFailureKind;
+    use crate::domain::workflow::{NodeKindName, WorkflowStepFailureKind};
     use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
     use async_trait::async_trait;
 
@@ -859,7 +878,7 @@ mod tests {
                 permission_mode: "edit".to_string(),
             },
             workflow_context_for_test(),
-            crate::domain::workflow::NodeType::Agent,
+            StepRuntimeKindContext::session(),
         )
         .unwrap();
 
@@ -950,7 +969,7 @@ mod tests {
         let context = workflow_step_context_with_runtime_timeouts(
             &settings,
             context,
-            crate::domain::workflow::NodeType::Agent,
+            StepRuntimeKindContext::session(),
         );
 
         assert_eq!(context.startup_timeout_secs, Some(30));
@@ -981,7 +1000,7 @@ mod tests {
         let context = workflow_step_context_with_runtime_timeouts(
             &settings,
             context,
-            crate::domain::workflow::NodeType::Agent,
+            StepRuntimeKindContext::session(),
         );
 
         assert_eq!(context.startup_timeout_secs, Some(30));
@@ -990,7 +1009,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_step_context_with_runtime_timeouts_injects_node_kind_policy_values() {
+    fn workflow_step_context_with_runtime_timeouts_injects_approval_gate_policy_values() {
         let settings = StepSessionCreationSettings {
             backend_id: Some("codex".to_string()),
             selected_model: Some("unknown-fast".to_string()),
@@ -1012,7 +1031,7 @@ mod tests {
         let context = workflow_step_context_with_runtime_timeouts(
             &settings,
             context,
-            crate::domain::workflow::NodeType::Approval,
+            StepRuntimeKindContext::new(NodeKindName::Session, true),
         );
 
         assert_eq!(context.startup_timeout_secs, Some(30));
@@ -1119,11 +1138,13 @@ mod tests {
         let mut exec = workflow_execution_fixture("run-1", "/tmp/repo");
         exec.workflow.nodes[0] = NodeDefinition {
             name: "parallel-review".to_string(),
-            node_type: NodeType::Parallel,
-            parallel_children: Some(vec![ChildNodeDefinition {
-                name: "review-a".to_string(),
-                ..Default::default()
-            }]),
+            kind: NodeKind::Fanout(FanoutSpec {
+                parallel_children: vec![InterimChild {
+                    name: "review-a".to_string(),
+                    ..Default::default()
+                }],
+                aggregate: None,
+            }),
             ..Default::default()
         };
         exec.workflow

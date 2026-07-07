@@ -27,26 +27,66 @@ pub(crate) struct ResolvedFacetsDto {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum NodeTypeDto {
+pub(crate) enum NodeKindDto {
     #[default]
-    Agent,
-    Bash,
-    Approval,
-    Parallel,
+    Session,
+    Command,
+    Fanout,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct NodeDefinitionDto {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub node_type: NodeTypeDto,
+pub(crate) struct FacetRefsDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub(crate) struct SessionSpecDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
+    pub gate: SessionGateDto,
+    pub facets: FacetRefsDto,
+    #[serde(skip)]
+    pub resolved_facets: ResolvedFacetsDto,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SessionGateDto {
+    #[default]
+    Auto,
+    Approval,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub(crate) struct FanoutSpecDto {
+    pub parallel_children: Vec<InterimChildDto>,
+    pub aggregate: Option<ParallelAggregateDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NodeDefinitionDto {
+    pub name: String,
+    pub kind: NodeKindDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionSpecDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fanout: Option<FanoutSpecDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contract: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,41 +96,20 @@ pub(crate) struct NodeDefinitionDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_output_from: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inline_prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collect: Option<CollectConfigDto>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parallel_children: Option<Vec<ChildNodeDefinitionDto>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aggregate: Option<ParallelAggregateDto>,
     #[serde(default, rename = "rules", skip_serializing_if = "Vec::is_empty")]
     pub transition_rules: Vec<TransitionRuleDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cycle_guard: Option<CycleGuardDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_cycle_for: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission: Option<String>,
-    #[serde(skip)]
-    pub resolved_facets: ResolvedFacetsDto,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ChildNodeDefinitionDto {
+pub(crate) struct InterimChildDto {
     pub name: String,
-    #[serde(rename = "type")]
-    pub node_type: NodeTypeDto,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knowledge: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instruction: Option<String>,
+    pub facets: FacetRefsDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contract: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -216,16 +235,6 @@ pub(crate) fn workflow_to_dto(definition: &domain::WorkflowDefinition) -> Workfl
     }
 }
 
-pub(crate) fn workflow_from_dto(workflow: WorkflowDto) -> domain::WorkflowDefinition {
-    domain::WorkflowDefinition {
-        name: workflow.name,
-        description: workflow.description,
-        builtin: workflow.builtin,
-        variables: workflow.variables,
-        nodes: workflow.nodes.into_iter().map(node_from_dto).collect(),
-    }
-}
-
 pub(crate) fn workflow_summary_to_dto(summary: domain::WorkflowSummary) -> WorkflowSummaryDto {
     WorkflowSummaryDto {
         name: summary.name,
@@ -263,22 +272,18 @@ pub(crate) fn run_summary_to_dto(summary: domain::WorkflowRunSummary) -> Workflo
 fn node_to_dto(node: &domain::NodeDefinition) -> NodeDefinitionDto {
     NodeDefinitionDto {
         name: node.name.clone(),
-        node_type: node_type_to_dto(node.node_type),
-        policy: node.policy.clone(),
-        knowledge: node.knowledge.clone(),
-        instruction: node.instruction.clone(),
+        kind: node_kind_to_dto(node.kind_name()),
+        command: node.command().map(str::to_string),
+        session: node.session().map(session_to_dto),
+        fanout: node.fanout().map(fanout_to_dto),
+        artifact: node.artifact.clone(),
+        input: node.input.clone(),
+        inputs: node.inputs.clone(),
         output_contract: node.output_contract.clone(),
         input_contracts: node.input_contracts.clone(),
         pass_previous_response: node.pass_previous_response,
         pass_output_from: node.pass_output_from.clone(),
-        inline_prompt: node.inline_prompt.clone(),
         collect: node.collect.as_ref().map(collect_to_dto),
-        command: node.command.clone(),
-        parallel_children: node
-            .parallel_children
-            .as_ref()
-            .map(|children| children.iter().map(child_node_to_dto).collect()),
-        aggregate: node.aggregate.as_ref().map(aggregate_to_dto),
         transition_rules: node
             .transition_rules
             .iter()
@@ -286,50 +291,34 @@ fn node_to_dto(node: &domain::NodeDefinition) -> NodeDefinitionDto {
             .collect(),
         cycle_guard: node.cycle_guard.as_ref().map(cycle_guard_to_dto),
         resets_cycle_for: node.resets_cycle_for.clone(),
-        model: node.model.clone(),
-        permission: node.permission.clone(),
-        resolved_facets: resolved_facets_to_dto(&node.resolved_facets),
     }
 }
 
-fn node_from_dto(node: NodeDefinitionDto) -> domain::NodeDefinition {
-    domain::NodeDefinition {
-        name: node.name,
-        node_type: node_type_from_dto(node.node_type),
-        policy: node.policy,
-        knowledge: node.knowledge,
-        instruction: node.instruction,
-        output_contract: node.output_contract,
-        input_contracts: node.input_contracts,
-        pass_previous_response: node.pass_previous_response,
-        pass_output_from: node.pass_output_from,
-        inline_prompt: node.inline_prompt,
-        collect: node.collect.map(collect_from_dto),
-        command: node.command,
-        parallel_children: node
+fn session_to_dto(session: &domain::SessionSpec) -> SessionSpecDto {
+    SessionSpecDto {
+        model: session.model.clone(),
+        permission: session.permission.clone(),
+        gate: gate_to_dto(session.gate),
+        facets: facet_refs_to_dto(&session.facets),
+        resolved_facets: resolved_facets_to_dto(&session.resolved_facets),
+    }
+}
+
+fn fanout_to_dto(fanout: &domain::FanoutSpec) -> FanoutSpecDto {
+    FanoutSpecDto {
+        parallel_children: fanout
             .parallel_children
-            .map(|children| children.into_iter().map(child_node_from_dto).collect()),
-        aggregate: node.aggregate.map(aggregate_from_dto),
-        transition_rules: node
-            .transition_rules
-            .into_iter()
-            .map(transition_rule_from_dto)
+            .iter()
+            .map(child_node_to_dto)
             .collect(),
-        cycle_guard: node.cycle_guard.map(cycle_guard_from_dto),
-        resets_cycle_for: node.resets_cycle_for,
-        model: node.model,
-        permission: node.permission,
-        resolved_facets: resolved_facets_from_dto(node.resolved_facets),
+        aggregate: fanout.aggregate.as_ref().map(aggregate_to_dto),
     }
 }
 
-fn child_node_to_dto(child: &domain::ChildNodeDefinition) -> ChildNodeDefinitionDto {
-    ChildNodeDefinitionDto {
+fn child_node_to_dto(child: &domain::InterimChild) -> InterimChildDto {
+    InterimChildDto {
         name: child.name.clone(),
-        node_type: node_type_to_dto(child.node_type),
-        policy: child.policy.clone(),
-        knowledge: child.knowledge.clone(),
-        instruction: child.instruction.clone(),
+        facets: facet_refs_to_dto(&child.facets),
         output_contract: child.output_contract.clone(),
         input_contracts: child.input_contracts.clone(),
         pass_previous_response: child.pass_previous_response,
@@ -340,38 +329,26 @@ fn child_node_to_dto(child: &domain::ChildNodeDefinition) -> ChildNodeDefinition
     }
 }
 
-fn child_node_from_dto(child: ChildNodeDefinitionDto) -> domain::ChildNodeDefinition {
-    domain::ChildNodeDefinition {
-        name: child.name,
-        node_type: node_type_from_dto(child.node_type),
-        policy: child.policy,
-        knowledge: child.knowledge,
-        instruction: child.instruction,
-        output_contract: child.output_contract,
-        input_contracts: child.input_contracts,
-        pass_previous_response: child.pass_previous_response,
-        pass_output_from: child.pass_output_from,
-        model: child.model,
-        permission: child.permission,
-        resolved_facets: resolved_facets_from_dto(child.resolved_facets),
+fn node_kind_to_dto(kind: domain::NodeKindName) -> NodeKindDto {
+    match kind {
+        domain::NodeKindName::Command => NodeKindDto::Command,
+        domain::NodeKindName::Session => NodeKindDto::Session,
+        domain::NodeKindName::Fanout => NodeKindDto::Fanout,
     }
 }
 
-fn node_type_to_dto(node_type: domain::NodeType) -> NodeTypeDto {
-    match node_type {
-        domain::NodeType::Agent => NodeTypeDto::Agent,
-        domain::NodeType::Bash => NodeTypeDto::Bash,
-        domain::NodeType::Approval => NodeTypeDto::Approval,
-        domain::NodeType::Parallel => NodeTypeDto::Parallel,
+fn gate_to_dto(gate: domain::SessionGate) -> SessionGateDto {
+    match gate {
+        domain::SessionGate::Auto => SessionGateDto::Auto,
+        domain::SessionGate::Approval => SessionGateDto::Approval,
     }
 }
 
-fn node_type_from_dto(node_type: NodeTypeDto) -> domain::NodeType {
-    match node_type {
-        NodeTypeDto::Agent => domain::NodeType::Agent,
-        NodeTypeDto::Bash => domain::NodeType::Bash,
-        NodeTypeDto::Approval => domain::NodeType::Approval,
-        NodeTypeDto::Parallel => domain::NodeType::Parallel,
+fn facet_refs_to_dto(facets: &domain::FacetRefs) -> FacetRefsDto {
+    FacetRefsDto {
+        policy: facets.policy.clone(),
+        knowledge: facets.knowledge.clone(),
+        instruction: facets.instruction.clone(),
     }
 }
 
@@ -379,13 +356,6 @@ fn collect_to_dto(collect: &domain::CollectConfig) -> CollectConfigDto {
     CollectConfigDto {
         from: collect.from.clone(),
         reduce: reduce_strategy_to_dto(&collect.reduce),
-    }
-}
-
-fn collect_from_dto(collect: CollectConfigDto) -> domain::CollectConfig {
-    domain::CollectConfig {
-        from: collect.from,
-        reduce: reduce_strategy_from_dto(collect.reduce),
     }
 }
 
@@ -399,31 +369,12 @@ fn reduce_strategy_to_dto(reduce: &domain::ReduceStrategy) -> ReduceStrategyDto 
     }
 }
 
-fn reduce_strategy_from_dto(reduce: ReduceStrategyDto) -> domain::ReduceStrategy {
-    match reduce {
-        ReduceStrategyDto::Last => domain::ReduceStrategy::Last,
-        ReduceStrategyDto::Concat => domain::ReduceStrategy::Concat,
-        ReduceStrategyDto::Grouped => domain::ReduceStrategy::Grouped,
-        ReduceStrategyDto::AnyNeedsFix => domain::ReduceStrategy::AnyNeedsFix,
-        ReduceStrategyDto::AllPassed => domain::ReduceStrategy::AllPassed,
-    }
-}
-
 fn aggregate_to_dto(aggregate: &domain::ParallelAggregate) -> ParallelAggregateDto {
     ParallelAggregateDto {
         all_match: aggregate.all_match.clone(),
         any_match: aggregate.any_match.clone(),
         then: aggregate.then.clone(),
         r#else: aggregate.r#else.clone(),
-    }
-}
-
-fn aggregate_from_dto(aggregate: ParallelAggregateDto) -> domain::ParallelAggregate {
-    domain::ParallelAggregate {
-        all_match: aggregate.all_match,
-        any_match: aggregate.any_match,
-        then: aggregate.then,
-        r#else: aggregate.r#else,
     }
 }
 
@@ -434,24 +385,10 @@ fn transition_rule_to_dto(rule: &domain::TransitionRule) -> TransitionRuleDto {
     }
 }
 
-fn transition_rule_from_dto(rule: TransitionRuleDto) -> domain::TransitionRule {
-    domain::TransitionRule {
-        r#match: rule.r#match,
-        next: rule.next,
-    }
-}
-
 fn cycle_guard_to_dto(guard: &domain::CycleGuard) -> CycleGuardDto {
     CycleGuardDto {
         max_iterations: guard.max_iterations,
         on_exhausted: guard.on_exhausted.clone(),
-    }
-}
-
-fn cycle_guard_from_dto(guard: CycleGuardDto) -> domain::CycleGuard {
-    domain::CycleGuard {
-        max_iterations: guard.max_iterations,
-        on_exhausted: guard.on_exhausted,
     }
 }
 
@@ -462,16 +399,6 @@ fn resolved_facets_to_dto(resolved: &ResolvedFacets) -> ResolvedFacetsDto {
         instruction: resolved.instruction.clone(),
         output_contract: resolved.output_contract.clone(),
         input_contracts: resolved.input_contracts.clone(),
-    }
-}
-
-fn resolved_facets_from_dto(resolved: ResolvedFacetsDto) -> ResolvedFacets {
-    ResolvedFacets {
-        policy: resolved.policy,
-        knowledge: resolved.knowledge,
-        instruction: resolved.instruction,
-        output_contract: resolved.output_contract,
-        input_contracts: resolved.input_contracts,
     }
 }
 
@@ -507,7 +434,15 @@ mod tests {
             variables: Default::default(),
             nodes: vec![NodeDefinitionDto {
                 name: "step".to_string(),
-                node_type: NodeTypeDto::Agent,
+                kind: NodeKindDto::Session,
+                session: Some(SessionSpecDto {
+                    gate: SessionGateDto::Auto,
+                    facets: FacetRefsDto {
+                        instruction: Some("inst".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 input_contracts: Some(vec!["input".to_string()]),
                 output_contract: Some("output".to_string()),
                 transition_rules: vec![TransitionRuleDto {
@@ -526,7 +461,13 @@ mod tests {
                 "builtin": false,
                 "nodes": [{
                     "name": "step",
-                    "type": "agent",
+                    "kind": "session",
+                    "session": {
+                        "gate": "auto",
+                        "facets": {
+                            "instruction": "inst"
+                        }
+                    },
                     "input_contracts": ["input"],
                     "output_contract": "output",
                     "rules": [{"match": "ok", "next": "done"}]

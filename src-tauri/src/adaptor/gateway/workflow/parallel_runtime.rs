@@ -15,9 +15,7 @@ use crate::adaptor::gateway::workflow::runtime_commit::StepOutcome;
 use crate::adaptor::gateway::workflow::runtime_state::{
     ParallelChildRun, ParallelChildState, ParallelRunState, WorkflowExecution,
 };
-use crate::adaptor::gateway::workflow::schema::{
-    ChildNodeDefinition, CollectConfig, ParallelAggregate,
-};
+use crate::adaptor::gateway::workflow::schema::{CollectConfig, InterimChild, ParallelAggregate};
 use crate::adaptor::gateway::workflow::state::{StepOutput, TokenUsage, WorkflowState};
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::adaptor::gateway::workflow::turn_completion;
@@ -25,7 +23,7 @@ use crate::domain::workflow::services::parallel as workflow_parallel;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ParallelStartContext {
-    pub(crate) parallel_steps: Vec<ChildNodeDefinition>,
+    pub(crate) parallel_steps: Vec<InterimChild>,
     pub(crate) parent_step_name: String,
     pub(crate) parent_run_index: u32,
     pub(crate) order: u32,
@@ -71,9 +69,7 @@ pub(crate) struct ParallelChildSessionSetup {
     pub(crate) run_index: u32,
 }
 
-pub(crate) fn child_step_names(
-    parallel_steps: &[crate::adaptor::gateway::workflow::schema::ChildNodeDefinition],
-) -> Vec<String> {
+pub(crate) fn child_step_names(parallel_steps: &[InterimChild]) -> Vec<String> {
     parallel_steps
         .iter()
         .map(|step| step.name.clone())
@@ -82,7 +78,7 @@ pub(crate) fn child_step_names(
 
 fn next_child_run_indices(
     counts: &HashMap<String, u32>,
-    parallel_steps: &[ChildNodeDefinition],
+    parallel_steps: &[InterimChild],
 ) -> Vec<u32> {
     let mut counts = counts.clone();
     parallel_steps
@@ -108,12 +104,19 @@ pub(crate) fn prepare_parallel_start_context(
                 exec.current_step_index, exec.workflow.name
             ))
         })?;
-    let parallel_steps = step.parallel_children.clone().ok_or_else(|| {
+    let fanout = step.fanout().ok_or_else(|| {
         WorkflowEngineError::InvalidState(format!(
-            "StartParallel requires parallel children for node '{}'",
+            "StartParallel requires fanout node '{}'",
             step.name
         ))
     })?;
+    let parallel_steps = fanout.parallel_children.clone();
+    if parallel_steps.is_empty() {
+        return Err(WorkflowEngineError::InvalidState(format!(
+            "StartParallel requires parallel children for node '{}'",
+            step.name
+        )));
+    }
     let parent_run_index = exec
         .step_execution_counts
         .get(&step.name)
@@ -126,7 +129,7 @@ pub(crate) fn prepare_parallel_start_context(
         order: exec.step_history.len() as u32,
         child_run_indices,
         parallel_steps,
-        aggregate: step.aggregate.clone(),
+        aggregate: fanout.aggregate.clone(),
         execution_id: exec.id.clone(),
         workflow_name: exec.workflow.name.clone(),
         task: exec.task.clone(),
@@ -389,7 +392,7 @@ pub(crate) fn resolve_step_result(output: &StepOutput) -> Option<String> {
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
-        ChildNodeDefinition, NodeDefinition, NodeType, ReduceStrategy, Workflow,
+        FanoutSpec, InterimChild, NodeDefinition, NodeKind, ReduceStrategy, Workflow,
     };
     use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
 
@@ -426,7 +429,7 @@ mod tests {
 
     #[test]
     fn prepare_parallel_start_context_captures_current_parallel_node() {
-        let child = ChildNodeDefinition {
+        let child = InterimChild {
             name: "review-a".to_string(),
             model: Some("model-a".to_string()),
             ..Default::default()
@@ -439,9 +442,10 @@ mod tests {
         };
         let exec = workflow_execution_fixture(NodeDefinition {
             name: "parallel-review".to_string(),
-            node_type: NodeType::Parallel,
-            parallel_children: Some(vec![child]),
-            aggregate: Some(aggregate.clone()),
+            kind: NodeKind::Fanout(FanoutSpec {
+                parallel_children: vec![child],
+                aggregate: Some(aggregate.clone()),
+            }),
             ..Default::default()
         });
 
@@ -475,6 +479,10 @@ mod tests {
     fn prepare_parallel_start_context_rejects_node_without_children() {
         let exec = workflow_execution_fixture(NodeDefinition {
             name: "plan".to_string(),
+            kind: NodeKind::Fanout(FanoutSpec {
+                parallel_children: vec![],
+                aggregate: None,
+            }),
             ..Default::default()
         });
 
@@ -491,11 +499,13 @@ mod tests {
     fn parallel_prompt_inputs_clones_runtime_inputs() {
         let mut exec = workflow_execution_fixture(NodeDefinition {
             name: "parallel-review".to_string(),
-            node_type: NodeType::Parallel,
-            parallel_children: Some(vec![ChildNodeDefinition {
-                name: "review-a".to_string(),
-                ..Default::default()
-            }]),
+            kind: NodeKind::Fanout(FanoutSpec {
+                parallel_children: vec![InterimChild {
+                    name: "review-a".to_string(),
+                    ..Default::default()
+                }],
+                aggregate: None,
+            }),
             ..Default::default()
         });
         exec.step_outputs.insert(

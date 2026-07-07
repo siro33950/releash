@@ -37,7 +37,8 @@ pub(crate) mod session_errors;
 pub(super) const COMMAND_NAMES: &[&str] = &[
     "list_workflows",
     "get_workflow",
-    "save_workflow",
+    "get_workflow_source",
+    "save_workflow_source",
     "delete_workflow",
     "open_workflow_in_editor",
     "start_workflow",
@@ -82,7 +83,8 @@ pub(crate) fn invoke_handler(
     tauri::generate_handler![
         definition::list_workflows,
         definition::get_workflow,
-        definition::save_workflow,
+        definition::get_workflow_source,
+        definition::save_workflow_source,
         definition::delete_workflow,
         definition::open_workflow_in_editor,
         runtime::start_workflow,
@@ -460,7 +462,9 @@ mod tests {
         WorkflowDefinitionResolverError,
     };
     use crate::adaptor::gateway::workflow::run::{RunStatus, TriggerSource};
-    use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType};
+    use crate::adaptor::gateway::workflow::schema::{
+        FacetRefs, NodeDefinition, NodeKind, SessionGate, SessionSpec,
+    };
     use crate::adaptor::gateway::workflow::state::{WorkflowExecutionState, WorkflowState};
     use crate::domain::workflow::ApprovalDecision;
     use std::collections::HashSet;
@@ -519,12 +523,7 @@ mod tests {
             name: "adapter-boundary".to_string(),
             description: "adapter command test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "review".to_string(),
-                node_type: NodeType::Approval,
-                instruction: Some("review".to_string()),
-                ..NodeDefinition::default()
-            }],
+            nodes: vec![approval_node("review", "review")],
         }
     }
 
@@ -537,8 +536,7 @@ mod tests {
             nodes: vec![
                 NodeDefinition {
                     name: "review".to_string(),
-                    node_type: NodeType::Approval,
-                    instruction: Some("review".to_string()),
+                    kind: session_kind(SessionGate::Approval, "review"),
                     transition_rules: vec![
                         crate::adaptor::gateway::workflow::schema::TransitionRule {
                             r#match: "reject".to_string(),
@@ -547,13 +545,35 @@ mod tests {
                     ],
                     ..NodeDefinition::default()
                 },
-                NodeDefinition {
-                    name: "fix".to_string(),
-                    node_type: NodeType::Agent,
-                    instruction: Some("fix".to_string()),
-                    ..NodeDefinition::default()
-                },
+                session_node("fix", "fix"),
             ],
+        }
+    }
+
+    fn session_kind(gate: SessionGate, instruction: &str) -> NodeKind {
+        NodeKind::Session(SessionSpec {
+            gate,
+            facets: FacetRefs {
+                instruction: Some(instruction.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    fn session_node(name: &str, instruction: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: session_kind(SessionGate::Auto, instruction),
+            ..Default::default()
+        }
+    }
+
+    fn approval_node(name: &str, instruction: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: session_kind(SessionGate::Approval, instruction),
+            ..Default::default()
         }
     }
 
@@ -1909,9 +1929,14 @@ mod tests {
             builtin: false,
             nodes: vec![NodeDefinition {
                 name: "step1".to_string(),
-                node_type: NodeType::Agent,
-                inline_prompt: Some("Do something".to_string()),
-                permission: Some("edit".to_string()),
+                kind: NodeKind::Session(SessionSpec {
+                    permission: Some("edit".to_string()),
+                    facets: FacetRefs {
+                        instruction: Some("implement".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 ..NodeDefinition::default()
             }],
         }
@@ -2892,8 +2917,15 @@ mod tests {
             builtin: false,
             nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
                 name: "plan".to_string(),
-                node_type: crate::adaptor::gateway::workflow::schema::NodeType::Agent,
-                instruction: Some("plan it".to_string()),
+                kind: crate::adaptor::gateway::workflow::schema::NodeKind::Session(
+                    crate::adaptor::gateway::workflow::schema::SessionSpec {
+                        facets: crate::adaptor::gateway::workflow::schema::FacetRefs {
+                            instruction: Some("implement".to_string()),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                ),
                 ..crate::adaptor::gateway::workflow::schema::NodeDefinition::default()
             }],
         };

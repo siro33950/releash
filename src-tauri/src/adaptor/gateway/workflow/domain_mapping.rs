@@ -192,22 +192,15 @@ pub(crate) fn parallel_step_state_from_domain(
 pub(crate) fn node_definition_to_domain(node: &schema::NodeDefinition) -> domain::NodeDefinition {
     domain::NodeDefinition {
         name: node.name.clone(),
-        node_type: node_type_to_domain(node.node_type),
-        policy: node.policy.clone(),
-        knowledge: node.knowledge.clone(),
-        instruction: node.instruction.clone(),
+        kind: node_kind_to_domain(&node.kind),
+        artifact: node.artifact.clone(),
+        input: node.input.clone(),
+        inputs: node.inputs.clone(),
         output_contract: node.output_contract.clone(),
         input_contracts: node.input_contracts.clone(),
         pass_previous_response: node.pass_previous_response,
         pass_output_from: node.pass_output_from.clone(),
-        inline_prompt: node.inline_prompt.clone(),
         collect: node.collect.as_ref().map(collect_config_to_domain),
-        command: node.command.clone(),
-        parallel_children: node
-            .parallel_children
-            .as_ref()
-            .map(|children| children.iter().map(child_node_to_domain).collect()),
-        aggregate: node.aggregate.as_ref().map(parallel_aggregate_to_domain),
         transition_rules: node
             .transition_rules
             .iter()
@@ -215,45 +208,58 @@ pub(crate) fn node_definition_to_domain(node: &schema::NodeDefinition) -> domain
             .collect(),
         cycle_guard: node.cycle_guard.as_ref().map(cycle_guard_to_domain),
         resets_cycle_for: node.resets_cycle_for.clone(),
-        model: node.model.clone(),
-        permission: node.permission.clone(),
-        resolved_facets: resolved_facets_to_domain(&node.resolved_facets),
     }
 }
 
-fn child_node_to_domain(child: &schema::ChildNodeDefinition) -> domain::ChildNodeDefinition {
-    domain::ChildNodeDefinition {
+pub(crate) fn node_kind_to_domain(kind: &schema::NodeKind) -> domain::NodeKind {
+    match kind {
+        schema::NodeKind::Command(spec) => domain::NodeKind::Command(domain::CommandSpec {
+            command: spec.command.clone(),
+        }),
+        schema::NodeKind::Session(spec) => domain::NodeKind::Session(domain::SessionSpec {
+            model: spec.model.clone(),
+            permission: spec.permission.clone(),
+            gate: session_gate_to_domain(spec.gate),
+            facets: facet_refs_to_domain(&spec.facets),
+            resolved_facets: resolved_facets_to_domain(&spec.resolved_facets),
+        }),
+        schema::NodeKind::Fanout(spec) => domain::NodeKind::Fanout(domain::FanoutSpec {
+            parallel_children: spec
+                .parallel_children
+                .iter()
+                .map(interim_child_to_domain)
+                .collect(),
+            aggregate: spec.aggregate.as_ref().map(parallel_aggregate_to_domain),
+        }),
+    }
+}
+
+fn session_gate_to_domain(gate: schema::SessionGate) -> domain::SessionGate {
+    match gate {
+        schema::SessionGate::Auto => domain::SessionGate::Auto,
+        schema::SessionGate::Approval => domain::SessionGate::Approval,
+    }
+}
+
+fn facet_refs_to_domain(facets: &schema::FacetRefs) -> domain::FacetRefs {
+    domain::FacetRefs {
+        policy: facets.policy.clone(),
+        knowledge: facets.knowledge.clone(),
+        instruction: facets.instruction.clone(),
+    }
+}
+
+fn interim_child_to_domain(child: &schema::InterimChild) -> domain::InterimChild {
+    domain::InterimChild {
         name: child.name.clone(),
-        node_type: node_type_to_domain(child.node_type),
-        policy: child.policy.clone(),
-        knowledge: child.knowledge.clone(),
-        instruction: child.instruction.clone(),
+        model: child.model.clone(),
+        permission: child.permission.clone(),
+        facets: facet_refs_to_domain(&child.facets),
         output_contract: child.output_contract.clone(),
         input_contracts: child.input_contracts.clone(),
         pass_previous_response: child.pass_previous_response,
         pass_output_from: child.pass_output_from.clone(),
-        model: child.model.clone(),
-        permission: child.permission.clone(),
         resolved_facets: resolved_facets_to_domain(&child.resolved_facets),
-    }
-}
-
-pub(crate) fn node_type_to_domain(node_type: schema::NodeType) -> domain::NodeType {
-    match node_type {
-        schema::NodeType::Agent => domain::NodeType::Agent,
-        schema::NodeType::Bash => domain::NodeType::Bash,
-        schema::NodeType::Approval => domain::NodeType::Approval,
-        schema::NodeType::Parallel => domain::NodeType::Parallel,
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn node_type_from_domain(node_type: domain::NodeType) -> schema::NodeType {
-    match node_type {
-        domain::NodeType::Agent => schema::NodeType::Agent,
-        domain::NodeType::Bash => schema::NodeType::Bash,
-        domain::NodeType::Approval => schema::NodeType::Approval,
-        domain::NodeType::Parallel => schema::NodeType::Parallel,
     }
 }
 
@@ -329,21 +335,39 @@ mod tests {
             variables: Default::default(),
             nodes: vec![schema::NodeDefinition {
                 name: "implement".to_string(),
-                node_type: schema::NodeType::Agent,
-                instruction: Some("inst".to_string()),
-                resolved_facets: schema::ResolvedFacets {
-                    instruction: Some("resolved instruction".to_string()),
+                kind: schema::NodeKind::Session(schema::SessionSpec {
+                    facets: schema::FacetRefs {
+                        instruction: Some("inst".to_string()),
+                        ..Default::default()
+                    },
+                    resolved_facets: schema::ResolvedFacets {
+                        instruction: Some("resolved instruction".to_string()),
+                        ..Default::default()
+                    },
                     ..Default::default()
-                },
+                }),
                 ..Default::default()
             }],
         };
 
         let mapped = workflow_definition_to_domain(&workflow);
 
-        assert_eq!(mapped.nodes[0].instruction.as_deref(), Some("inst"));
         assert_eq!(
-            mapped.nodes[0].resolved_facets.instruction.as_deref(),
+            mapped.nodes[0]
+                .session()
+                .unwrap()
+                .facets
+                .instruction
+                .as_deref(),
+            Some("inst")
+        );
+        assert_eq!(
+            mapped.nodes[0]
+                .session()
+                .unwrap()
+                .resolved_facets
+                .instruction
+                .as_deref(),
             Some("resolved instruction")
         );
     }

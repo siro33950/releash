@@ -136,7 +136,7 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 							worktreePath: "/repo/wt",
 							title: "Build step",
 							status: "running",
-							stepType: "agent",
+							stepType: "session",
 							updatedAt: 1100,
 							sessions: [
 								{

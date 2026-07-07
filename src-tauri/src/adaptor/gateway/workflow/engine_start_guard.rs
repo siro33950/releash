@@ -31,16 +31,16 @@ fn domain_validation_to_engine_error(
             WorkflowEngineError::InvalidWorkflow("Workflow has no steps".to_string())
         }
         domain::WorkflowError::Validation(message)
-            if message.starts_with("bash node ") && message.contains("not executable") =>
+            if message.starts_with("command node ") && message.contains("not executable") =>
         {
             let node_name = workflow
                 .nodes
                 .iter()
-                .find(|node| matches!(node.node_type, domain::NodeType::Bash))
+                .find(|node| node.is_command())
                 .map(|node| node.name.as_str())
                 .unwrap_or("unknown");
             WorkflowEngineError::InvalidWorkflow(format!(
-                "Bash node '{node_name}' is not executable in this milestone (planned for [13])"
+                "Command node '{node_name}' is not executable in this milestone (planned for [13])"
             ))
         }
         domain::WorkflowError::Validation(message) => WorkflowEngineError::InvalidWorkflow(message),
@@ -57,7 +57,7 @@ fn domain_validation_to_engine_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType};
+    use crate::adaptor::gateway::workflow::schema::{CommandSpec, NodeDefinition, NodeKind};
 
     fn workflow(nodes: Vec<NodeDefinition>) -> Workflow {
         Workflow {
@@ -80,14 +80,16 @@ mod tests {
     fn validate_workflow_shape_delegates_to_domain_and_preserves_bash_message() {
         let err = validate_workflow_shape(&workflow(vec![NodeDefinition {
             name: "build".to_string(),
-            node_type: NodeType::Bash,
+            kind: NodeKind::Command(CommandSpec {
+                command: "cargo build".to_string(),
+            }),
             ..Default::default()
         }]))
         .unwrap_err();
 
         assert_eq!(
             err.to_string(),
-            "Bash node 'build' is not executable in this milestone (planned for [13])"
+            "Command node 'build' is not executable in this milestone (planned for [13])"
         );
     }
 
@@ -96,7 +98,6 @@ mod tests {
         let err = validate_start(
             &workflow(vec![NodeDefinition {
                 name: "plan".to_string(),
-                node_type: NodeType::Agent,
                 ..Default::default()
             }]),
             Some("wf"),

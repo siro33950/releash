@@ -1,93 +1,91 @@
 name: 03_full-review
 description: 全観点を claude-opus-4-8 / gpt-5.6-sol でレビューし、モデル単位の妥当性チェックを行う。Summary 段では各 Open Thread の reviewer 指摘と verifier 分類を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。
 builtin: true
-
 nodes:
-  # ===== Posting phase: 6 viewpoints × 2 backends = 12 reviewers in parallel =====
-  - name: review-parallel
-    type: parallel
+- name: review-parallel
+  fanout:
     parallel_children:
-      - name: review-acceptance-opus
-        type: agent
-        model: claude-opus-4-8
-        permission: edit
+    - name: review-acceptance-opus
+      model: claude-opus-4-8
+      permission: edit
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-acceptance
-      - name: review-acceptance-gpt55
-        type: agent
-        model: gpt-5.6-sol
-        permission: full
+    - name: review-acceptance-gpt55
+      model: gpt-5.5
+      permission: full
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-acceptance
-      - name: review-structure-opus
-        type: agent
-        model: claude-opus-4-8
-        permission: edit
+    - name: review-structure-opus
+      model: claude-opus-4-8
+      permission: edit
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-structure
-      - name: review-structure-gpt55
-        type: agent
-        model: gpt-5.6-sol
-        permission: full
+    - name: review-structure-gpt55
+      model: gpt-5.5
+      permission: full
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-structure
-      - name: review-quality-opus
-        type: agent
-        model: claude-opus-4-8
-        permission: edit
+    - name: review-quality-opus
+      model: claude-opus-4-8
+      permission: edit
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-quality
-      - name: review-quality-gpt55
-        type: agent
-        model: gpt-5.6-sol
-        permission: full
+    - name: review-quality-gpt55
+      model: gpt-5.5
+      permission: full
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-quality
-      - name: review-test-opus
-        type: agent
-        model: claude-opus-4-8
-        permission: edit
+    - name: review-test-opus
+      model: claude-opus-4-8
+      permission: edit
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-test
-      - name: review-test-gpt55
-        type: agent
-        model: gpt-5.6-sol
-        permission: full
+    - name: review-test-gpt55
+      model: gpt-5.5
+      permission: full
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-test
-      - name: review-security-opus
-        type: agent
-        model: claude-opus-4-8
-        permission: edit
+    - name: review-security-opus
+      model: claude-opus-4-8
+      permission: edit
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-security
-      - name: review-security-gpt55
-        type: agent
-        model: gpt-5.6-sol
-        permission: full
+    - name: review-security-gpt55
+      model: gpt-5.5
+      permission: full
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-security
-      - name: review-architecture-opus
-        type: agent
-        model: claude-opus-4-8
-        permission: edit
+    - name: review-architecture-opus
+      model: claude-opus-4-8
+      permission: edit
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-architecture
-      - name: review-architecture-gpt55
-        type: agent
-        model: gpt-5.6-sol
-        permission: full
+    - name: review-architecture-gpt55
+      model: gpt-5.5
+      permission: full
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-architecture
@@ -95,25 +93,20 @@ nodes:
       all_match: ".*"
       then: verify-and-classify
       else: verify-and-classify
-
-  # ===== Verification phase: 2 verifiers independently verify every open Thread =====
-  # Each verifier executes tools (grep / cat / git diff / ast-grep / test) and assigns
-  # one of four states: VERIFIED / REFUTED / MANUAL_JUDGMENT / INFORMATIONAL.
-  # No consensus is sought; dissent is preserved for the Summary step.
-  - name: verify-and-classify
-    type: parallel
+- name: verify-and-classify
+  fanout:
     parallel_children:
-      - name: verify-opus
-        type: agent
-        model: claude-opus-4-8
-        permission: edit
+    - name: verify-opus
+      model: claude-opus-4-8
+      permission: edit
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: full-review-verify-and-classify
-      - name: verify-gpt55
-        type: agent
-        model: gpt-5.6-sol
-        permission: full
+    - name: verify-gpt55
+      model: gpt-5.5
+      permission: full
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: full-review-verify-and-classify
@@ -121,15 +114,12 @@ nodes:
       all_match: ".*"
       then: reporting
       else: reporting
-
-  # ===== Summary: terminal step. Walks through each Thread interactively with
-  # the human, discussing findings until an explicit policy is agreed, then
-  # posts the conclusion to the Thread (policy Comment or rationale-backed
-  # Resolve). All actions require explicit human approval.
-  - name: reporting
-    type: approval
+- name: reporting
+  session:
     model: claude-opus-4-8
     permission: edit
-    policy: reporting
-    knowledge: releash-thread-cli
-    instruction: full-review-summary
+    gate: approval
+    facets:
+      policy: reporting
+      knowledge: releash-thread-cli
+      instruction: full-review-summary

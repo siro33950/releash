@@ -1,53 +1,55 @@
 name: 02_implement_claude
 description: Spec を元にClaude系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。
 builtin: true
-
 nodes:
-  - name: implement
-    type: agent
+- name: implement
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: implement
-    policy: coding
-
-  - name: review_parallel
-    type: parallel
+    gate: auto
+    facets:
+      policy: coding
+      instruction: implement
+- name: review_parallel
+  fanout:
     parallel_children:
-      - name: review_spec
-        type: agent
-        model: gpt-5.6-sol
-        permission: edit
+    - name: review_spec
+      model: gpt-5.5
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
         instruction: spec-implement-review-spec
+    - name: review_design
+      model: gpt-5.5
+      permission: edit
+      facets:
         policy: reviewing
         knowledge: releash-thread-cli
-      - name: review_design
-        type: agent
-        model: gpt-5.6-sol
-        permission: edit
         instruction: spec-implement-review-design
-        policy: reviewing
-        knowledge: releash-thread-cli
-
-  - name: fix
-    type: agent
+- name: fix
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: spec-implement-fix
-    policy: coding
-    output_contract: spec-implement-fix-verdict
-    knowledge: releash-thread-cli
-    rules:
-      - match: fixed
-        next: review_parallel
-      - match: completed
-        next: report
-    cycle_guard:
-      max_iterations: 5
-      on_exhausted: report
-
-  - name: report
-    type: approval
+    gate: auto
+    facets:
+      policy: coding
+      knowledge: releash-thread-cli
+      instruction: spec-implement-fix
+  output_contract: spec-implement-fix-verdict
+  rules:
+  - match: fixed
+    next: review_parallel
+  - match: completed
+    next: report
+  cycle_guard:
+    max_iterations: 5
+    on_exhausted: report
+- name: report
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: spec-implement-report
-    knowledge: releash-thread-cli
+    gate: approval
+    facets:
+      knowledge: releash-thread-cli
+      instruction: spec-implement-report

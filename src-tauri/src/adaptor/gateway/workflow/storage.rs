@@ -162,10 +162,55 @@ pub fn save_workflow(
     Ok(())
 }
 
+pub fn parse_workflow_source(
+    content: &str,
+    facets_base_dir: &Path,
+) -> Result<Workflow, StorageError> {
+    let mut workflow: Workflow = serde_saphyr::from_str(content)?;
+    workflow.builtin = builtin::is_builtin_workflow(&workflow.name);
+    validate_workflow_definition(&workflow)?;
+    validate_workflow_facet_refs(&workflow, |key| {
+        facet::load_facet(facet::FacetKind::Contract, key, facets_base_dir).is_ok()
+    })?;
+    facet::resolve_workflow_facets(&mut workflow, facets_base_dir)?;
+    validate_workflow_variable_refs(&workflow)?;
+    Ok(workflow)
+}
+
+pub fn load_workflow_source(dir: &Path, name: &str) -> Result<String, StorageError> {
+    let path = resolve_workflow_path(dir, name)?;
+    Ok(fs::read_to_string(path)?)
+}
+
+pub fn save_workflow_source(
+    dir: &Path,
+    facets_base_dir: &Path,
+    content: &str,
+) -> Result<Workflow, StorageError> {
+    let mut workflow = parse_workflow_source(content, facets_base_dir)?;
+    ensure_dir(dir)?;
+
+    let file_path = dir.join(format!("{}.yml", workflow.name));
+    let tmp_path = dir.join(format!(
+        "{}.yml.{}.tmp",
+        workflow.name,
+        uuid::Uuid::new_v4()
+    ));
+
+    fs::write(&tmp_path, content)?;
+    if let Err(e) = fs::rename(&tmp_path, &file_path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
+
+    workflow.builtin = false;
+    Ok(workflow)
+}
+
 /// YAML ファイルから `Workflow` を読み込み、facet 参照を解決した上で validation する。
 ///
-/// [02] schema 境界: load 経路で `facet.rs` を呼び、`NodeDefinition.resolved_facets` /
-/// `ChildNodeDefinition.resolved_facets` に解決済み内容を格納する。
+/// [02] schema 境界: load 経路で `facet.rs` を呼び、session / fanout child の
+/// `resolved_facets` に解決済み内容を格納する。
 /// 実行用 Workflow には未解決 ref を残さない（schema 層は ref キーを保持しつつ、
 /// 実行系は resolved cache から直接合成する）。
 pub fn load_workflow(path: &Path, facets_base_dir: &Path) -> Result<Workflow, StorageError> {
@@ -187,13 +232,13 @@ pub fn load_workflow(path: &Path, facets_base_dir: &Path) -> Result<Workflow, St
 /// 黙って空文字へ展開させない（権限や宛先ずれの事故防止）。
 fn validate_workflow_variable_refs(workflow: &Workflow) -> Result<(), StorageError> {
     for node in &workflow.nodes {
-        for body in resolved_bodies(&node.resolved_facets) {
-            check_undefined_vars(&node.name, body, &workflow.variables)?;
+        if let Some(session) = node.session() {
+            for body in resolved_bodies(&session.resolved_facets) {
+                check_undefined_vars(&node.name, body, &workflow.variables)?;
+            }
         }
-        if let Some(inline) = &node.inline_prompt {
-            check_undefined_vars(&node.name, inline, &workflow.variables)?;
-        }
-        if let Some(children) = &node.parallel_children {
+        if let Some(fanout) = node.fanout() {
+            let children = &fanout.parallel_children;
             for child in children {
                 for body in resolved_bodies(&child.resolved_facets) {
                     check_undefined_vars(&child.name, body, &workflow.variables)?;
@@ -365,7 +410,9 @@ pub fn delete_workflow(dir: &Path, name: &str) -> Result<(), StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType};
+    use crate::adaptor::gateway::workflow::schema::{
+        FacetRefs, NodeDefinition, NodeKind, SessionSpec,
+    };
     use tempfile::TempDir;
 
     fn sample_workflow(name: &str, builtin: bool) -> Workflow {
@@ -376,9 +423,14 @@ mod tests {
             builtin,
             nodes: vec![NodeDefinition {
                 name: "step1".to_string(),
-                node_type: NodeType::Agent,
-                instruction: Some("implement".to_string()),
-                permission: Some("edit".to_string()),
+                kind: NodeKind::Session(SessionSpec {
+                    permission: Some("edit".to_string()),
+                    facets: FacetRefs {
+                        instruction: Some("implement".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 ..NodeDefinition::default()
             }],
         }
@@ -646,18 +698,24 @@ name: facet-load-test
 description: facet resolution test
 nodes:
   - name: implement
-    type: agent
-    policy: coding
-    instruction: implement
-    permission: edit
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        policy: coding
+        instruction: implement
 "#;
         let file_path = dir.join("facet-load-test.yml");
         std::fs::write(&file_path, yaml).unwrap();
         let wf = load_workflow(&file_path, dir).unwrap();
         let node = &wf.nodes[0];
-        assert_eq!(node.resolved_facets.policy.as_deref(), Some("POLICY_BODY"));
+        let session = node.session().unwrap();
         assert_eq!(
-            node.resolved_facets.instruction.as_deref(),
+            session.resolved_facets.policy.as_deref(),
+            Some("POLICY_BODY")
+        );
+        assert_eq!(
+            session.resolved_facets.instruction.as_deref(),
             Some("INSTRUCTION_BODY")
         );
     }
@@ -688,7 +746,7 @@ steps:
     }
 
     /// [02] schema 境界: load 経路で 4 種全 facet (policy/knowledge/instruction/output_contract)
-    /// が `NodeDefinition.resolved_facets` と `ChildNodeDefinition.resolved_facets` の
+    /// が node と fanout child の resolved facets に
     /// いずれにも解決済みで格納されることを担保する。
     #[test]
     fn load_workflow_resolves_all_four_facets_for_node_and_child() {
@@ -715,52 +773,61 @@ name: facet-all
 description: all four facets per node
 nodes:
   - name: lead
-    type: agent
-    policy: p
-    knowledge: k
-    instruction: i
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        policy: p
+        knowledge: k
+        instruction: i
     output_contract: oc
-    permission: edit
   - name: par
-    type: parallel
-    parallel_children:
-      - name: c1
-        type: agent
-        policy: pc
-        knowledge: kc
-        instruction: ic
-        output_contract: occ
-        permission: ask
-      - name: c2
-        type: agent
-        policy: pc
-        knowledge: kc
-        instruction: ic
-        output_contract: occ
-        permission: ask
-    aggregate:
-      all_match: LGTM
-      then: lead
-      else: lead
+    fanout:
+      parallel_children:
+        - name: c1
+          permission: ask
+          facets:
+            policy: pc
+            knowledge: kc
+            instruction: ic
+          output_contract: occ
+        - name: c2
+          permission: ask
+          facets:
+            policy: pc
+            knowledge: kc
+            instruction: ic
+          output_contract: occ
+      aggregate:
+        all_match: LGTM
+        then: lead
+        else: lead
 "#;
         let file_path = dir.join("facet-all.yml");
         std::fs::write(&file_path, yaml).unwrap();
         let wf = load_workflow(&file_path, dir).unwrap();
 
         let lead = wf.nodes.iter().find(|n| n.name == "lead").unwrap();
-        assert_eq!(lead.resolved_facets.policy.as_deref(), Some("POLICY"));
-        assert_eq!(lead.resolved_facets.knowledge.as_deref(), Some("KNOWLEDGE"));
+        let lead_session = lead.session().unwrap();
         assert_eq!(
-            lead.resolved_facets.instruction.as_deref(),
+            lead_session.resolved_facets.policy.as_deref(),
+            Some("POLICY")
+        );
+        assert_eq!(
+            lead_session.resolved_facets.knowledge.as_deref(),
+            Some("KNOWLEDGE")
+        );
+        assert_eq!(
+            lead_session.resolved_facets.instruction.as_deref(),
             Some("INSTRUCTION")
         );
         assert_eq!(
-            lead.resolved_facets.output_contract.as_deref(),
+            lead_session.resolved_facets.output_contract.as_deref(),
             Some("OUTPUT_CONTRACT")
         );
 
         let par = wf.nodes.iter().find(|n| n.name == "par").unwrap();
-        let children = par.parallel_children.as_ref().unwrap();
+        let children = &par.fanout().unwrap().parallel_children;
         for child in children {
             assert_eq!(
                 child.resolved_facets.policy.as_deref(),
@@ -791,10 +858,12 @@ name: missing-facet
 description: missing facet test
 nodes:
   - name: implement
-    type: agent
-    policy: nonexistent-policy
-    instruction: implement
-    permission: edit
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        policy: nonexistent-policy
+        instruction: implement
 "#;
         let file_path = dir.join("missing-facet.yml");
         std::fs::write(&file_path, yaml).unwrap();
@@ -823,9 +892,11 @@ variables:
   other_var: "value"
 nodes:
   - name: implement
-    type: agent
-    instruction: impl
-    permission: edit
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: impl
 "#;
         let file_path = dir.join("undefined-var-ref.yml");
         std::fs::write(&file_path, yaml).unwrap();
@@ -864,9 +935,11 @@ variables:
   project_label: "Releash"
 nodes:
   - name: implement
-    type: agent
-    instruction: impl
-    permission: edit
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: impl
 "#;
         let file_path = dir.join("declared-var-ref.yml");
         std::fs::write(&file_path, yaml).unwrap();

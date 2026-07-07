@@ -1,12 +1,10 @@
 use std::time::Duration;
 
-use crate::domain::workflow::{NodeType, TimeoutPolicy};
+use crate::domain::workflow::TimeoutPolicy;
 
 const EXTENDED_STALE_TIMEOUT: Duration = Duration::from_secs(600);
 
 const EXTENDED_STALE_MODELS: &[&str] = &["claude-opus-4-8", "gpt-5.6-sol"];
-
-const EXTENDED_STALE_NODE_KINDS: &[NodeType] = &[NodeType::Approval];
 
 const EXTENDED_STALE_TEMPLATES: &[&str] = &[
     "02_implement_codex",
@@ -25,11 +23,7 @@ pub(crate) fn workflow_runtime_timeout_policy() -> TimeoutPolicy {
     let policy = EXTENDED_STALE_MODELS.iter().fold(policy, |policy, model| {
         policy.with_stale_timeout_for_model(*model, EXTENDED_STALE_TIMEOUT)
     });
-    let policy = EXTENDED_STALE_NODE_KINDS
-        .iter()
-        .fold(policy, |policy, node_kind| {
-            policy.with_stale_timeout_for_node_kind(*node_kind, EXTENDED_STALE_TIMEOUT)
-        });
+    let policy = policy.with_stale_timeout_for_approval_session(EXTENDED_STALE_TIMEOUT);
     EXTENDED_STALE_TEMPLATES
         .iter()
         .fold(policy, |policy, template| {
@@ -40,7 +34,7 @@ pub(crate) fn workflow_runtime_timeout_policy() -> TimeoutPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::TimeoutContext;
+    use crate::domain::workflow::{NodeKindName, TimeoutContext};
 
     #[test]
     fn workflow_runtime_timeout_policy_injects_builtin_overrides_outside_domain() {
@@ -48,8 +42,8 @@ mod tests {
 
         assert_eq!(
             policy.stale_timeout(&TimeoutContext::new(
-                Some("gpt-5.6-sol".to_string()),
-                NodeType::Agent,
+                Some("gpt-5.5".to_string()),
+                NodeKindName::Session,
                 None
             )),
             EXTENDED_STALE_TIMEOUT
@@ -57,24 +51,35 @@ mod tests {
         assert_eq!(
             policy.stale_timeout(&TimeoutContext::new(
                 None,
-                NodeType::Agent,
-                Some("05_review-fix_codex".to_string())
+                NodeKindName::Session,
+                Some("05_review-fix_gpt55".to_string())
             )),
             EXTENDED_STALE_TIMEOUT
         );
         assert_eq!(
             policy.stale_timeout(&TimeoutContext::new(
                 Some("unknown-fast".to_string()),
-                NodeType::Approval,
+                NodeKindName::Session,
                 Some("unknown-template".to_string())
             )),
+            Duration::from_secs(180)
+        );
+        assert_eq!(
+            policy.stale_timeout(
+                &TimeoutContext::new(
+                    Some("unknown-fast".to_string()),
+                    NodeKindName::Session,
+                    Some("unknown-template".to_string())
+                )
+                .with_approval_gate(true)
+            ),
             EXTENDED_STALE_TIMEOUT
         );
         assert_eq!(
             TimeoutPolicy::default().stale_timeout(&TimeoutContext::new(
-                Some("gpt-5.6-sol".to_string()),
-                NodeType::Approval,
-                Some("05_review-fix_codex".to_string())
+                Some("gpt-5.5".to_string()),
+                NodeKindName::Session,
+                Some("05_review-fix_gpt55".to_string())
             )),
             Duration::from_secs(180)
         );

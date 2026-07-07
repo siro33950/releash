@@ -4,14 +4,13 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    node_definition_to_domain, step_history_entries_to_domain, workflow_execution_state_to_domain,
+    step_history_entries_to_domain, workflow_execution_state_to_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::{
     workflow_error_to_engine_error, WorkflowEngineError,
 };
 use crate::adaptor::gateway::workflow::runtime_state::ApprovalDecision;
 use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
-use crate::adaptor::gateway::workflow::schema::NodeType;
 use crate::adaptor::gateway::workflow::state::WorkflowState;
 use crate::domain::workflow::approval_rules as workflow_approval;
 use crate::domain::workflow::ApprovalDecision as DomainApprovalDecision;
@@ -59,7 +58,7 @@ pub(crate) fn resolve_chat_session_for_approval(
         workflow_approval::ApprovalChatSessionSnapshot {
             is_active: exec.is_active(),
             state: &state,
-            current_node_type: node_definition_to_domain(current_node).node_type,
+            is_current_approval_session: current_node.is_approval_session(),
             current_session_id: exec.current_session_id.as_deref(),
         },
     )
@@ -73,7 +72,7 @@ pub(crate) fn validate_approval_chat_instruction(
     content: &str,
 ) -> Result<(), WorkflowEngineError> {
     let current_step = &exec.workflow.nodes[exec.current_step_index];
-    let is_current_approval_session = current_step.node_type == NodeType::Approval
+    let is_current_approval_session = current_step.is_approval_session()
         && exec.current_session_id.as_deref() == Some(session_id);
     let is_prior_approval_step_session =
         !is_current_approval_session && is_approval_step_session(exec, session_id);
@@ -97,7 +96,7 @@ fn is_approval_step_session(exec: &WorkflowExecution, session_id: &str) -> bool 
         .workflow
         .nodes
         .iter()
-        .filter(|step| step.node_type == NodeType::Approval)
+        .filter(|step| step.is_approval_session())
         .map(|step| step.name.clone())
         .collect();
     let history = step_history_entries_to_domain(&exec.step_history);

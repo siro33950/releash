@@ -127,44 +127,81 @@ pub struct WorkflowDefinitionView {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum WorkflowNodeTypeView {
-    Agent,
-    Bash,
-    Approval,
-    Parallel,
+pub enum WorkflowNodeKindView {
+    Command,
+    Session,
+    Fanout,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowNodeDefinitionView {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub node_type: WorkflowNodeTypeView,
-    // agent / approval 系 prompt 設定
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkflowSessionGateView {
+    #[default]
+    Auto,
+    Approval,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct WorkflowFacetRefsView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
+}
+
+impl WorkflowFacetRefsView {
+    fn is_empty(&self) -> bool {
+        self.policy.is_none() && self.knowledge.is_none() && self.instruction.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct WorkflowSessionSpecView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
+    #[serde(default)]
+    pub gate: WorkflowSessionGateView,
+    #[serde(default, skip_serializing_if = "WorkflowFacetRefsView::is_empty")]
+    pub facets: WorkflowFacetRefsView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct WorkflowFanoutSpecView {
+    pub parallel_children: Vec<WorkflowInterimChildView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregate: Option<WorkflowAggregateConfigView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowNodeDefinitionView {
+    pub name: String,
+    pub kind: WorkflowNodeKindView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<WorkflowSessionSpecView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fanout: Option<WorkflowFanoutSpecView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contract: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_contracts: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_previous_response: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_output_from: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inline_prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collect: Option<WorkflowCollectConfigView>,
-    // bash 系
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-    // parallel 系: 子 node は ChildNodeDefinition と同じく top-level 専用フィールドを
-    // 構造的に持たない `WorkflowChildNodeDefinitionView` を使用する（[02] schema 境界）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parallel_children: Option<Vec<WorkflowChildNodeDefinitionView>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aggregate: Option<WorkflowAggregateConfigView>,
     // 共通: rules は空配列でも送る（frontend では非 optional として扱う）
     #[serde(default)]
     pub rules: Vec<WorkflowTransitionRuleView>,
@@ -172,39 +209,26 @@ pub struct WorkflowNodeDefinitionView {
     pub cycle_guard: Option<WorkflowCycleGuardView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_cycle_for: Option<Vec<String>>,
+}
+
+/// fanout 配下の暫定 child API 表現。子は暗黙に session 扱い。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowInterimChildView {
+    pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<String>,
-}
-
-/// 並列 node 配下の子 node の API 表現。
-///
-/// [02] schema 境界: Rust 側 `ChildNodeDefinition` と同じく、top-level 専用フィールド
-/// （`rules` / `cycle_guard` / `resets_cycle_for` / `collect` / `parallel_children` /
-///  `aggregate` / `command`）は型レベルで持たない。これにより、protocol 境界の
-/// API 表現が backend ドメインモデルと語彙的に一致する。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowChildNodeDefinitionView {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub node_type: WorkflowNodeTypeView,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knowledge: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instruction: Option<String>,
+    #[serde(default, skip_serializing_if = "WorkflowFacetRefsView::is_empty")]
+    pub facets: WorkflowFacetRefsView,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contract: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_contracts: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_previous_response: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_output_from: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

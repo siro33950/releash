@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use regex::RegexBuilder;
 
 use crate::domain::workflow::value_objects::{
-    ApprovalDecision, NodeType, TransitionRule, WorkflowDefinition, WorkflowExecutionState,
-    WorkflowStepFailureKind,
+    ApprovalDecision, NodeKindName, SessionGate, TransitionRule, WorkflowDefinition,
+    WorkflowExecutionState, WorkflowStepFailureKind,
 };
 use crate::domain::workflow::WorkflowError;
 
@@ -38,9 +38,9 @@ pub enum TurnCompleteDecision {
         node_name: String,
     },
     WaitApproval,
-    UnexpectedNodeType {
+    UnexpectedNodeKind {
         node_name: String,
-        node_type: NodeType,
+        kind: NodeKindName,
     },
     NotRunning,
 }
@@ -67,9 +67,9 @@ pub enum TurnCompleteMutationPlan {
     RequestApproval {
         node_name: String,
     },
-    UnexpectedNodeType {
+    UnexpectedNodeKind {
         node_name: String,
-        node_type: NodeType,
+        kind: NodeKindName,
         failure_reason: String,
     },
     NotRunning,
@@ -197,17 +197,20 @@ pub fn decide_turn_complete_action_with_signal(
         });
     }
 
-    match node.node_type {
-        NodeType::Agent => Ok(TurnCompleteDecision::AutoEvaluate {
-            rules: node.transition_rules.clone(),
-            node_name: node.name.clone(),
-        }),
-        NodeType::Approval => Ok(TurnCompleteDecision::WaitApproval),
-        NodeType::Bash | NodeType::Parallel => Ok(TurnCompleteDecision::UnexpectedNodeType {
-            node_name: node.name.clone(),
-            node_type: node.node_type,
-        }),
+    if let Some(session) = node.session() {
+        return match session.gate {
+            SessionGate::Auto => Ok(TurnCompleteDecision::AutoEvaluate {
+                rules: node.transition_rules.clone(),
+                node_name: node.name.clone(),
+            }),
+            SessionGate::Approval => Ok(TurnCompleteDecision::WaitApproval),
+        };
     }
+
+    Ok(TurnCompleteDecision::UnexpectedNodeKind {
+        node_name: node.name.clone(),
+        kind: node.kind_name(),
+    })
 }
 
 #[cfg(test)]
@@ -259,15 +262,15 @@ pub fn plan_turn_complete_mutation_with_signal(
                 .clone();
             TurnCompleteMutationPlan::RequestApproval { node_name }
         }
-        TurnCompleteDecision::UnexpectedNodeType {
+        TurnCompleteDecision::UnexpectedNodeKind {
             node_name,
-            node_type,
-        } => TurnCompleteMutationPlan::UnexpectedNodeType {
+            kind,
+        } => TurnCompleteMutationPlan::UnexpectedNodeKind {
             failure_reason: format!(
-                "Workflow engine reached turn_complete for unexpected node type {node_type:?} at step '{node_name}' (this should have been rejected upstream)"
+                "Workflow engine reached turn_complete for unexpected node kind {kind:?} at step '{node_name}' (this should have been rejected upstream)"
             ),
             node_name,
-            node_type,
+            kind,
         },
         TurnCompleteDecision::NotRunning => TurnCompleteMutationPlan::NotRunning,
     };
@@ -347,12 +350,41 @@ pub fn evaluate_auto_rules(text: &str, rules: &[TransitionRule]) -> Option<(Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::value_objects::{CycleGuard, NodeDefinition};
+    use crate::domain::workflow::value_objects::{
+        CommandSpec, CycleGuard, FacetRefs, NodeDefinition, NodeKind, NodeKindName, SessionGate,
+        SessionSpec,
+    };
 
-    fn node(name: &str, node_type: NodeType) -> NodeDefinition {
+    enum TestKind {
+        Session,
+        ApprovalSession,
+        Command,
+    }
+
+    fn node(name: &str, kind: TestKind) -> NodeDefinition {
+        let kind = match kind {
+            TestKind::Session => NodeKind::Session(SessionSpec {
+                facets: FacetRefs {
+                    instruction: Some("implement".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            TestKind::ApprovalSession => NodeKind::Session(SessionSpec {
+                gate: SessionGate::Approval,
+                facets: FacetRefs {
+                    instruction: Some("implement".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            TestKind::Command => NodeKind::Command(CommandSpec {
+                command: "cargo test".to_string(),
+            }),
+        };
         NodeDefinition {
             name: name.to_string(),
-            node_type,
+            kind,
             ..Default::default()
         }
     }
@@ -370,8 +402,8 @@ mod tests {
     #[test]
     fn decide_next_node_returns_following_node_or_completed() {
         let workflow = workflow(vec![
-            node("plan", NodeType::Agent),
-            node("done", NodeType::Agent),
+            node("plan", TestKind::Session),
+            node("done", TestKind::Session),
         ]);
 
         assert_eq!(
@@ -383,7 +415,7 @@ mod tests {
 
     #[test]
     fn check_cycle_guard_reports_boundary_and_fallback() {
-        let mut guarded = node("review", NodeType::Agent);
+        let mut guarded = node("review", TestKind::Session);
         guarded.cycle_guard = Some(CycleGuard {
             max_iterations: 2,
             on_exhausted: Some("fallback".to_string()),
@@ -404,9 +436,9 @@ mod tests {
     #[test]
     fn decide_turn_complete_action_distinguishes_agent_approval_and_unexpected_node() {
         let workflow = workflow(vec![
-            node("agent", NodeType::Agent),
-            node("approval", NodeType::Approval),
-            node("script", NodeType::Bash),
+            node("agent", TestKind::Session),
+            node("approval", TestKind::ApprovalSession),
+            node("script", TestKind::Command),
         ]);
 
         assert!(matches!(
@@ -419,13 +451,16 @@ mod tests {
         );
         assert!(matches!(
             decide_turn_complete_action(&workflow, 2, &WorkflowExecutionState::Running, 0).unwrap(),
-            TurnCompleteDecision::UnexpectedNodeType { .. }
+            TurnCompleteDecision::UnexpectedNodeKind {
+                kind: NodeKindName::Command,
+                ..
+            }
         ));
     }
 
     #[test]
     fn plan_turn_complete_mutation_builds_domain_failure_details() {
-        let workflow = workflow(vec![node("agent", NodeType::Agent)]);
+        let workflow = workflow(vec![node("agent", TestKind::Session)]);
 
         let plan = plan_turn_complete_mutation(&workflow, 0, &WorkflowExecutionState::Running, 42)
             .unwrap();
@@ -444,7 +479,7 @@ mod tests {
 
     #[test]
     fn plan_turn_complete_mutation_uses_explicit_model_refusal_signal() {
-        let workflow = workflow(vec![node("agent", NodeType::Agent)]);
+        let workflow = workflow(vec![node("agent", TestKind::Session)]);
 
         let plan = plan_turn_complete_mutation_with_signal(
             &workflow,
@@ -485,7 +520,7 @@ mod tests {
 
     #[test]
     fn decide_approval_action_uses_reject_rule() {
-        let mut approval = node("approve", NodeType::Approval);
+        let mut approval = node("approve", TestKind::ApprovalSession);
         approval.transition_rules = vec![TransitionRule {
             r#match: "reject".to_string(),
             next: "fix".to_string(),
@@ -508,12 +543,12 @@ mod tests {
 
     #[test]
     fn plan_approval_application_keeps_completion_data_and_reject_target() {
-        let mut approval = node("approve", NodeType::Approval);
+        let mut approval = node("approve", TestKind::ApprovalSession);
         approval.transition_rules = vec![TransitionRule {
             r#match: "reject".to_string(),
             next: "fix".to_string(),
         }];
-        let workflow = workflow(vec![approval, node("fix", NodeType::Agent)]);
+        let workflow = workflow(vec![approval, node("fix", TestKind::Session)]);
 
         let plan = plan_approval_application(
             &workflow,

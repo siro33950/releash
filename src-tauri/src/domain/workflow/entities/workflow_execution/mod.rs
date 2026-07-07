@@ -10,8 +10,7 @@ use std::collections::{HashMap, HashSet};
 use crate::domain::workflow::services::{contract, history, parallel, projection, validation};
 #[cfg(test)]
 use crate::domain::workflow::value_objects::{
-    ApprovalOperations, NodeDefinition, NodeType, RunId, StepOutput, WorkflowStateSnapshot,
-    WorktreePath,
+    ApprovalOperations, NodeDefinition, RunId, StepOutput, WorkflowStateSnapshot, WorktreePath,
 };
 use crate::domain::workflow::value_objects::{
     ParallelAggregate, StepHistoryEntry, TokenUsage, WorkflowDefinition, WorkflowExecutionState,
@@ -494,7 +493,10 @@ pub fn compute_step_states(
 #[cfg(test)]
 mod aggregate_tests {
     use super::*;
-    use crate::domain::workflow::value_objects::{TransitionRule, WorkflowDefinition};
+    use crate::domain::workflow::value_objects::{
+        CommandSpec, FacetRefs, FanoutSpec, InterimChild, NodeKind, SessionGate, SessionSpec,
+        TransitionRule, WorkflowDefinition,
+    };
 
     fn run_id() -> RunId {
         RunId::new("00000000-0000-4000-8000-000000000001").unwrap()
@@ -504,10 +506,52 @@ mod aggregate_tests {
         WorktreePath::new("/tmp/repo").unwrap()
     }
 
-    fn node(name: &str, node_type: NodeType) -> NodeDefinition {
+    enum TestNodeKind {
+        Session,
+        ApprovalSession,
+        Command,
+        Fanout,
+    }
+
+    fn node(name: &str, kind: TestNodeKind) -> NodeDefinition {
+        let kind = match kind {
+            TestNodeKind::Session => NodeKind::Session(SessionSpec {
+                facets: FacetRefs {
+                    instruction: Some("implement".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            TestNodeKind::ApprovalSession => NodeKind::Session(SessionSpec {
+                gate: SessionGate::Approval,
+                facets: FacetRefs {
+                    instruction: Some("implement".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            TestNodeKind::Command => NodeKind::Command(CommandSpec {
+                command: "cargo test".to_string(),
+            }),
+            TestNodeKind::Fanout => NodeKind::Fanout(FanoutSpec {
+                parallel_children: vec![child("a"), child("b")],
+                aggregate: None,
+            }),
+        };
         NodeDefinition {
             name: name.to_string(),
-            node_type,
+            kind,
+            ..Default::default()
+        }
+    }
+
+    fn child(name: &str) -> InterimChild {
+        InterimChild {
+            name: name.to_string(),
+            facets: FacetRefs {
+                instruction: Some("implement".to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -527,20 +571,20 @@ mod aggregate_tests {
         let empty = workflow(Vec::new());
         assert!(WorkflowExecution::new(run_id(), empty, worktree(), None, 1.0).is_err());
 
-        let with_bash = workflow(vec![node("script", NodeType::Bash)]);
-        assert!(WorkflowExecution::new(run_id(), with_bash, worktree(), None, 1.0).is_err());
+        let with_command = workflow(vec![node("script", TestNodeKind::Command)]);
+        assert!(WorkflowExecution::new(run_id(), with_command, worktree(), None, 1.0).is_err());
     }
 
     #[test]
     fn snapshot_computes_step_states_and_approval_operations() {
-        let mut approval = node("approve", NodeType::Approval);
+        let mut approval = node("approve", TestNodeKind::ApprovalSession);
         approval.transition_rules = vec![TransitionRule {
             r#match: "reject".to_string(),
             next: "fix".to_string(),
         }];
         let mut exec = WorkflowExecution::new(
             run_id(),
-            workflow(vec![node("plan", NodeType::Agent), approval]),
+            workflow(vec![node("plan", TestNodeKind::Session), approval]),
             worktree(),
             Some("task".to_string()),
             1.0,
@@ -574,7 +618,7 @@ mod aggregate_tests {
     fn abort_parallel_records_parent_with_child_snapshots() {
         let mut exec = WorkflowExecution::new(
             run_id(),
-            workflow(vec![node("parallel-review", NodeType::Parallel)]),
+            workflow(vec![node("parallel-review", TestNodeKind::Fanout)]),
             worktree(),
             None,
             1.0,
@@ -630,7 +674,7 @@ mod aggregate_tests {
     fn submit_output_updates_step_output_and_contract_variables() {
         let mut exec = WorkflowExecution::new(
             run_id(),
-            workflow(vec![node("spec", NodeType::Agent)]),
+            workflow(vec![node("spec", TestNodeKind::Session)]),
             worktree(),
             None,
             1.0,

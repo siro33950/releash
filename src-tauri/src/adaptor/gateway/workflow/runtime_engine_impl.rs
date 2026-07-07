@@ -15,7 +15,7 @@ use super::step_session_boundary::{dispatch_session_start, SessionStartGate};
 use super::step_session_boundary::{RealStepSessionDeps, StepSessionDeps};
 use crate::adaptor::gateway::workflow::approval_runtime as workflow_approval_runtime;
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    node_type_to_domain, parallel_aggregate_to_domain, transition_rule_from_domain,
+    node_kind_to_domain, parallel_aggregate_to_domain, transition_rule_from_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::engine_start_guard as workflow_engine_start_guard;
@@ -62,7 +62,9 @@ use crate::adaptor::gateway::workflow::runtime_state::{ParallelChildRun, Paralle
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::schema::NodeDefinition;
 #[cfg(test)]
-use crate::adaptor::gateway::workflow::schema::NodeType;
+use crate::adaptor::gateway::workflow::schema::{
+    CommandSpec, FacetRefs, FanoutSpec, InterimChild, NodeKind, SessionGate, SessionSpec,
+};
 use crate::adaptor::gateway::workflow::schema::{TransitionRule, Workflow};
 use crate::adaptor::gateway::workflow::secret_source;
 #[cfg(test)]
@@ -913,7 +915,7 @@ impl WorkflowRuntimeService {
 
         // NDJSONログ: step_started 以降は補助ログとして best effort で書き込む。
         // 最初のステップが並列ブロックかどうかで分岐
-        let first_step_is_parallel = workflow.nodes[0].is_parallel();
+        let first_step_is_parallel = workflow.nodes[0].is_fanout();
 
         // [04] post-commit: RunStarted append 済みのため start primitive は既に受理。
         //    初回 session / parallel children 起動失敗は Failed 状態遷移として観測し、
@@ -1745,7 +1747,7 @@ impl WorkflowRuntimeService {
                         rollback_snapshot: (exec.id.clone(), snapshot_before),
                     })
                 }
-                workflow_transition::TurnCompleteMutationPlan::UnexpectedNodeType {
+                workflow_transition::TurnCompleteMutationPlan::UnexpectedNodeKind {
                     failure_reason,
                     ..
                 } => {
@@ -3833,11 +3835,18 @@ impl WorkflowRuntimeService {
         let step_session = deps
             .create_step_session(
                 worktree_path,
-                step_clone.model.clone(),
-                step_clone.permission.clone(),
+                step_clone
+                    .session()
+                    .and_then(|session| session.model.clone()),
+                step_clone
+                    .session()
+                    .and_then(|session| session.permission.clone()),
                 workflow_defaults_clone,
                 workflow_step_context,
-                node_type_to_domain(step_clone.node_type),
+                workflow_runtime_session::StepRuntimeKindContext::new(
+                    node_kind_to_domain(&step_clone.kind).name(),
+                    step_clone.is_approval_session(),
+                ),
             )
             .await?;
         let permission_mode = step_session.permission_mode.clone();
@@ -4764,22 +4773,21 @@ impl WorkflowRuntimeService {
             builtin: false,
             nodes: vec![NodeDefinition {
                 name: "implementation_fix_policy".to_string(),
-                node_type: NodeType::Approval,
-                policy: None,
-                knowledge: None,
-                instruction: Some("Review fix policy".to_string()),
+                kind: NodeKind::Session(SessionSpec {
+                    gate: SessionGate::Approval,
+                    facets: FacetRefs {
+                        instruction: Some("Review fix policy".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 output_contract: Some("approved-fix-policy".to_string()),
                 transition_rules: vec![],
                 cycle_guard: None,
                 pass_previous_response: None,
                 pass_output_from: None,
-                inline_prompt: None,
                 collect: None,
-                parallel_children: None,
-                aggregate: None,
                 resets_cycle_for: None,
-                model: None,
-                permission: None,
                 ..Default::default()
             }],
         };
