@@ -5,7 +5,7 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
     step_outputs_to_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
-use crate::adaptor::gateway::workflow::schema::{ChildNodeDefinition, NodeDefinition};
+use crate::adaptor::gateway::workflow::schema::{InterimChild, NodeDefinition};
 use crate::adaptor::gateway::workflow::state::{StepHistoryEntry, StepOutput};
 use crate::domain::workflow::services::variable_renderer;
 
@@ -63,7 +63,7 @@ pub(crate) fn render_step_workflow_instruction(
     workflow_declared_variables: &HashMap<String, String>,
 ) -> Option<String> {
     render_workflow_instruction(
-        step.resolved_facets.instruction.as_ref()?,
+        step.resolved_facets()?.instruction.as_ref()?,
         run_id,
         &step.name,
         worktree_path,
@@ -73,7 +73,7 @@ pub(crate) fn render_step_workflow_instruction(
 }
 
 pub(crate) fn render_child_workflow_instruction(
-    step: &ChildNodeDefinition,
+    step: &InterimChild,
     run_id: &str,
     worktree_path: &str,
     task: Option<&str>,
@@ -166,26 +166,16 @@ pub(crate) fn build_step_prompt(
     workflow_declared_variables: &HashMap<String, String>,
 ) -> Result<(Option<String>, String), WorkflowEngineError> {
     if !step.has_facet_refs() {
-        if let Some(ref inline) = step.inline_prompt {
-            let rendered = render_facet_variables(inline, worktree_path, task);
-            let rendered = render_submit_command_variables(&rendered, run_id, &step.name);
-            let rendered = render_namespaced_variables(&rendered, workflow_declared_variables);
-            let prompt = inject_step_outputs(
-                &rendered,
-                step,
-                step_outputs,
-                step_history,
-                workflow_variables,
-            );
-            return Ok((None, prompt));
-        }
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
-            "Step '{}' has no facet refs and no inline_prompt.",
+            "Step '{}' has no facet refs.",
             step.name
         )));
     }
 
-    if step.resolved_facets.is_empty() {
+    if step
+        .resolved_facets()
+        .is_some_and(crate::adaptor::gateway::workflow::schema::ResolvedFacets::is_empty)
+    {
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
             "Step '{}' has unresolved facet refs (workflow must go through load pipeline)",
             step.name
@@ -224,7 +214,7 @@ pub(crate) fn build_step_prompt(
 /// 並列子ステップ用のプロンプトを構築する。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_parallel_step_prompt(
-    step: &ChildNodeDefinition,
+    step: &InterimChild,
     run_id: &str,
     worktree_path: &str,
     task: Option<&str>,
@@ -295,13 +285,18 @@ pub(crate) fn build_parallel_step_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::NodeType;
+    use crate::adaptor::gateway::workflow::schema::{FacetRefs, NodeKind, SessionSpec};
 
-    fn make_test_step(name: &str, node_type: NodeType, instruction: &str) -> NodeDefinition {
+    fn make_test_step(name: &str, instruction: &str) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
-            node_type,
-            instruction: Some(instruction.to_string()),
+            kind: NodeKind::Session(SessionSpec {
+                facets: FacetRefs {
+                    instruction: Some(instruction.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
             ..NodeDefinition::default()
         }
     }
@@ -362,7 +357,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_pass_previous_response() {
-        let mut step = make_test_step("step_b", NodeType::Agent, "Do B");
+        let mut step = make_test_step("step_b", "Do B");
         step.pass_previous_response = Some(true);
         let outputs = HashMap::from([(
             "step_a".to_string(),
@@ -378,7 +373,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_no_pass_previous_response() {
-        let step = make_test_step("step_b", NodeType::Agent, "Do B");
+        let step = make_test_step("step_b", "Do B");
 
         let result = inject_step_outputs("Do B", &step, &HashMap::new(), &[], &HashMap::new());
 
@@ -387,7 +382,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_pass_output_from_single() {
-        let mut step = make_test_step("step_c", NodeType::Agent, "Do C");
+        let mut step = make_test_step("step_c", "Do C");
         step.pass_output_from = Some(vec!["step_a".to_string()]);
         let outputs = HashMap::from([(
             "step_a".to_string(),
@@ -402,7 +397,7 @@ mod tests {
 
     #[test]
     fn reject_comment_accessible_via_pass_output_from() {
-        let mut step = make_test_step("fix", NodeType::Agent, "Fix issues");
+        let mut step = make_test_step("fix", "Fix issues");
         step.pass_output_from = Some(vec!["review".to_string()]);
         let outputs = HashMap::from([(
             "review".to_string(),
@@ -417,7 +412,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_pass_output_from_multiple() {
-        let mut step = make_test_step("step_c", NodeType::Agent, "Do C");
+        let mut step = make_test_step("step_c", "Do C");
         step.pass_output_from = Some(vec!["step_a".to_string(), "step_b".to_string()]);
         let outputs = HashMap::from([
             (
@@ -440,7 +435,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_pass_previous_response_no_output_injects_nothing() {
-        let mut step = make_test_step("step_b", NodeType::Agent, "Do B");
+        let mut step = make_test_step("step_b", "Do B");
         step.pass_previous_response = Some(true);
         let history = vec![history_entry("step_a")];
 
@@ -451,7 +446,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_missing_step_shows_not_completed() {
-        let mut step = make_test_step("step_b", NodeType::Agent, "Do B");
+        let mut step = make_test_step("step_b", "Do B");
         step.pass_output_from = Some(vec!["step_a".to_string()]);
 
         let result = inject_step_outputs("Do B", &step, &HashMap::new(), &[], &HashMap::new());
@@ -462,7 +457,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_workflow_variables_injected() {
-        let step = make_test_step("step_b", NodeType::Agent, "Do B");
+        let step = make_test_step("step_b", "Do B");
         let workflow_variables = HashMap::from([(
             "spec_dir".to_string(),
             "docs/spec/issues-909.md".to_string(),
@@ -477,7 +472,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_empty_workflow_variables_not_injected() {
-        let step = make_test_step("step_b", NodeType::Agent, "Do B");
+        let step = make_test_step("step_b", "Do B");
 
         let result = inject_step_outputs("Do B", &step, &HashMap::new(), &[], &HashMap::new());
 
@@ -486,7 +481,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_parallel_parent_aggregated_children() {
-        let mut step = make_test_step("spec_fix", NodeType::Agent, "Fix plan");
+        let mut step = make_test_step("spec_fix", "Fix plan");
         step.pass_output_from = Some(vec![
             "spec_review_parallel".to_string(),
             "plan_draft".to_string(),
@@ -530,7 +525,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_parallel_parent_via_pass_previous_response() {
-        let mut step = make_test_step("spec_fix", NodeType::Agent, "Fix plan");
+        let mut step = make_test_step("spec_fix", "Fix plan");
         step.pass_previous_response = Some(true);
         let outputs = HashMap::from([(
             "spec_review_parallel".to_string(),

@@ -38,6 +38,7 @@
 		"clsx": "^2.1.1",
 		"cmdk": "^1.1.1",
 		"lucide-react": "^1.23.0",
+		"monaco-editor": "0.55.1",
 		"radix-ui": "^1.6.2",
 		"react": "^19.2.7",
 		"react-dom": "^19.2.7",

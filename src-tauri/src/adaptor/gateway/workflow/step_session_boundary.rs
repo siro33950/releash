@@ -6,7 +6,7 @@ use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::state::WorkflowState;
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::domain::agent_session::PermissionMode;
-use crate::domain::workflow::{NodeType, WorkflowStepContext};
+use crate::domain::workflow::WorkflowStepContext;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
@@ -69,7 +69,7 @@ pub(crate) trait StepSessionDeps: Send + Sync {
         step_permission: Option<String>,
         workflow_defaults: WorkflowDefaults,
         workflow_step_context: WorkflowStepContext,
-        node_kind: NodeType,
+        kind_context: workflow_runtime_session::StepRuntimeKindContext,
     ) -> Result<StepSessionInfo, WorkflowEngineError>;
 
     /// 合成済み `system_prompt` を AgentSession 開始経路へ受け渡す。
@@ -130,7 +130,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         step_permission: Option<String>,
         workflow_defaults: WorkflowDefaults,
         workflow_step_context: WorkflowStepContext,
-        node_kind: NodeType,
+        kind_context: workflow_runtime_session::StepRuntimeKindContext,
     ) -> Result<StepSessionInfo, WorkflowEngineError> {
         let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(self.app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
@@ -143,7 +143,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
             step_permission,
             &workflow_defaults,
             workflow_step_context,
-            node_kind,
+            kind_context,
         )?;
         Ok(StepSessionInfo {
             id: step_session.id,

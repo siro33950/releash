@@ -354,7 +354,7 @@ describe("useWorkspaceTreeNodes", () => {
 						worktreePath: "/repo",
 						title: "review",
 						status: "running",
-						stepType: "agent",
+						stepType: "session",
 						updatedAt: 1_000,
 						runIndex: 1,
 						sessions: [

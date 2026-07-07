@@ -108,7 +108,7 @@ function stepDetail(
 		worktreePath: "/repo",
 		title: "review",
 		status: "running",
-		stepType: "parallel",
+		stepType: "fanout",
 		updatedAt: 1000,
 		runIndex: 1,
 		sessions: [
@@ -208,7 +208,7 @@ describe("WorkflowView", () => {
 			stepId: "run-1:review:1",
 		});
 		expect(screen.getByText("review")).toBeInTheDocument();
-		expect(screen.getByText("parallel")).toBeInTheDocument();
+		expect(screen.getByText("fanout")).toBeInTheDocument();
 		expect(container).toHaveClass("overflow-x-hidden", "overflow-y-auto");
 		await waitFor(() => {
 			expect(grid).toHaveStyle({
@@ -227,7 +227,7 @@ describe("WorkflowView", () => {
 		expect(
 			screen.getByTestId("bound-session-chat-session-b"),
 		).toBeInTheDocument();
-		// 各 Pane ヘッダーに Session 名と agent ステータスを表示する。
+		// 各 Pane ヘッダーに Session 名と実行ステータスを表示する。
 		expect(screen.getByText("Pane A")).toBeInTheDocument();
 		expect(screen.getByText("Pane B")).toBeInTheDocument();
 		expect(screen.getByTitle("running")).toBeInTheDocument();
@@ -273,14 +273,14 @@ describe("WorkflowView", () => {
 		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
 			stepDetailState({
 				status: "completed",
-				stepType: "approval",
+				stepType: "session",
 				sessions: [stepDetail().sessions[0]],
 			}),
 		);
 
 		render(<WorkflowView worktreePath="/repo" selectionRequest={selection} />);
 
-		expect(screen.getByText("approval")).toBeInTheDocument();
+		expect(screen.getByText("session")).toBeInTheDocument();
 		expect(screen.queryByText("agent")).toBeNull();
 	});
 

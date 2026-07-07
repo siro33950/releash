@@ -74,7 +74,7 @@ mod tests {
                     "description": "",
                     "nodes": [{
                         "name": "step",
-                        "type": "agent"
+                        "session": {}
                     }]
                 },
                 "permissionMode": "edit"
@@ -114,7 +114,7 @@ mod tests {
                     "description": "",
                     "nodes": [{
                         "name": "step",
-                        "type": "agent"
+                        "session": {}
                     }]
                 },
                 "permissionMode": "edit"

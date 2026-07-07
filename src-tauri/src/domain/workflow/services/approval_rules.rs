@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::domain::workflow::services::secret_masker;
 use crate::domain::workflow::value_objects::{
-    ApprovalDecision, NodeType, StepHistoryEntry, TransitionRule, WorkflowExecutionState,
+    ApprovalDecision, StepHistoryEntry, TransitionRule, WorkflowExecutionState,
 };
 use crate::domain::workflow::WorkflowError;
 #[cfg(test)]
@@ -153,7 +153,7 @@ pub fn validate_approval_chat_instruction(
 pub struct ApprovalChatSessionSnapshot<'a> {
     pub is_active: bool,
     pub state: &'a WorkflowExecutionState,
-    pub current_node_type: NodeType,
+    pub is_current_approval_session: bool,
     pub current_session_id: Option<&'a str>,
 }
 
@@ -168,9 +168,9 @@ pub fn resolve_chat_session_for_approval<'a>(
             "Workflow is not waiting for approval",
         ));
     }
-    if snapshot.current_node_type != NodeType::Approval {
+    if !snapshot.is_current_approval_session {
         return Err(WorkflowError::invalid_state(
-            "current node is not an approval step",
+            "current node is not an approval session",
         ));
     }
     snapshot.current_session_id.ok_or_else(|| {
@@ -412,7 +412,7 @@ mod approval_rules_tests {
         let snapshot = ApprovalChatSessionSnapshot {
             is_active: true,
             state: &WorkflowExecutionState::WaitingApproval,
-            current_node_type: NodeType::Approval,
+            is_current_approval_session: true,
             current_session_id: Some("session-1"),
         };
 
@@ -424,7 +424,7 @@ mod approval_rules_tests {
         let inactive = ApprovalChatSessionSnapshot {
             is_active: false,
             state: &WorkflowExecutionState::WaitingApproval,
-            current_node_type: NodeType::Approval,
+            is_current_approval_session: true,
             current_session_id: Some("session-1"),
         };
         assert_eq!(
@@ -437,7 +437,7 @@ mod approval_rules_tests {
         let no_session = ApprovalChatSessionSnapshot {
             is_active: true,
             state: &WorkflowExecutionState::WaitingApproval,
-            current_node_type: NodeType::Approval,
+            is_current_approval_session: true,
             current_session_id: None,
         };
         assert_eq!(

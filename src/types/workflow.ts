@@ -83,8 +83,8 @@ interface CycleGuard {
 	max_iterations: number;
 }
 
-// [02] Normalized Workflow: 旧 StepMode は廃止され、NodeType に統合された。
-export type NodeType = "agent" | "bash" | "approval" | "parallel";
+export type NodeKind = "command" | "session" | "fanout";
+export type SessionGate = "auto" | "approval";
 
 interface AggregateConfig {
 	all_match?: string;
@@ -93,17 +93,23 @@ interface AggregateConfig {
 	else: string;
 }
 
-/// 並列 node 配下の子 node の API 表現。
-///
-/// [02] schema 境界: Rust 側 `ChildNodeDefinition` と語彙を一致させるため、子 node には
-/// top-level 専用フィールド（`rules` / `cycle_guard` / `resets_cycle_for` / `collect` /
-/// `parallel_children` / `aggregate` / `command`）を持たせない。
-interface ChildNodeDefinition {
-	name: string;
-	type: NodeType;
+export interface FacetRefs {
 	policy?: string;
 	knowledge?: string;
 	instruction?: string;
+}
+
+export interface SessionSpec {
+	model?: string;
+	permission?: PermissionMode;
+	gate: SessionGate;
+	facets: FacetRefs;
+}
+
+/// fanout node 配下の暫定子 node API 表現。子は暗黙に session 扱い。
+interface InterimChild {
+	name: string;
+	facets: FacetRefs;
 	output_contract?: string;
 	input_contracts?: string[];
 	pass_previous_response?: boolean;
@@ -112,34 +118,30 @@ interface ChildNodeDefinition {
 	permission?: PermissionMode;
 }
 
-/// node 種別ごとの設定は、boundary doc では agent_config / approval_config /
-/// command_config / parallel_children として概念分類されるが、frontend では
-/// 表示・編集の都合上フラットなフィールドで保持する。Rust schema 側もフラット。
+interface FanoutSpec {
+	parallel_children: InterimChild[];
+	aggregate?: AggregateConfig;
+}
+
 export interface NodeDefinition {
 	name: string;
-	type: NodeType;
-	// agent / approval 種別で使用される prompt 関連 facet 参照
-	policy?: string;
-	knowledge?: string;
-	instruction?: string;
+	kind: NodeKind;
+	command?: string;
+	session?: SessionSpec;
+	fanout?: FanoutSpec;
+	artifact?: string;
+	input?: string;
+	inputs?: string[];
 	output_contract?: string;
 	input_contracts?: string[];
 	pass_previous_response?: boolean;
 	pass_output_from?: string[];
-	inline_prompt?: string;
 	collect?: CollectConfig;
-	// bash 種別で使用される command
-	command?: string;
-	// parallel 種別で使用される子 node 群と集約条件
-	parallel_children?: ChildNodeDefinition[];
-	aggregate?: AggregateConfig;
 	// 共通: rules は省略時 undefined（Rust 側で serde default 経路を持つが、frontend
 	// fixture では空配列を毎回書かなくて済むよう optional とする）
 	rules?: TransitionRule[];
 	cycle_guard?: CycleGuard;
 	resets_cycle_for?: string[];
-	model?: string;
-	permission?: PermissionMode;
 }
 
 interface CollectConfig {

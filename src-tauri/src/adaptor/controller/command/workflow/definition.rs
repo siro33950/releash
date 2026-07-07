@@ -1,6 +1,6 @@
 use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::dto::{
-    workflow_from_dto, workflow_summary_to_dto, workflow_to_dto, WorkflowDto, WorkflowSummaryDto,
+    workflow_summary_to_dto, workflow_to_dto, WorkflowDto, WorkflowSummaryDto,
 };
 
 #[tauri::command]
@@ -45,16 +45,32 @@ pub async fn get_workflow(
 }
 
 #[tauri::command]
-pub async fn save_workflow(
+pub async fn get_workflow_source(
     state: tauri::State<'_, AppState>,
-    workflow: WorkflowDto,
+    name: String,
+) -> Result<String, String> {
+    let query = state.workflow_usecase.clone();
+    tokio::task::spawn_blocking(move || {
+        query
+            .get_workflow_source(&name)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("ワークフロー '{name}' が見つかりません"))
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn save_workflow_source(
+    state: tauri::State<'_, AppState>,
+    source: String,
     original_name: Option<String>,
-) -> Result<(), String> {
+) -> Result<WorkflowDto, String> {
     let usecase = state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
-        let workflow = workflow_from_dto(workflow);
         usecase
-            .save_workflow(workflow, original_name.as_deref())
+            .save_workflow_source(&source, original_name.as_deref())
+            .map(|workflow| workflow_to_dto(&workflow))
             .map_err(|e| e.to_string())
     })
     .await

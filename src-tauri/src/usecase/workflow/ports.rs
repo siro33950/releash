@@ -33,6 +33,15 @@ pub trait WorkflowStepDetailProjectionRepository: Send + Sync {
     ) -> Result<Option<serde_json::Value>, WorkflowError>;
 }
 
+pub trait WorkflowDefinitionSourceGateway: Send + Sync {
+    fn get_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError>;
+    fn save_source(
+        &self,
+        source: &str,
+        original_name: Option<&str>,
+    ) -> Result<WorkflowDefinition, WorkflowError>;
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingWorkflowCommand {
     pub command_id: String,

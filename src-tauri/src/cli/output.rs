@@ -398,7 +398,9 @@ mod tests {
             builtin: false,
             nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
                 name: step_name.to_string(),
-                node_type: crate::adaptor::gateway::workflow::schema::NodeType::Agent,
+                kind: crate::adaptor::gateway::workflow::schema::NodeKind::Session(
+                    crate::adaptor::gateway::workflow::schema::SessionSpec::default(),
+                ),
                 output_contract: Some(contract.to_string()),
                 ..Default::default()
             }],
@@ -643,7 +645,9 @@ mod tests {
             builtin: false,
             nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
                 name: "review".to_string(),
-                node_type: crate::adaptor::gateway::workflow::schema::NodeType::Agent,
+                kind: crate::adaptor::gateway::workflow::schema::NodeKind::Session(
+                    crate::adaptor::gateway::workflow::schema::SessionSpec::default(),
+                ),
                 output_contract: Some("spec-directory".to_string()),
                 ..Default::default()
             }],
@@ -721,7 +725,9 @@ mod tests {
             builtin: false,
             nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
                 name: "review".to_string(),
-                node_type: crate::adaptor::gateway::workflow::schema::NodeType::Agent,
+                kind: crate::adaptor::gateway::workflow::schema::NodeKind::Session(
+                    crate::adaptor::gateway::workflow::schema::SessionSpec::default(),
+                ),
                 output_contract: Some("spec-directory".to_string()),
                 ..Default::default()
             }],

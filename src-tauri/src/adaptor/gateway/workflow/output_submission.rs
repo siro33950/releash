@@ -334,12 +334,13 @@ pub(crate) fn resolved_output_contract_definition_for(
     for node in &workflow.nodes {
         if node.name == step_name && node.output_contract.as_deref() == Some(contract) {
             return node
-                .resolved_facets
+                .resolved_facets()?
                 .output_contract
                 .as_deref()
                 .map(workflow_contract::strip_contract_validation_metadata);
         }
-        if let Some(children) = node.parallel_children.as_ref() {
+        if let Some(fanout) = node.fanout() {
+            let children = &fanout.parallel_children;
             for child in children {
                 if child.name == step_name && child.output_contract.as_deref() == Some(contract) {
                     return child
@@ -361,7 +362,7 @@ mod tests {
         ParallelChildRun, ParallelChildState, ParallelRunState, WorkflowExecution,
     };
     use crate::adaptor::gateway::workflow::schema::{
-        ChildNodeDefinition, NodeDefinition, NodeType, ResolvedFacets,
+        FanoutSpec, InterimChild, NodeDefinition, NodeKind, ResolvedFacets,
     };
     use crate::adaptor::gateway::workflow::state::{TokenUsage, WorkflowExecutionState};
     use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
@@ -371,25 +372,27 @@ mod tests {
             name: "wf".to_string(),
             nodes: vec![NodeDefinition {
                 name: "parallel-review".to_string(),
-                node_type: NodeType::Parallel,
-                parallel_children: Some(vec![
-                    ChildNodeDefinition {
-                        name: "review-a".to_string(),
-                        output_contract: Some("review-verdict".to_string()),
-                        resolved_facets: ResolvedFacets {
-                            output_contract: Some(
-                                "Visible contract\n```contract-validation\n{}\n```".to_string(),
-                            ),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    parallel_children: vec![
+                        InterimChild {
+                            name: "review-a".to_string(),
+                            output_contract: Some("review-verdict".to_string()),
+                            resolved_facets: ResolvedFacets {
+                                output_contract: Some(
+                                    "Visible contract\n```contract-validation\n{}\n```".to_string(),
+                                ),
+                                ..Default::default()
+                            },
                             ..Default::default()
                         },
-                        ..Default::default()
-                    },
-                    ChildNodeDefinition {
-                        name: "review-b".to_string(),
-                        output_contract: Some("review-verdict".to_string()),
-                        ..Default::default()
-                    },
-                ]),
+                        InterimChild {
+                            name: "review-b".to_string(),
+                            output_contract: Some("review-verdict".to_string()),
+                            ..Default::default()
+                        },
+                    ],
+                    aggregate: None,
+                }),
                 ..Default::default()
             }],
             ..Default::default()

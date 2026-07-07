@@ -17,7 +17,7 @@ use crate::adaptor::gateway::workflow::event::{
     RunAbortedChildOutcome, RunAbortedChildOutputSnapshot, RunAbortedStepSnapshot,
     TokenUsage as EventTokenUsage, WorkflowEvent,
 };
-use crate::adaptor::gateway::workflow::schema::{NodeType, Workflow};
+use crate::adaptor::gateway::workflow::schema::Workflow;
 use crate::adaptor::gateway::workflow::state::{
     ChildOutputSnapshot, ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage,
     WorkflowExecutionState, WorkflowStallObservation, WorkflowState,
@@ -840,25 +840,17 @@ pub struct WorkflowStepInputView {
     pub previous_step_structured_output: Option<serde_json::Value>,
 }
 
-fn node_type_label(t: NodeType) -> &'static str {
-    match t {
-        NodeType::Agent => "agent",
-        NodeType::Bash => "bash",
-        NodeType::Approval => "approval",
-        NodeType::Parallel => "parallel",
-    }
-}
-
 fn node_input_from_definition(
     workflow: &Workflow,
     node_name: &str,
 ) -> (Option<&'static str>, WorkflowStepInputView) {
     // top-level node
     if let Some(node) = workflow.nodes.iter().find(|n| n.name == node_name) {
+        let facets = node.session().map(|session| &session.facets);
         let mut view = WorkflowStepInputView {
-            instruction: node.instruction.clone(),
-            policy: node.policy.clone(),
-            knowledge: node.knowledge.clone(),
+            instruction: facets.and_then(|facets| facets.instruction.clone()),
+            policy: facets.and_then(|facets| facets.policy.clone()),
+            knowledge: facets.and_then(|facets| facets.knowledge.clone()),
             output_contract: node.output_contract.clone(),
             input_contracts: node.input_contracts.clone().unwrap_or_default(),
             ..WorkflowStepInputView::default()
@@ -869,22 +861,23 @@ fn node_input_from_definition(
                 view.previous_step_name = Some(workflow.nodes[idx - 1].name.clone());
             }
         }
-        return (Some(node_type_label(node.node_type)), view);
+        return (Some(node.kind_name().as_str()), view);
     }
     // parallel child node
     for parent in &workflow.nodes {
-        if let Some(children) = &parent.parallel_children {
+        if let Some(fanout) = parent.fanout() {
+            let children = &fanout.parallel_children;
             if let Some(child) = children.iter().find(|c| c.name == node_name) {
                 let view = WorkflowStepInputView {
-                    instruction: child.instruction.clone(),
-                    policy: child.policy.clone(),
-                    knowledge: child.knowledge.clone(),
+                    instruction: child.facets.instruction.clone(),
+                    policy: child.facets.policy.clone(),
+                    knowledge: child.facets.knowledge.clone(),
                     output_contract: child.output_contract.clone(),
                     input_contracts: child.input_contracts.clone().unwrap_or_default(),
                     previous_step_name: Some(parent.name.clone()),
                     ..WorkflowStepInputView::default()
                 };
-                return (Some(node_type_label(child.node_type)), view);
+                return (Some("session"), view);
             }
         }
     }
@@ -1770,15 +1763,26 @@ pub(crate) fn reconstruct_state_from_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType, Workflow};
+    use crate::adaptor::gateway::workflow::schema::{
+        FacetRefs, NodeDefinition, NodeKind, SessionSpec, Workflow,
+    };
 
     fn agent_node(name: &str) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
-            node_type: NodeType::Agent,
-            instruction: Some("x".to_string()),
+            kind: session_kind("x"),
             ..NodeDefinition::default()
         }
+    }
+
+    fn session_kind(instruction: &str) -> NodeKind {
+        NodeKind::Session(SessionSpec {
+            facets: FacetRefs {
+                instruction: Some(instruction.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
     }
 
     fn workflow_with_nodes(name: &str, nodes: Vec<&str>) -> Workflow {
@@ -3115,7 +3119,7 @@ mod tests {
     #[test]
     fn compute_step_detail_returns_completed_step_with_input_and_output() {
         let mut workflow = workflow_with_nodes("wf", vec!["plan", "review"]);
-        workflow.nodes[1].instruction = Some("review the diff".to_string());
+        workflow.nodes[1].kind = session_kind("review the diff");
         let snapshot = workflow.clone();
         let events = vec![
             run_started("exec-detail", snapshot),
@@ -3161,7 +3165,7 @@ mod tests {
             .unwrap();
         let detail = compute_step_detail(&state, &events, "review", Some(1)).unwrap();
         assert_eq!(detail.step_name, "review");
-        assert_eq!(detail.node_type, "agent");
+        assert_eq!(detail.node_type, "session");
         assert_eq!(detail.run_index, 1);
         assert_eq!(detail.result.as_deref(), Some("LGTM"));
         assert_eq!(detail.session_id.as_deref(), Some("review-session"));
@@ -3185,7 +3189,7 @@ mod tests {
     #[test]
     fn compute_step_detail_returns_input_for_pending_step() {
         let mut workflow = workflow_with_nodes("wf", vec!["plan", "review"]);
-        workflow.nodes[1].instruction = Some("review later".to_string());
+        workflow.nodes[1].kind = session_kind("review later");
         let snapshot = workflow.clone();
         let events = vec![
             run_started("exec-pending", snapshot),

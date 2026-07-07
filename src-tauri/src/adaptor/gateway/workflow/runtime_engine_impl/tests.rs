@@ -10,7 +10,7 @@ use crate::adaptor::gateway::workflow::runtime_state::{ApprovalAction, TurnCompl
 use crate::domain::agent_session::entities::PermissionResponse;
 use crate::domain::agent_session::gateway::{
     AgentBackend, AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, ForkSessionRequest,
-    SessionSpec, TurnInput,
+    SessionSpec as AgentSessionSpec, TurnInput,
 };
 use crate::domain::agent_session::value_objects::{
     BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
@@ -54,7 +54,7 @@ impl AgentBackend for WorkflowMockBackend {
 
     async fn open_session(
         &self,
-        _spec: SessionSpec,
+        _spec: AgentSessionSpec,
     ) -> Result<Box<dyn AgentSessionRuntime>, AgentBackendError> {
         Ok(Box::new(WorkflowMockRuntime))
     }
@@ -562,12 +562,12 @@ fn make_minimal_approval_exec(
         nodes: vec![
             NodeDefinition {
                 name: step_name.to_string(),
-                node_type: NodeType::Approval,
+                kind: test_node_kind(TestKind::ApprovalSession, "approve"),
                 ..Default::default()
             },
             NodeDefinition {
                 name: "next-step".to_string(),
-                node_type: NodeType::Agent,
+                kind: test_node_kind(TestKind::Session, "next"),
                 ..Default::default()
             },
         ],
@@ -675,10 +675,13 @@ fn workflow_stall_observation_fixture(
 
 #[tokio::test]
 async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
+    let data_dir = tempfile::TempDir::new().unwrap();
     let app = tauri::test::mock_builder()
+        .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+            data_dir.path().to_path_buf(),
+        ))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
-    let data_dir = tempfile::TempDir::new().unwrap();
     app.manage(Arc::new(
         crate::usecase::agent_session::status::AgentStatusCenter::new(),
     ));
@@ -868,10 +871,13 @@ async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
 
 #[tokio::test]
 async fn agent_stall_observed_append_failure_rolls_back_state_and_run_store() {
+    let data_dir = tempfile::TempDir::new().unwrap();
     let app = tauri::test::mock_builder()
+        .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+            data_dir.path().to_path_buf(),
+        ))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
-    let data_dir = tempfile::TempDir::new().unwrap();
     app.manage(Arc::new(
         crate::usecase::agent_session::status::AgentStatusCenter::new(),
     ));
@@ -959,10 +965,13 @@ async fn agent_stall_observed_append_failure_rolls_back_state_and_run_store() {
 
 #[tokio::test]
 async fn agent_stall_cleared_append_failure_rolls_back_state_and_run_store() {
+    let data_dir = tempfile::TempDir::new().unwrap();
     let app = tauri::test::mock_builder()
+        .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+            data_dir.path().to_path_buf(),
+        ))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
-    let data_dir = tempfile::TempDir::new().unwrap();
     app.manage(Arc::new(
         crate::usecase::agent_session::status::AgentStatusCenter::new(),
     ));
@@ -1048,19 +1057,89 @@ async fn agent_stall_cleared_append_failure_rolls_back_state_and_run_store() {
 
 fn make_test_step(
     name: &str,
-    node_type: NodeType,
+    kind: TestKind,
     instruction: &str,
     rules: Vec<TransitionRule>,
     cycle_guard: Option<CycleGuard>,
 ) -> NodeDefinition {
     NodeDefinition {
         name: name.to_string(),
-        node_type,
-        instruction: Some(instruction.to_string()),
+        kind: test_node_kind(kind, instruction),
         transition_rules: rules,
         cycle_guard,
         ..NodeDefinition::default()
     }
+}
+
+fn make_approval_step(name: &str, instruction: &str, rules: Vec<TransitionRule>) -> NodeDefinition {
+    make_test_step(name, TestKind::ApprovalSession, instruction, rules, None)
+}
+
+fn make_fanout_step(
+    name: &str,
+    children: Vec<InterimChild>,
+    aggregate: Option<ParallelAggregate>,
+) -> NodeDefinition {
+    NodeDefinition {
+        name: name.to_string(),
+        kind: NodeKind::Fanout(FanoutSpec {
+            parallel_children: children,
+            aggregate,
+        }),
+        ..Default::default()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TestKind {
+    Session,
+    ApprovalSession,
+    Command,
+    Fanout,
+}
+
+fn test_node_kind(kind: TestKind, instruction: &str) -> NodeKind {
+    match kind {
+        TestKind::Session => NodeKind::Session(SessionSpec {
+            facets: FacetRefs {
+                instruction: Some(instruction.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        TestKind::ApprovalSession => NodeKind::Session(SessionSpec {
+            gate: SessionGate::Approval,
+            facets: FacetRefs {
+                instruction: Some(instruction.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        TestKind::Command => NodeKind::Command(CommandSpec {
+            command: instruction.to_string(),
+        }),
+        TestKind::Fanout => NodeKind::Fanout(FanoutSpec::default()),
+    }
+}
+
+fn set_session_facets(node: &mut NodeDefinition, facets: FacetRefs) {
+    node.session_mut()
+        .expect("test node must be a session")
+        .facets = facets;
+}
+
+fn set_instruction_facet(node: &mut NodeDefinition, instruction: Option<String>) {
+    node.session_mut()
+        .expect("test node must be a session")
+        .facets
+        .instruction = instruction;
+}
+
+fn set_policy_facet(node: &mut NodeDefinition, policy: Option<String>) {
+    node.session_mut()
+        .expect("test node must be a session")
+        .facets
+        .policy = policy;
 }
 
 /// テストヘルパー: node の facet 参照を `base_dir` から解決し
@@ -1075,7 +1154,7 @@ fn resolve_node_facets_for_test(node: &mut NodeDefinition, base_dir: &std::path:
 /// テストヘルパー: 並列子 node の facet 参照を解決する。
 /// `crate::adaptor::gateway::workflow::facet::resolve_child_facets` への委譲。
 fn resolve_child_facets_for_test(
-    child: &mut crate::adaptor::gateway::workflow::schema::ChildNodeDefinition,
+    child: &mut crate::adaptor::gateway::workflow::schema::InterimChild,
     base_dir: &std::path::Path,
 ) {
     crate::adaptor::gateway::workflow::facet::resolve_child_facets(child, base_dir)
@@ -1089,17 +1168,17 @@ fn make_test_workflow() -> Workflow {
         description: "Test workflow".to_string(),
         builtin: false,
         nodes: vec![
-            make_test_step("plan", NodeType::Agent, "Plan the work", vec![], None),
+            make_test_step("plan", TestKind::Session, "Plan the work", vec![], None),
             make_test_step(
                 "implement",
-                NodeType::Agent,
+                TestKind::Session,
                 "Implement the plan",
                 vec![],
                 None,
             ),
             make_test_step(
                 "review",
-                NodeType::Agent,
+                TestKind::Session,
                 "Review the implementation",
                 vec![
                     TransitionRule {
@@ -1118,7 +1197,7 @@ fn make_test_workflow() -> Workflow {
             ),
             make_test_step(
                 "report",
-                NodeType::Approval,
+                TestKind::ApprovalSession,
                 "Generate report",
                 vec![TransitionRule {
                     r#match: "reject".to_string(),
@@ -1674,41 +1753,35 @@ fn turn_complete_action_wait_approval() {
 
 // [02]: Interactive 概念が廃止されたため、Interactive 用 SessionError 経路を
 // 検査する旧テスト `turn_complete_action_interactive_fails_for_validation_only_legacy_definition`
-// は削除した。bash / parallel 種別が turn_complete に流入した場合は専用バリアント
-// `UnexpectedNodeType` を返し、`SessionError { exit_code: 0 }`（正常終了セマンティクス）
+// は削除した。command / fanout 種別が turn_complete に流入した場合は専用バリアント
+// `UnexpectedNodeKind` を返し、`SessionError { exit_code: 0 }`（正常終了セマンティクス）
 // との混同を避ける。下記 2 テストでバリアント別に確認する。
 
 #[test]
-fn turn_complete_action_unexpected_node_type_for_bash() {
+fn turn_complete_action_unexpected_node_kind_for_command() {
     let mut exec = make_exec(0);
-    exec.workflow.nodes[0].node_type = NodeType::Bash;
+    exec.workflow.nodes[0].kind = test_node_kind(TestKind::Command, "cargo build");
     let action = exec.decide_turn_complete_action(0);
     match action {
-        TurnCompleteAction::UnexpectedNodeType {
-            step_name,
-            node_type,
-        } => {
+        TurnCompleteAction::UnexpectedNodeKind { step_name, kind } => {
             assert_eq!(step_name, "plan");
-            assert_eq!(node_type, NodeType::Bash);
+            assert_eq!(kind, crate::domain::workflow::NodeKindName::Command);
         }
-        other => panic!("Expected UnexpectedNodeType for Bash, got {:?}", other),
+        other => panic!("Expected UnexpectedNodeKind for command, got {:?}", other),
     }
 }
 
 #[test]
-fn turn_complete_action_unexpected_node_type_for_parallel() {
+fn turn_complete_action_unexpected_node_kind_for_fanout() {
     let mut exec = make_exec(0);
-    exec.workflow.nodes[0].node_type = NodeType::Parallel;
+    exec.workflow.nodes[0].kind = test_node_kind(TestKind::Fanout, "fanout");
     let action = exec.decide_turn_complete_action(0);
     match action {
-        TurnCompleteAction::UnexpectedNodeType {
-            step_name,
-            node_type,
-        } => {
+        TurnCompleteAction::UnexpectedNodeKind { step_name, kind } => {
             assert_eq!(step_name, "plan");
-            assert_eq!(node_type, NodeType::Parallel);
+            assert_eq!(kind, crate::domain::workflow::NodeKindName::Fanout);
         }
-        other => panic!("Expected UnexpectedNodeType for Parallel, got {:?}", other),
+        other => panic!("Expected UnexpectedNodeKind for fanout, got {:?}", other),
     }
 }
 
@@ -1834,25 +1907,24 @@ fn validate_start_no_existing_returns_ok() {
     assert!(result.is_ok());
 }
 
-/// [02] schema 境界: bash 種別 node を含む workflow は実行系未対応のため
+/// command kind node を含む workflow は実行系未対応のため
 /// 開始前に明示的に拒否される（実行系は [13] で具体化）。
 #[test]
-fn validate_start_rejects_bash_node() {
+fn validate_start_rejects_command_node() {
     let workflow = Workflow {
         variables: Default::default(),
-        name: "bash-wf".to_string(),
+        name: "command-wf".to_string(),
         description: String::new(),
         builtin: false,
         nodes: vec![NodeDefinition {
             name: "build".to_string(),
-            node_type: NodeType::Bash,
-            command: Some("echo hello".to_string()),
+            kind: test_node_kind(TestKind::Command, "echo hello"),
             ..NodeDefinition::default()
         }],
     };
     let result = WorkflowExecution::validate_start(&workflow, None);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("Bash node"));
+    assert!(result.unwrap_err().to_string().contains("Command node"));
 }
 
 // ---- is_terminal ----
@@ -2107,7 +2179,7 @@ fn approved_fix_policy_structured_output_is_masked_for_parallel_contract_path() 
 
 #[test]
 fn approved_policy_injected_output_uses_sanitized_contract_payload_without_global_variables() {
-    let mut step = make_test_step("fix", NodeType::Agent, "Fix", vec![], None);
+    let mut step = make_test_step("fix", TestKind::Session, "Fix", vec![], None);
     step.pass_output_from = Some(vec!["implementation_fix_policy".to_string()]);
 
     let sanitized = serde_json::json!({
@@ -2161,26 +2233,9 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
 
     let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
     exec.workflow.nodes[0].output_contract = Some("approved-fix-policy".to_string());
-    exec.workflow.nodes.push(NodeDefinition {
-        name: "fix".to_string(),
-        node_type: NodeType::Agent,
-        policy: None,
-        knowledge: None,
-        instruction: None,
-        output_contract: None,
-        transition_rules: vec![],
-        cycle_guard: None,
-        pass_previous_response: Some(true),
-        pass_output_from: None,
-        inline_prompt: Some("Fix".to_string()),
-        collect: None,
-        parallel_children: None,
-        aggregate: None,
-        resets_cycle_for: None,
-        model: None,
-        permission: None,
-        ..Default::default()
-    });
+    let mut fix = make_test_step("fix", TestKind::Session, "Fix", vec![], None);
+    fix.pass_previous_response = Some(true);
+    exec.workflow.nodes.push(fix);
     let outcome = WorkflowRuntimeService::apply_approval_application(
         &mut exec,
         &ApprovalDecision::Approve,
@@ -2361,9 +2416,9 @@ fn build_step_prompt_full_pipeline() {
     .unwrap();
     std::fs::write(contracts.join("plan-doc.md"), "Output as markdown.").unwrap();
 
-    let mut step = make_test_step("build", NodeType::Agent, "unused", vec![], None);
-    step.instruction = Some("impl".to_string());
-    step.policy = Some("coding".to_string());
+    let mut step = make_test_step("build", TestKind::Session, "unused", vec![], None);
+    set_instruction_facet(&mut step, Some("impl".to_string()));
+    set_policy_facet(&mut step, Some("coding".to_string()));
     step.output_contract = Some("plan-doc".to_string());
     step.pass_previous_response = Some(true);
     resolve_node_facets_for_test(&mut step, base);
@@ -2437,26 +2492,8 @@ fn build_step_prompt_full_pipeline() {
 
 #[test]
 fn build_step_prompt_no_facet_refs_returns_error() {
-    let step = NodeDefinition {
-        name: "empty".to_string(),
-        node_type: NodeType::Agent,
-        policy: None,
-        knowledge: None,
-        instruction: None,
-        output_contract: None,
-        transition_rules: vec![],
-        cycle_guard: None,
-        pass_previous_response: None,
-        pass_output_from: None,
-        inline_prompt: None,
-        collect: None,
-        parallel_children: None,
-        aggregate: None,
-        resets_cycle_for: None,
-        model: None,
-        permission: None,
-        ..Default::default()
-    };
+    let mut step = make_test_step("empty", TestKind::Session, "unused", vec![], None);
+    set_session_facets(&mut step, FacetRefs::default());
     let result = workflow_prompt::build_step_prompt(
         &step,
         "00000000-0000-0000-0000-000000000000",
@@ -2480,9 +2517,9 @@ fn build_step_prompt_policy_only_system_prompt_set() {
     std::fs::create_dir_all(&policies).unwrap();
     std::fs::write(policies.join("review.md"), "Review carefully.").unwrap();
 
-    let mut step = make_test_step("review", NodeType::Agent, "unused", vec![], None);
-    step.policy = Some("review".to_string());
-    step.instruction = None;
+    let mut step = make_test_step("review", TestKind::Session, "unused", vec![], None);
+    set_policy_facet(&mut step, Some("review".to_string()));
+    set_instruction_facet(&mut step, None);
     resolve_node_facets_for_test(&mut step, tmp.path());
     let (sys, prompt) = workflow_prompt::build_step_prompt(
         &step,
@@ -2513,10 +2550,10 @@ fn build_step_prompt_passes_composed_system_prompt_through() {
     std::fs::write(policies.join("coding.md"), "POLICY_BODY").unwrap();
     std::fs::write(contracts.join("plan-doc.md"), "CONTRACT_BODY").unwrap();
 
-    let mut step = make_test_step("s", NodeType::Agent, "unused", vec![], None);
-    step.policy = Some("coding".to_string());
+    let mut step = make_test_step("s", TestKind::Session, "unused", vec![], None);
+    set_policy_facet(&mut step, Some("coding".to_string()));
     step.output_contract = Some("plan-doc".to_string());
-    step.instruction = None;
+    set_instruction_facet(&mut step, None);
     resolve_node_facets_for_test(&mut step, tmp.path());
     let (sys, prompt) = workflow_prompt::build_step_prompt(
         &step,
@@ -2569,9 +2606,9 @@ fn build_step_prompt_expands_workflow_declared_variables_in_user_message() {
     )
     .unwrap();
 
-    let mut step = make_test_step("impl", NodeType::Agent, "unused", vec![], None);
-    step.instruction = Some("impl-vars".to_string());
-    step.policy = Some("vars-policy".to_string());
+    let mut step = make_test_step("impl", TestKind::Session, "unused", vec![], None);
+    set_instruction_facet(&mut step, Some("impl-vars".to_string()));
+    set_policy_facet(&mut step, Some("vars-policy".to_string()));
     step.output_contract = None;
     resolve_node_facets_for_test(&mut step, base);
 
@@ -2713,10 +2750,10 @@ async fn dispatch_session_start_passes_composed_system_prompt_to_gate() {
     std::fs::write(policies.join("p.md"), "POLICY_BODY").unwrap();
     std::fs::write(contracts.join("c.md"), "CONTRACT_BODY").unwrap();
 
-    let mut step = make_test_step("s", NodeType::Agent, "unused", vec![], None);
-    step.policy = Some("p".to_string());
+    let mut step = make_test_step("s", TestKind::Session, "unused", vec![], None);
+    set_policy_facet(&mut step, Some("p".to_string()));
     step.output_contract = Some("c".to_string());
-    step.instruction = None;
+    set_instruction_facet(&mut step, None);
     resolve_node_facets_for_test(&mut step, base);
 
     // build_step_prompt → dispatch_session_start の経路をそのまま再現する。
@@ -2785,10 +2822,10 @@ async fn build_and_dispatch_step_session_forwards_composed_system_prompt_through
     std::fs::write(policies.join("p.md"), "STEP_POLICY_BODY").unwrap();
     std::fs::write(contracts.join("c.md"), "STEP_CONTRACT_BODY").unwrap();
 
-    let mut step = make_test_step("s", NodeType::Agent, "unused", vec![], None);
-    step.policy = Some("p".to_string());
+    let mut step = make_test_step("s", TestKind::Session, "unused", vec![], None);
+    set_policy_facet(&mut step, Some("p".to_string()));
     step.output_contract = Some("c".to_string());
-    step.instruction = None;
+    set_instruction_facet(&mut step, None);
     resolve_node_facets_for_test(&mut step, base);
 
     let records = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2845,8 +2882,8 @@ async fn dispatch_session_start_passes_none_when_no_facets() {
     std::fs::create_dir_all(&instructions).unwrap();
     std::fs::write(instructions.join("only-instr.md"), "Body").unwrap();
 
-    let mut step = make_test_step("s", NodeType::Agent, "unused", vec![], None);
-    step.instruction = Some("only-instr".to_string());
+    let mut step = make_test_step("s", TestKind::Session, "unused", vec![], None);
+    set_instruction_facet(&mut step, Some("only-instr".to_string()));
     resolve_node_facets_for_test(&mut step, tmp.path());
     let (system_prompt, _prompt) = workflow_prompt::build_step_prompt(
         &step,
@@ -2957,7 +2994,7 @@ impl StepSessionDeps for RecordingStepSessionDeps {
         _step_permission: Option<String>,
         _workflow_defaults: WorkflowDefaults,
         workflow_step_context: WorkflowStepContext,
-        _node_kind: crate::domain::workflow::NodeType,
+        _kind_context: workflow_runtime_session::StepRuntimeKindContext,
     ) -> Result<StepSessionInfo, WorkflowEngineError> {
         self.create_step_session_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3101,12 +3138,15 @@ async fn start_step_session_with_deps_skips_side_effects_when_prompt_synthesis_f
     // 参照先ファセットが解決不能な step を含む execution を登録する。
     // facets_base_dir() 配下に "nonexistent_policy_<uuid>.md" が偶然存在することは
     // 実用上ありえないため、ファセット合成は必ず失敗する。
-    let mut step = make_test_step("missing-facet", NodeType::Agent, "unused", vec![], None);
-    step.instruction = None;
-    step.policy = Some(format!(
-        "nonexistent_policy_{}",
-        uuid::Uuid::new_v4().simple()
-    ));
+    let mut step = make_test_step("missing-facet", TestKind::Session, "unused", vec![], None);
+    set_instruction_facet(&mut step, None);
+    set_policy_facet(
+        &mut step,
+        Some(format!(
+            "nonexistent_policy_{}",
+            uuid::Uuid::new_v4().simple()
+        )),
+    );
 
     {
         let mut execs = engine.executions.lock().await;
@@ -3182,10 +3222,12 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
     // 期待通り更新されることを assert する。
     let engine = WorkflowRuntimeService::new_for_test();
 
-    // inline_prompt のみのステップなら facet ファイルなしでも合成が成功する。
-    let mut step = make_test_step("ok-step", NodeType::Agent, "unused", vec![], None);
-    step.instruction = None;
-    step.inline_prompt = Some("hello".to_string());
+    let tmp = tempfile::TempDir::new().unwrap();
+    let instructions = tmp.path().join("instructions");
+    std::fs::create_dir_all(&instructions).unwrap();
+    std::fs::write(instructions.join("ok.md"), "hello").unwrap();
+    let mut step = make_test_step("ok-step", TestKind::Session, "ok", vec![], None);
+    resolve_node_facets_for_test(&mut step, tmp.path());
 
     {
         let mut execs = engine.executions.lock().await;
@@ -3196,7 +3238,7 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
     engine
         .start_step_session_with_deps(&deps, "/repo")
         .await
-        .expect("start_step_session_with_deps must succeed for inline_prompt step");
+        .expect("start_step_session_with_deps must succeed for instruction facet step");
 
     // 各副作用境界が 1 回ずつ呼ばれている
     assert_eq!(deps.create_step_session_count(), 1);
@@ -3251,9 +3293,14 @@ async fn start_step_session_with_deps_keeps_workflow_instruction_outside_step_co
     )
     .unwrap();
 
-    let mut step = make_test_step("instruction-step", NodeType::Agent, "unused", vec![], None);
-    step.inline_prompt = Some("hello".to_string());
-    step.instruction = Some("impl".to_string());
+    let mut step = make_test_step(
+        "instruction-step",
+        TestKind::Session,
+        "unused",
+        vec![],
+        None,
+    );
+    set_instruction_facet(&mut step, Some("impl".to_string()));
     resolve_node_facets_for_test(&mut step, tmp.path());
 
     {
@@ -3291,9 +3338,12 @@ async fn start_step_session_with_deps_keeps_workflow_instruction_outside_step_co
 async fn start_step_session_with_deps_propagates_node_session_append_failure() {
     let engine = WorkflowRuntimeService::new_for_test();
 
-    let mut step = make_test_step("ok-step", NodeType::Agent, "unused", vec![], None);
-    step.instruction = None;
-    step.inline_prompt = Some("hello".to_string());
+    let tmp = tempfile::TempDir::new().unwrap();
+    let instructions = tmp.path().join("instructions");
+    std::fs::create_dir_all(&instructions).unwrap();
+    std::fs::write(instructions.join("ok.md"), "hello").unwrap();
+    let mut step = make_test_step("ok-step", TestKind::Session, "ok", vec![], None);
+    resolve_node_facets_for_test(&mut step, tmp.path());
 
     {
         let mut execs = engine.executions.lock().await;
@@ -3329,13 +3379,11 @@ async fn start_step_session_with_deps_propagates_node_session_append_failure() {
 
 // ---- build_parallel_step_prompt (並列子ステップの合成ルール) ----
 
-fn make_parallel_step(
-    name: &str,
-) -> crate::adaptor::gateway::workflow::schema::ChildNodeDefinition {
-    crate::adaptor::gateway::workflow::schema::ChildNodeDefinition {
+fn make_parallel_step(name: &str) -> crate::adaptor::gateway::workflow::schema::InterimChild {
+    crate::adaptor::gateway::workflow::schema::InterimChild {
         name: name.to_string(),
         permission: Some("edit".to_string()),
-        ..crate::adaptor::gateway::workflow::schema::ChildNodeDefinition::default()
+        ..crate::adaptor::gateway::workflow::schema::InterimChild::default()
     }
 }
 
@@ -3361,9 +3409,9 @@ fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
     std::fs::write(contracts.join("oc.md"), "PARALLEL_CONTRACT_BODY").unwrap();
 
     let mut ps = make_parallel_step("child");
-    ps.policy = Some("pol".to_string());
-    ps.knowledge = Some("know".to_string());
-    ps.instruction = Some("inst".to_string());
+    ps.facets.policy = Some("pol".to_string());
+    ps.facets.knowledge = Some("know".to_string());
+    ps.facets.instruction = Some("inst".to_string());
     ps.output_contract = Some("oc".to_string());
     resolve_child_facets_for_test(&mut ps, base);
     let (system_prompt, user_message) = workflow_prompt::build_parallel_step_prompt(
@@ -3424,7 +3472,7 @@ fn build_parallel_step_prompt_no_policy_or_contract_returns_none_system_prompt()
     std::fs::write(instructions.join("inst.md"), "INSTR").unwrap();
 
     let mut ps = make_parallel_step("child");
-    ps.instruction = Some("inst".to_string());
+    ps.facets.instruction = Some("inst".to_string());
     resolve_child_facets_for_test(&mut ps, base);
     let (system_prompt, user_message) = workflow_prompt::build_parallel_step_prompt(
         &ps,
@@ -3465,13 +3513,7 @@ fn make_approval_exec(
             name: "test".to_string(),
             description: "test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "review".to_string(),
-                node_type: NodeType::Approval,
-                instruction: Some("Review the code".to_string()),
-                transition_rules: rules,
-                ..NodeDefinition::default()
-            }],
+            nodes: vec![make_approval_step("review", "Review the code", rules)],
         },
         state,
         current_step_index: 0,
@@ -4006,48 +4048,19 @@ fn reject_comment_flows_through_approval_to_transition_and_history() {
             description: "test".to_string(),
             builtin: false,
             nodes: vec![
-                NodeDefinition {
-                    name: "review".to_string(),
-                    node_type: NodeType::Approval,
-                    policy: None,
-                    knowledge: None,
-                    instruction: Some("Review the code".to_string()),
-                    output_contract: None,
-                    transition_rules: vec![TransitionRule {
+                make_approval_step(
+                    "review",
+                    "Review the code",
+                    vec![TransitionRule {
                         r#match: "reject".to_string(),
                         next: "fix".to_string(),
                     }],
-                    cycle_guard: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel_children: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                    ..Default::default()
-                },
-                NodeDefinition {
-                    name: "fix".to_string(),
-                    node_type: NodeType::Agent,
-                    policy: None,
-                    knowledge: None,
-                    instruction: Some("Fix the issues".to_string()),
-                    output_contract: None,
-                    transition_rules: vec![],
-                    cycle_guard: None,
-                    pass_previous_response: Some(true),
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel_children: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                    ..Default::default()
+                ),
+                {
+                    let mut fix =
+                        make_test_step("fix", TestKind::Session, "Fix the issues", vec![], None);
+                    fix.pass_previous_response = Some(true);
+                    fix
                 },
             ],
         },
@@ -4132,27 +4145,12 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
             description: "test".to_string(),
             builtin: false,
             nodes: vec![
-                NodeDefinition {
-                    name: "fix_policy".to_string(),
-                    node_type: NodeType::Approval,
-                    policy: None,
-                    knowledge: None,
-                    instruction: Some("Review fix policy".to_string()),
-                    output_contract: Some("approved-fix-policy".to_string()),
-                    transition_rules: vec![],
-                    cycle_guard: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel_children: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                    ..Default::default()
+                {
+                    let mut step = make_approval_step("fix_policy", "Review fix policy", vec![]);
+                    step.output_contract = Some("approved-fix-policy".to_string());
+                    step
                 },
-                make_test_step("fix", NodeType::Agent, "Fix", vec![], None),
+                make_test_step("fix", TestKind::Session, "Fix", vec![], None),
             ],
         },
         state: WorkflowExecutionState::WaitingApproval,
@@ -4230,52 +4228,27 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
             description: "test".to_string(),
             builtin: false,
             nodes: vec![
-                NodeDefinition {
-                    name: "implementation_fix_policy".to_string(),
-                    node_type: NodeType::Approval,
-                    policy: None,
-                    knowledge: None,
-                    instruction: Some("Review fix policy".to_string()),
-                    output_contract: Some("approved-fix-policy".to_string()),
-                    transition_rules: vec![],
-                    cycle_guard: None,
-                    pass_previous_response: None,
-                    pass_output_from: Some(vec!["code_review_parallel".to_string()]),
-                    inline_prompt: None,
-                    collect: None,
-                    parallel_children: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                    ..Default::default()
+                {
+                    let mut step = make_approval_step(
+                        "implementation_fix_policy",
+                        "Review fix policy",
+                        vec![],
+                    );
+                    step.output_contract = Some("approved-fix-policy".to_string());
+                    step.pass_output_from = Some(vec!["code_review_parallel".to_string()]);
+                    step
                 },
-                make_test_step("fix", NodeType::Agent, "Fix", vec![], None),
-                NodeDefinition {
-                    name: "code_review_parallel".to_string(),
-                    node_type: NodeType::Parallel,
-                    policy: None,
-                    knowledge: None,
-                    instruction: None,
-                    output_contract: None,
-                    transition_rules: vec![],
-                    cycle_guard: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel_children: Some(vec![]),
-                    aggregate: Some(ParallelAggregate {
+                make_test_step("fix", TestKind::Session, "Fix", vec![], None),
+                make_fanout_step(
+                    "code_review_parallel",
+                    vec![],
+                    Some(ParallelAggregate {
                         all_match: Some("LGTM".to_string()),
                         any_match: None,
                         then: "fix".to_string(),
                         r#else: "implementation_fix_policy".to_string(),
                     }),
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                    ..Default::default()
-                },
+                ),
             ],
         },
         state: WorkflowExecutionState::WaitingApproval,
@@ -4365,7 +4338,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
     let worktree_path = "/repo";
     let policy_session_id = uuid::Uuid::new_v4().to_string();
 
-    let mut fix_step = make_test_step("fix", NodeType::Agent, "Fix", vec![], None);
+    let mut fix_step = make_test_step("fix", TestKind::Session, "Fix", vec![], None);
     fix_step.collect = Some(CollectConfig {
         from: vec!["implementation_fix_policy".to_string()],
         reduce: ReduceStrategy::Last,
@@ -4378,50 +4351,25 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
             description: "test".to_string(),
             builtin: false,
             nodes: vec![
-                NodeDefinition {
-                    name: "code_review_parallel".to_string(),
-                    node_type: NodeType::Parallel,
-                    policy: None,
-                    knowledge: None,
-                    instruction: None,
-                    output_contract: None,
-                    transition_rules: vec![],
-                    cycle_guard: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel_children: Some(vec![]),
-                    aggregate: Some(ParallelAggregate {
+                make_fanout_step(
+                    "code_review_parallel",
+                    vec![],
+                    Some(ParallelAggregate {
                         all_match: Some("LGTM".to_string()),
                         any_match: None,
                         then: "done".to_string(),
                         r#else: "implementation_fix_policy".to_string(),
                     }),
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                    ..Default::default()
-                },
-                NodeDefinition {
-                    name: "implementation_fix_policy".to_string(),
-                    node_type: NodeType::Approval,
-                    policy: None,
-                    knowledge: None,
-                    instruction: Some("Review fix policy".to_string()),
-                    output_contract: Some("approved-fix-policy".to_string()),
-                    transition_rules: vec![],
-                    cycle_guard: None,
-                    pass_previous_response: None,
-                    pass_output_from: Some(vec!["code_review_parallel".to_string()]),
-                    inline_prompt: None,
-                    collect: None,
-                    parallel_children: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                    ..Default::default()
+                ),
+                {
+                    let mut step = make_approval_step(
+                        "implementation_fix_policy",
+                        "Review fix policy",
+                        vec![],
+                    );
+                    step.output_contract = Some("approved-fix-policy".to_string());
+                    step.pass_output_from = Some(vec!["code_review_parallel".to_string()]);
+                    step
                 },
                 fix_step,
             ],
@@ -4550,18 +4498,8 @@ fn make_normal_step_exec_with_stall_observation() -> WorkflowExecution {
             description: "test".to_string(),
             builtin: false,
             nodes: vec![
-                NodeDefinition {
-                    name: "plan".to_string(),
-                    node_type: NodeType::Agent,
-                    instruction: Some("plan".to_string()),
-                    ..NodeDefinition::default()
-                },
-                NodeDefinition {
-                    name: "implement".to_string(),
-                    node_type: NodeType::Agent,
-                    instruction: Some("implement".to_string()),
-                    ..NodeDefinition::default()
-                },
+                make_test_step("plan", TestKind::Session, "plan", vec![], None),
+                make_test_step("implement", TestKind::Session, "implement", vec![], None),
             ],
         },
         state: WorkflowExecutionState::Running,
@@ -4709,7 +4647,7 @@ fn make_on_exhausted_workflow() -> Workflow {
         nodes: vec![
             make_test_step(
                 "fix",
-                NodeType::Agent,
+                TestKind::Session,
                 "Fix issues",
                 vec![TransitionRule {
                     r#match: ".*".to_string(),
@@ -4722,7 +4660,7 @@ fn make_on_exhausted_workflow() -> Workflow {
             ),
             make_test_step(
                 "review",
-                NodeType::Agent,
+                TestKind::Session,
                 "Review",
                 vec![TransitionRule {
                     r#match: "NEEDS_FIX".to_string(),
@@ -4734,7 +4672,7 @@ fn make_on_exhausted_workflow() -> Workflow {
                 resets_cycle_for: Some(vec!["fix".to_string()]),
                 ..make_test_step(
                     "approval",
-                    NodeType::Agent,
+                    TestKind::Session,
                     "Approve",
                     vec![TransitionRule {
                         r#match: "NEEDS_FIX".to_string(),
@@ -4973,7 +4911,7 @@ fn on_exhausted_chain_transitions() {
         nodes: vec![
             make_test_step(
                 "step_a",
-                NodeType::Agent,
+                TestKind::Session,
                 "A",
                 vec![],
                 Some(CycleGuard {
@@ -4983,7 +4921,7 @@ fn on_exhausted_chain_transitions() {
             ),
             make_test_step(
                 "step_b",
-                NodeType::Agent,
+                TestKind::Session,
                 "B",
                 vec![],
                 Some(CycleGuard {
@@ -4991,7 +4929,7 @@ fn on_exhausted_chain_transitions() {
                     on_exhausted: Some("step_c".to_string()),
                 }),
             ),
-            make_test_step("step_c", NodeType::Agent, "C", vec![], None),
+            make_test_step("step_c", TestKind::Session, "C", vec![], None),
         ],
     };
     let mut exec = WorkflowExecution {
@@ -5039,7 +4977,7 @@ fn on_exhausted_chain_to_non_exhausted_fails() {
         nodes: vec![
             make_test_step(
                 "step_a",
-                NodeType::Agent,
+                TestKind::Session,
                 "A",
                 vec![],
                 Some(CycleGuard {
@@ -5049,7 +4987,7 @@ fn on_exhausted_chain_to_non_exhausted_fails() {
             ),
             make_test_step(
                 "step_b",
-                NodeType::Agent,
+                TestKind::Session,
                 "B",
                 vec![],
                 Some(CycleGuard {
@@ -5155,22 +5093,21 @@ fn apply_transition_clears_step_outputs_for_target_step() {
 #[test]
 fn apply_transition_to_parallel_block_clears_block_and_children() {
     // 並列ブロックへの遷移では、ブロック自身と全子 step の前回出力が破棄される。
-    let parallel_block = NodeDefinition {
-        name: "code_review_parallel".to_string(),
-        node_type: NodeType::Parallel,
-        parallel_children: Some(vec![
+    let parallel_block = make_fanout_step(
+        "code_review_parallel",
+        vec![
             make_parallel_step("review_security"),
             make_parallel_step("review_style"),
-        ]),
-        ..NodeDefinition::default()
-    };
+        ],
+        None,
+    );
     let wf = Workflow {
         variables: Default::default(),
         name: "loop-parallel".to_string(),
         description: "test".to_string(),
         builtin: false,
         nodes: vec![
-            make_test_step("fix", NodeType::Agent, "Fix", vec![], None),
+            make_test_step("fix", TestKind::Session, "Fix", vec![], None),
             parallel_block,
         ],
     };
@@ -5700,12 +5637,12 @@ fn make_minimal_workflow() -> Workflow {
         name: "engine-test-wf".to_string(),
         description: "minimal".to_string(),
         builtin: false,
-        nodes: vec![NodeDefinition {
-            name: "only-step".to_string(),
-            node_type: NodeType::Agent,
-            inline_prompt: Some("do".to_string()),
-            permission: Some("edit".to_string()),
-            ..NodeDefinition::default()
+        nodes: vec![{
+            let mut step = make_test_step("only-step", TestKind::Session, "do", vec![], None);
+            step.session_mut()
+                .expect("minimal workflow step must be a session")
+                .permission = Some("edit".to_string());
+            step
         }],
     }
 }
@@ -5734,11 +5671,13 @@ fn validate_workflow_shape_rejects_empty_and_bash_workflows_without_side_effects
         name: "wf".to_string(),
         description: "".to_string(),
         builtin: false,
-        nodes: vec![NodeDefinition {
-            name: "bash-step".to_string(),
-            node_type: NodeType::Bash,
-            ..NodeDefinition::default()
-        }],
+        nodes: vec![make_test_step(
+            "bash-step",
+            TestKind::Command,
+            "echo test",
+            vec![],
+            None,
+        )],
     };
     assert!(matches!(
         workflow_engine_start_guard::validate_workflow_shape(&bash),
@@ -6581,7 +6520,7 @@ async fn resolve_chat_session_for_approval_rejects_non_waiting_approval_state() 
     let engine = WorkflowRuntimeService::new_for_test();
     let run_id = uuid::Uuid::new_v4().to_string();
     let mut exec = make_exec_with(&run_id, "/wt/x", WorkflowExecutionState::Running);
-    exec.workflow.nodes[0].node_type = NodeType::Approval;
+    exec.workflow.nodes[0].kind = test_node_kind(TestKind::ApprovalSession, "review");
     exec.current_session_id = Some("step-sess".to_string());
     engine.executions.lock().await.insert(run_id.clone(), exec);
 
@@ -6599,7 +6538,7 @@ async fn resolve_chat_session_for_approval_rejects_non_approval_current_node() {
     let engine = WorkflowRuntimeService::new_for_test();
     let run_id = uuid::Uuid::new_v4().to_string();
     let mut exec = make_exec_with(&run_id, "/wt/x", WorkflowExecutionState::WaitingApproval);
-    // current node は Agent のまま（make_minimal_workflow が Agent を返す）
+    // current node は通常 session のまま（make_minimal_workflow が auto session を返す）
     exec.current_session_id = Some("step-sess".to_string());
     engine.executions.lock().await.insert(run_id.clone(), exec);
 
@@ -6616,7 +6555,7 @@ async fn resolve_chat_session_for_approval_accepts_fully_valid_state() {
     let engine = WorkflowRuntimeService::new_for_test();
     let run_id = uuid::Uuid::new_v4().to_string();
     let mut exec = make_exec_with(&run_id, "/wt/x", WorkflowExecutionState::WaitingApproval);
-    exec.workflow.nodes[0].node_type = NodeType::Approval;
+    exec.workflow.nodes[0].kind = test_node_kind(TestKind::ApprovalSession, "review");
     exec.current_session_id = Some("step-sess".to_string());
     engine.executions.lock().await.insert(run_id.clone(), exec);
 
@@ -6635,7 +6574,7 @@ async fn resolve_chat_session_for_approval_rejects_terminal_run() {
     let engine = WorkflowRuntimeService::new_for_test();
     let run_id = uuid::Uuid::new_v4().to_string();
     let mut exec = make_exec_with(&run_id, "/wt/x", WorkflowExecutionState::Completed);
-    exec.workflow.nodes[0].node_type = NodeType::Approval;
+    exec.workflow.nodes[0].kind = test_node_kind(TestKind::ApprovalSession, "review");
     exec.current_session_id = Some("step-sess".to_string());
     engine.executions.lock().await.insert(run_id.clone(), exec);
 
@@ -6706,9 +6645,7 @@ mod dispatch_boundary_tests {
     use crate::adaptor::gateway::workflow::run::{
         RunStatus, TerminalRunStatus, TriggerSource, WorkflowRun,
     };
-    use crate::adaptor::gateway::workflow::schema::{
-        NodeDefinition, NodeType, TransitionRule, Workflow,
-    };
+    use crate::adaptor::gateway::workflow::schema::{TransitionRule, Workflow};
     use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
     use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
     use crate::usecase::agent_session::session::MessagePart;
@@ -6751,7 +6688,7 @@ mod dispatch_boundary_tests {
 
         async fn open_session(
             &self,
-            _spec: SessionSpec,
+            _spec: AgentSessionSpec,
         ) -> Result<Box<dyn AgentSessionRuntime>, AgentBackendError> {
             Ok(Box::new(DispatchMockRuntime))
         }
@@ -6849,12 +6786,7 @@ mod dispatch_boundary_tests {
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "review".to_string(),
-                node_type: NodeType::Approval,
-                instruction: Some("review".to_string()),
-                ..NodeDefinition::default()
-            }],
+            nodes: vec![make_approval_step("review", "review", vec![])],
         }
     }
 
@@ -6865,22 +6797,15 @@ mod dispatch_boundary_tests {
             description: "test".to_string(),
             builtin: false,
             nodes: vec![
-                NodeDefinition {
-                    name: "review".to_string(),
-                    node_type: NodeType::Approval,
-                    instruction: Some("review".to_string()),
-                    transition_rules: vec![TransitionRule {
+                make_approval_step(
+                    "review",
+                    "review",
+                    vec![TransitionRule {
                         r#match: "reject".to_string(),
                         next: "fix".to_string(),
                     }],
-                    ..NodeDefinition::default()
-                },
-                NodeDefinition {
-                    name: "fix".to_string(),
-                    node_type: NodeType::Agent,
-                    instruction: Some("fix".to_string()),
-                    ..NodeDefinition::default()
-                },
+                ),
+                make_test_step("fix", TestKind::Session, "fix", vec![], None),
             ],
         }
     }
@@ -7283,7 +7208,7 @@ mod dispatch_boundary_tests {
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/parallel-prompt-failure";
         let mut child = make_parallel_step("missing-facet-child");
-        child.policy = Some(format!(
+        child.facets.policy = Some(format!(
             "nonexistent_policy_{}",
             uuid::Uuid::new_v4().simple()
         ));
@@ -7293,12 +7218,7 @@ mod dispatch_boundary_tests {
             name: "parallel-prompt-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "parallel-review".to_string(),
-                node_type: NodeType::Parallel,
-                parallel_children: Some(vec![child]),
-                ..NodeDefinition::default()
-            }],
+            nodes: vec![make_fanout_step("parallel-review", vec![child], None)],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -7377,15 +7297,14 @@ mod dispatch_boundary_tests {
             name: "parallel-setup-rollback-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "parallel-review".to_string(),
-                node_type: NodeType::Parallel,
-                parallel_children: Some(vec![
+            nodes: vec![make_fanout_step(
+                "parallel-review",
+                vec![
                     make_parallel_step("review-a"),
                     make_parallel_step("review-b"),
-                ]),
-                ..NodeDefinition::default()
-            }],
+                ],
+                None,
+            )],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -8149,12 +8068,13 @@ mod dispatch_boundary_tests {
             name: "stale-policy-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "review".to_string(),
-                node_type: NodeType::Agent,
-                instruction: Some("review".to_string()),
-                ..NodeDefinition::default()
-            }],
+            nodes: vec![make_test_step(
+                "review",
+                TestKind::Session,
+                "review",
+                vec![],
+                None,
+            )],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -8234,15 +8154,14 @@ mod dispatch_boundary_tests {
             name: "parallel-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "parallel-review".to_string(),
-                node_type: NodeType::Parallel,
-                parallel_children: Some(vec![
+            nodes: vec![make_fanout_step(
+                "parallel-review",
+                vec![
                     make_parallel_step("review-a"),
                     make_parallel_step("review-b"),
-                ]),
-                ..NodeDefinition::default()
-            }],
+                ],
+                None,
+            )],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -8361,15 +8280,14 @@ mod dispatch_boundary_tests {
             name: "parallel-stall-success-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "parallel-review".to_string(),
-                node_type: NodeType::Parallel,
-                parallel_children: Some(vec![
+            nodes: vec![make_fanout_step(
+                "parallel-review",
+                vec![
                     make_parallel_step("review-a"),
                     make_parallel_step("review-b"),
-                ]),
-                ..NodeDefinition::default()
-            }],
+                ],
+                None,
+            )],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -8478,15 +8396,14 @@ mod dispatch_boundary_tests {
             name: "parallel-delegated-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "parallel-review".to_string(),
-                node_type: NodeType::Parallel,
-                parallel_children: Some(vec![
+            nodes: vec![make_fanout_step(
+                "parallel-review",
+                vec![
                     make_parallel_step("review-a"),
                     make_parallel_step("review-b"),
-                ]),
-                ..NodeDefinition::default()
-            }],
+                ],
+                None,
+            )],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -8606,12 +8523,11 @@ mod dispatch_boundary_tests {
             name: "parallel-zero-refusal-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "parallel-review".to_string(),
-                node_type: NodeType::Parallel,
-                parallel_children: Some(vec![review_a, make_parallel_step("review-b")]),
-                ..NodeDefinition::default()
-            }],
+            nodes: vec![make_fanout_step(
+                "parallel-review",
+                vec![review_a, make_parallel_step("review-b")],
+                None,
+            )],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -8762,15 +8678,14 @@ mod dispatch_boundary_tests {
             name: "parallel-partial-append-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "parallel-review".to_string(),
-                node_type: NodeType::Parallel,
-                parallel_children: Some(vec![
+            nodes: vec![make_fanout_step(
+                "parallel-review",
+                vec![
                     make_parallel_step("review-a"),
                     make_parallel_step("review-b"),
-                ]),
-                ..NodeDefinition::default()
-            }],
+                ],
+                None,
+            )],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -9807,12 +9722,7 @@ mod dispatch_boundary_tests {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "parallel-review".to_string(),
-                node_type: NodeType::Parallel,
-                parallel_children: Some(vec![]),
-                ..Default::default()
-            }],
+            nodes: vec![make_fanout_step("parallel-review", vec![], None)],
         };
         let exec = WorkflowExecution {
             id: "exec-abort-parallel".to_string(),
@@ -10836,12 +10746,13 @@ mod dispatch_boundary_tests {
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
-                nodes: vec![NodeDefinition {
-                    name: "plan".to_string(),
-                    node_type: NodeType::Agent,
-                    instruction: Some("plan".to_string()),
-                    ..NodeDefinition::default()
-                }],
+                nodes: vec![make_test_step(
+                    "plan",
+                    TestKind::Session,
+                    "plan",
+                    vec![],
+                    None,
+                )],
             },
             timestamp: 100.0,
         })
@@ -10999,11 +10910,10 @@ mod dispatch_boundary_tests {
             name: "submit-wf".to_string(),
             description: String::new(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "review".to_string(),
-                node_type: NodeType::Agent,
-                output_contract: Some("review-verdict".to_string()),
-                ..NodeDefinition::default()
+            nodes: vec![{
+                let mut step = make_test_step("review", TestKind::Session, "review", vec![], None);
+                step.output_contract = Some("review-verdict".to_string());
+                step
             }],
         }
     }
@@ -11447,11 +11357,10 @@ mod dispatch_boundary_tests {
             name: "spec-wf".to_string(),
             description: String::new(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "plan".to_string(),
-                node_type: NodeType::Agent,
-                output_contract: Some("spec-directory".to_string()),
-                ..NodeDefinition::default()
+            nodes: vec![{
+                let mut step = make_test_step("plan", TestKind::Session, "plan", vec![], None);
+                step.output_contract = Some("spec-directory".to_string());
+                step
             }],
         };
         engine
@@ -11506,17 +11415,17 @@ mod dispatch_boundary_tests {
             description: String::new(),
             builtin: false,
             nodes: vec![
-                NodeDefinition {
-                    name: "first".to_string(),
-                    node_type: NodeType::Agent,
-                    output_contract: Some("review-verdict".to_string()),
-                    ..NodeDefinition::default()
+                {
+                    let mut step =
+                        make_test_step("first", TestKind::Session, "first", vec![], None);
+                    step.output_contract = Some("review-verdict".to_string());
+                    step
                 },
-                NodeDefinition {
-                    name: "second".to_string(),
-                    node_type: NodeType::Agent,
-                    output_contract: Some("review-verdict".to_string()),
-                    ..NodeDefinition::default()
+                {
+                    let mut step =
+                        make_test_step("second", TestKind::Session, "second", vec![], None);
+                    step.output_contract = Some("review-verdict".to_string());
+                    step
                 },
             ],
         };
@@ -12072,11 +11981,10 @@ mod dispatch_boundary_tests {
             name: "spec-wf".to_string(),
             description: String::new(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "plan".to_string(),
-                node_type: NodeType::Agent,
-                output_contract: Some("spec-directory".to_string()),
-                ..NodeDefinition::default()
+            nodes: vec![{
+                let mut step = make_test_step("plan", TestKind::Session, "plan", vec![], None);
+                step.output_contract = Some("spec-directory".to_string());
+                step
             }],
         };
         engine

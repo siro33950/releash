@@ -1,9 +1,7 @@
 use crate::adaptor::gateway::workflow::builtin;
 use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain;
 use crate::adaptor::gateway::workflow::facet::{self, FacetKind};
-use crate::adaptor::gateway::workflow::schema::{
-    NodeDefinition, NodeType, ReduceStrategy, Workflow,
-};
+use crate::adaptor::gateway::workflow::schema::{NodeDefinition, ReduceStrategy, Workflow};
 use crate::domain::workflow::services::variable_renderer;
 use crate::domain::workflow::validation;
 use serde::Serialize;
@@ -261,17 +259,10 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         }
         ValidationError::EmptySteps => (None, Some("steps".to_string())),
         ValidationError::DuplicateStep { name } => (Some(name.clone()), Some("name".to_string())),
-        ValidationError::ParallelChildNotAuto { parent, .. } => (
-            Some(parent.clone()),
-            Some("parallel_children.type".to_string()),
-        ),
         ValidationError::ParallelChildNameConflict { child } => (
             Some(child.clone()),
             Some("parallel_children.name".to_string()),
         ),
-        ValidationError::AggregateWithoutParallel { step } => {
-            (Some(step.clone()), Some("aggregate".to_string()))
-        }
         ValidationError::AggregateInvalidConfig { step, .. } => {
             (Some(step.clone()), Some("aggregate".to_string()))
         }
@@ -331,11 +322,8 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::ModelResolutionFailed { step, .. } => {
             (Some(step.clone()), Some("model".to_string()))
         }
-        ValidationError::MissingCommand { step } => {
-            (Some(step.clone()), Some("command".to_string()))
-        }
         ValidationError::EmptyCommand { step } => (Some(step.clone()), Some("command".to_string())),
-        ValidationError::DisallowedFieldForNodeType { step, field, .. } => {
+        ValidationError::DisallowedFieldForKind { step, field, .. } => {
             (Some(step.clone()), Some(field.to_string()))
         }
         ValidationError::TooManyNodes { .. } => (None, Some("nodes".to_string())),
@@ -356,15 +344,15 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
 /// - Parallel block (aggregate なし) → 子完了後に進行
 /// - Auto モード + rules あり → マッチで遷移 or 不一致で FAIL（進行しない）
 fn can_advance_sequentially(step: &NodeDefinition) -> bool {
-    if step.is_parallel() {
-        return step.aggregate.is_none();
+    if let Some(fanout) = step.fanout() {
+        return fanout.aggregate.is_none();
     }
     if step.transition_rules.is_empty() {
         return true;
     }
     // [02]: agent ノードは rules ありで rules マッチ時のみ遷移する。
     // approval ノードのみ、rules ありでも sequential 進行を許す（既存挙動）。
-    matches!(step.node_type, NodeType::Approval)
+    step.is_approval_session()
 }
 
 /// 到達可能性の計算結果。
@@ -394,7 +382,7 @@ fn compute_reachable_steps<'a>(
                 explicitly_reachable.insert(&rule.next);
             }
         }
-        if let Some(ref agg) = step.aggregate {
+        if let Some(agg) = step.fanout().and_then(|fanout| fanout.aggregate.as_ref()) {
             if step_names.contains(agg.then.as_str()) {
                 explicitly_reachable.insert(&agg.then);
             }
@@ -498,7 +486,8 @@ fn diagnose_workflow(
     let mut referenceable_step_names: HashSet<&str> = HashSet::new();
     for step in &wf.nodes {
         referenceable_step_names.insert(step.name.as_str());
-        if let Some(ref children) = step.parallel_children {
+        if let Some(fanout) = step.fanout() {
+            let children = &fanout.parallel_children;
             for child in children {
                 referenceable_step_names.insert(child.name.as_str());
             }
@@ -565,7 +554,7 @@ fn diagnose_workflow(
             ) {
                 for from in &collect.from {
                     if let Some(source_step) = wf.nodes.iter().find(|s| s.name == *from) {
-                        if source_step.transition_rules.is_empty() && !source_step.is_parallel() {
+                        if source_step.transition_rules.is_empty() && !source_step.is_fanout() {
                             let item = DiagnosticItem {
                                 severity: Severity::Warning,
                                 message: format!(
@@ -611,29 +600,25 @@ fn diagnose_workflow(
             .check_step(
                 &step.name,
                 &FacetRefs {
-                    policy: step.policy.as_deref(),
-                    knowledge: step.knowledge.as_deref(),
-                    instruction: step.instruction.as_deref(),
+                    policy: step
+                        .session()
+                        .and_then(|session| session.facets.policy.as_deref()),
+                    knowledge: step
+                        .session()
+                        .and_then(|session| session.facets.knowledge.as_deref()),
+                    instruction: step
+                        .session()
+                        .and_then(|session| session.facets.instruction.as_deref()),
                     output_contract: step.output_contract.as_deref(),
                     input_contracts: step.input_contracts.as_deref(),
                 },
             );
 
-        // ファセット未設定チェック（inline_prompt があればOK）。
-        // bash node は command を持ち facet/inline_prompt は不要なため除外
-        // （validation.rs::validate_node_type_fields と整合）。
-        if !step.is_parallel()
-            && step.node_type != NodeType::Bash
-            && step.collect.is_none()
-            && !step.has_facet_refs()
-            && step.inline_prompt.is_none()
-        {
+        // command/fanout は実行構造を kind block に持つため facet は不要。
+        if step.is_session() && step.collect.is_none() && !step.has_facet_refs() {
             let item = DiagnosticItem {
                 severity: Severity::Error,
-                message: format!(
-                    "ステップ '{}' にはファセット参照またはinline_promptが必要です",
-                    step.name
-                ),
+                message: format!("ステップ '{}' にはファセット参照が必要です", step.name),
                 workflow_name: Some(name.clone()),
                 step_name: Some(step.name.clone()),
                 facet_key: None,
@@ -644,7 +629,8 @@ fn diagnose_workflow(
         }
 
         // parallel block の子step 診断
-        if let Some(ref children) = step.parallel_children {
+        if let Some(fanout) = step.fanout() {
+            let children = &fanout.parallel_children;
             let child_names: HashSet<&str> = children.iter().map(|c| c.name.as_str()).collect();
             for child in children {
                 FacetRefCheckContext::new(
@@ -657,9 +643,9 @@ fn diagnose_workflow(
                 .check_step(
                     &child.name,
                     &FacetRefs {
-                        policy: child.policy.as_deref(),
-                        knowledge: child.knowledge.as_deref(),
-                        instruction: child.instruction.as_deref(),
+                        policy: child.facets.policy.as_deref(),
+                        knowledge: child.facets.knowledge.as_deref(),
+                        instruction: child.facets.instruction.as_deref(),
                         output_contract: child.output_contract.as_deref(),
                         input_contracts: child.input_contracts.as_deref(),
                     },
@@ -740,7 +726,8 @@ fn diagnose_workflow(
 
         // preceding_step_names を更新（validation.rs と同じロジック）
         preceding_step_names.insert(&step.name);
-        if let Some(ref children) = step.parallel_children {
+        if let Some(fanout) = step.fanout() {
+            let children = &fanout.parallel_children;
             for child in children {
                 preceding_step_names.insert(&child.name);
             }
@@ -897,16 +884,55 @@ fn add_diagnostic(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
-        ChildNodeDefinition, CollectConfig, ReduceStrategy, TransitionRule, Workflow,
+        CollectConfig, CommandSpec, FacetRefs, FanoutSpec, InterimChild, NodeKind, ReduceStrategy,
+        SessionSpec, TransitionRule, Workflow,
     };
     use std::fs;
     use tempfile::TempDir;
 
     fn make_step(name: &str, instruction: Option<&str>) -> NodeDefinition {
+        let facets = FacetRefs {
+            instruction: instruction.map(str::to_string),
+            ..Default::default()
+        };
         NodeDefinition {
             name: name.to_string(),
-            node_type: NodeType::Agent,
-            instruction: instruction.map(|s| s.to_string()),
+            kind: NodeKind::Session(SessionSpec {
+                facets,
+                ..Default::default()
+            }),
+            ..NodeDefinition::default()
+        }
+    }
+
+    fn make_child(name: &str, instruction: Option<&str>) -> InterimChild {
+        InterimChild {
+            name: name.to_string(),
+            facets: FacetRefs {
+                instruction: instruction.map(str::to_string),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn make_fanout(name: &str, children: Vec<InterimChild>) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Fanout(FanoutSpec {
+                parallel_children: children,
+                aggregate: None,
+            }),
+            ..NodeDefinition::default()
+        }
+    }
+
+    fn make_command(name: &str, command: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Command(CommandSpec {
+                command: command.to_string(),
+            }),
             ..NodeDefinition::default()
         }
     }
@@ -1040,17 +1066,18 @@ mod tests {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                node_type: NodeType::Parallel,
-                parallel_children: Some(vec![ChildNodeDefinition {
+            nodes: vec![make_fanout(
+                "parent",
+                vec![InterimChild {
                     name: "child1".to_string(),
-                    node_type: NodeType::Agent,
-                    instruction: Some("impl".to_string()),
+                    facets: FacetRefs {
+                        instruction: Some("impl".to_string()),
+                        ..Default::default()
+                    },
                     input_contracts: Some(vec!["nonexistent-contract".to_string()]),
-                    ..ChildNodeDefinition::default()
-                }]),
-                ..make_step("parent", None)
-            }],
+                    ..Default::default()
+                }],
+            )],
         };
         save_workflow_yaml(wf_dir, &wf);
 
@@ -1257,34 +1284,11 @@ mod tests {
             && i.message.contains("未定義のテンプレート変数")));
     }
 
-    #[test]
-    fn diagnose_inline_prompt_no_facet_error() {
-        let tmp = TempDir::new().unwrap();
-        let wf_dir = tmp.path();
-
-        let wf = Workflow {
-            variables: Default::default(),
-            name: "test-wf".to_string(),
-            description: "test".to_string(),
-            builtin: false,
-            nodes: vec![NodeDefinition {
-                inline_prompt: Some("Do analysis".to_string()),
-                ..make_step("step1", None)
-            }],
-        };
-        save_workflow_yaml(wf_dir, &wf);
-
-        let report = diagnose_all(wf_dir, wf_dir);
-        assert!(!report.items.iter().any(|i| i.severity == Severity::Error
-            && i.step_name.as_deref() == Some("step1")
-            && i.message.contains("ファセット参照")));
-    }
-
-    /// [02] schema 境界: `type: bash` node は command を持ち facet/inline_prompt は不要。
-    /// diagnose_all 経路で valid な bash node が誤って「ファセット参照またはinline_promptが必要」
+    /// command node は command を持ち facet は不要。
+    /// diagnose_all 経路で valid な command node が誤って「ファセット参照が必要」
     /// エラーにならないことを担保する（validation.rs と同じ整合性が diagnostics 側にも必要）。
     #[test]
-    fn diagnose_bash_node_with_command_has_no_facet_required_error() {
+    fn diagnose_command_node_with_command_has_no_facet_required_error() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
 
@@ -1293,12 +1297,7 @@ mod tests {
             name: "bash-wf".to_string(),
             description: "bash test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "build".to_string(),
-                node_type: NodeType::Bash,
-                command: Some("cargo build".to_string()),
-                ..NodeDefinition::default()
-            }],
+            nodes: vec![make_command("build", "cargo build")],
         };
         save_workflow_yaml(wf_dir, &wf);
 
@@ -1306,16 +1305,15 @@ mod tests {
         assert!(
             !report.items.iter().any(|i| i.severity == Severity::Error
                 && i.step_name.as_deref() == Some("build")
-                && i.message.contains("ファセット参照またはinline_prompt")),
-            "bash node with command must not trigger facet/inline_prompt requirement error: {:?}",
+                && i.message.contains("ファセット参照")),
+            "command node with command must not trigger facet requirement error: {:?}",
             report.items
         );
     }
 
-    /// bash node の command 欠落時は validation 経路で command field のエラーになる
-    /// （diagnose_all は load 経路全体を呼ぶため、command 欠落は load 失敗として現れる）。
+    /// command node の command が空なら validation 経路で command field のエラーになる。
     #[test]
-    fn diagnose_bash_node_without_command_reports_command_error() {
+    fn diagnose_command_node_with_empty_command_reports_command_error() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
 
@@ -1324,12 +1322,7 @@ mod tests {
             name: "bash-wf".to_string(),
             description: "bash test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                name: "build".to_string(),
-                node_type: NodeType::Bash,
-                command: None,
-                ..NodeDefinition::default()
-            }],
+            nodes: vec![make_command("build", "   ")],
         };
         save_workflow_yaml(wf_dir, &wf);
 
@@ -1460,7 +1453,7 @@ mod tests {
         );
     }
 
-    // [02]: 新 schema では node_type が型レベルで必須となるため、旧テスト
+    // [02]: 新 schema では kind block が型レベルで必須となるため、旧テスト
     // `diagnose_missing_mode_via_validation` は YAML deserialize 段階で吸収されるため削除した。
 
     #[test]
@@ -1487,44 +1480,6 @@ mod tests {
                 && i.workflow_name.as_deref() == Some("dup-step")
                 && i.message.contains("重複")),
             "Expected duplicate step error, got: {:?}",
-            report.items
-        );
-    }
-
-    #[test]
-    fn diagnose_aggregate_without_parallel_via_validation() {
-        use crate::adaptor::gateway::workflow::schema::ParallelAggregate;
-
-        let tmp = TempDir::new().unwrap();
-        let wf_dir = tmp.path();
-        setup_facet(wf_dir, "instructions", "task", "content");
-
-        let wf = Workflow {
-            variables: Default::default(),
-            name: "agg-no-par".to_string(),
-            description: "test".to_string(),
-            builtin: false,
-            nodes: vec![
-                NodeDefinition {
-                    aggregate: Some(ParallelAggregate {
-                        all_match: Some("pass".to_string()),
-                        any_match: None,
-                        then: "step-2".to_string(),
-                        r#else: "step-2".to_string(),
-                    }),
-                    ..make_step("step-1", Some("task"))
-                },
-                make_step("step-2", Some("task")),
-            ],
-        };
-        save_workflow_yaml(wf_dir, &wf);
-
-        let report = diagnose_all(wf_dir, wf_dir);
-        assert!(
-            report.items.iter().any(|i| i.severity == Severity::Error
-                && i.workflow_name.as_deref() == Some("agg-no-par")
-                && i.message.contains("aggregate")),
-            "Expected aggregate-without-parallel error, got: {:?}",
             report.items
         );
     }
@@ -1601,8 +1556,6 @@ mod tests {
 
     #[test]
     fn diagnose_parallel_child_backward_reference_passes() {
-        use crate::adaptor::gateway::workflow::schema::{ChildNodeDefinition, NodeDefinition};
-
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "task", "content");
@@ -1614,15 +1567,18 @@ mod tests {
             description: "test".to_string(),
             builtin: false,
             nodes: vec![
-                NodeDefinition {
-                    parallel_children: Some(vec![ChildNodeDefinition {
+                make_fanout(
+                    "par",
+                    vec![InterimChild {
                         name: "child1".to_string(),
-                        instruction: Some("task".to_string()),
+                        facets: FacetRefs {
+                            instruction: Some("task".to_string()),
+                            ..Default::default()
+                        },
                         pass_output_from: Some(vec!["report".to_string()]),
-                        ..ChildNodeDefinition::default()
-                    }]),
-                    ..make_step("par", None)
-                },
+                        ..Default::default()
+                    }],
+                ),
                 make_step("report", Some("task")),
             ],
         };
@@ -1640,8 +1596,6 @@ mod tests {
 
     #[test]
     fn diagnose_parallel_child_sibling_ref() {
-        use crate::adaptor::gateway::workflow::schema::{ChildNodeDefinition, NodeDefinition};
-
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "task", "content");
@@ -1652,22 +1606,21 @@ mod tests {
             name: "par-sibling".to_string(),
             description: "test".to_string(),
             builtin: false,
-            nodes: vec![NodeDefinition {
-                parallel_children: Some(vec![
-                    ChildNodeDefinition {
-                        name: "child1".to_string(),
-                        instruction: Some("task".to_string()),
-                        ..ChildNodeDefinition::default()
-                    },
-                    ChildNodeDefinition {
+            nodes: vec![make_fanout(
+                "par",
+                vec![
+                    make_child("child1", Some("task")),
+                    InterimChild {
                         name: "child2".to_string(),
-                        instruction: Some("task".to_string()),
+                        facets: FacetRefs {
+                            instruction: Some("task".to_string()),
+                            ..Default::default()
+                        },
                         pass_output_from: Some(vec!["child1".to_string()]),
-                        ..ChildNodeDefinition::default()
+                        ..Default::default()
                     },
-                ]),
-                ..make_step("par", None)
-            }],
+                ],
+            )],
         };
         save_workflow_yaml(wf_dir, &wf);
 

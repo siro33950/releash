@@ -19,10 +19,16 @@ function makeWorkflow(overrides?: { input_contracts?: string[] }): Workflow {
 		nodes: [
 			{
 				name: "implement",
-				type: "agent",
-				policy: "coding",
-				knowledge: "architecture",
-				instruction: "implement",
+				kind: "session",
+				session: {
+					gate: "auto",
+					permission: "edit",
+					facets: {
+						policy: "coding",
+						knowledge: "architecture",
+						instruction: "implement",
+					},
+				},
 				output_contract: "plan-doc",
 				input_contracts: overrides?.input_contracts,
 				rules: [],

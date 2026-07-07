@@ -19,6 +19,17 @@ const EMPTY_REPORT = {
 	facet_usage: {},
 };
 
+const SESSION_NODE = {
+	name: "step-1",
+	kind: "session" as const,
+	session: {
+		gate: "auto" as const,
+		permission: "edit" as const,
+		facets: { instruction: "implement" },
+	},
+	rules: [],
+};
+
 function createMockAutomation(
 	overrides: Partial<ReturnType<typeof useAutomation>> = {},
 ): ReturnType<typeof useAutomation> {
@@ -30,6 +41,7 @@ function createMockAutomation(
 		error: null,
 		setError: vi.fn(),
 		selectedWorkflow: null,
+		selectedWorkflowSource: null,
 		selectedFacetContent: null,
 		selectedFacetKey: null,
 		selectedFacetKind: null,
@@ -37,7 +49,15 @@ function createMockAutomation(
 		fetchFacets: vi.fn(),
 		refreshDiagnostics: vi.fn(),
 		selectWorkflow: vi.fn(),
-		saveWorkflow: vi.fn().mockResolvedValue({ ok: true }),
+		saveWorkflowSource: vi.fn().mockResolvedValue({
+			ok: true,
+			workflow: {
+				name: "saved-wf",
+				description: "",
+				builtin: false,
+				nodes: [SESSION_NODE],
+			},
+		}),
 		deleteWorkflow: vi.fn(),
 		duplicateWorkflow: vi.fn().mockResolvedValue({ ok: true }),
 		openWorkflowInEditor: vi.fn(),
@@ -47,15 +67,10 @@ function createMockAutomation(
 		duplicateFacet: vi.fn().mockResolvedValue({ ok: true }),
 		openFacetInEditor: vi.fn(),
 		renderFacetPreview: vi.fn().mockResolvedValue("preview"),
-		loadAllFacetKeys: vi.fn().mockResolvedValue({
-			policy: [],
-			knowledge: [],
-			instruction: [],
-			output_contract: [],
-		}),
 		externalChangeDetected: false,
 		clearExternalChange: vi.fn(),
 		setSelectedWorkflow: vi.fn(),
+		setSelectedWorkflowSource: vi.fn(),
 		setSelectedFacetContent: vi.fn(),
 		setSelectedFacetKey: vi.fn(),
 		setSelectedFacetKind: vi.fn(),
@@ -133,6 +148,43 @@ describe("AutomationSection", () => {
 		expect(screen.getByTitle("Open in editor")).toBeInTheDocument();
 	});
 
+	it("creates workflow from minimal source without node schema", async () => {
+		const user = userEvent.setup();
+		const saveWorkflowSource = vi.fn().mockResolvedValue({
+			ok: true,
+			workflow: {
+				name: "new-wf",
+				description: "",
+				builtin: false,
+				nodes: [],
+			},
+		});
+		const selectWorkflow = vi.fn();
+		const automation = createMockAutomation({
+			saveWorkflowSource,
+			selectWorkflow,
+		});
+
+		render(<AutomationSection automation={automation} />);
+
+		await user.click(screen.getByRole("button"));
+		await user.type(screen.getByPlaceholderText("my-workflow"), "new-wf");
+		await user.click(screen.getByRole("button", { name: "Create" }));
+
+		await waitFor(() => {
+			expect(saveWorkflowSource).toHaveBeenCalledWith(
+				'name: new-wf\ndescription: ""\n',
+			);
+		});
+		const source = saveWorkflowSource.mock.calls[0][0];
+		expect(source).not.toContain("nodes:");
+		expect(source).not.toContain("session:");
+		expect(source).not.toContain("permission:");
+		expect(source).not.toContain("facets:");
+		expect(source).not.toContain("instruction:");
+		expect(selectWorkflow).toHaveBeenCalledWith("new-wf");
+	});
+
 	it("switches to Facets tab and shows sub-tabs", async () => {
 		const user = userEvent.setup();
 		const automation = createMockAutomation();
@@ -180,7 +232,7 @@ describe("AutomationSection", () => {
 				name: "my-custom",
 				description: "A custom workflow",
 				builtin: false,
-				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
+				nodes: [SESSION_NODE],
 			},
 		});
 		render(<AutomationSection automation={automation} />);
@@ -193,7 +245,7 @@ describe("AutomationSection", () => {
 				name: "builtin-workflow",
 				description: "Builtin",
 				builtin: true,
-				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
+				nodes: [SESSION_NODE],
 			},
 		});
 		render(<AutomationSection automation={automation} />);
@@ -254,26 +306,26 @@ describe("AutomationSection", () => {
 		confirmSpy.mockRestore();
 	});
 
-	it("shows external change warning when editing and change detected", async () => {
+	it("shows external change warning when editing a facet and change detected", async () => {
 		const user = userEvent.setup();
 		const automation = createMockAutomation({
-			selectedWorkflow: {
-				name: "my-custom",
-				description: "A custom workflow",
-				builtin: false,
-				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
-			},
+			selectedFacetContent: "# My Policy\n\nContent",
+			selectedFacetKey: "my-policy",
+			selectedFacetKind: "policy",
+			facets: [
+				{
+					key: "my-policy",
+					kind: "policies",
+					description: "Test",
+					builtin: false,
+				},
+			],
 			externalChangeDetected: true,
-			loadAllFacetKeys: vi.fn().mockResolvedValue({
-				policy: [],
-				knowledge: [],
-				instruction: [],
-				output_contract: [],
-			}),
 		});
 
 		render(<AutomationSection automation={automation} />);
 
+		await user.click(screen.getByText("Facets"));
 		await user.click(screen.getByText("Edit"));
 
 		await waitFor(() => {
@@ -289,24 +341,24 @@ describe("AutomationSection", () => {
 		const user = userEvent.setup();
 		const clearExternalChange = vi.fn();
 		const automation = createMockAutomation({
-			selectedWorkflow: {
-				name: "my-custom",
-				description: "A custom workflow",
-				builtin: false,
-				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
-			},
+			selectedFacetContent: "# My Policy\n\nContent",
+			selectedFacetKey: "my-policy",
+			selectedFacetKind: "policy",
+			facets: [
+				{
+					key: "my-policy",
+					kind: "policies",
+					description: "Test",
+					builtin: false,
+				},
+			],
 			externalChangeDetected: true,
 			clearExternalChange,
-			loadAllFacetKeys: vi.fn().mockResolvedValue({
-				policy: [],
-				knowledge: [],
-				instruction: [],
-				output_contract: [],
-			}),
 		});
 
 		render(<AutomationSection automation={automation} />);
 
+		await user.click(screen.getByText("Facets"));
 		await user.click(screen.getByText("Edit"));
 
 		await waitFor(() => {
@@ -437,89 +489,30 @@ describe("AutomationSection", () => {
 		});
 	});
 
-	it("workflow editor can add a step", async () => {
+	it("workflow detail Edit opens workflow in external editor", async () => {
 		const user = userEvent.setup();
+		const openWorkflowInEditor = vi.fn();
+		const saveWorkflowSource = vi.fn();
 		const automation = createMockAutomation({
 			selectedWorkflow: {
 				name: "test-wf",
 				description: "Test",
 				builtin: false,
-				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
+				nodes: [SESSION_NODE],
 			},
-			loadAllFacetKeys: vi.fn().mockResolvedValue({
-				policy: [],
-				knowledge: [],
-				instruction: [],
-				output_contract: [],
-			}),
+			openWorkflowInEditor,
+			saveWorkflowSource,
 		});
 
 		render(<AutomationSection automation={automation} />);
 
 		await user.click(screen.getByText("Edit"));
 
-		await waitFor(() => {
-			expect(screen.getByText("Steps (1)")).toBeInTheDocument();
-		});
-
-		const stepsHeader = screen.getByText("Steps (1)");
-		const addButton = stepsHeader.parentElement?.querySelector(
-			"button",
-		) as HTMLElement;
-		await user.click(addButton);
-
-		await waitFor(() => {
-			expect(screen.getByText("Steps (2)")).toBeInTheDocument();
-		});
-		expect(screen.getByText("step-2")).toBeInTheDocument();
-	});
-
-	it("step editor can change mode", async () => {
-		const user = userEvent.setup();
-		const automation = createMockAutomation({
-			selectedWorkflow: {
-				name: "test-wf",
-				description: "Test",
-				builtin: false,
-				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
-			},
-			loadAllFacetKeys: vi.fn().mockResolvedValue({
-				policy: [],
-				knowledge: [],
-				instruction: [],
-				output_contract: [],
-			}),
-		});
-
-		render(<AutomationSection automation={automation} />);
-
-		await user.click(screen.getByText("Edit"));
-
-		await waitFor(() => {
-			expect(screen.getByText("step-1")).toBeInTheDocument();
-		});
-
-		await user.click(screen.getByText("step-1"));
-
-		await waitFor(() => {
-			expect(screen.getByText("Type")).toBeInTheDocument();
-		});
-
-		const modeTrigger = screen.getByText("Agent").closest("button");
-		if (!modeTrigger) throw new Error("Type trigger button not found");
-		await user.click(modeTrigger);
-
-		await waitFor(() => {
-			expect(
-				screen.getByRole("option", { name: "Approval" }),
-			).toBeInTheDocument();
-		});
-
-		await user.click(screen.getByRole("option", { name: "Approval" }));
-
-		await waitFor(() => {
-			expect(screen.getByText("approval")).toBeInTheDocument();
-		});
+		expect(openWorkflowInEditor).toHaveBeenCalledWith("test-wf");
+		expect(saveWorkflowSource).not.toHaveBeenCalled();
+		expect(
+			screen.queryByRole("textbox", { name: "Workflow YAML" }),
+		).not.toBeInTheDocument();
 	});
 
 	it("workflow detail shows step details when expanded", async () => {
@@ -532,29 +525,33 @@ describe("AutomationSection", () => {
 				nodes: [
 					{
 						name: "complex-step",
-						type: "agent" as const,
-						policy: "coding-policy",
-						knowledge: "project-docs",
-						instruction: "do-thing",
+						kind: "fanout" as const,
+						fanout: {
+							parallel_children: [
+								{
+									name: "child-1",
+									facets: { instruction: "child-implement" },
+								},
+								{
+									name: "child-2",
+									facets: { instruction: "child-review" },
+								},
+							],
+							aggregate: {
+								all_match: "pass",
+								// biome-ignore lint/suspicious/noThenProperty: AggregateConfig uses then/else fields
+								then: "step-done",
+								else: "step-fail",
+							},
+						},
 						output_contract: "json-schema",
 						rules: [{ match: "pass", next: "next-step" }],
 						cycle_guard: { max_iterations: 3 },
 						pass_previous_response: true,
 						pass_output_from: ["step-0"],
-						inline_prompt: "Run the tests",
 						collect: {
 							from: ["step-a", "step-b"],
 							reduce: "concat" as const,
-						},
-						parallel_children: [
-							{ name: "child-1", type: "agent" as const },
-							{ name: "child-2", type: "approval" as const },
-						],
-						aggregate: {
-							all_match: "pass",
-							// biome-ignore lint/suspicious/noThenProperty: AggregateConfig uses then/else fields
-							then: "step-done",
-							else: "step-fail",
 						},
 					},
 				],
@@ -569,14 +566,12 @@ describe("AutomationSection", () => {
 			expect(screen.getByText("Facet References")).toBeInTheDocument();
 		});
 		expect(screen.getByText("Transition Rules")).toBeInTheDocument();
-		expect(screen.getByText("Inline Prompt")).toBeInTheDocument();
-		expect(screen.getByText("Run the tests")).toBeInTheDocument();
 		expect(
 			screen.getByText("Cycle Guard: max 3 iterations"),
 		).toBeInTheDocument();
 		expect(screen.getByText("Pass previous response: yes")).toBeInTheDocument();
 		expect(screen.getByText(/Pass output from: step-0/)).toBeInTheDocument();
-		expect(screen.getByText("Parallel Steps")).toBeInTheDocument();
+		expect(screen.getByText("Fanout Children")).toBeInTheDocument();
 		expect(screen.getByText(/child-1/)).toBeInTheDocument();
 		expect(screen.getByText(/child-2/)).toBeInTheDocument();
 	});
@@ -587,7 +582,7 @@ describe("AutomationSection", () => {
 				name: "diag-wf",
 				description: "Workflow with diagnostics",
 				builtin: false,
-				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
+				nodes: [SESSION_NODE],
 			},
 			report: {
 				...EMPTY_REPORT,
