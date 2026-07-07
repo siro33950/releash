@@ -92,7 +92,7 @@ pub enum ValidationError {
     MissingPermissionMode {
         step: String,
     },
-    /// bash 種別 node の `command` が空文字
+    /// command 種別 node の `command` が空文字
     EmptyCommand {
         step: String,
     },
@@ -243,7 +243,7 @@ impl fmt::Display for ValidationError {
             Self::EmptyCommand { step } => {
                 write!(
                     f,
-                    "bashステップ '{step}' の command は空にできません"
+                    "commandステップ '{step}' の command は空にできません"
                 )
             }
             Self::DisallowedFieldForKind {

@@ -651,6 +651,7 @@ mod tests {
         assert!(fixture.service.get_workflow("wf").unwrap().is_some());
         assert!(fixture.service.get_workflow("missing").unwrap().is_none());
         assert!(fixture.service.get_workflow("bad name!").is_err());
+        assert!(fixture.service.get_workflow_source("bad name!").is_err());
     }
 
     #[test]

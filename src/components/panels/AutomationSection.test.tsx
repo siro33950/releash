@@ -1,24 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { useAutomation } from "@/hooks/useAutomation";
 import { AutomationSection } from "./AutomationSection";
-
-vi.mock("@monaco-editor/react", () => ({
-	default: ({
-		value,
-		onChange,
-	}: {
-		value?: string;
-		onChange?: (value?: string) => void;
-	}) => (
-		<textarea
-			aria-label="Workflow YAML"
-			value={value ?? ""}
-			onChange={(event) => onChange?.(event.currentTarget.value)}
-		/>
-	),
-}));
 
 // Radix UI pointer event polyfills
 beforeAll(() => {
@@ -164,6 +148,43 @@ describe("AutomationSection", () => {
 		expect(screen.getByTitle("Open in editor")).toBeInTheDocument();
 	});
 
+	it("creates workflow from minimal source without node schema", async () => {
+		const user = userEvent.setup();
+		const saveWorkflowSource = vi.fn().mockResolvedValue({
+			ok: true,
+			workflow: {
+				name: "new-wf",
+				description: "",
+				builtin: false,
+				nodes: [],
+			},
+		});
+		const selectWorkflow = vi.fn();
+		const automation = createMockAutomation({
+			saveWorkflowSource,
+			selectWorkflow,
+		});
+
+		render(<AutomationSection automation={automation} />);
+
+		await user.click(screen.getByRole("button"));
+		await user.type(screen.getByPlaceholderText("my-workflow"), "new-wf");
+		await user.click(screen.getByRole("button", { name: "Create" }));
+
+		await waitFor(() => {
+			expect(saveWorkflowSource).toHaveBeenCalledWith(
+				'name: new-wf\ndescription: ""\n',
+			);
+		});
+		const source = saveWorkflowSource.mock.calls[0][0];
+		expect(source).not.toContain("nodes:");
+		expect(source).not.toContain("session:");
+		expect(source).not.toContain("permission:");
+		expect(source).not.toContain("facets:");
+		expect(source).not.toContain("instruction:");
+		expect(selectWorkflow).toHaveBeenCalledWith("new-wf");
+	});
+
 	it("switches to Facets tab and shows sub-tabs", async () => {
 		const user = userEvent.setup();
 		const automation = createMockAutomation();
@@ -285,21 +306,26 @@ describe("AutomationSection", () => {
 		confirmSpy.mockRestore();
 	});
 
-	it("shows external change warning when editing and change detected", async () => {
+	it("shows external change warning when editing a facet and change detected", async () => {
 		const user = userEvent.setup();
 		const automation = createMockAutomation({
-			selectedWorkflow: {
-				name: "my-custom",
-				description: "A custom workflow",
-				builtin: false,
-				nodes: [SESSION_NODE],
-			},
+			selectedFacetContent: "# My Policy\n\nContent",
+			selectedFacetKey: "my-policy",
+			selectedFacetKind: "policy",
+			facets: [
+				{
+					key: "my-policy",
+					kind: "policies",
+					description: "Test",
+					builtin: false,
+				},
+			],
 			externalChangeDetected: true,
-			selectedWorkflowSource: "name: my-custom\nnodes: []\n",
 		});
 
 		render(<AutomationSection automation={automation} />);
 
+		await user.click(screen.getByText("Facets"));
 		await user.click(screen.getByText("Edit"));
 
 		await waitFor(() => {
@@ -315,19 +341,24 @@ describe("AutomationSection", () => {
 		const user = userEvent.setup();
 		const clearExternalChange = vi.fn();
 		const automation = createMockAutomation({
-			selectedWorkflow: {
-				name: "my-custom",
-				description: "A custom workflow",
-				builtin: false,
-				nodes: [SESSION_NODE],
-			},
+			selectedFacetContent: "# My Policy\n\nContent",
+			selectedFacetKey: "my-policy",
+			selectedFacetKind: "policy",
+			facets: [
+				{
+					key: "my-policy",
+					kind: "policies",
+					description: "Test",
+					builtin: false,
+				},
+			],
 			externalChangeDetected: true,
 			clearExternalChange,
-			selectedWorkflowSource: "name: my-custom\nnodes: []\n",
 		});
 
 		render(<AutomationSection automation={automation} />);
 
+		await user.click(screen.getByText("Facets"));
 		await user.click(screen.getByText("Edit"));
 
 		await waitFor(() => {
@@ -458,17 +489,10 @@ describe("AutomationSection", () => {
 		});
 	});
 
-	it("workflow editor saves YAML source", async () => {
+	it("workflow detail Edit opens workflow in external editor", async () => {
 		const user = userEvent.setup();
-		const saveWorkflowSource = vi.fn().mockResolvedValue({
-			ok: true,
-			workflow: {
-				name: "test-wf",
-				description: "Test",
-				builtin: false,
-				nodes: [SESSION_NODE],
-			},
-		});
+		const openWorkflowInEditor = vi.fn();
+		const saveWorkflowSource = vi.fn();
 		const automation = createMockAutomation({
 			selectedWorkflow: {
 				name: "test-wf",
@@ -476,8 +500,7 @@ describe("AutomationSection", () => {
 				builtin: false,
 				nodes: [SESSION_NODE],
 			},
-			selectedWorkflowSource:
-				"name: test-wf\ndescription: Test\nnodes:\n  - name: step-1\n    session:\n      permission: edit\n      facets:\n        instruction: implement\n",
+			openWorkflowInEditor,
 			saveWorkflowSource,
 		});
 
@@ -485,27 +508,11 @@ describe("AutomationSection", () => {
 
 		await user.click(screen.getByText("Edit"));
 
-		await waitFor(() => {
-			expect(
-				screen.getByRole("textbox", { name: "Workflow YAML" }),
-			).toBeInTheDocument();
-		});
-
-		const editor = screen.getByRole("textbox", {
-			name: "Workflow YAML",
-		});
-		await user.clear(editor);
-		fireEvent.change(editor, {
-			target: { value: "name: test-wf\nnodes: []\n" },
-		});
-		await user.click(screen.getByText("Save"));
-
-		await waitFor(() => {
-			expect(saveWorkflowSource).toHaveBeenCalledWith(
-				"name: test-wf\nnodes: []\n",
-				"test-wf",
-			);
-		});
+		expect(openWorkflowInEditor).toHaveBeenCalledWith("test-wf");
+		expect(saveWorkflowSource).not.toHaveBeenCalled();
+		expect(
+			screen.queryByRole("textbox", { name: "Workflow YAML" }),
+		).not.toBeInTheDocument();
 	});
 
 	it("workflow detail shows step details when expanded", async () => {

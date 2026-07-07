@@ -22,7 +22,6 @@
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.110.0",
 		"@lobehub/icons-static-svg": "^1.91.0",
-		"@monaco-editor/react": "4.8.0-rc.3",
 		"@react-symbols/icons": "^1.4.1",
 		"@shikijs/langs": "^4.3.1",
 		"@shikijs/themes": "^4.3.1",
