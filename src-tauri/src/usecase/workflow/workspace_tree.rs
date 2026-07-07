@@ -10,7 +10,7 @@ use crate::domain::workflow::status_aggregation::{
 use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::{
     domain::workflow::{
-        NodeType, RunId, RunListFilter, RunStatus, WorkflowError, WorkflowRunManualArchiveRecord,
+        RunId, RunListFilter, RunStatus, WorkflowError, WorkflowRunManualArchiveRecord,
         WorkflowRunSummary, WorkflowStateSnapshot, WorkflowStepContext,
         WORKFLOW_ARCHIVE_REASON_MANUAL,
     },
@@ -672,17 +672,8 @@ fn step_type_for_group(step_name: &str, state: Option<&WorkflowStateSnapshot>) -
                 .iter()
                 .find(|node| node.name == step_name)
         })
-        .map(|node| node_type_label(node.node_type))
-        .unwrap_or("agent")
-}
-
-fn node_type_label(node_type: NodeType) -> &'static str {
-    match node_type {
-        NodeType::Agent => "agent",
-        NodeType::Bash => "bash",
-        NodeType::Approval => "approval",
-        NodeType::Parallel => "parallel",
-    }
+        .map(|node| node.kind_name().as_str())
+        .unwrap_or("session")
 }
 
 fn step_can_reject(
@@ -774,10 +765,10 @@ fn workflow_status_for_steps(
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ApprovalOperations, ChildOutputSnapshot, NodeDefinition, NodeType, ParallelStepState,
-        StepHistoryEntry, TriggerSource, WorkflowDefinition, WorkflowExecutionState,
-        STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_RUNNING,
-        STEP_STATE_WAITING_APPROVAL,
+        ApprovalOperations, ChildOutputSnapshot, CommandSpec, FacetRefs, FanoutSpec,
+        NodeDefinition, NodeKind, ParallelStepState, SessionGate, SessionSpec, StepHistoryEntry,
+        TriggerSource, WorkflowDefinition, WorkflowExecutionState, STEP_STATE_ABORTED,
+        STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
     };
 
     fn session(id: &str, title: &str, workflow_step_session: bool) -> WorkspaceSessionInput {
@@ -789,6 +780,39 @@ mod tests {
             first_message: title.to_string(),
             workflow_step_session,
             workflow_step_context: None,
+        }
+    }
+
+    fn session_node(name: &str, gate: SessionGate) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Session(SessionSpec {
+                gate,
+                facets: FacetRefs {
+                    instruction: Some("implement".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn command_node(name: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Command(CommandSpec {
+                command: "cargo test".to_string(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn fanout_node(name: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Fanout(FanoutSpec::default()),
+            ..Default::default()
         }
     }
 
@@ -1035,11 +1059,7 @@ mod tests {
         snapshot.current_session_id = None;
         snapshot.step_history = Vec::new();
         snapshot.active_parallel_steps = Vec::new();
-        snapshot.workflow_definition.nodes = vec![NodeDefinition {
-            name: "parallel-review".to_string(),
-            node_type: NodeType::Parallel,
-            ..Default::default()
-        }];
+        snapshot.workflow_definition.nodes = vec![fanout_node("parallel-review")];
 
         let nodes = project_workspace_tree_nodes(
             vec![
@@ -1067,7 +1087,7 @@ mod tests {
         assert_eq!(step.id, "run-1:parallel-review:2");
         assert_eq!(step.title, "parallel-review");
         assert_eq!(step.run_index, Some(2));
-        assert_eq!(step.step_type, "parallel");
+        assert_eq!(step.step_type, "fanout");
         assert_eq!(
             step.sessions
                 .iter()
@@ -1280,11 +1300,7 @@ mod tests {
             STEP_STATE_WAITING_APPROVAL.to_string(),
         )]);
         snapshot.approval_operations = Some(ApprovalOperations { can_reject: true });
-        snapshot.workflow_definition.nodes = vec![NodeDefinition {
-            name: "review".to_string(),
-            node_type: NodeType::Approval,
-            ..Default::default()
-        }];
+        snapshot.workflow_definition.nodes = vec![session_node("review", SessionGate::Approval)];
         snapshot.step_history = vec![crate::domain::workflow::StepHistoryEntry {
             step_name: "review".to_string(),
             completed_at: 1.0,
@@ -1332,11 +1348,11 @@ mod tests {
             .expect("current step");
 
         assert_eq!(previous.status, STEP_STATE_COMPLETED);
-        assert_eq!(previous.step_type, "approval");
+        assert_eq!(previous.step_type, "session");
         assert_eq!(previous.can_reject, None);
         assert_eq!(previous.sessions[0].id, "review-1");
         assert_eq!(current.status, "waiting");
-        assert_eq!(current.step_type, "approval");
+        assert_eq!(current.step_type, "session");
         assert_eq!(current.can_reject, Some(true));
         assert_eq!(current.sessions[0].id, "review-2");
     }
@@ -1360,21 +1376,9 @@ mod tests {
         }];
         snapshot.active_parallel_steps = Vec::new();
         snapshot.workflow_definition.nodes = vec![
-            NodeDefinition {
-                name: "script".to_string(),
-                node_type: NodeType::Bash,
-                ..Default::default()
-            },
-            NodeDefinition {
-                name: "lint".to_string(),
-                node_type: NodeType::Bash,
-                ..Default::default()
-            },
-            NodeDefinition {
-                name: "parallel-review".to_string(),
-                node_type: NodeType::Parallel,
-                ..Default::default()
-            },
+            command_node("script"),
+            command_node("lint"),
+            fanout_node("parallel-review"),
         ];
 
         let archives = Vec::new();
@@ -1391,13 +1395,13 @@ mod tests {
         assert!(workflow.steps.iter().any(|step| {
             step.title == "script"
                 && step.status == STEP_STATE_RUNNING
-                && step.step_type == "bash"
+                && step.step_type == "command"
                 && step.sessions.is_empty()
         }));
         assert!(workflow.steps.iter().any(|step| {
             step.title == "lint"
                 && step.status == STEP_STATE_COMPLETED
-                && step.step_type == "bash"
+                && step.step_type == "command"
                 && step.sessions.is_empty()
         }));
         assert!(!workflow

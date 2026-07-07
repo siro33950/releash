@@ -30,11 +30,12 @@ pub use services::{
 #[cfg(test)]
 pub use value_objects::WorkflowRunRecord;
 pub use value_objects::{
-    ApprovalDecision, ApprovalOperations, ChildNodeDefinition, ChildOutputSnapshot, CollectConfig,
-    ContractType, ContractValidationResult, CycleGuard, FacetKey, FacetKind, FacetSummary,
-    FailureClassification, FailureDisposition, NodeDefinition, NodeName, NodeType,
-    OutcomeCommitMode, ParallelAggregate, ParallelStepState, ReduceStrategy, RunId, RunListFilter,
-    RunStatus, RunStatusFilter, StepHistoryEntry, StepOutput, TimeoutKind, TokenUsage,
+    ApprovalDecision, ApprovalOperations, ChildOutputSnapshot, CollectConfig, CommandSpec,
+    ContractType, ContractValidationResult, CycleGuard, FacetKey, FacetKind, FacetRefs,
+    FacetSummary, FailureClassification, FailureDisposition, FanoutSpec, InterimChild,
+    NodeDefinition, NodeKind, NodeKindName, NodeName, OutcomeCommitMode, ParallelAggregate,
+    ParallelStepState, ReduceStrategy, RunId, RunListFilter, RunStatus, RunStatusFilter,
+    SessionGate, SessionSpec, StepHistoryEntry, StepOutput, TimeoutKind, TokenUsage,
     TransitionRule, TriggerSource, WorkflowDefinition, WorkflowExecutionState, WorkflowName,
     WorkflowRunSummary, WorkflowStallObservation, WorkflowStateSnapshot, WorkflowStepContext,
     WorkflowStepFailureKind, WorkflowSummary, WorktreePath, STEP_STATE_ABORTED,

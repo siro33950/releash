@@ -27,7 +27,8 @@ use crate::domain::workflow::{
     WorkflowSummary,
 };
 use crate::usecase::workflow::ports::{
-    ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDiagnosticsGateway,
+    ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDefinitionSourceGateway,
+    WorkflowDiagnosticsGateway,
 };
 
 use definition::WorkflowDefinitionUsecase;
@@ -62,6 +63,7 @@ impl WorkflowUsecase {
     pub fn new(
         query: WorkflowQueryService,
         definitions: std::sync::Arc<dyn WorkflowDefinitionRepository>,
+        definition_sources: std::sync::Arc<dyn WorkflowDefinitionSourceGateway>,
         facets: std::sync::Arc<dyn FacetRepository>,
         worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
         editors: std::sync::Arc<dyn ExternalEditorGateway>,
@@ -71,7 +73,7 @@ impl WorkflowUsecase {
         sessions: std::sync::Arc<dyn WorkspaceSessionGateway>,
         archive_runs: std::sync::Arc<dyn WorkflowRunArchiveRepository>,
     ) -> Self {
-        let definition_commands = WorkflowDefinitionUsecase::new(definitions);
+        let definition_commands = WorkflowDefinitionUsecase::new(definitions, definition_sources);
         let facet_commands = WorkflowFacetUsecase::new(facets.clone());
         let output = WorkflowOutputUsecase::new(query.clone(), facets, secrets);
         Self {
@@ -162,6 +164,10 @@ impl WorkflowUsecase {
         self.query.get_workflow(file_stem)
     }
 
+    pub fn get_workflow_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
+        self.query.get_workflow_source(file_stem)
+    }
+
     pub fn get_run_log(&self, run_id: &str) -> Result<Vec<WorkflowEventView>, WorkflowError> {
         self.query.get_run_log(run_id)
     }
@@ -197,13 +203,13 @@ impl WorkflowUsecase {
         self.query.list_facet_summaries(kind)
     }
 
-    pub fn save_workflow(
+    pub fn save_workflow_source(
         &self,
-        definition: WorkflowDefinition,
+        source: &str,
         original_name: Option<&str>,
-    ) -> Result<(), WorkflowError> {
+    ) -> Result<WorkflowDefinition, WorkflowError> {
         self.definition_commands
-            .save_workflow(definition, original_name)
+            .save_workflow_source(source, original_name)
     }
 
     pub fn delete_workflow(&self, name: &str) -> Result<(), WorkflowError> {
@@ -666,6 +672,63 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct FakeDefinitionSourceGateway {
+        sources: Mutex<HashMap<String, String>>,
+        save_definition: Mutex<Option<WorkflowDefinition>>,
+        save_error: Mutex<Option<String>>,
+        saves: Mutex<Vec<(String, Option<String>)>>,
+    }
+
+    impl FakeDefinitionSourceGateway {
+        fn insert_source(&self, file_stem: &str, source: &str) {
+            self.sources
+                .lock()
+                .unwrap()
+                .insert(file_stem.to_string(), source.to_string());
+        }
+
+        fn set_save_definition(&self, definition: WorkflowDefinition) {
+            *self.save_definition.lock().unwrap() = Some(definition);
+        }
+
+        fn fail_saves(&self, message: &str) {
+            *self.save_error.lock().unwrap() = Some(message.to_string());
+        }
+
+        fn saves(&self) -> Vec<(String, Option<String>)> {
+            self.saves.lock().unwrap().clone()
+        }
+    }
+
+    impl WorkflowDefinitionSourceGateway for FakeDefinitionSourceGateway {
+        fn get_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
+            Ok(self.sources.lock().unwrap().get(file_stem).cloned())
+        }
+
+        fn save_source(
+            &self,
+            source: &str,
+            original_name: Option<&str>,
+        ) -> Result<WorkflowDefinition, WorkflowError> {
+            self.saves
+                .lock()
+                .unwrap()
+                .push((source.to_string(), original_name.map(str::to_string)));
+
+            if let Some(message) = self.save_error.lock().unwrap().clone() {
+                return Err(WorkflowError::external(message));
+            }
+
+            Ok(self
+                .save_definition
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| workflow_definition("saved-workflow")))
+        }
+    }
+
+    #[derive(Default)]
     struct FakeFacetRepository {
         facets: Mutex<HashMap<(FacetKind, String), String>>,
     }
@@ -860,6 +923,7 @@ mod tests {
     struct Fixture {
         usecase: WorkflowUsecase,
         editors: Arc<FakeExternalEditorGateway>,
+        definition_sources: Arc<FakeDefinitionSourceGateway>,
     }
 
     impl Fixture {
@@ -868,6 +932,20 @@ mod tests {
         }
 
         fn with_runs(runs: Arc<dyn WorkflowRunRepository>) -> Self {
+            Self::with_runs_and_definition_sources(
+                runs,
+                Arc::new(FakeDefinitionSourceGateway::default()),
+            )
+        }
+
+        fn with_definition_sources(definition_sources: Arc<FakeDefinitionSourceGateway>) -> Self {
+            Self::with_runs_and_definition_sources(Arc::new(NoopRunRepository), definition_sources)
+        }
+
+        fn with_runs_and_definition_sources(
+            runs: Arc<dyn WorkflowRunRepository>,
+            definition_sources: Arc<FakeDefinitionSourceGateway>,
+        ) -> Self {
             let definitions = Arc::new(FakeDefinitionRepository::default());
             let facets = Arc::new(FakeFacetRepository::default());
             let events = Arc::new(FakeEventRepository::default());
@@ -875,6 +953,7 @@ mod tests {
             let query = WorkflowQueryService::new(
                 runs,
                 definitions.clone(),
+                definition_sources.clone(),
                 facets.clone(),
                 events.clone(),
                 Arc::new(NoopStateProjectionRepository),
@@ -883,6 +962,7 @@ mod tests {
             let usecase = WorkflowUsecase::new(
                 query,
                 definitions.clone(),
+                definition_sources.clone(),
                 facets.clone(),
                 Arc::new(FakeManagedWorktreeGateway),
                 editors.clone(),
@@ -892,7 +972,21 @@ mod tests {
                 Arc::new(EmptyWorkspaceSessionGateway),
                 Arc::new(NoopArchiveRepository),
             );
-            Self { usecase, editors }
+            Self {
+                usecase,
+                editors,
+                definition_sources,
+            }
+        }
+    }
+
+    fn workflow_definition(name: &str) -> WorkflowDefinition {
+        WorkflowDefinition {
+            name: name.to_string(),
+            description: String::new(),
+            builtin: false,
+            variables: Default::default(),
+            nodes: Vec::new(),
         }
     }
 
@@ -953,6 +1047,48 @@ mod tests {
         assert!(fixture
             .usecase
             .list_runs_for_worktree(None, "reject")
+            .is_err());
+    }
+
+    #[test]
+    fn get_workflow_source_returns_some_and_none_from_gateway() {
+        let definition_sources = Arc::new(FakeDefinitionSourceGateway::default());
+        definition_sources.insert_source("wf", "name: wf\n");
+        let fixture = Fixture::with_definition_sources(definition_sources);
+
+        assert_eq!(
+            fixture.usecase.get_workflow_source("wf").unwrap(),
+            Some("name: wf\n".to_string())
+        );
+        assert_eq!(
+            fixture.usecase.get_workflow_source("missing").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn save_workflow_source_returns_saved_definition_and_surfaces_gateway_errors() {
+        let fixture = Fixture::new();
+        fixture
+            .definition_sources
+            .set_save_definition(workflow_definition("saved-wf"));
+
+        let saved = fixture
+            .usecase
+            .save_workflow_source("name: saved-wf\n", Some("old-wf"))
+            .unwrap();
+
+        assert_eq!(saved.name, "saved-wf");
+        assert_eq!(
+            fixture.definition_sources.saves(),
+            vec![("name: saved-wf\n".to_string(), Some("old-wf".to_string()))]
+        );
+
+        fixture.definition_sources.fail_saves("save failed");
+
+        assert!(fixture
+            .usecase
+            .save_workflow_source("name: failed-wf\n", None)
             .is_err());
     }
 

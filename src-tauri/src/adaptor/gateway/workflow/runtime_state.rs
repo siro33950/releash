@@ -1,14 +1,12 @@
 use std::collections::HashMap;
 
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::domain_mapping::transition_rule_from_domain;
 use crate::adaptor::gateway::workflow::domain_mapping::{
     node_definition_to_domain, parallel_aggregate_to_domain, parallel_step_state_from_domain,
     step_history_entries_to_domain, step_history_entry_from_domain, step_output_from_domain,
     step_outputs_to_domain, token_usage_from_domain, token_usage_to_domain,
     workflow_definition_to_domain, workflow_execution_state_to_domain,
-};
-#[cfg(test)]
-use crate::adaptor::gateway::workflow::domain_mapping::{
-    node_type_from_domain, transition_rule_from_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::{
     workflow_error_to_engine_error, WorkflowEngineError,
@@ -17,7 +15,7 @@ use crate::adaptor::gateway::workflow::engine_start_guard;
 use crate::adaptor::gateway::workflow::output_submission as workflow_output_submission;
 use crate::adaptor::gateway::workflow::runtime_commit::StepOutcome;
 #[cfg(test)]
-use crate::adaptor::gateway::workflow::schema::{NodeType, TransitionRule};
+use crate::adaptor::gateway::workflow::schema::TransitionRule;
 use crate::adaptor::gateway::workflow::schema::{ParallelAggregate, Workflow};
 use crate::adaptor::gateway::workflow::state::{
     ApprovalOperations, StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState,
@@ -507,7 +505,7 @@ impl WorkflowExecution {
 
     fn step_outcome_for_current_step(&self) -> StepOutcome {
         let step = &self.workflow.nodes[self.current_step_index];
-        if step.is_parallel() {
+        if step.is_fanout() {
             StepOutcome::StartParallel(self.to_workflow_state())
         } else if step.collect.is_some() {
             StepOutcome::ReduceAndTransition(self.to_workflow_state())
@@ -586,13 +584,12 @@ impl WorkflowExecution {
             workflow_transition::TurnCompleteDecision::WaitApproval => {
                 TurnCompleteAction::WaitApproval
             }
-            workflow_transition::TurnCompleteDecision::UnexpectedNodeType {
-                node_name,
-                node_type,
-            } => TurnCompleteAction::UnexpectedNodeType {
-                step_name: node_name,
-                node_type: node_type_from_domain(node_type),
-            },
+            workflow_transition::TurnCompleteDecision::UnexpectedNodeKind { node_name, kind } => {
+                TurnCompleteAction::UnexpectedNodeKind {
+                    step_name: node_name,
+                    kind,
+                }
+            }
         }
     }
 
@@ -708,9 +705,9 @@ pub(crate) enum TurnCompleteAction {
     /// 設計上 turn_complete に流入してはならない node 種別を検出した
     /// （`validate_start` などの上流ガードで弾くべきケース）。`Failed` に遷移させ、
     /// `SessionError { exit_code: 0 }` の「正常終了」セマンティクスと混同しないようにする。
-    UnexpectedNodeType {
+    UnexpectedNodeKind {
         step_name: String,
-        node_type: NodeType,
+        kind: workflow_domain::NodeKindName,
     },
     /// ワークフローが実行中でない → 何もしない
     NotRunning,

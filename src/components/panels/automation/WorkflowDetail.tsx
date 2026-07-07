@@ -62,6 +62,10 @@ export function WorkflowDetail({
 
 function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 	const [expanded, setExpanded] = useState(false);
+	const session = step.session;
+	const facets = session?.facets;
+	const fanout = step.fanout;
+	const childCount = fanout?.parallel_children.length ?? 0;
 
 	return (
 		<div className="rounded-md border border-border">
@@ -74,11 +78,16 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 					<span className="text-xs text-muted-foreground">{index + 1}.</span>
 					<span className="text-sm font-medium">{step.name}</span>
 					<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-						{step.type}
+						{step.kind}
 					</span>
-					{step.parallel_children && (
+					{session?.gate === "approval" && (
+						<span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600">
+							gate: approval
+						</span>
+					)}
+					{fanout && (
 						<span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] text-blue-500">
-							parallel
+							{childCount} children
 						</span>
 					)}
 				</div>
@@ -92,24 +101,46 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 			{expanded && (
 				<div className="px-3 pb-3 flex flex-col gap-2 text-xs">
 					<Separator />
+					{step.command && (
+						<div className="flex flex-col gap-1">
+							<span className="font-medium text-muted-foreground">Command</span>
+							<p className="text-muted-foreground whitespace-pre-wrap bg-muted rounded p-2 font-mono">
+								{step.command}
+							</p>
+						</div>
+					)}
+
+					{session && (
+						<div className="flex flex-col gap-1">
+							<span className="font-medium text-muted-foreground">Session</span>
+							<div className="text-muted-foreground">
+								Gate: {session.gate}
+								{session.model ? ` | Model: ${session.model}` : ""}
+								{session.permission
+									? ` | Permission: ${session.permission}`
+									: ""}
+							</div>
+						</div>
+					)}
+
 					{/* Facet refs */}
-					{(step.policy ||
-						step.knowledge ||
-						step.instruction ||
+					{(facets?.policy ||
+						facets?.knowledge ||
+						facets?.instruction ||
 						step.output_contract ||
 						(step.input_contracts && step.input_contracts.length > 0)) && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">
 								Facet References
 							</span>
-							{step.policy && (
-								<FacetRefRow label="Policy" value={step.policy} />
+							{facets?.policy && (
+								<FacetRefRow label="Policy" value={facets.policy} />
 							)}
-							{step.knowledge && (
-								<FacetRefRow label="Knowledge" value={step.knowledge} />
+							{facets?.knowledge && (
+								<FacetRefRow label="Knowledge" value={facets.knowledge} />
 							)}
-							{step.instruction && (
-								<FacetRefRow label="Instruction" value={step.instruction} />
+							{facets?.instruction && (
+								<FacetRefRow label="Instruction" value={facets.instruction} />
 							)}
 							{step.output_contract && (
 								<FacetRefRow
@@ -123,18 +154,6 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 									value={step.input_contracts.join(", ")}
 								/>
 							)}
-						</div>
-					)}
-
-					{/* Inline prompt */}
-					{step.inline_prompt && (
-						<div className="flex flex-col gap-1">
-							<span className="font-medium text-muted-foreground">
-								Inline Prompt
-							</span>
-							<p className="text-muted-foreground whitespace-pre-wrap bg-muted rounded p-2">
-								{step.inline_prompt}
-							</p>
 						</div>
 					)}
 
@@ -187,27 +206,29 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 					)}
 
 					{/* Parallel children */}
-					{step.parallel_children && (
+					{fanout && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">
-								Parallel Steps
+								Fanout Children
 							</span>
-							{step.parallel_children.map((ps) => (
+							{fanout.parallel_children.map((ps) => (
 								<div key={ps.name} className="ml-2 text-muted-foreground">
-									• {ps.name} ({ps.type})
-									{ps.instruction && ` — instruction: ${ps.instruction}`}
+									• {ps.name}
+									{ps.facets.instruction &&
+										` — instruction: ${ps.facets.instruction}`}
 								</div>
 							))}
-							{step.aggregate && (
+							{fanout.aggregate && (
 								<div className="mt-1">
 									<span className="font-medium text-muted-foreground">
 										Aggregate:{" "}
 									</span>
 									<span className="text-muted-foreground">
-										{step.aggregate.all_match
-											? `all_match("${step.aggregate.all_match}")`
-											: `any_match("${step.aggregate.any_match}")`}{" "}
-										→ then: {step.aggregate.then}, else: {step.aggregate.else}
+										{fanout.aggregate.all_match
+											? `all_match("${fanout.aggregate.all_match}")`
+											: `any_match("${fanout.aggregate.any_match}")`}{" "}
+										→ then: {fanout.aggregate.then}, else:{" "}
+										{fanout.aggregate.else}
 									</span>
 								</div>
 							)}

@@ -1,57 +1,62 @@
 name: 06_verify-review-comments
 description: GitHub PR の unresolved review comment を Releash Thread に取り込み、review-fix 相当で対応後、commit/push して PR comment へまとめて返信する。
 builtin: true
-
 nodes:
-  - name: import_pr_review_comments
-    type: agent
+- name: import_pr_review_comments
+  session:
     model: gpt-5.5
     permission: full
-    instruction: verify-review-comments-import
-    policy: reviewing
-    knowledge: releash-thread-cli
-
-  - name: decide_pr_review_comment_policy
-    type: approval
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: verify-review-comments-import
+- name: decide_pr_review_comment_policy
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: verify-review-comments-decide-policy
-    policy: triage
-    knowledge: releash-thread-cli
-
-  - name: check_and_make_tasks
-    type: agent
+    gate: approval
+    facets:
+      policy: triage
+      knowledge: releash-thread-cli
+      instruction: verify-review-comments-decide-policy
+- name: check_and_make_tasks
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: review-fix-check-tasks
-    output_contract: review-fix-tasks
-    policy: reviewing
-    knowledge: releash-thread-cli
-    rules:
-      - match: NEEDS_FIX
-        next: implement_tasks
-      - match: LGTM
-        next: commit_push_and_reply
-
-  - name: implement_tasks
-    type: agent
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-fix-check-tasks
+  output_contract: review-fix-tasks
+  rules:
+  - match: NEEDS_FIX
+    next: implement_tasks
+  - match: LGTM
+    next: commit_push_and_reply
+- name: implement_tasks
+  session:
     model: gpt-5.5
     permission: full
-    instruction: review-fix
-    policy: coding
-    pass_output_from:
-      - check_and_make_tasks
-    rules:
-      - match: ".*"
-        next: check_and_make_tasks
-    cycle_guard:
-      max_iterations: 5
-      on_exhausted: commit_push_and_reply
-
-  - name: commit_push_and_reply
-    type: approval
+    gate: auto
+    facets:
+      policy: coding
+      instruction: review-fix
+  pass_output_from:
+  - check_and_make_tasks
+  rules:
+  - match: ".*"
+    next: check_and_make_tasks
+  cycle_guard:
+    max_iterations: 5
+    on_exhausted: commit_push_and_reply
+- name: commit_push_and_reply
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: verify-review-comments-commit-push-reply
-    policy: coding
-    knowledge: releash-thread-cli
+    gate: approval
+    facets:
+      policy: coding
+      knowledge: releash-thread-cli
+      instruction: verify-review-comments-commit-push-reply

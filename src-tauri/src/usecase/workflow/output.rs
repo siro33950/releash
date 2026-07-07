@@ -104,13 +104,13 @@ fn resolve_step_output_contract_from_drafts(
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        FacetSummary, NodeDefinition, NodeType, RunId, RunListFilter, WorkflowDefinition,
-        WorkflowDefinitionRepository, WorkflowRunRecord, WorkflowRunRepository, WorkflowRunSummary,
-        WorkflowStateSnapshot, WorkflowSummary,
+        FacetRefs, FacetSummary, NodeDefinition, NodeKind, RunId, RunListFilter, SessionSpec,
+        WorkflowDefinition, WorkflowDefinitionRepository, WorkflowRunRecord, WorkflowRunRepository,
+        WorkflowRunSummary, WorkflowStateSnapshot, WorkflowSummary,
     };
     use crate::usecase::workflow::ports::{
-        WorkflowEventRepository, WorkflowStateProjectionRepository,
-        WorkflowStepDetailProjectionRepository,
+        WorkflowDefinitionSourceGateway, WorkflowEventRepository,
+        WorkflowStateProjectionRepository, WorkflowStepDetailProjectionRepository,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -178,6 +178,22 @@ mod tests {
 
         fn delete(&self, _name: &str) -> Result<(), WorkflowError> {
             Ok(())
+        }
+    }
+
+    struct NoopDefinitionSourceGateway;
+
+    impl WorkflowDefinitionSourceGateway for NoopDefinitionSourceGateway {
+        fn get_source(&self, _file_stem: &str) -> Result<Option<String>, WorkflowError> {
+            Ok(None)
+        }
+
+        fn save_source(
+            &self,
+            _source: &str,
+            _original_name: Option<&str>,
+        ) -> Result<WorkflowDefinition, WorkflowError> {
+            Err(WorkflowError::external("not used"))
         }
     }
 
@@ -296,6 +312,7 @@ mod tests {
             let query = WorkflowQueryService::new(
                 Arc::new(NoopRunRepository),
                 Arc::new(NoopDefinitionRepository),
+                Arc::new(NoopDefinitionSourceGateway),
                 facets.clone(),
                 events.clone(),
                 Arc::new(NoopStateProjectionRepository),
@@ -322,7 +339,13 @@ mod tests {
             variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "review".to_string(),
-                node_type: NodeType::Agent,
+                kind: NodeKind::Session(SessionSpec {
+                    facets: FacetRefs {
+                        instruction: Some("implement".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 output_contract: Some(contract.to_string()),
                 ..Default::default()
             }],

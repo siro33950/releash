@@ -1,5 +1,5 @@
 use super::builtin;
-use super::schema::{ChildNodeDefinition, NodeDefinition, ResolvedFacets, Workflow};
+use super::schema::{InterimChild, NodeDefinition, ResolvedFacets, Workflow};
 use super::storage;
 use crate::domain::workflow::services::contract::strip_contract_validation_metadata;
 use serde::Serialize;
@@ -328,16 +328,19 @@ pub fn resolve_facet_path(
 ///
 /// agent / approval 種別の node が対象。bash / parallel node には facet 参照は存在しない。
 pub fn compose_facets(node: &NodeDefinition) -> ComposedPrompt {
+    let Some(session) = node.session() else {
+        return compose_from_parts(&ResolvedFacets::default(), None, None);
+    };
     compose_from_parts(
-        &node.resolved_facets,
+        &session.resolved_facets,
         node.output_contract.as_deref(),
         node.input_contracts.as_deref(),
     )
 }
 
 /// 並列子 node の prompt 関連 facet 参照から組み立てた `ComposedPrompt` を返す。
-/// `compose_facets` と同じく `ChildNodeDefinition.resolved_facets` のみを参照する。
-pub fn compose_child_facets(child: &ChildNodeDefinition) -> ComposedPrompt {
+/// `compose_facets` と同じく `InterimChild.resolved_facets` のみを参照する。
+pub fn compose_child_facets(child: &InterimChild) -> ComposedPrompt {
     compose_from_parts(
         &child.resolved_facets,
         child.output_contract.as_deref(),
@@ -396,20 +399,25 @@ fn compose_from_parts(
 /// load 経路で実行可能とは判定しない。
 pub fn resolve_workflow_facets(workflow: &mut Workflow, base_dir: &Path) -> Result<(), FacetError> {
     for node in &mut workflow.nodes {
-        node.resolved_facets = resolve_refs(
-            node.policy.as_deref(),
-            node.knowledge.as_deref(),
-            node.instruction.as_deref(),
-            node.output_contract.as_deref(),
-            node.input_contracts.as_deref(),
-            base_dir,
-        )?;
-        if let Some(ref mut children) = node.parallel_children {
+        let output_contract = node.output_contract.clone();
+        let input_contracts = node.input_contracts.clone();
+        if let Some(session) = node.session_mut() {
+            session.resolved_facets = resolve_refs(
+                session.facets.policy.as_deref(),
+                session.facets.knowledge.as_deref(),
+                session.facets.instruction.as_deref(),
+                output_contract.as_deref(),
+                input_contracts.as_deref(),
+                base_dir,
+            )?;
+        }
+        if let Some(fanout) = node.fanout_mut() {
+            let children = &mut fanout.parallel_children;
             for child in children {
                 child.resolved_facets = resolve_refs(
-                    child.policy.as_deref(),
-                    child.knowledge.as_deref(),
-                    child.instruction.as_deref(),
+                    child.facets.policy.as_deref(),
+                    child.facets.knowledge.as_deref(),
+                    child.facets.instruction.as_deref(),
                     child.output_contract.as_deref(),
                     child.input_contracts.as_deref(),
                     base_dir,
@@ -432,28 +440,32 @@ pub(crate) fn resolve_node_facets(
     node: &mut crate::adaptor::gateway::workflow::schema::NodeDefinition,
     base_dir: &Path,
 ) -> Result<(), FacetError> {
-    node.resolved_facets = resolve_refs(
-        node.policy.as_deref(),
-        node.knowledge.as_deref(),
-        node.instruction.as_deref(),
-        node.output_contract.as_deref(),
-        node.input_contracts.as_deref(),
-        base_dir,
-    )?;
+    let output_contract = node.output_contract.clone();
+    let input_contracts = node.input_contracts.clone();
+    if let Some(session) = node.session_mut() {
+        session.resolved_facets = resolve_refs(
+            session.facets.policy.as_deref(),
+            session.facets.knowledge.as_deref(),
+            session.facets.instruction.as_deref(),
+            output_contract.as_deref(),
+            input_contracts.as_deref(),
+            base_dir,
+        )?;
+    }
     Ok(())
 }
 
 /// テスト用ヘルパー: 並列子 node の facet 参照を解決する。
-/// `resolve_node_facets` の `ChildNodeDefinition` 版。
+/// `resolve_node_facets` の `InterimChild` 版。
 #[cfg(test)]
 pub(crate) fn resolve_child_facets(
-    child: &mut crate::adaptor::gateway::workflow::schema::ChildNodeDefinition,
+    child: &mut crate::adaptor::gateway::workflow::schema::InterimChild,
     base_dir: &Path,
 ) -> Result<(), FacetError> {
     child.resolved_facets = resolve_refs(
-        child.policy.as_deref(),
-        child.knowledge.as_deref(),
-        child.instruction.as_deref(),
+        child.facets.policy.as_deref(),
+        child.facets.knowledge.as_deref(),
+        child.facets.instruction.as_deref(),
         child.output_contract.as_deref(),
         child.input_contracts.as_deref(),
         base_dir,
@@ -504,7 +516,7 @@ fn resolve_refs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::NodeType;
+    use crate::adaptor::gateway::workflow::schema::{FacetRefs, NodeKind, SessionSpec};
     use crate::domain::workflow::services::variable_renderer;
     use tempfile::TempDir;
 
@@ -516,10 +528,14 @@ mod tests {
     ) -> NodeDefinition {
         NodeDefinition {
             name: "test".to_string(),
-            node_type: NodeType::Agent,
-            policy: policy.map(String::from),
-            knowledge: knowledge.map(String::from),
-            instruction: instruction.map(String::from),
+            kind: NodeKind::Session(SessionSpec {
+                facets: FacetRefs {
+                    policy: policy.map(String::from),
+                    knowledge: knowledge.map(String::from),
+                    instruction: instruction.map(String::from),
+                },
+                ..Default::default()
+            }),
             output_contract: output_contract.map(String::from),
             ..NodeDefinition::default()
         }
@@ -743,7 +759,7 @@ mod tests {
 
         let mut node = NodeDefinition {
             name: "test".to_string(),
-            node_type: NodeType::Agent,
+            kind: NodeKind::Session(SessionSpec::default()),
             input_contracts: Some(vec!["plan-doc".to_string()]),
             ..NodeDefinition::default()
         };
@@ -793,7 +809,10 @@ mod tests {
         assert!(result.user_message.contains("The system uses Tauri."));
         assert!(!result.user_message.contains("Implement the feature."));
         assert_eq!(
-            node.resolved_facets.instruction.as_deref(),
+            node.resolved_facets()
+                .expect("resolved facets must be available for session node")
+                .instruction
+                .as_deref(),
             Some("Implement the feature.")
         );
     }

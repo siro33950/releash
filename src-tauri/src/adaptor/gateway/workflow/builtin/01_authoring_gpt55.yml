@@ -1,45 +1,49 @@
 name: 01_authoring_gpt55
 description: ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をGPT系モデルで構築する。レビューループは行わない。
 builtin: true
-
 nodes:
-  - name: write_requirements
-    type: approval
+- name: write_requirements
+  session:
     model: gpt-5.5
     permission: edit
-    instruction: spec-authoring-write-requirements
-    policy: planning
-    output_contract: spec-directory
-
-  - name: write_behavior
-    type: approval
+    gate: approval
+    facets:
+      policy: planning
+      instruction: spec-authoring-write-requirements
+  output_contract: spec-directory
+- name: write_behavior
+  session:
     model: gpt-5.5
     permission: edit
-    instruction: spec-authoring-write-behavior
-    policy: planning
-    input_contracts:
-      - spec-directory
-    pass_output_from:
-      - write_requirements
-
-  - name: write_design
-    type: approval
+    gate: approval
+    facets:
+      policy: planning
+      instruction: spec-authoring-write-behavior
+  input_contracts:
+  - spec-directory
+  pass_output_from:
+  - write_requirements
+- name: write_design
+  session:
     model: gpt-5.5
     permission: edit
-    instruction: spec-authoring-write-design
-    policy: planning
-    input_contracts:
-      - spec-directory
-    pass_output_from:
-      - write_requirements
-
-  - name: spec_finalize
-    type: approval
+    gate: approval
+    facets:
+      policy: planning
+      instruction: spec-authoring-write-design
+  input_contracts:
+  - spec-directory
+  pass_output_from:
+  - write_requirements
+- name: spec_finalize
+  session:
     model: gpt-5.5
     permission: edit
-    instruction: spec-authoring-finalize
-    policy: planning
-    input_contracts:
-      - spec-directory
-    pass_output_from:
-      - write_requirements
+    gate: approval
+    facets:
+      policy: planning
+      instruction: spec-authoring-finalize
+  input_contracts:
+  - spec-directory
+  pass_output_from:
+  - write_requirements

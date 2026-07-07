@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::domain::workflow::value_objects::{
-    NodeType, ParallelAggregate, WorkflowStepFailureKind,
+    NodeKindName, ParallelAggregate, WorkflowStepFailureKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,21 +34,28 @@ impl Default for RetryPolicy {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TimeoutContext {
     pub model: Option<String>,
-    pub node_kind: NodeType,
+    pub node_kind: NodeKindName,
+    pub approval_gate: bool,
     pub workflow_template: Option<String>,
 }
 
 impl TimeoutContext {
     pub fn new(
         model: Option<String>,
-        node_kind: NodeType,
+        node_kind: NodeKindName,
         workflow_template: Option<String>,
     ) -> Self {
         Self {
             model,
             node_kind,
+            approval_gate: false,
             workflow_template,
         }
+    }
+
+    pub fn with_approval_gate(mut self, approval_gate: bool) -> Self {
+        self.approval_gate = approval_gate;
+        self
     }
 }
 
@@ -57,7 +64,8 @@ pub struct TimeoutPolicy {
     startup_timeout: Duration,
     stale_timeout: Duration,
     stale_timeout_by_model: HashMap<String, Duration>,
-    stale_timeout_by_node_kind: HashMap<NodeType, Duration>,
+    stale_timeout_by_node_kind: HashMap<NodeKindName, Duration>,
+    stale_timeout_for_approval_session: Option<Duration>,
     stale_timeout_by_template: HashMap<String, Duration>,
 }
 
@@ -85,12 +93,18 @@ impl TimeoutPolicy {
         self
     }
 
+    #[cfg(test)]
     pub fn with_stale_timeout_for_node_kind(
         mut self,
-        node_kind: NodeType,
+        node_kind: NodeKindName,
         timeout: Duration,
     ) -> Self {
         self.stale_timeout_by_node_kind.insert(node_kind, timeout);
+        self
+    }
+
+    pub fn with_stale_timeout_for_approval_session(mut self, timeout: Duration) -> Self {
+        self.stale_timeout_for_approval_session = Some(timeout);
         self
     }
 
@@ -98,6 +112,11 @@ impl TimeoutPolicy {
         if let Some(template) = ctx.workflow_template.as_deref() {
             if let Some(timeout) = self.stale_timeout_by_template.get(template) {
                 return *timeout;
+            }
+        }
+        if ctx.approval_gate {
+            if let Some(timeout) = self.stale_timeout_for_approval_session {
+                return timeout;
             }
         }
         if let Some(timeout) = self.stale_timeout_by_node_kind.get(&ctx.node_kind) {
@@ -119,6 +138,7 @@ impl Default for TimeoutPolicy {
             stale_timeout: Duration::from_secs(180),
             stale_timeout_by_model: HashMap::new(),
             stale_timeout_by_node_kind: HashMap::new(),
+            stale_timeout_for_approval_session: None,
             stale_timeout_by_template: HashMap::new(),
         }
     }
@@ -221,7 +241,7 @@ mod tests {
         assert_eq!(
             policy.stale_timeout(&TimeoutContext::new(
                 None,
-                NodeType::Agent,
+                NodeKindName::Session,
                 Some("heavy-review".to_string())
             )),
             Duration::from_secs(600)
@@ -229,7 +249,7 @@ mod tests {
         assert_eq!(
             policy.stale_timeout(&TimeoutContext::new(
                 Some("slow-model".to_string()),
-                NodeType::Agent,
+                NodeKindName::Session,
                 None
             )),
             Duration::from_secs(480)
@@ -239,14 +259,14 @@ mod tests {
     #[test]
     fn timeout_policy_resolves_node_kind_only_override() {
         let policy = TimeoutPolicy::default()
-            .with_stale_timeout_for_node_kind(NodeType::Approval, Duration::from_secs(420))
+            .with_stale_timeout_for_node_kind(NodeKindName::Session, Duration::from_secs(420))
             .with_stale_timeout_for_model("slow-model", Duration::from_secs(480))
             .with_stale_timeout_for_template("heavy-review", Duration::from_secs(600));
 
         assert_eq!(
             policy.stale_timeout(&TimeoutContext::new(
                 Some("unknown-model".to_string()),
-                NodeType::Approval,
+                NodeKindName::Session,
                 Some("unknown-template".to_string())
             )),
             Duration::from_secs(420)
@@ -257,12 +277,12 @@ mod tests {
     fn timeout_policy_prefers_template_over_node_kind() {
         let policy = TimeoutPolicy::default()
             .with_stale_timeout_for_template("heavy-review", Duration::from_secs(600))
-            .with_stale_timeout_for_node_kind(NodeType::Approval, Duration::from_secs(420));
+            .with_stale_timeout_for_node_kind(NodeKindName::Session, Duration::from_secs(420));
 
         assert_eq!(
             policy.stale_timeout(&TimeoutContext::new(
                 None,
-                NodeType::Approval,
+                NodeKindName::Session,
                 Some("heavy-review".to_string())
             )),
             Duration::from_secs(600)
@@ -272,16 +292,39 @@ mod tests {
     #[test]
     fn timeout_policy_prefers_node_kind_over_model() {
         let policy = TimeoutPolicy::default()
-            .with_stale_timeout_for_node_kind(NodeType::Approval, Duration::from_secs(420))
+            .with_stale_timeout_for_node_kind(NodeKindName::Session, Duration::from_secs(420))
             .with_stale_timeout_for_model("slow-model", Duration::from_secs(480));
 
         assert_eq!(
             policy.stale_timeout(&TimeoutContext::new(
                 Some("slow-model".to_string()),
-                NodeType::Approval,
+                NodeKindName::Session,
                 None
             )),
             Duration::from_secs(420)
+        );
+    }
+
+    #[test]
+    fn timeout_policy_resolves_approval_session_override() {
+        let policy = TimeoutPolicy::default()
+            .with_stale_timeout_for_approval_session(Duration::from_secs(420))
+            .with_stale_timeout_for_model("slow-model", Duration::from_secs(480));
+
+        assert_eq!(
+            policy.stale_timeout(
+                &TimeoutContext::new(Some("slow-model".to_string()), NodeKindName::Session, None)
+                    .with_approval_gate(true)
+            ),
+            Duration::from_secs(420)
+        );
+        assert_eq!(
+            policy.stale_timeout(&TimeoutContext::new(
+                Some("slow-model".to_string()),
+                NodeKindName::Session,
+                None
+            )),
+            Duration::from_secs(480)
         );
     }
 
@@ -294,7 +337,7 @@ mod tests {
         assert_eq!(
             policy.stale_timeout(&TimeoutContext::new(
                 Some("slow-model".to_string()),
-                NodeType::Agent,
+                NodeKindName::Session,
                 Some("heavy-review".to_string())
             )),
             Duration::from_secs(600)

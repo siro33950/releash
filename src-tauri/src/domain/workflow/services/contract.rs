@@ -35,7 +35,8 @@ pub fn lookup_step_output_contract(
                 .clone()
                 .filter(|contract| !contract.trim().is_empty());
         }
-        if let Some(children) = &node.parallel_children {
+        if let Some(fanout) = node.fanout() {
+            let children = &fanout.parallel_children;
             for child in children {
                 if child.name == step_name {
                     return child
@@ -448,7 +449,9 @@ fn validate_relative_contract_path(field: &str, path: &str) -> Result<(), Contra
 #[cfg(test)]
 mod contract_service_tests {
     use super::*;
-    use crate::domain::workflow::value_objects::{NodeDefinition, NodeType, WorkflowDefinition};
+    use crate::domain::workflow::value_objects::{
+        FanoutSpec, InterimChild, NodeDefinition, NodeKind, WorkflowDefinition,
+    };
     use serde_json::json;
 
     #[test]
@@ -499,14 +502,14 @@ mod contract_service_tests {
             variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "parallel".to_string(),
-                node_type: NodeType::Parallel,
-                parallel_children: Some(vec![
-                    crate::domain::workflow::value_objects::ChildNodeDefinition {
+                kind: NodeKind::Fanout(FanoutSpec {
+                    parallel_children: vec![InterimChild {
                         name: "child".to_string(),
                         output_contract: Some("review-verdict".to_string()),
                         ..Default::default()
-                    },
-                ]),
+                    }],
+                    aggregate: None,
+                }),
                 ..Default::default()
             }],
         };

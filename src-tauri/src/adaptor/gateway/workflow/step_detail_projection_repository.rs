@@ -47,7 +47,9 @@ impl WorkflowStepDetailProjectionRepository for WorkflowStepDetailProjectionLogR
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
-    use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType, Workflow};
+    use crate::adaptor::gateway::workflow::schema::{
+        FacetRefs, NodeDefinition, NodeKind, SessionSpec, Workflow,
+    };
     use tempfile::TempDir;
 
     #[test]
@@ -67,8 +69,13 @@ mod tests {
                 variables: Default::default(),
                 nodes: vec![NodeDefinition {
                     name: "plan".to_string(),
-                    node_type: NodeType::Agent,
-                    instruction: Some("plan it".to_string()),
+                    kind: NodeKind::Session(SessionSpec {
+                        facets: FacetRefs {
+                            instruction: Some("plan it".to_string()),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
                     ..NodeDefinition::default()
                 }],
             },

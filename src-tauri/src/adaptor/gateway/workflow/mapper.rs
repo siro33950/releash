@@ -140,22 +140,15 @@ fn domain_node_to_legacy(
 ) -> crate::adaptor::gateway::workflow::schema::NodeDefinition {
     crate::adaptor::gateway::workflow::schema::NodeDefinition {
         name: node.name.clone(),
-        node_type: domain_node_type_to_legacy(node.node_type),
-        policy: node.policy.clone(),
-        knowledge: node.knowledge.clone(),
-        instruction: node.instruction.clone(),
+        kind: domain_kind_to_legacy(&node.kind),
+        artifact: node.artifact.clone(),
+        input: node.input.clone(),
+        inputs: node.inputs.clone(),
         output_contract: node.output_contract.clone(),
         input_contracts: node.input_contracts.clone(),
         pass_previous_response: node.pass_previous_response,
         pass_output_from: node.pass_output_from.clone(),
-        inline_prompt: node.inline_prompt.clone(),
         collect: node.collect.as_ref().map(domain_collect_to_legacy),
-        command: node.command.clone(),
-        parallel_children: node
-            .parallel_children
-            .as_ref()
-            .map(|children| children.iter().map(domain_child_node_to_legacy).collect()),
-        aggregate: node.aggregate.as_ref().map(domain_aggregate_to_legacy),
         transition_rules: node
             .transition_rules
             .iter()
@@ -163,21 +156,73 @@ fn domain_node_to_legacy(
             .collect(),
         cycle_guard: node.cycle_guard.as_ref().map(domain_cycle_guard_to_legacy),
         resets_cycle_for: node.resets_cycle_for.clone(),
-        model: node.model.clone(),
-        permission: node.permission.clone(),
-        resolved_facets: domain_resolved_facets_to_legacy(&node.resolved_facets),
+    }
+}
+
+fn domain_kind_to_legacy(
+    kind: &domain::NodeKind,
+) -> crate::adaptor::gateway::workflow::schema::NodeKind {
+    match kind {
+        domain::NodeKind::Command(spec) => {
+            crate::adaptor::gateway::workflow::schema::NodeKind::Command(
+                crate::adaptor::gateway::workflow::schema::CommandSpec {
+                    command: spec.command.clone(),
+                },
+            )
+        }
+        domain::NodeKind::Session(spec) => {
+            crate::adaptor::gateway::workflow::schema::NodeKind::Session(
+                crate::adaptor::gateway::workflow::schema::SessionSpec {
+                    model: spec.model.clone(),
+                    permission: spec.permission.clone(),
+                    gate: domain_gate_to_legacy(spec.gate),
+                    facets: domain_facets_to_legacy(&spec.facets),
+                    resolved_facets: domain_resolved_facets_to_legacy(&spec.resolved_facets),
+                },
+            )
+        }
+        domain::NodeKind::Fanout(spec) => {
+            crate::adaptor::gateway::workflow::schema::NodeKind::Fanout(
+                crate::adaptor::gateway::workflow::schema::FanoutSpec {
+                    parallel_children: spec
+                        .parallel_children
+                        .iter()
+                        .map(domain_child_node_to_legacy)
+                        .collect(),
+                    aggregate: spec.aggregate.as_ref().map(domain_aggregate_to_legacy),
+                },
+            )
+        }
+    }
+}
+
+fn domain_gate_to_legacy(
+    gate: domain::SessionGate,
+) -> crate::adaptor::gateway::workflow::schema::SessionGate {
+    match gate {
+        domain::SessionGate::Auto => crate::adaptor::gateway::workflow::schema::SessionGate::Auto,
+        domain::SessionGate::Approval => {
+            crate::adaptor::gateway::workflow::schema::SessionGate::Approval
+        }
+    }
+}
+
+fn domain_facets_to_legacy(
+    facets: &domain::FacetRefs,
+) -> crate::adaptor::gateway::workflow::schema::FacetRefs {
+    crate::adaptor::gateway::workflow::schema::FacetRefs {
+        policy: facets.policy.clone(),
+        knowledge: facets.knowledge.clone(),
+        instruction: facets.instruction.clone(),
     }
 }
 
 fn domain_child_node_to_legacy(
-    child: &domain::ChildNodeDefinition,
-) -> crate::adaptor::gateway::workflow::schema::ChildNodeDefinition {
-    crate::adaptor::gateway::workflow::schema::ChildNodeDefinition {
+    child: &domain::InterimChild,
+) -> crate::adaptor::gateway::workflow::schema::InterimChild {
+    crate::adaptor::gateway::workflow::schema::InterimChild {
         name: child.name.clone(),
-        node_type: domain_node_type_to_legacy(child.node_type),
-        policy: child.policy.clone(),
-        knowledge: child.knowledge.clone(),
-        instruction: child.instruction.clone(),
+        facets: domain_facets_to_legacy(&child.facets),
         output_contract: child.output_contract.clone(),
         input_contracts: child.input_contracts.clone(),
         pass_previous_response: child.pass_previous_response,
@@ -185,17 +230,6 @@ fn domain_child_node_to_legacy(
         model: child.model.clone(),
         permission: child.permission.clone(),
         resolved_facets: domain_resolved_facets_to_legacy(&child.resolved_facets),
-    }
-}
-
-fn domain_node_type_to_legacy(
-    node_type: domain::NodeType,
-) -> crate::adaptor::gateway::workflow::schema::NodeType {
-    match node_type {
-        domain::NodeType::Agent => crate::adaptor::gateway::workflow::schema::NodeType::Agent,
-        domain::NodeType::Bash => crate::adaptor::gateway::workflow::schema::NodeType::Bash,
-        domain::NodeType::Approval => crate::adaptor::gateway::workflow::schema::NodeType::Approval,
-        domain::NodeType::Parallel => crate::adaptor::gateway::workflow::schema::NodeType::Parallel,
     }
 }
 
@@ -447,13 +481,17 @@ fn copy_domain_resolved_facets_to_legacy(
     workflow: &mut crate::adaptor::gateway::workflow::schema::Workflow,
 ) {
     for (source, target) in definition.nodes.iter().zip(workflow.nodes.iter_mut()) {
-        target.resolved_facets = domain_resolved_facets_to_legacy(&source.resolved_facets);
-        if let (Some(source_children), Some(target_children)) = (
-            source.parallel_children.as_ref(),
-            target.parallel_children.as_mut(),
-        ) {
-            for (source_child, target_child) in
-                source_children.iter().zip(target_children.iter_mut())
+        if let (Some(source_session), Some(target_session)) =
+            (source.session(), target.session_mut())
+        {
+            target_session.resolved_facets =
+                domain_resolved_facets_to_legacy(&source_session.resolved_facets);
+        }
+        if let (Some(source_fanout), Some(target_fanout)) = (source.fanout(), target.fanout_mut()) {
+            for (source_child, target_child) in source_fanout
+                .parallel_children
+                .iter()
+                .zip(target_fanout.parallel_children.iter_mut())
             {
                 target_child.resolved_facets =
                     domain_resolved_facets_to_legacy(&source_child.resolved_facets);
@@ -478,7 +516,7 @@ fn domain_resolved_facets_to_legacy(
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        NodeDefinition, NodeType, RunListFilter, RunStatus, TriggerSource,
+        FacetRefs, NodeDefinition, NodeKind, RunListFilter, RunStatus, SessionSpec, TriggerSource,
     };
 
     #[test]
@@ -573,25 +611,40 @@ mod tests {
             variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "step".to_string(),
-                node_type: NodeType::Agent,
-                instruction: Some("inst".to_string()),
-                resolved_facets: ResolvedFacets {
-                    instruction: Some("resolved".to_string()),
+                kind: NodeKind::Session(SessionSpec {
+                    facets: FacetRefs {
+                        instruction: Some("inst".to_string()),
+                        ..Default::default()
+                    },
+                    resolved_facets: ResolvedFacets {
+                        instruction: Some("resolved".to_string()),
+                        ..Default::default()
+                    },
                     ..Default::default()
-                },
+                }),
                 ..Default::default()
             }],
         };
 
         let legacy = domain_workflow_to_legacy(&definition).unwrap();
         assert_eq!(
-            legacy.nodes[0].resolved_facets.instruction.as_deref(),
+            legacy.nodes[0]
+                .session()
+                .unwrap()
+                .resolved_facets
+                .instruction
+                .as_deref(),
             Some("resolved")
         );
 
         let mapped = legacy_workflow_to_domain(legacy).unwrap();
         assert_eq!(
-            mapped.nodes[0].resolved_facets.instruction.as_deref(),
+            mapped.nodes[0]
+                .session()
+                .unwrap()
+                .resolved_facets
+                .instruction
+                .as_deref(),
             Some("resolved")
         );
     }
@@ -605,8 +658,13 @@ mod tests {
             variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "implement".to_string(),
-                node_type: NodeType::Agent,
-                instruction: Some("inst".to_string()),
+                kind: NodeKind::Session(SessionSpec {
+                    facets: FacetRefs {
+                        instruction: Some("inst".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 input_contracts: Some(vec!["input".to_string()]),
                 output_contract: Some("output".to_string()),
                 transition_rules: vec![domain::TransitionRule {
@@ -626,8 +684,12 @@ mod tests {
                 "builtin": false,
                 "nodes": [{
                     "name": "implement",
-                    "type": "agent",
-                    "instruction": "inst",
+                    "session": {
+                        "gate": "auto",
+                        "facets": {
+                            "instruction": "inst"
+                        }
+                    },
                     "input_contracts": ["input"],
                     "output_contract": "output",
                     "rules": [{
@@ -654,7 +716,9 @@ mod tests {
                     "description": "",
                     "nodes": [{
                         "name": "step",
-                        "type": "agent"
+                        "session": {
+                            "gate": "auto"
+                        }
                     }]
                 },
                 "permissionMode": "edit"

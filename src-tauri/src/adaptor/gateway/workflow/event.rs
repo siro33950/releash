@@ -479,7 +479,9 @@ mod tests {
     use super::*;
 
     fn minimal_workflow() -> Workflow {
-        use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType};
+        use crate::adaptor::gateway::workflow::schema::{
+            FacetRefs, NodeDefinition, NodeKind, SessionSpec,
+        };
         Workflow {
             variables: Default::default(),
             name: "wf".to_string(),
@@ -487,8 +489,13 @@ mod tests {
             builtin: false,
             nodes: vec![NodeDefinition {
                 name: "n1".to_string(),
-                node_type: NodeType::Agent,
-                instruction: Some("do".to_string()),
+                kind: NodeKind::Session(SessionSpec {
+                    facets: FacetRefs {
+                        instruction: Some("do".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 ..NodeDefinition::default()
             }],
         }

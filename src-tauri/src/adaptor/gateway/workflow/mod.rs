@@ -71,7 +71,9 @@ mod worktree_gateway;
 
 pub(crate) use archive_repository::WorkflowRunArchiveFileRepository;
 pub(crate) use config_path_gateway::WorkflowConfigPathFileGateway;
-pub(crate) use definition_repository::WorkflowDefinitionFileRepository;
+pub(crate) use definition_repository::{
+    WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
+};
 pub(crate) use diagnostics_gateway::WorkflowDiagnosticsFileGateway;
 #[cfg(test)]
 pub(crate) use editor_gateway::NoopWorkflowExternalEditorGateway;

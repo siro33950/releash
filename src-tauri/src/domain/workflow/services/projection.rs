@@ -66,7 +66,10 @@ pub fn active_parallel_steps(parallel_run: Option<&ParallelRunState>) -> Vec<Par
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        value_objects::{FailureDisposition, NodeType, TransitionRule, WorkflowStepFailureKind},
+        value_objects::{
+            FacetRefs, FailureDisposition, NodeDefinition, NodeKind, SessionGate, SessionSpec,
+            TransitionRule, WorkflowStepFailureKind,
+        },
         ParallelChildRun, ParallelChildState, ParallelRunState,
     };
 
@@ -121,7 +124,14 @@ mod tests {
     fn approval_operations_only_exposes_reject_when_waiting_approval() {
         let step = NodeDefinition {
             name: "approve".to_string(),
-            node_type: NodeType::Approval,
+            kind: NodeKind::Session(SessionSpec {
+                gate: SessionGate::Approval,
+                facets: FacetRefs {
+                    instruction: Some("implement".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
             transition_rules: vec![TransitionRule {
                 r#match: "reject".to_string(),
                 next: "fix".to_string(),

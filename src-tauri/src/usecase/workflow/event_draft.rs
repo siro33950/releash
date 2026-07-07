@@ -65,15 +65,40 @@ fn lookup_step_output_contract(
         if node.get("name").and_then(Value::as_str) == Some(step_name) {
             return output_contract_from_node(node);
         }
-        if let Some(children) = node.get("parallel_children") {
-            let children = children
-                .as_array()
-                .ok_or_else(|| "parallel_children must be an array".to_string())?;
-            for child in children {
-                if child.get("name").and_then(Value::as_str) == Some(step_name) {
-                    return output_contract_from_node(child);
-                }
+        if let Some(contract) = lookup_child_output_contract(
+            node.get("parallel_children"),
+            step_name,
+            "parallel_children",
+        )? {
+            return Ok(Some(contract));
+        }
+        if let Some(fanout) = node.get("fanout") {
+            if let Some(contract) = lookup_child_output_contract(
+                fanout.get("parallel_children"),
+                step_name,
+                "fanout.parallel_children",
+            )? {
+                return Ok(Some(contract));
             }
+        }
+    }
+    Ok(None)
+}
+
+fn lookup_child_output_contract(
+    children: Option<&Value>,
+    step_name: &str,
+    field_path: &str,
+) -> Result<Option<String>, String> {
+    let Some(children) = children else {
+        return Ok(None);
+    };
+    let children = children
+        .as_array()
+        .ok_or_else(|| format!("{field_path} must be an array"))?;
+    for child in children {
+        if child.get("name").and_then(Value::as_str) == Some(step_name) {
+            return output_contract_from_node(child);
         }
     }
     Ok(None)
@@ -139,7 +164,7 @@ mod tests {
                     "variables": {},
                     "nodes": [{
                         "name": "review",
-                        "type": "agent",
+                        "session": {},
                         "output_contract": "review-verdict"
                     }]
                 }
@@ -166,7 +191,7 @@ mod tests {
                     "variables": {},
                     "nodes": [{
                         "name": "review",
-                        "type": "agent",
+                        "session": {},
                         "output_contract": "review-verdict"
                     }]
                 }
@@ -175,6 +200,38 @@ mod tests {
 
         let contract = resolve_step_output_contract_from_drafts(&events, "review", "run-1")
             .expect("contract should resolve");
+
+        assert_eq!(contract, "review-verdict");
+    }
+
+    #[test]
+    fn resolve_step_output_contract_from_drafts_reads_fanout_child_contract() {
+        let events = vec![WorkflowEventDraft {
+            run_id: "run-1".to_string(),
+            event_kind: "run_started".to_string(),
+            timestamp: 1.0,
+            payload: serde_json::json!({
+                "workflow_definition": {
+                    "name": "wf",
+                    "description": "",
+                    "builtin": false,
+                    "variables": {},
+                    "nodes": [{
+                        "name": "review",
+                        "fanout": {
+                            "parallel_children": [{
+                                "name": "security-review",
+                                "output_contract": "review-verdict"
+                            }]
+                        }
+                    }]
+                }
+            }),
+        }];
+
+        let contract =
+            resolve_step_output_contract_from_drafts(&events, "security-review", "run-1")
+                .expect("fanout child contract should resolve");
 
         assert_eq!(contract, "review-verdict");
     }
@@ -193,7 +250,7 @@ mod tests {
                     "variables": {},
                     "nodes": [{
                         "name": "review",
-                        "type": "agent"
+                        "session": {}
                     }]
                 }
             }),
