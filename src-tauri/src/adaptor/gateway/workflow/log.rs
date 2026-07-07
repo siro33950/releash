@@ -54,6 +54,13 @@ impl WorkflowEventLog {
         self.log_dir.join(format!("{run_id}.ndjson"))
     }
 
+    pub(crate) fn gc_delete_paths(&self, run_id: &str) -> Vec<PathBuf> {
+        vec![
+            self.log_path(run_id),
+            self.log_dir.join(format!("{run_id}.json")),
+        ]
+    }
+
     /// イベントをNDJSON形式でログファイルに追記する。
     ///
     /// [08] production の単発 append は `write_log_required` → `append_batch` 経路に

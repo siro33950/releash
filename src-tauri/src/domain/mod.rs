@@ -1,5 +1,6 @@
 pub(crate) mod agent_session;
 pub(crate) mod app_config;
+pub(crate) mod app_data_gc;
 pub(crate) mod code;
 pub(crate) mod comment;
 pub(crate) mod external_editor;

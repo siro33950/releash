@@ -13,6 +13,7 @@ use crate::usecase::agent_session::session::{
 mod attachment_blob;
 mod event_store;
 mod fork_copier;
+mod gc;
 mod layout;
 mod message_store;
 mod meta_repository;
@@ -22,6 +23,8 @@ mod tool_output_blob;
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) use gc::SessionGcMetaRead;
 
 pub struct FileSessionStorage {
     pub(super) cache: RwLock<HashMap<String, SessionMeta>>,

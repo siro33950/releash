@@ -133,6 +133,10 @@ pub fn run() {
                     *shared_repo_paths.write() = paths;
                 }
             }
+            adaptor::controller::wiring::spawn_startup_app_data_gc(
+                data_dir.clone(),
+                shared_repo_paths.clone(),
+            );
 
             // repository ドメインの DI 配線（起動時に AppState を組み立てて manage）。
             // git ベースの usecase / query service はステートレス、repo_paths は

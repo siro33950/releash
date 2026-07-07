@@ -162,6 +162,10 @@ fn run_file_path(data_dir: &Path, run_id: &str) -> PathBuf {
     runs_dir(data_dir).join(format!("{run_id}.json"))
 }
 
+pub(crate) fn workflow_run_metadata_path(data_dir: &Path, run_id: &str) -> PathBuf {
+    run_file_path(data_dir, run_id)
+}
+
 /// `run_id` を UUID として検証する。Run Store のすべての lookup/read 経路で path traversal
 /// を防ぐ目的で利用する（Spec issues-1011: 信頼境界・run_id の形式検証）。
 fn is_valid_run_id(run_id: &str) -> bool {
@@ -285,20 +289,47 @@ pub(crate) fn sort_summaries_active_first(summaries: &mut [WorkflowRunSummary]) 
     });
 }
 
-pub(crate) fn iter_valid_run_metadata(data_dir: &Path) -> Vec<WorkflowRun> {
+#[derive(Debug, Clone)]
+pub(crate) struct WorkflowRunMetadataScan {
+    pub(crate) runs: Vec<WorkflowRun>,
+    pub(crate) is_complete: bool,
+}
+
+impl Default for WorkflowRunMetadataScan {
+    fn default() -> Self {
+        Self {
+            runs: Vec::new(),
+            is_complete: true,
+        }
+    }
+}
+
+pub(crate) fn scan_valid_run_metadata(data_dir: &Path) -> WorkflowRunMetadataScan {
     let runs_dir = runs_dir(data_dir);
     if !runs_dir.exists() {
-        return Vec::new();
+        return WorkflowRunMetadataScan::default();
     }
     let entries = match fs::read_dir(&runs_dir) {
         Ok(entries) => entries,
         Err(e) => {
             log::warn!("RunStore: failed to read runs dir: {e}");
-            return Vec::new();
+            return WorkflowRunMetadataScan {
+                runs: Vec::new(),
+                is_complete: false,
+            };
         }
     };
     let mut runs = Vec::new();
-    for entry in entries.flatten() {
+    let mut is_complete = true;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                log::warn!("RunStore: failed to read run metadata entry: {e}");
+                is_complete = false;
+                continue;
+            }
+        };
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
@@ -310,9 +341,30 @@ pub(crate) fn iter_valid_run_metadata(data_dir: &Path) -> Vec<WorkflowRun> {
                     "RunStore: skip corrupted run metadata at {}: {e}",
                     path.display()
                 );
+                is_complete = false;
             }
         }
     }
+    WorkflowRunMetadataScan { runs, is_complete }
+}
+
+pub(crate) fn read_valid_run_metadata(
+    data_dir: &Path,
+    run_id: &str,
+) -> Result<Option<WorkflowRun>, String> {
+    if !is_valid_run_id(run_id) {
+        return Err("invalid run_id".to_string());
+    }
+    let runs_dir = runs_dir(data_dir);
+    let path = run_file_path(data_dir, run_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    load_validated_metadata_entry(&runs_dir, &path).map(Some)
+}
+
+pub(crate) fn iter_valid_run_metadata(data_dir: &Path) -> Vec<WorkflowRun> {
+    let WorkflowRunMetadataScan { runs, .. } = scan_valid_run_metadata(data_dir);
     runs
 }
 

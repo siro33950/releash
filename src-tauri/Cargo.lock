@@ -3750,6 +3750,7 @@ dependencies = [
  "bytes",
  "clap",
  "dirs 6.0.0",
+ "filetime",
  "fix-path-env",
  "flate2",
  "fs2",

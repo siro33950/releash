@@ -8,6 +8,7 @@
 //! repository / code / agent_session / workflow などの usecase builder を一元的に束ね、
 //! query service や gateway 協力者は対応する usecase の構築時に注入する。
 
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -325,4 +326,89 @@ pub(crate) fn build_workflow_step_lifecycle_usecase(
 
 pub(crate) fn spawn_workflow_pending_command_watcher(app: tauri::AppHandle, data_dir: PathBuf) {
     crate::adaptor::gateway::workflow::spawn_pending_command_watcher(app, data_dir);
+}
+
+pub(crate) fn spawn_startup_app_data_gc(
+    app_data_dir: PathBuf,
+    shared_repo_paths: crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths,
+) {
+    spawn_startup_gc_with(
+        move || {
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let fs = crate::adaptor::gateway::app_data_gc::StdGcFileSystem;
+                let archive_pruner = crate::adaptor::gateway::app_data_gc::StdWorkflowArchivePruner;
+                let revalidation_reader =
+                    crate::adaptor::gateway::app_data_gc::StdGcRevalidationReader;
+                let request = crate::adaptor::gateway::app_data_gc::build_startup_gc_request(
+                    app_data_dir,
+                    shared_repo_paths,
+                );
+                crate::usecase::app_data_gc::run_startup_gc(
+                    request,
+                    &fs,
+                    &archive_pruner,
+                    &revalidation_reader,
+                )
+            }));
+            if result.is_err() {
+                log::error!("app data gc task panicked");
+            }
+        },
+        |gc| {
+            tauri::async_runtime::spawn_blocking(gc);
+        },
+    );
+}
+
+fn spawn_startup_gc_with<F, S>(gc: F, spawn: S)
+where
+    F: FnOnce() + Send + 'static,
+    S: FnOnce(F),
+{
+    spawn(gc);
+}
+
+#[cfg(test)]
+mod startup_gc_spawn_tests {
+    use super::spawn_startup_gc_with;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn startup_gc_runner_spawns_once() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_spawn = calls.clone();
+
+        spawn_startup_gc_with(
+            || panic!("gc body should not be run by this spawn stub"),
+            move |gc| {
+                calls_for_spawn.fetch_add(1, Ordering::SeqCst);
+                let _ = gc;
+            },
+        );
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn startup_gc_runner_does_not_wait_for_gc_body() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let started = Instant::now();
+
+        spawn_startup_gc_with(
+            move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            },
+            |gc| {
+                std::thread::spawn(gc);
+            },
+        );
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(500));
+        release_tx.send(()).unwrap();
+    }
 }

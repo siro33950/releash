@@ -404,7 +404,7 @@ pub(crate) fn state_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("review-comments")
 }
 
-fn worktree_storage_key(worktree: &str) -> String {
+pub(crate) fn worktree_storage_key(worktree: &str) -> String {
     let trimmed = worktree.trim();
     let canonical = Path::new(trimmed)
         .canonicalize()
