@@ -1,7 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::adaptor::protocol::workflow as workflow_wire;
 use crate::domain::workflow;
+use crate::domain::workflow::services::contract_schema;
 use crate::domain::workflow::WorkflowStateSnapshot;
 
 #[derive(Debug, Clone, Default)]
@@ -143,6 +144,11 @@ fn workflow_definition_to_view(
         name: workflow.name,
         description: workflow.description,
         builtin: workflow.builtin,
+        schemas: workflow
+            .schemas
+            .into_iter()
+            .map(|(name, schema)| (name, contract_schema::schema_def_to_json_value(&schema)))
+            .collect::<BTreeMap<_, _>>(),
         nodes: workflow
             .nodes
             .into_iter()
@@ -183,8 +189,6 @@ fn workflow_node_to_view(
         artifact: node.artifact,
         input: node.input,
         inputs: node.inputs,
-        output_contract: node.output_contract,
-        input_contracts: node.input_contracts,
         pass_previous_response: node.pass_previous_response,
         pass_output_from: node.pass_output_from,
         collect: node.collect.map(collect_config_to_view),
@@ -224,8 +228,8 @@ fn interim_child_to_view(child: workflow::InterimChild) -> workflow_wire::Workfl
         model: child.model,
         permission: child.permission,
         facets: facet_refs_to_view(child.facets),
-        output_contract: child.output_contract,
-        input_contracts: child.input_contracts,
+        artifact: child.artifact,
+        input: child.input,
         pass_previous_response: child.pass_previous_response,
         pass_output_from: child.pass_output_from,
     }
@@ -324,7 +328,7 @@ fn child_output_to_view(
         run_index: output.run_index,
         completed_at: output.completed_at,
         structured_output: output.structured_output,
-        output_contract: output.output_contract,
+        artifact_contract: output.artifact_contract,
         state: output.state,
         failure_kind: output.failure_kind,
         failure_disposition: output.failure_disposition,
@@ -342,7 +346,7 @@ fn parallel_step_state_to_view(
         run_index: state.run_index,
         completed_at: state.completed_at,
         structured_output: state.structured_output,
-        output_contract: state.output_contract,
+        artifact_contract: state.artifact_contract,
         failure_kind: state.failure_kind,
         failure_disposition: state.failure_disposition,
     }
@@ -355,7 +359,7 @@ fn step_output_to_view(output: workflow::StepOutput) -> workflow_wire::StepOutpu
         session_id: output.session_id,
         result: output.result,
         structured_output: output.structured_output,
-        output_contract: output.output_contract,
+        artifact_contract: output.artifact_contract,
         token_usage: output.token_usage.map(token_usage_to_view),
         completed_at: output.completed_at,
     }
@@ -393,7 +397,7 @@ mod tests {
                     run_index: 1,
                     completed_at: 2.0,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     state: "completed".to_string(),
                     failure_kind: None,
                     failure_disposition: None,
@@ -406,6 +410,7 @@ mod tests {
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
+                schemas: Default::default(),
                 nodes: vec![],
             },
             total_token_usage: TokenUsage::default(),
@@ -419,7 +424,7 @@ mod tests {
                 run_index: 1,
                 completed_at: None,
                 structured_output: None,
-                output_contract: None,
+                artifact_contract: None,
                 failure_kind: None,
                 failure_disposition: None,
             }],
@@ -494,7 +499,7 @@ mod tests {
             run_index: 1,
             completed_at: 3.0,
             structured_output: None,
-            output_contract: None,
+            artifact_contract: None,
             state: crate::domain::workflow::STEP_STATE_FAILED.to_string(),
             failure_kind: Some(crate::domain::workflow::WorkflowStepFailureKind::ModelRefusal),
             failure_disposition: Some(crate::domain::workflow::FailureDisposition::Partial),
@@ -569,6 +574,7 @@ mod tests {
             name: "review-cycle".to_string(),
             description: "Test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 make_session_test_node("plan", "plan"),
                 make_session_test_node("implement", "implement"),

@@ -1,6 +1,20 @@
 name: 02_implement_opus48
 description: Spec を元にClaude系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。
 builtin: true
+schemas:
+  spec-implement-fix-verdict:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+        - completed
+        - fixed
+      summary: string
+    required:
+    - verdict
+    - summary
+    additionalProperties: false
 nodes:
 - name: implement
   session:
@@ -36,7 +50,7 @@ nodes:
       policy: coding
       knowledge: releash-thread-cli
       instruction: spec-implement-fix
-  output_contract: spec-implement-fix-verdict
+  artifact: spec-implement-fix-verdict
   rules:
   - match: fixed
     next: review_parallel

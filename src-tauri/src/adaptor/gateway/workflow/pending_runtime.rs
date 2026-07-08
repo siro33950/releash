@@ -12,7 +12,7 @@ use crate::usecase::agent_session::session::SessionStore;
 #[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
-    fn output_submitted_already_recorded(
+    fn artifact_produced_already_recorded(
         &self,
         app: &tauri::AppHandle<R>,
         run_id: &str,
@@ -96,14 +96,14 @@ where
     R: tauri::Runtime,
     T: PendingCommandRuntime<R> + ?Sized,
 {
-    fn output_submitted_already_recorded(
+    fn artifact_produced_already_recorded(
         &self,
         app: &tauri::AppHandle<R>,
         run_id: &str,
         request_id: &str,
     ) -> Result<bool, WorkflowEngineError> {
         self.as_ref()
-            .output_submitted_already_recorded(app, run_id, request_id)
+            .artifact_produced_already_recorded(app, run_id, request_id)
     }
 
     fn cli_mutation_already_recorded(
@@ -236,13 +236,13 @@ where
 
 #[async_trait]
 impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
-    fn output_submitted_already_recorded(
+    fn artifact_produced_already_recorded(
         &self,
         app: &tauri::AppHandle<R>,
         run_id: &str,
         request_id: &str,
     ) -> Result<bool, WorkflowEngineError> {
-        WorkflowRuntimeService::output_submitted_already_recorded(self, app, run_id, request_id)
+        WorkflowRuntimeService::artifact_produced_already_recorded(self, app, run_id, request_id)
     }
 
     fn cli_mutation_already_recorded(

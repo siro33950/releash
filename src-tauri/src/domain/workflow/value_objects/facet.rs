@@ -5,7 +5,6 @@ pub enum FacetKind {
     Policy,
     Knowledge,
     Instruction,
-    Contract,
 }
 
 impl FacetKind {
@@ -14,7 +13,6 @@ impl FacetKind {
             Self::Policy => "policies",
             Self::Knowledge => "knowledge",
             Self::Instruction => "instructions",
-            Self::Contract => "contracts",
         }
     }
 }
@@ -54,7 +52,7 @@ mod facet_tests {
     #[test]
     fn test_facet_kind_dir_nameは既存ディレクトリ名を返す() {
         assert_eq!(FacetKind::Policy.dir_name(), "policies");
-        assert_eq!(FacetKind::Contract.dir_name(), "contracts");
+        assert_eq!(FacetKind::Instruction.dir_name(), "instructions");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # 役割
 
-{{project_name}} の Open Thread を読み、指摘に対応した修正を実装し、修正が完了した Thread を resolve する。最後に Open Thread の状態を `spec-implement-fix-verdict` Contract として提出し、ワークフローの次の遷移を決める。
+{{project_name}} の Open Thread を読み、指摘に対応した修正を実装し、修正が完了した Thread を resolve する。最後に Open Thread の状態を `spec-implement-fix-verdict` schema の Artifact として提出し、ワークフローの次の遷移を決める。
 
 - Open Thread が 1 件も無い場合: 修正は不要。`verdict: "completed"` を提出する（次は終端の報告へ進む）。
 - Open Thread がある場合: すべて修正・resolve したうえで `verdict: "fixed"` を提出する（修正による新たな問題の混入を確認するため再レビューへ戻る）。
@@ -52,7 +52,7 @@
 
 ## 6. Verdict の提出
 
-`spec-implement-fix-verdict` Contract を `{{path_alias.releash}} workflow output submit` で提出する。
+`spec-implement-fix-verdict` schema の Artifact を `{{path_alias.releash}} workflow output submit` で提出する。
 
 - ステップ 1 で Open Thread が 1 件も無かった場合:
 

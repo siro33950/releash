@@ -60,7 +60,7 @@ pub(crate) struct WorkflowExecution {
     pub(crate) task: Option<String>,
     /// 並列実行中の場合の状態。
     pub(crate) parallel_run: Option<ParallelRunState>,
-    /// ワークフローレベルの変数（spec-directory等のcontract結果から設定）。
+    /// ワークフローレベルの変数（#1326 で inputs / Artifact 参照へ置換予定）。
     pub(crate) workflow_variables: HashMap<String, String>,
     /// 現在実行中の step session で観測した非終端 stall signal。
     pub(crate) current_stall_observations: Vec<WorkflowStallObservation>,
@@ -82,7 +82,7 @@ pub(crate) struct ParallelChildRun {
     pub(crate) state: ParallelChildState,
     pub(crate) result: Option<String>,
     pub(crate) structured_output: Option<serde_json::Value>,
-    pub(crate) output_contract: Option<String>,
+    pub(crate) artifact_contract: Option<String>,
     pub(crate) failure_kind: Option<WorkflowStepFailureKind>,
     pub(crate) failure_disposition: Option<FailureDisposition>,
     pub(crate) token_usage: TokenUsage,
@@ -227,7 +227,7 @@ impl WorkflowExecution {
                         },
                         result: child.result.clone(),
                         structured_output: child.structured_output.clone(),
-                        output_contract: child.output_contract.clone(),
+                        artifact_contract: child.artifact_contract.clone(),
                         failure_kind: child.failure_kind,
                         failure_disposition: child.failure_disposition,
                         token_usage: token_usage_to_domain(&child.token_usage),
@@ -316,7 +316,7 @@ impl WorkflowExecution {
         &mut self,
         result: Option<String>,
         structured_output: Option<serde_json::Value>,
-        output_contract: Option<String>,
+        artifact_contract: Option<String>,
     ) -> StepHistoryEntry {
         let step_name = self.workflow.nodes[self.current_step_index].name.clone();
         let run_index = self
@@ -338,7 +338,7 @@ impl WorkflowExecution {
             },
         );
         if let Some(output) =
-            workflow_history::step_output_from_completed_history_entry(&entry, output_contract)
+            workflow_history::step_output_from_completed_history_entry(&entry, artifact_contract)
         {
             self.step_outputs
                 .insert(step_name, step_output_from_domain(output));

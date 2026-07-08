@@ -1,6 +1,52 @@
 name: 05_review-fix_opus48
 description: フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針と実装差分を確認して不足を Task 化し、Claude 系モデルで Task を実装するループで方針との合致を保証する。最後に人間が承認した Thread を resolve する。
 builtin: true
+schemas:
+  review-fix-task-text: string
+  review-fix-task:
+    type: object
+    properties:
+      task_id: string
+      thread_id: string
+      file: string
+      objective: string
+      acceptance_criteria:
+        type: array
+        items: review-fix-task-text
+      non_goals:
+        type: array
+        items: review-fix-task-text
+      source_policy: string
+      problem: string
+      expected: string
+      actual: string
+    required:
+    - task_id
+    - thread_id
+    - file
+    - objective
+    - source_policy
+    - problem
+    - expected
+    - actual
+    additionalProperties: false
+  review-fix-tasks:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+        - LGTM
+        - NEEDS_FIX
+      tasks:
+        type: array
+        items: review-fix-task
+      summary: string
+    required:
+    - verdict
+    - tasks
+    - summary
+    additionalProperties: false
 nodes:
 - name: check_and_make_tasks
   session:
@@ -11,7 +57,7 @@ nodes:
       policy: reviewing
       knowledge: releash-thread-cli
       instruction: review-fix-check-tasks
-  output_contract: review-fix-tasks
+  artifact: review-fix-tasks
   rules:
   - match: NEEDS_FIX
     next: implement_tasks

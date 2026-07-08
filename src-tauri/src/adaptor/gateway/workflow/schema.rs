@@ -1,7 +1,98 @@
 use serde::de;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::HashMap;
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use crate::domain::workflow as domain_workflow;
+use crate::domain::workflow::services::contract_schema;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SchemaDef {
+    Object {
+        properties: BTreeMap<String, SchemaDef>,
+        required: BTreeSet<String>,
+        additional_properties: bool,
+    },
+    Array {
+        items: String,
+    },
+    String {
+        r#enum: Option<Vec<String>>,
+    },
+    Boolean,
+    Integer,
+    Number,
+}
+
+impl Serialize for SchemaDef {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        contract_schema::schema_def_to_json_value(&schema_def_to_domain(self)).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SchemaDef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        contract_schema::schema_def_from_json(&value)
+            .map(schema_def_from_domain)
+            .map_err(de::Error::custom)
+    }
+}
+
+fn schema_def_to_domain(schema: &SchemaDef) -> domain_workflow::SchemaDef {
+    match schema {
+        SchemaDef::Object {
+            properties,
+            required,
+            additional_properties,
+        } => domain_workflow::SchemaDef::Object {
+            properties: properties
+                .iter()
+                .map(|(name, schema)| (name.clone(), schema_def_to_domain(schema)))
+                .collect(),
+            required: required.clone(),
+            additional_properties: *additional_properties,
+        },
+        SchemaDef::Array { items } => domain_workflow::SchemaDef::Array {
+            items: items.clone(),
+        },
+        SchemaDef::String { r#enum } => domain_workflow::SchemaDef::String {
+            r#enum: r#enum.clone(),
+        },
+        SchemaDef::Boolean => domain_workflow::SchemaDef::Boolean,
+        SchemaDef::Integer => domain_workflow::SchemaDef::Integer,
+        SchemaDef::Number => domain_workflow::SchemaDef::Number,
+    }
+}
+
+fn schema_def_from_domain(schema: domain_workflow::SchemaDef) -> SchemaDef {
+    match schema {
+        domain_workflow::SchemaDef::Object {
+            properties,
+            required,
+            additional_properties,
+        } => SchemaDef::Object {
+            properties: properties
+                .into_iter()
+                .map(|(name, schema)| (name, schema_def_from_domain(schema)))
+                .collect(),
+            required,
+            additional_properties,
+        },
+        domain_workflow::SchemaDef::Array { items } => SchemaDef::Array { items },
+        domain_workflow::SchemaDef::String { r#enum } => SchemaDef::String { r#enum },
+        domain_workflow::SchemaDef::Boolean => SchemaDef::Boolean,
+        domain_workflow::SchemaDef::Integer => SchemaDef::Integer,
+        domain_workflow::SchemaDef::Number => SchemaDef::Number,
+    }
+}
 
 /// ワークフローテンプレート定義。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -11,6 +102,8 @@ pub struct Workflow {
     pub description: String,
     #[serde(default)]
     pub builtin: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemas: BTreeMap<String, SchemaDef>,
     /// facet 展開用の静的変数宣言（#1326 で削除予定）。
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub variables: HashMap<String, String>,
@@ -23,17 +116,11 @@ pub struct ResolvedFacets {
     pub policy: Option<String>,
     pub knowledge: Option<String>,
     pub instruction: Option<String>,
-    pub output_contract: Option<String>,
-    pub input_contracts: Vec<String>,
 }
 
 impl ResolvedFacets {
     pub fn is_empty(&self) -> bool {
-        self.policy.is_none()
-            && self.knowledge.is_none()
-            && self.instruction.is_none()
-            && self.output_contract.is_none()
-            && self.input_contracts.is_empty()
+        self.policy.is_none() && self.knowledge.is_none() && self.instruction.is_none()
     }
 }
 
@@ -142,8 +229,6 @@ pub struct NodeDefinition {
     pub input: Option<String>,
     pub inputs: Vec<String>,
     // 既存表現は担当 goal まで共通位置に残す。
-    pub output_contract: Option<String>,
-    pub input_contracts: Option<Vec<String>>,
     pub pass_previous_response: Option<bool>,
     pub pass_output_from: Option<Vec<String>>,
     pub collect: Option<CollectConfig>,
@@ -156,8 +241,6 @@ impl NodeDefinition {
     pub fn has_facet_refs(&self) -> bool {
         self.session()
             .is_some_and(|session| !session.facets.is_empty())
-            || self.output_contract.is_some()
-            || self.input_contracts.as_ref().is_some_and(|v| !v.is_empty())
     }
 
     pub fn kind_name(&self) -> NodeKindName {
@@ -227,10 +310,6 @@ struct RawNodeDefinition {
     #[serde(default)]
     inputs: Vec<String>,
     #[serde(default)]
-    output_contract: Option<String>,
-    #[serde(default)]
-    input_contracts: Option<Vec<String>>,
-    #[serde(default)]
     pass_previous_response: Option<bool>,
     #[serde(default)]
     pass_output_from: Option<Vec<String>>,
@@ -274,8 +353,6 @@ impl<'de> Deserialize<'de> for NodeDefinition {
             artifact: raw.artifact,
             input: raw.input,
             inputs: raw.inputs,
-            output_contract: raw.output_contract,
-            input_contracts: raw.input_contracts,
             pass_previous_response: raw.pass_previous_response,
             pass_output_from: raw.pass_output_from,
             collect: raw.collect,
@@ -303,8 +380,6 @@ impl Serialize for NodeDefinition {
         if !self.inputs.is_empty() {
             map.serialize_entry("inputs", &self.inputs)?;
         }
-        serialize_option(&mut map, "output_contract", &self.output_contract)?;
-        serialize_option(&mut map, "input_contracts", &self.input_contracts)?;
         serialize_option(
             &mut map,
             "pass_previous_response",
@@ -345,9 +420,9 @@ pub struct InterimChild {
     #[serde(default, skip_serializing_if = "FacetRefs::is_empty")]
     pub facets: FacetRefs,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_contract: Option<String>,
+    pub artifact: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_contracts: Option<Vec<String>>,
+    pub input: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_previous_response: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -359,8 +434,6 @@ pub struct InterimChild {
 impl InterimChild {
     pub fn has_facet_refs(&self) -> bool {
         !self.facets.is_empty()
-            || self.output_contract.is_some()
-            || self.input_contracts.as_ref().is_some_and(|v| !v.is_empty())
     }
 }
 
@@ -575,6 +648,110 @@ nodes:
         let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
         assert!(err.to_string().contains("type"));
+    }
+
+    #[test]
+    fn rejects_legacy_output_contract_field() {
+        let yaml = r#"
+name: old-output-contract
+description: invalid
+nodes:
+  - name: review
+    session:
+      permission: edit
+    output_contract: review-verdict
+"#;
+        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("output_contract"));
+    }
+
+    #[test]
+    fn rejects_legacy_input_contracts_field() {
+        let yaml = r#"
+name: old-input-contracts
+description: invalid
+nodes:
+  - name: implement
+    session:
+      permission: edit
+    input_contracts:
+      - spec-directory
+"#;
+        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("input_contracts"));
+    }
+
+    #[test]
+    fn schemas_accept_scalar_string_contract() {
+        let yaml = r#"
+name: scalar-schema
+description: valid
+schemas:
+  request_text: string
+nodes:
+  - name: review
+    session:
+      permission: edit
+    input: request_text
+"#;
+        let workflow = serde_saphyr::from_str::<Workflow>(yaml).unwrap();
+        assert!(matches!(
+            workflow.schemas.get("request_text"),
+            Some(SchemaDef::String { r#enum: None })
+        ));
+    }
+
+    #[test]
+    fn schemas_serde_matches_domain_schema_helper_for_supported_shapes() {
+        for value in [
+            serde_json::json!("string"),
+            serde_json::json!({"type": "string", "enum": ["LGTM", "NEEDS_FIX"]}),
+            serde_json::json!({"type": "array", "items": "review-item"}),
+            serde_json::json!({"type": "boolean"}),
+            serde_json::json!({"type": "integer"}),
+            serde_json::json!({"type": "number"}),
+            serde_json::json!({
+                "type": "object",
+                "properties": {"verdict": {"type": "string", "enum": ["LGTM"]}},
+                "required": ["verdict"],
+                "additionalProperties": false
+            }),
+        ] {
+            let gateway_schema: SchemaDef = serde_json::from_value(value.clone()).unwrap();
+            let domain_schema = contract_schema::schema_def_from_json(&value).unwrap();
+            assert_eq!(schema_def_to_domain(&gateway_schema), domain_schema);
+        }
+    }
+
+    #[test]
+    fn schemas_reject_array_extra_keywords_with_allowed_field_message() {
+        let err = serde_json::from_value::<SchemaDef>(serde_json::json!({
+            "type": "array",
+            "items": "review-item",
+            "required": []
+        }))
+        .unwrap_err();
+
+        assert!(err.to_string().contains("array schema supports only items"));
+    }
+
+    #[test]
+    fn schemas_reject_subset_outside_keywords() {
+        let yaml = r#"
+name: invalid-schema-keyword
+description: invalid
+schemas:
+  review:
+    type: object
+    oneOf: []
+nodes:
+  - name: review
+    session:
+      permission: edit
+"#;
+        assert!(serde_saphyr::from_str::<Workflow>(yaml).is_err());
     }
 
     #[test]

@@ -8,11 +8,10 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-const ALL_FACET_KINDS: [FacetKind; 4] = [
+const ALL_FACET_KINDS: [FacetKind; 3] = [
     FacetKind::Policy,
     FacetKind::Knowledge,
     FacetKind::Instruction,
-    FacetKind::Contract,
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -275,7 +274,7 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ),
         ValidationError::ParallelChildMissingFacet { parent, .. } => (
             Some(parent.clone()),
-            // 旧ラベル "parallel.facets" と同じく、policy/knowledge/instruction/output_contract
+            // 旧ラベル "parallel.facets" と同じく、policy/knowledge/instruction/artifact_contract
             // のいずれかの欠落を表す論理グループ名として "facets" を用いる
             // （新 schema の YAML キーは個別だが、`MissingFacet` 側も "facets" 表現）。
             Some("parallel_children.facets".to_string()),
@@ -330,8 +329,14 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::TooManyParallelChildren { step, .. } => {
             (Some(step.clone()), Some("parallel_children".to_string()))
         }
-        ValidationError::UnknownContractRef { step, slot, .. } => {
+        ValidationError::UnknownSchemaRef { step, slot, .. }
+        | ValidationError::InvalidSchemaRef { step, slot, .. } => {
             (Some(step.clone()), Some((*slot).to_string()))
+        }
+        ValidationError::InvalidSchema { .. } => (None, Some("schemas".to_string())),
+        ValidationError::InvalidArtifactSchema { step, .. }
+        | ValidationError::ReservedArtifactField { step, .. } => {
+            (Some(step.clone()), Some("artifact".to_string()))
         }
     }
 }
@@ -609,8 +614,6 @@ fn diagnose_workflow(
                     instruction: step
                         .session()
                         .and_then(|session| session.facets.instruction.as_deref()),
-                    output_contract: step.output_contract.as_deref(),
-                    input_contracts: step.input_contracts.as_deref(),
                 },
             );
 
@@ -646,8 +649,6 @@ fn diagnose_workflow(
                         policy: child.facets.policy.as_deref(),
                         knowledge: child.facets.knowledge.as_deref(),
                         instruction: child.facets.instruction.as_deref(),
-                        output_contract: child.output_contract.as_deref(),
-                        input_contracts: child.input_contracts.as_deref(),
                     },
                 );
 
@@ -739,8 +740,6 @@ struct FacetRefs<'a> {
     policy: Option<&'a str>,
     knowledge: Option<&'a str>,
     instruction: Option<&'a str>,
-    output_contract: Option<&'a str>,
-    input_contracts: Option<&'a [String]>,
 }
 
 /// 複数の facet 参照を 1 つの step スコープで一括検査するためのコンテキスト。
@@ -811,7 +810,7 @@ impl<'a> FacetRefCheckContext<'a> {
         }
     }
 
-    /// 1 つの step が持つ全 facet ref（4 単数 slot + input_contracts 配列）を一括検査する。
+    /// 1 つの step が持つ全 facet ref を一括検査する。
     fn check_step(&mut self, step_name: &str, facet_refs: &FacetRefs<'_>) {
         let singles: &[(&str, FacetKind, Option<&str>)] = &[
             ("policy", FacetKind::Policy, facet_refs.policy),
@@ -821,20 +820,10 @@ impl<'a> FacetRefCheckContext<'a> {
                 FacetKind::Instruction,
                 facet_refs.instruction,
             ),
-            (
-                "output_contract",
-                FacetKind::Contract,
-                facet_refs.output_contract,
-            ),
         ];
         for (slot, kind, key_opt) in singles {
             if let Some(key) = key_opt {
                 self.check(step_name, slot, *kind, key);
-            }
-        }
-        if let Some(keys) = facet_refs.input_contracts {
-            for key in keys {
-                self.check(step_name, "input_contracts", FacetKind::Contract, key);
             }
         }
     }
@@ -885,7 +874,7 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
         CollectConfig, CommandSpec, FacetRefs, FanoutSpec, InterimChild, NodeKind, ReduceStrategy,
-        SessionSpec, TransitionRule, Workflow,
+        SchemaDef, SessionSpec, TransitionRule, Workflow,
     };
     use std::fs;
     use tempfile::TempDir;
@@ -976,6 +965,7 @@ mod tests {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_step("step1", Some("nonexistent-instruction"))],
         };
         save_workflow_yaml(wf_dir, &wf);
@@ -988,9 +978,9 @@ mod tests {
     }
 
     #[test]
-    fn diagnose_missing_input_contract_ref() {
-        // Scenario: input_contracts が存在しない Contract キーを参照していれば
-        // facet 参照チェックでエラーになる
+    fn diagnose_missing_input_schema_ref() {
+        // Scenario: input が存在しない schemas Contract キーを参照していれば
+        // workflow validation 経由でエラーになる
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "impl", "content");
@@ -1000,8 +990,9 @@ mod tests {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                input_contracts: Some(vec!["nonexistent-contract".to_string()]),
+                input: Some("nonexistent-contract".to_string()),
                 ..make_step("step1", Some("impl"))
             }],
         };
@@ -1010,52 +1001,130 @@ mod tests {
         let report = diagnose_all(wf_dir, wf_dir);
         assert!(
             report.items.iter().any(|i| i.severity == Severity::Error
-                && i.message.contains("存在しないファセット")
+                && i.message.contains("存在しない schemas Contract")
                 && i.message.contains("nonexistent-contract")
-                && i.field.as_deref() == Some("input_contracts")),
-            "Expected missing-input-contract error, got: {:?}",
+                && i.step_name.as_deref() == Some("step1")
+                && i.field.as_deref() == Some("input")),
+            "Expected missing-input-schema error, got: {:?}",
             report.items
         );
     }
 
     #[test]
-    fn diagnose_input_contract_usage_recorded() {
-        // Scenario: input_contracts から参照された Contract は facet_usage に
-        // slot="input_contracts" で記録される
+    fn diagnose_missing_artifact_schema_ref_remains_node_scoped() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "impl", "content");
-        setup_facet(wf_dir, "contracts", "input-contract", "format: text");
 
         let wf = Workflow {
             variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                input_contracts: Some(vec!["input-contract".to_string()]),
+                artifact: Some("nonexistent-contract".to_string()),
                 ..make_step("step1", Some("impl"))
             }],
         };
         save_workflow_yaml(wf_dir, &wf);
 
         let report = diagnose_all(wf_dir, wf_dir);
-        let usage = report
-            .facet_usage
-            .get("contracts/input-contract")
-            .expect("contracts/input-contract usage entry should exist");
         assert!(
-            usage
-                .iter()
-                .any(|e| e.step_name == "step1" && e.slot == "input_contracts"),
-            "Expected input_contracts usage entry, got: {:?}",
-            usage
+            report.items.iter().any(|i| i.severity == Severity::Error
+                && i.message.contains("存在しない schemas Contract")
+                && i.message.contains("nonexistent-contract")
+                && i.step_name.as_deref() == Some("step1")
+                && i.field.as_deref() == Some("artifact")),
+            "Expected missing-artifact-schema error on step1, got: {:?}",
+            report.items
         );
     }
 
     #[test]
-    fn diagnose_missing_input_contract_ref_in_parallel_child() {
-        // Scenario: parallel child の input_contracts でも存在しない Contract
+    fn diagnose_array_items_unknown_schema_ref_is_schema_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        setup_facet(wf_dir, "instructions", "impl", "content");
+
+        let wf = Workflow {
+            variables: Default::default(),
+            name: "test-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: [(
+                "review-list".to_string(),
+                SchemaDef::Array {
+                    items: "missing-item".to_string(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            nodes: vec![make_step("step1", Some("impl"))],
+        };
+        save_workflow_yaml(wf_dir, &wf);
+
+        let report = diagnose_all(wf_dir, wf_dir);
+        assert!(
+            report.items.iter().any(|i| i.severity == Severity::Error
+                && i.message.contains("schemas.review-list")
+                && i.message
+                    .contains("array.items references unknown schemas 'missing-item'")
+                && i.step_name.is_none()
+                && i.field.as_deref() == Some("schemas")),
+            "Expected schema-scoped array.items error, got: {:?}",
+            report.items
+        );
+        assert!(
+            !report
+                .items
+                .iter()
+                .any(|i| i.step_name.as_deref() == Some("review-list")),
+            "array.items diagnostics must not be attached to a schema name as a step: {:?}",
+            report.items
+        );
+    }
+
+    #[test]
+    fn diagnose_schema_refs_do_not_record_facet_usage() {
+        // Scenario: schemas Contract はファセットではないため facet_usage に記録されない
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        setup_facet(wf_dir, "instructions", "impl", "content");
+
+        let wf = Workflow {
+            variables: Default::default(),
+            name: "test-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: [(
+                "input-contract".to_string(),
+                SchemaDef::Object {
+                    properties: Default::default(),
+                    required: Default::default(),
+                    additional_properties: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            nodes: vec![NodeDefinition {
+                input: Some("input-contract".to_string()),
+                ..make_step("step1", Some("impl"))
+            }],
+        };
+        save_workflow_yaml(wf_dir, &wf);
+
+        let report = diagnose_all(wf_dir, wf_dir);
+        assert!(
+            !report.facet_usage.contains_key("contracts/input-contract"),
+            "schemas Contract must not be tracked as facet usage: {:?}",
+            report.facet_usage
+        );
+    }
+
+    #[test]
+    fn diagnose_missing_input_schema_ref_in_parallel_child() {
+        // Scenario: parallel child の input でも存在しない schemas Contract
         // 参照を検出する
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
@@ -1066,6 +1135,7 @@ mod tests {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_fanout(
                 "parent",
                 vec![InterimChild {
@@ -1074,7 +1144,7 @@ mod tests {
                         instruction: Some("impl".to_string()),
                         ..Default::default()
                     },
-                    input_contracts: Some(vec!["nonexistent-contract".to_string()]),
+                    input: Some("nonexistent-contract".to_string()),
                     ..Default::default()
                 }],
             )],
@@ -1084,10 +1154,10 @@ mod tests {
         let report = diagnose_all(wf_dir, wf_dir);
         assert!(
             report.items.iter().any(|i| i.severity == Severity::Error
-                && i.message.contains("存在しないファセット")
+                && i.message.contains("存在しない schemas Contract")
                 && i.step_name.as_deref() == Some("child1")
-                && i.field.as_deref() == Some("input_contracts")),
-            "Expected missing-input-contract error on child, got: {:?}",
+                && i.field.as_deref() == Some("input")),
+            "Expected missing-input-schema error on child, got: {:?}",
             report.items
         );
     }
@@ -1103,6 +1173,7 @@ mod tests {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 transition_rules: vec![TransitionRule {
                     r#match: "DONE".to_string(),
@@ -1131,6 +1202,7 @@ mod tests {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 NodeDefinition {
                     // source step without rules
@@ -1166,6 +1238,7 @@ mod tests {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 NodeDefinition {
                     transition_rules: vec![TransitionRule {
@@ -1203,6 +1276,7 @@ mod tests {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 make_step("step1", Some("impl")),
                 make_step("step2", Some("impl")),
@@ -1297,6 +1371,7 @@ mod tests {
             name: "bash-wf".to_string(),
             description: "bash test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_command("build", "cargo build")],
         };
         save_workflow_yaml(wf_dir, &wf);
@@ -1322,6 +1397,7 @@ mod tests {
             name: "bash-wf".to_string(),
             description: "bash test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_command("build", "   ")],
         };
         save_workflow_yaml(wf_dir, &wf);
@@ -1348,6 +1424,7 @@ mod tests {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_step("step1", Some("impl"))],
         };
         save_workflow_yaml(wf_dir, &wf);
@@ -1372,6 +1449,7 @@ mod tests {
             name: "bad workflow".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_step("step1", Some("impl"))],
         };
         let content = serde_saphyr::to_string(&wf).unwrap();
@@ -1395,6 +1473,7 @@ mod tests {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 NodeDefinition {
                     ..make_step("review-step", Some("review"))
@@ -1433,6 +1512,41 @@ mod tests {
     }
 
     #[test]
+    fn diagnose_invalid_schema_identifier_via_diagnose_all() {
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        setup_facet(wf_dir, "instructions", "review", "content");
+        fs::create_dir_all(wf_dir).unwrap();
+        fs::write(
+            wf_dir.join("bad-schema-name.yml"),
+            r#"name: bad-schema-name
+description: test
+schemas:
+  "review; curl https://example.invalid #":
+    type: object
+    properties:
+      status: string
+    required:
+      - status
+nodes:
+  - name: review
+    session:
+      permission: edit
+      facets:
+        instruction: review
+    artifact: "review; curl https://example.invalid #"
+"#,
+        )
+        .unwrap();
+
+        let report = diagnose_all(wf_dir, wf_dir);
+        assert!(report.items.iter().any(|i| i.severity == Severity::Error
+            && i.workflow_name.as_deref() == Some("bad-schema-name")
+            && i.field.as_deref() == Some("schemas")
+            && i.message.contains("must start with an ASCII alphanumeric")));
+    }
+
+    #[test]
     fn diagnose_schema_violation_yaml() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
@@ -1467,6 +1581,7 @@ mod tests {
             name: "dup-step".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 make_step("same-name", Some("task")),
                 make_step("same-name", Some("task")),
@@ -1496,6 +1611,7 @@ mod tests {
             name: "backward-ref".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 NodeDefinition {
                     pass_output_from: Some(vec!["step2".to_string()]),
@@ -1530,6 +1646,7 @@ mod tests {
             name: "subsequent-collect".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 NodeDefinition {
                     collect: Some(CollectConfig {
@@ -1566,6 +1683,7 @@ mod tests {
             name: "par-backward".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 make_fanout(
                     "par",
@@ -1606,6 +1724,7 @@ mod tests {
             name: "par-sibling".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_fanout(
                 "par",
                 vec![

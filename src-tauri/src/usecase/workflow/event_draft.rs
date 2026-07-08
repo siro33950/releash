@@ -1,16 +1,67 @@
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
-use crate::domain::workflow::contract::{ContractLookupError, OutputSubmittedSnapshot};
+use crate::domain::workflow::contract::{ArtifactSubmittedSnapshot, ContractLookupError};
+use crate::domain::workflow::services::contract_schema;
+use crate::domain::workflow::SchemaDef;
 
 use super::ports::WorkflowEventDraft;
 
-pub(crate) fn resolve_step_output_contract_from_drafts(
+pub(crate) fn resolve_node_artifact_contract_from_drafts(
     events: &[WorkflowEventDraft],
-    step_name: &str,
+    node_name: &str,
     run_id: &str,
 ) -> Result<String, ContractLookupError> {
-    let workflow = events
+    let workflow = run_started_workflow_from_drafts(events, run_id)?;
+
+    lookup_node_artifact_contract(workflow.definition, node_name)
+        .map_err(|details| ContractLookupError::InvalidRunStartedPayload {
+            details: format!("invalid payload for run_started event: {details}"),
+        })?
+        .ok_or_else(|| ContractLookupError::NoArtifactContract {
+            workflow_name: workflow.name,
+            node: node_name.to_string(),
+        })
+}
+
+pub(crate) struct ArtifactSchemaContext {
+    pub contract: String,
+    pub schemas: BTreeMap<String, SchemaDef>,
+}
+
+pub(crate) fn resolve_node_artifact_schema_from_drafts(
+    events: &[WorkflowEventDraft],
+    node_name: &str,
+    run_id: &str,
+) -> Result<ArtifactSchemaContext, ContractLookupError> {
+    let workflow = run_started_workflow_from_drafts(events, run_id)?;
+    let contract = lookup_node_artifact_contract(workflow.definition, node_name)
+        .map_err(|details| ContractLookupError::InvalidRunStartedPayload {
+            details: format!("invalid payload for run_started event: {details}"),
+        })?
+        .ok_or_else(|| ContractLookupError::NoArtifactContract {
+            workflow_name: workflow.name.clone(),
+            node: node_name.to_string(),
+        })?;
+    let schemas = schemas_from_workflow(workflow.definition).map_err(|details| {
+        ContractLookupError::InvalidRunStartedPayload {
+            details: format!("invalid payload for run_started event: {details}"),
+        }
+    })?;
+    Ok(ArtifactSchemaContext { contract, schemas })
+}
+
+struct RunStartedWorkflow<'a> {
+    name: String,
+    definition: &'a Value,
+}
+
+fn run_started_workflow_from_drafts<'a>(
+    events: &'a [WorkflowEventDraft],
+    run_id: &str,
+) -> Result<RunStartedWorkflow<'a>, ContractLookupError> {
+    events
         .iter()
         .find(|event| event.event_kind == "run_started")
         .map(|event| {
@@ -23,21 +74,7 @@ pub(crate) fn resolve_step_output_contract_from_drafts(
         .transpose()?
         .ok_or_else(|| ContractLookupError::RunNotFound {
             run_id: run_id.to_string(),
-        })?;
-
-    lookup_step_output_contract(workflow.definition, step_name)
-        .map_err(|details| ContractLookupError::InvalidRunStartedPayload {
-            details: format!("invalid payload for run_started event: {details}"),
-        })?
-        .ok_or_else(|| ContractLookupError::NoOutputContract {
-            workflow_name: workflow.name,
-            step: step_name.to_string(),
         })
-}
-
-struct RunStartedWorkflow<'a> {
-    name: String,
-    definition: &'a Value,
 }
 
 fn run_started_workflow_from_payload(payload: &Value) -> Result<RunStartedWorkflow<'_>, String> {
@@ -53,29 +90,46 @@ fn run_started_workflow_from_payload(payload: &Value) -> Result<RunStartedWorkfl
     Ok(RunStartedWorkflow { name, definition })
 }
 
-fn lookup_step_output_contract(
+fn schemas_from_workflow(workflow: &Value) -> Result<BTreeMap<String, SchemaDef>, String> {
+    let Some(schemas) = workflow.get("schemas") else {
+        return Ok(BTreeMap::new());
+    };
+    let schemas = schemas
+        .as_object()
+        .ok_or_else(|| "workflow_definition.schemas must be an object".to_string())?;
+    schemas
+        .iter()
+        .map(|(name, value)| {
+            contract_schema::schema_def_from_json(value)
+                .map(|schema| (name.clone(), schema))
+                .map_err(|reason| format!("schemas.{name}: {reason}"))
+        })
+        .collect()
+}
+
+fn lookup_node_artifact_contract(
     workflow: &Value,
-    step_name: &str,
+    node_name: &str,
 ) -> Result<Option<String>, String> {
     let nodes = workflow
         .get("nodes")
         .and_then(Value::as_array)
         .ok_or_else(|| "workflow_definition.nodes must be an array".to_string())?;
     for node in nodes {
-        if node.get("name").and_then(Value::as_str) == Some(step_name) {
-            return output_contract_from_node(node);
+        if node.get("name").and_then(Value::as_str) == Some(node_name) {
+            return artifact_contract_from_node(node);
         }
-        if let Some(contract) = lookup_child_output_contract(
+        if let Some(contract) = lookup_child_artifact_contract(
             node.get("parallel_children"),
-            step_name,
+            node_name,
             "parallel_children",
         )? {
             return Ok(Some(contract));
         }
         if let Some(fanout) = node.get("fanout") {
-            if let Some(contract) = lookup_child_output_contract(
+            if let Some(contract) = lookup_child_artifact_contract(
                 fanout.get("parallel_children"),
-                step_name,
+                node_name,
                 "fanout.parallel_children",
             )? {
                 return Ok(Some(contract));
@@ -85,9 +139,9 @@ fn lookup_step_output_contract(
     Ok(None)
 }
 
-fn lookup_child_output_contract(
+fn lookup_child_artifact_contract(
     children: Option<&Value>,
-    step_name: &str,
+    node_name: &str,
     field_path: &str,
 ) -> Result<Option<String>, String> {
     let Some(children) = children else {
@@ -97,48 +151,50 @@ fn lookup_child_output_contract(
         .as_array()
         .ok_or_else(|| format!("{field_path} must be an array"))?;
     for child in children {
-        if child.get("name").and_then(Value::as_str) == Some(step_name) {
-            return output_contract_from_node(child);
+        if child.get("name").and_then(Value::as_str) == Some(node_name) {
+            return artifact_contract_from_node(child);
         }
     }
     Ok(None)
 }
 
-fn output_contract_from_node(node: &Value) -> Result<Option<String>, String> {
-    match node.get("output_contract") {
+fn artifact_contract_from_node(node: &Value) -> Result<Option<String>, String> {
+    match node.get("artifact") {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) if value.trim().is_empty() => Ok(None),
         Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(_) => Err("output_contract must be a string".to_string()),
+        Some(_) => Err("artifact must be a string".to_string()),
     }
 }
 
 #[derive(Debug, Deserialize)]
-struct OutputSubmittedDraftPayload {
+struct ArtifactProducedDraftPayload {
     #[serde(alias = "nodeName")]
     node_name: String,
-    contract: String,
-    #[serde(alias = "structuredOutput")]
-    structured_output: Value,
+    #[serde(default)]
+    contract: Option<String>,
+    #[serde(alias = "structuredOutput", alias = "structured_output")]
+    value: Value,
     #[serde(default, alias = "submittedAt")]
     submitted_at: Option<f64>,
     #[serde(default, alias = "requestId")]
     request_id: Option<String>,
 }
 
-pub(crate) fn latest_output_submitted_from_drafts(
+pub(crate) fn latest_artifact_produced_from_drafts(
     events: &[WorkflowEventDraft],
     step_name: &str,
-) -> Option<OutputSubmittedSnapshot> {
+) -> Option<ArtifactSubmittedSnapshot> {
     events.iter().rev().find_map(|event| {
-        if event.event_kind != "output_submitted" {
+        if event.event_kind != "artifact_produced" {
             return None;
         }
         let payload =
-            serde_json::from_value::<OutputSubmittedDraftPayload>(event.payload.clone()).ok()?;
-        (payload.node_name == step_name).then_some(OutputSubmittedSnapshot {
-            contract: payload.contract,
-            structured_output: payload.structured_output,
+            serde_json::from_value::<ArtifactProducedDraftPayload>(event.payload.clone()).ok()?;
+        let contract = payload.contract?;
+        (payload.node_name == step_name).then_some(ArtifactSubmittedSnapshot {
+            contract,
+            value: payload.value,
             submitted_at: payload.submitted_at,
             request_id: payload.request_id,
             timestamp: event.timestamp,
@@ -151,7 +207,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_step_output_contract_from_drafts_reads_run_started_definition() {
+    fn resolve_node_artifact_contract_from_drafts_reads_run_started_definition() {
         let events = vec![WorkflowEventDraft {
             run_id: "run-1".to_string(),
             event_kind: "run_started".to_string(),
@@ -165,20 +221,20 @@ mod tests {
                     "nodes": [{
                         "name": "review",
                         "session": {},
-                        "output_contract": "review-verdict"
+                        "artifact": "review-verdict"
                     }]
                 }
             }),
         }];
 
-        let contract = resolve_step_output_contract_from_drafts(&events, "review", "run-1")
+        let contract = resolve_node_artifact_contract_from_drafts(&events, "review", "run-1")
             .expect("contract should resolve");
 
         assert_eq!(contract, "review-verdict");
     }
 
     #[test]
-    fn resolve_step_output_contract_from_drafts_reads_camel_case_run_started_definition() {
+    fn resolve_node_artifact_contract_from_drafts_reads_camel_case_run_started_definition() {
         let events = vec![WorkflowEventDraft {
             run_id: "run-1".to_string(),
             event_kind: "run_started".to_string(),
@@ -192,20 +248,20 @@ mod tests {
                     "nodes": [{
                         "name": "review",
                         "session": {},
-                        "output_contract": "review-verdict"
+                        "artifact": "review-verdict"
                     }]
                 }
             }),
         }];
 
-        let contract = resolve_step_output_contract_from_drafts(&events, "review", "run-1")
+        let contract = resolve_node_artifact_contract_from_drafts(&events, "review", "run-1")
             .expect("contract should resolve");
 
         assert_eq!(contract, "review-verdict");
     }
 
     #[test]
-    fn resolve_step_output_contract_from_drafts_reads_fanout_child_contract() {
+    fn resolve_node_artifact_contract_from_drafts_reads_fanout_child_contract() {
         let events = vec![WorkflowEventDraft {
             run_id: "run-1".to_string(),
             event_kind: "run_started".to_string(),
@@ -221,7 +277,7 @@ mod tests {
                         "fanout": {
                             "parallel_children": [{
                                 "name": "security-review",
-                                "output_contract": "review-verdict"
+                                "artifact": "review-verdict"
                             }]
                         }
                     }]
@@ -230,14 +286,14 @@ mod tests {
         }];
 
         let contract =
-            resolve_step_output_contract_from_drafts(&events, "security-review", "run-1")
+            resolve_node_artifact_contract_from_drafts(&events, "security-review", "run-1")
                 .expect("fanout child contract should resolve");
 
         assert_eq!(contract, "review-verdict");
     }
 
     #[test]
-    fn resolve_step_output_contract_from_drafts_reports_missing_contract() {
+    fn resolve_node_artifact_contract_from_drafts_reports_missing_contract() {
         let events = vec![WorkflowEventDraft {
             run_id: "run-1".to_string(),
             event_kind: "run_started".to_string(),
@@ -256,27 +312,27 @@ mod tests {
             }),
         }];
 
-        let err = resolve_step_output_contract_from_drafts(&events, "review", "run-1")
+        let err = resolve_node_artifact_contract_from_drafts(&events, "review", "run-1")
             .expect_err("missing contract should be explicit");
 
         assert_eq!(
             err,
-            ContractLookupError::NoOutputContract {
+            ContractLookupError::NoArtifactContract {
                 workflow_name: "wf".to_string(),
-                step: "review".to_string()
+                node: "review".to_string()
             }
         );
     }
 
-    fn output_submitted(step: &str, timestamp: f64, verdict: &str) -> WorkflowEventDraft {
+    fn artifact_produced(step: &str, timestamp: f64, verdict: &str) -> WorkflowEventDraft {
         WorkflowEventDraft {
             run_id: "run-1".to_string(),
-            event_kind: "output_submitted".to_string(),
+            event_kind: "artifact_produced".to_string(),
             timestamp,
             payload: serde_json::json!({
                 "node_name": step,
                 "contract": "review-verdict",
-                "structured_output": {"verdict": verdict},
+                "value": {"verdict": verdict},
                 "submitted_at": timestamp - 1.0,
                 "request_id": format!("req-{timestamp}")
             }),
@@ -284,27 +340,27 @@ mod tests {
     }
 
     #[test]
-    fn latest_output_submitted_from_drafts_picks_latest_matching_step() {
+    fn latest_artifact_produced_from_drafts_picks_latest_matching_step() {
         let events = vec![
-            output_submitted("review", 10.0, "NEEDS_FIX"),
-            output_submitted("other", 20.0, "BLOCKED"),
-            output_submitted("review", 30.0, "LGTM"),
+            artifact_produced("review", 10.0, "NEEDS_FIX"),
+            artifact_produced("other", 20.0, "BLOCKED"),
+            artifact_produced("review", 30.0, "LGTM"),
         ];
 
-        let snapshot = latest_output_submitted_from_drafts(&events, "review")
+        let snapshot = latest_artifact_produced_from_drafts(&events, "review")
             .expect("latest matching output should be returned");
 
         assert_eq!(snapshot.timestamp, 30.0);
-        assert_eq!(snapshot.structured_output["verdict"], "LGTM");
+        assert_eq!(snapshot.value["verdict"], "LGTM");
         assert_eq!(snapshot.submitted_at, Some(29.0));
         assert_eq!(snapshot.request_id.as_deref(), Some("req-30"));
     }
 
     #[test]
-    fn latest_output_submitted_from_drafts_reads_camel_case_output_payload() {
+    fn latest_artifact_produced_from_drafts_reads_camel_case_output_payload() {
         let events = vec![WorkflowEventDraft {
             run_id: "run-1".to_string(),
-            event_kind: "output_submitted".to_string(),
+            event_kind: "artifact_produced".to_string(),
             timestamp: 10.0,
             payload: serde_json::json!({
                 "nodeName": "review",
@@ -315,20 +371,35 @@ mod tests {
             }),
         }];
 
-        let snapshot = latest_output_submitted_from_drafts(&events, "review")
+        let snapshot = latest_artifact_produced_from_drafts(&events, "review")
             .expect("latest matching output should be returned");
 
         assert_eq!(snapshot.timestamp, 10.0);
-        assert_eq!(snapshot.structured_output["verdict"], "LGTM");
+        assert_eq!(snapshot.value["verdict"], "LGTM");
         assert_eq!(snapshot.submitted_at, Some(9.0));
         assert_eq!(snapshot.request_id.as_deref(), Some("req-10"));
     }
 
     #[test]
-    fn latest_output_submitted_from_drafts_returns_none_without_matching_step() {
-        let events = vec![output_submitted("other", 20.0, "BLOCKED")];
+    fn latest_artifact_produced_from_drafts_returns_none_without_matching_step() {
+        let events = vec![artifact_produced("other", 20.0, "BLOCKED")];
 
-        assert!(latest_output_submitted_from_drafts(&events, "review").is_none());
-        assert!(latest_output_submitted_from_drafts(&[], "review").is_none());
+        assert!(latest_artifact_produced_from_drafts(&events, "review").is_none());
+        assert!(latest_artifact_produced_from_drafts(&[], "review").is_none());
+    }
+
+    #[test]
+    fn latest_artifact_produced_from_drafts_ignores_contractless_artifact() {
+        let events = vec![WorkflowEventDraft {
+            run_id: "run-1".to_string(),
+            event_kind: "artifact_produced".to_string(),
+            timestamp: 10.0,
+            payload: serde_json::json!({
+                "node_name": "review",
+                "value": {"stdout": "ok"}
+            }),
+        }];
+
+        assert!(latest_artifact_produced_from_drafts(&events, "review").is_none());
     }
 }

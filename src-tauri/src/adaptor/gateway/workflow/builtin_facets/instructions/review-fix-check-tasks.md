@@ -58,7 +58,7 @@ git diff "$(git merge-base "$RELEASH_BASE_BRANCH" HEAD)" HEAD
 
 Task は、次の実装 Step が Thread を読まずに修正できる粒度で書く。
 
-Task は `review-fix-tasks` Contract の exact key で作る。別名で代替しない。
+Task は `review-fix-tasks` schema の exact key で作る。別名で代替しない。
 
 各 Task 直下に必ず入れる key:
 
@@ -83,7 +83,7 @@ Task は `review-fix-tasks` Contract の exact key で作る。別名で代替�
 - 複数の受入条件がある場合は、同じ Task の `acceptance_criteria` に列挙する。
 - `source_thread_id`、`title`、`locations`、`details` などの補助 key を使ってもよいが、必須 key の代替にはならない。
 
-## 5. Contract 提出前チェック
+## 5. Artifact 提出前チェック
 
 提出前に、作成した JSON が次の形になっていることを確認する。
 
@@ -126,7 +126,7 @@ Task は `review-fix-tasks` Contract の exact key で作る。別名で代替�
 
 # 出力
 
-出力Contract `review-fix-tasks` に従って提出する。
+`review-fix-tasks` schema に従う Artifact として提出する。
 
 不足がない場合:
 

@@ -55,7 +55,7 @@ pub fn active_parallel_steps(parallel_run: Option<&ParallelRunState>) -> Vec<Par
             run_index: child.run_index,
             completed_at: None,
             structured_output: child.structured_output.clone(),
-            output_contract: child.output_contract.clone(),
+            artifact_contract: child.artifact_contract.clone(),
             failure_kind: child.failure_kind,
             failure_disposition: child.failure_disposition,
         })
@@ -161,7 +161,7 @@ mod tests {
                     state: ParallelChildState::Running,
                     result: None,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -173,7 +173,7 @@ mod tests {
                     state: ParallelChildState::Completed,
                     result: Some("ok".to_string()),
                     structured_output: Some(serde_json::json!({ "status": "ok" })),
-                    output_contract: Some("contract".to_string()),
+                    artifact_contract: Some("contract".to_string()),
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(steps[1].state, "completed");
         assert_eq!(steps[1].session_id, None);
         assert_eq!(steps[1].result.as_deref(), Some("ok"));
-        assert_eq!(steps[1].output_contract.as_deref(), Some("contract"));
+        assert_eq!(steps[1].artifact_contract.as_deref(), Some("contract"));
     }
 
     #[test]
@@ -205,7 +205,7 @@ mod tests {
                     "failureKind": "model_refusal",
                     "disposition": "partial",
                 })),
-                output_contract: None,
+                artifact_contract: None,
                 failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
                 failure_disposition: Some(FailureDisposition::Partial),
                 token_usage: TokenUsage::default(),

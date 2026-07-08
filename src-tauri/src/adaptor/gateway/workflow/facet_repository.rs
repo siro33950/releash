@@ -17,10 +17,6 @@ impl WorkflowFacetFileRepository {
             base_dir: base_dir.into(),
         }
     }
-
-    pub(crate) fn new_default() -> Self {
-        Self::new(legacy_facet::facets_base_dir())
-    }
 }
 
 impl FacetRepository for WorkflowFacetFileRepository {

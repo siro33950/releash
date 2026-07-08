@@ -119,18 +119,17 @@ pub(crate) fn append_task_block(
     }
 }
 
-pub(crate) fn append_output_contract_completion_action(
+pub(crate) fn append_artifact_completion_action(
     prompt: &mut String,
-    output_contract: Option<&str>,
+    artifact: Option<&str>,
     run_id: &str,
     step_name: &str,
     workflow_declared_variables: &HashMap<String, String>,
 ) {
-    let Some(contract) = output_contract else {
+    let Some(contract) = artifact else {
         return;
     };
-    let action =
-        crate::adaptor::gateway::workflow::facet::output_contract_completion_action(contract);
+    let action = crate::adaptor::gateway::workflow::facet::artifact_completion_action(contract);
     let action = render_submit_command_variables(&action, run_id, step_name);
     let action = render_namespaced_variables(&action, workflow_declared_variables);
     if !prompt.is_empty() {
@@ -199,11 +198,11 @@ pub(crate) fn build_step_prompt(
         step_history,
         workflow_variables,
     );
-    let allow_task = step.input_contracts.as_ref().is_some_and(|v| !v.is_empty());
+    let allow_task = step.input.is_some();
     append_task_block(&mut prompt, task, allow_task);
-    append_output_contract_completion_action(
+    append_artifact_completion_action(
         &mut prompt,
-        step.output_contract.as_deref(),
+        step.artifact.as_deref(),
         run_id,
         &step.name,
         workflow_declared_variables,
@@ -269,11 +268,11 @@ pub(crate) fn build_parallel_step_prompt(
     }
 
     append_workflow_variables_block(&mut user_message, workflow_variables);
-    let allow_task = step.input_contracts.as_ref().is_some_and(|v| !v.is_empty());
+    let allow_task = step.input.is_some();
     append_task_block(&mut user_message, task, allow_task);
-    append_output_contract_completion_action(
+    append_artifact_completion_action(
         &mut user_message,
-        step.output_contract.as_deref(),
+        step.artifact.as_deref(),
         run_id,
         &step.name,
         workflow_declared_variables,
@@ -308,7 +307,7 @@ mod tests {
             session_id: None,
             result: result.map(str::to_string),
             structured_output: Some(serde_json::json!({ "text": output_text })),
-            output_contract: None,
+            artifact_contract: None,
             token_usage: None,
             completed_at: 1000.0,
         }
@@ -504,7 +503,7 @@ mod tests {
                         "findings": []
                     }
                 })),
-                output_contract: None,
+                artifact_contract: None,
                 token_usage: None,
                 completed_at: 1000.0,
             },
@@ -541,7 +540,7 @@ mod tests {
                         "findings": [{ "severity": "must_fix", "message": "SQL injection risk" }]
                     }
                 })),
-                output_contract: None,
+                artifact_contract: None,
                 token_usage: None,
                 completed_at: 1000.0,
             },

@@ -1,5 +1,6 @@
 pub mod approval_rules;
 pub mod contract;
+pub mod contract_schema;
 pub mod failure_policy;
 pub mod history;
 pub mod parallel;

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub const MAX_NODES_PER_WORKFLOW: usize = 256;
 pub const MAX_PARALLEL_CHILDREN: usize = 64;
@@ -8,8 +8,27 @@ pub struct WorkflowDefinition {
     pub name: String,
     pub description: String,
     pub builtin: bool,
+    pub schemas: BTreeMap<String, SchemaDef>,
     pub variables: HashMap<String, String>,
     pub nodes: Vec<NodeDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SchemaDef {
+    Object {
+        properties: BTreeMap<String, SchemaDef>,
+        required: BTreeSet<String>,
+        additional_properties: bool,
+    },
+    Array {
+        items: String,
+    },
+    String {
+        r#enum: Option<Vec<String>>,
+    },
+    Boolean,
+    Integer,
+    Number,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -17,8 +36,6 @@ pub struct ResolvedFacets {
     pub policy: Option<String>,
     pub knowledge: Option<String>,
     pub instruction: Option<String>,
-    pub output_contract: Option<String>,
-    pub input_contracts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -109,8 +126,6 @@ pub struct NodeDefinition {
     pub artifact: Option<String>,
     pub input: Option<String>,
     pub inputs: Vec<String>,
-    pub output_contract: Option<String>,
-    pub input_contracts: Option<Vec<String>>,
     pub pass_previous_response: Option<bool>,
     pub pass_output_from: Option<Vec<String>>,
     pub collect: Option<CollectConfig>,
@@ -123,8 +138,6 @@ impl NodeDefinition {
     pub fn has_facet_refs(&self) -> bool {
         self.session()
             .is_some_and(|session| !session.facets.is_empty())
-            || self.output_contract.is_some()
-            || self.input_contracts.as_ref().is_some_and(|v| !v.is_empty())
     }
 
     pub fn kind_name(&self) -> NodeKindName {
@@ -193,8 +206,8 @@ pub struct InterimChild {
     pub model: Option<String>,
     pub permission: Option<String>,
     pub facets: FacetRefs,
-    pub output_contract: Option<String>,
-    pub input_contracts: Option<Vec<String>>,
+    pub artifact: Option<String>,
+    pub input: Option<String>,
     pub pass_previous_response: Option<bool>,
     pub pass_output_from: Option<Vec<String>>,
     pub resolved_facets: ResolvedFacets,
@@ -203,8 +216,6 @@ pub struct InterimChild {
 impl InterimChild {
     pub fn has_facet_refs(&self) -> bool {
         !self.facets.is_empty()
-            || self.output_contract.is_some()
-            || self.input_contracts.as_ref().is_some_and(|v| !v.is_empty())
     }
 }
 
@@ -259,7 +270,9 @@ mod definition_tests {
     fn test_node_definition_facet参照を検出する() {
         let mut node = NodeDefinition::default();
         assert!(!node.has_facet_refs());
-        node.output_contract = Some("spec-directory".to_string());
+        if let Some(session) = node.session_mut() {
+            session.facets.instruction = Some("spec-authoring".to_string());
+        }
         assert!(node.has_facet_refs());
     }
 }

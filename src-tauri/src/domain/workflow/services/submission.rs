@@ -90,6 +90,7 @@ mod submission_tests {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: Default::default(),
             variables: Default::default(),
             nodes,
         }

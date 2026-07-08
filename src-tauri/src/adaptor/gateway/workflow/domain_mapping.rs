@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::adaptor::gateway::workflow::schema;
 use crate::adaptor::gateway::workflow::state as legacy_state;
@@ -12,6 +12,7 @@ pub(crate) fn workflow_definition_to_domain(
         name: workflow.name.clone(),
         description: workflow.description.clone(),
         builtin: workflow.builtin,
+        schemas: workflow_schemas_to_domain(&workflow.schemas),
         variables: workflow.variables.clone(),
         nodes: workflow
             .nodes
@@ -19,6 +20,15 @@ pub(crate) fn workflow_definition_to_domain(
             .map(node_definition_to_domain)
             .collect(),
     }
+}
+
+pub(crate) fn workflow_schemas_to_domain(
+    schemas: &BTreeMap<String, schema::SchemaDef>,
+) -> BTreeMap<String, domain::SchemaDef> {
+    schemas
+        .iter()
+        .map(|(name, schema)| (name.clone(), schema_def_to_domain(schema)))
+        .collect()
 }
 
 pub(crate) fn workflow_execution_state_to_domain(
@@ -61,7 +71,7 @@ pub(crate) fn step_output_to_domain(output: &legacy_state::StepOutput) -> domain
         session_id: output.session_id.clone(),
         result: output.result.clone(),
         structured_output: output.structured_output.clone(),
-        output_contract: output.output_contract.clone(),
+        artifact_contract: output.artifact_contract.clone(),
         token_usage: output.token_usage.as_ref().map(token_usage_to_domain),
         completed_at: output.completed_at,
     }
@@ -75,7 +85,7 @@ pub(crate) fn step_output_from_domain(output: domain::StepOutput) -> legacy_stat
         session_id: output.session_id,
         result: output.result,
         structured_output: output.structured_output,
-        output_contract: output.output_contract,
+        artifact_contract: output.artifact_contract,
         token_usage,
         completed_at: output.completed_at,
     }
@@ -134,7 +144,7 @@ fn child_output_from_domain(
         run_index: output.run_index,
         completed_at: output.completed_at,
         structured_output: output.structured_output,
-        output_contract: output.output_contract,
+        artifact_contract: output.artifact_contract,
         state: output.state,
         failure_kind: output.failure_kind,
         failure_disposition: output.failure_disposition,
@@ -151,7 +161,7 @@ fn child_output_to_domain(
         run_index: output.run_index,
         completed_at: output.completed_at,
         structured_output: output.structured_output.clone(),
-        output_contract: output.output_contract.clone(),
+        artifact_contract: output.artifact_contract.clone(),
         state: output.state.clone(),
         failure_kind: output.failure_kind,
         failure_disposition: output.failure_disposition,
@@ -183,7 +193,7 @@ pub(crate) fn parallel_step_state_from_domain(
         run_index: state.run_index,
         completed_at: state.completed_at,
         structured_output: state.structured_output,
-        output_contract: state.output_contract,
+        artifact_contract: state.artifact_contract,
         failure_kind: state.failure_kind,
         failure_disposition: state.failure_disposition,
     }
@@ -196,8 +206,6 @@ pub(crate) fn node_definition_to_domain(node: &schema::NodeDefinition) -> domain
         artifact: node.artifact.clone(),
         input: node.input.clone(),
         inputs: node.inputs.clone(),
-        output_contract: node.output_contract.clone(),
-        input_contracts: node.input_contracts.clone(),
         pass_previous_response: node.pass_previous_response,
         pass_output_from: node.pass_output_from.clone(),
         collect: node.collect.as_ref().map(collect_config_to_domain),
@@ -255,8 +263,8 @@ fn interim_child_to_domain(child: &schema::InterimChild) -> domain::InterimChild
         model: child.model.clone(),
         permission: child.permission.clone(),
         facets: facet_refs_to_domain(&child.facets),
-        output_contract: child.output_contract.clone(),
-        input_contracts: child.input_contracts.clone(),
+        artifact: child.artifact.clone(),
+        input: child.input.clone(),
         pass_previous_response: child.pass_previous_response,
         pass_output_from: child.pass_output_from.clone(),
         resolved_facets: resolved_facets_to_domain(&child.resolved_facets),
@@ -317,8 +325,32 @@ fn resolved_facets_to_domain(resolved: &schema::ResolvedFacets) -> ResolvedFacet
         policy: resolved.policy.clone(),
         knowledge: resolved.knowledge.clone(),
         instruction: resolved.instruction.clone(),
-        output_contract: resolved.output_contract.clone(),
-        input_contracts: resolved.input_contracts.clone(),
+    }
+}
+
+fn schema_def_to_domain(schema: &schema::SchemaDef) -> domain::SchemaDef {
+    match schema {
+        schema::SchemaDef::Object {
+            properties,
+            required,
+            additional_properties,
+        } => domain::SchemaDef::Object {
+            properties: properties
+                .iter()
+                .map(|(name, schema)| (name.clone(), schema_def_to_domain(schema)))
+                .collect(),
+            required: required.clone(),
+            additional_properties: *additional_properties,
+        },
+        schema::SchemaDef::Array { items } => domain::SchemaDef::Array {
+            items: items.clone(),
+        },
+        schema::SchemaDef::String { r#enum } => domain::SchemaDef::String {
+            r#enum: r#enum.clone(),
+        },
+        schema::SchemaDef::Boolean => domain::SchemaDef::Boolean,
+        schema::SchemaDef::Integer => domain::SchemaDef::Integer,
+        schema::SchemaDef::Number => domain::SchemaDef::Number,
     }
 }
 
@@ -332,6 +364,7 @@ mod tests {
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,
+            schemas: Default::default(),
             variables: Default::default(),
             nodes: vec![schema::NodeDefinition {
                 name: "implement".to_string(),

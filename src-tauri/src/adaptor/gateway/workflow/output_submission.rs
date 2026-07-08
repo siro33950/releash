@@ -1,13 +1,16 @@
 use std::collections::HashMap;
 
-use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain;
+use crate::adaptor::gateway::workflow::domain_mapping::{
+    workflow_definition_to_domain, workflow_schemas_to_domain,
+};
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
 use crate::adaptor::gateway::workflow::schema::Workflow;
 use crate::adaptor::gateway::workflow::state::{StepOutput, WorkflowExecutionState};
+use crate::domain::workflow::services::contract_schema::SchemaViolation;
 use crate::domain::workflow::services::{
-    contract as workflow_contract, secret_masker, submission as domain_submission,
+    contract as workflow_contract, contract_schema, secret_masker, submission as domain_submission,
 };
 use crate::domain::workflow::{ContractType, ContractValidationResult, NodeName};
 
@@ -33,13 +36,36 @@ pub(crate) struct SubmissionParallelRun<'a> {
 pub(crate) struct SubmittedOutputMutation {
     pub(crate) workflow_name: String,
     prior_step_output: Option<StepOutput>,
-    prior_workflow_variables: HashMap<String, String>,
 }
 
+#[derive(Debug)]
 pub(crate) struct ValidatedSubmissionOutput {
     pub(crate) structured_output: serde_json::Value,
     pub(crate) result: Option<String>,
-    pub(crate) workflow_variables: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum SubmissionValidationError {
+    Engine(WorkflowEngineError),
+    SchemaViolation {
+        error: WorkflowEngineError,
+        violations: Vec<SchemaViolation>,
+    },
+}
+
+impl SubmissionValidationError {
+    pub(crate) fn into_engine_error(self) -> WorkflowEngineError {
+        match self {
+            Self::Engine(error) | Self::SchemaViolation { error, .. } => error,
+        }
+    }
+
+    pub(crate) fn schema_violations(&self) -> Option<&[SchemaViolation]> {
+        match self {
+            Self::SchemaViolation { violations, .. } => Some(violations),
+            Self::Engine(_) => None,
+        }
+    }
 }
 
 pub(crate) struct SubmissionTargetContext {
@@ -66,38 +92,36 @@ pub(crate) fn validate_submit_output_request(
 }
 
 pub(crate) fn validate_submission_output_with_secrets(
+    workflow: &Workflow,
     contract: &str,
     structured_output: serde_json::Value,
     secrets: &[String],
-) -> Result<ValidatedSubmissionOutput, WorkflowEngineError> {
+) -> Result<ValidatedSubmissionOutput, SubmissionValidationError> {
     let redacted =
         secret_masker::mask_sensitive_structured_output(contract, structured_output, secrets);
-    let contract_definition = crate::adaptor::gateway::workflow::builtin::get_builtin_facet(
-        crate::adaptor::gateway::workflow::facet::FacetKind::Contract,
-        contract,
-    );
-    match workflow_contract::validate_contract_value_with_definition(redacted, contract_definition)
-    {
+    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+    match workflow_contract::validate_artifact_value(&schemas, contract, redacted.clone()) {
         ContractValidationResult::Valid {
             structured_output,
             result,
-        } => {
-            let workflow_variables =
-                workflow_contract::extract_workflow_variables_from_contract_output(
-                    Some(contract),
-                    Some(&structured_output),
-                );
-            Ok(ValidatedSubmissionOutput {
-                structured_output,
-                result,
-                workflow_variables,
-            })
-        }
+        } => Ok(ValidatedSubmissionOutput {
+            structured_output,
+            result,
+        }),
         ContractValidationResult::Invalid(violation) => {
-            Err(WorkflowEngineError::ValidationError(format!(
-                "contract validation failed ({}): {}",
+            let error = WorkflowEngineError::ValidationError(format!(
+                "artifact schema validation failed ({}): {}",
                 violation.reason, violation.details
-            )))
+            ));
+            if violation.reason == "schema_violation" {
+                let violations = schemas
+                    .get(contract)
+                    .and_then(|schema| contract_schema::validate(&redacted, schema, &schemas).err())
+                    .unwrap_or_default();
+                Err(SubmissionValidationError::SchemaViolation { error, violations })
+            } else {
+                Err(SubmissionValidationError::Engine(error))
+            }
         }
     }
 }
@@ -164,7 +188,7 @@ pub(crate) fn validate_submission_target_context(
     }
 
     let workflow = workflow_definition_to_domain(&exec.workflow);
-    let expected_contract = workflow_contract::lookup_step_output_contract(&workflow, step_name)
+    let expected_contract = workflow_contract::lookup_node_artifact_contract(&workflow, step_name)
         .ok_or_else(|| {
             WorkflowEngineError::ValidationError(format!(
                 "step '{step_name}' is not a valid submission target"
@@ -242,14 +266,12 @@ pub(crate) fn apply_validated_submission(
     contract: &str,
     validated_output: &serde_json::Value,
     validated_result: Option<String>,
-    contract_vars: HashMap<String, String>,
     timestamp: f64,
 ) -> Result<SubmittedOutputMutation, WorkflowEngineError> {
     let target = validate_submission_target_context(exec, run_id, step_name, contract)?;
     let mutation = SubmittedOutputMutation {
         workflow_name: target.workflow_name,
         prior_step_output: exec.step_outputs.get(step_name).cloned(),
-        prior_workflow_variables: exec.workflow_variables.clone(),
     };
     exec.step_outputs.insert(
         step_name.to_string(),
@@ -259,14 +281,11 @@ pub(crate) fn apply_validated_submission(
             session_id: None,
             result: validated_result,
             structured_output: Some(validated_output.clone()),
-            output_contract: Some(contract.to_string()),
+            artifact_contract: Some(contract.to_string()),
             token_usage: None,
             completed_at: timestamp,
         },
     );
-    if !contract_vars.is_empty() {
-        exec.workflow_variables.extend(contract_vars);
-    }
     Ok(mutation)
 }
 
@@ -283,11 +302,10 @@ pub(crate) fn rollback_validated_submission(
             exec.step_outputs.remove(step_name);
         }
     }
-    exec.workflow_variables = mutation.prior_workflow_variables;
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn output_submitted_event(
+pub(crate) fn artifact_produced_event(
     run_id: &str,
     workflow_name: &str,
     step_name: &str,
@@ -297,12 +315,12 @@ pub(crate) fn output_submitted_event(
     submitted_at: Option<f64>,
     timestamp: f64,
 ) -> WorkflowEvent {
-    WorkflowEvent::OutputSubmitted {
+    WorkflowEvent::ArtifactProduced {
         run_id: run_id.to_string(),
         workflow_name: workflow_name.to_string(),
         node_name: step_name.to_string(),
-        contract,
-        structured_output,
+        contract: Some(contract),
+        value: structured_output,
         request_id,
         submitted_at,
         timestamp,
@@ -317,42 +335,13 @@ pub(crate) fn submitted_step_output_for(
 ) -> Option<StepOutput> {
     let output = step_outputs.get(step_name)?;
     if output.run_index == run_index
-        && output.output_contract.as_deref() == Some(contract)
+        && output.artifact_contract.as_deref() == Some(contract)
         && output.structured_output.is_some()
     {
         Some(output.clone())
     } else {
         None
     }
-}
-
-pub(crate) fn resolved_output_contract_definition_for(
-    workflow: &Workflow,
-    step_name: &str,
-    contract: &str,
-) -> Option<String> {
-    for node in &workflow.nodes {
-        if node.name == step_name && node.output_contract.as_deref() == Some(contract) {
-            return node
-                .resolved_facets()?
-                .output_contract
-                .as_deref()
-                .map(workflow_contract::strip_contract_validation_metadata);
-        }
-        if let Some(fanout) = node.fanout() {
-            let children = &fanout.parallel_children;
-            for child in children {
-                if child.name == step_name && child.output_contract.as_deref() == Some(contract) {
-                    return child
-                        .resolved_facets
-                        .output_contract
-                        .as_deref()
-                        .map(workflow_contract::strip_contract_validation_metadata);
-                }
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -362,7 +351,7 @@ mod tests {
         ParallelChildRun, ParallelChildState, ParallelRunState, WorkflowExecution,
     };
     use crate::adaptor::gateway::workflow::schema::{
-        FanoutSpec, InterimChild, NodeDefinition, NodeKind, ResolvedFacets,
+        FanoutSpec, InterimChild, NodeDefinition, NodeKind, SchemaDef,
     };
     use crate::adaptor::gateway::workflow::state::{TokenUsage, WorkflowExecutionState};
     use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
@@ -370,24 +359,28 @@ mod tests {
     fn workflow_with_parallel() -> Workflow {
         Workflow {
             name: "wf".to_string(),
+            schemas: [(
+                "review-verdict".to_string(),
+                SchemaDef::Object {
+                    properties: Default::default(),
+                    required: Default::default(),
+                    additional_properties: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
             nodes: vec![NodeDefinition {
                 name: "parallel-review".to_string(),
                 kind: NodeKind::Fanout(FanoutSpec {
                     parallel_children: vec![
                         InterimChild {
                             name: "review-a".to_string(),
-                            output_contract: Some("review-verdict".to_string()),
-                            resolved_facets: ResolvedFacets {
-                                output_contract: Some(
-                                    "Visible contract\n```contract-validation\n{}\n```".to_string(),
-                                ),
-                                ..Default::default()
-                            },
+                            artifact: Some("review-verdict".to_string()),
                             ..Default::default()
                         },
                         InterimChild {
                             name: "review-b".to_string(),
-                            output_contract: Some("review-verdict".to_string()),
+                            artifact: Some("review-verdict".to_string()),
                             ..Default::default()
                         },
                     ],
@@ -415,7 +408,7 @@ mod tests {
                     state: ParallelChildState::Running,
                     result: None,
                     structured_output: None,
-                    output_contract: Some("review-verdict".to_string()),
+                    artifact_contract: Some("review-verdict".to_string()),
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -427,7 +420,7 @@ mod tests {
                     state: ParallelChildState::Completed,
                     result: None,
                     structured_output: None,
-                    output_contract: Some("review-verdict".to_string()),
+                    artifact_contract: Some("review-verdict".to_string()),
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -445,7 +438,7 @@ mod tests {
             session_id: None,
             result: Some("LGTM".to_string()),
             structured_output: structured.then(|| serde_json::json!({"verdict": "LGTM"})),
-            output_contract: contract.map(ToOwned::to_owned),
+            artifact_contract: contract.map(ToOwned::to_owned),
             token_usage: Some(TokenUsage::default()),
             completed_at: 1000.0,
         }
@@ -458,7 +451,7 @@ mod tests {
                 name: "wf".to_string(),
                 nodes: vec![NodeDefinition {
                     name: "review".to_string(),
-                    output_contract: Some("review-verdict".to_string()),
+                    artifact: Some("review-verdict".to_string()),
                     ..NodeDefinition::default()
                 }],
                 ..Workflow::default()
@@ -539,19 +532,6 @@ mod tests {
     }
 
     #[test]
-    fn resolved_output_contract_definition_strips_validation_metadata_for_parallel_child() {
-        assert_eq!(
-            resolved_output_contract_definition_for(
-                &workflow_with_parallel(),
-                "review-a",
-                "review-verdict",
-            )
-            .as_deref(),
-            Some("Visible contract")
-        );
-    }
-
-    #[test]
     fn validate_submit_output_request_rejects_invalid_identity_fields() {
         assert!(matches!(
             validate_submit_output_request("not-a-uuid", "review", "review-verdict"),
@@ -575,8 +555,33 @@ mod tests {
     }
 
     #[test]
-    fn validate_submission_output_with_secrets_extracts_workflow_variables() {
+    fn validate_submission_output_with_secrets_accepts_schema_valid_artifact() {
+        let workflow = Workflow {
+            name: "wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: [(
+                "spec-directory".to_string(),
+                SchemaDef::Object {
+                    properties: [
+                        ("spec_dir".to_string(), SchemaDef::String { r#enum: None }),
+                        ("design".to_string(), SchemaDef::String { r#enum: None }),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    required: ["spec_dir".to_string(), "design".to_string()]
+                        .into_iter()
+                        .collect(),
+                    additional_properties: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            variables: Default::default(),
+            nodes: vec![],
+        };
         let validated = validate_submission_output_with_secrets(
+            &workflow,
             "spec-directory",
             serde_json::json!({
                 "spec_dir": "docs/specs/feat-token",
@@ -587,21 +592,52 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            validated
-                .workflow_variables
-                .get("spec_dir")
-                .map(String::as_str),
-            Some("docs/specs/feat-token")
-        );
-        assert_eq!(
             validated.structured_output["spec_dir"],
             "docs/specs/feat-token"
         );
     }
 
     #[test]
-    fn output_submitted_event_preserves_external_shape() {
-        let event = output_submitted_event(
+    fn validate_submission_output_with_secrets_rejects_unsafe_spec_dir() {
+        let workflow = Workflow {
+            name: "wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: [(
+                "spec-directory".to_string(),
+                SchemaDef::Object {
+                    properties: [("spec_dir".to_string(), SchemaDef::String { r#enum: None })]
+                        .into_iter()
+                        .collect(),
+                    required: ["spec_dir".to_string()].into_iter().collect(),
+                    additional_properties: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            variables: Default::default(),
+            nodes: vec![],
+        };
+
+        for spec_dir in ["/tmp/spec", "../outside"] {
+            let err = validate_submission_output_with_secrets(
+                &workflow,
+                "spec-directory",
+                serde_json::json!({ "spec_dir": spec_dir }),
+                &[],
+            )
+            .unwrap_err();
+            assert!(matches!(
+                err,
+                SubmissionValidationError::SchemaViolation { ref violations, .. }
+                    if violations.iter().any(|violation| violation.path == "$.spec_dir")
+            ));
+        }
+    }
+
+    #[test]
+    fn artifact_produced_event_preserves_external_shape() {
+        let event = artifact_produced_event(
             "run-1",
             "wf",
             "review",
@@ -614,7 +650,7 @@ mod tests {
 
         assert!(matches!(
             event,
-            WorkflowEvent::OutputSubmitted {
+            WorkflowEvent::ArtifactProduced {
                 run_id,
                 workflow_name,
                 node_name,
@@ -626,7 +662,7 @@ mod tests {
             } if run_id == "run-1"
                 && workflow_name == "wf"
                 && node_name == "review"
-                && contract == "review-verdict"
+                && contract.as_deref() == Some("review-verdict")
                 && request_id == "request-1"
                 && (submitted_at - 10.0).abs() < f64::EPSILON
                 && (timestamp - 20.0).abs() < f64::EPSILON
@@ -662,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_validated_submission_updates_step_output_and_workflow_variables() {
+    fn apply_validated_submission_updates_step_output_without_workflow_variable_side_effects() {
         let mut exec = running_execution();
         let mutation = apply_validated_submission(
             &mut exec,
@@ -671,7 +707,6 @@ mod tests {
             "review-verdict",
             &serde_json::json!({"verdict": "LGTM"}),
             Some("LGTM".to_string()),
-            HashMap::from([("spec_dir".to_string(), "docs/specs/x".to_string())]),
             42.0,
         )
         .unwrap();
@@ -679,13 +714,10 @@ mod tests {
         assert_eq!(mutation.workflow_name, "wf");
         let output = exec.step_outputs.get("review").unwrap();
         assert_eq!(output.run_index, 2);
-        assert_eq!(output.output_contract.as_deref(), Some("review-verdict"));
+        assert_eq!(output.artifact_contract.as_deref(), Some("review-verdict"));
         assert_eq!(output.result.as_deref(), Some("LGTM"));
         assert_eq!(output.completed_at, 42.0);
-        assert_eq!(
-            exec.workflow_variables.get("spec_dir").map(String::as_str),
-            Some("docs/specs/x")
-        );
+        assert!(exec.workflow_variables.is_empty());
     }
 
     #[test]
@@ -698,7 +730,6 @@ mod tests {
             "other-contract",
             &serde_json::json!({"verdict": "LGTM"}),
             Some("LGTM".to_string()),
-            HashMap::new(),
             42.0,
         )
         .unwrap_err();
@@ -717,7 +748,6 @@ mod tests {
             "review-verdict",
             &serde_json::json!({"verdict": "LGTM"}),
             Some("LGTM".to_string()),
-            HashMap::new(),
             42.0,
         )
         .unwrap_err();
@@ -727,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn rollback_validated_submission_restores_previous_output_and_variables() {
+    fn rollback_validated_submission_restores_previous_output_without_touching_variables() {
         let mut exec = running_execution();
         exec.step_outputs.insert(
             "review".to_string(),
@@ -742,7 +772,6 @@ mod tests {
             "review-verdict",
             &serde_json::json!({"verdict": "NEEDS_WORK"}),
             Some("NEEDS_WORK".to_string()),
-            HashMap::from([("spec_dir".to_string(), "docs/specs/new".to_string())]),
             42.0,
         )
         .unwrap();
