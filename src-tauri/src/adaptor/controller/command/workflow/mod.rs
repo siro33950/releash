@@ -127,7 +127,6 @@ fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
         "policy" => Ok(FacetKind::Policy),
         "knowledge" => Ok(FacetKind::Knowledge),
         "instruction" => Ok(FacetKind::Instruction),
-        "contract" => Ok(FacetKind::Contract),
         _ => Err(format!("Unknown facet kind: {kind}")),
     }
 }
@@ -142,7 +141,7 @@ fn parse_workflow_approval_permission_mode(
 // ---- ファセットコマンドの内部実装（テスト可能な純粋関数として切り出し） ----
 //
 // Tauri コマンドはこれらの inner 関数に委譲する。インテグレーションを
-// テンポラリディレクトリ上で再現することで、4 種それぞれの正常経路到達と、
+// テンポラリディレクトリ上で再現することで、3 種それぞれの正常経路到達と、
 // 廃止済み種別および未知種別での I/O 非発生を直接検証できるようにする。
 
 #[cfg(test)]
@@ -523,6 +522,7 @@ mod tests {
             name: "adapter-boundary".to_string(),
             description: "adapter command test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![approval_node("review", "review")],
         }
     }
@@ -533,6 +533,7 @@ mod tests {
             name: "adapter-boundary".to_string(),
             description: "adapter command test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 NodeDefinition {
                     name: "review".to_string(),
@@ -725,7 +726,7 @@ mod tests {
                 WorkflowEvent::ParallelCompleted { .. } => "ParallelCompleted",
                 WorkflowEvent::ContractRepairRequested { .. } => "ContractRepairRequested",
                 WorkflowEvent::CliMutationRequested { .. } => "CliMutationRequested",
-                WorkflowEvent::OutputSubmitted { .. } => "OutputSubmitted",
+                WorkflowEvent::ArtifactProduced { .. } => "ArtifactProduced",
                 WorkflowEvent::CliMutationRejected { .. } => "CliMutationRejected",
             })
             .collect()
@@ -767,7 +768,7 @@ mod tests {
             parse_facet_kind("instruction").unwrap(),
             FacetKind::Instruction
         );
-        assert_eq!(parse_facet_kind("contract").unwrap(), FacetKind::Contract);
+        assert!(parse_facet_kind("contract").is_err());
     }
 
     /// Spec [04] Rule「同一意図 command は呼び出し経路に依らず等価」:
@@ -1583,11 +1584,11 @@ mod tests {
         assert!(parse_facet_kind("").is_err());
     }
 
-    /// Gherkin: parse_facet_kind を経由する Tauri コマンドは 4種それぞれの種別指定で
+    /// Gherkin: parse_facet_kind を経由する Tauri コマンドは 3種それぞれの種別指定で
     /// 正常経路に到達する（種別解決層）
     #[test]
-    fn parse_facet_kind_resolves_all_four_kinds_for_command_routing() {
-        for kind in ["policy", "knowledge", "instruction", "contract"] {
+    fn parse_facet_kind_resolves_all_three_kinds_for_command_routing() {
+        for kind in ["policy", "knowledge", "instruction"] {
             assert!(
                 parse_facet_kind(kind).is_ok(),
                 "kind '{kind}' should be accepted"
@@ -1595,23 +1596,21 @@ mod tests {
         }
     }
 
-    // ---- ファセットコマンド × 4 種カバレッジ + persona / 未知種別拒否 ----
+    // ---- ファセットコマンド × 3 種カバレッジ + persona / contract / 未知種別拒否 ----
     //
-    // Spec L107-127 の「列挙した各 Tauri コマンドは 4種それぞれの種別指定で正常経路に到達する」
-    // および「persona または未知種別を指定した Tauri コマンドは拒否される」を、
-    // テンポラリディレクトリ上で各コマンド × 4種の組合せで実行することで検証する。
+    // policy/knowledge/instruction の正常経路と、persona / contract / 未知種別の拒否を、
+    // テンポラリディレクトリ上で検証する。
 
-    const FOUR_KINDS: [(&str, &str); 4] = [
+    const THREE_KINDS: [(&str, &str); 3] = [
         ("policy", "policies"),
         ("knowledge", "knowledge"),
         ("instruction", "instructions"),
-        ("contract", "contracts"),
     ];
 
-    /// 4 種それぞれのディレクトリを作成し、各種に既存の非ビルトインキー（"sample-{kind}"）を配置する。
+    /// 3 種それぞれのディレクトリを作成し、各種に既存の非ビルトインキー（"sample-{kind}"）を配置する。
     fn setup_tmp_facets_base() -> tempfile::TempDir {
         let tmp = tempfile::TempDir::new().unwrap();
-        for (_kind, dir_name) in FOUR_KINDS {
+        for (_kind, dir_name) in THREE_KINDS {
             let dir = tmp.path().join(dir_name);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join(format!("sample-{dir_name}.md")), "SAMPLE_BODY").unwrap();
@@ -1620,7 +1619,7 @@ mod tests {
     }
 
     fn key_for(kind: &str) -> String {
-        let (_, dir) = FOUR_KINDS.iter().find(|(k, _)| *k == kind).unwrap();
+        let (_, dir) = THREE_KINDS.iter().find(|(k, _)| *k == kind).unwrap();
         format!("sample-{dir}")
     }
 
@@ -1647,7 +1646,7 @@ mod tests {
     #[test]
     fn list_facets_inner_reaches_listing_path_for_each_kind() {
         let tmp = setup_tmp_facets_base();
-        for (kind, _) in FOUR_KINDS {
+        for (kind, _) in THREE_KINDS {
             let listed = list_facets_inner(kind, tmp.path()).unwrap();
             assert!(
                 listed.iter().any(|k| k == &key_for(kind)),
@@ -1660,7 +1659,7 @@ mod tests {
     #[test]
     fn list_facets_inner_rejects_persona_and_unknown_without_io() {
         let tmp = setup_tmp_facets_base();
-        for bad in ["persona", "unknown"] {
+        for bad in ["persona", "contract", "unknown"] {
             let result = list_facets_inner(bad, tmp.path());
             assert!(result.is_err(), "list_facets({bad}) must be rejected");
         }
@@ -1670,7 +1669,7 @@ mod tests {
     #[test]
     fn get_facet_inner_reaches_load_path_for_each_kind() {
         let tmp = setup_tmp_facets_base();
-        for (kind, _) in FOUR_KINDS {
+        for (kind, _) in THREE_KINDS {
             let body = get_facet_inner(kind, &key_for(kind), tmp.path()).unwrap();
             assert_eq!(body, "SAMPLE_BODY", "get_facet({kind}) body mismatch");
         }
@@ -1680,7 +1679,7 @@ mod tests {
     #[test]
     fn get_facet_inner_rejects_persona_and_unknown_without_io() {
         let tmp = setup_tmp_facets_base();
-        for bad in ["persona", "unknown"] {
+        for bad in ["persona", "contract", "unknown"] {
             let result = get_facet_inner(bad, "sample-policies", tmp.path());
             assert!(result.is_err(), "get_facet({bad}) must be rejected");
         }
@@ -1690,7 +1689,7 @@ mod tests {
     #[test]
     fn save_facet_inner_writes_for_each_kind() {
         let tmp = setup_tmp_facets_base();
-        for (kind, dir_name) in FOUR_KINDS {
+        for (kind, dir_name) in THREE_KINDS {
             let key = format!("created-{dir_name}");
             save_facet_inner(kind, &key, "WRITTEN_BODY", true, tmp.path()).unwrap();
             let path = tmp.path().join(dir_name).join(format!("{key}.md"));
@@ -1704,7 +1703,7 @@ mod tests {
     fn save_facet_inner_rejects_persona_and_unknown_without_io() {
         let tmp = setup_tmp_facets_base();
         let before = personas_dir_snapshot(tmp.path());
-        for bad in ["persona", "unknown"] {
+        for bad in ["persona", "contract", "unknown"] {
             let result = save_facet_inner(bad, "anything", "BODY", true, tmp.path());
             assert!(result.is_err(), "save_facet({bad}) must be rejected");
         }
@@ -1716,7 +1715,7 @@ mod tests {
     #[test]
     fn delete_facet_inner_removes_for_each_kind() {
         let tmp = setup_tmp_facets_base();
-        for (kind, dir_name) in FOUR_KINDS {
+        for (kind, dir_name) in THREE_KINDS {
             let key = key_for(kind);
             let path = tmp.path().join(dir_name).join(format!("{key}.md"));
             assert!(path.exists());
@@ -1729,12 +1728,12 @@ mod tests {
     #[test]
     fn delete_facet_inner_rejects_persona_and_unknown_without_io() {
         let tmp = setup_tmp_facets_base();
-        for bad in ["persona", "unknown"] {
+        for bad in ["persona", "contract", "unknown"] {
             let result = delete_facet_inner(bad, "sample-policies", tmp.path());
             assert!(result.is_err(), "delete_facet({bad}) must be rejected");
         }
-        // 4種のサンプルは温存されている
-        for (_, dir_name) in FOUR_KINDS {
+        // 3種のサンプルは温存されている
+        for (_, dir_name) in THREE_KINDS {
             assert!(tmp
                 .path()
                 .join(dir_name)
@@ -1747,7 +1746,7 @@ mod tests {
     #[test]
     fn list_facet_summaries_inner_lists_for_each_kind() {
         let tmp = setup_tmp_facets_base();
-        for (kind, _) in FOUR_KINDS {
+        for (kind, _) in THREE_KINDS {
             let summaries = list_facet_summaries_inner(kind, tmp.path()).unwrap();
             assert!(
                 summaries.iter().any(|s| s.key == key_for(kind)),
@@ -1760,7 +1759,7 @@ mod tests {
     #[test]
     fn list_facet_summaries_inner_rejects_persona_and_unknown_without_io() {
         let tmp = setup_tmp_facets_base();
-        for bad in ["persona", "unknown"] {
+        for bad in ["persona", "contract", "unknown"] {
             let result = list_facet_summaries_inner(bad, tmp.path());
             assert!(
                 result.is_err(),
@@ -1773,7 +1772,7 @@ mod tests {
     #[test]
     fn duplicate_facet_inner_creates_new_file_for_each_kind() {
         let tmp = setup_tmp_facets_base();
-        for (kind, dir_name) in FOUR_KINDS {
+        for (kind, dir_name) in THREE_KINDS {
             let source = key_for(kind);
             let new_key = format!("copied-{dir_name}");
             duplicate_facet_inner(kind, &source, &new_key, tmp.path()).unwrap();
@@ -1790,7 +1789,7 @@ mod tests {
     #[test]
     fn duplicate_facet_inner_rejects_persona_and_unknown_without_io() {
         let tmp = setup_tmp_facets_base();
-        for bad in ["persona", "unknown"] {
+        for bad in ["persona", "contract", "unknown"] {
             let result = duplicate_facet_inner(bad, "src", "dst", tmp.path());
             assert!(result.is_err(), "duplicate_facet({bad}) must be rejected");
         }
@@ -1800,9 +1799,9 @@ mod tests {
     #[test]
     fn open_facet_in_editor_inner_invokes_opener_for_each_kind() {
         // open_facet_in_editor のエディタ呼び出し点はテストダブル（クロージャ）で差し替えて、
-        // 実プロセスを起動せずに 4 種すべての正常経路到達と引数（対象パス）を検証する。
+        // 実プロセスを起動せずに 3 種すべての正常経路到達と引数（対象パス）を検証する。
         let tmp = setup_tmp_facets_base();
-        for (kind, dir_name) in FOUR_KINDS {
+        for (kind, dir_name) in THREE_KINDS {
             let recorded: Arc<std::sync::Mutex<Vec<String>>> =
                 Arc::new(std::sync::Mutex::new(Vec::new()));
             let recorded_clone = recorded.clone();
@@ -1831,7 +1830,7 @@ mod tests {
     #[test]
     fn open_facet_in_editor_inner_rejects_persona_and_unknown_without_invoking_opener() {
         let tmp = setup_tmp_facets_base();
-        for bad in ["persona", "unknown"] {
+        for bad in ["persona", "contract", "unknown"] {
             let invoked: Arc<std::sync::Mutex<bool>> = Arc::new(std::sync::Mutex::new(false));
             let invoked_clone = invoked.clone();
             let result = open_facet_in_editor_inner(bad, "sample", tmp.path(), move |_| {
@@ -1854,7 +1853,7 @@ mod tests {
     /// （Spec Rule: Persona廃止後もユーザーディレクトリ上の物理ファイルは保持される）
     ///
     /// temp dir に personas/legacy.md を事前作成し、ファセット一覧系の経路実行後も
-    /// ファイルが残り、4種の一覧結果に legacy が含まれないことを直接 assert する。
+    /// ファイルが残り、3種の一覧結果に legacy が含まれないことを直接 assert する。
     #[test]
     fn legacy_persona_file_remains_on_disk_and_is_not_listed_for_any_kind() {
         let tmp = setup_tmp_facets_base();
@@ -1866,8 +1865,8 @@ mod tests {
         let legacy_path = personas_dir.join("legacy.md");
         std::fs::write(&legacy_path, "LEGACY_PERSONA_BODY").unwrap();
 
-        // ファセット一覧系経路を 4 種それぞれで実行
-        for (kind, _dir_name) in FOUR_KINDS {
+        // ファセット一覧系経路を 3 種それぞれで実行
+        for (kind, _dir_name) in THREE_KINDS {
             let listed = list_facets_inner(kind, base).unwrap();
             assert!(
                 !listed.iter().any(|k| k == "legacy"),
@@ -1927,6 +1926,7 @@ mod tests {
             name: name.to_string(),
             description: "test workflow".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "step1".to_string(),
                 kind: NodeKind::Session(SessionSpec {
@@ -1947,7 +1947,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let wf = make_test_workflow("source-wf");
-        storage::save_workflow(dir, dir, &wf).unwrap();
+        storage::save_workflow(dir, &wf).unwrap();
 
         // Simulate duplicate logic
         let new_name = "copied-wf";
@@ -1958,7 +1958,7 @@ mod tests {
         let mut copied = storage::load_workflow(&dir.join("source-wf.yml"), dir).unwrap();
         copied.name = new_name.to_string();
         copied.builtin = false;
-        storage::save_workflow(dir, dir, &copied).unwrap();
+        storage::save_workflow(dir, &copied).unwrap();
 
         assert!(dir.join(format!("{new_name}.yml")).exists());
         let loaded = storage::load_workflow(&dir.join(format!("{new_name}.yml")), dir).unwrap();
@@ -1971,7 +1971,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let wf = make_test_workflow("existing-wf");
-        storage::save_workflow(dir, dir, &wf).unwrap();
+        storage::save_workflow(dir, &wf).unwrap();
 
         // Act: Simulate the duplicate check from the command
         let new_name = "existing-wf";
@@ -2134,8 +2134,8 @@ mod tests {
         // Create two workflows
         let wf_a = make_test_workflow("workflow-a");
         let wf_b = make_test_workflow("workflow-b");
-        storage::save_workflow(dir, dir, &wf_a).unwrap();
-        storage::save_workflow(dir, dir, &wf_b).unwrap();
+        storage::save_workflow(dir, &wf_a).unwrap();
+        storage::save_workflow(dir, &wf_b).unwrap();
 
         // Simulate renaming workflow-a to workflow-b (duplicate)
         let original_name = Some("workflow-a".to_string());
@@ -2254,7 +2254,7 @@ mod tests {
         if (is_new || is_rename) && dir.join(format!("{}.yml", workflow.name)).exists() {
             return Err(format!("ワークフロー '{}' は既に存在します", workflow.name));
         }
-        storage::save_workflow(dir, dir, workflow).map_err(|e| e.to_string())?;
+        storage::save_workflow(dir, workflow).map_err(|e| e.to_string())?;
         if let Some(orig) = original_name {
             if orig != workflow.name {
                 let old_path = dir.join(format!("{orig}.yml"));
@@ -2273,7 +2273,7 @@ mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("my-wf");
-        storage::save_workflow(dir, dir, &wf).unwrap();
+        storage::save_workflow(dir, &wf).unwrap();
 
         // Update same workflow (original_name = Some("my-wf"), name = "my-wf")
         let mut updated = make_test_workflow("my-wf");
@@ -2305,7 +2305,7 @@ mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("dup-wf");
-        storage::save_workflow(dir, dir, &wf).unwrap();
+        storage::save_workflow(dir, &wf).unwrap();
 
         let result = simulate_save_workflow(dir, &wf, None);
         assert!(result.is_err());
@@ -2318,7 +2318,7 @@ mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("old-name");
-        storage::save_workflow(dir, dir, &wf).unwrap();
+        storage::save_workflow(dir, &wf).unwrap();
 
         let mut renamed = make_test_workflow("new-name");
         renamed.description = "renamed".to_string();
@@ -2333,8 +2333,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        storage::save_workflow(dir, dir, &make_test_workflow("wf-a")).unwrap();
-        storage::save_workflow(dir, dir, &make_test_workflow("wf-b")).unwrap();
+        storage::save_workflow(dir, &make_test_workflow("wf-a")).unwrap();
+        storage::save_workflow(dir, &make_test_workflow("wf-b")).unwrap();
 
         let renamed = make_test_workflow("wf-b");
         let result = simulate_save_workflow(dir, &renamed, Some("wf-a"));
@@ -2753,6 +2753,7 @@ mod tests {
                     name: "wf".to_string(),
                     description: "test".to_string(),
                     builtin: false,
+                    schemas: Default::default(),
                     nodes: vec![],
                 },
                 timestamp: 100.0,
@@ -2815,6 +2816,7 @@ mod tests {
                     name: "wf".to_string(),
                     description: "test".to_string(),
                     builtin: false,
+                    schemas: Default::default(),
                     nodes: vec![],
                 },
                 timestamp: 400.0,
@@ -2915,6 +2917,7 @@ mod tests {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
                 name: "plan".to_string(),
                 kind: crate::adaptor::gateway::workflow::schema::NodeKind::Session(

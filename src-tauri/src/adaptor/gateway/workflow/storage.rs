@@ -123,20 +123,8 @@ pub fn ensure_dir(dir: &Path) -> Result<(), StorageError> {
     Ok(())
 }
 
-pub fn save_workflow(
-    dir: &Path,
-    facets_base_dir: &Path,
-    workflow: &Workflow,
-) -> Result<(), StorageError> {
+pub fn save_workflow(dir: &Path, workflow: &Workflow) -> Result<(), StorageError> {
     validate_workflow_definition(workflow)?;
-    // [02] Contract 双方向対称性: user-authored workflow を保存する経路でも
-    // `input_contracts` / `output_contract` の参照キーが Contract facet として
-    // 実在することを検証する。load 時の facet 解決と同じ基準（呼び出し元が指定する
-    // `facets_base_dir`）で検証し、存在しない参照を持つ workflow がディスクに
-    // 書き出されないようにする。
-    validate_workflow_facet_refs(workflow, |key| {
-        facet::load_facet(facet::FacetKind::Contract, key, facets_base_dir).is_ok()
-    })?;
 
     ensure_dir(dir)?;
 
@@ -169,9 +157,6 @@ pub fn parse_workflow_source(
     let mut workflow: Workflow = serde_saphyr::from_str(content)?;
     workflow.builtin = builtin::is_builtin_workflow(&workflow.name);
     validate_workflow_definition(&workflow)?;
-    validate_workflow_facet_refs(&workflow, |key| {
-        facet::load_facet(facet::FacetKind::Contract, key, facets_base_dir).is_ok()
-    })?;
     facet::resolve_workflow_facets(&mut workflow, facets_base_dir)?;
     validate_workflow_variable_refs(&workflow)?;
     Ok(workflow)
@@ -257,8 +242,6 @@ fn resolved_bodies(
         .into_iter()
         .chain(rf.knowledge.as_deref())
         .chain(rf.instruction.as_deref())
-        .chain(rf.output_contract.as_deref())
-        .chain(rf.input_contracts.iter().map(|s| s.as_str()))
 }
 
 fn check_undefined_vars(
@@ -362,17 +345,6 @@ fn validate_workflow_definition(workflow: &Workflow) -> Result<(), ValidationErr
     validation::validate(&workflow)
 }
 
-fn validate_workflow_facet_refs<F>(
-    workflow: &Workflow,
-    contract_exists: F,
-) -> Result<(), ValidationError>
-where
-    F: Fn(&str) -> bool,
-{
-    let workflow = workflow_definition_to_domain(workflow);
-    validation::validate_facet_refs(&workflow, contract_exists)
-}
-
 pub fn resolve_workflow_path(dir: &Path, name: &str) -> Result<PathBuf, StorageError> {
     validation::validate_name(name)?;
     let file_path = dir.join(format!("{name}.yml"));
@@ -421,6 +393,7 @@ mod tests {
             name: name.to_string(),
             description: format!("{name} workflow"),
             builtin,
+            schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "step1".to_string(),
                 kind: NodeKind::Session(SessionSpec {
@@ -456,7 +429,7 @@ mod tests {
         let dir = tmp.path();
 
         let wf = sample_workflow("my-workflow", false);
-        save_workflow(dir, dir, &wf).unwrap();
+        save_workflow(dir, &wf).unwrap();
 
         let file_path = dir.join("my-workflow.yml");
         assert!(file_path.exists());
@@ -472,9 +445,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        save_workflow(dir, dir, &sample_workflow("charlie", false)).unwrap();
-        save_workflow(dir, dir, &sample_workflow("alpha", false)).unwrap();
-        save_workflow(dir, dir, &sample_workflow("bravo", false)).unwrap();
+        save_workflow(dir, &sample_workflow("charlie", false)).unwrap();
+        save_workflow(dir, &sample_workflow("alpha", false)).unwrap();
+        save_workflow(dir, &sample_workflow("bravo", false)).unwrap();
 
         let list = list_workflows(dir).unwrap();
         let builtin_names = builtin_workflow_names();
@@ -506,7 +479,7 @@ mod tests {
         let dir = tmp.path();
 
         // save_workflowで作成（ファイル名 = YAML本文name）
-        save_workflow(dir, dir, &sample_workflow("original", false)).unwrap();
+        save_workflow(dir, &sample_workflow("original", false)).unwrap();
 
         // ファイルをリネームしてYAML本文nameとファイルstemを乖離させる
         fs::rename(dir.join("original.yml"), dir.join("renamed.yml")).unwrap();
@@ -539,7 +512,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        save_workflow(dir, dir, &sample_workflow("deleteme", false)).unwrap();
+        save_workflow(dir, &sample_workflow("deleteme", false)).unwrap();
         assert!(dir.join("deleteme.yml").exists());
 
         delete_workflow(dir, "deleteme").unwrap();
@@ -575,7 +548,7 @@ mod tests {
     fn resolve_workflow_path_success() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
-        save_workflow(dir, dir, &sample_workflow("my-workflow", false)).unwrap();
+        save_workflow(dir, &sample_workflow("my-workflow", false)).unwrap();
 
         let result = resolve_workflow_path(dir, "my-workflow");
         assert!(result.is_ok());
@@ -632,8 +605,8 @@ mod tests {
         let dir = tmp.path();
 
         // 既存ワークフローを作成
-        save_workflow(dir, dir, &sample_workflow("existing", false)).unwrap();
-        save_workflow(dir, dir, &sample_workflow("to-rename", false)).unwrap();
+        save_workflow(dir, &sample_workflow("existing", false)).unwrap();
+        save_workflow(dir, &sample_workflow("to-rename", false)).unwrap();
 
         // "to-rename" → "existing" へのリネームは重複検出されるべき
         let target_path = dir.join("existing.yml");
@@ -648,7 +621,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        save_workflow(dir, dir, &sample_workflow("my-flow", false)).unwrap();
+        save_workflow(dir, &sample_workflow("my-flow", false)).unwrap();
 
         // 同名の新規作成は重複チェックで検出されるべき
         let existing = dir.join("my-flow.yml");
@@ -745,32 +718,29 @@ steps:
         );
     }
 
-    /// [02] schema 境界: load 経路で 4 種全 facet (policy/knowledge/instruction/output_contract)
+    /// [02] schema 境界: load 経路で 3 種全 facet (policy/knowledge/instruction)
     /// が node と fanout child の resolved facets に
     /// いずれにも解決済みで格納されることを担保する。
     #[test]
-    fn load_workflow_resolves_all_four_facets_for_node_and_child() {
+    fn load_workflow_resolves_all_three_facets_for_node_and_child() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let policies = dir.join("policies");
         let knowledge = dir.join("knowledge");
         let instructions = dir.join("instructions");
-        let contracts = dir.join("contracts");
-        for d in [&policies, &knowledge, &instructions, &contracts] {
+        for d in [&policies, &knowledge, &instructions] {
             std::fs::create_dir_all(d).unwrap();
         }
         std::fs::write(policies.join("p.md"), "POLICY").unwrap();
         std::fs::write(knowledge.join("k.md"), "KNOWLEDGE").unwrap();
         std::fs::write(instructions.join("i.md"), "INSTRUCTION").unwrap();
-        std::fs::write(contracts.join("oc.md"), "OUTPUT_CONTRACT").unwrap();
         std::fs::write(policies.join("pc.md"), "CHILD_POLICY").unwrap();
         std::fs::write(knowledge.join("kc.md"), "CHILD_KNOWLEDGE").unwrap();
         std::fs::write(instructions.join("ic.md"), "CHILD_INSTRUCTION").unwrap();
-        std::fs::write(contracts.join("occ.md"), "CHILD_OUTPUT_CONTRACT").unwrap();
 
         let yaml = r#"
 name: facet-all
-description: all four facets per node
+description: all three facets per node
 nodes:
   - name: lead
     session:
@@ -780,7 +750,6 @@ nodes:
         policy: p
         knowledge: k
         instruction: i
-    output_contract: oc
   - name: par
     fanout:
       parallel_children:
@@ -790,14 +759,12 @@ nodes:
             policy: pc
             knowledge: kc
             instruction: ic
-          output_contract: occ
         - name: c2
           permission: ask
           facets:
             policy: pc
             knowledge: kc
             instruction: ic
-          output_contract: occ
       aggregate:
         all_match: LGTM
         then: lead
@@ -821,10 +788,6 @@ nodes:
             lead_session.resolved_facets.instruction.as_deref(),
             Some("INSTRUCTION")
         );
-        assert_eq!(
-            lead_session.resolved_facets.output_contract.as_deref(),
-            Some("OUTPUT_CONTRACT")
-        );
 
         let par = wf.nodes.iter().find(|n| n.name == "par").unwrap();
         let children = &par.fanout().unwrap().parallel_children;
@@ -840,10 +803,6 @@ nodes:
             assert_eq!(
                 child.resolved_facets.instruction.as_deref(),
                 Some("CHILD_INSTRUCTION")
-            );
-            assert_eq!(
-                child.resolved_facets.output_contract.as_deref(),
-                Some("CHILD_OUTPUT_CONTRACT")
             );
         }
     }

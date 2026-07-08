@@ -16,7 +16,7 @@ const EMPTY_REPORT: DiagnosticReport = {
 	facet_usage: {},
 };
 
-export type FacetSubTab = "policy" | "knowledge" | "instruction" | "contract";
+export type FacetSubTab = "policy" | "knowledge" | "instruction";
 
 export function useAutomation(open: boolean) {
 	const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);

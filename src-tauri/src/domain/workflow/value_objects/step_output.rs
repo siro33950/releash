@@ -46,7 +46,7 @@ pub struct ChildOutputSnapshot {
     pub run_index: u32,
     pub completed_at: f64,
     pub structured_output: Option<serde_json::Value>,
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
     pub state: String,
     pub failure_kind: Option<WorkflowStepFailureKind>,
     pub failure_disposition: Option<FailureDisposition>,
@@ -61,7 +61,7 @@ pub struct ParallelStepState {
     pub run_index: u32,
     pub completed_at: Option<f64>,
     pub structured_output: Option<serde_json::Value>,
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
     pub failure_kind: Option<WorkflowStepFailureKind>,
     pub failure_disposition: Option<FailureDisposition>,
 }
@@ -73,7 +73,7 @@ pub struct StepOutput {
     pub session_id: Option<String>,
     pub result: Option<String>,
     pub structured_output: Option<serde_json::Value>,
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
     pub token_usage: Option<TokenUsage>,
     pub completed_at: f64,
 }

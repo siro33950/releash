@@ -127,11 +127,11 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 					{(facets?.policy ||
 						facets?.knowledge ||
 						facets?.instruction ||
-						step.output_contract ||
-						(step.input_contracts && step.input_contracts.length > 0)) && (
+						step.artifact ||
+						step.input) && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">
-								Facet References
+								Workflow References
 							</span>
 							{facets?.policy && (
 								<FacetRefRow label="Policy" value={facets.policy} />
@@ -142,18 +142,10 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 							{facets?.instruction && (
 								<FacetRefRow label="Instruction" value={facets.instruction} />
 							)}
-							{step.output_contract && (
-								<FacetRefRow
-									label="Output Contract"
-									value={step.output_contract}
-								/>
+							{step.artifact && (
+								<FacetRefRow label="Artifact" value={step.artifact} />
 							)}
-							{step.input_contracts && step.input_contracts.length > 0 && (
-								<FacetRefRow
-									label="Input Contracts"
-									value={step.input_contracts.join(", ")}
-								/>
-							)}
+							{step.input && <FacetRefRow label="Input" value={step.input} />}
 						</div>
 					)}
 

@@ -55,9 +55,9 @@ pub(crate) enum WorkflowMutationSource {
 /// CLI pending dispatcher / compatibility dispatch boundary 経由で渡される commit metadata。
 ///
 /// `CliPending` は CliMutationRequested を伴う Approve / Reject / Abort 系の文脈。
-/// `SubmitOutput` は OutputSubmitted 単体で記録される [08] structured output 提出系で、
+/// `SubmitOutput` は ArtifactProduced 単体で記録される [08] structured output 提出系で、
 /// CliMutationRequested は emit しない（spec [08] 振る舞い定義 Rule 1 / Rule 4:
-/// SubmitOutput 単独で `request_id` / `submitted_at` を伴う OutputSubmitted を記録）。
+/// SubmitOutput 単独で `request_id` / `submitted_at` を伴う ArtifactProduced を記録）。
 ///
 /// 5-3 / 5-4 修正: いずれの variant も engine 拒否時に `CliMutationRejected` event
 /// を補助履歴として記録する。SubmitOutput variant は payload 本体を持たないが、

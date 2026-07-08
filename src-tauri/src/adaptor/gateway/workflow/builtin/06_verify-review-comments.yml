@@ -1,6 +1,52 @@
 name: 06_verify-review-comments
 description: GitHub PR の unresolved review comment を Releash Thread に取り込み、review-fix 相当で対応後、commit/push して PR comment へまとめて返信する。
 builtin: true
+schemas:
+  review-fix-task-text: string
+  review-fix-task:
+    type: object
+    properties:
+      task_id: string
+      thread_id: string
+      file: string
+      objective: string
+      acceptance_criteria:
+        type: array
+        items: review-fix-task-text
+      non_goals:
+        type: array
+        items: review-fix-task-text
+      source_policy: string
+      problem: string
+      expected: string
+      actual: string
+    required:
+    - task_id
+    - thread_id
+    - file
+    - objective
+    - source_policy
+    - problem
+    - expected
+    - actual
+    additionalProperties: false
+  review-fix-tasks:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+        - LGTM
+        - NEEDS_FIX
+      tasks:
+        type: array
+        items: review-fix-task
+      summary: string
+    required:
+    - verdict
+    - tasks
+    - summary
+    additionalProperties: false
 nodes:
 - name: import_pr_review_comments
   session:
@@ -29,7 +75,7 @@ nodes:
       policy: reviewing
       knowledge: releash-thread-cli
       instruction: review-fix-check-tasks
-  output_contract: review-fix-tasks
+  artifact: review-fix-tasks
   rules:
   - match: NEEDS_FIX
     next: implement_tasks

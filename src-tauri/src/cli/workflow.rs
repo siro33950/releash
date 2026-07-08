@@ -452,7 +452,7 @@ fn event_kind_display_name(kind: &str) -> &str {
         "parallel_completed" => "ParallelCompleted",
         "contract_repair_requested" => "ContractRepairRequested",
         "cli_mutation_requested" => "CliMutationRequested",
-        "output_submitted" => "OutputSubmitted",
+        "artifact_produced" => "ArtifactProduced",
         "cli_mutation_rejected" => "CliMutationRejected",
         other => other,
     }
@@ -998,6 +998,7 @@ mod tests {
             name: "engine-cli-list".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "step1".to_string(),
                 kind: NodeKind::Session(SessionSpec::default()),

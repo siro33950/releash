@@ -73,7 +73,7 @@ pub struct RunAbortedChildOutputSnapshot {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
     #[serde(alias = "state")]
     pub outcome: RunAbortedChildOutcome,
 }
@@ -267,7 +267,7 @@ pub enum WorkflowEvent {
         aggregate_result: String,
         timestamp: f64,
     },
-    /// output_contract repair prompt が送信された。
+    /// artifact_contract repair prompt が送信された。
     ContractRepairRequested {
         run_id: String,
         workflow_name: String,
@@ -309,16 +309,18 @@ pub enum WorkflowEvent {
     /// CLI / in-process 経路が engine の submit-output primitive で受理され、
     /// contract 適合判定 → `step_outputs` / `workflow_variables` 更新と同一
     /// トランザクションで append される。contract 不適合・stale step・不在 step
-    /// などの拒否は本 event を残さない（spec [08] OutputSubmitted append の
+    /// などの拒否は本 event を残さない（spec [08] ArtifactProduced append の
     /// 不可分性境界）。
-    OutputSubmitted {
+    ArtifactProduced {
         run_id: String,
         workflow_name: String,
         node_name: String,
-        /// 対象 step の `output_contract`。
-        contract: String,
-        /// contract 適合判定を通過した構造化出力。
-        structured_output: serde_json::Value,
+        /// 対象 step の `artifact_contract`。command stdout など contract を持たない
+        /// Artifact では `None`。
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        contract: Option<String>,
+        /// contract 適合判定を通過した Artifact 値。
+        value: serde_json::Value,
         /// CLI pending command 経由で提出された場合の caller 側 request id。
         /// in-process 経路（Tauri command 等）で提出された場合は `None`。
         #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -340,7 +342,7 @@ pub enum WorkflowEvent {
     /// だった経路）がある。
     ///
     /// spec [08] Rule 1「SubmitOutput の拒否は事実履歴に残さない」の意味は、
-    /// accepted のメイン履歴（`OutputSubmitted` / `CliMutationRequested`）に
+    /// accepted のメイン履歴（`ArtifactProduced` / `CliMutationRequested`）に
     /// 出ないことを指すと再定義する。観測経路用の補助履歴として本 event は
     /// 並列に追記される。
     ///
@@ -372,7 +374,7 @@ pub enum WorkflowEvent {
 /// を限定）。`Reject` の `reason` は CLI 入口で必須化済み。
 ///
 /// `SubmitOutput` variant は `CliMutationRejected` でのみ使用する（accepted 経路
-/// は `OutputSubmitted` event が一次表現）。payload 本体は容量が大きい可能性が
+/// は `ArtifactProduced` event が一次表現）。payload 本体は容量が大きい可能性が
 /// あるため `step_name` と `contract` のみを保持する。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -468,7 +470,7 @@ impl WorkflowEvent {
             | Self::ParallelCompleted { run_id, .. }
             | Self::ContractRepairRequested { run_id, .. }
             | Self::CliMutationRequested { run_id, .. }
-            | Self::OutputSubmitted { run_id, .. }
+            | Self::ArtifactProduced { run_id, .. }
             | Self::CliMutationRejected { run_id, .. } => run_id,
         }
     }
@@ -487,6 +489,7 @@ mod tests {
             name: "wf".to_string(),
             description: "".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "n1".to_string(),
                 kind: NodeKind::Session(SessionSpec {
@@ -559,7 +562,7 @@ mod tests {
                     run_index: 1,
                     completed_at: 2.0,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     outcome: RunAbortedChildOutcome::Aborted,
                 }]),
             }),

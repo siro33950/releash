@@ -152,7 +152,7 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionFileRepository {
     ) -> Result<(), WorkflowError> {
         let plan = validate_and_prepare_save(&self.workflows_dir, &definition.name, original_name)?;
         let legacy = mapper::domain_workflow_to_legacy(&definition)?;
-        storage::save_workflow(&self.workflows_dir, &self.facets_base_dir, &legacy)
+        storage::save_workflow(&self.workflows_dir, &legacy)
             .map_err(|e| WorkflowError::external(e.to_string()))?;
         remove_renamed_workflow_file_after_success(&self.workflows_dir, &plan)
     }
@@ -202,6 +202,7 @@ mod tests {
             name: name.to_string(),
             description: "desc".to_string(),
             builtin: false,
+            schemas: Default::default(),
             variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "step".to_string(),

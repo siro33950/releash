@@ -154,7 +154,7 @@ pub struct ChildOutputSnapshot {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
     /// child snapshot の終端状態。`"completed"`（既定）/ `"aborted"`。
     #[serde(default = "default_step_entry_state")]
     pub state: String,
@@ -179,7 +179,7 @@ pub struct ParallelStepState {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub failure_kind: Option<WorkflowStepFailureKind>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -198,7 +198,7 @@ pub struct StepOutput {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token_usage: Option<TokenUsage>,
     pub completed_at: f64,
@@ -302,7 +302,7 @@ fn child_output_to_domain(
         run_index: output.run_index,
         completed_at: output.completed_at,
         structured_output: output.structured_output,
-        output_contract: output.output_contract,
+        artifact_contract: output.artifact_contract,
         state: output.state,
         failure_kind: output.failure_kind,
         failure_disposition: output.failure_disposition,
@@ -320,7 +320,7 @@ fn parallel_step_state_to_domain(
         run_index: state.run_index,
         completed_at: state.completed_at,
         structured_output: state.structured_output,
-        output_contract: state.output_contract,
+        artifact_contract: state.artifact_contract,
         failure_kind: state.failure_kind,
         failure_disposition: state.failure_disposition,
     }
@@ -333,7 +333,7 @@ fn step_output_to_domain(output: StepOutput) -> crate::domain::workflow::StepOut
         session_id: output.session_id,
         result: output.result,
         structured_output: output.structured_output,
-        output_contract: output.output_contract,
+        artifact_contract: output.artifact_contract,
         token_usage: output.token_usage.map(token_usage_to_domain),
         completed_at: output.completed_at,
     }

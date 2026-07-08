@@ -5,23 +5,23 @@ use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RequestEventKind {
-    OutputSubmitted,
+    ArtifactProduced,
     CliMutationRequested,
 }
 
 impl RequestEventKind {
     fn validation_label(self) -> &'static str {
         match self {
-            Self::OutputSubmitted => "SubmitOutput",
+            Self::ArtifactProduced => "SubmitOutput",
             Self::CliMutationRequested => "CLI mutation",
         }
     }
 
     fn matches_request_id(self, event: &WorkflowEvent, request_id: &str) -> bool {
         match self {
-            Self::OutputSubmitted => matches!(
+            Self::ArtifactProduced => matches!(
                 event,
-                WorkflowEvent::OutputSubmitted { request_id: Some(id), .. }
+                WorkflowEvent::ArtifactProduced { request_id: Some(id), .. }
                     | WorkflowEvent::ContractRepairRequested { request_id: Some(id), .. }
                     if id == request_id
             ),
@@ -80,17 +80,17 @@ mod tests {
     }
 
     #[test]
-    fn request_event_already_recorded_finds_output_submitted_request_id() {
+    fn request_event_already_recorded_finds_artifact_produced_request_id() {
         let tmp = tempfile::tempdir().unwrap();
         let run_id = uuid(1);
         let request_id = uuid(2);
         WorkflowEventLog::new(tmp.path())
-            .append_batch(&[WorkflowEvent::OutputSubmitted {
+            .append_batch(&[WorkflowEvent::ArtifactProduced {
                 run_id: run_id.clone(),
                 workflow_name: "wf".to_string(),
                 node_name: "review".to_string(),
-                contract: "review-verdict".to_string(),
-                structured_output: serde_json::json!({"verdict": "LGTM"}),
+                contract: Some("review-verdict".to_string()),
+                value: serde_json::json!({"verdict": "LGTM"}),
                 request_id: Some(request_id.clone()),
                 submitted_at: Some(10.0),
                 timestamp: 11.0,
@@ -100,7 +100,7 @@ mod tests {
         assert_eq!(
             request_event_already_recorded(
                 tmp.path(),
-                RequestEventKind::OutputSubmitted,
+                RequestEventKind::ArtifactProduced,
                 &run_id,
                 &request_id,
             ),
@@ -109,7 +109,7 @@ mod tests {
         assert_eq!(
             request_event_already_recorded(
                 tmp.path(),
-                RequestEventKind::OutputSubmitted,
+                RequestEventKind::ArtifactProduced,
                 &run_id,
                 &uuid(3),
             ),
@@ -141,7 +141,7 @@ mod tests {
         assert_eq!(
             request_event_already_recorded(
                 tmp.path(),
-                RequestEventKind::OutputSubmitted,
+                RequestEventKind::ArtifactProduced,
                 &run_id,
                 &request_id,
             ),
@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(
             request_event_already_recorded(
                 std::path::Path::new("/tmp"),
-                RequestEventKind::OutputSubmitted,
+                RequestEventKind::ArtifactProduced,
                 "not-a-uuid",
                 &uuid(7),
             ),

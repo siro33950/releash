@@ -75,7 +75,7 @@ impl WorkflowUsecase {
     ) -> Self {
         let definition_commands = WorkflowDefinitionUsecase::new(definitions, definition_sources);
         let facet_commands = WorkflowFacetUsecase::new(facets.clone());
-        let output = WorkflowOutputUsecase::new(query.clone(), facets, secrets);
+        let output = WorkflowOutputUsecase::new(query.clone(), secrets);
         Self {
             query,
             definition_commands,
@@ -985,6 +985,7 @@ mod tests {
             name: name.to_string(),
             description: String::new(),
             builtin: false,
+            schemas: Default::default(),
             variables: Default::default(),
             nodes: Vec::new(),
         }

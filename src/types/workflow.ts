@@ -33,7 +33,7 @@ interface ChildOutputSnapshot {
 	runIndex: number;
 	completedAt: number;
 	structuredOutput?: JsonValue;
-	outputContract?: string;
+	artifactContract?: string;
 	/** 受信側 optional。未指定時は `"completed"` 扱い（旧バックエンド互換）。 */
 	state?: StepEntryState;
 	failureKind?: WorkflowStepFailureKind;
@@ -106,12 +106,14 @@ export interface SessionSpec {
 	facets: FacetRefs;
 }
 
+export type WorkflowSchema = JsonValue;
+
 /// fanout node 配下の暫定子 node API 表現。子は暗黙に session 扱い。
 interface InterimChild {
 	name: string;
 	facets: FacetRefs;
-	output_contract?: string;
-	input_contracts?: string[];
+	artifact?: string;
+	input?: string;
 	pass_previous_response?: boolean;
 	pass_output_from?: string[];
 	model?: string;
@@ -132,8 +134,6 @@ export interface NodeDefinition {
 	artifact?: string;
 	input?: string;
 	inputs?: string[];
-	output_contract?: string;
-	input_contracts?: string[];
 	pass_previous_response?: boolean;
 	pass_output_from?: string[];
 	collect?: CollectConfig;
@@ -160,6 +160,7 @@ export interface Workflow {
 	name: string;
 	description: string;
 	builtin: boolean;
+	schemas?: Record<string, WorkflowSchema>;
 	nodes: NodeDefinition[];
 }
 
@@ -169,7 +170,7 @@ interface StepOutput {
 	sessionId?: string;
 	result?: string;
 	structuredOutput?: JsonValue;
-	outputContract?: string;
+	artifactContract?: string;
 	tokenUsage?: TokenUsage;
 	completedAt: number;
 }
@@ -182,7 +183,7 @@ interface ParallelStepState {
 	runIndex: number;
 	completedAt?: number;
 	structuredOutput?: JsonValue;
-	outputContract?: string;
+	artifactContract?: string;
 	failureKind?: WorkflowStepFailureKind;
 	failureDisposition?: FailureDisposition;
 }
@@ -258,7 +259,7 @@ export type WorkflowSummary = {
 	is_running: boolean;
 };
 
-export type FacetKind = "policy" | "knowledge" | "instruction" | "contract";
+export type FacetKind = "policy" | "knowledge" | "instruction";
 
 export interface FacetSummary {
 	key: string;

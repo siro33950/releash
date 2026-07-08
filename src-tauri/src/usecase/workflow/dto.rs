@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::domain::workflow as domain;
+use crate::domain::workflow::services::contract_schema;
 use crate::domain::workflow::value_objects::ResolvedFacets;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -11,6 +12,8 @@ pub(crate) struct WorkflowDto {
     pub description: String,
     #[serde(default)]
     pub builtin: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemas: BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub variables: HashMap<String, String>,
     pub nodes: Vec<NodeDefinitionDto>,
@@ -21,8 +24,6 @@ pub(crate) struct ResolvedFacetsDto {
     pub policy: Option<String>,
     pub knowledge: Option<String>,
     pub instruction: Option<String>,
-    pub output_contract: Option<String>,
-    pub input_contracts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -88,10 +89,6 @@ pub(crate) struct NodeDefinitionDto {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_contract: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_contracts: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_previous_response: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_output_from: Option<Vec<String>>,
@@ -111,9 +108,9 @@ pub(crate) struct InterimChildDto {
     pub name: String,
     pub facets: FacetRefsDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_contract: Option<String>,
+    pub artifact: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_contracts: Option<Vec<String>>,
+    pub input: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_previous_response: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -230,6 +227,16 @@ pub(crate) fn workflow_to_dto(definition: &domain::WorkflowDefinition) -> Workfl
         name: definition.name.clone(),
         description: definition.description.clone(),
         builtin: definition.builtin,
+        schemas: definition
+            .schemas
+            .iter()
+            .map(|(name, schema)| {
+                (
+                    name.clone(),
+                    contract_schema::schema_def_to_json_value(schema),
+                )
+            })
+            .collect(),
         variables: definition.variables.clone(),
         nodes: definition.nodes.iter().map(node_to_dto).collect(),
     }
@@ -279,8 +286,6 @@ fn node_to_dto(node: &domain::NodeDefinition) -> NodeDefinitionDto {
         artifact: node.artifact.clone(),
         input: node.input.clone(),
         inputs: node.inputs.clone(),
-        output_contract: node.output_contract.clone(),
-        input_contracts: node.input_contracts.clone(),
         pass_previous_response: node.pass_previous_response,
         pass_output_from: node.pass_output_from.clone(),
         collect: node.collect.as_ref().map(collect_to_dto),
@@ -319,8 +324,8 @@ fn child_node_to_dto(child: &domain::InterimChild) -> InterimChildDto {
     InterimChildDto {
         name: child.name.clone(),
         facets: facet_refs_to_dto(&child.facets),
-        output_contract: child.output_contract.clone(),
-        input_contracts: child.input_contracts.clone(),
+        artifact: child.artifact.clone(),
+        input: child.input.clone(),
         pass_previous_response: child.pass_previous_response,
         pass_output_from: child.pass_output_from.clone(),
         model: child.model.clone(),
@@ -397,8 +402,6 @@ fn resolved_facets_to_dto(resolved: &ResolvedFacets) -> ResolvedFacetsDto {
         policy: resolved.policy.clone(),
         knowledge: resolved.knowledge.clone(),
         instruction: resolved.instruction.clone(),
-        output_contract: resolved.output_contract.clone(),
-        input_contracts: resolved.input_contracts.clone(),
     }
 }
 
@@ -431,6 +434,17 @@ mod tests {
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,
+            schemas: [(
+                "plan".to_string(),
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": false
+                }),
+            )]
+            .into_iter()
+            .collect(),
             variables: Default::default(),
             nodes: vec![NodeDefinitionDto {
                 name: "step".to_string(),
@@ -443,8 +457,8 @@ mod tests {
                     },
                     ..Default::default()
                 }),
-                input_contracts: Some(vec!["input".to_string()]),
-                output_contract: Some("output".to_string()),
+                artifact: Some("plan".to_string()),
+                input: Some("plan".to_string()),
                 transition_rules: vec![TransitionRuleDto {
                     r#match: "ok".to_string(),
                     next: "done".to_string(),
@@ -459,6 +473,14 @@ mod tests {
                 "name": "wf",
                 "description": "desc",
                 "builtin": false,
+                "schemas": {
+                    "plan": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                    }
+                },
                 "nodes": [{
                     "name": "step",
                     "kind": "session",
@@ -468,8 +490,8 @@ mod tests {
                             "instruction": "inst"
                         }
                     },
-                    "input_contracts": ["input"],
-                    "output_contract": "output",
+                    "artifact": "plan",
+                    "input": "plan",
                     "rules": [{"match": "ok", "next": "done"}]
                 }]
             })

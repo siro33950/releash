@@ -79,14 +79,14 @@ pub enum TurnCompleteMutationPlan {
 pub struct ApprovalApplication {
     pub effective_result: String,
     pub structured_output: Option<serde_json::Value>,
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalCompletion {
     pub result: String,
     pub structured_output: Option<serde_json::Value>,
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -329,7 +329,7 @@ pub fn plan_approval_application(
         completion: ApprovalCompletion {
             result: application.effective_result,
             structured_output: application.structured_output,
-            output_contract: application.output_contract,
+            artifact_contract: application.artifact_contract,
         },
         transition,
     })
@@ -394,6 +394,7 @@ mod tests {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: Default::default(),
             variables: Default::default(),
             nodes,
         }
@@ -560,7 +561,7 @@ mod tests {
             ApprovalApplication {
                 effective_result: "reject".to_string(),
                 structured_output: Some(serde_json::json!({ "decision": "reject" })),
-                output_contract: Some("approval-contract".to_string()),
+                artifact_contract: Some("approval-contract".to_string()),
             },
         )
         .unwrap();
@@ -571,7 +572,7 @@ mod tests {
         );
         assert_eq!(plan.completion.result, "reject");
         assert_eq!(
-            plan.completion.output_contract.as_deref(),
+            plan.completion.artifact_contract.as_deref(),
             Some("approval-contract")
         );
     }

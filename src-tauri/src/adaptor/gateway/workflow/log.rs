@@ -321,6 +321,7 @@ mod tests {
             name: name.to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "step1".to_string(),
                 kind: NodeKind::Session(SessionSpec {
@@ -885,6 +886,7 @@ mod tests {
             name: "test-wf".to_string(),
             description: "".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![plan, implement, review],
         }
     }
@@ -1114,6 +1116,7 @@ mod tests {
             name: "parallel-wf".to_string(),
             description: "".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_agent_node("plan", "plan"), parallel_review],
         };
 
@@ -1387,6 +1390,7 @@ mod tests {
             name: "approval-then-next".to_string(),
             description: "".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![review, make_agent_node("ship", "ship")],
         };
 

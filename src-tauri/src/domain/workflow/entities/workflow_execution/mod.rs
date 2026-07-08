@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 #[cfg(test)]
-use crate::domain::workflow::services::{contract, history, parallel, projection, validation};
+use crate::domain::workflow::services::{history, parallel, projection, validation};
 #[cfg(test)]
 use crate::domain::workflow::value_objects::{
     ApprovalOperations, NodeDefinition, RunId, StepOutput, WorkflowStateSnapshot, WorktreePath,
@@ -57,7 +57,7 @@ pub struct ParallelChildRun {
     pub state: ParallelChildState,
     pub result: Option<String>,
     pub structured_output: Option<serde_json::Value>,
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
     pub failure_kind: Option<WorkflowStepFailureKind>,
     pub failure_disposition: Option<FailureDisposition>,
     pub token_usage: TokenUsage,
@@ -80,7 +80,7 @@ pub struct NodeCompletion {
     pub session_id: Option<String>,
     pub token_usage: Option<TokenUsage>,
     pub structured_output: Option<serde_json::Value>,
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
     pub run_index: Option<u32>,
     pub completed_at: f64,
 }
@@ -193,7 +193,7 @@ impl WorkflowExecution {
             run_index,
         });
         if let Some(output) =
-            history::step_output_from_completed_history_entry(&entry, completion.output_contract)
+            history::step_output_from_completed_history_entry(&entry, completion.artifact_contract)
         {
             self.step_outputs.insert(entry.step_name.clone(), output);
         }
@@ -244,7 +244,7 @@ impl WorkflowExecution {
                 state: ParallelChildState::Running,
                 result: None,
                 structured_output: None,
-                output_contract: None,
+                artifact_contract: None,
                 failure_kind: None,
                 failure_disposition: None,
                 token_usage: TokenUsage::default(),
@@ -291,7 +291,7 @@ impl WorkflowExecution {
                 state: ParallelChildState::Running,
                 result: None,
                 structured_output: None,
-                output_contract: None,
+                artifact_contract: None,
                 failure_kind: None,
                 failure_disposition: None,
                 token_usage: TokenUsage::default(),
@@ -310,7 +310,7 @@ impl WorkflowExecution {
                 .and_then(|output| output.structured_output.clone()),
             prior
                 .as_ref()
-                .and_then(|output| output.output_contract.clone()),
+                .and_then(|output| output.artifact_contract.clone()),
         );
 
         if let Some(parallel_run) = &mut self.parallel_run {
@@ -324,7 +324,7 @@ impl WorkflowExecution {
                 child.session_id = completion.session_id.clone();
                 child.token_usage = completion.token_usage.clone().unwrap_or_default();
                 child.structured_output = output_merge.structured_output.clone();
-                child.output_contract = output_merge.output_contract.clone();
+                child.artifact_contract = output_merge.artifact_contract.clone();
                 child.failure_kind = None;
                 child.failure_disposition = None;
                 child.run_index = completion.run_index;
@@ -339,7 +339,7 @@ impl WorkflowExecution {
                 session_id: Some(completion.session_id),
                 result: completion.result,
                 structured_output: output_merge.structured_output,
-                output_contract: output_merge.output_contract,
+                artifact_contract: output_merge.artifact_contract,
                 token_usage: completion.token_usage.clone(),
                 completed_at: completion.completed_at,
             },
@@ -370,17 +370,12 @@ impl WorkflowExecution {
                 run_index,
                 session_id: None,
                 result,
-                structured_output: Some(structured_output.clone()),
-                output_contract: Some(contract.to_string()),
+                structured_output: Some(structured_output),
+                artifact_contract: Some(contract.to_string()),
                 token_usage: None,
                 completed_at: timestamp,
             },
         );
-        self.workflow_variables
-            .extend(contract::extract_workflow_variables_from_contract_output(
-                Some(contract),
-                Some(&structured_output),
-            ));
         self.updated_at = timestamp;
     }
 
@@ -561,6 +556,7 @@ mod aggregate_tests {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: Default::default(),
             variables: Default::default(),
             nodes,
         }
@@ -599,7 +595,7 @@ mod aggregate_tests {
                 output_tokens: 3,
             }),
             structured_output: None,
-            output_contract: None,
+            artifact_contract: None,
             run_index: Some(1),
             completed_at: 2.0,
         })
@@ -671,7 +667,7 @@ mod aggregate_tests {
     }
 
     #[test]
-    fn submit_output_updates_step_output_and_contract_variables() {
+    fn submit_output_updates_step_output_without_workflow_variable_side_effects() {
         let mut exec = WorkflowExecution::new(
             run_id(),
             workflow(vec![node("spec", TestNodeKind::Session)]),
@@ -690,15 +686,9 @@ mod aggregate_tests {
 
         let snapshot = exec.to_snapshot();
         assert_eq!(
-            snapshot.step_outputs["spec"].output_contract.as_deref(),
+            snapshot.step_outputs["spec"].artifact_contract.as_deref(),
             Some("spec-directory")
         );
-        assert_eq!(
-            snapshot
-                .workflow_variables
-                .get("spec_dir")
-                .map(String::as_str),
-            Some("docs/spec")
-        );
+        assert!(snapshot.workflow_variables.is_empty());
     }
 }

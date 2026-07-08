@@ -195,7 +195,7 @@ describe("AutomationSection", () => {
 		expect(screen.getByText("Policy")).toBeInTheDocument();
 		expect(screen.getByText("Knowledge")).toBeInTheDocument();
 		expect(screen.getByText("Instruction")).toBeInTheDocument();
-		expect(screen.getByText("Contract")).toBeInTheDocument();
+		expect(screen.queryByText("Contract")).not.toBeInTheDocument();
 	});
 
 	it("shows error message when error is set", () => {
@@ -544,7 +544,7 @@ describe("AutomationSection", () => {
 								else: "step-fail",
 							},
 						},
-						output_contract: "json-schema",
+						artifact: "json-schema",
 						rules: [{ match: "pass", next: "next-step" }],
 						cycle_guard: { max_iterations: 3 },
 						pass_previous_response: true,
@@ -563,8 +563,10 @@ describe("AutomationSection", () => {
 		await user.click(screen.getByText("complex-step"));
 
 		await waitFor(() => {
-			expect(screen.getByText("Facet References")).toBeInTheDocument();
+			expect(screen.getByText("Workflow References")).toBeInTheDocument();
 		});
+		expect(screen.getByText(/^Artifact:/)).toBeInTheDocument();
+		expect(screen.getByText("json-schema")).toBeInTheDocument();
 		expect(screen.getByText("Transition Rules")).toBeInTheDocument();
 		expect(
 			screen.getByText("Cycle Guard: max 3 iterations"),
@@ -595,7 +597,7 @@ describe("AutomationSection", () => {
 					},
 					{
 						severity: "warning",
-						message: "Consider adding output contract",
+						message: "Consider adding artifact schema",
 						workflow_name: "diag-wf",
 						step_name: "step-1",
 					},
@@ -608,7 +610,7 @@ describe("AutomationSection", () => {
 			screen.getByText("Step references missing facet"),
 		).toBeInTheDocument();
 		expect(
-			screen.getByText("Consider adding output contract"),
+			screen.getByText("Consider adding artifact schema"),
 		).toBeInTheDocument();
 	});
 

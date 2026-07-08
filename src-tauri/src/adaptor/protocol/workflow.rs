@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::domain::workflow::{FailureDisposition, WorkflowStepFailureKind};
 
@@ -122,6 +122,8 @@ pub struct WorkflowDefinitionView {
     pub description: String,
     #[serde(default)]
     pub builtin: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemas: BTreeMap<String, serde_json::Value>,
     pub nodes: Vec<WorkflowNodeDefinitionView>,
 }
 
@@ -193,10 +195,6 @@ pub struct WorkflowNodeDefinitionView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_contract: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_contracts: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_previous_response: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_output_from: Option<Vec<String>>,
@@ -222,9 +220,9 @@ pub struct WorkflowInterimChildView {
     #[serde(default, skip_serializing_if = "WorkflowFacetRefsView::is_empty")]
     pub facets: WorkflowFacetRefsView,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_contract: Option<String>,
+    pub artifact: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_contracts: Option<Vec<String>>,
+    pub input: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_previous_response: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -302,7 +300,7 @@ pub struct ChildOutputSnapshotView {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
     /// child snapshot の終端状態。`"completed"`（既定）/ `"failed"` / `"aborted"`。
     #[serde(default = "default_step_entry_state_view")]
     pub state: String,
@@ -327,7 +325,7 @@ pub struct ParallelStepStateView {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub failure_kind: Option<WorkflowStepFailureKind>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -346,7 +344,7 @@ pub struct StepOutputView {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token_usage: Option<TokenUsageView>,
     pub completed_at: f64,
@@ -372,6 +370,7 @@ mod tests {
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
+                schemas: Default::default(),
                 nodes: Vec::new(),
             },
             total_token_usage: TokenUsageView::default(),
@@ -459,7 +458,7 @@ mod tests {
             run_index: 1,
             completed_at: 1.0,
             structured_output: None,
-            output_contract: None,
+            artifact_contract: None,
             state: STEP_STATE_FAILED_VIEW.to_string(),
             failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
             failure_disposition: Some(FailureDisposition::Partial),
@@ -482,7 +481,7 @@ mod tests {
             run_index: 1,
             completed_at: None,
             structured_output: None,
-            output_contract: None,
+            artifact_contract: None,
             failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
             failure_disposition: Some(FailureDisposition::Partial),
         };

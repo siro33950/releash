@@ -556,7 +556,7 @@ fn run_aborted_child_snapshot_from_child_output(
         run_index: child.run_index,
         completed_at: child.completed_at,
         structured_output: child.structured_output.clone(),
-        output_contract: child.output_contract.clone(),
+        artifact_contract: child.artifact_contract.clone(),
         outcome: run_aborted_child_outcome_from_state(&child.state),
     }
 }
@@ -590,7 +590,7 @@ pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
         | WorkflowEvent::ParallelCompleted { timestamp, .. }
         | WorkflowEvent::ContractRepairRequested { timestamp, .. }
         | WorkflowEvent::CliMutationRequested { timestamp, .. }
-        | WorkflowEvent::OutputSubmitted { timestamp, .. }
+        | WorkflowEvent::ArtifactProduced { timestamp, .. }
         | WorkflowEvent::CliMutationRejected { timestamp, .. } => *timestamp,
     }
 }
@@ -616,7 +616,7 @@ pub(crate) fn set_workflow_event_timestamp(event: &mut WorkflowEvent, commit_tim
         | WorkflowEvent::ParallelCompleted { timestamp, .. }
         | WorkflowEvent::ContractRepairRequested { timestamp, .. }
         | WorkflowEvent::CliMutationRequested { timestamp, .. }
-        | WorkflowEvent::OutputSubmitted { timestamp, .. }
+        | WorkflowEvent::ArtifactProduced { timestamp, .. }
         | WorkflowEvent::CliMutationRejected { timestamp, .. } => *timestamp = commit_timestamp,
     }
 }
@@ -788,7 +788,7 @@ mod tests {
                     run_index: 1,
                     completed_at: 40.0,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     state: STEP_STATE_COMPLETED.to_string(),
                     failure_kind: None,
                     failure_disposition: None,
@@ -800,7 +800,7 @@ mod tests {
                     run_index: 1,
                     completed_at: 42.0,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     state: STEP_STATE_ABORTED.to_string(),
                     failure_kind: None,
                     failure_disposition: None,

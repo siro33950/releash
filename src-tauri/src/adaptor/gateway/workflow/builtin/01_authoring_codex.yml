@@ -1,6 +1,14 @@
 name: 01_authoring_codex
 description: ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をGPT系モデルで構築する。レビューループは行わない。
 builtin: true
+schemas:
+  spec-directory:
+    type: object
+    properties:
+      spec_dir: string
+    required:
+    - spec_dir
+    additionalProperties: false
 nodes:
 - name: write_requirements
   session:
@@ -10,7 +18,7 @@ nodes:
     facets:
       policy: planning
       instruction: spec-authoring-write-requirements
-  output_contract: spec-directory
+  artifact: spec-directory
 - name: write_behavior
   session:
     model: gpt-5.5
@@ -19,8 +27,7 @@ nodes:
     facets:
       policy: planning
       instruction: spec-authoring-write-behavior
-  input_contracts:
-  - spec-directory
+  input: spec-directory
   pass_output_from:
   - write_requirements
 - name: write_design
@@ -31,8 +38,7 @@ nodes:
     facets:
       policy: planning
       instruction: spec-authoring-write-design
-  input_contracts:
-  - spec-directory
+  input: spec-directory
   pass_output_from:
   - write_requirements
 - name: spec_finalize
@@ -43,7 +49,6 @@ nodes:
     facets:
       policy: planning
       instruction: spec-authoring-finalize
-  input_contracts:
-  - spec-directory
+  input: spec-directory
   pass_output_from:
   - write_requirements

@@ -82,6 +82,7 @@ use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::adaptor::gateway::workflow::turn_completion;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::services::contract as workflow_contract;
+use crate::domain::workflow::services::contract_schema as workflow_contract_schema;
 use crate::domain::workflow::services::failure_policy::{
     ParallelFailurePolicy, ParallelPropagation, RepairDecision, RetryPolicy,
     StructuredOutputRepairPolicy,
@@ -412,7 +413,7 @@ fn upsert_stall_observation(
     observations.push(observation);
 }
 
-// [08] `lookup_step_output_contract` は domain の contract service に移動済み。
+// [08] `lookup_step_artifact_contract` は domain の contract service に移動済み。
 // engine と CLI の双方が同じ domain service を参照するため、本モジュールではメモのみ残す。
 
 impl WorkflowRuntimeService {
@@ -1025,10 +1026,10 @@ impl WorkflowRuntimeService {
         .await
     }
 
-    /// [08] 指定 run の event log 内に同じ `request_id` を持つ OutputSubmitted が既に
+    /// [08] 指定 run の event log 内に同じ `request_id` を持つ ArtifactProduced が既に
     /// append されているかを判定する idempotency 用 helper。CLI pending command の
-    /// 再処理時に重複 OutputSubmitted を作らないように、dispatch 入口側で短絡する。
-    pub(crate) fn output_submitted_already_recorded<R: tauri::Runtime>(
+    /// 再処理時に重複 ArtifactProduced を作らないように、dispatch 入口側で短絡する。
+    pub(crate) fn artifact_produced_already_recorded<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         run_id: &str,
@@ -1038,7 +1039,7 @@ impl WorkflowRuntimeService {
             .map_err(WorkflowEngineError::SessionStore)?;
         request_event_already_recorded(
             &data_dir,
-            RequestEventKind::OutputSubmitted,
+            RequestEventKind::ArtifactProduced,
             run_id,
             request_id,
         )
@@ -1050,7 +1051,7 @@ impl WorkflowRuntimeService {
     /// 1. run / step / contract の妥当性検証
     /// 2. `validate_contract_value` で contract 適合判定
     /// 3. 適合時のみ `step_outputs` / `workflow_variables` を更新し、
-    ///    `OutputSubmitted` event を append
+    ///    `ArtifactProduced` event を append
     /// 4. 不適合・stale step・不在 step・契約タイプ不一致は副作用なしで `Err` を返し、
     ///    `step_outputs` / `workflow_variables` / event log を一切変更しない。
     #[allow(clippy::too_many_arguments)]
@@ -1104,11 +1105,19 @@ impl WorkflowRuntimeService {
         //    同一の前処理 + validation を共有するため、`preprocess_and_validate_output`
         //    に集約する（spec [08] L169 / Rule 2）。
         let secrets = secret_source::collect_configured_secret_values(app);
+        let workflow = {
+            let execs = self.executions.lock().await;
+            execs
+                .get(run_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?
+                .workflow
+                .clone()
+        };
         let workflow_output_submission::ValidatedSubmissionOutput {
             structured_output: validated_output,
             result: validated_result,
-            workflow_variables: contract_vars,
         } = match workflow_output_submission::validate_submission_output_with_secrets(
+            &workflow,
             &contract,
             structured_output,
             &secrets,
@@ -1132,7 +1141,7 @@ impl WorkflowRuntimeService {
 
         // 2. writer lock 取得後に state / contract / accepting target / run_index を
         //    再検証し、snapshot 採取と mutation を同一 lock スコープで行う
-        //    （spec [08] 境界: OutputSubmitted の append は適合判定および state 更新と
+        //    （spec [08] 境界: ArtifactProduced の append は適合判定および state 更新と
         //    同一トランザクション境界内。並行 dispatch によって stale step の output が
         //    確定されないよう、validation と mutation のあいだに lock を手放さない）。
         let timestamp = current_timestamp();
@@ -1148,16 +1157,15 @@ impl WorkflowRuntimeService {
                 &contract,
                 &validated_output,
                 validated_result,
-                contract_vars,
                 timestamp,
             )?
         };
 
-        // 3. OutputSubmitted event を append。append 失敗時は state を snapshot から
+        // 3. ArtifactProduced event を append。append 失敗時は state を snapshot から
         //    一括復元することで「validation・state 更新・event append」を原子的に揃える
         //    （spec [08] 振る舞い定義 Rule 1: 適合しない場合 / 適合する場合いずれも
         //    state と event log が一致する）。
-        let event = workflow_output_submission::output_submitted_event(
+        let event = workflow_output_submission::artifact_produced_event(
             run_id,
             &mutation.workflow_name,
             &step_name,
@@ -1190,7 +1198,7 @@ impl WorkflowRuntimeService {
         step_name: &str,
         contract: &str,
         request_id: Option<&str>,
-        validation_error: WorkflowEngineError,
+        validation_error: workflow_output_submission::SubmissionValidationError,
     ) -> Result<(), WorkflowEngineError> {
         let target = {
             let execs = self.executions.lock().await;
@@ -1203,8 +1211,9 @@ impl WorkflowRuntimeService {
         };
         let target = match target {
             Ok(target) => target,
-            Err(_) => return Err(validation_error),
+            Err(_) => return Err(validation_error.into_engine_error()),
         };
+        let schema_violations = validation_error.schema_violations().map(Vec::from);
         self.handle_missing_required_output(
             app,
             session_store,
@@ -1218,6 +1227,7 @@ impl WorkflowRuntimeService {
             target.session_id.as_deref(),
             request_id,
             SubmissionViolation::InvalidSubmitOutput,
+            schema_violations.as_deref(),
         )
         .await
     }
@@ -1227,7 +1237,7 @@ impl WorkflowRuntimeService {
         app: &tauri::AppHandle<R>,
         context: CommandCommitContext,
     ) -> Result<(), WorkflowEngineError> {
-        // SubmitOutput 経路は CliMutationRequested を emit せず、OutputSubmitted 単体で
+        // SubmitOutput 経路は CliMutationRequested を emit せず、ArtifactProduced 単体で
         // 記録する（spec [08]）。ここでは何もせず Ok を返す。
         let Some(mutation_ref) = context.cli_pending_mutation() else {
             return Ok(());
@@ -1893,7 +1903,7 @@ impl WorkflowRuntimeService {
                 let entry = exec.make_step_history_entry(
                     Some(completion.result),
                     completion.structured_output,
-                    completion.output_contract,
+                    completion.artifact_contract,
                 );
                 exec.step_history.push(entry);
                 exec.apply_advance()
@@ -1903,7 +1913,7 @@ impl WorkflowRuntimeService {
                 let entry = exec.make_step_history_entry(
                     Some(completion.result),
                     completion.structured_output,
-                    completion.output_contract,
+                    completion.artifact_contract,
                 );
                 exec.step_history.push(entry);
                 exec.apply_transition(&target)?
@@ -1994,7 +2004,7 @@ impl WorkflowRuntimeService {
             worktree_path,
             workflow_name_for_contract,
             node_name_for_contract,
-            approval_output_contract,
+            approval_artifact_contract,
             approval_run_index,
             approval_submitted_output,
         ) = {
@@ -2008,13 +2018,13 @@ impl WorkflowRuntimeService {
                 expected_step_name,
             )?;
             let node = &exec.workflow.nodes[exec.current_step_index];
-            let output_contract = node.output_contract.clone();
+            let artifact_contract = node.artifact.clone();
             let run_index = exec
                 .step_execution_counts
                 .get(&node.name)
                 .copied()
                 .unwrap_or(1);
-            let submitted_output = output_contract.as_deref().and_then(|contract| {
+            let submitted_output = artifact_contract.as_deref().and_then(|contract| {
                 workflow_output_submission::submitted_step_output_for(
                     &exec.step_outputs,
                     &node.name,
@@ -2027,7 +2037,7 @@ impl WorkflowRuntimeService {
                 exec.worktree_path.clone(),
                 exec.workflow.name.clone(),
                 node.name.clone(),
-                output_contract,
+                artifact_contract,
                 run_index,
                 submitted_output,
             )
@@ -2047,7 +2057,7 @@ impl WorkflowRuntimeService {
         }
 
         let approve_submitted_output = if matches!(decision, ApprovalDecision::Approve) {
-            if let Some(ref contract) = approval_output_contract {
+            if let Some(ref contract) = approval_artifact_contract {
                 if let Some(output) = approval_submitted_output {
                     Some(output)
                 } else {
@@ -2064,6 +2074,7 @@ impl WorkflowRuntimeService {
                         current_session_id.as_deref(),
                         None,
                         SubmissionViolation::MissingSubmitOutput,
+                        None,
                     )
                     .await?;
                     return Err(WorkflowEngineError::ValidationError(
@@ -2097,20 +2108,16 @@ impl WorkflowRuntimeService {
                 }
             };
 
-        let application_output_contract: Option<String> = if matches!(
+        let application_artifact_contract: Option<String> = if matches!(
             decision,
             ApprovalDecision::Approve
-        ) && approve_submitted_output.is_some()
+        ) && approve_submitted_output
+            .is_some()
         {
-            approval_output_contract.clone()
+            approval_artifact_contract.clone()
         } else {
             None
         };
-        let contract_variables = workflow_contract::extract_workflow_variables_from_contract_output(
-            application_output_contract.as_deref(),
-            structured_output.as_ref(),
-        );
-
         // contract resultがあればそちらを優先、なければresult_tag
         let effective_result = contract_result.unwrap_or_else(|| result_tag.to_string());
 
@@ -2131,14 +2138,13 @@ impl WorkflowRuntimeService {
             let workflow_name = exec.workflow.name.clone();
             let node_name = exec.workflow.nodes[exec.current_step_index].name.clone();
             let snapshot_before = exec.clone();
-            exec.workflow_variables.extend(contract_variables);
             let outcome = Self::apply_approval_application(
                 exec,
                 &decision,
                 workflow_transition::ApprovalApplication {
                     effective_result,
                     structured_output,
-                    output_contract: application_output_contract,
+                    artifact_contract: application_artifact_contract,
                 },
             )?;
             (outcome, snapshot_before, workflow_name, node_name)
@@ -2580,7 +2586,7 @@ impl WorkflowRuntimeService {
         token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError> {
         // [08] parallel child の構造化出力は CLI / Tauri 経由の `SubmitOutput` で確定する。
-        // output_contract がある child は、提出済み output が無い限り Completed にしない。
+        // artifact_contract がある child は、提出済み output が無い限り Completed にしない。
         let child_failed = exit_code != 0 || failure_signal.is_some();
         let (submitted_child_output, missing_child_output) = if !child_failed {
             let execs = self.executions.lock().await;
@@ -2599,7 +2605,7 @@ impl WorkflowRuntimeService {
             let Some(child) = pr.children.iter().find(|c| c.session_id == session_id) else {
                 return Ok(());
             };
-            if let Some(contract) = child.output_contract.clone() {
+            if let Some(contract) = child.artifact_contract.clone() {
                 let submitted = workflow_output_submission::submitted_step_output_for(
                     &exec.step_outputs,
                     &child.step_name,
@@ -2637,6 +2643,7 @@ impl WorkflowRuntimeService {
                 Some(session_id),
                 None,
                 SubmissionViolation::MissingSubmitOutput,
+                None,
             )
             .await?;
             return Ok(());
@@ -2714,7 +2721,7 @@ impl WorkflowRuntimeService {
                             session_id: Some(session_id.to_string()),
                             result: child.result.clone(),
                             structured_output: child.structured_output.clone(),
-                            output_contract: child.output_contract.clone(),
+                            artifact_contract: child.artifact_contract.clone(),
                             token_usage: Some(child_token_usage.clone()),
                             completed_at: current_timestamp(),
                         },
@@ -3080,6 +3087,7 @@ impl WorkflowRuntimeService {
         session_id: Option<&str>,
         request_id: Option<&str>,
         violation: SubmissionViolation,
+        schema_violations: Option<&[workflow_contract_schema::SchemaViolation]>,
     ) -> Result<(), WorkflowEngineError> {
         let prior_attempts =
             self.contract_repair_attempt_count(app, run_id, node_name, run_index)?;
@@ -3150,26 +3158,19 @@ impl WorkflowRuntimeService {
         )
         .map_err(WorkflowEngineError::SessionStore)?;
 
-        let contract_definition = {
-            let execs = self.executions.lock().await;
-            execs.get(run_id).and_then(|exec| {
-                workflow_output_submission::resolved_output_contract_definition_for(
-                    &exec.workflow,
-                    node_name,
-                    contract,
-                )
-            })
-        };
         let cli_alias = crate::infrastructure::platform::path_aliases::alias_name_for_profile(
             crate::infrastructure::platform::path_aliases::BuildProfile::current(),
         );
-        let prompt = workflow_contract::build_missing_output_repair_prompt(
-            cli_alias,
-            run_id,
-            node_name,
-            contract,
-            contract_definition.as_deref(),
-        );
+        let prompt = match (violation, schema_violations) {
+            (SubmissionViolation::InvalidSubmitOutput, Some(violations)) => {
+                workflow_contract::build_schema_violation_repair_prompt(
+                    cli_alias, run_id, node_name, contract, violations,
+                )
+            }
+            _ => workflow_contract::build_missing_artifact_repair_prompt(
+                cli_alias, run_id, node_name, contract,
+            ),
+        };
         let permission_mode = PermissionMode::parse(&session.permission_mode)
             .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
         let _runtime_guard = agent_runtime.acquire_session_lock(session_id).await;
@@ -3568,7 +3569,7 @@ impl WorkflowRuntimeService {
 
     /// autoモードのタグ検出結果を処理する。
     /// 判定 + 状態変更 + 履歴記録を1回のロックで原子的に実行する。
-    /// output_contractが設定されたステップではcontract検証を実行し、
+    /// artifact_contractが設定されたステップではcontract検証を実行し、
     /// 違反時はリトライプロンプトを送信する。
     #[allow(clippy::too_many_arguments)]
     async fn handle_auto_complete<R: tauri::Runtime>(
@@ -3585,12 +3586,12 @@ impl WorkflowRuntimeService {
         let text = turn_completion::extract_text_from_parts(final_parts);
 
         // [08] prose 抽出経路廃止: agent step の structured output は CLI / Tauri 経由の
-        // `SubmitOutput` でしか確定しない。output_contract がある step は、提出済み
+        // `SubmitOutput` でしか確定しない。artifact_contract がある step は、提出済み
         // output が見つからない限り完了扱いにせず、同じ session に修正ターンを投げる。
         let (
             run_id,
             workflow_name,
-            output_contract,
+            artifact_contract,
             run_index,
             current_session_id,
             submitted_output,
@@ -3599,13 +3600,13 @@ impl WorkflowRuntimeService {
             let (run_id, exec) = find_by_worktree(&execs, worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             let node = &exec.workflow.nodes[exec.current_step_index];
-            let output_contract = node.output_contract.clone();
+            let artifact_contract = node.artifact.clone();
             let run_index = exec
                 .step_execution_counts
                 .get(&node.name)
                 .copied()
                 .unwrap_or(1);
-            let submitted_output = output_contract.as_deref().and_then(|contract| {
+            let submitted_output = artifact_contract.as_deref().and_then(|contract| {
                 workflow_output_submission::submitted_step_output_for(
                     &exec.step_outputs,
                     &node.name,
@@ -3616,13 +3617,13 @@ impl WorkflowRuntimeService {
             (
                 run_id.clone(),
                 exec.workflow.name.clone(),
-                output_contract,
+                artifact_contract,
                 run_index,
                 exec.current_session_id.clone(),
                 submitted_output,
             )
         };
-        let (structured_output, contract_result) = if let Some(ref contract) = output_contract {
+        let (structured_output, contract_result) = if let Some(ref contract) = artifact_contract {
             if let Some(output) = submitted_output {
                 (output.structured_output.clone(), output.result.clone())
             } else {
@@ -3639,6 +3640,7 @@ impl WorkflowRuntimeService {
                     current_session_id.as_deref(),
                     None,
                     SubmissionViolation::MissingSubmitOutput,
+                    None,
                 )
                 .await?;
                 return Ok(());
@@ -3647,10 +3649,6 @@ impl WorkflowRuntimeService {
             (None, None)
         };
         let _ = run_index;
-
-        // contract検証成功時のworkflow_variables反映。
-        self.apply_contract_variables(worktree_path, &output_contract, &structured_output)
-            .await;
 
         let effective_result = contract_result;
 
@@ -3677,7 +3675,7 @@ impl WorkflowRuntimeService {
                     let entry = exec.make_step_history_entry(
                         effective_result,
                         structured_output,
-                        output_contract,
+                        artifact_contract,
                     );
                     exec.step_history.push(entry);
                     exec.apply_advance()
@@ -3687,7 +3685,7 @@ impl WorkflowRuntimeService {
                     let entry = exec.make_step_history_entry(
                         Some(matched_rule),
                         structured_output,
-                        output_contract,
+                        artifact_contract,
                     );
                     exec.step_history.push(entry);
                     exec.apply_transition(&next_step)?
@@ -3697,7 +3695,7 @@ impl WorkflowRuntimeService {
                     let entry = exec.make_step_history_entry(
                         Some("no_matching_rule".to_string()),
                         structured_output,
-                        output_contract,
+                        artifact_contract,
                     );
                     exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
@@ -3945,26 +3943,6 @@ impl WorkflowRuntimeService {
         )
         .await?;
         Ok(prompt)
-    }
-
-    /// contract検証成功時にworkflow_variablesへの反映を行う共通ヘルパー。
-    /// spec-directory contractの場合、spec_dirをworkflow_variablesに設定する。
-    async fn apply_contract_variables(
-        &self,
-        worktree_path: &str,
-        output_contract: &Option<String>,
-        structured_output: &Option<serde_json::Value>,
-    ) {
-        let vars = workflow_contract::extract_workflow_variables_from_contract_output(
-            output_contract.as_deref(),
-            structured_output.as_ref(),
-        );
-        if !vars.is_empty() {
-            let mut execs = self.executions.lock().await;
-            if let Some(exec) = find_by_worktree_mut(&mut execs, worktree_path) {
-                exec.workflow_variables.extend(vars);
-            }
-        }
     }
 
     /// [08] prose 抽出経路は engine から完全除去された（spec [08] Rule 4 構造化出力の
@@ -4675,13 +4653,13 @@ impl WorkflowRuntimeService {
             workflow_approval_runtime::validate_approval_turn_phase(None)?;
         }
 
-        let output_contract = {
+        let artifact_contract = {
             let execs = self.executions.lock().await;
             let exec = execs
                 .get(run_id)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
             exec.workflow.nodes[exec.current_step_index]
-                .output_contract
+                .artifact
                 .clone()
         };
 
@@ -4705,15 +4683,11 @@ impl WorkflowRuntimeService {
                 ),
             };
 
-        let application_output_contract = if matches!(decision, ApprovalDecision::Approve) {
-            output_contract.clone()
+        let application_artifact_contract = if matches!(decision, ApprovalDecision::Approve) {
+            artifact_contract.clone()
         } else {
             None
         };
-        let contract_variables = workflow_contract::extract_workflow_variables_from_contract_output(
-            application_output_contract.as_deref(),
-            structured_output.as_ref(),
-        );
         let effective_result = contract_result.unwrap_or_else(|| result_tag.to_string());
 
         let mut execs = self.executions.lock().await;
@@ -4725,14 +4699,13 @@ impl WorkflowRuntimeService {
             expected_execution_id,
             expected_step_name,
         )?;
-        exec.workflow_variables.extend(contract_variables);
         Self::apply_approval_application(
             exec,
             &decision,
             workflow_transition::ApprovalApplication {
                 effective_result,
                 structured_output,
-                output_contract: application_output_contract,
+                artifact_contract: application_artifact_contract,
             },
         )
     }
@@ -4771,6 +4744,7 @@ impl WorkflowRuntimeService {
             name: "test-approval-workflow".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "implementation_fix_policy".to_string(),
                 kind: NodeKind::Session(SessionSpec {
@@ -4781,7 +4755,7 @@ impl WorkflowRuntimeService {
                     },
                     ..Default::default()
                 }),
-                output_contract: Some("approved-fix-policy".to_string()),
+                artifact: Some("approved-fix-policy".to_string()),
                 transition_rules: vec![],
                 cycle_guard: None,
                 pass_previous_response: None,

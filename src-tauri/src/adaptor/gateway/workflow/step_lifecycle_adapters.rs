@@ -530,6 +530,7 @@ mod tests {
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
+                schemas: Default::default(),
                 nodes: vec![],
             },
             total_token_usage: TokenUsage::default(),

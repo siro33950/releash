@@ -406,7 +406,7 @@ pub(crate) async fn prepare_parallel_child_session_setups<R: tauri::Runtime>(
             workflow_instruction: creation_plan.workflow_instruction,
             user_message: creation_plan.user_message,
             permission_mode: child_permission_mode,
-            output_contract: ps.output_contract.clone(),
+            artifact_contract: ps.artifact.clone(),
             run_index: creation_plan.run_index,
         });
     }
@@ -794,6 +794,7 @@ mod tests {
                 name: "test-workflow".to_string(),
                 description: String::new(),
                 builtin: false,
+                schemas: Default::default(),
                 variables: HashMap::new(),
                 nodes: vec![NodeDefinition {
                     name: step_name.clone(),
@@ -1160,7 +1161,7 @@ mod tests {
                 session_id: Some("plan-session".to_string()),
                 result: Some("DONE".to_string()),
                 structured_output: Some(serde_json::json!({ "status": "ok" })),
-                output_contract: None,
+                artifact_contract: None,
                 token_usage: None,
                 completed_at: 2.0,
             },

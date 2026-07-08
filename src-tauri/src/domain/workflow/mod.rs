@@ -34,7 +34,7 @@ pub use value_objects::{
     ContractType, ContractValidationResult, CycleGuard, FacetKey, FacetKind, FacetRefs,
     FacetSummary, FailureClassification, FailureDisposition, FanoutSpec, InterimChild,
     NodeDefinition, NodeKind, NodeKindName, NodeName, OutcomeCommitMode, ParallelAggregate,
-    ParallelStepState, ReduceStrategy, RunId, RunListFilter, RunStatus, RunStatusFilter,
+    ParallelStepState, ReduceStrategy, RunId, RunListFilter, RunStatus, RunStatusFilter, SchemaDef,
     SessionGate, SessionSpec, StepHistoryEntry, StepOutput, TimeoutKind, TokenUsage,
     TransitionRule, TriggerSource, WorkflowDefinition, WorkflowExecutionState, WorkflowName,
     WorkflowRunSummary, WorkflowStallObservation, WorkflowStateSnapshot, WorkflowStepContext,

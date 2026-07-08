@@ -118,7 +118,7 @@ where
     let is_submit_output = matches!(&payload, PendingCommandPayload::SubmitOutput { .. });
 
     // [08] CLI 提出経路と in-process 経路は engine の submit-output primitive で合流する。
-    // CLI pending の SubmitOutput は CliMutationRequested を伴わず OutputSubmitted 単体で
+    // CLI pending の SubmitOutput は CliMutationRequested を伴わず ArtifactProduced 単体で
     // 記録されるため commit_context は `SubmitOutput { request_id, submitted_at }` を運ぶ。
     // 他の CLI mutation（Approve / Reject / Abort）は従来通り `CliPending` を運ぶ。
     let (commit_context, request_id) = if is_submit_output {
@@ -151,7 +151,7 @@ where
     let dispatch_payload = payload_to_runtime_dispatch(payload);
 
     let already_recorded = if is_submit_output {
-        engine.output_submitted_already_recorded(app, &run_id, &request_id)
+        engine.artifact_produced_already_recorded(app, &run_id, &request_id)
     } else {
         engine.cli_mutation_already_recorded(app, &run_id, &request_id)
     };
@@ -274,7 +274,7 @@ where
     let reason = error.to_string();
     let should_commit = should_commit_rejected_external_request(&error);
     // [06] spec [08] Rule 1 維持: SubmitOutput は accepted のメイン履歴
-    // （`OutputSubmitted` / `CliMutationRequested`）に拒否事実を残さない。
+    // （`ArtifactProduced` / `CliMutationRequested`）に拒否事実を残さない。
     // 一方、それ以外の CLI mutation（Approve / Reject / Abort）は従来通り
     // `CliMutationRequested` を記録する。
     if !is_submit_output && should_commit {
@@ -463,7 +463,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl PendingCommandRuntime<tauri::test::MockRuntime> for FakePendingRuntime {
-        fn output_submitted_already_recorded(
+        fn artifact_produced_already_recorded(
             &self,
             _app: &tauri::AppHandle<tauri::test::MockRuntime>,
             _run_id: &str,
@@ -863,7 +863,7 @@ mod tests {
     }
 
     /// [08] CLI pending 経由の SubmitOutput が engine の handle_submit_output
-    /// に合流し、`OutputSubmitted` event が caller の `request_id` と `submitted_at`
+    /// に合流し、`ArtifactProduced` event が caller の `request_id` と `submitted_at`
     /// を保持する形で append される（spec [08] CLI 経路と in-process 経路の合流境界）。
     #[tokio::test]
     async fn dispatch_pending_submit_output_appends_event_with_caller_metadata() {
@@ -910,7 +910,7 @@ mod tests {
     /// [08] CLI pending 経由の SubmitOutput が contract 不適合の場合、event は残らず、
     /// dispatcher は `RejectedFinal` を返す（spec [08] 振る舞い定義 Rule 1 適合しない場合）。
     ///
-    /// 5-3 修正: `OutputSubmitted` / `CliMutationRequested` は引き続き残らないが、
+    /// 5-3 修正: `ArtifactProduced` / `CliMutationRequested` は引き続き残らないが、
     /// 観測経路用の補助履歴として `CliMutationRejected` event が追記される。
     #[tokio::test]
     async fn dispatch_pending_submit_output_rejects_invalid_contract() {
