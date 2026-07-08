@@ -1003,8 +1003,84 @@ mod tests {
             report.items.iter().any(|i| i.severity == Severity::Error
                 && i.message.contains("存在しない schemas Contract")
                 && i.message.contains("nonexistent-contract")
+                && i.step_name.as_deref() == Some("step1")
                 && i.field.as_deref() == Some("input")),
             "Expected missing-input-schema error, got: {:?}",
+            report.items
+        );
+    }
+
+    #[test]
+    fn diagnose_missing_artifact_schema_ref_remains_node_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        setup_facet(wf_dir, "instructions", "impl", "content");
+
+        let wf = Workflow {
+            variables: Default::default(),
+            name: "test-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![NodeDefinition {
+                artifact: Some("nonexistent-contract".to_string()),
+                ..make_step("step1", Some("impl"))
+            }],
+        };
+        save_workflow_yaml(wf_dir, &wf);
+
+        let report = diagnose_all(wf_dir, wf_dir);
+        assert!(
+            report.items.iter().any(|i| i.severity == Severity::Error
+                && i.message.contains("存在しない schemas Contract")
+                && i.message.contains("nonexistent-contract")
+                && i.step_name.as_deref() == Some("step1")
+                && i.field.as_deref() == Some("artifact")),
+            "Expected missing-artifact-schema error on step1, got: {:?}",
+            report.items
+        );
+    }
+
+    #[test]
+    fn diagnose_array_items_unknown_schema_ref_is_schema_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        setup_facet(wf_dir, "instructions", "impl", "content");
+
+        let wf = Workflow {
+            variables: Default::default(),
+            name: "test-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: [(
+                "review-list".to_string(),
+                SchemaDef::Array {
+                    items: "missing-item".to_string(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            nodes: vec![make_step("step1", Some("impl"))],
+        };
+        save_workflow_yaml(wf_dir, &wf);
+
+        let report = diagnose_all(wf_dir, wf_dir);
+        assert!(
+            report.items.iter().any(|i| i.severity == Severity::Error
+                && i.message.contains("schemas.review-list")
+                && i.message
+                    .contains("array.items references unknown schemas 'missing-item'")
+                && i.step_name.is_none()
+                && i.field.as_deref() == Some("schemas")),
+            "Expected schema-scoped array.items error, got: {:?}",
+            report.items
+        );
+        assert!(
+            !report
+                .items
+                .iter()
+                .any(|i| i.step_name.as_deref() == Some("review-list")),
+            "array.items diagnostics must not be attached to a schema name as a step: {:?}",
             report.items
         );
     }

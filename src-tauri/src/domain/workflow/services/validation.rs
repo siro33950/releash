@@ -133,13 +133,13 @@ pub enum ValidationError {
         value: String,
         reason: String,
     },
-    /// `artifact` / `input` / `items` が存在しない `schemas:` Contract を参照している。
+    /// `artifact` / `input` が存在しない `schemas:` Contract を参照している。
     UnknownSchemaRef {
         step: String,
         slot: &'static str,
         key: String,
     },
-    /// `artifact` / `input` / `items` の Contract 参照名が安全な identifier ではない。
+    /// `artifact` / `input` の Contract 参照名が安全な identifier ではない。
     InvalidSchemaRef {
         step: String,
         slot: &'static str,
@@ -748,12 +748,16 @@ fn validate_schema_def(
             }
         }
         SchemaDef::Array { items } => {
-            validate_schema_reference_identifier(name, "items", items)?;
+            if !contract_schema::is_safe_identifier(items) {
+                return Err(ValidationError::InvalidSchema {
+                    schema: name.to_string(),
+                    reason: safe_identifier_message().to_string(),
+                });
+            }
             if !workflow.schemas.contains_key(items) {
-                return Err(ValidationError::UnknownSchemaRef {
-                    step: name.to_string(),
-                    slot: "items",
-                    key: items.clone(),
+                return Err(ValidationError::InvalidSchema {
+                    schema: name.to_string(),
+                    reason: format!("array.items references unknown schemas '{items}'"),
                 });
             }
         }
@@ -2534,8 +2538,9 @@ mod tests {
 
         assert!(matches!(
             validate_schema_refs(&wf).unwrap_err(),
-            ValidationError::InvalidSchemaRef { ref step, slot, ref key, .. }
-                if step == "review-list" && slot == "items" && key == "../outside"
+            ValidationError::InvalidSchema { ref schema, ref reason }
+                if schema == "review-list"
+                    && reason.contains("must start with an ASCII alphanumeric")
         ));
     }
 
@@ -2588,8 +2593,9 @@ mod tests {
 
         assert!(matches!(
             validate_schema_refs(&wf).unwrap_err(),
-            ValidationError::UnknownSchemaRef { ref step, slot, ref key }
-                if step == "review-list" && slot == "items" && key == "missing-item"
+            ValidationError::InvalidSchema { ref schema, ref reason }
+                if schema == "review-list"
+                    && reason == "array.items references unknown schemas 'missing-item'"
         ));
     }
 
