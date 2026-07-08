@@ -5524,11 +5524,7 @@ mod tests {
     ) {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if notifier
-                    .streaming_deltas()
-                    .last()
-                    .is_some_and(|delta| predicate(delta))
-                {
+                if notifier.streaming_deltas().last().is_some_and(&predicate) {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;

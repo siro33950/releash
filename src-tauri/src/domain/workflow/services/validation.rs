@@ -331,7 +331,10 @@ impl fmt::Display for ValidationError {
 
 impl std::error::Error for ValidationError {}
 
-fn reference_error_to_validation_error(error: reference::ReferenceResolveError) -> ValidationError {
+fn reference_error_to_validation_error(
+    error: reference::ReferenceResolveError,
+    context: reference::ReferenceResolveContext,
+) -> ValidationError {
     match error {
         reference::ReferenceResolveError::ReservedNodeName { name } => {
             ValidationError::InvalidArtifactReference {
@@ -367,8 +370,15 @@ fn reference_error_to_validation_error(error: reference::ReferenceResolveError) 
         reference::ReferenceResolveError::InvalidInputRef { value } => {
             ValidationError::InvalidArtifactReference {
                 reference: value,
-                reason: "`inputs:` entries must be `request` or a top-level node Artifact name"
-                    .to_string(),
+                reason: match context {
+                    reference::ReferenceResolveContext::Inputs => {
+                        "`inputs:` entries must be `request` or a top-level node Artifact name"
+                    }
+                    reference::ReferenceResolveContext::Template => {
+                        "`{{ ... }}` references must be `request`, `item[.field]`, or `<node>[.field]`"
+                    }
+                }
+                .to_string(),
             }
         }
         reference::ReferenceResolveError::InputsNotAllowedOnFanout { node } => {
@@ -378,6 +388,12 @@ fn reference_error_to_validation_error(error: reference::ReferenceResolveError) 
             }
         }
     }
+}
+
+fn reference_diagnostic_to_validation_error(
+    diagnostic: reference::ReferenceResolveDiagnostic,
+) -> ValidationError {
+    reference_error_to_validation_error(diagnostic.error, diagnostic.context)
 }
 
 pub fn validate_name(name: &str) -> Result<(), ValidationError> {
@@ -424,11 +440,11 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
         return Err(err);
     }
     validate_schema_refs(workflow)?;
-    if let Some(err) = reference::validate_workflow_references(workflow)
+    if let Some(err) = reference::validate_workflow_reference_diagnostics(workflow)
         .into_iter()
         .next()
     {
-        return Err(reference_error_to_validation_error(err));
+        return Err(reference_diagnostic_to_validation_error(err));
     }
 
     // 遷移先名前空間: トップレベルstep名のみ（aggregate.then/else, rule.nextの検証用）
@@ -738,7 +754,9 @@ pub fn validate_template_references(
 ) -> Vec<ValidationError> {
     reference::validate_template_references(workflow, content, allow_item)
         .into_iter()
-        .map(reference_error_to_validation_error)
+        .map(|error| {
+            reference_error_to_validation_error(error, reference::ReferenceResolveContext::Template)
+        })
         .collect()
 }
 
@@ -1078,9 +1096,9 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
         errors.push(e);
     }
     errors.extend(
-        reference::validate_workflow_references(workflow)
+        reference::validate_workflow_reference_diagnostics(workflow)
             .into_iter()
-            .map(reference_error_to_validation_error),
+            .map(reference_diagnostic_to_validation_error),
     );
 
     // 名前空間構築: 重複があれば蓄積するが、以降のチェックは続行
@@ -1690,6 +1708,48 @@ mod tests {
                 ValidationError::InvalidArtifactReference { ref reference, .. } if reference == input
             ));
         }
+    }
+
+    #[test]
+    fn invalid_input_reference_keeps_inputs_context_reason() {
+        let wf = make_workflow(vec![NodeDefinition {
+            inputs: vec!["bad ref".to_string()],
+            ..make_step("consume", TestKind::Session, vec![])
+        }]);
+
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::InvalidArtifactReference { ref reference, ref reason }
+                if reference == "bad ref"
+                    && reason == "`inputs:` entries must be `request` or a top-level node Artifact name"
+        ));
+    }
+
+    #[test]
+    fn invalid_template_reference_uses_template_context_reason() {
+        let wf = make_workflow(vec![command_step("step1", "echo {{ bad ref }}")]);
+
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::InvalidArtifactReference { ref reference, ref reason }
+                if reference == "bad ref"
+                    && reason.contains("{{ ... }}")
+                    && !reason.contains("inputs:")
+        ));
+    }
+
+    #[test]
+    fn validate_template_references_uses_template_context_reason() {
+        let wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        let errors = validate_template_references(&wf, "{{ bad ref }}", false);
+
+        assert!(matches!(
+            errors.as_slice(),
+            [ValidationError::InvalidArtifactReference { reference, reason }]
+                if reference == "bad ref"
+                    && reason.contains("{{ ... }}")
+                    && !reason.contains("inputs:")
+        ));
     }
 
     #[test]

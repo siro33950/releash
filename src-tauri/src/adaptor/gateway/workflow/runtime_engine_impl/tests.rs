@@ -9091,12 +9091,20 @@ mod dispatch_boundary_tests {
             let mut exec = make_waiting_approval_execution(&run_id, &format!("/wt/{label}"));
             exec.state = terminal_state;
             engine.executions.lock().await.insert(run_id.clone(), exec);
+            engine.run_facet_contents.lock().await.insert(
+                run_id.clone(),
+                crate::adaptor::gateway::workflow::facet::WorkflowFacetContents::default(),
+            );
 
             engine.release_terminal_execution(&run_id).await;
 
             assert!(
                 !engine.contains_execution_for_test(&run_id).await,
                 "{label} terminal execution must be removed"
+            );
+            assert!(
+                !engine.run_facet_contents.lock().await.contains_key(&run_id),
+                "{label} terminal facet contents must be removed"
             );
         }
 
@@ -9108,12 +9116,24 @@ mod dispatch_boundary_tests {
             .lock()
             .await
             .insert(active_run_id.clone(), active);
+        engine.run_facet_contents.lock().await.insert(
+            active_run_id.clone(),
+            crate::adaptor::gateway::workflow::facet::WorkflowFacetContents::default(),
+        );
 
         engine.release_terminal_execution(&active_run_id).await;
 
         assert!(
             engine.contains_execution_for_test(&active_run_id).await,
             "active execution must not be released"
+        );
+        assert!(
+            engine
+                .run_facet_contents
+                .lock()
+                .await
+                .contains_key(&active_run_id),
+            "active facet contents must not be released"
         );
         assert_eq!(engine.executions_len_for_test().await, 1);
     }
@@ -9473,6 +9493,64 @@ mod dispatch_boundary_tests {
         }));
     }
 
+    /// Task 1326 regression: reservation 後の validate_start 失敗 rollback で、
+    /// runtime-local facet read model を残さない。
+    #[tokio::test]
+    async fn start_run_validate_start_failure_releases_run_facet_contents() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let run_store_dir = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(run_store_dir.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
+        let worktree = "/wt/start-validate-start-failure".to_string();
+        let existing_run_id = uuid::Uuid::new_v4().to_string();
+        let mut existing =
+            make_exec_with(&existing_run_id, &worktree, WorkflowExecutionState::Running);
+        existing.workflow.name = "existing-active-wf".to_string();
+        engine
+            .executions
+            .lock()
+            .await
+            .insert(existing_run_id.clone(), existing);
+
+        let stem = crate::adaptor::gateway::workflow::builtin::list_builtin_workflows()
+            .into_iter()
+            .next()
+            .expect("at least one builtin workflow must exist")
+            .name;
+        let workflow = engine.resolve_start_run_workflow(&stem).await.unwrap();
+        let result = engine
+            .start_resolved_workflow(
+                app.handle(),
+                &session_store,
+                &handles,
+                workflow,
+                worktree,
+                &stem,
+                Some("start with validate_start failure".to_string()),
+                TriggerSource::DesktopUi,
+                crate::domain::agent_session::PermissionMode::Edit,
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::AlreadyActive(_))));
+        assert!(
+            engine.run_facet_contents.lock().await.is_empty(),
+            "validate_start rollback must release run_facet_contents"
+        );
+        assert!(
+            engine.list_active_runs().await.is_empty(),
+            "failed reservation must be cancelled"
+        );
+        assert!(
+            engine.contains_execution_for_test(&existing_run_id).await,
+            "pre-existing execution must remain"
+        );
+        assert_eq!(engine.executions_len_for_test().await, 1);
+    }
+
     /// Spec [04] rollback: StartRun の RunStarted append が失敗した場合、
     /// reservation / execution / parent ChatSession を command 受理前へ戻す。
     #[tokio::test]
@@ -9515,6 +9593,10 @@ mod dispatch_boundary_tests {
 
         assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
         assert!(engine.executions.lock().await.is_empty());
+        assert!(
+            engine.run_facet_contents.lock().await.is_empty(),
+            "RunStarted append rollback must release run_facet_contents"
+        );
         assert!(engine.list_active_runs().await.is_empty());
         let sessions = session_store
             .list_worktree_sessions(&dispatch_data_dir(app.handle()), &worktree)

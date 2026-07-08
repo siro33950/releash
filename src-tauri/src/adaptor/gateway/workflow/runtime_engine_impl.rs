@@ -920,6 +920,7 @@ impl WorkflowRuntimeService {
         let snapshot = match snapshot_result {
             Ok(s) => s,
             Err(e) => {
+                self.release_run_facet_contents(&run_id).await;
                 rollback_reservation(format!("validate_start failed: {e}")).await;
                 return Err(e);
             }
@@ -944,6 +945,7 @@ impl WorkflowRuntimeService {
             let mut execs = self.executions.lock().await;
             execs.remove(&run_id);
             drop(execs);
+            self.release_run_facet_contents(&run_id).await;
             rollback_reservation(format!("RunStarted log failed: {e}")).await;
             return Err(WorkflowEngineError::SessionStore(format!(
                 "write RunStarted log failed: {e}"
@@ -3065,10 +3067,22 @@ impl WorkflowRuntimeService {
         execs.get(run_id).map(|exec| exec.to_workflow_state())
     }
 
+    async fn release_run_facet_contents(&self, run_id: &str) {
+        self.run_facet_contents.lock().await.remove(run_id);
+    }
+
     async fn release_terminal_execution(&self, run_id: &str) {
-        let mut execs = self.executions.lock().await;
-        if execs.get(run_id).is_some_and(|exec| exec.is_terminal()) {
-            execs.remove(run_id);
+        let removed = {
+            let mut execs = self.executions.lock().await;
+            if execs.get(run_id).is_some_and(|exec| exec.is_terminal()) {
+                execs.remove(run_id);
+                true
+            } else {
+                false
+            }
+        };
+        if removed {
+            self.release_run_facet_contents(run_id).await;
         }
     }
 

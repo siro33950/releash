@@ -939,6 +939,8 @@ exec sleep 30
 
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
+    // env 変数の直列化のため await 越しにロックを保持する必要がある（テスト用グローバルロック）
+    #[allow(clippy::await_holding_lock)]
     async fn test_spawn_runtime_process_initialize_write失敗時にpid登録を削除する() {
         let _env_lock = crate::test_support::TEST_ENV_LOCK.lock().unwrap();
         let data_dir = tempfile::tempdir().unwrap();

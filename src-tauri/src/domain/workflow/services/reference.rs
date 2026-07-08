@@ -31,6 +31,24 @@ pub enum ReferenceResolveError {
     InputsNotAllowedOnFanout { node: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReferenceResolveContext {
+    Inputs,
+    Template,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReferenceResolveDiagnostic {
+    pub(crate) error: ReferenceResolveError,
+    pub(crate) context: ReferenceResolveContext,
+}
+
+impl ReferenceResolveDiagnostic {
+    fn new(error: ReferenceResolveError, context: ReferenceResolveContext) -> Self {
+        Self { error, context }
+    }
+}
+
 pub fn parse_reference(input: &str) -> Result<ArtifactReference, ReferenceParseError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -79,40 +97,62 @@ pub fn extract_template_references(content: &str) -> Vec<String> {
     refs
 }
 
-pub fn validate_workflow_references(workflow: &WorkflowDefinition) -> Vec<ReferenceResolveError> {
+pub(crate) fn validate_workflow_reference_diagnostics(
+    workflow: &WorkflowDefinition,
+) -> Vec<ReferenceResolveDiagnostic> {
     let mut errors = Vec::new();
     let context = ReferenceValidationContext::new(workflow);
 
     for node in &workflow.nodes {
         if is_reserved_artifact_name(&node.name) {
-            errors.push(ReferenceResolveError::ReservedNodeName {
-                name: node.name.clone(),
-            });
+            errors.push(ReferenceResolveDiagnostic::new(
+                ReferenceResolveError::ReservedNodeName {
+                    name: node.name.clone(),
+                },
+                ReferenceResolveContext::Inputs,
+            ));
         }
         if node.is_fanout() && !node.inputs.is_empty() {
-            errors.push(ReferenceResolveError::InputsNotAllowedOnFanout {
-                node: node.name.clone(),
-            });
+            errors.push(ReferenceResolveDiagnostic::new(
+                ReferenceResolveError::InputsNotAllowedOnFanout {
+                    node: node.name.clone(),
+                },
+                ReferenceResolveContext::Inputs,
+            ));
         }
         for input in &node.inputs {
             match parse_reference(input) {
                 Ok(ArtifactReference::Request)
                 | Ok(ArtifactReference::Node { field: None, .. }) => {
-                    validate_reference(input, &context, false, &mut errors);
+                    let mut input_errors = Vec::new();
+                    validate_reference(input, &context, false, &mut input_errors);
+                    errors.extend(input_errors.into_iter().map(|error| {
+                        ReferenceResolveDiagnostic::new(error, ReferenceResolveContext::Inputs)
+                    }));
                 }
-                Ok(_) | Err(_) => errors.push(ReferenceResolveError::InvalidInputRef {
-                    value: input.clone(),
-                }),
+                Ok(_) | Err(_) => errors.push(ReferenceResolveDiagnostic::new(
+                    ReferenceResolveError::InvalidInputRef {
+                        value: input.clone(),
+                    },
+                    ReferenceResolveContext::Inputs,
+                )),
             }
         }
-        validate_node_templates(node, &context, false, &mut errors);
+        let mut template_errors = Vec::new();
+        validate_node_templates(node, &context, false, &mut template_errors);
+        errors.extend(template_errors.into_iter().map(|error| {
+            ReferenceResolveDiagnostic::new(error, ReferenceResolveContext::Template)
+        }));
 
         if let Some(fanout) = node.fanout() {
             for child in &fanout.parallel_children {
                 if is_reserved_artifact_name(&child.name) {
-                    errors.push(ReferenceResolveError::ReservedNodeName {
-                        name: child.name.clone(),
-                    });
+                    errors.push(ReferenceResolveDiagnostic::new(
+                        ReferenceResolveError::ReservedNodeName {
+                            name: child.name.clone(),
+                        },
+                        ReferenceResolveContext::Inputs,
+                    ));
                 }
             }
         }
