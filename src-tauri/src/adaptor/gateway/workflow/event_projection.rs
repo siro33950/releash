@@ -219,6 +219,7 @@ pub enum WorkflowEventView {
         workflow_file_stem: String,
         worktree_path: String,
         workflow_definition: Workflow,
+        request: String,
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
     },
@@ -448,6 +449,7 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 workflow_file_stem,
                 worktree_path,
                 workflow_definition,
+                request,
                 timestamp,
             } => WorkflowEventView::RunStarted {
                 run_id,
@@ -455,6 +457,7 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 workflow_file_stem,
                 worktree_path,
                 workflow_definition,
+                request,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
             WorkflowEvent::NodeStarted {
@@ -1097,7 +1100,6 @@ pub(crate) fn reconstruct_state_from_events(
     let mut step_history: Vec<StepHistoryEntry> = Vec::new();
     let mut step_execution_counts: HashMap<String, u32> = HashMap::new();
     let mut step_outputs: HashMap<String, StepOutput> = HashMap::new();
-    let workflow_variables: HashMap<String, String> = HashMap::new();
     let mut total_token_usage = TokenUsage::default();
     let mut exec_state = WorkflowExecutionState::Running;
     let mut current_step_name = workflow
@@ -1116,11 +1118,18 @@ pub(crate) fn reconstruct_state_from_events(
             WorkflowEvent::RunStarted {
                 timestamp,
                 workflow_name: wn,
+                request,
                 ..
             } => {
                 started_at = *timestamp;
                 updated_at = *timestamp;
                 workflow_name = wn.clone();
+                step_outputs.insert(
+                    crate::domain::workflow::services::reference::REQUEST_ARTIFACT.to_string(),
+                    crate::adaptor::gateway::workflow::prompt_rendering::request_step_output(
+                        request, *timestamp,
+                    ),
+                );
             }
             WorkflowEvent::NodeStarted {
                 node_name,
@@ -1239,17 +1248,31 @@ pub(crate) fn reconstruct_state_from_events(
                 } else {
                     step_history.push(completed_entry);
                 }
-                if structured_output.is_some() {
+                let prior_output = step_outputs.get(node_name).cloned();
+                let merged_structured_output = structured_output.clone().or_else(|| {
+                    prior_output
+                        .as_ref()
+                        .and_then(|p| p.structured_output.clone())
+                });
+                if merged_structured_output.is_some() || prior_output.is_some() {
                     step_outputs.insert(
                         node_name.clone(),
                         StepOutput {
                             step_name: node_name.clone(),
                             run_index: ri,
-                            session_id: session_id.clone(),
-                            result: result.clone(),
-                            structured_output: structured_output.clone(),
-                            artifact_contract: None,
-                            token_usage: token_usage.clone(),
+                            session_id: session_id.clone().or_else(|| {
+                                prior_output.as_ref().and_then(|p| p.session_id.clone())
+                            }),
+                            result: result
+                                .clone()
+                                .or_else(|| prior_output.as_ref().and_then(|p| p.result.clone())),
+                            structured_output: merged_structured_output,
+                            artifact_contract: prior_output
+                                .as_ref()
+                                .and_then(|p| p.artifact_contract.clone()),
+                            token_usage: token_usage.clone().or_else(|| {
+                                prior_output.as_ref().and_then(|p| p.token_usage.clone())
+                            }),
                             completed_at: *timestamp,
                         },
                     );
@@ -1682,26 +1705,26 @@ pub(crate) fn reconstruct_state_from_events(
                 timestamp,
                 ..
             } => {
-                let Some(contract) = contract else {
-                    updated_at = *timestamp;
-                    continue;
-                };
                 // [08] CLI / in-process 経由で確定した step output を state に復元する。
-                // 後続 step が `pass_output_from` で経路非依存に参照できる shape に揃える。
+                // 後続 step が `input_reference` で経路非依存に参照できる shape に揃える。
                 // `result` は engine の live state と同じ値（contract validator の戻り値）
                 // を再導出する。これにより live と reload 経路で aggregate 評価が乖離しない。
                 let ri = step_execution_counts.get(node_name).copied().unwrap_or(0);
-                let restored_result = match workflow_contract::validate_artifact_value(
-                    &domain_schemas,
-                    contract,
-                    value.clone(),
-                ) {
-                    ContractValidationResult::Valid { result, .. } => result,
-                    // append-only ログに記録された ArtifactProduced は engine 側で validator を
-                    // 通過しているため通常ここには到達しない。validator が将来変更されて
-                    // 不適合判定になっても、result を None にして live と同等に振る舞う
-                    // （aggregate 評価では match なしになるだけ）。
-                    ContractValidationResult::Invalid(_) => None,
+                let restored_result = if let Some(contract) = contract {
+                    match workflow_contract::validate_artifact_value(
+                        &domain_schemas,
+                        contract,
+                        value.clone(),
+                    ) {
+                        ContractValidationResult::Valid { result, .. } => result,
+                        // append-only ログに記録された ArtifactProduced は engine 側で validator を
+                        // 通過しているため通常ここには到達しない。validator が将来変更されて
+                        // 不適合判定になっても、result を None にして live と同等に振る舞う
+                        // （aggregate 評価では match なしになるだけ）。
+                        ContractValidationResult::Invalid(_) => None,
+                    }
+                } else {
+                    None
                 };
                 step_outputs.insert(
                     node_name.clone(),
@@ -1711,7 +1734,7 @@ pub(crate) fn reconstruct_state_from_events(
                         session_id: None,
                         result: restored_result,
                         structured_output: Some(value.clone()),
-                        artifact_contract: Some(contract.clone()),
+                        artifact_contract: contract.clone(),
                         token_usage: None,
                         completed_at: *timestamp,
                     },
@@ -1747,7 +1770,6 @@ pub(crate) fn reconstruct_state_from_events(
         step_outputs,
         step_states,
         active_parallel_steps,
-        workflow_variables,
         approval_operations: None,
         stall_observations,
         started_at,
@@ -1782,7 +1804,6 @@ mod tests {
 
     fn workflow_with_nodes(name: &str, nodes: Vec<&str>) -> Workflow {
         Workflow {
-            variables: Default::default(),
             name: name.to_string(),
             description: String::new(),
             builtin: false,
@@ -1797,6 +1818,7 @@ mod tests {
             workflow_name: workflow.name.clone(),
             workflow_file_stem: workflow.name.clone(),
             worktree_path: "/repo".to_string(),
+            request: String::new(),
             workflow_definition: workflow,
             timestamp: 1000.0,
         }
@@ -3209,7 +3231,7 @@ mod tests {
 
     /// [08] ArtifactProduced projection: live engine と同じ shape で `StepOutput` slot を
     /// 復元する。`result` は contract validator を再導出するため、reload 経路でも
-    /// `pass_output_from` で経路非依存に参照できる（spec [08] Rule 3 Scenario 1/3）。
+    /// `input_reference` で経路非依存に参照できる（spec [08] Rule 3 Scenario 1/3）。
     #[test]
     fn projection_restores_step_output_from_artifact_produced_with_validator_derived_result() {
         let mut workflow = workflow_with_nodes("wf", vec!["review"]);
@@ -3261,6 +3283,79 @@ mod tests {
     }
 
     #[test]
+    fn node_completed_projection_preserves_submitted_artifact_output() {
+        let mut workflow = workflow_with_nodes("wf", vec!["review"]);
+        workflow.schemas = [(
+            "review-verdict".to_string(),
+            SchemaDef::Object {
+                properties: [("verdict".to_string(), SchemaDef::String { r#enum: None })]
+                    .into_iter()
+                    .collect(),
+                required: ["verdict".to_string()].into_iter().collect(),
+                additional_properties: false,
+            },
+        )]
+        .into_iter()
+        .collect();
+        workflow.nodes[0].artifact = Some("review-verdict".to_string());
+        let artifact_value = serde_json::json!({"verdict": "LGTM"});
+        let mut events = vec![
+            run_started("exec-submit-complete", workflow),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-submit-complete".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::ArtifactProduced {
+                run_id: "exec-submit-complete".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                contract: Some("review-verdict".to_string()),
+                value: artifact_value.clone(),
+                request_id: Some("00000000-0000-0000-0000-0000000000bb".to_string()),
+                submitted_at: Some(1010.0),
+                timestamp: 1011.0,
+            },
+        ];
+        let submitted_state = reconstruct_state_from_events("exec-submit-complete", &events)
+            .unwrap()
+            .unwrap();
+        let submitted_output = submitted_state.step_outputs["review"].clone();
+
+        events.push(WorkflowEvent::NodeCompleted {
+            run_id: "exec-submit-complete".to_string(),
+            workflow_name: "wf".to_string(),
+            node_name: "review".to_string(),
+            result: Some("LGTM".to_string()),
+            session_id: Some("session-review".to_string()),
+            token_usage: None,
+            structured_output: Some(artifact_value),
+            run_index: Some(1),
+            timestamp: 1012.0,
+        });
+
+        let completed_state = reconstruct_state_from_events("exec-submit-complete", &events)
+            .unwrap()
+            .unwrap();
+        let completed_output = &completed_state.step_outputs["review"];
+        assert_eq!(
+            completed_output.artifact_contract,
+            submitted_output.artifact_contract
+        );
+        assert_eq!(
+            completed_output.structured_output,
+            submitted_output.structured_output
+        );
+        assert_eq!(completed_output.result, submitted_output.result);
+        assert_eq!(
+            completed_output.session_id.as_deref(),
+            Some("session-review")
+        );
+    }
+
+    #[test]
     fn projection_restores_schema_valid_artifact_without_workflow_variable_side_effects() {
         let mut workflow = workflow_with_nodes("wf", vec!["spec"]);
         workflow.schemas = [(
@@ -3300,7 +3395,6 @@ mod tests {
         let state = reconstruct_state_from_events("exec-spec", &events)
             .unwrap()
             .unwrap();
-        assert!(state.workflow_variables.is_empty());
         assert_eq!(
             state.step_outputs["spec"]
                 .structured_output

@@ -916,8 +916,10 @@ mod tests {
 
     #[test]
     fn test_convert_turn_failedは_error_partと_failed完了へ変換する() {
-        let mut state = CodexConvertState::default();
-        state.turn_id = Some("turn-1".to_string());
+        let mut state = CodexConvertState {
+            turn_id: Some("turn-1".to_string()),
+            ..Default::default()
+        };
 
         let events = convert_jsonrpc_message(
             &json!({
@@ -1024,8 +1026,10 @@ mod tests {
 
     #[test]
     fn test_convert_token_usageと_turn_completedを反映する() {
-        let mut state = CodexConvertState::default();
-        state.turn_id = Some("turn-1".to_string());
+        let mut state = CodexConvertState {
+            turn_id: Some("turn-1".to_string()),
+            ..Default::default()
+        };
         let usage_events = convert_jsonrpc_message(
             &json!({
                 "method": "thread/tokenUsage/updated",

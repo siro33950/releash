@@ -433,7 +433,6 @@ mod tests {
         contract: &str,
     ) {
         let workflow = crate::adaptor::gateway::workflow::schema::Workflow {
-            variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -457,6 +456,7 @@ mod tests {
             workflow_name: "wf".to_string(),
             workflow_file_stem: "wf".to_string(),
             worktree_path: worktree_path.to_string(),
+            request: String::new(),
             workflow_definition: workflow,
             timestamp: 100.0,
         })
@@ -711,7 +711,6 @@ mod tests {
         let run_id = test_uuid(95);
         // RunStarted event に workflow definition を埋め込む
         let yaml = crate::adaptor::gateway::workflow::schema::Workflow {
-            variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -735,6 +734,7 @@ mod tests {
             workflow_name: "wf".to_string(),
             workflow_file_stem: "wf".to_string(),
             worktree_path: "/wt/validate".to_string(),
+            request: String::new(),
             workflow_definition: yaml,
             timestamp: 100.0,
         })
@@ -792,7 +792,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let run_id = test_uuid(96);
         let workflow = crate::adaptor::gateway::workflow::schema::Workflow {
-            variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -816,6 +815,7 @@ mod tests {
             workflow_name: "wf".to_string(),
             workflow_file_stem: "wf".to_string(),
             worktree_path: "/wt/validate-fail".to_string(),
+            request: String::new(),
             workflow_definition: workflow,
             timestamp: 100.0,
         })

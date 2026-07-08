@@ -325,7 +325,6 @@ mod tests {
                     additional_properties: true,
                 },
             )]),
-            variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "review".to_string(),
                 kind: NodeKind::Session(SessionSpec {

@@ -34,8 +34,6 @@ pub struct WorkflowState {
     pub step_outputs: HashMap<String, StepOutput>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_parallel_steps: Vec<ParallelStepState>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub workflow_variables: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_operations: Option<ApprovalOperations>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -236,7 +234,6 @@ pub(crate) fn workflow_state_to_domain_snapshot(
             .into_iter()
             .map(parallel_step_state_to_domain)
             .collect(),
-        workflow_variables: state.workflow_variables,
         approval_operations: state.approval_operations.map(|operations| {
             crate::domain::workflow::ApprovalOperations {
                 can_reject: operations.can_reject,

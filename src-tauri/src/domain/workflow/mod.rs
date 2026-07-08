@@ -24,8 +24,8 @@ pub use repository::{
     WorkflowRunManualArchiveRecord, WorkflowRunRepository, WORKFLOW_ARCHIVE_REASON_MANUAL,
 };
 pub use services::{
-    approval_rules, contract, secret_masker, validation, variable_renderer, ApprovalInputError,
-    RetryPolicy, TimeoutContext, TimeoutPolicy,
+    approval_rules, contract, secret_masker, validation, ApprovalInputError, RetryPolicy,
+    TimeoutContext, TimeoutPolicy,
 };
 #[cfg(test)]
 pub use value_objects::WorkflowRunRecord;

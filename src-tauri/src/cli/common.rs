@@ -279,8 +279,8 @@ models = ["opus"]
             workflow_name: workflow_name.to_string(),
             workflow_file_stem: workflow_name.to_string(),
             worktree_path: worktree.to_string(),
+            request: String::new(),
             workflow_definition: crate::adaptor::gateway::workflow::schema::Workflow {
-                variables: Default::default(),
                 name: workflow_name.to_string(),
                 description: "test".to_string(),
                 builtin: false,

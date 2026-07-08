@@ -5,7 +5,6 @@ use crate::adaptor::gateway::workflow::{
     event as legacy_event, facet as legacy_facet, run as legacy_run,
 };
 use crate::domain::workflow as domain;
-use crate::domain::workflow::value_objects::ResolvedFacets;
 use crate::usecase::workflow::ports::WorkflowEventDraft;
 
 #[cfg(test)]
@@ -118,7 +117,7 @@ fn legacy_trigger_source_to_domain(source: legacy_run::TriggerSource) -> domain:
 pub(crate) fn domain_workflow_to_legacy(
     definition: &domain::WorkflowDefinition,
 ) -> Result<crate::adaptor::gateway::workflow::schema::Workflow, domain::WorkflowError> {
-    let mut workflow = crate::adaptor::gateway::workflow::schema::Workflow {
+    Ok(crate::adaptor::gateway::workflow::schema::Workflow {
         name: definition.name.clone(),
         description: definition.description.clone(),
         builtin: definition.builtin,
@@ -127,11 +126,8 @@ pub(crate) fn domain_workflow_to_legacy(
             .iter()
             .map(|(name, schema)| (name.clone(), domain_schema_to_legacy(schema)))
             .collect(),
-        variables: definition.variables.clone(),
         nodes: definition.nodes.iter().map(domain_node_to_legacy).collect(),
-    };
-    copy_domain_resolved_facets_to_legacy(definition, &mut workflow);
-    Ok(workflow)
+    })
 }
 
 pub(crate) fn legacy_workflow_to_domain(
@@ -149,8 +145,6 @@ fn domain_node_to_legacy(
         artifact: node.artifact.clone(),
         input: node.input.clone(),
         inputs: node.inputs.clone(),
-        pass_previous_response: node.pass_previous_response,
-        pass_output_from: node.pass_output_from.clone(),
         collect: node.collect.as_ref().map(domain_collect_to_legacy),
         transition_rules: node
             .transition_rules
@@ -180,7 +174,6 @@ fn domain_kind_to_legacy(
                     permission: spec.permission.clone(),
                     gate: domain_gate_to_legacy(spec.gate),
                     facets: domain_facets_to_legacy(&spec.facets),
-                    resolved_facets: domain_resolved_facets_to_legacy(&spec.resolved_facets),
                 },
             )
         }
@@ -228,11 +221,8 @@ fn domain_child_node_to_legacy(
         facets: domain_facets_to_legacy(&child.facets),
         artifact: child.artifact.clone(),
         input: child.input.clone(),
-        pass_previous_response: child.pass_previous_response,
-        pass_output_from: child.pass_output_from.clone(),
         model: child.model.clone(),
         permission: child.permission.clone(),
-        resolved_facets: domain_resolved_facets_to_legacy(&child.resolved_facets),
     }
 }
 
@@ -355,6 +345,7 @@ pub(crate) fn domain_event_draft_to_legacy(
                 workflow_name: String,
                 workflow_file_stem: String,
                 worktree_path: String,
+                request: String,
                 workflow_definition: crate::adaptor::gateway::workflow::schema::Workflow,
             }
 
@@ -364,6 +355,7 @@ pub(crate) fn domain_event_draft_to_legacy(
                 workflow_name: payload.workflow_name,
                 workflow_file_stem: payload.workflow_file_stem,
                 worktree_path: payload.worktree_path,
+                request: payload.request,
                 workflow_definition: payload.workflow_definition,
                 timestamp: event.timestamp,
             })
@@ -476,40 +468,6 @@ fn parse_payload<T: for<'de> Deserialize<'de>>(
             event.event_kind
         ))
     })
-}
-
-fn copy_domain_resolved_facets_to_legacy(
-    definition: &domain::WorkflowDefinition,
-    workflow: &mut crate::adaptor::gateway::workflow::schema::Workflow,
-) {
-    for (source, target) in definition.nodes.iter().zip(workflow.nodes.iter_mut()) {
-        if let (Some(source_session), Some(target_session)) =
-            (source.session(), target.session_mut())
-        {
-            target_session.resolved_facets =
-                domain_resolved_facets_to_legacy(&source_session.resolved_facets);
-        }
-        if let (Some(source_fanout), Some(target_fanout)) = (source.fanout(), target.fanout_mut()) {
-            for (source_child, target_child) in source_fanout
-                .parallel_children
-                .iter()
-                .zip(target_fanout.parallel_children.iter_mut())
-            {
-                target_child.resolved_facets =
-                    domain_resolved_facets_to_legacy(&source_child.resolved_facets);
-            }
-        }
-    }
-}
-
-fn domain_resolved_facets_to_legacy(
-    resolved: &ResolvedFacets,
-) -> crate::adaptor::gateway::workflow::schema::ResolvedFacets {
-    crate::adaptor::gateway::workflow::schema::ResolvedFacets {
-        policy: resolved.policy.clone(),
-        knowledge: resolved.knowledge.clone(),
-        instruction: resolved.instruction.clone(),
-    }
 }
 
 fn domain_schema_to_legacy(
@@ -635,22 +593,17 @@ mod tests {
     }
 
     #[test]
-    fn workflow_mapping_preserves_resolved_facets() {
+    fn workflow_mapping_preserves_facet_refs_without_runtime_contents() {
         let definition = domain::WorkflowDefinition {
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,
             schemas: Default::default(),
-            variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "step".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
                         instruction: Some("inst".to_string()),
-                        ..Default::default()
-                    },
-                    resolved_facets: ResolvedFacets {
-                        instruction: Some("resolved".to_string()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -664,10 +617,10 @@ mod tests {
             legacy.nodes[0]
                 .session()
                 .unwrap()
-                .resolved_facets
+                .facets
                 .instruction
                 .as_deref(),
-            Some("resolved")
+            Some("inst")
         );
 
         let mapped = legacy_workflow_to_domain(legacy).unwrap();
@@ -675,10 +628,10 @@ mod tests {
             mapped.nodes[0]
                 .session()
                 .unwrap()
-                .resolved_facets
+                .facets
                 .instruction
                 .as_deref(),
-            Some("resolved")
+            Some("inst")
         );
     }
 
@@ -698,7 +651,6 @@ mod tests {
             )]
             .into_iter()
             .collect(),
-            variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "implement".to_string(),
                 kind: NodeKind::Session(SessionSpec {
@@ -760,6 +712,7 @@ mod tests {
                 "workflowName": "wf",
                 "workflowFileStem": "wf",
                 "worktreePath": "/repo",
+                "request": "ship feature",
                 "workflowDefinition": {
                     "name": "wf",
                     "description": "",
@@ -778,5 +731,6 @@ mod tests {
         let json = serde_json::to_value(&legacy).unwrap();
         assert_eq!(json["event"], "run_started");
         assert_eq!(json["workflow_name"], "wf");
+        assert_eq!(json["request"], "ship feature");
     }
 }

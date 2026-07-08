@@ -23,9 +23,9 @@ GitHub への reply は最後の `commit_push_and_reply` Step でまとめて行
 ## 1. 対象 Thread を取得する
 
 ```sh
-{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json
-{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json
-{{path_alias.releash}} review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json
+releash review list --session-id "$RELEASH_SESSION_ID" --state open --json
+releash review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json
+releash review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json
 ```
 
 対象は `[PR_REVIEW_COMMENT_IMPORTED]` があり、まだ `[FIX_POLICY_APPROVED]` も `[PR_REVIEW_REPLY_APPROVED]` もない Thread。

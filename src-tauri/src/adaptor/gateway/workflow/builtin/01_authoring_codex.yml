@@ -19,6 +19,8 @@ nodes:
       policy: planning
       instruction: spec-authoring-write-requirements
   artifact: spec-directory
+  inputs:
+  - request
 - name: write_behavior
   session:
     model: gpt-5.5
@@ -27,8 +29,7 @@ nodes:
     facets:
       policy: planning
       instruction: spec-authoring-write-behavior
-  input: spec-directory
-  pass_output_from:
+  inputs:
   - write_requirements
 - name: write_design
   session:
@@ -38,8 +39,7 @@ nodes:
     facets:
       policy: planning
       instruction: spec-authoring-write-design
-  input: spec-directory
-  pass_output_from:
+  inputs:
   - write_requirements
 - name: spec_finalize
   session:
@@ -49,6 +49,5 @@ nodes:
     facets:
       policy: planning
       instruction: spec-authoring-finalize
-  input: spec-directory
-  pass_output_from:
+  inputs:
   - write_requirements

@@ -472,7 +472,6 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
-            workflow_variables: HashMap::new(),
             current_stall_observations: Vec::new(),
         }
     }
@@ -577,7 +576,6 @@ mod tests {
             )]
             .into_iter()
             .collect(),
-            variables: Default::default(),
             nodes: vec![],
         };
         let validated = validate_submission_output_with_secrets(
@@ -615,7 +613,6 @@ mod tests {
             )]
             .into_iter()
             .collect(),
-            variables: Default::default(),
             nodes: vec![],
         };
 
@@ -717,7 +714,6 @@ mod tests {
         assert_eq!(output.artifact_contract.as_deref(), Some("review-verdict"));
         assert_eq!(output.result.as_deref(), Some("LGTM"));
         assert_eq!(output.completed_at, 42.0);
-        assert!(exec.workflow_variables.is_empty());
     }
 
     #[test]
@@ -757,14 +753,12 @@ mod tests {
     }
 
     #[test]
-    fn rollback_validated_submission_restores_previous_output_without_touching_variables() {
+    fn rollback_validated_submission_restores_previous_output() {
         let mut exec = running_execution();
         exec.step_outputs.insert(
             "review".to_string(),
             step_output(1, Some("review-verdict"), true),
         );
-        exec.workflow_variables
-            .insert("spec_dir".to_string(), "docs/specs/old".to_string());
         let mutation = apply_validated_submission(
             &mut exec,
             "run-1",
@@ -781,9 +775,5 @@ mod tests {
         let output = exec.step_outputs.get("review").unwrap();
         assert_eq!(output.run_index, 1);
         assert_eq!(output.result.as_deref(), Some("LGTM"));
-        assert_eq!(
-            exec.workflow_variables.get("spec_dir").map(String::as_str),
-            Some("docs/specs/old")
-        );
     }
 }

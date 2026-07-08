@@ -1,4 +1,4 @@
-{{project_name}} プロジェクトの `behavior.md` をユーザーとの対話で作成または更新する。
+`{{ write_requirements.spec_dir }}` の `behavior.md` をユーザーとの対話で作成または更新する。
 
 ## 入力
 
@@ -70,4 +70,3 @@ Feature: [機能名]
 - 具体的なレスポンスコード、画面文言、テスト assertion
 - 実装手順、ファイル名、関数名
 - 境界値やタイムアウト等のコードレベル edge case
-

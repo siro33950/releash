@@ -71,7 +71,7 @@ nodes:
     facets:
       policy: coding
       instruction: review-fix
-  pass_output_from:
+  inputs:
   - check_and_make_tasks
   rules:
   - match: ".*"

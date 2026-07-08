@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
-use crate::adaptor::gateway::workflow::{builtin, facet as legacy_facet};
-use crate::domain::workflow::services::variable_renderer;
+use crate::adaptor::gateway::workflow::{builtin, facet as legacy_facet, prompt_rendering};
 use crate::domain::workflow::{FacetKind, FacetRepository, FacetSummary, WorkflowError};
 
 use super::mapper;
@@ -47,7 +46,7 @@ impl FacetRepository for WorkflowFacetFileRepository {
                 "ビルトインファセットは編集できません",
             ));
         }
-        let undefined = variable_renderer::find_undefined_template_variables(content);
+        let undefined = prompt_rendering::find_undefined_template_variables(content);
         if !undefined.is_empty() {
             return Err(WorkflowError::validation(format!(
                 "未定義のテンプレート変数が含まれています: {}",

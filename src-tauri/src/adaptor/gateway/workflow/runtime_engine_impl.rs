@@ -28,6 +28,7 @@ use crate::adaptor::gateway::workflow::execution_registry::{
     find_any_by_worktree, find_by_worktree, find_by_worktree_mut, ExecutionStateTarget,
 };
 use crate::adaptor::gateway::workflow::external_execution_restore as workflow_external_restore;
+use crate::adaptor::gateway::workflow::facet::WorkflowFacetContents;
 use crate::adaptor::gateway::workflow::failure_wire::{
     self as workflow_failure_wire, SubmissionViolation,
 };
@@ -202,6 +203,8 @@ pub struct WorkflowRuntimeService {
     executions: Mutex<HashMap<String, WorkflowExecution>>,
     /// session_id（親・ステップ・並列子） → SessionWorkflowRef のマッピング
     session_workflow_refs: Mutex<HashMap<String, SessionWorkflowRef>>,
+    /// run_id → 解決済み facet 本文。workflow state / event には含めない runtime-local read model。
+    run_facet_contents: Mutex<HashMap<String, WorkflowFacetContents>>,
     /// active な WorkflowRun の管理および run metadata の永続化を担う Run Store。
     /// worktree_path → active run_id の secondary index は Run Store 内で保持する。
     run_store: Arc<RunStore>,
@@ -426,6 +429,7 @@ impl WorkflowRuntimeService {
         Self {
             executions: Mutex::new(HashMap::new()),
             session_workflow_refs: Mutex::new(HashMap::new()),
+            run_facet_contents: Mutex::new(HashMap::new()),
             run_store: Arc::new(RunStore::new()),
             workflow_resolver,
             worktree_resolver,
@@ -494,6 +498,7 @@ impl WorkflowRuntimeService {
                     workflow_name: workflow.name.clone(),
                     workflow_file_stem: workflow.name.clone(),
                     worktree_path: worktree_path.clone(),
+                    request: String::new(),
                     workflow_definition: workflow.clone(),
                     timestamp: now,
                 })
@@ -520,7 +525,6 @@ impl WorkflowRuntimeService {
                 step_outputs: HashMap::new(),
                 task: None,
                 parallel_run: None,
-                workflow_variables: HashMap::new(),
                 current_stall_observations: Vec::new(),
             },
         );
@@ -611,6 +615,32 @@ impl WorkflowRuntimeService {
         Ok(run_id)
     }
 
+    fn resolve_facet_contents_for_workflow(
+        workflow: &Workflow,
+    ) -> Result<WorkflowFacetContents, WorkflowEngineError> {
+        crate::adaptor::gateway::workflow::storage::resolve_and_validate_workflow_facets(
+            workflow,
+            &crate::adaptor::gateway::workflow::facet::facets_base_dir(),
+        )
+        .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))
+    }
+
+    async fn facet_contents_for_run(
+        &self,
+        run_id: &str,
+        workflow: &Workflow,
+    ) -> Result<WorkflowFacetContents, WorkflowEngineError> {
+        if let Some(contents) = self.run_facet_contents.lock().await.get(run_id).cloned() {
+            return Ok(contents);
+        }
+        let contents = Self::resolve_facet_contents_for_workflow(workflow)?;
+        self.run_facet_contents
+            .lock()
+            .await
+            .insert(run_id.to_string(), contents.clone());
+        Ok(contents)
+    }
+
     async fn insert_workflow_execution(
         &self,
         run_id: String,
@@ -620,6 +650,12 @@ impl WorkflowRuntimeService {
         workflow_defaults: WorkflowDefaults,
         now: f64,
     ) -> Result<WorkflowState, WorkflowEngineError> {
+        let request = task.clone().unwrap_or_default();
+        let mut step_outputs = HashMap::new();
+        step_outputs.insert(
+            crate::domain::workflow::services::reference::REQUEST_ARTIFACT.to_string(),
+            workflow_prompt::request_step_output(&request, now),
+        );
         let mut execution = WorkflowExecution {
             id: run_id.clone(),
             workflow: workflow.clone(),
@@ -632,10 +668,9 @@ impl WorkflowRuntimeService {
             updated_at: now,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
-            step_outputs: HashMap::new(),
+            step_outputs,
             task,
             parallel_run: None,
-            workflow_variables: HashMap::new(),
             current_stall_observations: Vec::new(),
             worktree_path: worktree_path.clone(),
         };
@@ -812,6 +847,7 @@ impl WorkflowRuntimeService {
                 .map(|entry| Some(entry.backend))
         })
         .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
+        let facet_contents = Self::resolve_facet_contents_for_workflow(&workflow)?;
 
         // ===== Phase 2: 副作用（Run Store reservation 先取り → 親 session 作成 → executions 登録） =====
         // Spec issues-1011 finding 5/8: 並行起動でも parent ChatSession を孤立させないために
@@ -823,6 +859,10 @@ impl WorkflowRuntimeService {
         let run_id = self
             .reserve_workflow_run(&workflow, &worktree_path, task.clone(), trigger_source, now)
             .await?;
+        self.run_facet_contents
+            .lock()
+            .await
+            .insert(run_id.clone(), facet_contents);
 
         // 以降の副作用で失敗した場合は Run Store reservation を確実に撤回する helper。
         // Spec issues-1011 finding 9: reservation 撤回専用 API (`cancel_reservation`) を使い、
@@ -880,6 +920,7 @@ impl WorkflowRuntimeService {
         let snapshot = match snapshot_result {
             Ok(s) => s,
             Err(e) => {
+                self.release_run_facet_contents(&run_id).await;
                 rollback_reservation(format!("validate_start failed: {e}")).await;
                 return Err(e);
             }
@@ -896,6 +937,7 @@ impl WorkflowRuntimeService {
                 workflow_name: snapshot.workflow_name.clone(),
                 workflow_file_stem: file_stem.to_string(),
                 worktree_path: worktree_path.clone(),
+                request: task.clone().unwrap_or_default(),
                 workflow_definition: workflow.clone(),
                 timestamp: now,
             },
@@ -903,6 +945,7 @@ impl WorkflowRuntimeService {
             let mut execs = self.executions.lock().await;
             execs.remove(&run_id);
             drop(execs);
+            self.release_run_facet_contents(&run_id).await;
             rollback_reservation(format!("RunStarted log failed: {e}")).await;
             return Err(WorkflowEngineError::SessionStore(format!(
                 "write RunStarted log failed: {e}"
@@ -1050,10 +1093,10 @@ impl WorkflowRuntimeService {
     ///
     /// 1. run / step / contract の妥当性検証
     /// 2. `validate_contract_value` で contract 適合判定
-    /// 3. 適合時のみ `step_outputs` / `workflow_variables` を更新し、
+    /// 3. 適合時のみ `step_outputs` を更新し、
     ///    `ArtifactProduced` event を append
     /// 4. 不適合・stale step・不在 step・契約タイプ不一致は副作用なしで `Err` を返し、
-    ///    `step_outputs` / `workflow_variables` / event log を一切変更しない。
+    ///    `step_outputs` / event log を一切変更しない。
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn submit_workflow_output<R: tauri::Runtime>(
         &self,
@@ -3024,24 +3067,23 @@ impl WorkflowRuntimeService {
         execs.get(run_id).map(|exec| exec.to_workflow_state())
     }
 
-    async fn release_terminal_execution(&self, run_id: &str) {
-        let mut execs = self.executions.lock().await;
-        if execs.get(run_id).is_some_and(|exec| exec.is_terminal()) {
-            execs.remove(run_id);
-        }
+    async fn release_run_facet_contents(&self, run_id: &str) {
+        self.run_facet_contents.lock().await.remove(run_id);
     }
 
-    /// 起動環境別の `releash` alias 名を返す（spec issues-1054）。
-    ///
-    /// 本関数は alias 名のみを必要とするため、data_dir 解決を経由しない pure helper
-    /// (`alias_name_for_profile`) を直接呼び、`dirs::data_dir()` 失敗で alias 名解決が
-    /// 巻き込まれないようにする。
-    #[cfg(test)]
-    fn resolve_releash_alias() -> String {
-        crate::infrastructure::platform::path_aliases::alias_name_for_profile(
-            crate::infrastructure::platform::path_aliases::BuildProfile::current(),
-        )
-        .to_string()
+    async fn release_terminal_execution(&self, run_id: &str) {
+        let removed = {
+            let mut execs = self.executions.lock().await;
+            if execs.get(run_id).is_some_and(|exec| exec.is_terminal()) {
+                execs.remove(run_id);
+                true
+            } else {
+                false
+            }
+        };
+        if removed {
+            self.release_run_facet_contents(run_id).await;
+        }
     }
 
     fn contract_repair_attempt_count<R: tauri::Runtime>(
@@ -3767,12 +3809,10 @@ impl WorkflowRuntimeService {
             run_id_for_ref,
             step_clone,
             step_outputs_clone,
-            step_history_clone,
             task_clone,
-            workflow_variables_clone,
-            workflow_declared_variables_clone,
             workflow_defaults_clone,
             workflow_step_context,
+            workflow_clone,
         ) = {
             let execs = self.executions.lock().await;
             let (run_id, exec) = find_by_worktree(&execs, worktree_path)
@@ -3787,10 +3827,7 @@ impl WorkflowRuntimeService {
                 run_id.clone(),
                 step.clone(),
                 exec.step_outputs.clone(),
-                exec.step_history.clone(),
                 exec.task.clone(),
-                exec.workflow_variables.clone(),
-                exec.workflow.variables.clone(),
                 exec.workflow_defaults.clone(),
                 WorkflowStepContext {
                     run_id: run_id.clone(),
@@ -3804,8 +3841,13 @@ impl WorkflowRuntimeService {
                     startup_max_retries: None,
                     stale_timeout_secs: None,
                 },
+                exec.workflow.clone(),
             )
         };
+        let facet_contents = self
+            .facet_contents_for_run(&run_id_for_ref, &workflow_clone)
+            .await?;
+        let step_facet_contents = facet_contents.for_node(&step_clone.name);
 
         // プロンプト合成（純粋関数）を最初に行う。
         // ここで失敗（参照先ファセットが存在しない等）した場合、後続の
@@ -3814,20 +3856,16 @@ impl WorkflowRuntimeService {
         // ChatSession や参照マップ entry を残さないことを構造的に保証する。
         let (system_prompt, prompt) = workflow_prompt::build_step_prompt(
             &step_clone,
+            step_facet_contents,
             &run_id_for_ref,
-            worktree_path,
             task_clone.as_deref(),
             &step_outputs_clone,
-            &step_history_clone,
-            &workflow_variables_clone,
-            &workflow_declared_variables_clone,
         )?;
         let workflow_instruction = workflow_prompt::render_step_workflow_instruction(
             &step_clone,
-            &run_id_for_ref,
-            worktree_path,
+            step_facet_contents,
             task_clone.as_deref(),
-            &workflow_declared_variables_clone,
+            &step_outputs_clone,
         );
         // ステップ設定の解決 → セッション生成（workflow_defaults を継承元に注入）
         let step_session = deps
@@ -3914,25 +3952,16 @@ impl WorkflowRuntimeService {
     async fn build_and_dispatch_step_session<G: SessionStartGate + ?Sized>(
         gate: &G,
         step: &NodeDefinition,
+        facet_contents: Option<&crate::adaptor::gateway::workflow::facet::FacetContents>,
         run_id: &str,
         step_session_id: &str,
         worktree_path: &str,
         permission_mode: Option<String>,
         task: Option<&str>,
         step_outputs: &HashMap<String, StepOutput>,
-        step_history: &[StepHistoryEntry],
-        workflow_variables: &HashMap<String, String>,
     ) -> Result<String, WorkflowEngineError> {
-        let (system_prompt, prompt) = workflow_prompt::build_step_prompt(
-            step,
-            run_id,
-            worktree_path,
-            task,
-            step_outputs,
-            step_history,
-            workflow_variables,
-            &HashMap::new(),
-        )?;
+        let (system_prompt, prompt) =
+            workflow_prompt::build_step_prompt(step, facet_contents, run_id, task, step_outputs)?;
         dispatch_session_start(
             gate,
             step_session_id,
@@ -4446,6 +4475,15 @@ impl WorkflowRuntimeService {
             worktree_path,
         )
         .await?;
+        let workflow_for_facets = {
+            let execs = self.executions.lock().await;
+            let (_run_id, exec) = find_by_worktree(&execs, worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            exec.workflow.clone()
+        };
+        let facet_contents = self
+            .facet_contents_for_run(&parallel_start.execution_id, &workflow_for_facets)
+            .await?;
 
         // ParallelStarted ログ
         if emit_parallel_started {
@@ -4461,6 +4499,7 @@ impl WorkflowRuntimeService {
             worktree_path,
             &parallel_start,
             &prompt_inputs,
+            &facet_contents,
         )
         .await?;
 
@@ -4740,7 +4779,6 @@ impl WorkflowRuntimeService {
         state: WorkflowExecutionState,
     ) -> WorkflowState {
         let workflow = Workflow {
-            variables: Default::default(),
             name: "test-approval-workflow".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -4758,8 +4796,6 @@ impl WorkflowRuntimeService {
                 artifact: Some("approved-fix-policy".to_string()),
                 transition_rules: vec![],
                 cycle_guard: None,
-                pass_previous_response: None,
-                pass_output_from: None,
                 collect: None,
                 resets_cycle_for: None,
                 ..Default::default()
@@ -4779,7 +4815,6 @@ impl WorkflowRuntimeService {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
-            workflow_variables: HashMap::new(),
             current_stall_observations: Vec::new(),
             worktree_path: worktree_path.to_string(),
             workflow_defaults: WorkflowDefaults {

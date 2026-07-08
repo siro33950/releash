@@ -71,7 +71,6 @@ pub fn workflow_state_to_view(
             .into_iter()
             .map(parallel_step_state_to_view)
             .collect(),
-        workflow_variables: state.workflow_variables,
         approval_operations: state.approval_operations.map(|operations| {
             workflow_wire::ApprovalOperationsView {
                 can_reject: operations.can_reject,
@@ -189,8 +188,6 @@ fn workflow_node_to_view(
         artifact: node.artifact,
         input: node.input,
         inputs: node.inputs,
-        pass_previous_response: node.pass_previous_response,
-        pass_output_from: node.pass_output_from,
         collect: node.collect.map(collect_config_to_view),
         rules: node
             .transition_rules
@@ -230,8 +227,6 @@ fn interim_child_to_view(child: workflow::InterimChild) -> workflow_wire::Workfl
         facets: facet_refs_to_view(child.facets),
         artifact: child.artifact,
         input: child.input,
-        pass_previous_response: child.pass_previous_response,
-        pass_output_from: child.pass_output_from,
     }
 }
 
@@ -406,7 +401,6 @@ mod tests {
             }],
             step_execution_counts: HashMap::new(),
             workflow_definition: WorkflowDefinition {
-                variables: Default::default(),
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
@@ -428,7 +422,6 @@ mod tests {
                 failure_kind: None,
                 failure_disposition: None,
             }],
-            workflow_variables: HashMap::new(),
             approval_operations: None,
             stall_observations: Vec::new(),
             started_at: 0.0,
@@ -570,7 +563,6 @@ mod tests {
 
     fn make_test_workflow_for_session() -> WorkflowDefinition {
         WorkflowDefinition {
-            variables: Default::default(),
             name: "review-cycle".to_string(),
             description: "Test".to_string(),
             builtin: false,
@@ -630,7 +622,6 @@ mod tests {
             },
             step_states: HashMap::new(),
             active_parallel_steps: vec![],
-            workflow_variables: HashMap::new(),
             approval_operations: None,
             stall_observations: Vec::new(),
             started_at: 999.0,

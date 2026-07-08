@@ -526,7 +526,6 @@ mod tests {
             }],
             step_execution_counts: HashMap::new(),
             workflow_definition: WorkflowDefinition {
-                variables: Default::default(),
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
@@ -537,7 +536,6 @@ mod tests {
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
             active_parallel_steps: vec![],
-            workflow_variables: HashMap::new(),
             approval_operations: None,
             stall_observations: Vec::new(),
             started_at: 0.0,

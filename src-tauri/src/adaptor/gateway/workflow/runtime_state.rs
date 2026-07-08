@@ -56,12 +56,10 @@ pub(crate) struct WorkflowExecution {
     pub(crate) current_step_token_usage: TokenUsage,
     /// step_name → 最新StepOutput のマップ。
     pub(crate) step_outputs: HashMap<String, StepOutput>,
-    /// ワークフロー実行時のタスク内容（テンプレート変数 {{task}} の展開に使用）。
+    /// ワークフロー実行時のタスク内容（テンプレート変数 {{ request }} の展開に使用）。
     pub(crate) task: Option<String>,
     /// 並列実行中の場合の状態。
     pub(crate) parallel_run: Option<ParallelRunState>,
-    /// ワークフローレベルの変数（#1326 で inputs / Artifact 参照へ置換予定）。
-    pub(crate) workflow_variables: HashMap<String, String>,
     /// 現在実行中の step session で観測した非終端 stall signal。
     pub(crate) current_stall_observations: Vec<WorkflowStallObservation>,
 }
@@ -188,7 +186,6 @@ impl WorkflowExecution {
             step_states,
             step_outputs: self.step_outputs.clone(),
             active_parallel_steps,
-            workflow_variables: self.workflow_variables.clone(),
             approval_operations: self.build_approval_operations(),
             stall_observations: self.current_stall_observations.clone(),
             started_at: self.started_at,
@@ -363,7 +360,7 @@ impl WorkflowExecution {
     /// 親ブロック名と全子 step 名を一括で削除する。
     ///
     /// 同一 step がループで再実行される際、前回値が残ったままになると
-    /// `evaluate_aggregate` / `pass_output_from` / `apply_reduce` /
+    /// `evaluate_aggregate` / `input_reference` / `apply_reduce` /
     /// `inject_step_outputs` が前回値を引いてしまい、新しい実行で
     /// `structured_output` が更新されないケースや LLM が前回ターンの
     /// `<workflow_output>` を引用してきたケースで Contract 違反が

@@ -1,11 +1,11 @@
 # 役割
 
-{{project_name}} のコード変更を **Spec 充足の観点** でレビューし、問題と判断したものを review Thread として投稿する。
+{{ request }} のコード変更を **Spec 充足の観点** でレビューし、問題と判断したものを review Thread として投稿する。
 
 # 入力
 
 - 環境変数 `RELEASH_BASE_BRANCH`: 当該 worktree の base ブランチ名。差分取得の基準として必ず使う
-- `docs/specs/{{project_name}}/requirements.md` / `behavior.md` / `design.md`
+- `docs/specs/{{ request }}/requirements.md` / `behavior.md` / `design.md`
 
 # 基本方針
 

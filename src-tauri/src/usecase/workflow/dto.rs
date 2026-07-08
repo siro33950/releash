@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::domain::workflow as domain;
 use crate::domain::workflow::services::contract_schema;
-use crate::domain::workflow::value_objects::ResolvedFacets;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
@@ -14,16 +13,7 @@ pub(crate) struct WorkflowDto {
     pub builtin: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub schemas: BTreeMap<String, serde_json::Value>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub variables: HashMap<String, String>,
     pub nodes: Vec<NodeDefinitionDto>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub(crate) struct ResolvedFacetsDto {
-    pub policy: Option<String>,
-    pub knowledge: Option<String>,
-    pub instruction: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -53,8 +43,6 @@ pub(crate) struct SessionSpecDto {
     pub permission: Option<String>,
     pub gate: SessionGateDto,
     pub facets: FacetRefsDto,
-    #[serde(skip)]
-    pub resolved_facets: ResolvedFacetsDto,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -89,10 +77,6 @@ pub(crate) struct NodeDefinitionDto {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_previous_response: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_output_from: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collect: Option<CollectConfigDto>,
     #[serde(default, rename = "rules", skip_serializing_if = "Vec::is_empty")]
     pub transition_rules: Vec<TransitionRuleDto>,
@@ -112,15 +96,9 @@ pub(crate) struct InterimChildDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_previous_response: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_output_from: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<String>,
-    #[serde(skip)]
-    pub resolved_facets: ResolvedFacetsDto,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -237,7 +215,6 @@ pub(crate) fn workflow_to_dto(definition: &domain::WorkflowDefinition) -> Workfl
                 )
             })
             .collect(),
-        variables: definition.variables.clone(),
         nodes: definition.nodes.iter().map(node_to_dto).collect(),
     }
 }
@@ -286,8 +263,6 @@ fn node_to_dto(node: &domain::NodeDefinition) -> NodeDefinitionDto {
         artifact: node.artifact.clone(),
         input: node.input.clone(),
         inputs: node.inputs.clone(),
-        pass_previous_response: node.pass_previous_response,
-        pass_output_from: node.pass_output_from.clone(),
         collect: node.collect.as_ref().map(collect_to_dto),
         transition_rules: node
             .transition_rules
@@ -305,7 +280,6 @@ fn session_to_dto(session: &domain::SessionSpec) -> SessionSpecDto {
         permission: session.permission.clone(),
         gate: gate_to_dto(session.gate),
         facets: facet_refs_to_dto(&session.facets),
-        resolved_facets: resolved_facets_to_dto(&session.resolved_facets),
     }
 }
 
@@ -326,11 +300,8 @@ fn child_node_to_dto(child: &domain::InterimChild) -> InterimChildDto {
         facets: facet_refs_to_dto(&child.facets),
         artifact: child.artifact.clone(),
         input: child.input.clone(),
-        pass_previous_response: child.pass_previous_response,
-        pass_output_from: child.pass_output_from.clone(),
         model: child.model.clone(),
         permission: child.permission.clone(),
-        resolved_facets: resolved_facets_to_dto(&child.resolved_facets),
     }
 }
 
@@ -397,14 +368,6 @@ fn cycle_guard_to_dto(guard: &domain::CycleGuard) -> CycleGuardDto {
     }
 }
 
-fn resolved_facets_to_dto(resolved: &ResolvedFacets) -> ResolvedFacetsDto {
-    ResolvedFacetsDto {
-        policy: resolved.policy.clone(),
-        knowledge: resolved.knowledge.clone(),
-        instruction: resolved.instruction.clone(),
-    }
-}
-
 fn run_status_to_dto(status: domain::RunStatus) -> RunStatusDto {
     match status {
         domain::RunStatus::Running => RunStatusDto::Running,
@@ -445,7 +408,6 @@ mod tests {
             )]
             .into_iter()
             .collect(),
-            variables: Default::default(),
             nodes: vec![NodeDefinitionDto {
                 name: "step".to_string(),
                 kind: NodeKindDto::Session,
