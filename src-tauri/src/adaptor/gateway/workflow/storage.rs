@@ -15,18 +15,8 @@ pub enum StorageError {
     YamlSerialize(serde_saphyr::ser::Error),
     Validation(ValidationError),
     FacetResolution(facet::FacetError),
-    /// facet 本文が `{{vars.<name>}}` で workflow 定義に存在しない変数を参照している。
-    /// spec issues-1054 「未定義 workflow 変数の拒否」: load 経路を一次境界として検出する。
-    UndefinedWorkflowVariables {
-        node_name: String,
-        undefined: Vec<String>,
-    },
-    NotFound {
-        name: String,
-    },
-    BuiltinProtected {
-        name: String,
-    },
+    NotFound { name: String },
+    BuiltinProtected { name: String },
 }
 
 impl fmt::Display for StorageError {
@@ -37,14 +27,6 @@ impl fmt::Display for StorageError {
             Self::YamlSerialize(e) => write!(f, "YAMLシリアライズ失敗: {e}"),
             Self::Validation(e) => write!(f, "validation_error: {e}"),
             Self::FacetResolution(e) => write!(f, "facet解決失敗: {e}"),
-            Self::UndefinedWorkflowVariables {
-                node_name,
-                undefined,
-            } => write!(
-                f,
-                "node '{node_name}' の facet が未定義の workflow 変数を参照しています: {} （workflow 定義の `variables` で宣言してください）",
-                undefined.join(", ")
-            ),
             Self::NotFound { name } => {
                 write!(f, "ワークフロー '{name}' が見つかりません")
             }
@@ -63,7 +45,6 @@ impl std::error::Error for StorageError {
             Self::YamlSerialize(e) => Some(e),
             Self::Validation(e) => Some(e),
             Self::FacetResolution(e) => Some(e),
-            Self::UndefinedWorkflowVariables { .. } => None,
             Self::NotFound { .. } => None,
             Self::BuiltinProtected { .. } => None,
         }
@@ -157,8 +138,8 @@ pub fn parse_workflow_source(
     let mut workflow: Workflow = serde_saphyr::from_str(content)?;
     workflow.builtin = builtin::is_builtin_workflow(&workflow.name);
     validate_workflow_definition(&workflow)?;
-    facet::resolve_workflow_facets(&mut workflow, facets_base_dir)?;
-    validate_workflow_variable_refs(&workflow)?;
+    let facet_contents = facet::resolve_workflow_facets(&workflow, facets_base_dir)?;
+    validate_resolved_facet_references(&workflow, &facet_contents)?;
     Ok(workflow)
 }
 
@@ -195,7 +176,7 @@ pub fn save_workflow_source(
 /// YAML ファイルから `Workflow` を読み込み、facet 参照を解決した上で validation する。
 ///
 /// [02] schema 境界: load 経路で `facet.rs` を呼び、session / fanout child の
-/// `resolved_facets` に解決済み内容を格納する。
+/// gateway read model に解決済み内容を格納し、facet 本文の Artifact 参照も検証する。
 /// 実行用 Workflow には未解決 ref を残さない（schema 層は ref キーを保持しつつ、
 /// 実行系は resolved cache から直接合成する）。
 pub fn load_workflow(path: &Path, facets_base_dir: &Path) -> Result<Workflow, StorageError> {
@@ -204,65 +185,9 @@ pub fn load_workflow(path: &Path, facets_base_dir: &Path) -> Result<Workflow, St
     // YAMLの builtin フラグは無視し、コード側（builtin.rs）で判定する
     workflow.builtin = builtin::is_builtin_workflow(&workflow.name);
     validate_workflow_definition(&workflow)?;
-    facet::resolve_workflow_facets(&mut workflow, facets_base_dir)?;
-    // spec issues-1054: 未定義 `{{vars.<name>}}` 参照は load 経路を一次境界として検出する。
-    validate_workflow_variable_refs(&workflow)?;
+    let facet_contents = facet::resolve_workflow_facets(&workflow, facets_base_dir)?;
+    validate_resolved_facet_references(&workflow, &facet_contents)?;
     Ok(workflow)
-}
-
-/// resolved_facets の各本文に `{{vars.<name>}}` 参照が含まれている場合、
-/// すべて workflow.variables で宣言されていることを検証する。
-///
-/// spec issues-1054 「未定義 workflow 変数の拒否」: load 時点でエラーとし、
-/// 黙って空文字へ展開させない（権限や宛先ずれの事故防止）。
-fn validate_workflow_variable_refs(workflow: &Workflow) -> Result<(), StorageError> {
-    for node in &workflow.nodes {
-        if let Some(session) = node.session() {
-            for body in resolved_bodies(&session.resolved_facets) {
-                check_undefined_vars(&node.name, body, &workflow.variables)?;
-            }
-        }
-        if let Some(fanout) = node.fanout() {
-            let children = &fanout.parallel_children;
-            for child in children {
-                for body in resolved_bodies(&child.resolved_facets) {
-                    check_undefined_vars(&child.name, body, &workflow.variables)?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn resolved_bodies(
-    rf: &crate::adaptor::gateway::workflow::schema::ResolvedFacets,
-) -> impl Iterator<Item = &str> + '_ {
-    rf.policy
-        .as_deref()
-        .into_iter()
-        .chain(rf.knowledge.as_deref())
-        .chain(rf.instruction.as_deref())
-}
-
-fn check_undefined_vars(
-    node_name: &str,
-    body: &str,
-    defined: &std::collections::HashMap<String, String>,
-) -> Result<(), StorageError> {
-    let undefined =
-        crate::domain::workflow::services::variable_renderer::find_undefined_workflow_variable_refs(
-            body, defined,
-        );
-    if undefined.is_empty() {
-        return Ok(());
-    }
-    let mut unique: Vec<String> = undefined;
-    unique.sort();
-    unique.dedup();
-    Err(StorageError::UndefinedWorkflowVariables {
-        node_name: node_name.to_string(),
-        undefined: unique,
-    })
 }
 
 fn list_yml_summaries<T, E: fmt::Display>(
@@ -345,6 +270,59 @@ fn validate_workflow_definition(workflow: &Workflow) -> Result<(), ValidationErr
     validation::validate(&workflow)
 }
 
+pub(crate) fn resolve_and_validate_workflow_facets(
+    workflow: &Workflow,
+    facets_base_dir: &Path,
+) -> Result<facet::WorkflowFacetContents, StorageError> {
+    let facet_contents = facet::resolve_workflow_facets(workflow, facets_base_dir)?;
+    validate_resolved_facet_references(workflow, &facet_contents)?;
+    Ok(facet_contents)
+}
+
+fn validate_resolved_facet_references(
+    workflow: &Workflow,
+    facet_contents: &facet::WorkflowFacetContents,
+) -> Result<(), ValidationError> {
+    let domain_workflow = workflow_definition_to_domain(workflow);
+    for (_node_name, contents) in facet_contents.iter_node_contents() {
+        for content in [
+            contents.policy.as_deref(),
+            contents.knowledge.as_deref(),
+            contents.instruction.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(err) =
+                validation::validate_template_references(&domain_workflow, content, false)
+                    .into_iter()
+                    .next()
+            {
+                return Err(err);
+            }
+        }
+    }
+    for (_parent_name, _child_name, contents) in facet_contents.iter_child_contents() {
+        for content in [
+            contents.policy.as_deref(),
+            contents.knowledge.as_deref(),
+            contents.instruction.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(err) =
+                validation::validate_template_references(&domain_workflow, content, true)
+                    .into_iter()
+                    .next()
+            {
+                return Err(err);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn resolve_workflow_path(dir: &Path, name: &str) -> Result<PathBuf, StorageError> {
     validation::validate_name(name)?;
     let file_path = dir.join(format!("{name}.yml"));
@@ -389,7 +367,6 @@ mod tests {
 
     fn sample_workflow(name: &str, builtin: bool) -> Workflow {
         Workflow {
-            variables: Default::default(),
             name: name.to_string(),
             description: format!("{name} workflow"),
             builtin,
@@ -654,9 +631,9 @@ mod tests {
     }
 
     /// [02] schema 境界: `storage::load_workflow` は load 経路で facet を解決し、
-    /// `NodeDefinition.resolved_facets` に本文を格納する。
+    /// gateway read model として検証する。
     #[test]
-    fn load_workflow_resolves_facets_into_node_cache() {
+    fn load_workflow_resolves_facets_into_gateway_read_model() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let policies = dir.join("policies");
@@ -681,16 +658,53 @@ nodes:
         let file_path = dir.join("facet-load-test.yml");
         std::fs::write(&file_path, yaml).unwrap();
         let wf = load_workflow(&file_path, dir).unwrap();
-        let node = &wf.nodes[0];
-        let session = node.session().unwrap();
-        assert_eq!(
-            session.resolved_facets.policy.as_deref(),
-            Some("POLICY_BODY")
-        );
-        assert_eq!(
-            session.resolved_facets.instruction.as_deref(),
-            Some("INSTRUCTION_BODY")
-        );
+        let resolved = resolve_and_validate_workflow_facets(&wf, dir).unwrap();
+        let contents = resolved.for_node("implement").unwrap();
+        assert_eq!(contents.policy.as_deref(), Some("POLICY_BODY"));
+        assert_eq!(contents.instruction.as_deref(), Some("INSTRUCTION_BODY"));
+    }
+
+    #[test]
+    fn parse_and_load_validate_resolved_facet_artifact_references() {
+        for (facet_key, facet_body, expected_ref) in [
+            ("missing-ref", "Use {{ missing.field }}", "missing"),
+            ("item-out-of-scope", "Use {{ item.path }}", "item"),
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let dir = tmp.path();
+            let instructions = dir.join("instructions");
+            std::fs::create_dir_all(&instructions).unwrap();
+            std::fs::write(instructions.join(format!("{facet_key}.md")), facet_body).unwrap();
+
+            let yaml = format!(
+                r#"
+name: facet-reference-{facet_key}
+description: invalid facet reference
+nodes:
+  - name: implement
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: {facet_key}
+"#
+            );
+            let parsed = parse_workflow_source(&yaml, dir);
+            assert!(matches!(
+                parsed.unwrap_err(),
+                StorageError::Validation(validation::ValidationError::InvalidArtifactReference { ref reference, .. })
+                    if reference == expected_ref
+            ));
+
+            let file_path = dir.join(format!("facet-reference-{facet_key}.yml"));
+            std::fs::write(&file_path, yaml).unwrap();
+            let loaded = load_workflow(&file_path, dir);
+            assert!(matches!(
+                loaded.unwrap_err(),
+                StorageError::Validation(validation::ValidationError::InvalidArtifactReference { ref reference, .. })
+                    if reference == expected_ref
+            ));
+        }
     }
 
     /// [02] schema 境界: 旧 `steps:` 表現で書かれた user-authored YAML は
@@ -719,8 +733,7 @@ steps:
     }
 
     /// [02] schema 境界: load 経路で 3 種全 facet (policy/knowledge/instruction)
-    /// が node と fanout child の resolved facets に
-    /// いずれにも解決済みで格納されることを担保する。
+    /// が node と fanout child の read model に解決済みで格納されることを担保する。
     #[test]
     fn load_workflow_resolves_all_three_facets_for_node_and_child() {
         let tmp = TempDir::new().unwrap();
@@ -773,35 +786,19 @@ nodes:
         let file_path = dir.join("facet-all.yml");
         std::fs::write(&file_path, yaml).unwrap();
         let wf = load_workflow(&file_path, dir).unwrap();
+        let resolved = resolve_and_validate_workflow_facets(&wf, dir).unwrap();
 
-        let lead = wf.nodes.iter().find(|n| n.name == "lead").unwrap();
-        let lead_session = lead.session().unwrap();
-        assert_eq!(
-            lead_session.resolved_facets.policy.as_deref(),
-            Some("POLICY")
-        );
-        assert_eq!(
-            lead_session.resolved_facets.knowledge.as_deref(),
-            Some("KNOWLEDGE")
-        );
-        assert_eq!(
-            lead_session.resolved_facets.instruction.as_deref(),
-            Some("INSTRUCTION")
-        );
+        let lead_contents = resolved.for_node("lead").unwrap();
+        assert_eq!(lead_contents.policy.as_deref(), Some("POLICY"));
+        assert_eq!(lead_contents.knowledge.as_deref(), Some("KNOWLEDGE"));
+        assert_eq!(lead_contents.instruction.as_deref(), Some("INSTRUCTION"));
 
-        let par = wf.nodes.iter().find(|n| n.name == "par").unwrap();
-        let children = &par.fanout().unwrap().parallel_children;
-        for child in children {
+        for child_name in ["c1", "c2"] {
+            let child_contents = resolved.for_child("par", child_name).unwrap();
+            assert_eq!(child_contents.policy.as_deref(), Some("CHILD_POLICY"));
+            assert_eq!(child_contents.knowledge.as_deref(), Some("CHILD_KNOWLEDGE"));
             assert_eq!(
-                child.resolved_facets.policy.as_deref(),
-                Some("CHILD_POLICY")
-            );
-            assert_eq!(
-                child.resolved_facets.knowledge.as_deref(),
-                Some("CHILD_KNOWLEDGE")
-            );
-            assert_eq!(
-                child.resolved_facets.instruction.as_deref(),
+                child_contents.instruction.as_deref(),
                 Some("CHILD_INSTRUCTION")
             );
         }
@@ -831,65 +828,15 @@ nodes:
     }
 
     /// spec issues-1054 「未定義 workflow 変数の拒否」: facet 本文が宣言されていない
-    /// `{{vars.<name>}}` を参照している workflow は load 経路で拒否される。
+    /// `variables:` は旧構文として schema deserialize 境界で拒否される。
     #[test]
-    fn load_workflow_rejects_undefined_workflow_variable_reference() {
+    fn load_workflow_rejects_variables_section() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
-        let instructions = dir.join("instructions");
-        std::fs::create_dir_all(&instructions).unwrap();
-        std::fs::write(
-            instructions.join("impl.md"),
-            "Run `{{vars.cli_alias}} workflow output submit`",
-        )
-        .unwrap();
 
         let yaml = r#"
-name: undefined-var-ref
-description: undefined variable test
-variables:
-  other_var: "value"
-nodes:
-  - name: implement
-    session:
-      permission: edit
-      gate: auto
-      facets:
-        instruction: impl
-"#;
-        let file_path = dir.join("undefined-var-ref.yml");
-        std::fs::write(&file_path, yaml).unwrap();
-        let result = load_workflow(&file_path, dir);
-        let err = result.expect_err("undefined {{vars.cli_alias}} must be rejected");
-        match err {
-            StorageError::UndefinedWorkflowVariables {
-                node_name,
-                undefined,
-            } => {
-                assert_eq!(node_name, "implement");
-                assert_eq!(undefined, vec!["cli_alias".to_string()]);
-            }
-            other => panic!("expected UndefinedWorkflowVariables, got {other:?}"),
-        }
-    }
-
-    /// spec issues-1054 「workflow 定義変数の facet 展開」: workflow 定義の
-    /// `variables` で宣言された変数を参照する facet は load 経路を通る。
-    #[test]
-    fn load_workflow_accepts_declared_workflow_variable_reference() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        let instructions = dir.join("instructions");
-        std::fs::create_dir_all(&instructions).unwrap();
-        std::fs::write(
-            instructions.join("impl.md"),
-            "Label: {{vars.project_label}}",
-        )
-        .unwrap();
-
-        let yaml = r#"
-name: declared-var-ref
-description: declared variable test
+name: old-variables-section
+description: variables section test
 variables:
   project_label: "Releash"
 nodes:
@@ -898,14 +845,66 @@ nodes:
       permission: edit
       gate: auto
       facets:
+        instruction: missing
+"#;
+        let file_path = dir.join("old-variables-section.yml");
+        std::fs::write(&file_path, yaml).unwrap();
+        let result = load_workflow(&file_path, dir);
+        assert!(matches!(result, Err(StorageError::YamlDeserialize(_))));
+    }
+
+    #[test]
+    fn load_workflow_rejects_legacy_pass_fields() {
+        for (field, value) in [
+            ("pass_output_from", "plan"),
+            ("pass_previous_response", "true"),
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let dir = tmp.path();
+            let yaml = format!(
+                r#"
+name: old-pass-field
+description: pass field test
+nodes:
+  - name: implement
+    {field}: {value}
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: missing
+"#
+            );
+            let file_path = dir.join(format!("old-{field}.yml"));
+            std::fs::write(&file_path, yaml).unwrap();
+            let result = load_workflow(&file_path, dir);
+            assert!(matches!(result, Err(StorageError::YamlDeserialize(_))));
+        }
+    }
+
+    /// Artifact template references load without a workflow-level variables section.
+    #[test]
+    fn load_workflow_accepts_request_artifact_reference() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let instructions = dir.join("instructions");
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::write(instructions.join("impl.md"), "Request: {{ request }}").unwrap();
+
+        let yaml = r#"
+name: request-ref
+description: request reference test
+nodes:
+  - name: implement
+    session:
+      permission: edit
+      gate: auto
+      facets:
         instruction: impl
 "#;
-        let file_path = dir.join("declared-var-ref.yml");
+        let file_path = dir.join("request-ref.yml");
         std::fs::write(&file_path, yaml).unwrap();
         let wf = load_workflow(&file_path, dir).expect("load must succeed");
-        assert_eq!(
-            wf.variables.get("project_label").map(String::as_str),
-            Some("Releash")
-        );
+        assert_eq!(wf.nodes[0].name, "implement");
     }
 }

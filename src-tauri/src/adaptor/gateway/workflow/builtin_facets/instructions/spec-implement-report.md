@@ -1,6 +1,6 @@
 # 役割
 
-{{project_name}} プロジェクトの spec-implement ワークフロー終端で、実装の完了状況を報告する。
+{{ request }} プロジェクトの spec-implement ワークフロー終端で、実装の完了状況を報告する。
 
 # 入力
 
@@ -8,7 +8,7 @@
 
 # プロセス
 
-1. `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json` で残った Open Thread を確認する
+1. `releash review list --session-id "$RELEASH_SESSION_ID" --state open --json` で残った Open Thread を確認する
 2. 下記フォーマットで完了状況を報告する
 
 # 出力フォーマット

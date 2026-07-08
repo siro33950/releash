@@ -114,8 +114,6 @@ interface InterimChild {
 	facets: FacetRefs;
 	artifact?: string;
 	input?: string;
-	pass_previous_response?: boolean;
-	pass_output_from?: string[];
 	model?: string;
 	permission?: PermissionMode;
 }
@@ -134,8 +132,6 @@ export interface NodeDefinition {
 	artifact?: string;
 	input?: string;
 	inputs?: string[];
-	pass_previous_response?: boolean;
-	pass_output_from?: string[];
 	collect?: CollectConfig;
 	// 共通: rules は省略時 undefined（Rust 側で serde default 経路を持つが、frontend
 	// fixture では空配列を毎回書かなくて済むよう optional とする）
@@ -215,7 +211,6 @@ export interface WorkflowState {
 	stepHistory: StepHistoryEntry[];
 	stepExecutionCounts: Record<string, number>;
 	stepOutputs: Record<string, StepOutput>;
-	workflowVariables?: Record<string, string>;
 	workflowDefinition: Workflow;
 	totalTokenUsage: TokenUsage;
 	stepStates: Record<string, string>;

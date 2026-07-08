@@ -203,7 +203,6 @@ mod tests {
             description: "desc".to_string(),
             builtin: false,
             schemas: Default::default(),
-            variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "step".to_string(),
                 kind: NodeKind::Session(SessionSpec {

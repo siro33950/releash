@@ -69,6 +69,7 @@ mod tests {
                 "workflowName": "wf",
                 "workflowFileStem": "wf",
                 "worktreePath": "/repo",
+                "request": "ship it",
                 "workflowDefinition": {
                     "name": "wf",
                     "description": "",
@@ -93,6 +94,7 @@ mod tests {
         let events = repo.read(&run_id).unwrap();
         assert_eq!(events[0].event_kind, "run_started");
         assert_eq!(events[0].payload["workflow_name"], "wf");
+        assert_eq!(events[0].payload["request"], "ship it");
     }
 
     #[test]
@@ -109,6 +111,7 @@ mod tests {
                 "workflowName": "wf",
                 "workflowFileStem": "wf",
                 "worktreePath": "/repo",
+                "request": "",
                 "workflowDefinition": {
                     "name": "wf",
                     "description": "",

@@ -1,4 +1,4 @@
-{{project_name}} プロジェクトの `design.md` をユーザーとの対話で作成または更新する。
+`{{ write_requirements.spec_dir }}` の `design.md` をユーザーとの対話で作成または更新する。
 
 ## 入力
 

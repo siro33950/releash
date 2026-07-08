@@ -91,6 +91,7 @@ pub enum WorkflowEvent {
         workflow_name: String,
         workflow_file_stem: String,
         worktree_path: String,
+        request: String,
         /// reconstruct 経路の必須フィールド（[02] 互換境界）。
         workflow_definition: Workflow,
         timestamp: f64,
@@ -307,7 +308,7 @@ pub enum WorkflowEvent {
     /// [08] step に対する構造化出力が contract 適合判定を経て確定した事実。
     ///
     /// CLI / in-process 経路が engine の submit-output primitive で受理され、
-    /// contract 適合判定 → `step_outputs` / `workflow_variables` 更新と同一
+    /// contract 適合判定 → `step_outputs` 更新と同一
     /// トランザクションで append される。contract 不適合・stale step・不在 step
     /// などの拒否は本 event を残さない（spec [08] ArtifactProduced append の
     /// 不可分性境界）。
@@ -485,7 +486,6 @@ mod tests {
             FacetRefs, NodeDefinition, NodeKind, SessionSpec,
         };
         Workflow {
-            variables: Default::default(),
             name: "wf".to_string(),
             description: "".to_string(),
             builtin: false,
@@ -511,6 +511,7 @@ mod tests {
             workflow_name: "wf".to_string(),
             workflow_file_stem: "wf".to_string(),
             worktree_path: "/repo".to_string(),
+            request: "fix tests".to_string(),
             workflow_definition: minimal_workflow(),
             timestamp: 1.0,
         };
@@ -706,6 +707,7 @@ mod tests {
                 workflow_name: "w".to_string(),
                 workflow_file_stem: "w".to_string(),
                 worktree_path: "/r".to_string(),
+                request: String::new(),
                 workflow_definition: minimal_workflow(),
                 timestamp: 0.0,
             },

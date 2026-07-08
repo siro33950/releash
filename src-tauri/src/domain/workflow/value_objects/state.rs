@@ -69,7 +69,6 @@ pub struct WorkflowStateSnapshot {
     pub step_states: HashMap<String, String>,
     pub step_outputs: HashMap<String, StepOutput>,
     pub active_parallel_steps: Vec<ParallelStepState>,
-    pub workflow_variables: HashMap<String, String>,
     pub approval_operations: Option<ApprovalOperations>,
     pub stall_observations: Vec<WorkflowStallObservation>,
     pub started_at: f64,

@@ -149,7 +149,6 @@ mod contract_service_tests {
                     additional_properties: true,
                 },
             )]),
-            variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "parallel".to_string(),
                 kind: NodeKind::Fanout(FanoutSpec {

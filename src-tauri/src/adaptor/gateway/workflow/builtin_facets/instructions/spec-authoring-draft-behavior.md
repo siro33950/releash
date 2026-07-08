@@ -1,4 +1,4 @@
-{{project_name}} プロジェクトの `behavior.md` を一括で作成または更新する。
+`{{ write_requirements.spec_dir }}` の `behavior.md` を一括で作成または更新する。
 
 ## 入力
 

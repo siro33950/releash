@@ -125,7 +125,6 @@ mod tests {
             description: "desc".to_string(),
             builtin,
             schemas: Default::default(),
-            variables: Default::default(),
             nodes: Vec::new(),
         }
     }

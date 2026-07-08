@@ -434,7 +434,7 @@ fn validate_run_id(run_id: &str) -> Result<(), String> {
 #[cfg(test)]
 fn validate_template_variables(content: &str) -> Result<(), String> {
     let errors =
-        crate::domain::workflow::services::variable_renderer::find_undefined_template_variables(
+        crate::adaptor::gateway::workflow::prompt_rendering::find_undefined_template_variables(
             content,
         );
     if !errors.is_empty() {
@@ -518,18 +518,16 @@ mod tests {
 
     fn approval_only_workflow() -> Workflow {
         Workflow {
-            variables: Default::default(),
             name: "adapter-boundary".to_string(),
             description: "adapter command test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![approval_node("review", "review")],
+            nodes: vec![approval_node("review", "review-all")],
         }
     }
 
     fn rejectable_adapter_workflow() -> Workflow {
         Workflow {
-            variables: Default::default(),
             name: "adapter-boundary".to_string(),
             description: "adapter command test".to_string(),
             builtin: false,
@@ -537,7 +535,7 @@ mod tests {
             nodes: vec![
                 NodeDefinition {
                     name: "review".to_string(),
-                    kind: session_kind(SessionGate::Approval, "review"),
+                    kind: session_kind(SessionGate::Approval, "review-all"),
                     transition_rules: vec![
                         crate::adaptor::gateway::workflow::schema::TransitionRule {
                             r#match: "reject".to_string(),
@@ -546,7 +544,7 @@ mod tests {
                     ],
                     ..NodeDefinition::default()
                 },
-                session_node("fix", "fix"),
+                session_node("fix", "review-fix"),
             ],
         }
     }
@@ -1893,15 +1891,15 @@ mod tests {
     }
 
     #[test]
-    fn validate_template_variables_system_vars_ok() {
-        assert!(validate_template_variables("Use {{project_name}} and {{task}}").is_ok());
+    fn validate_template_variables_artifact_refs_ok() {
+        assert!(validate_template_variables("Use {{ request }} and {{ plan.summary }}").is_ok());
     }
 
     #[test]
-    fn validate_template_variables_unknown_var_fails() {
-        let result = validate_template_variables("Use {{unknown}}");
+    fn validate_template_variables_invalid_ref_fails() {
+        let result = validate_template_variables("Use {{ bad ref }}");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown"));
+        assert!(result.unwrap_err().contains("bad ref"));
     }
 
     #[test]
@@ -1911,9 +1909,9 @@ mod tests {
 
     #[test]
     fn validate_template_variables_mixed() {
-        let result = validate_template_variables("{{task}} and {{bad_var}}");
+        let result = validate_template_variables("{{ request }} and {{ request.more }}");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("bad_var"));
+        assert!(result.unwrap_err().contains("request.more"));
     }
 
     // ---- duplicate logic tests ----
@@ -1922,7 +1920,6 @@ mod tests {
 
     fn make_test_workflow(name: &str) -> Workflow {
         Workflow {
-            variables: Default::default(),
             name: name.to_string(),
             description: "test workflow".to_string(),
             builtin: false,
@@ -2748,8 +2745,8 @@ mod tests {
                 workflow_name: "wf".to_string(),
                 workflow_file_stem: "wf".to_string(),
                 worktree_path: unauthorized_wt.to_string(),
+                request: String::new(),
                 workflow_definition: Workflow {
-                    variables: Default::default(),
                     name: "wf".to_string(),
                     description: "test".to_string(),
                     builtin: false,
@@ -2811,8 +2808,8 @@ mod tests {
                 workflow_name: "wf".to_string(),
                 workflow_file_stem: "wf".to_string(),
                 worktree_path: worktree_path.clone(),
+                request: String::new(),
                 workflow_definition: Workflow {
-                    variables: Default::default(),
                     name: "wf".to_string(),
                     description: "test".to_string(),
                     builtin: false,
@@ -2867,6 +2864,7 @@ mod tests {
                 workflow_name: "adapter-boundary".to_string(),
                 workflow_file_stem: "adapter-boundary".to_string(),
                 worktree_path: worktree_path.clone(),
+                request: String::new(),
                 workflow_definition: approval_only_workflow(),
                 timestamp: 500.0,
             })
@@ -2913,7 +2911,6 @@ mod tests {
         );
         let event_log = WorkflowEventLog::new(&data_dir);
         let snapshot = Workflow {
-            variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -2938,6 +2935,7 @@ mod tests {
                 workflow_name: "wf".to_string(),
                 workflow_file_stem: "wf".to_string(),
                 worktree_path: worktree_path.clone(),
+                request: String::new(),
                 workflow_definition: snapshot,
                 timestamp: 100.0,
             })

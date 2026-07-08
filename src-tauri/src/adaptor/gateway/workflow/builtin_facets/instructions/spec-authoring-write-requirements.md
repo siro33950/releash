@@ -1,10 +1,10 @@
-{{project_name}} プロジェクトの Spec ディレクトリを作成し、`requirements.md` をユーザーとの対話で作成または更新する。
+`{{ request }}` を起点に Spec ディレクトリを作成し、`requirements.md` をユーザーとの対話で作成または更新する。
 
 ## 入力
 
 解決したい課題は次の通り。この課題を起点として、ユーザーと対話しながら要件を具体化する。
 
-{{task}}
+{{ request }}
 
 ## 目的
 
@@ -48,7 +48,7 @@ Goal → Background → Users / Actors → Requirements → Constraints → Scop
 
 ## Spec ディレクトリ決定
 
-`docs/specs/{{project_name}}` を使う。
+`docs/specs/<spec-id>` を使う。`<spec-id>` は request の内容から短く安定した識別子として決める。
 
 ## requirements.md に書くこと
 

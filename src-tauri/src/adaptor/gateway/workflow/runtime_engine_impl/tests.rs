@@ -582,7 +582,6 @@ fn make_minimal_approval_exec(
     step_name: &str,
 ) -> WorkflowExecution {
     let workflow = Workflow {
-        variables: Default::default(),
         name: "test-workflow".to_string(),
         description: "minimal approval fixture".to_string(),
         builtin: false,
@@ -614,7 +613,6 @@ fn make_minimal_approval_exec(
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -739,6 +737,7 @@ async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
                 workflow_name: workflow.name.clone(),
                 workflow_file_stem: workflow.name.clone(),
                 worktree_path: exec.worktree_path.clone(),
+                request: String::new(),
                 workflow_definition: workflow,
                 timestamp: exec.started_at,
             },
@@ -1170,28 +1169,36 @@ fn set_policy_facet(node: &mut NodeDefinition, policy: Option<String>) {
         .policy = policy;
 }
 
-/// テストヘルパー: node の facet 参照を `base_dir` から解決し
-/// `resolved_facets` に格納する。`crate::adaptor::gateway::workflow::facet::resolve_node_facets`
-/// （`#[cfg(test)] pub(crate)`）への薄い委譲で、欠損 facet 時の `unwrap` 等の
-/// パニックは facet helper 側で発生する。
-fn resolve_node_facets_for_test(node: &mut NodeDefinition, base_dir: &std::path::Path) {
+/// テストヘルパー: node の facet 参照を `base_dir` から解決する。
+fn resolve_node_facets_for_test(
+    node: &NodeDefinition,
+    base_dir: &std::path::Path,
+) -> crate::adaptor::gateway::workflow::facet::FacetContents {
     crate::adaptor::gateway::workflow::facet::resolve_node_facets(node, base_dir)
-        .expect("facet refs must resolve in tests; missing facet indicates a fixture bug");
+        .expect("facet refs must resolve in tests; missing facet indicates a fixture bug")
+}
+
+fn instruction_contents(
+    instruction: &str,
+) -> crate::adaptor::gateway::workflow::facet::FacetContents {
+    crate::adaptor::gateway::workflow::facet::FacetContents {
+        instruction: Some(instruction.to_string()),
+        ..Default::default()
+    }
 }
 
 /// テストヘルパー: 並列子 node の facet 参照を解決する。
 /// `crate::adaptor::gateway::workflow::facet::resolve_child_facets` への委譲。
 fn resolve_child_facets_for_test(
-    child: &mut crate::adaptor::gateway::workflow::schema::InterimChild,
+    child: &crate::adaptor::gateway::workflow::schema::InterimChild,
     base_dir: &std::path::Path,
-) {
+) -> crate::adaptor::gateway::workflow::facet::FacetContents {
     crate::adaptor::gateway::workflow::facet::resolve_child_facets(child, base_dir)
-        .expect("facet refs must resolve in tests; missing facet indicates a fixture bug");
+        .expect("facet refs must resolve in tests; missing facet indicates a fixture bug")
 }
 
 fn make_test_workflow() -> Workflow {
     Workflow {
-        variables: Default::default(),
         name: "test-workflow".to_string(),
         description: "Test workflow".to_string(),
         builtin: false,
@@ -1255,7 +1262,6 @@ fn workflow_execution_to_workflow_state() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -1292,7 +1298,6 @@ fn is_active_running() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -1319,7 +1324,6 @@ fn is_active_waiting_approval() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -1346,7 +1350,6 @@ fn is_active_completed() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -1377,7 +1380,6 @@ fn is_active_failed() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -1404,7 +1406,6 @@ fn is_active_aborted() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -1434,7 +1435,6 @@ fn to_workflow_state_waiting_approval() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -1469,7 +1469,6 @@ fn to_workflow_state_waiting_approval_without_reject_rule_disables_reject() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -1516,7 +1515,6 @@ fn to_workflow_state_failed() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -1554,7 +1552,6 @@ fn to_workflow_state_aborted() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -1583,7 +1580,6 @@ fn to_workflow_state_completed() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -1646,7 +1642,6 @@ fn make_exec(step_index: usize) -> WorkflowExecution {
         current_step_token_usage: TokenUsage::default(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -1900,7 +1895,6 @@ fn decide_approval_action_not_waiting() {
 #[test]
 fn validate_start_empty_steps_returns_err() {
     let workflow = Workflow {
-        variables: Default::default(),
         name: "empty".to_string(),
         description: String::new(),
         builtin: false,
@@ -1942,7 +1936,6 @@ fn validate_start_no_existing_returns_ok() {
 #[test]
 fn validate_start_rejects_command_node() {
     let workflow = Workflow {
-        variables: Default::default(),
         name: "command-wf".to_string(),
         description: String::new(),
         builtin: false,
@@ -2211,16 +2204,14 @@ fn approved_fix_policy_structured_output_is_masked_for_parallel_contract_path() 
 #[test]
 fn approved_policy_injected_output_uses_sanitized_contract_payload_without_global_variables() {
     let mut step = make_test_step("fix", TestKind::Session, "Fix", vec![], None);
-    step.pass_output_from = Some(vec!["implementation_fix_policy".to_string()]);
+    let facet_contents = instruction_contents("Fix");
+    step.inputs = vec!["implementation_fix_policy".to_string()];
 
     let sanitized = serde_json::json!({
         "policy": "Use password=[REDACTED] only in examples.",
         "review_step": "code_review_parallel",
         "findings": []
     });
-    let vars: HashMap<String, String> = HashMap::new();
-    assert!(vars.is_empty());
-
     let mut outputs = HashMap::new();
     outputs.insert(
         "implementation_fix_policy".to_string(),
@@ -2235,11 +2226,13 @@ fn approved_policy_injected_output_uses_sanitized_contract_payload_without_globa
             completed_at: 1000.0,
         },
     );
-    let injected = workflow_prompt::inject_step_outputs("Fix", &step, &outputs, &[], &vars);
-    assert!(injected.contains("[REDACTED]"));
-    assert!(injected.contains("<step_output name=\"implementation_fix_policy\">"));
-    assert!(!injected.contains("<workflow_variables>"));
-    assert!(!injected.contains("secret123"));
+    let (_sys, prompt) =
+        workflow_prompt::build_step_prompt(&step, Some(&facet_contents), "run-1", None, &outputs)
+            .unwrap();
+    assert!(prompt.contains("[REDACTED]"));
+    assert!(prompt.contains("## input: implementation_fix_policy"));
+    assert!(!prompt.contains("<step_outputs>"));
+    assert!(!prompt.contains("secret123"));
 }
 
 #[test]
@@ -2262,7 +2255,8 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
     let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
     exec.workflow.nodes[0].artifact = Some("approved-fix-policy".to_string());
     let mut fix = make_test_step("fix", TestKind::Session, "Fix", vec![], None);
-    fix.pass_previous_response = Some(true);
+    let facet_contents = instruction_contents("Fix");
+    fix.inputs = vec!["review".to_string()];
     exec.workflow.nodes.push(fix);
     let outcome = WorkflowRuntimeService::apply_approval_application(
         &mut exec,
@@ -2282,7 +2276,6 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
     assert!(!state_json.contains("secret123"));
     assert!(!state_json.contains("ghp_abcdefghijklmnopqrstuvwxyz1234567890"));
     assert!(!state_json.contains("MY_TOKEN_VALUE_123456"));
-    assert!(!exec.workflow_variables.contains_key("approved_fix_policy"));
     assert!(!exec.step_history[0]
         .structured_output
         .as_ref()
@@ -2290,17 +2283,18 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
         .to_string()
         .contains("secret123"));
 
-    let injected = workflow_prompt::inject_step_outputs(
-        "Fix",
+    let (_sys, prompt) = workflow_prompt::build_step_prompt(
         &exec.workflow.nodes[exec.current_step_index],
+        Some(&facet_contents),
+        "run-1",
+        None,
         &exec.step_outputs,
-        &exec.step_history,
-        &exec.workflow_variables,
-    );
-    assert!(injected.contains("[REDACTED]"));
-    assert!(!injected.contains("<workflow_variables>"));
-    assert!(!injected.contains("secret123"));
-    assert!(!injected.contains("MY_TOKEN_VALUE_123456"));
+    )
+    .unwrap();
+    assert!(prompt.contains("[REDACTED]"));
+    assert!(!prompt.contains("<step_outputs>"));
+    assert!(!prompt.contains("secret123"));
+    assert!(!prompt.contains("MY_TOKEN_VALUE_123456"));
 }
 
 #[test]
@@ -2342,6 +2336,7 @@ fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
         workflow_name: exec.workflow.name.clone(),
         workflow_file_stem: "test-workflow".to_string(),
         worktree_path: "/repo".to_string(),
+        request: String::new(),
         workflow_definition: exec.workflow.clone(),
         timestamp: 1000.0,
     })
@@ -2434,12 +2429,12 @@ fn build_step_prompt_full_pipeline() {
     std::fs::create_dir_all(&contracts).unwrap();
     std::fs::write(
         policies.join("coding.md"),
-        "Coding policy for {{project_name}}.",
+        "Coding policy for {{ request }}.",
     )
     .unwrap();
     std::fs::write(
         instructions.join("impl.md"),
-        "Task: {{task}}\nImplement the feature.",
+        "Task: {{ request }}\nImplement the feature.",
     )
     .unwrap();
     std::fs::write(contracts.join("plan-doc.md"), "Output as markdown.").unwrap();
@@ -2448,45 +2443,29 @@ fn build_step_prompt_full_pipeline() {
     set_instruction_facet(&mut step, Some("impl".to_string()));
     set_policy_facet(&mut step, Some("coding".to_string()));
     step.artifact = Some("plan-doc".to_string());
-    step.pass_previous_response = Some(true);
-    resolve_node_facets_for_test(&mut step, base);
+    step.inputs = vec!["plan".to_string()];
+    let facet_contents = resolve_node_facets_for_test(&step, base);
 
     let mut outputs = HashMap::new();
     outputs.insert(
         "plan".to_string(),
         make_step_output("plan", "Plan output text", None),
     );
-    let history = vec![StepHistoryEntry {
-        step_name: "plan".to_string(),
-        completed_at: 2000.0,
-        result: None,
-        session_id: None,
-        token_usage: None,
-        structured_output: None,
-
-        run_index: 0,
-        child_outputs: None,
-        state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
-    }];
     let (sys, prompt) = workflow_prompt::build_step_prompt(
         &step,
+        Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
-        "/home/user/my-app",
         Some("Fix bug"),
         &outputs,
-        &history,
-        &HashMap::new(),
-        &HashMap::new(),
     )
     .unwrap();
 
-    // policy + artifact_contract → system_prompt with variable expansion
+    // policy + artifact_contract → system_prompt with request expansion
     let sys_str = sys.expect("system_prompt should be set");
-    assert!(sys_str.contains("Coding policy for my-app."));
+    assert!(sys_str.contains("Coding policy for Fix bug."));
     let instruction = workflow_prompt::render_step_workflow_instruction(
         &step,
-        "00000000-0000-0000-0000-000000000000",
-        "/home/user/my-app",
+        Some(&facet_contents),
         Some("Fix bug"),
         &HashMap::new(),
     )
@@ -2498,22 +2477,18 @@ fn build_step_prompt_full_pipeline() {
     // artifact_contract がある場合、作業本文の末尾にも Contract 由来の
     // 完了時アクションを置き、初回完了時に CLI 提出へ誘導する。
     assert!(prompt.contains("完了時の必須アクション"));
-    // CLI 名は起動環境別 alias で展開される（spec issues-1054）。
-    let cli_alias = WorkflowRuntimeService::resolve_releash_alias();
-    assert!(prompt.contains(&format!(
-        "{cli_alias} workflow output submit 00000000-0000-0000-0000-000000000000"
-    )));
+    assert!(prompt.contains("releash workflow output submit 00000000-0000-0000-0000-000000000000"));
     assert!(prompt.contains("--node build"));
     assert!(prompt.contains("--type plan-doc"));
     assert!(prompt.contains("--json"));
     assert!(!prompt.contains("--file"));
     assert!(!prompt.contains("+  --step"));
-    // inject_step_outputs: pass_previous_response includes plan output
-    assert!(prompt.contains("<step_output name=\"plan\">"));
+    // explicit inputs include plan output as JSON
+    assert!(prompt.contains("## input: plan"));
     assert!(prompt.contains("Plan output text"));
     assert!(
         prompt.find("完了時の必須アクション").unwrap() > prompt.find("Plan output text").unwrap(),
-        "completion action must remain after injected step outputs"
+        "completion action must remain after injected inputs"
     );
 }
 
@@ -2523,12 +2498,9 @@ fn build_step_prompt_no_facet_refs_returns_error() {
     set_session_facets(&mut step, FacetRefs::default());
     let result = workflow_prompt::build_step_prompt(
         &step,
-        "00000000-0000-0000-0000-000000000000",
-        "/repo",
         None,
-        &HashMap::new(),
-        &[],
-        &HashMap::new(),
+        "00000000-0000-0000-0000-000000000000",
+        None,
         &HashMap::new(),
     );
     assert!(result.is_err());
@@ -2547,15 +2519,12 @@ fn build_step_prompt_policy_only_system_prompt_set() {
     let mut step = make_test_step("review", TestKind::Session, "unused", vec![], None);
     set_policy_facet(&mut step, Some("review".to_string()));
     set_instruction_facet(&mut step, None);
-    resolve_node_facets_for_test(&mut step, tmp.path());
+    let facet_contents = resolve_node_facets_for_test(&step, tmp.path());
     let (sys, prompt) = workflow_prompt::build_step_prompt(
         &step,
+        Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
-        "/repo",
         None,
-        &HashMap::new(),
-        &[],
-        &HashMap::new(),
         &HashMap::new(),
     )
     .unwrap();
@@ -2581,15 +2550,12 @@ fn build_step_prompt_passes_composed_system_prompt_through() {
     set_policy_facet(&mut step, Some("coding".to_string()));
     step.artifact = Some("plan-doc".to_string());
     set_instruction_facet(&mut step, None);
-    resolve_node_facets_for_test(&mut step, tmp.path());
+    let facet_contents = resolve_node_facets_for_test(&step, tmp.path());
     let (sys, prompt) = workflow_prompt::build_step_prompt(
         &step,
+        Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
-        "/repo",
         None,
-        &HashMap::new(),
-        &[],
-        &HashMap::new(),
         &HashMap::new(),
     )
     .unwrap();
@@ -2599,22 +2565,14 @@ fn build_step_prompt_passes_composed_system_prompt_through() {
     assert!(!sys.is_empty(), "system_prompt must not be empty string");
     assert!(sys.contains("POLICY_BODY"));
     assert!(prompt.contains("完了時の必須アクション"));
-    // CLI 名は起動環境別 alias で展開される（spec issues-1054）。
-    let cli_alias = WorkflowRuntimeService::resolve_releash_alias();
-    assert!(prompt.contains(&format!(
-        "{cli_alias} workflow output submit 00000000-0000-0000-0000-000000000000"
-    )));
+    assert!(prompt.contains("releash workflow output submit 00000000-0000-0000-0000-000000000000"));
     assert!(prompt.contains("--node s"));
     assert!(prompt.contains("--type plan-doc"));
     assert!(!prompt.contains("+  --step"));
 }
 
 #[test]
-fn build_step_prompt_expands_workflow_declared_variables_in_user_message() {
-    // spec issues-1054「workflow 定義変数の facet 展開」:
-    // build_step_prompt は workflow_declared_variables を facet 本文の
-    // `{{vars.<name>}}` 展開に渡す。instruction は system context 経路へ渡す値として、
-    // policy は system_prompt として `{{vars.*}}` が宣言値に置換されることを検証する。
+fn build_step_prompt_expands_artifact_field_references_in_user_message() {
     let tmp = tempfile::TempDir::new().unwrap();
     let base = tmp.path();
     let instructions = base.join("instructions");
@@ -2623,12 +2581,12 @@ fn build_step_prompt_expands_workflow_declared_variables_in_user_message() {
     std::fs::create_dir_all(&policies).unwrap();
     std::fs::write(
         instructions.join("impl-vars.md"),
-        "Spec dir: {{vars.spec_dir}}\nEnv: {{vars.env}}",
+        "Spec dir: {{ authoring.spec_dir }}\nRequest: {{ request }}",
     )
     .unwrap();
     std::fs::write(
         policies.join("vars-policy.md"),
-        "Operate within {{vars.env}}.",
+        "Operate within {{ authoring.spec_dir }}.",
     )
     .unwrap();
 
@@ -2636,45 +2594,55 @@ fn build_step_prompt_expands_workflow_declared_variables_in_user_message() {
     set_instruction_facet(&mut step, Some("impl-vars".to_string()));
     set_policy_facet(&mut step, Some("vars-policy".to_string()));
     step.artifact = None;
-    resolve_node_facets_for_test(&mut step, base);
+    step.inputs = vec!["authoring".to_string()];
+    let facet_contents = resolve_node_facets_for_test(&step, base);
 
-    let mut declared = HashMap::new();
-    declared.insert("spec_dir".to_string(), "docs/specs/issues-1054".to_string());
-    declared.insert("env".to_string(), "production".to_string());
+    let mut outputs = HashMap::new();
+    outputs.insert(
+        "authoring".to_string(),
+        StepOutput {
+            step_name: "authoring".to_string(),
+            run_index: 1,
+            session_id: None,
+            result: None,
+            structured_output: Some(serde_json::json!({
+                "spec_dir": "docs/specs/issues-1326"
+            })),
+            artifact_contract: Some("spec-directory".to_string()),
+            token_usage: None,
+            completed_at: 1.0,
+        },
+    );
 
     let (sys, prompt) = workflow_prompt::build_step_prompt(
         &step,
+        Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
-        "/repo",
-        None,
-        &HashMap::new(),
-        &[],
-        &HashMap::new(),
-        &declared,
+        Some("implement the authored spec"),
+        &outputs,
     )
     .unwrap();
     let instruction = workflow_prompt::render_step_workflow_instruction(
         &step,
-        "00000000-0000-0000-0000-000000000000",
-        "/repo",
-        None,
-        &declared,
+        Some(&facet_contents),
+        Some("implement the authored spec"),
+        &outputs,
     )
     .expect("workflow instruction");
 
-    // workflow instruction 側の `{{vars.spec_dir}}` / `{{vars.env}}` が宣言値に展開される
-    assert!(instruction.contains("Spec dir: docs/specs/issues-1054"));
-    assert!(instruction.contains("Env: production"));
-    assert!(prompt.contains("Spec dir: docs/specs/issues-1054"));
-    assert!(prompt.contains("Env: production"));
+    assert!(instruction.contains("Spec dir: docs/specs/issues-1326"));
+    assert!(instruction.contains("Request: implement the authored spec"));
+    assert!(prompt.contains("Spec dir: docs/specs/issues-1326"));
+    assert!(prompt.contains("Request: implement the authored spec"));
+    assert!(prompt.contains("## input: authoring"));
     // 未展開トークンが残らない
-    assert!(!prompt.contains("{{vars.spec_dir}}"));
-    assert!(!prompt.contains("{{vars.env}}"));
+    assert!(!prompt.contains("{{ authoring.spec_dir }}"));
+    assert!(!prompt.contains("{{ request }}"));
 
-    // system_prompt 側でも `{{vars.env}}` が展開される
+    // system_prompt 側でも `{{ authoring.spec_dir }}` が展開される
     let sys_str = sys.expect("system_prompt should be set");
-    assert!(sys_str.contains("Operate within production."));
-    assert!(!sys_str.contains("{{vars.env}}"));
+    assert!(sys_str.contains("Operate within docs/specs/issues-1326."));
+    assert!(!sys_str.contains("{{ authoring.spec_dir }}"));
 }
 
 // ---- dispatch_session_start (SessionStartGate 経由のテストダブル検証) ----
@@ -2780,17 +2748,14 @@ async fn dispatch_session_start_passes_composed_system_prompt_to_gate() {
     set_policy_facet(&mut step, Some("p".to_string()));
     step.artifact = Some("c".to_string());
     set_instruction_facet(&mut step, None);
-    resolve_node_facets_for_test(&mut step, base);
+    let facet_contents = resolve_node_facets_for_test(&step, base);
 
     // build_step_prompt → dispatch_session_start の経路をそのまま再現する。
     let (system_prompt, _prompt) = workflow_prompt::build_step_prompt(
         &step,
+        Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
-        "/repo",
         None,
-        &HashMap::new(),
-        &[],
-        &HashMap::new(),
         &HashMap::new(),
     )
     .unwrap();
@@ -2851,7 +2816,7 @@ async fn build_and_dispatch_step_session_forwards_composed_system_prompt_through
     set_policy_facet(&mut step, Some("p".to_string()));
     step.artifact = Some("c".to_string());
     set_instruction_facet(&mut step, None);
-    resolve_node_facets_for_test(&mut step, base);
+    let facet_contents = resolve_node_facets_for_test(&step, base);
 
     let records = Arc::new(std::sync::Mutex::new(Vec::new()));
     let gate = RecordingSessionStartGate {
@@ -2861,13 +2826,12 @@ async fn build_and_dispatch_step_session_forwards_composed_system_prompt_through
     let prompt = WorkflowRuntimeService::build_and_dispatch_step_session(
         &gate,
         &step,
+        Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
         "step-session-id",
         "/repo",
         None,
         None,
-        &HashMap::new(),
-        &[],
         &HashMap::new(),
     )
     .await
@@ -2908,15 +2872,12 @@ async fn dispatch_session_start_passes_none_when_no_facets() {
 
     let mut step = make_test_step("s", TestKind::Session, "unused", vec![], None);
     set_instruction_facet(&mut step, Some("only-instr".to_string()));
-    resolve_node_facets_for_test(&mut step, tmp.path());
+    let facet_contents = resolve_node_facets_for_test(&step, tmp.path());
     let (system_prompt, _prompt) = workflow_prompt::build_step_prompt(
         &step,
+        Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
-        "/repo",
         None,
-        &HashMap::new(),
-        &[],
-        &HashMap::new(),
         &HashMap::new(),
     )
     .unwrap();
@@ -3103,7 +3064,6 @@ fn insert_single_step_execution(
     step: NodeDefinition,
 ) {
     let workflow = Workflow {
-        variables: Default::default(),
         name: "regression-workflow".to_string(),
         description: "regression test".to_string(),
         builtin: false,
@@ -3124,7 +3084,6 @@ fn insert_single_step_execution(
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -3133,6 +3092,19 @@ fn insert_single_step_execution(
         },
     };
     execs.insert(exec.id.clone(), exec);
+}
+
+async fn seed_single_node_facet_contents_for_test(
+    engine: &WorkflowRuntimeService,
+    node_name: &str,
+    contents: crate::adaptor::gateway::workflow::facet::FacetContents,
+) {
+    engine.run_facet_contents.lock().await.insert(
+        "exec-id".to_string(),
+        crate::adaptor::gateway::workflow::facet::WorkflowFacetContents::from_node_for_test(
+            node_name, contents,
+        ),
+    );
 }
 
 #[tokio::test]
@@ -3251,13 +3223,14 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
     let instructions = tmp.path().join("instructions");
     std::fs::create_dir_all(&instructions).unwrap();
     std::fs::write(instructions.join("ok.md"), "hello").unwrap();
-    let mut step = make_test_step("ok-step", TestKind::Session, "ok", vec![], None);
-    resolve_node_facets_for_test(&mut step, tmp.path());
+    let step = make_test_step("ok-step", TestKind::Session, "ok", vec![], None);
+    let facet_contents = resolve_node_facets_for_test(&step, tmp.path());
 
     {
         let mut execs = engine.executions.lock().await;
         insert_single_step_execution(&mut execs, step);
     }
+    seed_single_node_facet_contents_for_test(&engine, "ok-step", facet_contents).await;
 
     let deps = RecordingStepSessionDeps::default();
     engine
@@ -3326,12 +3299,13 @@ async fn start_step_session_with_deps_keeps_workflow_instruction_outside_step_co
         None,
     );
     set_instruction_facet(&mut step, Some("impl".to_string()));
-    resolve_node_facets_for_test(&mut step, tmp.path());
+    let facet_contents = resolve_node_facets_for_test(&step, tmp.path());
 
     {
         let mut execs = engine.executions.lock().await;
         insert_single_step_execution(&mut execs, step);
     }
+    seed_single_node_facet_contents_for_test(&engine, "instruction-step", facet_contents).await;
 
     let deps = RecordingStepSessionDeps::default();
     engine
@@ -3367,13 +3341,14 @@ async fn start_step_session_with_deps_propagates_node_session_append_failure() {
     let instructions = tmp.path().join("instructions");
     std::fs::create_dir_all(&instructions).unwrap();
     std::fs::write(instructions.join("ok.md"), "hello").unwrap();
-    let mut step = make_test_step("ok-step", TestKind::Session, "ok", vec![], None);
-    resolve_node_facets_for_test(&mut step, tmp.path());
+    let step = make_test_step("ok-step", TestKind::Session, "ok", vec![], None);
+    let facet_contents = resolve_node_facets_for_test(&step, tmp.path());
 
     {
         let mut execs = engine.executions.lock().await;
         insert_single_step_execution(&mut execs, step);
     }
+    seed_single_node_facet_contents_for_test(&engine, "ok-step", facet_contents).await;
 
     let deps = RecordingStepSessionDeps::default();
     deps.fail_append_node_session_started();
@@ -3438,17 +3413,14 @@ fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
     ps.facets.knowledge = Some("know".to_string());
     ps.facets.instruction = Some("inst".to_string());
     ps.artifact = Some("oc".to_string());
-    resolve_child_facets_for_test(&mut ps, base);
+    let facet_contents = resolve_child_facets_for_test(&ps, base);
     let (system_prompt, user_message) = workflow_prompt::build_parallel_step_prompt(
         &ps,
+        Some(&facet_contents),
         "11111111-1111-1111-1111-111111111111",
-        "/repo",
         None,
         &HashMap::new(),
-        false,
         None,
-        &HashMap::new(),
-        &HashMap::new(),
     )
     .unwrap();
 
@@ -3463,19 +3435,16 @@ fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
     assert!(user_message.contains("PARALLEL_INSTRUCTION_BODY"));
     let instruction = workflow_prompt::render_child_workflow_instruction(
         &ps,
-        "11111111-1111-1111-1111-111111111111",
-        "/repo",
+        Some(&facet_contents),
         None,
         &HashMap::new(),
+        None,
     )
     .expect("parallel workflow instruction");
     assert!(instruction.contains("PARALLEL_INSTRUCTION_BODY"));
     assert!(user_message.contains("完了時の必須アクション"));
-    // CLI 名は起動環境別 alias で展開される（spec issues-1054）。
-    let cli_alias = WorkflowRuntimeService::resolve_releash_alias();
-    assert!(user_message.contains(&format!(
-        "{cli_alias} workflow output submit 11111111-1111-1111-1111-111111111111"
-    )));
+    assert!(user_message
+        .contains("releash workflow output submit 11111111-1111-1111-1111-111111111111"));
     assert!(user_message.contains("--node child"));
     assert!(user_message.contains("--type oc"));
     assert!(!user_message.contains("+  --step"));
@@ -3495,17 +3464,14 @@ fn build_parallel_step_prompt_no_policy_or_contract_returns_none_system_prompt()
 
     let mut ps = make_parallel_step("child");
     ps.facets.instruction = Some("inst".to_string());
-    resolve_child_facets_for_test(&mut ps, base);
+    let facet_contents = resolve_child_facets_for_test(&ps, base);
     let (system_prompt, user_message) = workflow_prompt::build_parallel_step_prompt(
         &ps,
+        Some(&facet_contents),
         "11111111-1111-1111-1111-111111111111",
-        "/repo",
         None,
         &HashMap::new(),
-        false,
         None,
-        &HashMap::new(),
-        &HashMap::new(),
     )
     .unwrap();
 
@@ -3513,10 +3479,10 @@ fn build_parallel_step_prompt_no_policy_or_contract_returns_none_system_prompt()
     assert!(user_message.contains("INSTR"));
     let instruction = workflow_prompt::render_child_workflow_instruction(
         &ps,
-        "11111111-1111-1111-1111-111111111111",
-        "/repo",
+        Some(&facet_contents),
         None,
         &HashMap::new(),
+        None,
     )
     .expect("parallel workflow instruction");
     assert_eq!(instruction, "INSTR");
@@ -3531,7 +3497,6 @@ fn make_approval_exec(
     WorkflowExecution {
         id: "exec-1".to_string(),
         workflow: Workflow {
-            variables: Default::default(),
             name: "test".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -3549,7 +3514,6 @@ fn make_approval_exec(
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4066,7 +4030,6 @@ fn reject_comment_flows_through_approval_to_transition_and_history() {
     let mut exec = WorkflowExecution {
         id: "exec-1".to_string(),
         workflow: Workflow {
-            variables: Default::default(),
             name: "review-fix".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -4083,7 +4046,7 @@ fn reject_comment_flows_through_approval_to_transition_and_history() {
                 {
                     let mut fix =
                         make_test_step("fix", TestKind::Session, "Fix the issues", vec![], None);
-                    fix.pass_previous_response = Some(true);
+                    fix.inputs = vec!["review".to_string()];
                     fix
                 },
             ],
@@ -4099,7 +4062,6 @@ fn reject_comment_flows_through_approval_to_transition_and_history() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4148,15 +4110,18 @@ fn reject_comment_flows_through_approval_to_transition_and_history() {
     assert_eq!(exec.current_step_index, 1);
     assert_eq!(exec.workflow.nodes[exec.current_step_index].name, "fix");
 
-    let injected = workflow_prompt::inject_step_outputs(
-        "Draft next policy",
+    exec.workflow.nodes[exec.current_step_index].inputs = vec!["review".to_string()];
+    let facet_contents = instruction_contents("Fix the issues");
+    let (_sys, prompt) = workflow_prompt::build_step_prompt(
         &exec.workflow.nodes[exec.current_step_index],
+        Some(&facet_contents),
+        "run-1",
+        None,
         &exec.step_outputs,
-        &exec.step_history,
-        &HashMap::new(),
-    );
-    assert!(injected.contains("\"decision\": \"reject\""));
-    assert!(injected.contains("\"comment\": \"Fix the naming convention\""));
+    )
+    .unwrap();
+    assert!(prompt.contains("\"decision\": \"reject\""));
+    assert!(prompt.contains("\"comment\": \"Fix the naming convention\""));
 }
 
 #[test]
@@ -4164,7 +4129,6 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
     let mut exec = WorkflowExecution {
         id: "exec-1".to_string(),
         workflow: Workflow {
-            variables: Default::default(),
             name: "auto-approve".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -4193,7 +4157,6 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4220,7 +4183,6 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
     assert_eq!(exec.current_step_index, 1);
     assert_eq!(exec.step_history.len(), 1);
     assert_eq!(*exec.step_execution_counts.get("fix").unwrap(), 1);
-    assert!(!exec.workflow_variables.contains_key("approved_fix_policy"));
 
     let duplicate = WorkflowRuntimeService::apply_approval_application(
         &mut exec,
@@ -4248,7 +4210,6 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
     let mut exec = WorkflowExecution {
         id: "exec-auto-approve".to_string(),
         workflow: Workflow {
-            variables: Default::default(),
             name: "auto-approve-path".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -4261,7 +4222,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
                         vec![],
                     );
                     step.artifact = Some("approved-fix-policy".to_string());
-                    step.pass_output_from = Some(vec!["code_review_parallel".to_string()]);
+                    step.inputs = vec!["code_review_parallel".to_string()];
                     step
                 },
                 make_test_step("fix", TestKind::Session, "Fix", vec![], None),
@@ -4288,7 +4249,6 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4334,7 +4294,6 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
             .unwrap()["policy"],
         "Fix only reviewed findings."
     );
-    assert_eq!(exec.workflow_variables.get("approved_fix_policy"), None);
     assert_eq!(exec.step_execution_counts.get("fix"), Some(&1));
 
     let duplicate = WorkflowRuntimeService::apply_approval_application(
@@ -4372,7 +4331,6 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
     let exec = WorkflowExecution {
         id: "exec-auto-approve".to_string(),
         workflow: Workflow {
-            variables: Default::default(),
             name: "auto-approve-execute-outcome".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -4395,7 +4353,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
                         vec![],
                     );
                     step.artifact = Some("approved-fix-policy".to_string());
-                    step.pass_output_from = Some(vec!["code_review_parallel".to_string()]);
+                    step.inputs = vec!["code_review_parallel".to_string()];
                     step
                 },
                 fix_step,
@@ -4412,7 +4370,6 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4520,7 +4477,6 @@ fn make_normal_step_exec_with_stall_observation() -> WorkflowExecution {
     let mut exec = WorkflowExecution {
         id: "normal-stall-clear".to_string(),
         workflow: Workflow {
-            variables: Default::default(),
             name: "normal-stall-clear-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -4541,7 +4497,6 @@ fn make_normal_step_exec_with_stall_observation() -> WorkflowExecution {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4597,7 +4552,6 @@ fn make_step_history_entry_saves_contract_result_to_step_output() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4648,7 +4602,6 @@ fn make_step_history_entry_no_structured_output_no_step_output() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4668,7 +4621,6 @@ fn make_step_history_entry_no_structured_output_no_step_output() {
 
 fn make_on_exhausted_workflow() -> Workflow {
     Workflow {
-        variables: Default::default(),
         name: "on-exhausted-test".to_string(),
         description: "Test on_exhausted".to_string(),
         builtin: false,
@@ -4734,7 +4686,6 @@ fn on_exhausted_transitions_to_fallback_step() {
         current_step_token_usage: TokenUsage::default(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4779,7 +4730,6 @@ fn on_exhausted_none_fails_workflow() {
         current_step_token_usage: TokenUsage::default(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4813,7 +4763,6 @@ fn check_cycle_guard_exceeded_with_on_exhausted() {
         current_step_token_usage: TokenUsage::default(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4854,7 +4803,6 @@ fn resets_cycle_for_clears_execution_count() {
         current_step_token_usage: TokenUsage::default(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4894,7 +4842,6 @@ fn resets_cycle_for_allows_reloop_after_reset() {
         current_step_token_usage: TokenUsage::default(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -4933,7 +4880,6 @@ fn resets_cycle_for_allows_reloop_after_reset() {
 fn on_exhausted_chain_transitions() {
     // step_a → (exhausted) → step_b → (exhausted) → step_c
     let wf = Workflow {
-        variables: Default::default(),
         name: "chain-test".to_string(),
         description: "test".to_string(),
         builtin: false,
@@ -4981,7 +4927,6 @@ fn on_exhausted_chain_transitions() {
         current_step_token_usage: TokenUsage::default(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -5000,7 +4945,6 @@ fn on_exhausted_chain_transitions() {
 fn on_exhausted_chain_to_non_exhausted_fails() {
     // step_a → (exhausted) → step_b (exhausted, no on_exhausted) → Failed
     let wf = Workflow {
-        variables: Default::default(),
         name: "chain-fail-test".to_string(),
         description: "test".to_string(),
         builtin: false,
@@ -5047,7 +4991,6 @@ fn on_exhausted_chain_to_non_exhausted_fails() {
         current_step_token_usage: TokenUsage::default(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -5133,7 +5076,6 @@ fn apply_transition_to_parallel_block_clears_block_and_children() {
         None,
     );
     let wf = Workflow {
-        variables: Default::default(),
         name: "loop-parallel".to_string(),
         description: "test".to_string(),
         builtin: false,
@@ -5173,7 +5115,6 @@ fn apply_transition_to_parallel_block_clears_block_and_children() {
         current_step_token_usage: TokenUsage::default(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -5455,7 +5396,6 @@ async fn engine_run_id_consistency_across_execution_and_run_store_metadata() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: worktree_path.to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -5538,7 +5478,6 @@ async fn engine_validate_start_rejects_duplicate_active_run_on_same_worktree() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: worktree_path.to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -5615,7 +5554,6 @@ async fn engine_state_transitions_sync_to_run_store_active_and_completed() {
         step_states: HashMap::new(),
         step_outputs: HashMap::new(),
         active_parallel_steps: vec![],
-        workflow_variables: HashMap::new(),
         stall_observations: Vec::new(),
         approval_operations: None,
         started_at: 100.0,
@@ -5665,7 +5603,6 @@ async fn engine_state_transitions_sync_to_run_store_active_and_completed() {
 
 fn make_minimal_workflow() -> Workflow {
     Workflow {
-        variables: Default::default(),
         name: "engine-test-wf".to_string(),
         description: "minimal".to_string(),
         builtin: false,
@@ -5687,7 +5624,6 @@ fn make_minimal_workflow() -> Workflow {
 fn validate_workflow_shape_rejects_empty_and_bash_workflows_without_side_effects() {
     // 空 nodes は InvalidWorkflow
     let empty = Workflow {
-        variables: Default::default(),
         name: "wf".to_string(),
         description: "".to_string(),
         builtin: false,
@@ -5701,7 +5637,6 @@ fn validate_workflow_shape_rejects_empty_and_bash_workflows_without_side_effects
 
     // bash node を含む workflow も InvalidWorkflow
     let bash = Workflow {
-        variables: Default::default(),
         name: "wf".to_string(),
         description: "".to_string(),
         builtin: false,
@@ -5780,7 +5715,6 @@ async fn handle_auto_complete_fixture_uses_run_id_as_executions_key() {
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: "/wt/auto-complete".to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -5822,7 +5756,6 @@ fn make_exec_with(
         step_outputs: HashMap::new(),
         task: None,
         parallel_run: None,
-        workflow_variables: HashMap::new(),
         current_stall_observations: Vec::new(),
         worktree_path: worktree_path.to_string(),
         workflow_defaults: WorkflowDefaults {
@@ -6086,7 +6019,6 @@ async fn run_store_completed_listing_includes_completed_failed_aborted_via_autho
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
             active_parallel_steps: vec![],
-            workflow_variables: HashMap::new(),
             stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 100.0,
@@ -6315,6 +6247,12 @@ async fn start_workflow_core_records_run_id_and_rejects_duplicate_worktree() {
     let (exec_id, exec_worktree) = {
         let execs = engine.executions.lock().await;
         let exec = execs.get(&run_id).unwrap();
+        let request_output = exec
+            .step_outputs
+            .get(crate::domain::workflow::services::reference::REQUEST_ARTIFACT)
+            .and_then(|output| output.structured_output.as_ref())
+            .cloned();
+        assert_eq!(request_output, Some(serde_json::json!("task-x")));
         (exec.id.clone(), exec.worktree_path.clone())
     };
     let active = engine.list_active_runs().await;
@@ -6367,6 +6305,25 @@ async fn start_workflow_core_records_run_id_and_rejects_duplicate_worktree() {
         duplicate,
         Err(WorkflowEngineError::AlreadyActive(_))
     ));
+
+    let empty_request_run_id = engine
+        .start_workflow_common_core_for_test(
+            make_minimal_workflow(),
+            "/wt/start-empty-request".to_string(),
+            None,
+            TriggerSource::DesktopUi,
+            now + 2.0,
+        )
+        .await
+        .unwrap();
+    let execs = engine.executions.lock().await;
+    let empty_request = execs
+        .get(&empty_request_run_id)
+        .unwrap()
+        .step_outputs
+        .get(crate::domain::workflow::services::reference::REQUEST_ARTIFACT)
+        .and_then(|output| output.structured_output.as_ref());
+    assert_eq!(empty_request, Some(&serde_json::json!("")));
 }
 
 /// Spec issues-1011 finding 14: 同一 worktree への重複起動は reservation 段階で拒否され、
@@ -6515,7 +6472,6 @@ async fn run_store_terminal_statuses_propagate_status_field_in_completed_listing
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
             active_parallel_steps: vec![],
-            workflow_variables: HashMap::new(),
             stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 100.0,
@@ -6817,7 +6773,6 @@ mod dispatch_boundary_tests {
 
     fn make_approval_only_workflow() -> Workflow {
         Workflow {
-            variables: Default::default(),
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -6828,7 +6783,6 @@ mod dispatch_boundary_tests {
 
     fn make_rejectable_approval_workflow() -> Workflow {
         Workflow {
-            variables: Default::default(),
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -6872,7 +6826,6 @@ mod dispatch_boundary_tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
-            workflow_variables: HashMap::new(),
             current_stall_observations: Vec::new(),
             workflow_defaults: WorkflowDefaults {
                 backend_id: Some("claude".to_string()),
@@ -7058,6 +7011,7 @@ mod dispatch_boundary_tests {
                     workflow_name: exec.workflow.name.clone(),
                     workflow_file_stem: exec.workflow.name.clone(),
                     worktree_path: exec.worktree_path.clone(),
+                    request: String::new(),
                     workflow_definition: exec.workflow.clone(),
                     timestamp: exec.started_at,
                 },
@@ -7251,7 +7205,6 @@ mod dispatch_boundary_tests {
         ));
 
         let workflow = Workflow {
-            variables: Default::default(),
             name: "parallel-prompt-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -7331,7 +7284,6 @@ mod dispatch_boundary_tests {
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/parallel-setup-rollback";
         let workflow = Workflow {
-            variables: Default::default(),
             name: "parallel-setup-rollback-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -7441,30 +7393,25 @@ mod dispatch_boundary_tests {
     }
 
     /// Spec [04]: atomic mutation 境界。mutation 直前の `WorkflowExecution` snapshot を
-    /// 一括復元することで、履歴・変数・state・current_step_index を含む全フィールドが
+    /// 一括復元することで、履歴・state・current_step_index を含む全フィールドが
     /// 元に戻ることを担保する（部分 rollback helper を使わない構造）。
     #[tokio::test]
     async fn approval_snapshot_rollback_restores_workflow_execution_fully() {
         let engine = WorkflowRuntimeService::new_for_test();
         let run_id = uuid::Uuid::new_v4().to_string();
 
-        let mut exec = make_waiting_approval_execution(&run_id, "/wt/atomic");
-        exec.workflow_variables
-            .insert("preserved".to_string(), "before".to_string());
+        let exec = make_waiting_approval_execution(&run_id, "/wt/atomic");
         let before_history_len = exec.step_history.len();
         let before_step_index = exec.current_step_index;
         let before_state = exec.state.clone();
-        let before_variables = exec.workflow_variables.clone();
         let snapshot_before = exec.clone();
 
         engine.executions.lock().await.insert(run_id.clone(), exec);
 
-        // mutation を適用（apply_approval_application + workflow_variables.extend）
+        // mutation を適用
         {
             let mut execs = engine.executions.lock().await;
             let exec = execs.get_mut(&run_id).unwrap();
-            exec.workflow_variables
-                .insert("after_only".to_string(), "x".to_string());
             let _ = WorkflowRuntimeService::apply_approval_application(
                 exec,
                 &ApprovalDecision::Approve,
@@ -7476,7 +7423,6 @@ mod dispatch_boundary_tests {
             )
             .unwrap();
             assert_ne!(exec.state, before_state);
-            assert!(exec.workflow_variables.contains_key("after_only"));
         }
 
         // event append 失敗時の一括復元（handle_approval 内と同じ操作）。
@@ -7499,14 +7445,6 @@ mod dispatch_boundary_tests {
             before_history_len,
             "step_history.len() が復元される"
         );
-        assert!(
-            !restored.workflow_variables.contains_key("after_only"),
-            "mutation 後に追加された workflow_variables が消える"
-        );
-        assert_eq!(
-            restored.workflow_variables, before_variables,
-            "workflow_variables 全体が mutation 前と等価"
-        );
     }
 
     fn dispatch_internal_test_snapshot(run_id: &str, workflow_name: &str) -> WorkflowState {
@@ -7521,7 +7459,6 @@ mod dispatch_boundary_tests {
             step_history: vec![],
             step_execution_counts: HashMap::new(),
             workflow_definition: crate::adaptor::gateway::workflow::schema::Workflow {
-                variables: Default::default(),
                 name: workflow_name.to_string(),
                 description: String::new(),
                 builtin: false,
@@ -7532,7 +7469,6 @@ mod dispatch_boundary_tests {
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
             active_parallel_steps: vec![],
-            workflow_variables: HashMap::new(),
             stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 0.0,
@@ -8104,7 +8040,6 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/stale-policy-terminal";
         let step_session_id = "stale-step-session";
         let workflow = Workflow {
-            variables: Default::default(),
             name: "stale-policy-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -8191,7 +8126,6 @@ mod dispatch_boundary_tests {
         let failed_child_session_id = "parallel-child-failed-session";
         let interrupted_child_session_id = "parallel-child-interrupted-session";
         let workflow = Workflow {
-            variables: Default::default(),
             name: "parallel-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -8318,7 +8252,6 @@ mod dispatch_boundary_tests {
         let completed_child_session_id = "parallel-child-stall-completed-session";
         let waiting_child_session_id = "parallel-child-stall-waiting-session";
         let workflow = Workflow {
-            variables: Default::default(),
             name: "parallel-stall-success-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -8435,7 +8368,6 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/parallel-delegated-failure";
         let successful_child_session_id = "parallel-child-success-session";
         let workflow = Workflow {
-            variables: Default::default(),
             name: "parallel-delegated-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -8563,7 +8495,6 @@ mod dispatch_boundary_tests {
         let mut review_a = make_parallel_step("review-a");
         review_a.artifact = Some("review-verdict".to_string());
         let workflow = Workflow {
-            variables: Default::default(),
             name: "parallel-zero-refusal-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -8719,7 +8650,6 @@ mod dispatch_boundary_tests {
         let refused_child_session_id = "parallel-child-refusal-append-failure-session";
         let waiting_child_session_id = "parallel-child-still-running-session";
         let workflow = Workflow {
-            variables: Default::default(),
             name: "parallel-partial-append-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -8969,7 +8899,6 @@ mod dispatch_boundary_tests {
             step_history: vec![],
             step_execution_counts: HashMap::new(),
             workflow_definition: crate::adaptor::gateway::workflow::schema::Workflow {
-                variables: Default::default(),
                 name: "fail-wf".to_string(),
                 description: String::new(),
                 builtin: false,
@@ -8980,7 +8909,6 @@ mod dispatch_boundary_tests {
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
             active_parallel_steps: vec![],
-            workflow_variables: HashMap::new(),
             stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 900.0,
@@ -9163,12 +9091,20 @@ mod dispatch_boundary_tests {
             let mut exec = make_waiting_approval_execution(&run_id, &format!("/wt/{label}"));
             exec.state = terminal_state;
             engine.executions.lock().await.insert(run_id.clone(), exec);
+            engine.run_facet_contents.lock().await.insert(
+                run_id.clone(),
+                crate::adaptor::gateway::workflow::facet::WorkflowFacetContents::default(),
+            );
 
             engine.release_terminal_execution(&run_id).await;
 
             assert!(
                 !engine.contains_execution_for_test(&run_id).await,
                 "{label} terminal execution must be removed"
+            );
+            assert!(
+                !engine.run_facet_contents.lock().await.contains_key(&run_id),
+                "{label} terminal facet contents must be removed"
             );
         }
 
@@ -9180,12 +9116,24 @@ mod dispatch_boundary_tests {
             .lock()
             .await
             .insert(active_run_id.clone(), active);
+        engine.run_facet_contents.lock().await.insert(
+            active_run_id.clone(),
+            crate::adaptor::gateway::workflow::facet::WorkflowFacetContents::default(),
+        );
 
         engine.release_terminal_execution(&active_run_id).await;
 
         assert!(
             engine.contains_execution_for_test(&active_run_id).await,
             "active execution must not be released"
+        );
+        assert!(
+            engine
+                .run_facet_contents
+                .lock()
+                .await
+                .contains_key(&active_run_id),
+            "active facet contents must not be released"
         );
         assert_eq!(engine.executions_len_for_test().await, 1);
     }
@@ -9209,6 +9157,7 @@ mod dispatch_boundary_tests {
             workflow_name: workflow.name.clone(),
             workflow_file_stem: "boundary-wf".to_string(),
             worktree_path: worktree_path.to_string(),
+            request: String::new(),
             workflow_definition: workflow.clone(),
             timestamp: 1000.0,
         })
@@ -9380,8 +9329,6 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/append-fail";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
         exec.current_session_id = None;
-        exec.workflow_variables
-            .insert("k".to_string(), "v_before".to_string());
         let snapshot_before = exec.clone();
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
 
@@ -9415,11 +9362,6 @@ mod dispatch_boundary_tests {
         assert_eq!(
             restored.step_history.len(),
             snapshot_before.step_history.len()
-        );
-        assert_eq!(
-            restored.workflow_variables.get("k").map(|s| s.as_str()),
-            Some("v_before"),
-            "workflow_variables も mutation 前の値に戻る"
         );
         drop(execs);
 
@@ -9544,10 +9486,69 @@ mod dispatch_boundary_tests {
                 event,
                 WorkflowEvent::RunStarted {
                     workflow_file_stem,
+                    request,
                     ..
-                } if workflow_file_stem == &stem
+                } if workflow_file_stem == &stem && request == "start me"
             )
         }));
+    }
+
+    /// Task 1326 regression: reservation 後の validate_start 失敗 rollback で、
+    /// runtime-local facet read model を残さない。
+    #[tokio::test]
+    async fn start_run_validate_start_failure_releases_run_facet_contents() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let run_store_dir = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(run_store_dir.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
+        let worktree = "/wt/start-validate-start-failure".to_string();
+        let existing_run_id = uuid::Uuid::new_v4().to_string();
+        let mut existing =
+            make_exec_with(&existing_run_id, &worktree, WorkflowExecutionState::Running);
+        existing.workflow.name = "existing-active-wf".to_string();
+        engine
+            .executions
+            .lock()
+            .await
+            .insert(existing_run_id.clone(), existing);
+
+        let stem = crate::adaptor::gateway::workflow::builtin::list_builtin_workflows()
+            .into_iter()
+            .next()
+            .expect("at least one builtin workflow must exist")
+            .name;
+        let workflow = engine.resolve_start_run_workflow(&stem).await.unwrap();
+        let result = engine
+            .start_resolved_workflow(
+                app.handle(),
+                &session_store,
+                &handles,
+                workflow,
+                worktree,
+                &stem,
+                Some("start with validate_start failure".to_string()),
+                TriggerSource::DesktopUi,
+                crate::domain::agent_session::PermissionMode::Edit,
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::AlreadyActive(_))));
+        assert!(
+            engine.run_facet_contents.lock().await.is_empty(),
+            "validate_start rollback must release run_facet_contents"
+        );
+        assert!(
+            engine.list_active_runs().await.is_empty(),
+            "failed reservation must be cancelled"
+        );
+        assert!(
+            engine.contains_execution_for_test(&existing_run_id).await,
+            "pre-existing execution must remain"
+        );
+        assert_eq!(engine.executions_len_for_test().await, 1);
     }
 
     /// Spec [04] rollback: StartRun の RunStarted append が失敗した場合、
@@ -9592,6 +9593,10 @@ mod dispatch_boundary_tests {
 
         assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
         assert!(engine.executions.lock().await.is_empty());
+        assert!(
+            engine.run_facet_contents.lock().await.is_empty(),
+            "RunStarted append rollback must release run_facet_contents"
+        );
         assert!(engine.list_active_runs().await.is_empty());
         let sessions = session_store
             .list_worktree_sessions(&dispatch_data_dir(app.handle()), &worktree)
@@ -9630,6 +9635,7 @@ mod dispatch_boundary_tests {
                 workflow_name: workflow.name.clone(),
                 workflow_file_stem: workflow.name.clone(),
                 worktree_path: worktree_path.to_string(),
+                request: String::new(),
                 workflow_definition: workflow,
                 timestamp: 1000.0,
             })
@@ -9719,6 +9725,7 @@ mod dispatch_boundary_tests {
                 workflow_name: workflow.name.clone(),
                 workflow_file_stem: workflow.name.clone(),
                 worktree_path: worktree_path.to_string(),
+                request: String::new(),
                 workflow_definition: workflow,
                 timestamp: 1000.0,
             })
@@ -9765,7 +9772,6 @@ mod dispatch_boundary_tests {
     #[test]
     fn make_aborted_parallel_history_entry_snapshots_mixed_child_states() {
         let workflow = Workflow {
-            variables: Default::default(),
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -9816,7 +9822,6 @@ mod dispatch_boundary_tests {
                     },
                 ],
             }),
-            workflow_variables: HashMap::new(),
             current_stall_observations: Vec::new(),
             workflow_defaults: WorkflowDefaults {
                 backend_id: None,
@@ -10622,8 +10627,6 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/run-store-sync-rollback";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
         exec.current_session_id = None;
-        exec.workflow_variables
-            .insert("keep".to_string(), "before".to_string());
         let snapshot_before = exec.clone();
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
 
@@ -10647,10 +10650,6 @@ mod dispatch_boundary_tests {
         let execs = engine.executions.lock().await;
         let restored = execs.get(&run_id).unwrap();
         assert_eq!(restored.state, WorkflowExecutionState::WaitingApproval);
-        assert_eq!(
-            restored.workflow_variables.get("keep").map(String::as_str),
-            Some("before")
-        );
         assert_eq!(
             restored.step_history.len(),
             snapshot_before.step_history.len()
@@ -10789,8 +10788,8 @@ mod dispatch_boundary_tests {
             workflow_name: "wf".to_string(),
             workflow_file_stem: "wf".to_string(),
             worktree_path: "/wt/a".to_string(),
+            request: String::new(),
             workflow_definition: Workflow {
-                variables: Default::default(),
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
@@ -10955,7 +10954,6 @@ mod dispatch_boundary_tests {
 
     fn make_submit_output_workflow() -> Workflow {
         Workflow {
-            variables: Default::default(),
             name: "submit-wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -11349,7 +11347,7 @@ mod dispatch_boundary_tests {
     }
 
     /// [08] 振る舞い定義 Rule 3: 提出済み output は後続 step から
-    /// `pass_output_from` 経路で経路非依存に参照できる。step_outputs に
+    /// `input_reference` 経路で経路非依存に参照できる。step_outputs に
     /// 書き込まれた entry が contract 由来の `artifact_contract` を保持することを担保する。
     #[tokio::test]
     async fn submit_output_step_output_carries_contract_for_downstream_reference() {
@@ -11393,7 +11391,7 @@ mod dispatch_boundary_tests {
     }
 
     /// [08] spec-directory artifact が submit された場合、step output に
-    /// 検証済み artifact が保存される。schema 方式では workflow_variables 抽出は行わない。
+    /// 検証済み artifact が保存される。
     #[tokio::test]
     async fn submit_output_stores_spec_dir_artifact_without_workflow_variable_side_effects() {
         let app = make_dispatch_app();
@@ -11403,7 +11401,6 @@ mod dispatch_boundary_tests {
         engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
-            variables: Default::default(),
             name: "spec-wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -11439,7 +11436,6 @@ mod dispatch_boundary_tests {
 
         let exec = engine.executions.lock().await;
         let exec = exec.get(&run_id).unwrap();
-        assert!(exec.workflow_variables.is_empty());
         assert_eq!(
             exec.step_outputs["plan"]
                 .structured_output
@@ -11460,7 +11456,6 @@ mod dispatch_boundary_tests {
         engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
-            variables: Default::default(),
             name: "multi-step".to_string(),
             description: String::new(),
             builtin: false,
@@ -11499,7 +11494,7 @@ mod dispatch_boundary_tests {
             .lock()
             .await
             .get(&run_id)
-            .map(|e| (e.step_outputs.clone(), e.workflow_variables.clone()))
+            .map(|e| e.step_outputs.clone())
             .unwrap();
 
         let err = submit_output_for_test(
@@ -11522,10 +11517,9 @@ mod dispatch_boundary_tests {
             .lock()
             .await
             .get(&run_id)
-            .map(|e| (e.step_outputs.clone(), e.workflow_variables.clone()))
+            .map(|e| e.step_outputs.clone())
             .unwrap();
-        assert_eq!(exec_before.0.len(), exec_after.0.len());
-        assert_eq!(exec_before.1, exec_after.1);
+        assert_eq!(exec_before.len(), exec_after.len());
 
         // ArtifactProduced event は append されない
         let events_after = read_submit_output_events(&app, &run_id);
@@ -12020,7 +12014,7 @@ mod dispatch_boundary_tests {
     }
 
     /// [08] 振る舞い定義 Rule 1: ArtifactProduced append が失敗した場合、
-    /// step_outputs / workflow_variables / event log は提出前状態のまま保たれる。
+    /// step_outputs / step_outputs / event log は提出前状態のまま保たれる。
     /// `write_log_required` の挿入 fail 経由で append 失敗を再現し、rollback の事実を
     /// 直接検証する（spec [08]: 「副作用なしで提出前状態のまま保つ」）。
     #[tokio::test]
@@ -12032,7 +12026,6 @@ mod dispatch_boundary_tests {
         engine.set_run_store_data_dir(data_dir.clone()).await;
         let run_id = uuid::Uuid::new_v4().to_string();
         let workflow = Workflow {
-            variables: Default::default(),
             name: "spec-wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -12063,7 +12056,7 @@ mod dispatch_boundary_tests {
             .lock()
             .await
             .get(&run_id)
-            .map(|e| (e.step_outputs.clone(), e.workflow_variables.clone()))
+            .map(|e| e.step_outputs.clone())
             .unwrap();
         let events_before = read_submit_output_events(&app, &run_id);
 
@@ -12089,11 +12082,10 @@ mod dispatch_boundary_tests {
             .lock()
             .await
             .get(&run_id)
-            .map(|e| (e.step_outputs.clone(), e.workflow_variables.clone()))
+            .map(|e| e.step_outputs.clone())
             .unwrap();
-        assert_eq!(exec_before.0.len(), exec_after.0.len());
-        assert!(!exec_after.0.contains_key("plan"));
-        assert_eq!(exec_before.1, exec_after.1);
+        assert_eq!(exec_before.len(), exec_after.len());
+        assert!(!exec_after.contains_key("plan"));
 
         // ArtifactProduced event は append されない（log への副作用なし）
         let events_after = read_submit_output_events(&app, &run_id);

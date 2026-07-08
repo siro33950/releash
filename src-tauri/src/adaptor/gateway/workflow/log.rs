@@ -317,7 +317,6 @@ mod tests {
             FacetRefs, NodeDefinition, NodeKind, SessionSpec,
         };
         Workflow {
-            variables: Default::default(),
             name: name.to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -403,6 +402,7 @@ mod tests {
             workflow_name: "new".to_string(),
             workflow_file_stem: "new".to_string(),
             worktree_path: "/repo".to_string(),
+            request: String::new(),
             workflow_definition: minimal_workflow_for_log("new"),
             timestamp: 1001.0,
         })
@@ -555,6 +555,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
+            request: String::new(),
             workflow_definition: minimal_workflow_for_log("test"),
             timestamp: 1000.0,
         };
@@ -618,6 +619,7 @@ mod tests {
             workflow_name: "wf-a".to_string(),
             workflow_file_stem: "wf-a".to_string(),
             worktree_path: "/repo-1".to_string(),
+            request: String::new(),
             workflow_definition: minimal_workflow_for_log("test"),
             timestamp: 1000.0,
         })
@@ -627,6 +629,7 @@ mod tests {
             workflow_name: "wf-b".to_string(),
             workflow_file_stem: "wf-b".to_string(),
             worktree_path: "/repo-2".to_string(),
+            request: String::new(),
             workflow_definition: minimal_workflow_for_log("test"),
             timestamp: 1001.0,
         })
@@ -636,6 +639,7 @@ mod tests {
             workflow_name: "wf-c".to_string(),
             workflow_file_stem: "wf-c".to_string(),
             worktree_path: "/repo-1".to_string(),
+            request: String::new(),
             workflow_definition: minimal_workflow_for_log("test"),
             timestamp: 1002.0,
         })
@@ -666,6 +670,7 @@ mod tests {
                 workflow_name: "wf".to_string(),
                 workflow_file_stem: "wf".to_string(),
                 worktree_path: "/repo".to_string(),
+                request: String::new(),
                 workflow_definition: minimal_workflow_for_log("test"),
                 timestamp: 1.0,
             },
@@ -882,7 +887,6 @@ mod tests {
         });
         let _ = &mut plan;
         Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "".to_string(),
             builtin: false,
@@ -911,6 +915,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
+            request: String::new(),
             workflow_definition: wf.clone(),
             timestamp: 1000.0,
         })
@@ -1027,6 +1032,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
+            request: String::new(),
             workflow_definition: wf.clone(),
             timestamp: 2000.0,
         })
@@ -1112,7 +1118,6 @@ mod tests {
             ..NodeDefinition::default()
         };
         let wf = Workflow {
-            variables: Default::default(),
             name: "parallel-wf".to_string(),
             description: "".to_string(),
             builtin: false,
@@ -1126,6 +1131,7 @@ mod tests {
                 workflow_name: "parallel-wf".to_string(),
                 workflow_file_stem: "parallel-wf".to_string(),
                 worktree_path: "/repo".to_string(),
+                request: String::new(),
                 workflow_definition: wf.clone(),
                 timestamp: 1000.0,
             },
@@ -1284,6 +1290,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
+            request: String::new(),
             workflow_definition: wf.clone(),
             timestamp: 1000.0,
         })
@@ -1339,6 +1346,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
+            request: String::new(),
             workflow_definition: wf.clone(),
             timestamp: 1000.0,
         })
@@ -1386,7 +1394,6 @@ mod tests {
             next: "ship".to_string(),
         }];
         let wf = Workflow {
-            variables: Default::default(),
             name: "approval-then-next".to_string(),
             description: "".to_string(),
             builtin: false,
@@ -1399,6 +1406,7 @@ mod tests {
             workflow_name: "approval-then-next".to_string(),
             workflow_file_stem: "approval-then-next".to_string(),
             worktree_path: "/repo".to_string(),
+            request: String::new(),
             workflow_definition: wf.clone(),
             timestamp: 2000.0,
         })

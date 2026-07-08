@@ -15,7 +15,7 @@ PR review comment 対応の最終段として、人間に差分・検証結果�
 
 ## 1. 対象 Thread と対応状況を取得する
 
-`{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json` で Open Thread を取得し、`[PR_REVIEW_COMMENT_IMPORTED]` が付いた Thread を対象にする。
+`releash review list --session-id "$RELEASH_SESSION_ID" --state open --json` で Open Thread を取得し、`[PR_REVIEW_COMMENT_IMPORTED]` が付いた Thread を対象にする。
 
 各 Thread について `review get` / `review history` を確認し、次のいずれかを特定する。
 
@@ -89,7 +89,7 @@ gh api repos/{OWNER}/{NAME}/pulls/{PR_NUMBER}/comments \
 GitHub reply が成功した Thread だけ resolve する。
 
 ```sh
-{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome resolved --summary "<対応要約>" --json
+releash review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome resolved --summary "<対応要約>" --json
 ```
 
 # 出力

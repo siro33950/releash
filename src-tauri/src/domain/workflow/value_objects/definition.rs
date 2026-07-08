@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_NODES_PER_WORKFLOW: usize = 256;
 pub const MAX_PARALLEL_CHILDREN: usize = 64;
@@ -9,7 +9,6 @@ pub struct WorkflowDefinition {
     pub description: String,
     pub builtin: bool,
     pub schemas: BTreeMap<String, SchemaDef>,
-    pub variables: HashMap<String, String>,
     pub nodes: Vec<NodeDefinition>,
 }
 
@@ -29,13 +28,6 @@ pub enum SchemaDef {
     Boolean,
     Integer,
     Number,
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ResolvedFacets {
-    pub policy: Option<String>,
-    pub knowledge: Option<String>,
-    pub instruction: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -110,7 +102,6 @@ pub struct SessionSpec {
     pub permission: Option<String>,
     pub gate: SessionGate,
     pub facets: FacetRefs,
-    pub resolved_facets: ResolvedFacets,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -126,8 +117,6 @@ pub struct NodeDefinition {
     pub artifact: Option<String>,
     pub input: Option<String>,
     pub inputs: Vec<String>,
-    pub pass_previous_response: Option<bool>,
-    pub pass_output_from: Option<Vec<String>>,
     pub collect: Option<CollectConfig>,
     pub transition_rules: Vec<TransitionRule>,
     pub cycle_guard: Option<CycleGuard>,
@@ -208,9 +197,6 @@ pub struct InterimChild {
     pub facets: FacetRefs,
     pub artifact: Option<String>,
     pub input: Option<String>,
-    pub pass_previous_response: Option<bool>,
-    pub pass_output_from: Option<Vec<String>>,
-    pub resolved_facets: ResolvedFacets,
 }
 
 impl InterimChild {

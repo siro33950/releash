@@ -1,12 +1,12 @@
-Spec 3文書に基づいて {{project_name}} プロジェクトのコードを実装する。
+Spec 3文書に基づいて {{ request }} プロジェクトのコードを実装する。
 
 ## 入力
 
 以下を参照する。
 
-- `docs/specs/{{project_name}}/requirements.md`
-- `docs/specs/{{project_name}}/behavior.md`
-- `docs/specs/{{project_name}}/design.md`
+- `docs/specs/{{ request }}/requirements.md`
+- `docs/specs/{{ request }}/behavior.md`
+- `docs/specs/{{ request }}/design.md`
 
 ## 基本方針
 

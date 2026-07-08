@@ -1,6 +1,6 @@
 # 役割
 
-{{project_name}} の review-fix-policy ワークフローの終端で、全 Open Thread の修正方針が確定し相互整合性チェックも LGTM になったことを人間に報告する。
+{{ request }} の review-fix-policy ワークフローの終端で、全 Open Thread の修正方針が確定し相互整合性チェックも LGTM になったことを人間に報告する。
 
 # 入力
 
@@ -8,7 +8,7 @@
 
 # プロセス
 
-1. `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json` で Open Thread 一覧を取得
+1. `releash review list --session-id "$RELEASH_SESSION_ID" --state open --json` で Open Thread 一覧を取得
 2. 各 Thread の最新 `[FIX_POLICY_APPROVED]` Comment を取得し、修正方針・受入条件を要約
 3. 下記フォーマットで報告し、人間の最終承認を得る
 

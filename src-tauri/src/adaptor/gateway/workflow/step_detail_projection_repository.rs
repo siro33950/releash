@@ -62,12 +62,12 @@ mod tests {
             workflow_name: "wf".to_string(),
             workflow_file_stem: "wf".to_string(),
             worktree_path: "/repo".to_string(),
+            request: String::new(),
             workflow_definition: Workflow {
                 name: "wf".to_string(),
                 description: "test".to_string(),
                 builtin: false,
                 schemas: Default::default(),
-                variables: Default::default(),
                 nodes: vec![NodeDefinition {
                     name: "plan".to_string(),
                     kind: NodeKind::Session(SessionSpec {

@@ -65,7 +65,6 @@ pub(crate) fn restore_execution_from_projected_state(
         step_outputs: state.step_outputs,
         task: run.task,
         parallel_run: None,
-        workflow_variables: state.workflow_variables,
         current_stall_observations: state.stall_observations,
     };
 
@@ -120,7 +119,6 @@ mod tests {
             step_states: Default::default(),
             step_outputs: Default::default(),
             active_parallel_steps: Vec::new(),
-            workflow_variables: Default::default(),
             stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 10.0,

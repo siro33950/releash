@@ -1,4 +1,4 @@
-{{project_name}} のフルレビュー後修正方針について、Open Thread に残っている承認済み方針 Comment の完全性と相互整合性を確認する。
+{{ request }} のフルレビュー後修正方針について、Open Thread に残っている承認済み方針 Comment の完全性と相互整合性を確認する。
 
 ## 入力
 
@@ -6,7 +6,7 @@
 - 各 Thread の本文、履歴、既存 Comment
 - `[FIX_POLICY_APPROVED]` 承認済み修正方針 Comment
 - `[FIX_POLICY_CHANGE_REQUEST]` 差し戻し Comment
-- タスク（任意の自由文。確認観点の補足指示があれば）: {{task}}
+- タスク（任意の自由文。確認観点の補足指示があれば）: {{ request }}
 
 ## 正本ルール
 
@@ -20,8 +20,8 @@
 
 ### 1. Open Thread を取得する
 
-1. `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json` で全 Open Thread を取得する
-2. 各 Thread に対して `{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` と `{{path_alias.releash}} review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json` を実行し、本文と履歴を確認する
+1. `releash review list --session-id "$RELEASH_SESSION_ID" --state open --json` で全 Open Thread を取得する
+2. 各 Thread に対して `releash review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` と `releash review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json` を実行し、本文と履歴を確認する
 3. 各 Open Thread について、最新の `[FIX_POLICY_APPROVED]` と `[FIX_POLICY_CHANGE_REQUEST]` を時系列で特定する
 
 Open Thread が 0 件なら、最終行に `LGTM` と出力して終了する。
