@@ -7,6 +7,7 @@ use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::execution_registry::{
     find_by_worktree, find_by_worktree_mut,
 };
+use crate::adaptor::gateway::workflow::facet::WorkflowFacetContents;
 use crate::adaptor::gateway::workflow::failure_policy_config::workflow_runtime_timeout_policy;
 use crate::adaptor::gateway::workflow::parallel_runtime::{
     self as workflow_parallel_runtime, ParallelChildSessionSetup, ParallelPromptInputs,
@@ -353,9 +354,10 @@ pub(crate) async fn prepare_parallel_child_session_setups<R: tauri::Runtime>(
     worktree_path: &str,
     parallel_start: &ParallelStartContext,
     prompt_inputs: &ParallelPromptInputs,
+    facet_contents: &WorkflowFacetContents,
 ) -> Result<Vec<ParallelChildSessionSetup>, WorkflowEngineError> {
     let prompt_plans =
-        prepare_parallel_child_prompt_plans(worktree_path, parallel_start, prompt_inputs)?;
+        prepare_parallel_child_prompt_plans(parallel_start, prompt_inputs, facet_contents)?;
     let creation_plans =
         prepare_parallel_child_creation_plans(registry, parallel_start, prompt_plans)?;
     let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
@@ -434,9 +436,9 @@ struct ParallelChildCreationPlan {
 }
 
 fn prepare_parallel_child_prompt_plans(
-    worktree_path: &str,
     parallel_start: &ParallelStartContext,
     prompt_inputs: &ParallelPromptInputs,
+    facet_contents: &WorkflowFacetContents,
 ) -> Result<Vec<ParallelChildPromptPlan>, WorkflowEngineError> {
     parallel_start
         .parallel_steps
@@ -446,14 +448,11 @@ fn prepare_parallel_child_prompt_plans(
         .map(|((step_index, ps), run_index)| {
             let (system_prompt, user_message) = workflow_prompt::build_parallel_step_prompt(
                 ps,
+                facet_contents.for_child(&parallel_start.parent_step_name, &ps.name),
                 &parallel_start.execution_id,
-                worktree_path,
                 parallel_start.task.as_deref(),
                 &prompt_inputs.step_outputs,
-                ps.pass_previous_response.unwrap_or(false),
-                ps.pass_output_from.as_deref(),
-                &prompt_inputs.workflow_variables,
-                &prompt_inputs.workflow_declared_variables,
+                None,
             )?;
             Ok(ParallelChildPromptPlan {
                 step_index,
@@ -462,10 +461,10 @@ fn prepare_parallel_child_prompt_plans(
                 user_message,
                 workflow_instruction: workflow_prompt::render_child_workflow_instruction(
                     ps,
-                    &parallel_start.execution_id,
-                    worktree_path,
+                    facet_contents.for_child(&parallel_start.parent_step_name, &ps.name),
                     parallel_start.task.as_deref(),
-                    &prompt_inputs.workflow_declared_variables,
+                    &prompt_inputs.step_outputs,
+                    None,
                 ),
             })
         })
@@ -795,7 +794,6 @@ mod tests {
                 description: String::new(),
                 builtin: false,
                 schemas: Default::default(),
-                variables: HashMap::new(),
                 nodes: vec![NodeDefinition {
                     name: step_name.clone(),
                     ..Default::default()
@@ -817,7 +815,6 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
-            workflow_variables: HashMap::new(),
             current_stall_observations: Vec::new(),
         }
     }
@@ -1148,11 +1145,6 @@ mod tests {
             }),
             ..Default::default()
         };
-        exec.workflow
-            .variables
-            .insert("declared".to_string(), "yes".to_string());
-        exec.workflow_variables
-            .insert("runtime".to_string(), "ready".to_string());
         exec.step_outputs.insert(
             "plan".to_string(),
             StepOutput {
@@ -1176,22 +1168,6 @@ mod tests {
         assert_eq!(
             inputs.parallel_start.child_step_names(),
             vec!["review-a".to_string()]
-        );
-        assert_eq!(
-            inputs
-                .prompt_inputs
-                .workflow_variables
-                .get("runtime")
-                .map(String::as_str),
-            Some("ready")
-        );
-        assert_eq!(
-            inputs
-                .prompt_inputs
-                .workflow_declared_variables
-                .get("declared")
-                .map(String::as_str),
-            Some("yes")
         );
         assert_eq!(
             inputs.prompt_inputs.step_outputs["plan"].structured_output,

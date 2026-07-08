@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, HashMap};
 use crate::adaptor::gateway::workflow::schema;
 use crate::adaptor::gateway::workflow::state as legacy_state;
 use crate::domain::workflow as domain;
-use crate::domain::workflow::value_objects::ResolvedFacets;
 
 pub(crate) fn workflow_definition_to_domain(
     workflow: &schema::Workflow,
@@ -13,7 +12,6 @@ pub(crate) fn workflow_definition_to_domain(
         description: workflow.description.clone(),
         builtin: workflow.builtin,
         schemas: workflow_schemas_to_domain(&workflow.schemas),
-        variables: workflow.variables.clone(),
         nodes: workflow
             .nodes
             .iter()
@@ -206,8 +204,6 @@ pub(crate) fn node_definition_to_domain(node: &schema::NodeDefinition) -> domain
         artifact: node.artifact.clone(),
         input: node.input.clone(),
         inputs: node.inputs.clone(),
-        pass_previous_response: node.pass_previous_response,
-        pass_output_from: node.pass_output_from.clone(),
         collect: node.collect.as_ref().map(collect_config_to_domain),
         transition_rules: node
             .transition_rules
@@ -229,7 +225,6 @@ pub(crate) fn node_kind_to_domain(kind: &schema::NodeKind) -> domain::NodeKind {
             permission: spec.permission.clone(),
             gate: session_gate_to_domain(spec.gate),
             facets: facet_refs_to_domain(&spec.facets),
-            resolved_facets: resolved_facets_to_domain(&spec.resolved_facets),
         }),
         schema::NodeKind::Fanout(spec) => domain::NodeKind::Fanout(domain::FanoutSpec {
             parallel_children: spec
@@ -265,9 +260,6 @@ fn interim_child_to_domain(child: &schema::InterimChild) -> domain::InterimChild
         facets: facet_refs_to_domain(&child.facets),
         artifact: child.artifact.clone(),
         input: child.input.clone(),
-        pass_previous_response: child.pass_previous_response,
-        pass_output_from: child.pass_output_from.clone(),
-        resolved_facets: resolved_facets_to_domain(&child.resolved_facets),
     }
 }
 
@@ -320,15 +312,7 @@ fn cycle_guard_to_domain(guard: &schema::CycleGuard) -> domain::CycleGuard {
     }
 }
 
-fn resolved_facets_to_domain(resolved: &schema::ResolvedFacets) -> ResolvedFacets {
-    ResolvedFacets {
-        policy: resolved.policy.clone(),
-        knowledge: resolved.knowledge.clone(),
-        instruction: resolved.instruction.clone(),
-    }
-}
-
-fn schema_def_to_domain(schema: &schema::SchemaDef) -> domain::SchemaDef {
+pub(crate) fn schema_def_to_domain(schema: &schema::SchemaDef) -> domain::SchemaDef {
     match schema {
         schema::SchemaDef::Object {
             properties,
@@ -359,22 +343,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workflow_definition_to_domain_preserves_runtime_only_resolved_facets() {
+    fn workflow_definition_to_domain_preserves_facet_refs_without_runtime_contents() {
         let workflow = schema::Workflow {
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,
             schemas: Default::default(),
-            variables: Default::default(),
             nodes: vec![schema::NodeDefinition {
                 name: "implement".to_string(),
                 kind: schema::NodeKind::Session(schema::SessionSpec {
                     facets: schema::FacetRefs {
                         instruction: Some("inst".to_string()),
-                        ..Default::default()
-                    },
-                    resolved_facets: schema::ResolvedFacets {
-                        instruction: Some("resolved instruction".to_string()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -393,15 +372,6 @@ mod tests {
                 .instruction
                 .as_deref(),
             Some("inst")
-        );
-        assert_eq!(
-            mapped.nodes[0]
-                .session()
-                .unwrap()
-                .resolved_facets
-                .instruction
-                .as_deref(),
-            Some("resolved instruction")
         );
     }
 }

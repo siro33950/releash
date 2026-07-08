@@ -986,7 +986,6 @@ mod tests {
             description: String::new(),
             builtin: false,
             schemas: Default::default(),
-            variables: Default::default(),
             nodes: Vec::new(),
         }
     }

@@ -40,7 +40,6 @@ pub struct WorkflowExecution {
     step_outputs: HashMap<String, StepOutput>,
     task: Option<String>,
     parallel_run: Option<ParallelRunState>,
-    workflow_variables: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,7 +127,6 @@ impl WorkflowExecution {
             step_outputs: HashMap::new(),
             task,
             parallel_run: None,
-            workflow_variables: HashMap::new(),
         })
     }
 
@@ -164,7 +162,6 @@ impl WorkflowExecution {
             step_states,
             step_outputs: self.step_outputs.clone(),
             active_parallel_steps: projection::active_parallel_steps(self.parallel_run.as_ref()),
-            workflow_variables: self.workflow_variables.clone(),
             approval_operations: self.build_approval_operations(),
             stall_observations: Vec::new(),
             started_at: self.started_at,
@@ -557,7 +554,6 @@ mod aggregate_tests {
             description: String::new(),
             builtin: false,
             schemas: Default::default(),
-            variables: Default::default(),
             nodes,
         }
     }
@@ -689,6 +685,5 @@ mod aggregate_tests {
             snapshot.step_outputs["spec"].artifact_contract.as_deref(),
             Some("spec-directory")
         );
-        assert!(snapshot.workflow_variables.is_empty());
     }
 }

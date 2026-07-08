@@ -54,8 +54,6 @@ impl ParallelStartContext {
 #[derive(Debug, Clone)]
 pub(crate) struct ParallelPromptInputs {
     pub(crate) step_outputs: HashMap<String, StepOutput>,
-    pub(crate) workflow_variables: HashMap<String, String>,
-    pub(crate) workflow_declared_variables: HashMap<String, String>,
 }
 
 pub(crate) struct ParallelChildSessionSetup {
@@ -140,8 +138,6 @@ pub(crate) fn prepare_parallel_start_context(
 pub(crate) fn parallel_prompt_inputs(exec: &WorkflowExecution) -> ParallelPromptInputs {
     ParallelPromptInputs {
         step_outputs: exec.step_outputs.clone(),
-        workflow_variables: exec.workflow_variables.clone(),
-        workflow_declared_variables: exec.workflow.variables.clone(),
     }
 }
 
@@ -404,7 +400,6 @@ mod tests {
                 description: String::new(),
                 builtin: false,
                 schemas: Default::default(),
-                variables: HashMap::from([("declared".to_string(), "yes".to_string())]),
                 nodes: vec![node],
             },
             state: WorkflowExecutionState::Running,
@@ -423,7 +418,6 @@ mod tests {
             step_outputs: HashMap::new(),
             task: Some("ship it".to_string()),
             parallel_run: None,
-            workflow_variables: HashMap::new(),
             current_stall_observations: Vec::new(),
         }
     }
@@ -513,28 +507,11 @@ mod tests {
             "plan".to_string(),
             make_step_output("plan", "draft", Some("DONE")),
         );
-        exec.workflow_variables
-            .insert("contract".to_string(), "ready".to_string());
-
         let inputs = parallel_prompt_inputs(&exec);
 
         assert_eq!(
             inputs.step_outputs["plan"].structured_output,
             Some(serde_json::json!({ "text": "draft" }))
-        );
-        assert_eq!(
-            inputs
-                .workflow_variables
-                .get("contract")
-                .map(String::as_str),
-            Some("ready")
-        );
-        assert_eq!(
-            inputs
-                .workflow_declared_variables
-                .get("declared")
-                .map(String::as_str),
-            Some("yes")
         );
     }
 

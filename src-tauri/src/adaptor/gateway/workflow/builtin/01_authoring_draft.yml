@@ -19,6 +19,8 @@ nodes:
       policy: planning
       instruction: spec-authoring-draft-requirements
   artifact: spec-directory
+  inputs:
+  - request
 - name: write_behavior
   session:
     model: claude-opus-4-8
@@ -27,8 +29,7 @@ nodes:
     facets:
       policy: planning
       instruction: spec-authoring-draft-behavior
-  input: spec-directory
-  pass_output_from:
+  inputs:
   - write_requirements
 - name: write_design
   session:
@@ -38,7 +39,5 @@ nodes:
     facets:
       policy: planning
       instruction: spec-authoring-draft-design
-  input: spec-directory
-  pass_output_from:
+  inputs:
   - write_requirements
-  - write_behavior

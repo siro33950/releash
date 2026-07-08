@@ -1,8 +1,8 @@
-{{project_name}} のフルレビューで残った Open Thread を 1 件ずつ人間と確認し、実装前の修正方針を決定する。対応する Thread には `[FIX_POLICY_APPROVED]` 付きの方針 Comment を投稿し、対応見送り・誤検知・情報のみの Thread は方針と根拠を含めて resolve する。本 Step では実装しない。
+{{ request }} のフルレビューで残った Open Thread を 1 件ずつ人間と確認し、実装前の修正方針を決定する。対応する Thread には `[FIX_POLICY_APPROVED]` 付きの方針 Comment を投稿し、対応見送り・誤検知・情報のみの Thread は方針と根拠を含めて resolve する。本 Step では実装しない。
 
 ## 入力
 
-- タスク（任意の自由文。方針決定の補足指示があれば）: {{task}}
+- タスク（任意の自由文。方針決定の補足指示があれば）: {{ request }}
 - 全 Open Thread
 - 各 Thread の本文、履歴、reviewer 指摘、verifier 判定、verifier 修正方針、既存方針 Comment
 - `[FIX_POLICY_CHANGE_REQUEST]` 差し戻し Comment
@@ -54,8 +54,8 @@ CHANGE_REQUESTへの回答: <該当する場合のみ。差し戻しを修正方
 
 ### 1. Thread を収集する
 
-1. `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json` で Open Thread を取得する
-2. 各 Thread に対して `{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` と `{{path_alias.releash}} review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json` を実行する
+1. `releash review list --session-id "$RELEASH_SESSION_ID" --state open --json` で Open Thread を取得する
+2. 各 Thread に対して `releash review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` と `releash review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json` を実行する
 3. reviewer 指摘、verifier 判定、verifier 修正方針、既存 `[FIX_POLICY_APPROVED]`、`[FIX_POLICY_CHANGE_REQUEST]` を整理する
 
 Open Thread が 0 件なら、完了報告を出して Step を終える。
@@ -129,7 +129,7 @@ approve された Thread だけ処理する。
 対応見送りの resolve 例:
 
 ```sh
-{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome wontfix --summary "<対応見送りの理由>" --json
+releash review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome wontfix --summary "<対応見送りの理由>" --json
 ```
 
 ### 6. 次の Thread に進む

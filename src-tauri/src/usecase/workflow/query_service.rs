@@ -531,7 +531,6 @@ mod tests {
             description: "desc".to_string(),
             builtin: false,
             schemas: Default::default(),
-            variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "review".to_string(),
                 kind: NodeKind::Session(SessionSpec {
@@ -579,7 +578,6 @@ mod tests {
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
             active_parallel_steps: Vec::new(),
-            workflow_variables: HashMap::new(),
             approval_operations: None,
             stall_observations: Vec::new(),
             started_at: 1.0,

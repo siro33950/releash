@@ -1,6 +1,6 @@
 # 役割
 
-{{project_name}} のフルレビュー後修正 Task を実装する。
+{{ request }} のフルレビュー後修正 Task を実装する。
 
 この Step は、直前 Step から渡された Task だけを実装対象にする。Open Thread や `[FIX_POLICY_APPROVED]` Comment を直接読んではならない。
 

@@ -60,8 +60,6 @@ pub struct WorkflowStateFieldsView {
     pub step_outputs: HashMap<String, StepOutputView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_parallel_steps: Vec<ParallelStepStateView>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub workflow_variables: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_operations: Option<ApprovalOperationsView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -195,10 +193,6 @@ pub struct WorkflowNodeDefinitionView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_previous_response: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_output_from: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collect: Option<WorkflowCollectConfigView>,
     // 共通: rules は空配列でも送る（frontend では非 optional として扱う）
     #[serde(default)]
@@ -223,10 +217,6 @@ pub struct WorkflowInterimChildView {
     pub artifact: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_previous_response: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_output_from: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -377,7 +367,6 @@ mod tests {
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
             active_parallel_steps: Vec::new(),
-            workflow_variables: HashMap::new(),
             approval_operations: None,
             stall_observations: Vec::new(),
             started_at: 1.0,

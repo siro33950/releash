@@ -128,6 +128,7 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 						facets?.knowledge ||
 						facets?.instruction ||
 						step.artifact ||
+						(step.inputs && step.inputs.length > 0) ||
 						step.input) && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">
@@ -144,6 +145,9 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 							)}
 							{step.artifact && (
 								<FacetRefRow label="Artifact" value={step.artifact} />
+							)}
+							{step.inputs && step.inputs.length > 0 && (
+								<FacetRefRow label="Inputs" value={step.inputs.join(", ")} />
 							)}
 							{step.input && <FacetRefRow label="Input" value={step.input} />}
 						</div>
@@ -182,18 +186,6 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 								From: {step.collect.from.join(", ")} | Reduce:{" "}
 								{step.collect.reduce}
 							</div>
-						</div>
-					)}
-
-					{/* Output passing */}
-					{step.pass_previous_response && (
-						<div className="text-muted-foreground">
-							Pass previous response: yes
-						</div>
-					)}
-					{step.pass_output_from && step.pass_output_from.length > 0 && (
-						<div className="text-muted-foreground">
-							Pass output from: {step.pass_output_from.join(", ")}
 						</div>
 					)}
 

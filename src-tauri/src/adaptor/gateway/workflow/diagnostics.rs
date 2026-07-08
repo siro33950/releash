@@ -1,8 +1,8 @@
 use crate::adaptor::gateway::workflow::builtin;
 use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain;
 use crate::adaptor::gateway::workflow::facet::{self, FacetKind};
+use crate::adaptor::gateway::workflow::prompt_rendering;
 use crate::adaptor::gateway::workflow::schema::{NodeDefinition, ReduceStrategy, Workflow};
-use crate::domain::workflow::services::variable_renderer;
 use crate::domain::workflow::validation;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -79,7 +79,7 @@ pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticR
     let all_facet_keys = collect_all_facet_keys(facets_base_dir);
 
     // --- ワークフロー診断 ---
-    let workflows = load_all_workflows(workflows_dir);
+    let workflows = load_all_workflows(workflows_dir, facets_base_dir);
     for (name, wf_result) in &workflows {
         match wf_result {
             Err(msg) => {
@@ -183,7 +183,10 @@ fn collect_all_facet_keys(base_dir: &Path) -> HashSet<String> {
 }
 
 /// ディスク + builtin のワークフロー一覧を読み込み
-fn load_all_workflows(dir: &Path) -> Vec<(String, Result<Workflow, String>)> {
+fn load_all_workflows(
+    dir: &Path,
+    facets_base_dir: &Path,
+) -> Vec<(String, Result<Workflow, String>)> {
     let mut results = Vec::new();
 
     // ディスク上のカスタムワークフロー（validate() をスキップし全件走査）
@@ -198,8 +201,10 @@ fn load_all_workflows(dir: &Path) -> Vec<(String, Result<Workflow, String>)> {
                         let result = std::fs::read_to_string(&path)
                             .map_err(|e| e.to_string())
                             .and_then(|content| {
-                                serde_saphyr::from_str::<Workflow>(&content)
-                                    .map_err(|e| e.to_string())
+                                let workflow = serde_saphyr::from_str::<Workflow>(&content)
+                                    .map_err(|e| e.to_string())?;
+                                let _ = facet::resolve_workflow_facets(&workflow, facets_base_dir);
+                                Ok(workflow)
                             });
                         seen.insert(name.clone());
                         results.push((name, result));
@@ -244,7 +249,6 @@ fn is_covered_by_diagnostics(e: &validation::ValidationError) -> bool {
             | ValidationError::InvalidChars { .. }
             | ValidationError::UnknownNextStep { .. }
             | ValidationError::MissingFacet { .. }
-            | ValidationError::UnknownOutputFrom { .. }
             | ValidationError::UnknownCollectFrom { .. }
     )
 }
@@ -268,10 +272,6 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::AggregateUnknownTarget { step, .. } => {
             (Some(step.clone()), Some("aggregate".to_string()))
         }
-        ValidationError::ParallelChildSiblingRef { parent, .. } => (
-            Some(parent.clone()),
-            Some("parallel_children.pass_output_from".to_string()),
-        ),
         ValidationError::ParallelChildMissingFacet { parent, .. } => (
             Some(parent.clone()),
             // 旧ラベル "parallel.facets" と同じく、policy/knowledge/instruction/artifact_contract
@@ -283,12 +283,10 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
             (Some(step.clone()), Some("rules.next".to_string()))
         }
         ValidationError::MissingFacet { step } => (Some(step.clone()), Some("facets".to_string())),
-        ValidationError::UnknownOutputFrom { step, .. } => {
-            (Some(step.clone()), Some("pass_output_from".to_string()))
-        }
         ValidationError::UnknownCollectFrom { step, .. } => {
             (Some(step.clone()), Some("collect.from".to_string()))
         }
+        ValidationError::InvalidArtifactReference { .. } => (None, Some("inputs".to_string())),
         ValidationError::UnknownOnExhausted { step, .. } => (
             Some(step.clone()),
             Some("cycle_guard.on_exhausted".to_string()),
@@ -486,18 +484,6 @@ fn diagnose_workflow(
 
     // step名の集合（到達可能性チェック・遷移先チェック用、トップレベルstep名のみ）
     let step_names: HashSet<&str> = wf.nodes.iter().map(|s| s.name.as_str()).collect();
-    // 参照可能名前空間: トップレベルstep名 + 並列子step名（pass_output_from等の検証用）
-    // validation.rs の referenceable_step_names と同じロジック
-    let mut referenceable_step_names: HashSet<&str> = HashSet::new();
-    for step in &wf.nodes {
-        referenceable_step_names.insert(step.name.as_str());
-        if let Some(fanout) = step.fanout() {
-            let children = &fanout.parallel_children;
-            for child in children {
-                referenceable_step_names.insert(child.name.as_str());
-            }
-        }
-    }
     // 先行step名の集合（collect.from のチェック用）
     // validation.rs と同じロジック: collect.from は先行ステップのみ参照可能
     let mut preceding_step_names: HashSet<&str> = HashSet::new();
@@ -579,27 +565,6 @@ fn diagnose_workflow(
             }
         }
 
-        // pass_output_from 参照チェック（後方参照も許可、validation.rsと同じ）
-        if let Some(ref refs) = step.pass_output_from {
-            for r in refs {
-                if !referenceable_step_names.contains(r.as_str()) {
-                    let item = DiagnosticItem {
-                        severity: Severity::Error,
-                        message: format!(
-                            "ステップ '{}' のpass_output_fromが存在しないステップ '{}' を参照しています",
-                            step.name, r
-                        ),
-                        workflow_name: Some(name.clone()),
-                        step_name: Some(step.name.clone()),
-                        facet_key: None,
-                        facet_kind: None,
-                        field: Some("pass_output_from".to_string()),
-                    };
-                    add_diagnostic(items, workflow_summaries, name, item);
-                }
-            }
-        }
-
         // ファセット参照の存在チェック + usage 記録
         FacetRefCheckContext::new(name, all_facet_keys, items, workflow_summaries, facet_usage)
             .check_step(
@@ -634,7 +599,6 @@ fn diagnose_workflow(
         // parallel block の子step 診断
         if let Some(fanout) = step.fanout() {
             let children = &fanout.parallel_children;
-            let child_names: HashSet<&str> = children.iter().map(|c| c.name.as_str()).collect();
             for child in children {
                 FacetRefCheckContext::new(
                     name,
@@ -651,41 +615,6 @@ fn diagnose_workflow(
                         instruction: child.facets.instruction.as_deref(),
                     },
                 );
-
-                // 並列子stepの pass_output_from チェック（兄弟参照禁止、後方参照は許可）
-                if let Some(ref refs) = child.pass_output_from {
-                    for r in refs {
-                        if child_names.contains(r.as_str()) {
-                            let item = DiagnosticItem {
-                                severity: Severity::Error,
-                                message: format!(
-                                    "parallelブロック '{}' の子ステップ '{}' のpass_output_fromが同一ブロック内の兄弟ステップ '{}' を参照しています",
-                                    step.name, child.name, r
-                                ),
-                                workflow_name: Some(name.clone()),
-                                step_name: Some(child.name.clone()),
-                                facet_key: None,
-                                facet_kind: None,
-                                field: Some("parallel_children.pass_output_from".to_string()),
-                            };
-                            add_diagnostic(items, workflow_summaries, name, item);
-                        } else if !referenceable_step_names.contains(r.as_str()) {
-                            let item = DiagnosticItem {
-                                severity: Severity::Error,
-                                message: format!(
-                                    "parallelブロック '{}' の子ステップ '{}' のpass_output_fromが存在しないステップ '{}' を参照しています",
-                                    step.name, child.name, r
-                                ),
-                                workflow_name: Some(name.clone()),
-                                step_name: Some(child.name.clone()),
-                                facet_key: None,
-                                facet_kind: None,
-                                field: Some("parallel_children.pass_output_from".to_string()),
-                            };
-                            add_diagnostic(items, workflow_summaries, name, item);
-                        }
-                    }
-                }
             }
         }
 
@@ -837,7 +766,7 @@ fn check_template_variables(
     items: &mut Vec<DiagnosticItem>,
     facet_summaries: &mut HashMap<String, DiagnosticSummary>,
 ) {
-    for var_name in variable_renderer::find_undefined_template_variables(content) {
+    for var_name in prompt_rendering::find_undefined_template_variables(content) {
         let item = DiagnosticItem {
             severity: Severity::Error,
             message: format!(
@@ -897,6 +826,7 @@ mod tests {
     fn make_child(name: &str, instruction: Option<&str>) -> InterimChild {
         InterimChild {
             name: name.to_string(),
+            permission: Some("edit".to_string()),
             facets: FacetRefs {
                 instruction: instruction.map(str::to_string),
                 ..Default::default()
@@ -961,7 +891,6 @@ mod tests {
         let wf_dir = tmp.path();
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -986,7 +915,6 @@ mod tests {
         setup_facet(wf_dir, "instructions", "impl", "content");
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1017,7 +945,6 @@ mod tests {
         setup_facet(wf_dir, "instructions", "impl", "content");
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1048,7 +975,6 @@ mod tests {
         setup_facet(wf_dir, "instructions", "impl", "content");
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1093,7 +1019,6 @@ mod tests {
         setup_facet(wf_dir, "instructions", "impl", "content");
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1131,7 +1056,6 @@ mod tests {
         setup_facet(wf_dir, "instructions", "impl", "content");
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1169,7 +1093,6 @@ mod tests {
         setup_facet(wf_dir, "instructions", "impl", "content");
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1198,7 +1121,6 @@ mod tests {
         setup_facet(wf_dir, "instructions", "review", "content");
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1234,7 +1156,6 @@ mod tests {
 
         // step1 が Auto + rules で step3 へ遷移 → orphan は到達不能
         let wf = Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1272,7 +1193,6 @@ mod tests {
         // rules なしの step → 次の step は暗黙的に到達可能（到達不能ではない）
         // ただし明示的遷移なしの warning は出る
         let wf = Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1333,24 +1253,28 @@ mod tests {
     fn diagnose_template_variable_error() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
-        setup_facet(wf_dir, "instructions", "bad", "Use {{unknown_var}} here");
+        setup_facet(wf_dir, "instructions", "bad", "Use {{request.field}} here");
+        let wf = Workflow {
+            name: "bad-template".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![make_step("step1", Some("bad"))],
+        };
+        save_workflow_yaml(wf_dir, &wf);
 
         let report = diagnose_all(wf_dir, wf_dir);
-        assert!(report.items.iter().any(
-            |i| i.severity == Severity::Error && i.message.contains("未定義のテンプレート変数")
-        ));
+        assert!(report.items.iter().any(|i| i.severity == Severity::Error
+            && i.facet_key.as_deref() == Some("bad")
+            && i.message
+                .contains("未定義のテンプレート変数 '{{request.field}}'")));
     }
 
     #[test]
-    fn diagnose_system_variables_ok() {
+    fn diagnose_request_reference_ok() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
-        setup_facet(
-            wf_dir,
-            "instructions",
-            "good",
-            "Project: {{project_name}}, Task: {{task}}",
-        );
+        setup_facet(wf_dir, "instructions", "good", "Request: {{ request }}");
 
         let report = diagnose_all(wf_dir, wf_dir);
         assert!(!report.items.iter().any(|i| i.severity == Severity::Error
@@ -1367,7 +1291,6 @@ mod tests {
         let wf_dir = tmp.path();
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "bash-wf".to_string(),
             description: "bash test".to_string(),
             builtin: false,
@@ -1393,7 +1316,6 @@ mod tests {
         let wf_dir = tmp.path();
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "bash-wf".to_string(),
             description: "bash test".to_string(),
             builtin: false,
@@ -1420,7 +1342,6 @@ mod tests {
         setup_facet(wf_dir, "instructions", "impl", "content");
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1445,7 +1366,6 @@ mod tests {
         // diagnose_allでは「読み込みに失敗」エラーとして報告される
         fs::create_dir_all(wf_dir).unwrap();
         let wf = Workflow {
-            variables: Default::default(),
             name: "bad workflow".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1469,7 +1389,6 @@ mod tests {
         setup_facet(wf_dir, "instructions", "review", "content");
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1577,7 +1496,6 @@ nodes:
         setup_facet(wf_dir, "instructions", "task", "content");
 
         let wf = Workflow {
-            variables: Default::default(),
             name: "dup-step".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1600,24 +1518,35 @@ nodes:
     }
 
     #[test]
-    fn diagnose_pass_output_from_backward_reference_passes() {
+    fn diagnose_node_input_reference_passes() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "task", "content");
 
-        // step1 が後続の step2 を pass_output_from で参照 → 後方参照は許可（エラーにならない）
         let wf = Workflow {
-            variables: Default::default(),
-            name: "backward-ref".to_string(),
+            name: "input-ref".to_string(),
             description: "test".to_string(),
             builtin: false,
-            schemas: Default::default(),
+            schemas: [(
+                "artifact".to_string(),
+                SchemaDef::Object {
+                    properties: Default::default(),
+                    required: Default::default(),
+                    additional_properties: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
             nodes: vec![
                 NodeDefinition {
-                    pass_output_from: Some(vec!["step2".to_string()]),
+                    artifact: Some("artifact".to_string()),
                     ..make_step("step1", Some("task"))
                 },
-                make_step("step2", Some("task")),
+                NodeDefinition {
+                    inputs: vec!["step1".to_string()],
+                    artifact: Some("artifact".to_string()),
+                    ..make_step("step2", Some("task"))
+                },
             ],
         };
         save_workflow_yaml(wf_dir, &wf);
@@ -1627,9 +1556,8 @@ nodes:
             !report
                 .items
                 .iter()
-                .any(|i| i.severity == Severity::Error
-                    && i.field.as_deref() == Some("pass_output_from")),
-            "Backward reference in pass_output_from should not be an error, got: {:?}",
+                .any(|i| i.severity == Severity::Error && i.field.as_deref() == Some("inputs")),
+            "Artifact input reference should not be an error, got: {:?}",
             report.items
         );
     }
@@ -1642,7 +1570,6 @@ nodes:
 
         // step1 が後続の step2 を collect.from で参照 → エラーになるべき
         let wf = Workflow {
-            variables: Default::default(),
             name: "subsequent-collect".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -1672,33 +1599,27 @@ nodes:
     }
 
     #[test]
-    fn diagnose_parallel_child_backward_reference_passes() {
+    fn diagnose_parallel_child_item_reference_passes() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
-        setup_facet(wf_dir, "instructions", "task", "content");
+        setup_facet(wf_dir, "instructions", "task", "{{ item.path }}");
 
-        // parallel block の子step が後続の report を参照 → 後方参照は許可（エラーにならない）
         let wf = Workflow {
-            variables: Default::default(),
-            name: "par-backward".to_string(),
+            name: "par-item".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![
-                make_fanout(
-                    "par",
-                    vec![InterimChild {
-                        name: "child1".to_string(),
-                        facets: FacetRefs {
-                            instruction: Some("task".to_string()),
-                            ..Default::default()
-                        },
-                        pass_output_from: Some(vec!["report".to_string()]),
+            nodes: vec![make_fanout(
+                "par",
+                vec![InterimChild {
+                    name: "child1".to_string(),
+                    facets: FacetRefs {
+                        instruction: Some("task".to_string()),
                         ..Default::default()
-                    }],
-                ),
-                make_step("report", Some("task")),
-            ],
+                    },
+                    ..Default::default()
+                }],
+            )],
         };
         save_workflow_yaml(wf_dir, &wf);
 
@@ -1706,50 +1627,42 @@ nodes:
         assert!(
             !report.items.iter().any(|i| i.severity == Severity::Error
                 && i.step_name.as_deref() == Some("child1")
-                && i.field.as_deref() == Some("parallel_children.pass_output_from")),
-            "Backward reference in parallel child pass_output_from should not be an error, got: {:?}",
+                && i.field.as_deref() == Some("inputs")),
+            "item reference inside parallel child should not be an error, got: {:?}",
             report.items
         );
     }
 
     #[test]
-    fn diagnose_parallel_child_sibling_ref() {
+    fn diagnose_fanout_inputs_rejected() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "task", "content");
 
-        // parallel block の子step が兄弟を参照 → エラーになるべき
+        let mut fanout = make_fanout(
+            "par",
+            vec![
+                make_child("child1", Some("task")),
+                make_child("child2", Some("task")),
+            ],
+        );
+        fanout.inputs = vec!["request".to_string()];
         let wf = Workflow {
-            variables: Default::default(),
-            name: "par-sibling".to_string(),
+            name: "fanout-inputs".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_fanout(
-                "par",
-                vec![
-                    make_child("child1", Some("task")),
-                    InterimChild {
-                        name: "child2".to_string(),
-                        facets: FacetRefs {
-                            instruction: Some("task".to_string()),
-                            ..Default::default()
-                        },
-                        pass_output_from: Some(vec!["child1".to_string()]),
-                        ..Default::default()
-                    },
-                ],
-            )],
+            nodes: vec![fanout],
         };
         save_workflow_yaml(wf_dir, &wf);
 
         let report = diagnose_all(wf_dir, wf_dir);
         assert!(
             report.items.iter().any(|i| i.severity == Severity::Error
-                && i.step_name.as_deref() == Some("child2")
-                && i.field.as_deref() == Some("parallel_children.pass_output_from")
-                && i.message.contains("兄弟ステップ")),
-            "Expected sibling reference error for parallel child, got: {:?}",
+                && i.workflow_name.as_deref() == Some("fanout-inputs")
+                && i.field.as_deref() == Some("inputs")
+                && i.message.contains("fanout")),
+            "Expected fanout inputs error, got: {:?}",
             report.items
         );
     }

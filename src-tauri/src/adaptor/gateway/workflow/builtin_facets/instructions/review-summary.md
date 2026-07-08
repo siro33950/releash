@@ -4,8 +4,8 @@
 
 # 手順
 
-1. `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json` で全 Open Thread を取得する
-2. 各 Thread に対し `{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` で Thread 詳細（本文・履歴）を取得する
+1. `releash review list --session-id "$RELEASH_SESSION_ID" --state open --json` で全 Open Thread を取得する
+2. 各 Thread に対し `releash review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` で Thread 詳細（本文・履歴）を取得する
 3. 下記「報告フォーマット」に従い、**全 Open Thread** を Thread 単位で人間に報告する
 4. 報告後、人間が approve したら workflow 終了
 

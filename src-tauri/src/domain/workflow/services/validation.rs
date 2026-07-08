@@ -1,4 +1,4 @@
-use crate::domain::workflow::services::contract_schema;
+use crate::domain::workflow::services::{contract_schema, reference};
 use crate::domain::workflow::value_objects::{MAX_NODES_PER_WORKFLOW, MAX_PARALLEL_CHILDREN};
 use crate::domain::workflow::{
     NodeDefinition, NodeKindName, ReduceStrategy, SchemaDef, TransitionRule,
@@ -27,10 +27,6 @@ pub enum ValidationError {
     MissingFacet {
         step: String,
     },
-    UnknownOutputFrom {
-        step: String,
-        reference: String,
-    },
     UnknownCollectFrom {
         step: String,
         reference: String,
@@ -48,12 +44,6 @@ pub enum ValidationError {
     AggregateUnknownTarget {
         step: String,
         target: String,
-    },
-    /// 並列子stepが同一block内の兄弟stepを pass_output_from で参照
-    ParallelChildSiblingRef {
-        parent: String,
-        child: String,
-        reference: String,
     },
     /// 並列子stepにファセット参照がない
     ParallelChildMissingFacet {
@@ -162,6 +152,11 @@ pub enum ValidationError {
         contract: String,
         field: String,
     },
+    /// `inputs:` または `{{ ... }}` が解決できない Artifact 参照を含む。
+    InvalidArtifactReference {
+        reference: String,
+        reason: String,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -186,10 +181,6 @@ impl fmt::Display for ValidationError {
                     "ステップ '{step}' にはファセット参照が必要です（collectステップのみ省略可）"
                 )
             }
-            Self::UnknownOutputFrom { step, reference } => write!(
-                f,
-                "ステップ '{step}' のpass_output_fromが存在しないステップ '{reference}' を参照しています"
-            ),
             Self::UnknownCollectFrom { step, reference } => write!(
                 f,
                 "ステップ '{step}' のcollect.fromが存在しないステップ '{reference}' を参照しています"
@@ -203,14 +194,6 @@ impl fmt::Display for ValidationError {
             Self::AggregateUnknownTarget { step, target } => write!(
                 f,
                 "ステップ '{step}' のaggregateが存在しないステップ '{target}' を参照しています"
-            ),
-            Self::ParallelChildSiblingRef {
-                parent,
-                child,
-                reference,
-            } => write!(
-                f,
-                "parallelブロック '{parent}' の子ステップ '{child}' のpass_output_fromが同一ブロック内の兄弟ステップ '{reference}' を参照しています"
             ),
             Self::ParallelChildMissingFacet { parent, child } => write!(
                 f,
@@ -339,11 +322,63 @@ impl fmt::Display for ValidationError {
                     "commandステップ '{step}' の artifact '{contract}' が予約 field '{field}' を宣言しています"
                 )
             }
+            Self::InvalidArtifactReference { reference, reason } => {
+                write!(f, "Artifact参照 '{reference}' が不正です: {reason}")
+            }
         }
     }
 }
 
 impl std::error::Error for ValidationError {}
+
+fn reference_error_to_validation_error(error: reference::ReferenceResolveError) -> ValidationError {
+    match error {
+        reference::ReferenceResolveError::ReservedNodeName { name } => {
+            ValidationError::InvalidArtifactReference {
+                reference: name,
+                reason: "`request` and `item` are reserved Artifact names and cannot be node names"
+                    .to_string(),
+            }
+        }
+        reference::ReferenceResolveError::UnknownNode { name } => {
+            ValidationError::InvalidArtifactReference {
+                reference: name,
+                reason: "unknown Artifact-producing node".to_string(),
+            }
+        }
+        reference::ReferenceResolveError::UnavailableArtifact { name } => {
+            ValidationError::InvalidArtifactReference {
+                reference: name,
+                reason: "the referenced node does not produce an Artifact".to_string(),
+            }
+        }
+        reference::ReferenceResolveError::UnknownField { reference, field } => {
+            ValidationError::InvalidArtifactReference {
+                reference: format!("{reference}.{field}"),
+                reason: "unknown Artifact field".to_string(),
+            }
+        }
+        reference::ReferenceResolveError::ItemOutOfScope => {
+            ValidationError::InvalidArtifactReference {
+                reference: reference::ITEM_ARTIFACT.to_string(),
+                reason: "`item` is only available inside fanout child scope".to_string(),
+            }
+        }
+        reference::ReferenceResolveError::InvalidInputRef { value } => {
+            ValidationError::InvalidArtifactReference {
+                reference: value,
+                reason: "`inputs:` entries must be `request` or a top-level node Artifact name"
+                    .to_string(),
+            }
+        }
+        reference::ReferenceResolveError::InputsNotAllowedOnFanout { node } => {
+            ValidationError::InvalidArtifactReference {
+                reference: node,
+                reason: "fanout nodes cannot declare `inputs:`".to_string(),
+            }
+        }
+    }
+}
 
 pub fn validate_name(name: &str) -> Result<(), ValidationError> {
     match WorkflowName::new(name) {
@@ -389,10 +424,15 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
         return Err(err);
     }
     validate_schema_refs(workflow)?;
+    if let Some(err) = reference::validate_workflow_references(workflow)
+        .into_iter()
+        .next()
+    {
+        return Err(reference_error_to_validation_error(err));
+    }
 
     // 遷移先名前空間: トップレベルstep名のみ（aggregate.then/else, rule.nextの検証用）
     let mut transition_target_names = HashSet::new();
-    // 参照可能名前空間: トップレベルstep名 + 並列子step名（pass_output_from等の検証用）
     let mut referenceable_step_names = HashSet::new();
     for step in &workflow.nodes {
         if !transition_target_names.insert(step.name.as_str()) {
@@ -414,7 +454,7 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
         }
     }
 
-    // 各ステップより前に定義されたステップ名を追跡（parallel子stepのpass_output_from検証用）
+    // 各ステップより前に定義されたステップ名を追跡（collect.from検証用）
     let mut preceding_step_names: HashSet<&str> = HashSet::new();
 
     for step in &workflow.nodes {
@@ -434,8 +474,6 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                     reason: "fanoutブロックには1つ以上の子ステップが必要です".to_string(),
                 });
             }
-            let child_names: HashSet<&str> = children.iter().map(|c| c.name.as_str()).collect();
-
             for child in children {
                 // 子step にはファセット参照が必要
                 if !child.has_facet_refs() {
@@ -447,27 +485,6 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
 
                 // 子step の permission 妥当性チェック（必須）
                 validate_required_permission(&child.name, child.permission.as_deref())?;
-
-                // pass_output_from の参照先チェック
-                if let Some(ref refs) = child.pass_output_from {
-                    for r in refs {
-                        // 同一block内の兄弟子step参照は禁止
-                        if child_names.contains(r.as_str()) {
-                            return Err(ValidationError::ParallelChildSiblingRef {
-                                parent: step.name.clone(),
-                                child: child.name.clone(),
-                                reference: r.clone(),
-                            });
-                        }
-                        // 定義済みステップ（兄弟以外）を参照可能（後方参照も許可）
-                        if !referenceable_step_names.contains(r.as_str()) {
-                            return Err(ValidationError::UnknownOutputFrom {
-                                step: child.name.clone(),
-                                reference: r.clone(),
-                            });
-                        }
-                    }
-                }
             }
 
             // aggregate バリデーション
@@ -554,19 +571,6 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                         step: step.name.clone(),
                         next: rule.next.clone(),
                     });
-                }
-            }
-
-            // pass_output_from の参照先 step 名が定義済みステップに存在するか検証
-            // （後方参照を許可：出力が未生成の場合は空として扱われる）
-            if let Some(ref refs) = step.pass_output_from {
-                for r in refs {
-                    if !referenceable_step_names.contains(r.as_str()) {
-                        return Err(ValidationError::UnknownOutputFrom {
-                            step: step.name.clone(),
-                            reference: r.clone(),
-                        });
-                    }
                 }
             }
 
@@ -685,6 +689,13 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
 /// backend-owned schema state だけを読む。
 pub fn validate_schema_refs(workflow: &Workflow) -> Result<(), ValidationError> {
     for (name, schema) in &workflow.schemas {
+        if name == reference::REQUEST_ARTIFACT {
+            return Err(ValidationError::InvalidArtifactReference {
+                reference: name.to_string(),
+                reason: "`request` is a reserved Artifact name and cannot be declared in schemas"
+                    .to_string(),
+            });
+        }
         if !contract_schema::is_safe_identifier(name) {
             return Err(ValidationError::InvalidSchema {
                 schema: name.to_string(),
@@ -718,6 +729,17 @@ pub fn validate_schema_refs(workflow: &Workflow) -> Result<(), ValidationError> 
     }
 
     Ok(())
+}
+
+pub fn validate_template_references(
+    workflow: &Workflow,
+    content: &str,
+    allow_item: bool,
+) -> Vec<ValidationError> {
+    reference::validate_template_references(workflow, content, allow_item)
+        .into_iter()
+        .map(reference_error_to_validation_error)
+        .collect()
 }
 
 fn validate_schema_def(
@@ -1055,6 +1077,11 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
     if let Err(e) = validate_schema_refs(workflow) {
         errors.push(e);
     }
+    errors.extend(
+        reference::validate_workflow_references(workflow)
+            .into_iter()
+            .map(reference_error_to_validation_error),
+    );
 
     // 名前空間構築: 重複があれば蓄積するが、以降のチェックは続行
     let mut transition_target_names = HashSet::new();
@@ -1102,8 +1129,6 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
                     reason: "fanoutブロックには1つ以上の子ステップが必要です".to_string(),
                 });
             }
-            let child_names: HashSet<&str> = children.iter().map(|c| c.name.as_str()).collect();
-
             for child in children {
                 if !child.has_facet_refs() {
                     errors.push(ValidationError::ParallelChildMissingFacet {
@@ -1115,23 +1140,6 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
                     validate_required_permission(&child.name, child.permission.as_deref())
                 {
                     errors.push(e);
-                }
-                if let Some(ref refs) = child.pass_output_from {
-                    for r in refs {
-                        if child_names.contains(r.as_str()) {
-                            errors.push(ValidationError::ParallelChildSiblingRef {
-                                parent: step.name.clone(),
-                                child: child.name.clone(),
-                                reference: r.clone(),
-                            });
-                        }
-                        if !referenceable_step_names.contains(r.as_str()) {
-                            errors.push(ValidationError::UnknownOutputFrom {
-                                step: child.name.clone(),
-                                reference: r.clone(),
-                            });
-                        }
-                    }
                 }
             }
 
@@ -1210,16 +1218,6 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
                         step: step.name.clone(),
                         next: rule.next.clone(),
                     });
-                }
-            }
-            if let Some(ref refs) = step.pass_output_from {
-                for r in refs {
-                    if !referenceable_step_names.contains(r.as_str()) {
-                        errors.push(ValidationError::UnknownOutputFrom {
-                            step: step.name.clone(),
-                            reference: r.clone(),
-                        });
-                    }
                 }
             }
             if let Some(ref collect) = step.collect {
@@ -1324,7 +1322,6 @@ mod tests {
 
     fn make_workflow(nodes: Vec<NodeDefinition>) -> Workflow {
         Workflow {
-            variables: Default::default(),
             schemas: Default::default(),
             name: "test".to_string(),
             description: "test workflow".to_string(),
@@ -1425,6 +1422,27 @@ mod tests {
                 command: command.to_string(),
             }),
             ..Default::default()
+        }
+    }
+
+    fn artifact_object_schema(fields: &[&str]) -> SchemaDef {
+        SchemaDef::Object {
+            properties: fields
+                .iter()
+                .map(|field| ((*field).to_string(), SchemaDef::String { r#enum: None }))
+                .collect(),
+            required: BTreeSet::new(),
+            additional_properties: false,
+        }
+    }
+
+    fn workflow_with_schemas(
+        nodes: Vec<NodeDefinition>,
+        schemas: BTreeMap<String, SchemaDef>,
+    ) -> Workflow {
+        Workflow {
+            schemas,
+            ..make_workflow(nodes)
         }
     }
 
@@ -1627,14 +1645,119 @@ mod tests {
     }
 
     #[test]
-    fn unknown_output_from_fails() {
+    fn reserved_artifact_names_cannot_be_nodes() {
+        for name in ["request", "item"] {
+            let wf = make_workflow(vec![make_step(name, TestKind::Session, vec![])]);
+            assert!(matches!(
+                validate(&wf).unwrap_err(),
+                ValidationError::InvalidArtifactReference { ref reference, .. } if reference == name
+            ));
+        }
+    }
+
+    #[test]
+    fn unknown_input_artifact_fails() {
         let wf = make_workflow(vec![NodeDefinition {
-            pass_output_from: Some(vec!["nonexistent".to_string()]),
+            inputs: vec!["nonexistent".to_string()],
             ..make_step("step1", TestKind::Session, vec![])
         }]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::UnknownOutputFrom { ref reference, .. } if reference == "nonexistent"
+            ValidationError::InvalidArtifactReference { ref reference, .. } if reference == "nonexistent"
+        ));
+    }
+
+    #[test]
+    fn input_rejects_field_reference_item_and_request_field() {
+        let mut schemas = BTreeMap::new();
+        schemas.insert("plan-doc".to_string(), artifact_object_schema(&["summary"]));
+        for input in ["plan.summary", "item", "request.field"] {
+            let mut plan = make_step("plan", TestKind::Session, vec![]);
+            plan.artifact = Some("plan-doc".to_string());
+            let wf = workflow_with_schemas(
+                vec![
+                    plan,
+                    NodeDefinition {
+                        inputs: vec![input.to_string()],
+                        ..make_step("consume", TestKind::Session, vec![])
+                    },
+                ],
+                schemas.clone(),
+            );
+
+            assert!(matches!(
+                validate(&wf).unwrap_err(),
+                ValidationError::InvalidArtifactReference { ref reference, .. } if reference == input
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_task_template_reference_fails_when_no_artifact_exists() {
+        let wf = make_workflow(vec![command_step("step1", "echo {{ task }}")]);
+
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::InvalidArtifactReference { ref reference, .. } if reference == "task"
+        ));
+    }
+
+    #[test]
+    fn item_template_reference_fails_outside_fanout_child_scope() {
+        let wf = make_workflow(vec![command_step("step1", "echo {{ item.path }}")]);
+
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::InvalidArtifactReference { ref reference, .. } if reference == "item"
+        ));
+    }
+
+    #[test]
+    fn artifact_reference_to_session_without_artifact_fails() {
+        let wf = make_workflow(vec![
+            make_step("plan", TestKind::Session, vec![]),
+            command_step("consume", "echo {{ plan }}"),
+        ]);
+
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::InvalidArtifactReference { ref reference, ref reason }
+                if reference == "plan" && reason.contains("does not produce")
+        ));
+    }
+
+    #[test]
+    fn command_without_artifact_rejects_non_reserved_field() {
+        let wf = make_workflow(vec![
+            command_step("build", "cargo build"),
+            command_step("consume", "echo {{ build.no_such_field }}"),
+        ]);
+
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::InvalidArtifactReference { ref reference, ref reason }
+                if reference == "build.no_such_field" && reason.contains("unknown Artifact field")
+        ));
+    }
+
+    #[test]
+    fn artifact_node_rejects_undeclared_field() {
+        let mut schemas = BTreeMap::new();
+        schemas.insert("plan-doc".to_string(), artifact_object_schema(&["summary"]));
+        let mut plan = make_step("plan", TestKind::Session, vec![]);
+        plan.artifact = Some("plan-doc".to_string());
+        let wf = workflow_with_schemas(
+            vec![
+                plan,
+                command_step("consume", "echo {{ plan.unknown_field }}"),
+            ],
+            schemas,
+        );
+
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::InvalidArtifactReference { ref reference, ref reason }
+                if reference == "plan.unknown_field" && reason.contains("unknown Artifact field")
         ));
     }
 
@@ -1654,11 +1777,10 @@ mod tests {
     }
 
     #[test]
-    fn valid_pass_output_from_passes() {
+    fn valid_input_reference_passes() {
         let wf = make_workflow(vec![
             make_step("step_a", TestKind::Session, vec![]),
             NodeDefinition {
-                pass_output_from: Some(vec!["step_a".to_string()]),
                 ..make_step("step_b", TestKind::Session, vec![])
             },
         ]);
@@ -1782,22 +1904,17 @@ mod tests {
     }
 
     #[test]
-    fn parallel_child_sibling_ref_fails() {
-        let wf = make_workflow(vec![make_parallel_block(
+    fn fanout_inputs_are_rejected() {
+        let mut fanout = make_parallel_block(
             "par",
-            vec![
-                make_parallel_step("child1"),
-                InterimChild {
-                    pass_output_from: Some(vec!["child1".to_string()]),
-                    ..make_parallel_step("child2")
-                },
-            ],
+            vec![make_parallel_step("child1"), make_parallel_step("child2")],
             None,
-        )]);
+        );
+        fanout.inputs = vec!["request".to_string()];
+        let wf = make_workflow(vec![fanout]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::ParallelChildSiblingRef { ref parent, ref child, ref reference }
-                if parent == "par" && child == "child2" && reference == "child1"
+            ValidationError::InvalidArtifactReference { ref reference, .. } if reference == "par"
         ));
     }
 
@@ -1822,13 +1939,12 @@ mod tests {
     // `normal_step_missing_mode_fails` は YAML deserialize 段階で吸収される（[02] 範囲）。
 
     #[test]
-    fn parallel_child_pass_output_from_valid_global_step() {
+    fn parallel_child_input_reference_valid_global_step() {
         let wf = make_workflow(vec![
             make_step("plan", TestKind::Session, vec![]),
             make_parallel_block(
                 "par",
                 vec![InterimChild {
-                    pass_output_from: Some(vec!["plan".to_string()]),
                     ..make_parallel_step("child1")
                 }],
                 None,
@@ -1956,7 +2072,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_child_pass_output_from_subsequent_step_passes() {
+    fn parallel_child_input_reference_subsequent_step_passes() {
         // parallel block より後に定義されたステップへの後方参照は許可される
         // （出力が未生成の場合は空として扱われる）
         let wf = make_workflow(vec![
@@ -1964,7 +2080,6 @@ mod tests {
             make_parallel_block(
                 "par",
                 vec![InterimChild {
-                    pass_output_from: Some(vec!["report".to_string()]),
                     ..make_parallel_step("child1")
                 }],
                 None,
@@ -1975,7 +2090,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_child_pass_output_from_preceding_step_passes() {
+    fn parallel_child_input_reference_preceding_step_passes() {
         // parallel block より前に定義されたステップへの参照はOK
         let wf = make_workflow(vec![
             make_step("plan", TestKind::Session, vec![]),
@@ -1983,7 +2098,6 @@ mod tests {
             make_parallel_block(
                 "par",
                 vec![InterimChild {
-                    pass_output_from: Some(vec!["plan".to_string(), "implement".to_string()]),
                     ..make_parallel_step("child1")
                 }],
                 None,
@@ -1994,7 +2108,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_child_pass_output_from_prior_parallel_child_passes() {
+    fn parallel_child_input_reference_prior_parallel_child_passes() {
         // 前のparallel blockの子stepへの参照はOK
         let wf = make_workflow(vec![
             make_parallel_block(
@@ -2008,7 +2122,6 @@ mod tests {
             make_parallel_block(
                 "par2",
                 vec![InterimChild {
-                    pass_output_from: Some(vec!["review-a".to_string()]),
                     ..make_parallel_step("summarize")
                 }],
                 None,
@@ -2128,14 +2241,13 @@ mod tests {
         ));
     }
 
-    // ---- pass_output_from 後方参照 ----
+    // ---- input_reference 後方参照 ----
 
     #[test]
-    fn pass_output_from_backward_reference_passes() {
-        // 定義順で後方のステップを pass_output_from で参照できる
+    fn input_reference_backward_reference_passes() {
+        // 定義順で後方のステップを input_reference で参照できる
         let wf = make_workflow(vec![
             NodeDefinition {
-                pass_output_from: Some(vec!["step_b".to_string()]),
                 ..make_step("step_a", TestKind::Session, vec![])
             },
             make_step("step_b", TestKind::Session, vec![]),
@@ -2464,6 +2576,25 @@ mod tests {
         );
 
         assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn schema_refs_reject_request_schema_but_allow_item_schema() {
+        let mut request_wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        request_wf
+            .schemas
+            .insert("request".to_string(), SchemaDef::String { r#enum: None });
+        assert!(matches!(
+            validate_schema_refs(&request_wf).unwrap_err(),
+            ValidationError::InvalidArtifactReference { ref reference, ref reason }
+                if reference == "request" && reason.contains("reserved Artifact name")
+        ));
+
+        let mut item_wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        item_wf
+            .schemas
+            .insert("item".to_string(), SchemaDef::String { r#enum: None });
+        assert!(validate_schema_refs(&item_wf).is_ok());
     }
 
     #[test]

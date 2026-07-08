@@ -1,4 +1,4 @@
-{{project_name}} プロジェクトの Spec ディレクトリを作成し、`requirements.md` を一括で作成または更新する。
+`{{ request }}` を起点に Spec ディレクトリを作成し、`requirements.md` を一括で作成または更新する。
 
 ## 基本方針
 

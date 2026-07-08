@@ -1,8 +1,7 @@
 //! PathAliases — 起動環境（dev / 本番）から一意に決まる CLI alias の解決単位。
 //!
 //! alias 名・実行 binary・データディレクトリの三者を組として保持する。
-//! facet 展開 (`{{path_alias.releash}}`) と子プロセス起動経路（PTY / oneshot /
-//! agent bridge）の双方が同じソースから値を引く。
+//! 子プロセス起動経路（PTY / oneshot / agent bridge）が同じソースから値を引く。
 //!
 //! [01] CLI alias と実行対象の一意な対応:
 //! 本番ビルド (release) → alias 名 `releash` / data dir `com.releash.app`

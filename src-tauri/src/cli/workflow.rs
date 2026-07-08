@@ -676,7 +676,15 @@ mod tests {
     "outputTokens": 0
   }},
   "stepStates": {{}},
-  "stepOutputs": {{}},
+  "stepOutputs": {{
+    "request": {{
+      "stepName": "request",
+      "runIndex": 0,
+      "structuredOutput": "",
+      "artifactContract": "string",
+      "completedAt": 100.0
+    }}
+  }},
   "startedAt": 100.0,
   "updatedAt": 100.0
 }}
@@ -688,7 +696,7 @@ mod tests {
         assert_eq!(
             logs_human,
             format!(
-                r#"RunStarted {{"event":"run_started","run_id":"{run_id}","timestamp":100.0,"workflow_definition":{{"builtin":false,"description":"test","name":"wf","nodes":[]}},"workflow_file_stem":"wf","workflow_name":"wf","worktree_path":"/wt/runs"}}
+                r#"RunStarted {{"event":"run_started","request":"","run_id":"{run_id}","timestamp":100.0,"workflow_definition":{{"builtin":false,"description":"test","name":"wf","nodes":[]}},"workflow_file_stem":"wf","workflow_name":"wf","worktree_path":"/wt/runs"}}
 "#
             )
         );
@@ -700,6 +708,7 @@ mod tests {
                 r#"[
   {{
     "event": "run_started",
+    "request": "",
     "run_id": "{run_id}",
     "timestamp": 100.0,
     "workflow_definition": {{
@@ -994,7 +1003,6 @@ mod tests {
             .await;
 
         let workflow = Workflow {
-            variables: Default::default(),
             name: "engine-cli-list".to_string(),
             description: String::new(),
             builtin: false,

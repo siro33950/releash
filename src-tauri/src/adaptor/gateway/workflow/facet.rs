@@ -1,8 +1,8 @@
 use super::builtin;
-use super::schema::{InterimChild, NodeDefinition, ResolvedFacets, Workflow};
+use super::schema::{FacetRefs, Workflow};
 use super::storage;
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -80,17 +80,21 @@ impl FacetKind {
 }
 
 /// `artifact:` がある node の user message 末尾に置く完了時アクション。
-pub fn artifact_completion_action(key: &str) -> String {
+pub fn artifact_completion_action(key: &str, run_id: &str, node_name: &str) -> String {
     let quoted_key = crate::domain::shell::quote_path_for_shell(key);
+    let quoted_run_id = crate::domain::shell::quote_path_for_shell(run_id);
+    let quoted_node_name = crate::domain::shell::quote_path_for_shell(node_name);
     format!(
         "## 完了時の必須アクション\n\n\
 提出値が確定した時点で、次の assistant action は最終応答ではなく CLI 実行でなければならない。\n\
 チャット本文に JSON や要約を書いても提出とは扱われない。必ず次のコマンドで Artifact を提出すること。\n\
 このコマンドが成功するまで node は完了していない。\n\n\
 ```sh\n\
-{{{{path_alias.releash}}}} workflow output submit {{{{run_id}}}} \\\n  --node {{{{node_name}}}} \\\n  --type {key} \\\n  --json '{{...}}'\n\
+releash workflow output submit {run_id} \\\n  --node {node_name} \\\n  --type {key} \\\n  --json '{{...}}'\n\
 ```"
 ,
+        run_id = quoted_run_id,
+        node_name = quoted_node_name,
         key = quoted_key
     )
 }
@@ -99,6 +103,77 @@ pub fn artifact_completion_action(key: &str) -> String {
 pub struct ComposedPrompt {
     pub system_prompt: Option<String>,
     pub user_message: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FacetContents {
+    pub policy: Option<String>,
+    pub knowledge: Option<String>,
+    pub instruction: Option<String>,
+}
+
+impl FacetContents {
+    pub fn is_empty(&self) -> bool {
+        self.policy.is_none() && self.knowledge.is_none() && self.instruction.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkflowFacetContents {
+    nodes: BTreeMap<String, FacetContents>,
+    children: BTreeMap<String, BTreeMap<String, FacetContents>>,
+}
+
+impl WorkflowFacetContents {
+    pub fn for_node(&self, node_name: &str) -> Option<&FacetContents> {
+        self.nodes.get(node_name)
+    }
+
+    pub fn for_child(&self, parent_name: &str, child_name: &str) -> Option<&FacetContents> {
+        self.children
+            .get(parent_name)
+            .and_then(|children| children.get(child_name))
+    }
+
+    fn insert_node(&mut self, node_name: String, contents: FacetContents) {
+        self.nodes.insert(node_name, contents);
+    }
+
+    fn insert_child(&mut self, parent_name: String, child_name: String, contents: FacetContents) {
+        self.children
+            .entry(parent_name)
+            .or_default()
+            .insert(child_name, contents);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_node_for_test(
+        node_name: impl Into<String>,
+        contents: FacetContents,
+    ) -> Self {
+        let mut resolved = Self::default();
+        resolved.insert_node(node_name.into(), contents);
+        resolved
+    }
+
+    pub fn iter_node_contents(&self) -> impl Iterator<Item = (&str, &FacetContents)> {
+        self.nodes
+            .iter()
+            .map(|(node_name, contents)| (node_name.as_str(), contents))
+    }
+
+    pub fn iter_child_contents(&self) -> impl Iterator<Item = (&str, &str, &FacetContents)> {
+        self.children.iter().flat_map(|(parent_name, children)| {
+            children
+                .iter()
+                .map(|(child_name, contents)| (parent_name.as_str(), child_name.as_str(), contents))
+        })
+    }
+}
+
+pub fn empty_facet_contents() -> &'static FacetContents {
+    static EMPTY: std::sync::OnceLock<FacetContents> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(FacetContents::default)
 }
 
 pub fn validate_facet_key(key: &str) -> Result<(), FacetError> {
@@ -276,26 +351,27 @@ pub fn resolve_facet_path(
 
 /// node の prompt 関連 facet 参照から組み立てた `ComposedPrompt` を返す。
 ///
-/// [02] schema 境界: 実行時に未解決 ref を残さないため、`NodeDefinition.resolved_facets`
-/// を唯一の参照源とする。ファイル I/O fallback は持たない（呼び出し前に
-/// `storage::load_workflow` / `builtin::load_builtin_workflow_resolved` 経由で
-/// `resolved_facets` を populate しておくこと）。
+/// 実行時に未解決 ref を残さないため、gateway 側 read model の解決済み本文を
+/// 唯一の参照源とする。ファイル I/O fallback は持たない。
 ///
 /// agent / approval 種別の node が対象。bash / parallel node には facet 参照は存在しない。
-pub fn compose_facets(node: &NodeDefinition) -> ComposedPrompt {
-    let Some(session) = node.session() else {
-        return compose_from_parts(&ResolvedFacets::default());
-    };
-    compose_from_parts(&session.resolved_facets)
+pub fn compose_facets(resolved: Option<&FacetContents>) -> ComposedPrompt {
+    match resolved {
+        Some(resolved) => compose_from_parts(resolved),
+        None => compose_from_parts(empty_facet_contents()),
+    }
 }
 
 /// 並列子 node の prompt 関連 facet 参照から組み立てた `ComposedPrompt` を返す。
-/// `compose_facets` と同じく `InterimChild.resolved_facets` のみを参照する。
-pub fn compose_child_facets(child: &InterimChild) -> ComposedPrompt {
-    compose_from_parts(&child.resolved_facets)
+/// `compose_facets` と同じく gateway 側 read model の解決済み本文を参照する。
+pub fn compose_child_facets(resolved: Option<&FacetContents>) -> ComposedPrompt {
+    match resolved {
+        Some(resolved) => compose_from_parts(resolved),
+        None => compose_from_parts(empty_facet_contents()),
+    }
 }
 
-fn compose_from_parts(resolved: &ResolvedFacets) -> ComposedPrompt {
+fn compose_from_parts(resolved: &FacetContents) -> ComposedPrompt {
     let mut system_parts: Vec<String> = Vec::new();
     if let Some(ref content) = resolved.policy {
         system_parts.push(content.clone());
@@ -320,94 +396,70 @@ fn compose_from_parts(resolved: &ResolvedFacets) -> ComposedPrompt {
 }
 
 /// `Workflow` に含まれる全 node / 子 node の facet 参照を解決し、
-/// それぞれの `resolved_facets` フィールドに本文を格納する。
+/// gateway 側 read model として返す。
 ///
-/// `storage::load_workflow` から呼ばれ、未解決 ref を schema 層に残さないようにする
-/// （[02] schema 境界）。欠損 facet があれば `FacetError::NotFound` を伝搬し、
-/// load 経路で実行可能とは判定しない。
-pub fn resolve_workflow_facets(workflow: &mut Workflow, base_dir: &Path) -> Result<(), FacetError> {
-    for node in &mut workflow.nodes {
-        if let Some(session) = node.session_mut() {
-            session.resolved_facets = resolve_refs(
-                session.facets.policy.as_deref(),
-                session.facets.knowledge.as_deref(),
-                session.facets.instruction.as_deref(),
-                base_dir,
-            )?;
+/// 欠損 facet があれば `FacetError::NotFound` を伝搬し、load 経路で実行可能とは判定しない。
+pub fn resolve_workflow_facets(
+    workflow: &Workflow,
+    base_dir: &Path,
+) -> Result<WorkflowFacetContents, FacetError> {
+    let mut resolved = WorkflowFacetContents::default();
+    for node in &workflow.nodes {
+        if let Some(session) = node.session() {
+            resolved.insert_node(node.name.clone(), resolve_refs(&session.facets, base_dir)?);
         }
-        if let Some(fanout) = node.fanout_mut() {
-            let children = &mut fanout.parallel_children;
+        if let Some(fanout) = node.fanout() {
+            let children = &fanout.parallel_children;
             for child in children {
-                child.resolved_facets = resolve_refs(
-                    child.facets.policy.as_deref(),
-                    child.facets.knowledge.as_deref(),
-                    child.facets.instruction.as_deref(),
-                    base_dir,
-                )?;
+                resolved.insert_child(
+                    node.name.clone(),
+                    child.name.clone(),
+                    resolve_refs(&child.facets, base_dir)?,
+                );
             }
         }
     }
-    Ok(())
+    Ok(resolved)
 }
 
-/// テスト用ヘルパー: 単一 node の facet 参照を `base_dir` から解決し
-/// `resolved_facets` に格納する。production の `resolve_workflow_facets` が
-/// workflow 全体に対して行う処理を、engine / facet 各モジュールの単体テストで
-/// 個別 node 単位に分解して使うためのもの。
+/// テスト用ヘルパー: 単一 node の facet 参照を `base_dir` から解決する。
 ///
 /// `unwrap()` 等で潰さず `FacetError` をそのまま返すため、欠損 facet のテスト
 /// シナリオもこのヘルパーを経由して書ける。
 #[cfg(test)]
 pub(crate) fn resolve_node_facets(
-    node: &mut crate::adaptor::gateway::workflow::schema::NodeDefinition,
+    node: &crate::adaptor::gateway::workflow::schema::NodeDefinition,
     base_dir: &Path,
-) -> Result<(), FacetError> {
-    if let Some(session) = node.session_mut() {
-        session.resolved_facets = resolve_refs(
-            session.facets.policy.as_deref(),
-            session.facets.knowledge.as_deref(),
-            session.facets.instruction.as_deref(),
-            base_dir,
-        )?;
-    }
-    Ok(())
+) -> Result<FacetContents, FacetError> {
+    node.session()
+        .map(|session| resolve_refs(&session.facets, base_dir))
+        .unwrap_or_else(|| Ok(FacetContents::default()))
 }
 
 /// テスト用ヘルパー: 並列子 node の facet 参照を解決する。
 /// `resolve_node_facets` の `InterimChild` 版。
 #[cfg(test)]
 pub(crate) fn resolve_child_facets(
-    child: &mut crate::adaptor::gateway::workflow::schema::InterimChild,
+    child: &crate::adaptor::gateway::workflow::schema::InterimChild,
     base_dir: &Path,
-) -> Result<(), FacetError> {
-    child.resolved_facets = resolve_refs(
-        child.facets.policy.as_deref(),
-        child.facets.knowledge.as_deref(),
-        child.facets.instruction.as_deref(),
-        base_dir,
-    )?;
-    Ok(())
+) -> Result<FacetContents, FacetError> {
+    resolve_refs(&child.facets, base_dir)
 }
 
-fn resolve_refs(
-    policy: Option<&str>,
-    knowledge: Option<&str>,
-    instruction: Option<&str>,
-    base_dir: &Path,
-) -> Result<ResolvedFacets, FacetError> {
-    let resolved_policy = match policy {
+fn resolve_refs(facets: &FacetRefs, base_dir: &Path) -> Result<FacetContents, FacetError> {
+    let resolved_policy = match facets.policy.as_deref() {
         Some(k) => Some(load_facet(FacetKind::Policy, k, base_dir)?),
         None => None,
     };
-    let resolved_knowledge = match knowledge {
+    let resolved_knowledge = match facets.knowledge.as_deref() {
         Some(k) => Some(load_facet(FacetKind::Knowledge, k, base_dir)?),
         None => None,
     };
-    let resolved_instruction = match instruction {
+    let resolved_instruction = match facets.instruction.as_deref() {
         Some(k) => Some(load_facet(FacetKind::Instruction, k, base_dir)?),
         None => None,
     };
-    Ok(ResolvedFacets {
+    Ok(FacetContents {
         policy: resolved_policy,
         knowledge: resolved_knowledge,
         instruction: resolved_instruction,
@@ -417,8 +469,10 @@ fn resolve_refs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::{FacetRefs, NodeKind, SessionSpec};
-    use crate::domain::workflow::services::variable_renderer;
+    use crate::adaptor::gateway::workflow::prompt_rendering;
+    use crate::adaptor::gateway::workflow::schema::{
+        FacetRefs, NodeDefinition, NodeKind, SessionSpec,
+    };
     use tempfile::TempDir;
 
     fn make_facet_node(
@@ -582,9 +636,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let mut node = make_facet_node(Some("coding"), Some("architecture"), Some("implement"));
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
+        let node = make_facet_node(Some("coding"), Some("architecture"), Some("implement"));
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
 
         let sys = result.system_prompt.expect("system_prompt should be set");
         assert!(sys.contains("Follow best practices."));
@@ -598,9 +652,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let mut node = make_facet_node(Some("coding"), None, None);
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
+        let node = make_facet_node(Some("coding"), None, None);
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
 
         assert_eq!(
             result.system_prompt.as_deref(),
@@ -611,12 +665,12 @@ mod tests {
 
     #[test]
     fn artifact_contract_completion_action_requires_cli_as_next_action() {
-        let action = artifact_completion_action("plan-doc");
+        let action = artifact_completion_action("plan-doc", "run-1", "plan");
 
         assert!(action.contains("完了時の必須アクション"));
         assert!(action.contains("次の assistant action は最終応答ではなく CLI 実行"));
-        // CLI 名は engine 側の `render_namespaced_variables` で展開される。
-        assert!(action.contains("{{path_alias.releash}} workflow output submit"));
+        assert!(action.contains("releash workflow output submit run-1"));
+        assert!(action.contains("--node plan"));
         assert!(action.contains("--type plan-doc"));
         assert!(action.contains("--json"));
         assert!(!action.contains("--file"));
@@ -625,10 +679,16 @@ mod tests {
 
     #[test]
     fn artifact_contract_completion_action_quotes_shell_metacharacters() {
-        let action = artifact_completion_action("review; curl https://example.invalid #");
+        let action = artifact_completion_action(
+            "review; curl https://example.invalid #",
+            "run; bad",
+            "node; bad",
+        );
 
         assert!(action.contains("--type 'review; curl https://example.invalid #'"));
         assert!(!action.contains("--type review; curl"));
+        assert!(action.contains("submit 'run; bad'"));
+        assert!(action.contains("--node 'node; bad'"));
     }
 
     #[test]
@@ -637,9 +697,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let mut node = make_facet_node(None, Some("architecture"), Some("implement"));
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
+        let node = make_facet_node(None, Some("architecture"), Some("implement"));
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
 
         assert!(result.system_prompt.is_none());
     }
@@ -650,17 +710,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let mut node = make_facet_node(None, Some("architecture"), Some("implement"));
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
+        let node = make_facet_node(None, Some("architecture"), Some("implement"));
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
 
         assert!(result.user_message.contains("The system uses Tauri."));
         assert!(result.user_message.contains("Implement the feature."));
         assert_eq!(
-            node.resolved_facets()
-                .expect("resolved facets must be available for session node")
-                .instruction
-                .as_deref(),
+            resolved.instruction.as_deref(),
             Some("Implement the feature.")
         );
     }
@@ -671,9 +728,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let mut node = make_facet_node(Some("coding"), None, None);
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
+        let node = make_facet_node(Some("coding"), None, None);
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
 
         assert_eq!(result.user_message, "");
     }
@@ -683,9 +740,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let mut node = make_facet_node(Some("coding"), Some("architecture"), Some("implement"));
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
+        let node = make_facet_node(Some("coding"), Some("architecture"), Some("implement"));
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
 
         let sys = result.system_prompt.expect("system_prompt should be set");
         assert!(sys.contains("Follow best practices."));
@@ -699,28 +756,28 @@ mod tests {
     #[test]
     fn resolve_with_missing_facet_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let mut node = make_facet_node(Some("nonexistent"), None, None);
-        let result = resolve_node_facets(&mut node, tmp.path());
+        let node = make_facet_node(Some("nonexistent"), None, None);
+        let result = resolve_node_facets(&node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
     #[test]
     fn resolve_with_missing_knowledge_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let mut node = make_facet_node(None, Some("nonexistent"), None);
-        let result = resolve_node_facets(&mut node, tmp.path());
+        let node = make_facet_node(None, Some("nonexistent"), None);
+        let result = resolve_node_facets(&node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
     #[test]
     fn resolve_with_missing_instruction_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let mut node = make_facet_node(None, None, Some("nonexistent"));
-        let result = resolve_node_facets(&mut node, tmp.path());
+        let node = make_facet_node(None, None, Some("nonexistent"));
+        let result = resolve_node_facets(&node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
-    // --- compose → render_facet_variables パイプライン結合テスト ---
+    // --- compose → Artifact reference rendering パイプライン結合テスト ---
 
     #[test]
     fn compose_and_render_pipeline() {
@@ -733,42 +790,39 @@ mod tests {
         std::fs::create_dir_all(&instructions).unwrap();
         std::fs::write(
             policies.join("coding.md"),
-            "Coding rules for {{project_name}}.",
+            "Coding rules for {{ request }}.",
         )
         .unwrap();
-        std::fs::write(
-            instructions.join("impl.md"),
-            "Task: {{task}}\nProject: {{project_name}}",
-        )
-        .unwrap();
+        std::fs::write(instructions.join("impl.md"), "Task: {{ request }}").unwrap();
 
-        let mut node = make_facet_node(Some("coding"), None, Some("impl"));
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let composed = compose_facets(&node);
+        let node = make_facet_node(Some("coding"), None, Some("impl"));
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let composed = compose_facets(Some(&resolved));
 
-        let worktree_path = "/home/user/my-project";
         let task = Some("Fix the bug");
 
-        let rendered_system = composed
-            .system_prompt
-            .map(|s| prompt_rendering::render_facet_variables(&s, worktree_path, task));
-        let rendered_user =
-            prompt_rendering::render_facet_variables(&composed.user_message, worktree_path, task);
+        let (_system_prompt, rendered_user) = prompt_rendering::build_step_prompt(
+            &node,
+            Some(&resolved),
+            "run-1",
+            task,
+            &std::collections::HashMap::new(),
+        )
+        .expect("prompt rendering");
         let rendered_instruction = prompt_rendering::render_step_workflow_instruction(
             &node,
-            "run-1",
-            worktree_path,
+            Some(&resolved),
             task,
             &std::collections::HashMap::new(),
         )
         .expect("workflow instruction");
 
-        assert_eq!(rendered_system.unwrap(), "Coding rules for my-project.");
-        assert_eq!(rendered_user, "Task: Fix the bug\nProject: my-project");
         assert_eq!(
-            rendered_instruction,
-            "Task: Fix the bug\nProject: my-project"
+            composed.system_prompt.as_deref(),
+            Some("Coding rules for {{ request }}.")
         );
+        assert_eq!(rendered_user, "Task: Fix the bug");
+        assert_eq!(rendered_instruction, "Task: Fix the bug");
     }
 
     // --- extract_description ---
@@ -870,129 +924,23 @@ mod tests {
         }
     }
 
-    // --- namespace 展開 (spec issues-1054) ---
+    // --- Artifact template rendering ---
 
     #[test]
-    fn render_path_alias_substitutes_releash_with_runtime_alias() {
-        // Rule: 起動環境別 `{{path_alias.releash}}` が `releash` / `releash-dev` に展開される
-        let alias_name = crate::infrastructure::platform::path_aliases::alias_name_for_profile(
-            crate::infrastructure::platform::path_aliases::BuildProfile::current(),
+    fn find_undefined_template_variables_returns_only_invalid_reference_syntax() {
+        let content = "{{ request }} {{ plan.summary }} {{ request.more }} {{ bad ref }}";
+        let undefined = prompt_rendering::find_undefined_template_variables(content);
+        assert_eq!(
+            undefined,
+            vec!["request.more".to_string(), "bad ref".to_string()]
         );
-        let content = "Run `{{path_alias.releash}} workflow output submit`";
-        let rendered =
-            variable_renderer::render_path_alias_variables_with_name(content, alias_name);
-        let expected_alias = if cfg!(debug_assertions) {
-            "releash-dev"
-        } else {
-            "releash"
-        };
-        assert!(
-            rendered.contains(&format!("Run `{expected_alias} workflow output submit`")),
-            "rendered={rendered}"
-        );
-    }
-
-    #[test]
-    fn render_workflow_variables_substitutes_declared_vars() {
-        // Rule: workflow が宣言した変数は `{{vars.<name>}}` で facet から参照できる
-        let mut vars = std::collections::HashMap::new();
-        vars.insert("project_label".to_string(), "Releash".to_string());
-        vars.insert("env".to_string(), "production".to_string());
-        let content = "Project: {{vars.project_label}}, env={{vars.env}}";
-        let rendered = variable_renderer::render_workflow_variables(content, &vars);
-        assert_eq!(rendered, "Project: Releash, env=production");
-    }
-
-    #[test]
-    fn find_undefined_workflow_variable_refs_returns_only_undefined_vars() {
-        let mut vars = std::collections::HashMap::new();
-        vars.insert("known".to_string(), "value".to_string());
-        let content = "{{vars.known}} {{vars.unknown}} {{vars.another_missing}}";
-        let mut undefined =
-            variable_renderer::find_undefined_workflow_variable_refs(content, &vars);
-        undefined.sort();
-        assert_eq!(undefined, vec!["another_missing", "unknown"]);
-    }
-
-    #[test]
-    fn find_undefined_template_variables_does_not_flag_namespaced_refs() {
-        // 既存 SYSTEM_TEMPLATE_VARIABLES 以外のトップレベル参照は未定義扱いだが、
-        // 既知 namespace + 既知 key（`path_alias.releash` / `vars.*`）は facet 単体検証では対象外。
-        let content = "{{project_name}} {{vars.x}} {{path_alias.releash}} {{unknown_top}}";
-        let undefined = variable_renderer::find_undefined_template_variables(content);
-        assert_eq!(undefined, vec!["unknown_top".to_string()]);
-    }
-
-    #[test]
-    fn find_undefined_template_variables_flags_unknown_namespace() {
-        // 既知 namespace に含まれない `<ns>.<key>` は未定義扱いになる。
-        let content = "{{not_a_namespace.key}}";
-        let undefined = variable_renderer::find_undefined_template_variables(content);
-        assert_eq!(undefined, vec!["not_a_namespace.key".to_string()]);
-    }
-
-    #[test]
-    fn find_undefined_template_variables_flags_unknown_path_alias_key() {
-        // path_alias namespace は known_keys に含まれる key のみ既知扱い。
-        // typo（例: `relase`）は未定義として検出される（spec design.md「未定義参照はエラー」）。
-        let content = "{{path_alias.relase}} {{path_alias.releash}}";
-        let undefined = variable_renderer::find_undefined_template_variables(content);
-        assert_eq!(undefined, vec!["path_alias.relase".to_string()]);
-    }
-
-    #[test]
-    fn render_path_alias_variables_leaves_unknown_keys_intact() {
-        // typo した key は置換せず未展開のまま残す（未定義検出側でエラーになる）。
-        let alias_name = crate::infrastructure::platform::path_aliases::alias_name_for_profile(
-            crate::infrastructure::platform::path_aliases::BuildProfile::current(),
-        );
-        let content = "{{path_alias.relase}} / {{path_alias.releash}}";
-        let rendered =
-            variable_renderer::render_path_alias_variables_with_name(content, alias_name);
-        assert!(
-            rendered.contains("{{path_alias.relase}}"),
-            "unknown key should remain unexpanded: {rendered}"
-        );
-        let expected_alias = if cfg!(debug_assertions) {
-            "releash-dev"
-        } else {
-            "releash"
-        };
-        assert!(
-            rendered.contains(expected_alias),
-            "known key should be expanded: {rendered}"
-        );
-    }
-
-    #[test]
-    fn render_workflow_variables_does_not_secondary_expand() {
-        // Rule: 値内に `{{vars.other}}` の文字列があっても二次展開せず、HashMap
-        // 反復順序に依存しない（spec Contracts: 値は静的文字列のみ）。
-        let mut vars = std::collections::HashMap::new();
-        vars.insert("a".to_string(), "{{vars.b}}".to_string());
-        vars.insert("b".to_string(), "RESOLVED_B".to_string());
-        let content = "A={{vars.a}} B={{vars.b}}";
-        let rendered = variable_renderer::render_workflow_variables(content, &vars);
-        // 反復順序によらず: `{{vars.a}}` は値そのもの (`{{vars.b}}` 文字列) になる。
-        assert_eq!(rendered, "A={{vars.b}} B=RESOLVED_B");
-    }
-
-    #[test]
-    fn render_workflow_variables_leaves_undefined_refs_unchanged() {
-        let vars = std::collections::HashMap::new();
-        let rendered =
-            variable_renderer::render_workflow_variables("hello {{vars.missing}} world", &vars);
-        assert_eq!(rendered, "hello {{vars.missing}} world");
     }
 
     #[test]
     fn render_template_variables_treats_surrounding_whitespace_inside_refs_as_equivalent() {
-        // `{{ task }}` と `{{task}}` を同一参照として扱う（trim 後にマッチ）。
-        // 既存テンプレートに空白付き参照は存在しないため互換性影響はなく、
-        // 本挙動は `replace_template_refs` の意図的な仕様（doc 参照）。
         let mut vars = std::collections::HashMap::new();
-        vars.insert("task".to_string(), "do".to_string());
-        let out = variable_renderer::render_template_variables("a {{ task }} b", &vars);
+        vars.insert("request".to_string(), "do".to_string());
+        let out = prompt_rendering::render_template_variables("a {{ request }} b", &vars);
         assert_eq!(out, "a do b");
     }
 
@@ -1000,7 +948,7 @@ mod tests {
     fn render_template_variables_keeps_unresolved_ref_verbatim_including_whitespace() {
         // 解決できない参照は元の `{{ ... }}` をそのまま残し、内側のスペースを変更しない。
         let vars = std::collections::HashMap::new();
-        let out = variable_renderer::render_template_variables("x {{ unknown }} y", &vars);
+        let out = prompt_rendering::render_template_variables("x {{ unknown }} y", &vars);
         assert_eq!(out, "x {{ unknown }} y");
     }
 }

@@ -370,10 +370,10 @@ describe("AutomationSection", () => {
 		expect(clearExternalChange).toHaveBeenCalled();
 	});
 
-	it("shows facet detail with content and variables", async () => {
+	it("shows facet detail with content and artifact references", async () => {
 		const user = userEvent.setup();
 		const automation = createMockAutomation({
-			selectedFacetContent: "Hello {{project_name}} world",
+			selectedFacetContent: "Hello {{ request }} world",
 			selectedFacetKey: "test-facet",
 			selectedFacetKind: "policy",
 			facets: [
@@ -395,9 +395,10 @@ describe("AutomationSection", () => {
 				1,
 			);
 		});
-		expect(screen.getByText("{{project_name}}")).toBeInTheDocument();
 		expect(
-			screen.getByText("Hello {{project_name}} world"),
+			screen.getByText(
+				(_, element) => element?.textContent === "Hello {{ request }} world",
+			),
 		).toBeInTheDocument();
 		expect(screen.getByText("Edit")).toBeInTheDocument();
 	});
@@ -545,10 +546,9 @@ describe("AutomationSection", () => {
 							},
 						},
 						artifact: "json-schema",
+						inputs: ["step-0"],
 						rules: [{ match: "pass", next: "next-step" }],
 						cycle_guard: { max_iterations: 3 },
-						pass_previous_response: true,
-						pass_output_from: ["step-0"],
 						collect: {
 							from: ["step-a", "step-b"],
 							reduce: "concat" as const,
@@ -571,8 +571,8 @@ describe("AutomationSection", () => {
 		expect(
 			screen.getByText("Cycle Guard: max 3 iterations"),
 		).toBeInTheDocument();
-		expect(screen.getByText("Pass previous response: yes")).toBeInTheDocument();
-		expect(screen.getByText(/Pass output from: step-0/)).toBeInTheDocument();
+		expect(screen.getByText(/^Inputs:/)).toBeInTheDocument();
+		expect(screen.getByText("step-0")).toBeInTheDocument();
 		expect(screen.getByText("Fanout Children")).toBeInTheDocument();
 		expect(screen.getByText(/child-1/)).toBeInTheDocument();
 		expect(screen.getByText(/child-2/)).toBeInTheDocument();

@@ -1,6 +1,6 @@
 # 役割
 
-{{project_name}} のフルレビュー後修正について、Open Thread の `[FIX_POLICY_APPROVED]` と現在の実装差分を確認し、未実装・不足・方針不一致を Task にする。
+{{ request }} のフルレビュー後修正について、Open Thread の `[FIX_POLICY_APPROVED]` と現在の実装差分を確認し、未実装・不足・方針不一致を Task にする。
 
 この Step は確認と Task 化だけを行う。コード変更、Thread への Comment 投稿、resolve は行わない。
 
@@ -18,14 +18,14 @@
 次のコマンドで Open Thread を取得する。
 
 ```sh
-{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json
+releash review list --session-id "$RELEASH_SESSION_ID" --state open --json
 ```
 
 必要に応じて各 Thread の詳細と履歴を確認する。
 
 ```sh
-{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json
-{{path_alias.releash}} review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json
+releash review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json
+releash review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json
 ```
 
 対象は `[FIX_POLICY_APPROVED]` Comment が存在する Open Thread のみ。
@@ -140,7 +140,7 @@ Task は `review-fix-tasks` schema の exact key で作る。別名で代替し�
 - `tasks` に次回実装すべき Task を 1 件以上入れる
 - `summary` に不足内容の概要を書く
 
-提出直前に、上記の必須 key がすべて exact key で入っていることを確認し、同じ JSON を `{{path_alias.releash}} workflow output submit` で提出する。
+提出直前に、上記の必須 key がすべて exact key で入っていることを確認する。Artifact の提出コマンドは prompt 末尾の必須アクションに従う。
 
 # 禁止事項
 

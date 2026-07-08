@@ -2,8 +2,9 @@ use serde::de;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
+use super::domain_mapping;
 use crate::domain::workflow as domain_workflow;
 use crate::domain::workflow::services::contract_schema;
 
@@ -30,7 +31,8 @@ impl Serialize for SchemaDef {
     where
         S: Serializer,
     {
-        contract_schema::schema_def_to_json_value(&schema_def_to_domain(self)).serialize(serializer)
+        contract_schema::schema_def_to_json_value(&domain_mapping::schema_def_to_domain(self))
+            .serialize(serializer)
     }
 }
 
@@ -43,32 +45,6 @@ impl<'de> Deserialize<'de> for SchemaDef {
         contract_schema::schema_def_from_json(&value)
             .map(schema_def_from_domain)
             .map_err(de::Error::custom)
-    }
-}
-
-fn schema_def_to_domain(schema: &SchemaDef) -> domain_workflow::SchemaDef {
-    match schema {
-        SchemaDef::Object {
-            properties,
-            required,
-            additional_properties,
-        } => domain_workflow::SchemaDef::Object {
-            properties: properties
-                .iter()
-                .map(|(name, schema)| (name.clone(), schema_def_to_domain(schema)))
-                .collect(),
-            required: required.clone(),
-            additional_properties: *additional_properties,
-        },
-        SchemaDef::Array { items } => domain_workflow::SchemaDef::Array {
-            items: items.clone(),
-        },
-        SchemaDef::String { r#enum } => domain_workflow::SchemaDef::String {
-            r#enum: r#enum.clone(),
-        },
-        SchemaDef::Boolean => domain_workflow::SchemaDef::Boolean,
-        SchemaDef::Integer => domain_workflow::SchemaDef::Integer,
-        SchemaDef::Number => domain_workflow::SchemaDef::Number,
     }
 }
 
@@ -104,24 +80,7 @@ pub struct Workflow {
     pub builtin: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub schemas: BTreeMap<String, SchemaDef>,
-    /// facet 展開用の静的変数宣言（#1326 で削除予定）。
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub variables: HashMap<String, String>,
     pub nodes: Vec<NodeDefinition>,
-}
-
-/// load 時に解決した facet コンテンツのキャッシュ。
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ResolvedFacets {
-    pub policy: Option<String>,
-    pub knowledge: Option<String>,
-    pub instruction: Option<String>,
-}
-
-impl ResolvedFacets {
-    pub fn is_empty(&self) -> bool {
-        self.policy.is_none() && self.knowledge.is_none() && self.instruction.is_none()
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -185,8 +144,6 @@ pub struct SessionSpec {
     pub gate: SessionGate,
     #[serde(default, skip_serializing_if = "FacetRefs::is_empty")]
     pub facets: FacetRefs,
-    #[serde(skip)]
-    pub resolved_facets: ResolvedFacets,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -228,9 +185,6 @@ pub struct NodeDefinition {
     pub artifact: Option<String>,
     pub input: Option<String>,
     pub inputs: Vec<String>,
-    // 既存表現は担当 goal まで共通位置に残す。
-    pub pass_previous_response: Option<bool>,
-    pub pass_output_from: Option<Vec<String>>,
     pub collect: Option<CollectConfig>,
     pub transition_rules: Vec<TransitionRule>,
     pub cycle_guard: Option<CycleGuard>,
@@ -267,6 +221,7 @@ impl NodeDefinition {
         }
     }
 
+    #[cfg(test)]
     pub fn session_mut(&mut self) -> Option<&mut SessionSpec> {
         match &mut self.kind {
             NodeKind::Session(spec) => Some(spec),
@@ -279,17 +234,6 @@ impl NodeDefinition {
             NodeKind::Fanout(spec) => Some(spec),
             _ => None,
         }
-    }
-
-    pub fn fanout_mut(&mut self) -> Option<&mut FanoutSpec> {
-        match &mut self.kind {
-            NodeKind::Fanout(spec) => Some(spec),
-            _ => None,
-        }
-    }
-
-    pub fn resolved_facets(&self) -> Option<&ResolvedFacets> {
-        self.session().map(|session| &session.resolved_facets)
     }
 }
 
@@ -309,10 +253,6 @@ struct RawNodeDefinition {
     input: Option<String>,
     #[serde(default)]
     inputs: Vec<String>,
-    #[serde(default)]
-    pass_previous_response: Option<bool>,
-    #[serde(default)]
-    pass_output_from: Option<Vec<String>>,
     #[serde(default)]
     collect: Option<CollectConfig>,
     #[serde(default, rename = "rules")]
@@ -353,8 +293,6 @@ impl<'de> Deserialize<'de> for NodeDefinition {
             artifact: raw.artifact,
             input: raw.input,
             inputs: raw.inputs,
-            pass_previous_response: raw.pass_previous_response,
-            pass_output_from: raw.pass_output_from,
             collect: raw.collect,
             transition_rules: raw.transition_rules,
             cycle_guard: raw.cycle_guard,
@@ -380,12 +318,6 @@ impl Serialize for NodeDefinition {
         if !self.inputs.is_empty() {
             map.serialize_entry("inputs", &self.inputs)?;
         }
-        serialize_option(
-            &mut map,
-            "pass_previous_response",
-            &self.pass_previous_response,
-        )?;
-        serialize_option(&mut map, "pass_output_from", &self.pass_output_from)?;
         serialize_option(&mut map, "collect", &self.collect)?;
         if !self.transition_rules.is_empty() {
             map.serialize_entry("rules", &self.transition_rules)?;
@@ -423,12 +355,6 @@ pub struct InterimChild {
     pub artifact: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_previous_response: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_output_from: Option<Vec<String>>,
-    #[serde(skip)]
-    pub resolved_facets: ResolvedFacets,
 }
 
 impl InterimChild {
@@ -721,7 +647,10 @@ nodes:
         ] {
             let gateway_schema: SchemaDef = serde_json::from_value(value.clone()).unwrap();
             let domain_schema = contract_schema::schema_def_from_json(&value).unwrap();
-            assert_eq!(schema_def_to_domain(&gateway_schema), domain_schema);
+            assert_eq!(
+                domain_mapping::schema_def_to_domain(&gateway_schema),
+                domain_schema
+            );
         }
     }
 
