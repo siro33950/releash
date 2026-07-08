@@ -50,6 +50,7 @@ mod tests {
                     name: "wf".to_string(),
                     description: "test".to_string(),
                     builtin: false,
+                    schemas: Default::default(),
                     variables: Default::default(),
                     nodes: vec![],
                 },

@@ -284,6 +284,7 @@ models = ["opus"]
                 name: workflow_name.to_string(),
                 description: "test".to_string(),
                 builtin: false,
+                schemas: Default::default(),
                 nodes: vec![],
             },
             timestamp: 100.0,

@@ -106,6 +106,7 @@ pub fn render_facet_variables(content: &str, worktree_path: &str, task: Option<&
 pub fn render_submit_command_variables(content: &str, run_id: &str, step_name: &str) -> String {
     content
         .replace("{{run_id}}", run_id)
+        .replace("{{node_name}}", step_name)
         .replace("{{step_name}}", step_name)
 }
 
@@ -327,7 +328,7 @@ mod variable_renderer_tests {
                 session_id: None,
                 result: None,
                 structured_output: Some(serde_json::json!({"summary": "ready"})),
-                output_contract: None,
+                artifact_contract: None,
                 token_usage: None,
                 completed_at: 1.0,
             },

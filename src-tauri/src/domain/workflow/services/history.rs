@@ -35,7 +35,7 @@ pub fn completed_step_history_entry(input: CompletedStepHistoryInput) -> StepHis
 
 pub fn step_output_from_completed_history_entry(
     entry: &StepHistoryEntry,
-    output_contract: Option<String>,
+    artifact_contract: Option<String>,
 ) -> Option<StepOutput> {
     entry.structured_output.as_ref()?;
     Some(StepOutput {
@@ -44,7 +44,7 @@ pub fn step_output_from_completed_history_entry(
         session_id: entry.session_id.clone(),
         result: entry.result.clone(),
         structured_output: entry.structured_output.clone(),
-        output_contract,
+        artifact_contract,
         token_usage: entry.token_usage.clone(),
         completed_at: entry.completed_at,
     })
@@ -116,7 +116,7 @@ pub fn aborted_parallel_history_entry(
                 run_index: child.run_index,
                 completed_at: output.map(|value| value.completed_at).unwrap_or(timestamp),
                 structured_output: output.and_then(|value| value.structured_output.clone()),
-                output_contract: output.and_then(|value| value.output_contract.clone()),
+                artifact_contract: output.and_then(|value| value.artifact_contract.clone()),
                 state: if child.state.is_completed() {
                     STEP_STATE_COMPLETED.to_string()
                 } else {
@@ -175,7 +175,7 @@ mod tests {
         assert_eq!(output.step_name, "review");
         assert_eq!(output.session_id.as_deref(), Some("session-review"));
         assert_eq!(output.result.as_deref(), Some("LGTM"));
-        assert_eq!(output.output_contract.as_deref(), Some("review-contract"));
+        assert_eq!(output.artifact_contract.as_deref(), Some("review-contract"));
         assert_eq!(output.token_usage.unwrap().input_tokens, 2);
     }
 
@@ -245,7 +245,7 @@ mod tests {
                 session_id: Some("output-session-a".to_string()),
                 result: Some("from output".to_string()),
                 structured_output: Some(serde_json::json!({ "ok": true })),
-                output_contract: Some("review".to_string()),
+                artifact_contract: Some("review".to_string()),
                 token_usage: None,
                 completed_at: 10.0,
             },
@@ -262,7 +262,7 @@ mod tests {
                         state: ParallelChildState::Completed,
                         result: Some("from child".to_string()),
                         structured_output: None,
-                        output_contract: None,
+                        artifact_contract: None,
                         failure_kind: None,
                         failure_disposition: None,
                         token_usage: TokenUsage::default(),
@@ -274,7 +274,7 @@ mod tests {
                         state: ParallelChildState::Running,
                         result: Some("partial".to_string()),
                         structured_output: None,
-                        output_contract: None,
+                        artifact_contract: None,
                         failure_kind: None,
                         failure_disposition: None,
                         token_usage: TokenUsage::default(),

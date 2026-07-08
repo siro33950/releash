@@ -2,7 +2,7 @@ Spec 3文書の整合性をチェックして報告し、ユーザーが Spec �
 
 ## 入力
 
-`spec-directory` Contract で渡される `spec_dir` を読み、以下を参照する。
+`spec-directory` schema で渡される `spec_dir` を読み、以下を参照する。
 
 - `${spec_dir}/requirements.md`
 - `${spec_dir}/behavior.md`

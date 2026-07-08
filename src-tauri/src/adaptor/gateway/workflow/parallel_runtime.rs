@@ -64,7 +64,7 @@ pub(crate) struct ParallelChildSessionSetup {
     pub(crate) system_prompt: Option<String>,
     pub(crate) workflow_instruction: Option<String>,
     pub(crate) user_message: String,
-    pub(crate) output_contract: Option<String>,
+    pub(crate) artifact_contract: Option<String>,
     pub(crate) permission_mode: String,
     pub(crate) run_index: u32,
 }
@@ -165,7 +165,7 @@ pub(crate) fn apply_parallel_run_state(
             state: ParallelChildState::Running,
             result: None,
             structured_output: None,
-            output_contract: setup.output_contract.clone(),
+            artifact_contract: setup.artifact_contract.clone(),
             failure_kind: None,
             failure_disposition: None,
             token_usage: TokenUsage::default(),
@@ -403,6 +403,7 @@ mod tests {
                 name: "test-workflow".to_string(),
                 description: String::new(),
                 builtin: false,
+                schemas: Default::default(),
                 variables: HashMap::from([("declared".to_string(), "yes".to_string())]),
                 nodes: vec![node],
             },
@@ -589,7 +590,7 @@ mod tests {
             session_id: Some(format!("session-{step_name}")),
             result: result.map(str::to_string),
             structured_output: Some(serde_json::json!({ "text": text })),
-            output_contract: None,
+            artifact_contract: None,
             token_usage: None,
             completed_at: 1000.0,
         }
@@ -742,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_aggregate_child_without_output_contract_has_no_step_output() {
+    fn evaluate_aggregate_child_without_artifact_contract_has_no_step_output() {
         let aggregate = aggregate(Some("LGTM"), None);
         let outputs = make_outputs(vec![("arch-review", "ok", Some("LGTM"))]);
         let children = vec!["arch-review".to_string(), "test-step".to_string()];
@@ -1023,7 +1024,7 @@ mod tests {
                 "verdict": "NEEDS_FIX",
                 "findings": [{ "severity": "error", "message": "bug" }],
             })),
-            output_contract: None,
+            artifact_contract: None,
             token_usage: None,
             completed_at: 1000.0,
         };
@@ -1041,7 +1042,7 @@ mod tests {
             session_id: None,
             result: None,
             structured_output: Some(serde_json::json!({"status": "FIXED"})),
-            output_contract: None,
+            artifact_contract: None,
             token_usage: None,
             completed_at: 1000.0,
         };
@@ -1062,7 +1063,7 @@ mod tests {
                 "verdict": "LGTM",
                 "status": "FIXED",
             })),
-            output_contract: None,
+            artifact_contract: None,
             token_usage: None,
             completed_at: 1000.0,
         };

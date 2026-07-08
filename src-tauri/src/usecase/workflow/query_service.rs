@@ -125,7 +125,7 @@ impl WorkflowQueryService {
         step_name: &str,
     ) -> Result<WorkflowGetOutputResult, WorkflowError> {
         let events = self.read_events(run_id)?;
-        Ok(latest_output_submitted_from_drafts(&events, step_name)
+        Ok(latest_artifact_produced_from_drafts(&events, step_name)
             .unwrap_or(WorkflowGetOutputResult::NotSubmitted))
     }
 
@@ -201,14 +201,14 @@ fn seconds_to_ms(seconds: f64) -> f64 {
     seconds * 1000.0
 }
 
-fn latest_output_submitted_from_drafts(
+fn latest_artifact_produced_from_drafts(
     events: &[WorkflowEventDraft],
     step_name: &str,
 ) -> Option<WorkflowGetOutputResult> {
-    event_draft::latest_output_submitted_from_drafts(events, step_name).map(|snapshot| {
+    event_draft::latest_artifact_produced_from_drafts(events, step_name).map(|snapshot| {
         WorkflowGetOutputResult::Submitted {
             contract: snapshot.contract,
-            structured_output: snapshot.structured_output,
+            structured_output: snapshot.value,
             submitted_at: snapshot.submitted_at,
             request_id: snapshot.request_id,
             timestamp: snapshot.timestamp,
@@ -530,6 +530,7 @@ mod tests {
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,
+            schemas: Default::default(),
             variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "review".to_string(),
@@ -590,7 +591,7 @@ mod tests {
         "00000000-0000-4000-8000-000000000101"
     }
 
-    fn output_submitted(
+    fn artifact_produced(
         run_id: &str,
         node_name: &str,
         contract: &str,
@@ -600,13 +601,13 @@ mod tests {
     ) -> WorkflowEventDraft {
         WorkflowEventDraft {
             run_id: run_id.to_string(),
-            event_kind: "output_submitted".to_string(),
+            event_kind: "artifact_produced".to_string(),
             timestamp,
             payload: serde_json::json!({
                 "workflow_name": "wf",
                 "node_name": node_name,
                 "contract": contract,
-                "structured_output": structured_output,
+                "value": structured_output,
                 "submitted_at": timestamp,
                 "request_id": request_id,
             }),
@@ -667,8 +668,8 @@ mod tests {
             })
             .unwrap();
         fixture.facets.values.lock().unwrap().insert(
-            (FacetKind::Contract, "spec-directory".to_string()),
-            "contract body".to_string(),
+            (FacetKind::Instruction, "implement".to_string()),
+            "instruction body".to_string(),
         );
 
         assert_eq!(fixture.service.read_events(test_run_id()).unwrap().len(), 1);
@@ -679,17 +680,17 @@ mod tests {
         assert_eq!(
             fixture
                 .service
-                .get_facet(FacetKind::Contract, "spec-directory")
+                .get_facet(FacetKind::Instruction, "implement")
                 .unwrap(),
-            "contract body"
+            "instruction body"
         );
         assert_eq!(
             fixture
                 .service
-                .list_facet_summaries(FacetKind::Contract)
+                .list_facet_summaries(FacetKind::Instruction)
                 .unwrap()[0]
                 .key,
-            "spec-directory"
+            "implement"
         );
     }
 
@@ -741,13 +742,13 @@ mod tests {
             .events
             .append(&WorkflowEventDraft {
                 run_id: test_run_id().to_string(),
-                event_kind: "output_submitted".to_string(),
+                event_kind: "artifact_produced".to_string(),
                 timestamp: 4.0,
                 payload: serde_json::json!({
                     "workflow_name": "wf",
                     "node_name": "review",
                     "contract": "review-result",
-                    "structured_output": {"status": "ok"},
+                    "value": {"status": "ok"},
                     "submitted_at": 4.0,
                     "request_id": "req-2",
                 }),
@@ -769,7 +770,7 @@ mod tests {
         let fixture = Fixture::new();
         fixture
             .events
-            .append(&output_submitted(
+            .append(&artifact_produced(
                 test_run_id(),
                 "review",
                 "review-result",
@@ -780,7 +781,7 @@ mod tests {
             .unwrap();
         fixture
             .events
-            .append(&output_submitted(
+            .append(&artifact_produced(
                 test_run_id(),
                 "review",
                 "review-result",

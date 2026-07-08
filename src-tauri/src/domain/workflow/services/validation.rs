@@ -1,7 +1,8 @@
+use crate::domain::workflow::services::contract_schema;
 use crate::domain::workflow::value_objects::{MAX_NODES_PER_WORKFLOW, MAX_PARALLEL_CHILDREN};
 use crate::domain::workflow::{
-    NodeDefinition, NodeKindName, ReduceStrategy, TransitionRule, WorkflowDefinition as Workflow,
-    WorkflowError, WorkflowName,
+    NodeDefinition, NodeKindName, ReduceStrategy, SchemaDef, TransitionRule,
+    WorkflowDefinition as Workflow, WorkflowError, WorkflowName,
 };
 use regex::RegexBuilder;
 use std::collections::HashSet;
@@ -132,12 +133,34 @@ pub enum ValidationError {
         value: String,
         reason: String,
     },
-    /// `input_contracts` / `output_contract` が存在しない Contract facet を参照している。
-    /// 信頼境界外入力 (user-authored workflow / フロントエンド編集) の保存時に検出する。
-    UnknownContractRef {
+    /// `artifact` / `input` / `items` が存在しない `schemas:` Contract を参照している。
+    UnknownSchemaRef {
         step: String,
         slot: &'static str,
         key: String,
+    },
+    /// `artifact` / `input` / `items` の Contract 参照名が安全な identifier ではない。
+    InvalidSchemaRef {
+        step: String,
+        slot: &'static str,
+        key: String,
+        reason: String,
+    },
+    /// `schemas:` 内の宣言が JSON Schema subset として矛盾している。
+    InvalidSchema {
+        schema: String,
+        reason: String,
+    },
+    /// `artifact:` が Object 以外の Contract を参照している。
+    InvalidArtifactSchema {
+        step: String,
+        contract: String,
+    },
+    /// command node の `artifact:` Contract が予約 field を宣言している。
+    ReservedArtifactField {
+        step: String,
+        contract: String,
+        field: String,
     },
 }
 
@@ -280,10 +303,40 @@ impl fmt::Display for ValidationError {
                     "ステップ '{step}' のmodel '{value}' の所属バックエンドを解決できません: {reason}"
                 )
             }
-            Self::UnknownContractRef { step, slot, key } => {
+            Self::UnknownSchemaRef { step, slot, key } => {
                 write!(
                     f,
-                    "ステップ '{step}' の {slot} が存在しない Contract facet '{key}' を参照しています"
+                    "ステップ '{step}' の {slot} が存在しない schemas Contract '{key}' を参照しています"
+                )
+            }
+            Self::InvalidSchemaRef {
+                step,
+                slot,
+                key,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "ステップ '{step}' の {slot} Contract 参照 '{key}' が不正です: {reason}"
+                )
+            }
+            Self::InvalidSchema { schema, reason } => {
+                write!(f, "schemas.{schema} の宣言が不正です: {reason}")
+            }
+            Self::InvalidArtifactSchema { step, contract } => {
+                write!(
+                    f,
+                    "ステップ '{step}' の artifact '{contract}' は Object Contract である必要があります"
+                )
+            }
+            Self::ReservedArtifactField {
+                step,
+                contract,
+                field,
+            } => {
+                write!(
+                    f,
+                    "commandステップ '{step}' の artifact '{contract}' が予約 field '{field}' を宣言しています"
                 )
             }
         }
@@ -335,6 +388,7 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
     if let Some(err) = collect_node_count_errors(workflow).into_iter().next() {
         return Err(err);
     }
+    validate_schema_refs(workflow)?;
 
     // 遷移先名前空間: トップレベルstep名のみ（aggregate.then/else, rule.nextの検証用）
     let mut transition_target_names = HashSet::new();
@@ -625,70 +679,165 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
     Ok(())
 }
 
-/// `input_contracts` / `output_contract` の参照キーが Contract facet として
-/// 実在するかを検証する（[02] Contract 双方向対称性 + 信頼境界外入力の参照妥当性検査）。
+/// `schemas:` 宣言と `artifact` / `input` 参照を検証する。
 ///
-/// `contract_exists` は呼び出し側が「facet base dir + builtin」での解決可否を返すクロージャ。
-/// validation.rs は facet I/O を持たない（境界保持）ため、storage.rs などの呼び出し側で
-/// `facet::load_facet(FacetKind::Contract, key, base_dir).is_ok()` を渡す形にする。
-///
-/// top-level node と parallel child の両方を網羅して検査する。
-pub fn validate_facet_refs<F>(
-    workflow: &Workflow,
-    contract_exists: F,
-) -> Result<(), ValidationError>
-where
-    F: Fn(&str) -> bool,
-{
-    fn check<F: Fn(&str) -> bool>(
-        step_name: &str,
-        output_contract: Option<&str>,
-        input_contracts: Option<&[String]>,
-        contract_exists: &F,
-    ) -> Result<(), ValidationError> {
-        if let Some(key) = output_contract {
-            if !contract_exists(key) {
-                return Err(ValidationError::UnknownContractRef {
-                    step: step_name.to_string(),
-                    slot: "output_contract",
-                    key: key.to_string(),
-                });
-            }
+/// validation.rs は facet I/O を持たず、workflow definition に含まれる
+/// backend-owned schema state だけを読む。
+pub fn validate_schema_refs(workflow: &Workflow) -> Result<(), ValidationError> {
+    for (name, schema) in &workflow.schemas {
+        if !contract_schema::is_safe_identifier(name) {
+            return Err(ValidationError::InvalidSchema {
+                schema: name.to_string(),
+                reason: safe_identifier_message().to_string(),
+            });
         }
-        if let Some(keys) = input_contracts {
-            for key in keys {
-                if !contract_exists(key) {
-                    return Err(ValidationError::UnknownContractRef {
-                        step: step_name.to_string(),
-                        slot: "input_contracts",
-                        key: key.clone(),
-                    });
-                }
-            }
-        }
-        Ok(())
+        validate_schema_def(name, schema, workflow)?;
     }
 
     for node in &workflow.nodes {
-        check(
+        validate_node_schema_refs(
             &node.name,
-            node.output_contract.as_deref(),
-            node.input_contracts.as_deref(),
-            &contract_exists,
+            node.artifact.as_deref(),
+            node.input.as_deref(),
+            node.is_command(),
+            node.is_fanout(),
+            workflow,
         )?;
         if let Some(fanout) = node.fanout() {
-            let children = &fanout.parallel_children;
-            for child in children {
-                check(
+            for child in &fanout.parallel_children {
+                validate_node_schema_refs(
                     &child.name,
-                    child.output_contract.as_deref(),
-                    child.input_contracts.as_deref(),
-                    &contract_exists,
+                    child.artifact.as_deref(),
+                    child.input.as_deref(),
+                    false,
+                    false,
+                    workflow,
                 )?;
             }
         }
     }
+
     Ok(())
+}
+
+fn validate_schema_def(
+    name: &str,
+    schema: &SchemaDef,
+    workflow: &Workflow,
+) -> Result<(), ValidationError> {
+    match schema {
+        SchemaDef::Object {
+            properties,
+            required,
+            ..
+        } => {
+            for field in required {
+                if !properties.contains_key(field) {
+                    return Err(ValidationError::InvalidSchema {
+                        schema: name.to_string(),
+                        reason: format!("required field '{field}' is not declared in properties"),
+                    });
+                }
+            }
+            for (field, property_schema) in properties {
+                validate_schema_def(
+                    &format!("{name}.properties.{field}"),
+                    property_schema,
+                    workflow,
+                )?;
+            }
+        }
+        SchemaDef::Array { items } => {
+            validate_schema_reference_identifier(name, "items", items)?;
+            if !workflow.schemas.contains_key(items) {
+                return Err(ValidationError::UnknownSchemaRef {
+                    step: name.to_string(),
+                    slot: "items",
+                    key: items.clone(),
+                });
+            }
+        }
+        SchemaDef::String { r#enum } => {
+            if r#enum.as_ref().is_some_and(Vec::is_empty) {
+                return Err(ValidationError::InvalidSchema {
+                    schema: name.to_string(),
+                    reason: "enum must contain at least one value".to_string(),
+                });
+            }
+        }
+        SchemaDef::Boolean | SchemaDef::Integer | SchemaDef::Number => {}
+    }
+    Ok(())
+}
+
+fn validate_node_schema_refs(
+    node_name: &str,
+    artifact: Option<&str>,
+    input: Option<&str>,
+    is_command: bool,
+    is_fanout: bool,
+    workflow: &Workflow,
+) -> Result<(), ValidationError> {
+    if let Some(contract) = artifact {
+        validate_schema_reference_identifier(node_name, "artifact", contract)?;
+        let schema =
+            workflow
+                .schemas
+                .get(contract)
+                .ok_or_else(|| ValidationError::UnknownSchemaRef {
+                    step: node_name.to_string(),
+                    slot: "artifact",
+                    key: contract.to_string(),
+                })?;
+        if is_fanout || !matches!(schema, SchemaDef::Object { .. }) {
+            return Err(ValidationError::InvalidArtifactSchema {
+                step: node_name.to_string(),
+                contract: contract.to_string(),
+            });
+        }
+        if is_command {
+            if let Some(field) = contract_schema::schema_declares_command_reserved_field(schema) {
+                return Err(ValidationError::ReservedArtifactField {
+                    step: node_name.to_string(),
+                    contract: contract.to_string(),
+                    field,
+                });
+            }
+        }
+    }
+
+    if let Some(contract) = input {
+        validate_schema_reference_identifier(node_name, "input", contract)?;
+        if !workflow.schemas.contains_key(contract) {
+            return Err(ValidationError::UnknownSchemaRef {
+                step: node_name.to_string(),
+                slot: "input",
+                key: contract.to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_schema_reference_identifier(
+    step: &str,
+    slot: &'static str,
+    key: &str,
+) -> Result<(), ValidationError> {
+    if contract_schema::is_safe_identifier(key) {
+        return Ok(());
+    }
+    Err(ValidationError::InvalidSchemaRef {
+        step: step.to_string(),
+        slot,
+        key: key.to_string(),
+        reason: safe_identifier_message().to_string(),
+    })
+}
+
+fn safe_identifier_message() -> &'static str {
+    "must start with an ASCII alphanumeric character and contain only ASCII alphanumeric characters, '-' or '_'"
 }
 
 /// node 数上限 (`MAX_NODES_PER_WORKFLOW`) と parallel 子 node 数上限
@@ -758,24 +907,12 @@ fn validate_node_kind_fields(step: &NodeDefinition) -> Result<(), ValidationErro
                     step: step.name.clone(),
                 });
             }
-            if step.output_contract.is_some() {
-                return Err(disallow("output_contract"));
-            }
-            if step.input_contracts.as_ref().is_some_and(|v| !v.is_empty()) {
-                return Err(disallow("input_contracts"));
-            }
             if step.collect.is_some() {
                 return Err(disallow("collect"));
             }
         }
         NodeKindName::Session => {}
         NodeKindName::Fanout => {
-            if step.output_contract.is_some() {
-                return Err(disallow("output_contract"));
-            }
-            if step.input_contracts.as_ref().is_some_and(|v| !v.is_empty()) {
-                return Err(disallow("input_contracts"));
-            }
             if step.collect.is_some() {
                 return Err(disallow("collect"));
             }
@@ -910,6 +1047,9 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
         // node 数上限超過時は名前空間構築自体が無意味なため打ち切る
         // （validate と同じ短絡条件）。
         return errors;
+    }
+    if let Err(e) = validate_schema_refs(workflow) {
+        errors.push(e);
     }
 
     // 名前空間構築: 重複があれば蓄積するが、以降のチェックは続行
@@ -1168,8 +1308,9 @@ mod tests {
     use super::*;
     use crate::domain::workflow::{
         CollectConfig, CommandSpec, CycleGuard, FacetRefs, FanoutSpec, InterimChild, NodeKind,
-        ParallelAggregate, SessionGate, SessionSpec,
+        ParallelAggregate, SchemaDef, SessionGate, SessionSpec,
     };
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[derive(Clone, Copy)]
     enum TestKind {
@@ -1180,6 +1321,7 @@ mod tests {
     fn make_workflow(nodes: Vec<NodeDefinition>) -> Workflow {
         Workflow {
             variables: Default::default(),
+            schemas: Default::default(),
             name: "test".to_string(),
             description: "test workflow".to_string(),
             builtin: false,
@@ -2293,58 +2435,215 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn command_node_rejects_contract_fields() {
-        let mut output_contract = command_step("build", "cargo build");
-        output_contract.output_contract = Some("build-output".to_string());
-        let wf = make_workflow(vec![output_contract]);
-        assert!(matches!(
-            validate(&wf).unwrap_err(),
-            ValidationError::DisallowedFieldForKind { ref step, field, kind }
-                if step == "build" && field == "output_contract" && kind == "command"
-        ));
-
-        let mut input_contracts = command_step("test", "cargo test");
-        input_contracts.input_contracts = Some(vec!["test-input".to_string()]);
-        let wf = make_workflow(vec![input_contracts]);
-        assert!(matches!(
-            validate(&wf).unwrap_err(),
-            ValidationError::DisallowedFieldForKind { ref step, field, kind }
-                if step == "test" && field == "input_contracts" && kind == "command"
-        ));
+    fn object_schema(required: &[&str]) -> SchemaDef {
+        SchemaDef::Object {
+            properties: required
+                .iter()
+                .map(|field| ((*field).to_string(), SchemaDef::String { r#enum: None }))
+                .collect(),
+            required: required.iter().map(|field| (*field).to_string()).collect(),
+            additional_properties: true,
+        }
     }
 
     #[test]
-    fn fanout_node_rejects_contract_fields() {
-        let mut output_contract =
-            make_parallel_block("review", vec![make_parallel_step("review-a")], None);
-        output_contract.output_contract = Some("review-output".to_string());
-        let wf = make_workflow(vec![output_contract]);
-        assert!(matches!(
-            validate(&wf).unwrap_err(),
-            ValidationError::DisallowedFieldForKind { ref step, field, kind }
-                if step == "review" && field == "output_contract" && kind == "fanout"
-        ));
-
-        let mut input_contracts =
-            make_parallel_block("aggregate", vec![make_parallel_step("aggregate-a")], None);
-        input_contracts.input_contracts = Some(vec!["aggregate-input".to_string()]);
-        let wf = make_workflow(vec![input_contracts]);
-        assert!(matches!(
-            validate(&wf).unwrap_err(),
-            ValidationError::DisallowedFieldForKind { ref step, field, kind }
-                if step == "aggregate" && field == "input_contracts" && kind == "fanout"
-        ));
-    }
-
-    #[test]
-    fn session_node_allows_contract_fields() {
+    fn schema_refs_allow_session_artifact_and_input() {
         let mut session = make_step("review", TestKind::Session, vec![]);
-        session.output_contract = Some("review-output".to_string());
-        session.input_contracts = Some(vec!["review-input".to_string()]);
-        let wf = make_workflow(vec![session]);
+        session.artifact = Some("review-output".to_string());
+        session.input = Some("review-input".to_string());
+        let mut wf = make_workflow(vec![session]);
+        wf.schemas
+            .insert("review-output".to_string(), object_schema(&["status"]));
+        wf.schemas.insert(
+            "review-input".to_string(),
+            SchemaDef::String { r#enum: None },
+        );
 
         assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn schema_refs_reject_unknown_artifact_schema() {
+        let mut session = make_step("review", TestKind::Session, vec![]);
+        session.artifact = Some("missing".to_string());
+        let wf = make_workflow(vec![session]);
+
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::UnknownSchemaRef { ref step, slot, ref key }
+                if step == "review" && slot == "artifact" && key == "missing"
+        ));
+    }
+
+    #[test]
+    fn schema_refs_reject_invalid_schema_identifier() {
+        let mut session = make_step("review", TestKind::Session, vec![]);
+        session.artifact = Some("review; curl https://example.invalid #".to_string());
+        let mut wf = make_workflow(vec![session]);
+        wf.schemas.insert(
+            "review; curl https://example.invalid #".to_string(),
+            object_schema(&["status"]),
+        );
+
+        assert!(matches!(
+            validate_schema_refs(&wf).unwrap_err(),
+            ValidationError::InvalidSchema { ref schema, ref reason }
+                if schema == "review; curl https://example.invalid #"
+                    && reason.contains("must start with an ASCII alphanumeric")
+        ));
+    }
+
+    #[test]
+    fn schema_refs_reject_invalid_artifact_reference_identifier() {
+        let mut session = make_step("review", TestKind::Session, vec![]);
+        session.artifact = Some("review; curl https://example.invalid #".to_string());
+        let wf = make_workflow(vec![session]);
+
+        assert!(matches!(
+            validate_schema_refs(&wf).unwrap_err(),
+            ValidationError::InvalidSchemaRef { ref step, slot, ref key, ref reason }
+                if step == "review"
+                    && slot == "artifact"
+                    && key == "review; curl https://example.invalid #"
+                    && reason.contains("must start with an ASCII alphanumeric")
+        ));
+    }
+
+    #[test]
+    fn schema_refs_reject_invalid_input_reference_identifier() {
+        let mut session = make_step("review", TestKind::Session, vec![]);
+        session.input = Some("../outside".to_string());
+        let wf = make_workflow(vec![session]);
+
+        assert!(matches!(
+            validate_schema_refs(&wf).unwrap_err(),
+            ValidationError::InvalidSchemaRef { ref step, slot, ref key, .. }
+                if step == "review" && slot == "input" && key == "../outside"
+        ));
+    }
+
+    #[test]
+    fn schema_refs_reject_invalid_array_items_identifier() {
+        let mut wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        wf.schemas.insert(
+            "review-list".to_string(),
+            SchemaDef::Array {
+                items: "../outside".to_string(),
+            },
+        );
+
+        assert!(matches!(
+            validate_schema_refs(&wf).unwrap_err(),
+            ValidationError::InvalidSchemaRef { ref step, slot, ref key, .. }
+                if step == "review-list" && slot == "items" && key == "../outside"
+        ));
+    }
+
+    #[test]
+    fn schema_refs_reject_required_field_missing_from_properties() {
+        let mut wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        wf.schemas.insert(
+            "review-output".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::new(),
+                required: BTreeSet::from(["verdict".to_string()]),
+                additional_properties: true,
+            },
+        );
+
+        assert!(matches!(
+            validate_schema_refs(&wf).unwrap_err(),
+            ValidationError::InvalidSchema { ref schema, ref reason }
+                if schema == "review-output"
+                    && reason == "required field 'verdict' is not declared in properties"
+        ));
+    }
+
+    #[test]
+    fn schema_refs_reject_empty_string_enum() {
+        let mut wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        wf.schemas.insert(
+            "review-output".to_string(),
+            SchemaDef::String {
+                r#enum: Some(Vec::new()),
+            },
+        );
+
+        assert!(matches!(
+            validate_schema_refs(&wf).unwrap_err(),
+            ValidationError::InvalidSchema { ref schema, ref reason }
+                if schema == "review-output" && reason == "enum must contain at least one value"
+        ));
+    }
+
+    #[test]
+    fn schema_refs_reject_array_items_unknown_schema() {
+        let mut wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        wf.schemas.insert(
+            "review-list".to_string(),
+            SchemaDef::Array {
+                items: "missing-item".to_string(),
+            },
+        );
+
+        assert!(matches!(
+            validate_schema_refs(&wf).unwrap_err(),
+            ValidationError::UnknownSchemaRef { ref step, slot, ref key }
+                if step == "review-list" && slot == "items" && key == "missing-item"
+        ));
+    }
+
+    #[test]
+    fn schema_refs_reject_session_artifact_non_object_schema() {
+        let mut session = make_step("review", TestKind::Session, vec![]);
+        session.artifact = Some("review-output".to_string());
+        let mut wf = make_workflow(vec![session]);
+        wf.schemas.insert(
+            "review-output".to_string(),
+            SchemaDef::String { r#enum: None },
+        );
+
+        assert!(matches!(
+            validate_schema_refs(&wf).unwrap_err(),
+            ValidationError::InvalidArtifactSchema { ref step, ref contract }
+                if step == "review" && contract == "review-output"
+        ));
+    }
+
+    #[test]
+    fn fanout_node_rejects_artifact_declaration() {
+        let mut fanout = make_parallel_block("review", vec![make_parallel_step("review-a")], None);
+        fanout.artifact = Some("review-output".to_string());
+        let mut wf = make_workflow(vec![fanout]);
+        wf.schemas
+            .insert("review-output".to_string(), object_schema(&["status"]));
+
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::InvalidArtifactSchema { ref step, ref contract }
+                if step == "review" && contract == "review-output"
+        ));
+    }
+
+    #[test]
+    fn command_node_rejects_artifact_reserved_field_collision() {
+        let mut command = command_step("build", "cargo build");
+        command.artifact = Some("build-output".to_string());
+        let mut wf = make_workflow(vec![command]);
+        wf.schemas.insert(
+            "build-output".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::from([("ok".to_string(), SchemaDef::Boolean)]),
+                required: BTreeSet::from(["ok".to_string()]),
+                additional_properties: true,
+            },
+        );
+
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::ReservedArtifactField { ref step, ref contract, ref field }
+                if step == "build" && contract == "build-output" && field == "ok"
+        ));
     }
 
     // ---- DoS ガードのテスト ----
@@ -2424,55 +2723,10 @@ mod tests {
         ));
     }
 
-    // ---- validate_facet_refs ----
-
     #[test]
-    fn validate_facet_refs_passes_when_all_contracts_exist() {
-        let wf = make_workflow(vec![NodeDefinition {
-            output_contract: Some("output-contract".to_string()),
-            input_contracts: Some(vec![
-                "input-contract-a".to_string(),
-                "input-contract-b".to_string(),
-            ]),
-            ..make_step("step1", TestKind::Session, vec![])
-        }]);
-        let known: HashSet<&str> =
-            HashSet::from(["output-contract", "input-contract-a", "input-contract-b"]);
-        assert!(validate_facet_refs(&wf, |k| known.contains(k)).is_ok());
-    }
-
-    #[test]
-    fn validate_facet_refs_detects_missing_output_contract() {
-        let wf = make_workflow(vec![NodeDefinition {
-            output_contract: Some("nonexistent".to_string()),
-            ..make_step("step1", TestKind::Session, vec![])
-        }]);
-        let err = validate_facet_refs(&wf, |_| false).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::UnknownContractRef { ref step, slot, ref key }
-                if step == "step1" && slot == "output_contract" && key == "nonexistent"
-        ));
-    }
-
-    #[test]
-    fn validate_facet_refs_detects_missing_input_contract() {
-        let wf = make_workflow(vec![NodeDefinition {
-            input_contracts: Some(vec!["unknown-key".to_string()]),
-            ..make_step("step1", TestKind::Session, vec![])
-        }]);
-        let err = validate_facet_refs(&wf, |_| false).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::UnknownContractRef { ref step, slot, ref key }
-                if step == "step1" && slot == "input_contracts" && key == "unknown-key"
-        ));
-    }
-
-    #[test]
-    fn validate_facet_refs_inspects_parallel_children() {
+    fn validate_schema_refs_inspects_parallel_children() {
         let child = InterimChild {
-            input_contracts: Some(vec!["nope".to_string()]),
+            input: Some("nope".to_string()),
             ..make_parallel_step("child1")
         };
         let par = make_parallel_block(
@@ -2486,11 +2740,11 @@ mod tests {
             }),
         );
         let wf = make_workflow(vec![par]);
-        let err = validate_facet_refs(&wf, |_| false).unwrap_err();
+        let err = validate_schema_refs(&wf).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::UnknownContractRef { ref step, slot, ref key }
-                if step == "child1" && slot == "input_contracts" && key == "nope"
+            ValidationError::UnknownSchemaRef { ref step, slot, ref key }
+                if step == "child1" && slot == "input" && key == "nope"
         ));
     }
 }

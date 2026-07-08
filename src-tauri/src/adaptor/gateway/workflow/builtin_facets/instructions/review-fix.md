@@ -6,7 +6,7 @@
 
 # 入力
 
-直前の `check_and_make_tasks` Step の出力Contract `review-fix-tasks` に含まれる Task 一覧。
+直前の `check_and_make_tasks` Step が提出した `review-fix-tasks` Artifact に含まれる Task 一覧。
 
 # Task の扱い
 

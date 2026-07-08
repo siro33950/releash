@@ -2,7 +2,7 @@
 
 ## 入力
 
-`spec-directory` Contract で渡される `spec_dir` を読み、以下を参照する。
+`spec-directory` schema で渡される `spec_dir` を読み、以下を参照する。
 
 - `${spec_dir}/requirements.md`
 - `${spec_dir}/behavior.md`

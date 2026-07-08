@@ -440,7 +440,7 @@ async fn terminal_state_cleanup_targets_current_and_parallel_step_sessions() {
             run_index: 1,
             completed_at: None,
             structured_output: None,
-            output_contract: None,
+            artifact_contract: None,
             failure_kind: None,
             failure_disposition: None,
         },
@@ -452,7 +452,7 @@ async fn terminal_state_cleanup_targets_current_and_parallel_step_sessions() {
             run_index: 1,
             completed_at: None,
             structured_output: None,
-            output_contract: None,
+            artifact_contract: None,
             failure_kind: None,
             failure_disposition: None,
         },
@@ -494,7 +494,7 @@ async fn terminal_outcome_cleanup_includes_parent_entry_and_parallel_child_outpu
                 run_index: 1,
                 completed_at: 1.0,
                 structured_output: None,
-                output_contract: None,
+                artifact_contract: None,
                 state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
                 failure_kind: None,
                 failure_disposition: None,
@@ -506,7 +506,7 @@ async fn terminal_outcome_cleanup_includes_parent_entry_and_parallel_child_outpu
                 run_index: 1,
                 completed_at: 1.0,
                 structured_output: None,
-                output_contract: None,
+                artifact_contract: None,
                 state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
                 failure_kind: None,
                 failure_disposition: None,
@@ -546,8 +546,35 @@ async fn retry_current_step_outcome_releases_previous_session_only() {
     );
 }
 use crate::adaptor::gateway::workflow::schema::{
-    CollectConfig, CycleGuard, ParallelAggregate, ReduceStrategy, TransitionRule, Workflow,
+    CollectConfig, CycleGuard, ParallelAggregate, ReduceStrategy, SchemaDef, TransitionRule,
+    Workflow,
 };
+
+fn object_schema_for_test(fields: &[&str]) -> SchemaDef {
+    SchemaDef::Object {
+        properties: fields
+            .iter()
+            .map(|field| (field.to_string(), SchemaDef::String { r#enum: None }))
+            .collect(),
+        required: fields.iter().map(|field| field.to_string()).collect(),
+        additional_properties: false,
+    }
+}
+
+fn submit_test_schemas() -> std::collections::BTreeMap<String, SchemaDef> {
+    [
+        (
+            "review-verdict".to_string(),
+            object_schema_for_test(&["verdict"]),
+        ),
+        (
+            "spec-directory".to_string(),
+            object_schema_for_test(&["spec_dir"]),
+        ),
+    ]
+    .into_iter()
+    .collect()
+}
 
 fn make_minimal_approval_exec(
     execution_id: &str,
@@ -559,6 +586,7 @@ fn make_minimal_approval_exec(
         name: "test-workflow".to_string(),
         description: "minimal approval fixture".to_string(),
         builtin: false,
+        schemas: Default::default(),
         nodes: vec![
             NodeDefinition {
                 name: step_name.to_string(),
@@ -610,7 +638,7 @@ fn current_step_for_stall_observation_ignores_terminal_parallel_children() {
                 state: ParallelChildState::Running,
                 result: None,
                 structured_output: None,
-                output_contract: None,
+                artifact_contract: None,
                 failure_kind: None,
                 failure_disposition: None,
                 token_usage: TokenUsage::default(),
@@ -622,7 +650,7 @@ fn current_step_for_stall_observation_ignores_terminal_parallel_children() {
                 state: ParallelChildState::Completed,
                 result: Some("ok".to_string()),
                 structured_output: None,
-                output_contract: None,
+                artifact_contract: None,
                 failure_kind: None,
                 failure_disposition: None,
                 token_usage: TokenUsage::default(),
@@ -634,7 +662,7 @@ fn current_step_for_stall_observation_ignores_terminal_parallel_children() {
                 state: ParallelChildState::Failed,
                 result: Some("model_refusal".to_string()),
                 structured_output: None,
-                output_contract: None,
+                artifact_contract: None,
                 failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
                 failure_disposition: Some(FailureDisposition::Partial),
                 token_usage: TokenUsage::default(),
@@ -1167,6 +1195,7 @@ fn make_test_workflow() -> Workflow {
         name: "test-workflow".to_string(),
         description: "Test workflow".to_string(),
         builtin: false,
+        schemas: Default::default(),
         nodes: vec![
             make_test_step("plan", TestKind::Session, "Plan the work", vec![], None),
             make_test_step(
@@ -1875,6 +1904,7 @@ fn validate_start_empty_steps_returns_err() {
         name: "empty".to_string(),
         description: String::new(),
         builtin: false,
+        schemas: Default::default(),
         nodes: vec![],
     };
     let result = WorkflowExecution::validate_start(&workflow, None);
@@ -1916,6 +1946,7 @@ fn validate_start_rejects_command_node() {
         name: "command-wf".to_string(),
         description: String::new(),
         builtin: false,
+        schemas: Default::default(),
         nodes: vec![NodeDefinition {
             name: "build".to_string(),
             kind: test_node_kind(TestKind::Command, "echo hello"),
@@ -2073,7 +2104,7 @@ fn make_step_output(step_name: &str, output_text: &str, result: Option<&str>) ->
         session_id: None,
         result: result.map(|s| s.to_string()),
         structured_output: Some(serde_json::json!({"text": output_text})),
-        output_contract: None,
+        artifact_contract: None,
         token_usage: None,
         completed_at: 1000.0,
     }
@@ -2187,10 +2218,7 @@ fn approved_policy_injected_output_uses_sanitized_contract_payload_without_globa
         "review_step": "code_review_parallel",
         "findings": []
     });
-    let vars = workflow_contract::extract_workflow_variables_from_contract_output(
-        Some("approved-fix-policy"),
-        Some(&sanitized),
-    );
+    let vars: HashMap<String, String> = HashMap::new();
     assert!(vars.is_empty());
 
     let mut outputs = HashMap::new();
@@ -2202,7 +2230,7 @@ fn approved_policy_injected_output_uses_sanitized_contract_payload_without_globa
             session_id: Some("policy-session".to_string()),
             result: Some("approved".to_string()),
             structured_output: Some(sanitized),
-            output_contract: Some("approved-fix-policy".to_string()),
+            artifact_contract: Some("approved-fix-policy".to_string()),
             token_usage: None,
             completed_at: 1000.0,
         },
@@ -2232,7 +2260,7 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
     assert!(!raw.contains("MY_TOKEN_VALUE_123456"));
 
     let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
-    exec.workflow.nodes[0].output_contract = Some("approved-fix-policy".to_string());
+    exec.workflow.nodes[0].artifact = Some("approved-fix-policy".to_string());
     let mut fix = make_test_step("fix", TestKind::Session, "Fix", vec![], None);
     fix.pass_previous_response = Some(true);
     exec.workflow.nodes.push(fix);
@@ -2242,7 +2270,7 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
         ApprovalApplication {
             effective_result: "approved".to_string(),
             structured_output: Some(structured),
-            output_contract: Some("approved-fix-policy".to_string()),
+            artifact_contract: Some("approved-fix-policy".to_string()),
         },
     )
     .unwrap();
@@ -2297,7 +2325,7 @@ fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
         ApprovalApplication {
             effective_result: "approved".to_string(),
             structured_output: Some(structured),
-            output_contract: Some("approved-fix-policy".to_string()),
+            artifact_contract: Some("approved-fix-policy".to_string()),
         },
     )
     .unwrap();
@@ -2419,7 +2447,7 @@ fn build_step_prompt_full_pipeline() {
     let mut step = make_test_step("build", TestKind::Session, "unused", vec![], None);
     set_instruction_facet(&mut step, Some("impl".to_string()));
     set_policy_facet(&mut step, Some("coding".to_string()));
-    step.output_contract = Some("plan-doc".to_string());
+    step.artifact = Some("plan-doc".to_string());
     step.pass_previous_response = Some(true);
     resolve_node_facets_for_test(&mut step, base);
 
@@ -2452,10 +2480,9 @@ fn build_step_prompt_full_pipeline() {
     )
     .unwrap();
 
-    // policy + output_contract → system_prompt with variable expansion
+    // policy + artifact_contract → system_prompt with variable expansion
     let sys_str = sys.expect("system_prompt should be set");
     assert!(sys_str.contains("Coding policy for my-app."));
-    assert!(sys_str.contains("Output as markdown."));
     let instruction = workflow_prompt::render_step_workflow_instruction(
         &step,
         "00000000-0000-0000-0000-000000000000",
@@ -2466,9 +2493,9 @@ fn build_step_prompt_full_pipeline() {
     .expect("workflow instruction");
     assert!(instruction.contains("Task: Fix bug"));
     assert!(instruction.contains("Implement the feature."));
-    assert!(!prompt.contains("Task: Fix bug"));
-    assert!(!prompt.contains("Implement the feature."));
-    // output_contract がある場合、作業本文の末尾にも Contract 由来の
+    assert!(prompt.contains("Task: Fix bug"));
+    assert!(prompt.contains("Implement the feature."));
+    // artifact_contract がある場合、作業本文の末尾にも Contract 由来の
     // 完了時アクションを置き、初回完了時に CLI 提出へ誘導する。
     assert!(prompt.contains("完了時の必須アクション"));
     // CLI 名は起動環境別 alias で展開される（spec issues-1054）。
@@ -2476,7 +2503,7 @@ fn build_step_prompt_full_pipeline() {
     assert!(prompt.contains(&format!(
         "{cli_alias} workflow output submit 00000000-0000-0000-0000-000000000000"
     )));
-    assert!(prompt.contains("--step build"));
+    assert!(prompt.contains("--node build"));
     assert!(prompt.contains("--type plan-doc"));
     assert!(prompt.contains("--json"));
     assert!(!prompt.contains("--file"));
@@ -2552,7 +2579,7 @@ fn build_step_prompt_passes_composed_system_prompt_through() {
 
     let mut step = make_test_step("s", TestKind::Session, "unused", vec![], None);
     set_policy_facet(&mut step, Some("coding".to_string()));
-    step.output_contract = Some("plan-doc".to_string());
+    step.artifact = Some("plan-doc".to_string());
     set_instruction_facet(&mut step, None);
     resolve_node_facets_for_test(&mut step, tmp.path());
     let (sys, prompt) = workflow_prompt::build_step_prompt(
@@ -2571,14 +2598,13 @@ fn build_step_prompt_passes_composed_system_prompt_through() {
     let sys = sys.expect("system_prompt must be passed through, not dropped");
     assert!(!sys.is_empty(), "system_prompt must not be empty string");
     assert!(sys.contains("POLICY_BODY"));
-    assert!(sys.contains("CONTRACT_BODY"));
     assert!(prompt.contains("完了時の必須アクション"));
     // CLI 名は起動環境別 alias で展開される（spec issues-1054）。
     let cli_alias = WorkflowRuntimeService::resolve_releash_alias();
     assert!(prompt.contains(&format!(
         "{cli_alias} workflow output submit 00000000-0000-0000-0000-000000000000"
     )));
-    assert!(prompt.contains("--step s"));
+    assert!(prompt.contains("--node s"));
     assert!(prompt.contains("--type plan-doc"));
     assert!(!prompt.contains("+  --step"));
 }
@@ -2609,7 +2635,7 @@ fn build_step_prompt_expands_workflow_declared_variables_in_user_message() {
     let mut step = make_test_step("impl", TestKind::Session, "unused", vec![], None);
     set_instruction_facet(&mut step, Some("impl-vars".to_string()));
     set_policy_facet(&mut step, Some("vars-policy".to_string()));
-    step.output_contract = None;
+    step.artifact = None;
     resolve_node_facets_for_test(&mut step, base);
 
     let mut declared = HashMap::new();
@@ -2639,8 +2665,8 @@ fn build_step_prompt_expands_workflow_declared_variables_in_user_message() {
     // workflow instruction 側の `{{vars.spec_dir}}` / `{{vars.env}}` が宣言値に展開される
     assert!(instruction.contains("Spec dir: docs/specs/issues-1054"));
     assert!(instruction.contains("Env: production"));
-    assert!(!prompt.contains("Spec dir: docs/specs/issues-1054"));
-    assert!(!prompt.contains("Env: production"));
+    assert!(prompt.contains("Spec dir: docs/specs/issues-1054"));
+    assert!(prompt.contains("Env: production"));
     // 未展開トークンが残らない
     assert!(!prompt.contains("{{vars.spec_dir}}"));
     assert!(!prompt.contains("{{vars.env}}"));
@@ -2752,7 +2778,7 @@ async fn dispatch_session_start_passes_composed_system_prompt_to_gate() {
 
     let mut step = make_test_step("s", TestKind::Session, "unused", vec![], None);
     set_policy_facet(&mut step, Some("p".to_string()));
-    step.output_contract = Some("c".to_string());
+    step.artifact = Some("c".to_string());
     set_instruction_facet(&mut step, None);
     resolve_node_facets_for_test(&mut step, base);
 
@@ -2804,7 +2830,6 @@ async fn dispatch_session_start_passes_composed_system_prompt_to_gate() {
         "system_prompt must not be dropped or replaced with an empty string"
     );
     assert!(sp.contains("POLICY_BODY"));
-    assert!(sp.contains("CONTRACT_BODY"));
 }
 
 #[tokio::test]
@@ -2824,7 +2849,7 @@ async fn build_and_dispatch_step_session_forwards_composed_system_prompt_through
 
     let mut step = make_test_step("s", TestKind::Session, "unused", vec![], None);
     set_policy_facet(&mut step, Some("p".to_string()));
-    step.output_contract = Some("c".to_string());
+    step.artifact = Some("c".to_string());
     set_instruction_facet(&mut step, None);
     resolve_node_facets_for_test(&mut step, base);
 
@@ -2848,7 +2873,7 @@ async fn build_and_dispatch_step_session_forwards_composed_system_prompt_through
     .await
     .unwrap();
 
-    // knowledge / instruction がなくても、output_contract があれば user_message には
+    // knowledge / instruction がなくても、artifact_contract があれば user_message には
     // Contract 由来の完了時アクションが入る。
     let _ = prompt;
 
@@ -2870,12 +2895,11 @@ async fn build_and_dispatch_step_session_forwards_composed_system_prompt_through
         "system_prompt must not be dropped or replaced with an empty string"
     );
     assert!(sp.contains("STEP_POLICY_BODY"));
-    assert!(sp.contains("STEP_CONTRACT_BODY"));
 }
 
 #[tokio::test]
 async fn dispatch_session_start_passes_none_when_no_facets() {
-    // Scenario: policy も output_contract も指定がないと system_prompt は設定されない
+    // Scenario: policy も artifact_contract も指定がないと system_prompt は設定されない
     // を SessionStartGate 経由でも維持することを検証する。
     let tmp = tempfile::TempDir::new().unwrap();
     let instructions = tmp.path().join("instructions");
@@ -2910,7 +2934,7 @@ async fn dispatch_session_start_passes_none_when_no_facets() {
     assert_eq!(recorded.len(), 1);
     assert!(
         recorded[0].system_prompt.is_none(),
-        "system_prompt must be None when neither policy nor output_contract is specified"
+        "system_prompt must be None when neither policy nor artifact_contract is specified"
     );
 }
 
@@ -3083,6 +3107,7 @@ fn insert_single_step_execution(
         name: "regression-workflow".to_string(),
         description: "regression test".to_string(),
         builtin: false,
+        schemas: Default::default(),
         nodes: vec![step],
     };
     let exec = WorkflowExecution {
@@ -3390,8 +3415,8 @@ fn make_parallel_step(name: &str) -> crate::adaptor::gateway::workflow::schema::
 #[test]
 fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
     // Scenario: 並列ステップの子ステップでも同じ合成ルールが適用される
-    // 並列子ステップに policy / output_contract / knowledge / instruction の 4 種すべてを指定し、
-    // policy + output_contract が system_prompt に、knowledge + instruction が user_message に
+    // 並列子ステップに policy / knowledge / instruction と artifact を指定し、
+    // policy が system_prompt に、knowledge + instruction + artifact action が user_message に
     // 集約されることを検証する。
     let tmp = tempfile::TempDir::new().unwrap();
     let base = tmp.path();
@@ -3412,7 +3437,7 @@ fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
     ps.facets.policy = Some("pol".to_string());
     ps.facets.knowledge = Some("know".to_string());
     ps.facets.instruction = Some("inst".to_string());
-    ps.output_contract = Some("oc".to_string());
+    ps.artifact = Some("oc".to_string());
     resolve_child_facets_for_test(&mut ps, base);
     let (system_prompt, user_message) = workflow_prompt::build_parallel_step_prompt(
         &ps,
@@ -3428,17 +3453,14 @@ fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
     .unwrap();
 
     let sp = system_prompt.expect("system_prompt must be set for parallel child with policy/oc");
-    // policy と output_contract の本文が system_prompt に集約される
+    // policy の本文が system_prompt に集約される
     assert!(sp.contains("PARALLEL_POLICY_BODY"));
-    assert!(sp.contains("PARALLEL_CONTRACT_BODY"));
-    // Contract 本文は system_prompt に集約される
     assert!(!sp.contains("PARALLEL_KNOWLEDGE_BODY"));
     assert!(!sp.contains("PARALLEL_INSTRUCTION_BODY"));
 
-    // knowledge と Contract 由来の完了時アクションは user_message に集約される。
-    // instruction は Agent system context の dedup 経路へ渡す。
+    // knowledge / instruction と Artifact 由来の完了時アクションは user_message に集約される。
     assert!(user_message.contains("PARALLEL_KNOWLEDGE_BODY"));
-    assert!(!user_message.contains("PARALLEL_INSTRUCTION_BODY"));
+    assert!(user_message.contains("PARALLEL_INSTRUCTION_BODY"));
     let instruction = workflow_prompt::render_child_workflow_instruction(
         &ps,
         "11111111-1111-1111-1111-111111111111",
@@ -3454,17 +3476,17 @@ fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
     assert!(user_message.contains(&format!(
         "{cli_alias} workflow output submit 11111111-1111-1111-1111-111111111111"
     )));
-    assert!(user_message.contains("--step child"));
+    assert!(user_message.contains("--node child"));
     assert!(user_message.contains("--type oc"));
     assert!(!user_message.contains("+  --step"));
-    // policy / output_contract 本文は user_message には入らない
+    // policy 本文と schema 名は user_message には余計に混ざらない。
     assert!(!user_message.contains("PARALLEL_POLICY_BODY"));
     assert!(!user_message.contains("PARALLEL_CONTRACT_BODY"));
 }
 
 #[test]
 fn build_parallel_step_prompt_no_policy_or_contract_returns_none_system_prompt() {
-    // 並列子ステップでも policy / output_contract がない場合は system_prompt が None になる。
+    // 並列子ステップでも policy がない場合は system_prompt が None になる。
     let tmp = tempfile::TempDir::new().unwrap();
     let base = tmp.path();
     let instructions = base.join("instructions");
@@ -3488,7 +3510,7 @@ fn build_parallel_step_prompt_no_policy_or_contract_returns_none_system_prompt()
     .unwrap();
 
     assert!(system_prompt.is_none());
-    assert!(!user_message.contains("INSTR"));
+    assert!(user_message.contains("INSTR"));
     let instruction = workflow_prompt::render_child_workflow_instruction(
         &ps,
         "11111111-1111-1111-1111-111111111111",
@@ -3513,6 +3535,7 @@ fn make_approval_exec(
             name: "test".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_approval_step("review", "Review the code", rules)],
         },
         state,
@@ -3830,7 +3853,7 @@ async fn validate_approval_chat_instruction_rejects_stale_approved_policy_sessio
     let engine = WorkflowRuntimeService::new_for_test();
     let mut exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
     exec.workflow.nodes[0].name = "implementation_fix_policy".to_string();
-    exec.workflow.nodes[0].output_contract = Some("approved-fix-policy".to_string());
+    exec.workflow.nodes[0].artifact = Some("approved-fix-policy".to_string());
     exec.current_session_id = Some("fix-session".to_string());
     exec.step_history.push(StepHistoryEntry {
         step_name: "implementation_fix_policy".to_string(),
@@ -3859,7 +3882,7 @@ async fn validate_approval_chat_instruction_rejects_stale_approved_policy_sessio
                 "review_step": "code_review_parallel",
                 "findings": []
             })),
-            output_contract: Some("approved-fix-policy".to_string()),
+            artifact_contract: Some("approved-fix-policy".to_string()),
             token_usage: None,
             completed_at: 1000.0,
         },
@@ -3893,7 +3916,7 @@ async fn validate_approval_chat_instruction_rejects_stale_rejected_policy_sessio
     let engine = WorkflowRuntimeService::new_for_test();
     let mut exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
     exec.workflow.nodes[0].name = "implementation_fix_policy".to_string();
-    exec.workflow.nodes[0].output_contract = Some("approved-fix-policy".to_string());
+    exec.workflow.nodes[0].artifact = Some("approved-fix-policy".to_string());
     exec.current_session_id = Some("implementation-approval-session".to_string());
     exec.step_history.push(StepHistoryEntry {
         step_name: "implementation_fix_policy".to_string(),
@@ -3920,7 +3943,7 @@ async fn validate_approval_chat_instruction_rejects_stale_rejected_policy_sessio
                 "decision": "reject",
                 "comment": "Revise policy."
             })),
-            output_contract: None,
+            artifact_contract: None,
             token_usage: None,
             completed_at: 1000.0,
         },
@@ -4047,6 +4070,7 @@ fn reject_comment_flows_through_approval_to_transition_and_history() {
             name: "review-fix".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 make_approval_step(
                     "review",
@@ -4098,7 +4122,7 @@ fn reject_comment_flows_through_approval_to_transition_and_history() {
                 "Fix the naming convention",
                 &[],
             )),
-            output_contract: None,
+            artifact_contract: None,
         },
     )
     .unwrap();
@@ -4144,10 +4168,11 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
             name: "auto-approve".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 {
                     let mut step = make_approval_step("fix_policy", "Review fix policy", vec![]);
-                    step.output_contract = Some("approved-fix-policy".to_string());
+                    step.artifact = Some("approved-fix-policy".to_string());
                     step
                 },
                 make_test_step("fix", TestKind::Session, "Fix", vec![], None),
@@ -4187,7 +4212,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
         ApprovalApplication {
             effective_result: "approved".to_string(),
             structured_output: Some(structured_output),
-            output_contract: Some("approved-fix-policy".to_string()),
+            artifact_contract: Some("approved-fix-policy".to_string()),
         },
     )
     .unwrap();
@@ -4207,7 +4232,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
                 "review_step": "code_review_parallel",
                 "findings": []
             })),
-            output_contract: Some("approved-fix-policy".to_string()),
+            artifact_contract: Some("approved-fix-policy".to_string()),
         },
     );
     match duplicate {
@@ -4227,6 +4252,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
             name: "auto-approve-path".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 {
                     let mut step = make_approval_step(
@@ -4234,7 +4260,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
                         "Review fix policy",
                         vec![],
                     );
-                    step.output_contract = Some("approved-fix-policy".to_string());
+                    step.artifact = Some("approved-fix-policy".to_string());
                     step.pass_output_from = Some(vec!["code_review_parallel".to_string()]);
                     step
                 },
@@ -4292,7 +4318,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
         ApprovalApplication {
             effective_result: "approved".to_string(),
             structured_output: Some(structured_output),
-            output_contract: Some("approved-fix-policy".to_string()),
+            artifact_contract: Some("approved-fix-policy".to_string()),
         },
     )
     .unwrap();
@@ -4321,7 +4347,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
                 "review_step": "code_review_parallel",
                 "findings": []
             })),
-            output_contract: Some("approved-fix-policy".to_string()),
+            artifact_contract: Some("approved-fix-policy".to_string()),
         },
     );
     assert!(matches!(
@@ -4350,6 +4376,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
             name: "auto-approve-execute-outcome".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 make_fanout_step(
                     "code_review_parallel",
@@ -4367,7 +4394,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
                         "Review fix policy",
                         vec![],
                     );
-                    step.output_contract = Some("approved-fix-policy".to_string());
+                    step.artifact = Some("approved-fix-policy".to_string());
                     step.pass_output_from = Some(vec!["code_review_parallel".to_string()]);
                     step
                 },
@@ -4497,6 +4524,7 @@ fn make_normal_step_exec_with_stall_observation() -> WorkflowExecution {
             name: "normal-stall-clear-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 make_test_step("plan", TestKind::Session, "plan", vec![], None),
                 make_test_step("implement", TestKind::Session, "implement", vec![], None),
@@ -4595,7 +4623,7 @@ fn make_step_history_entry_saves_contract_result_to_step_output() {
     assert_eq!(step_output.result.as_deref(), Some("LGTM"));
     assert_eq!(step_output.structured_output, Some(structured));
     assert_eq!(
-        step_output.output_contract.as_deref(),
+        step_output.artifact_contract.as_deref(),
         Some("review-verdict")
     );
 }
@@ -4644,6 +4672,7 @@ fn make_on_exhausted_workflow() -> Workflow {
         name: "on-exhausted-test".to_string(),
         description: "Test on_exhausted".to_string(),
         builtin: false,
+        schemas: Default::default(),
         nodes: vec![
             make_test_step(
                 "fix",
@@ -4908,6 +4937,7 @@ fn on_exhausted_chain_transitions() {
         name: "chain-test".to_string(),
         description: "test".to_string(),
         builtin: false,
+        schemas: Default::default(),
         nodes: vec![
             make_test_step(
                 "step_a",
@@ -4974,6 +5004,7 @@ fn on_exhausted_chain_to_non_exhausted_fails() {
         name: "chain-fail-test".to_string(),
         description: "test".to_string(),
         builtin: false,
+        schemas: Default::default(),
         nodes: vec![
             make_test_step(
                 "step_a",
@@ -5039,7 +5070,7 @@ fn make_step_output_fixture(step_name: &str, run_index: u32) -> StepOutput {
         session_id: None,
         result: Some("prev".to_string()),
         structured_output: Some(serde_json::json!({"verdict": "LGTM"})),
-        output_contract: None,
+        artifact_contract: None,
         token_usage: None,
         completed_at: 1000.0,
     }
@@ -5106,6 +5137,7 @@ fn apply_transition_to_parallel_block_clears_block_and_children() {
         name: "loop-parallel".to_string(),
         description: "test".to_string(),
         builtin: false,
+        schemas: Default::default(),
         nodes: vec![
             make_test_step("fix", TestKind::Session, "Fix", vec![], None),
             parallel_block,
@@ -5637,6 +5669,7 @@ fn make_minimal_workflow() -> Workflow {
         name: "engine-test-wf".to_string(),
         description: "minimal".to_string(),
         builtin: false,
+        schemas: Default::default(),
         nodes: vec![{
             let mut step = make_test_step("only-step", TestKind::Session, "do", vec![], None);
             step.session_mut()
@@ -5658,6 +5691,7 @@ fn validate_workflow_shape_rejects_empty_and_bash_workflows_without_side_effects
         name: "wf".to_string(),
         description: "".to_string(),
         builtin: false,
+        schemas: Default::default(),
         nodes: vec![],
     };
     assert!(matches!(
@@ -5671,6 +5705,7 @@ fn validate_workflow_shape_rejects_empty_and_bash_workflows_without_side_effects
         name: "wf".to_string(),
         description: "".to_string(),
         builtin: false,
+        schemas: Default::default(),
         nodes: vec![make_test_step(
             "bash-step",
             TestKind::Command,
@@ -6786,6 +6821,7 @@ mod dispatch_boundary_tests {
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_approval_step("review", "review", vec![])],
         }
     }
@@ -6796,6 +6832,7 @@ mod dispatch_boundary_tests {
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![
                 make_approval_step(
                     "review",
@@ -7218,6 +7255,7 @@ mod dispatch_boundary_tests {
             name: "parallel-prompt-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_fanout_step("parallel-review", vec![child], None)],
         };
         let mut exec =
@@ -7297,6 +7335,7 @@ mod dispatch_boundary_tests {
             name: "parallel-setup-rollback-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_fanout_step(
                 "parallel-review",
                 vec![
@@ -7432,7 +7471,7 @@ mod dispatch_boundary_tests {
                 ApprovalApplication {
                     effective_result: "approve".to_string(),
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                 },
             )
             .unwrap();
@@ -7486,6 +7525,7 @@ mod dispatch_boundary_tests {
                 name: workflow_name.to_string(),
                 description: String::new(),
                 builtin: false,
+                schemas: Default::default(),
                 nodes: vec![],
             },
             total_token_usage: TokenUsage::default(),
@@ -8068,6 +8108,7 @@ mod dispatch_boundary_tests {
             name: "stale-policy-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_test_step(
                 "review",
                 TestKind::Session,
@@ -8154,6 +8195,7 @@ mod dispatch_boundary_tests {
             name: "parallel-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_fanout_step(
                 "parallel-review",
                 vec![
@@ -8183,7 +8225,7 @@ mod dispatch_boundary_tests {
                     state: ParallelChildState::Running,
                     result: None,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -8195,7 +8237,7 @@ mod dispatch_boundary_tests {
                     state: ParallelChildState::Running,
                     result: None,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -8280,6 +8322,7 @@ mod dispatch_boundary_tests {
             name: "parallel-stall-success-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_fanout_step(
                 "parallel-review",
                 vec![
@@ -8313,7 +8356,7 @@ mod dispatch_boundary_tests {
                     state: ParallelChildState::Running,
                     result: None,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -8325,7 +8368,7 @@ mod dispatch_boundary_tests {
                     state: ParallelChildState::Running,
                     result: None,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -8396,6 +8439,7 @@ mod dispatch_boundary_tests {
             name: "parallel-delegated-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_fanout_step(
                 "parallel-review",
                 vec![
@@ -8427,7 +8471,7 @@ mod dispatch_boundary_tests {
                     "disposition": "partial",
                     "exitCode": 1,
                 })),
-                output_contract: None,
+                artifact_contract: None,
                 token_usage: Some(TokenUsage::default()),
                 completed_at: 1001.0,
             },
@@ -8446,7 +8490,7 @@ mod dispatch_boundary_tests {
                         "disposition": "partial",
                         "exitCode": 1,
                     })),
-                    output_contract: None,
+                    artifact_contract: None,
                     failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
                     failure_disposition: Some(FailureDisposition::Partial),
                     token_usage: TokenUsage::default(),
@@ -8458,7 +8502,7 @@ mod dispatch_boundary_tests {
                     state: ParallelChildState::Running,
                     result: None,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -8517,12 +8561,13 @@ mod dispatch_boundary_tests {
         let refused_child_session_id = "parallel-child-zero-refusal-session";
         let waiting_child_session_id = "parallel-child-waiting-session";
         let mut review_a = make_parallel_step("review-a");
-        review_a.output_contract = Some("review-verdict".to_string());
+        review_a.artifact = Some("review-verdict".to_string());
         let workflow = Workflow {
             variables: Default::default(),
             name: "parallel-zero-refusal-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_fanout_step(
                 "parallel-review",
                 vec![review_a, make_parallel_step("review-b")],
@@ -8553,7 +8598,7 @@ mod dispatch_boundary_tests {
                     state: ParallelChildState::Running,
                     result: None,
                     structured_output: None,
-                    output_contract: Some("review-verdict".to_string()),
+                    artifact_contract: Some("review-verdict".to_string()),
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -8565,7 +8610,7 @@ mod dispatch_boundary_tests {
                     state: ParallelChildState::Running,
                     result: None,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -8678,6 +8723,7 @@ mod dispatch_boundary_tests {
             name: "parallel-partial-append-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_fanout_step(
                 "parallel-review",
                 vec![
@@ -8708,7 +8754,7 @@ mod dispatch_boundary_tests {
                     state: ParallelChildState::Running,
                     result: None,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -8720,7 +8766,7 @@ mod dispatch_boundary_tests {
                     state: ParallelChildState::Running,
                     result: None,
                     structured_output: None,
-                    output_contract: None,
+                    artifact_contract: None,
                     failure_kind: None,
                     failure_disposition: None,
                     token_usage: TokenUsage::default(),
@@ -8927,6 +8973,7 @@ mod dispatch_boundary_tests {
                 name: "fail-wf".to_string(),
                 description: String::new(),
                 builtin: false,
+                schemas: Default::default(),
                 nodes: vec![],
             },
             total_token_usage: TokenUsage::default(),
@@ -9722,6 +9769,7 @@ mod dispatch_boundary_tests {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: Default::default(),
             nodes: vec![make_fanout_step("parallel-review", vec![], None)],
         };
         let exec = WorkflowExecution {
@@ -9748,7 +9796,7 @@ mod dispatch_boundary_tests {
                         state: ParallelChildState::Completed,
                         result: Some("LGTM".to_string()),
                         structured_output: None,
-                        output_contract: None,
+                        artifact_contract: None,
                         failure_kind: None,
                         failure_disposition: None,
                         token_usage: TokenUsage::default(),
@@ -9760,7 +9808,7 @@ mod dispatch_boundary_tests {
                         state: ParallelChildState::Running,
                         result: None,
                         structured_output: None,
-                        output_contract: None,
+                        artifact_contract: None,
                         failure_kind: None,
                         failure_disposition: None,
                         token_usage: TokenUsage::default(),
@@ -10746,6 +10794,7 @@ mod dispatch_boundary_tests {
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
+                schemas: Default::default(),
                 nodes: vec![make_test_step(
                     "plan",
                     TestKind::Session,
@@ -10910,9 +10959,10 @@ mod dispatch_boundary_tests {
             name: "submit-wf".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: submit_test_schemas(),
             nodes: vec![{
                 let mut step = make_test_step("review", TestKind::Session, "review", vec![], None);
-                step.output_contract = Some("review-verdict".to_string());
+                step.artifact = Some("review-verdict".to_string());
                 step
             }],
         }
@@ -10978,7 +11028,7 @@ mod dispatch_boundary_tests {
             .await
             .expect("step_outputs must be updated");
         assert_eq!(
-            step_output.output_contract.as_deref(),
+            step_output.artifact_contract.as_deref(),
             Some("review-verdict")
         );
         assert_eq!(
@@ -10986,28 +11036,28 @@ mod dispatch_boundary_tests {
             "LGTM"
         );
 
-        // OutputSubmitted event が追記されている
+        // ArtifactProduced event が追記されている
         let events = read_submit_output_events(&app, &run_id);
         let submitted = events
             .iter()
             .find_map(|e| match e {
-                WorkflowEvent::OutputSubmitted {
+                WorkflowEvent::ArtifactProduced {
                     node_name,
                     contract,
-                    structured_output,
+                    value,
                     request_id,
                     submitted_at,
                     ..
                 } if node_name == "review" => Some((
                     contract.clone(),
-                    structured_output.clone(),
+                    value.clone(),
                     request_id.clone(),
                     *submitted_at,
                 )),
                 _ => None,
             })
-            .expect("OutputSubmitted event must be appended");
-        assert_eq!(submitted.0, "review-verdict");
+            .expect("ArtifactProduced event must be appended");
+        assert_eq!(submitted.0.as_deref(), Some("review-verdict"));
         assert_eq!(submitted.1["verdict"], "LGTM");
         assert_eq!(
             submitted.2.as_deref(),
@@ -11029,7 +11079,7 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/submit-invalid";
         let session_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
         let mut workflow = make_submit_output_workflow();
-        workflow.nodes[0].output_contract = Some("spec-directory".to_string());
+        workflow.nodes[0].artifact = Some("spec-directory".to_string());
         engine
             .seed_active_execution_for_test(
                 run_id.clone(),
@@ -11069,7 +11119,7 @@ mod dispatch_boundary_tests {
             &run_id,
             "review",
             "spec-directory",
-            serde_json::json!({"spec_dir": "/not/relative"}),
+            serde_json::json!({}),
             Some("00000000-0000-0000-0000-000000000ab1"),
             Some(900.0),
         )
@@ -11078,11 +11128,11 @@ mod dispatch_boundary_tests {
 
         // step_outputs は更新されない
         assert!(step_output_for(&engine, &run_id, "review").await.is_none());
-        // OutputSubmitted event も書かれない
+        // ArtifactProduced event も書かれない
         let events = read_submit_output_events(&app, &run_id);
         assert!(events
             .iter()
-            .all(|e| !matches!(e, WorkflowEvent::OutputSubmitted { .. })));
+            .all(|e| !matches!(e, WorkflowEvent::ArtifactProduced { .. })));
         assert!(events.iter().any(|event| matches!(
             event,
             WorkflowEvent::ContractRepairRequested {
@@ -11110,7 +11160,7 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/submit-invalid-idempotent";
         let session_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
         let mut workflow = make_submit_output_workflow();
-        workflow.nodes[0].output_contract = Some("spec-directory".to_string());
+        workflow.nodes[0].artifact = Some("spec-directory".to_string());
         engine
             .seed_active_execution_for_test(
                 run_id.clone(),
@@ -11146,7 +11196,7 @@ mod dispatch_boundary_tests {
             crate::adaptor::gateway::workflow::pending_command::CliRequestPayload::SubmitOutput {
                 step_name: "review".to_string(),
                 contract: "spec-directory".to_string(),
-                structured_output: serde_json::json!({"spec_dir": "/not/relative"}),
+                structured_output: serde_json::json!({}),
             },
             901.0,
         );
@@ -11234,7 +11284,7 @@ mod dispatch_boundary_tests {
         let events = read_submit_output_events(&app, &run_id);
         assert!(events
             .iter()
-            .all(|e| !matches!(e, WorkflowEvent::OutputSubmitted { .. })));
+            .all(|e| !matches!(e, WorkflowEvent::ArtifactProduced { .. })));
     }
 
     /// [08] 振る舞い定義 Rule 1: 不在 run （UUID 未登録）に対する提出は ExecutionNotFound で拒否。
@@ -11300,7 +11350,7 @@ mod dispatch_boundary_tests {
 
     /// [08] 振る舞い定義 Rule 3: 提出済み output は後続 step から
     /// `pass_output_from` 経路で経路非依存に参照できる。step_outputs に
-    /// 書き込まれた entry が contract 由来の `output_contract` を保持することを担保する。
+    /// 書き込まれた entry が contract 由来の `artifact_contract` を保持することを担保する。
     #[tokio::test]
     async fn submit_output_step_output_carries_contract_for_downstream_reference() {
         let app = make_dispatch_app();
@@ -11335,17 +11385,17 @@ mod dispatch_boundary_tests {
             .await
             .expect("step_outputs slot must be populated");
         assert_eq!(
-            step_output.output_contract.as_deref(),
+            step_output.artifact_contract.as_deref(),
             Some("review-verdict")
         );
         // structured_output が後続経路に渡る shape で保持される
         assert!(step_output.structured_output.is_some());
     }
 
-    /// [08] spec-directory contract が submit された場合、workflow_variables に
-    /// `spec_dir` が反映される（extract_contract_variables の合流）。
+    /// [08] spec-directory artifact が submit された場合、step output に
+    /// 検証済み artifact が保存される。schema 方式では workflow_variables 抽出は行わない。
     #[tokio::test]
-    async fn submit_output_applies_contract_variables_for_spec_dir() {
+    async fn submit_output_stores_spec_dir_artifact_without_workflow_variable_side_effects() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
@@ -11357,9 +11407,10 @@ mod dispatch_boundary_tests {
             name: "spec-wf".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: submit_test_schemas(),
             nodes: vec![{
                 let mut step = make_test_step("plan", TestKind::Session, "plan", vec![], None);
-                step.output_contract = Some("spec-directory".to_string());
+                step.artifact = Some("spec-directory".to_string());
                 step
             }],
         };
@@ -11386,16 +11437,15 @@ mod dispatch_boundary_tests {
         .await
         .unwrap();
 
-        let vars = engine
-            .executions
-            .lock()
-            .await
-            .get(&run_id)
-            .map(|exec| exec.workflow_variables.clone())
-            .unwrap();
+        let exec = engine.executions.lock().await;
+        let exec = exec.get(&run_id).unwrap();
+        assert!(exec.workflow_variables.is_empty());
         assert_eq!(
-            vars.get("spec_dir").map(|s| s.as_str()),
-            Some("docs/spec/issues-1029.md")
+            exec.step_outputs["plan"]
+                .structured_output
+                .as_ref()
+                .unwrap()["spec_dir"],
+            "docs/spec/issues-1029.md"
         );
     }
 
@@ -11414,17 +11464,18 @@ mod dispatch_boundary_tests {
             name: "multi-step".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: submit_test_schemas(),
             nodes: vec![
                 {
                     let mut step =
                         make_test_step("first", TestKind::Session, "first", vec![], None);
-                    step.output_contract = Some("review-verdict".to_string());
+                    step.artifact = Some("review-verdict".to_string());
                     step
                 },
                 {
                     let mut step =
                         make_test_step("second", TestKind::Session, "second", vec![], None);
-                    step.output_contract = Some("review-verdict".to_string());
+                    step.artifact = Some("review-verdict".to_string());
                     step
                 },
             ],
@@ -11476,17 +11527,17 @@ mod dispatch_boundary_tests {
         assert_eq!(exec_before.0.len(), exec_after.0.len());
         assert_eq!(exec_before.1, exec_after.1);
 
-        // OutputSubmitted event は append されない
+        // ArtifactProduced event は append されない
         let events_after = read_submit_output_events(&app, &run_id);
         assert_eq!(events_before.len(), events_after.len());
         assert!(events_after
             .iter()
-            .all(|e| !matches!(e, WorkflowEvent::OutputSubmitted { .. })));
+            .all(|e| !matches!(e, WorkflowEvent::ArtifactProduced { .. })));
     }
 
     /// [08] 振る舞い定義 Rule 4: agent step の自由文出力に `<workflow_output>` 相当の
     /// 表現が含まれていても、明示的提出が無い限り step_outputs は更新されず、
-    /// OutputSubmitted event も追記されない（prose 抽出経路の完全廃止）。
+    /// ArtifactProduced event も追記されない（prose 抽出経路の完全廃止）。
     #[tokio::test]
     async fn agent_free_text_workflow_output_block_does_not_confirm_step_output() {
         let app = make_dispatch_app();
@@ -11523,7 +11574,7 @@ mod dispatch_boundary_tests {
 
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         // 自由文経路は prose 抽出を行わないため、step_outputs は変化せず、
-        // output_contract がある step は明示的提出なしでは完了しない。
+        // artifact_contract がある step は明示的提出なしでは完了しない。
         // [08] handle_auto_complete のエラーを .ok() で握り潰さないこと（review 指摘）。
         // 完了経路を通って初めて「自由文出力中の `<workflow_output>` は無視される」を
         // 検証できるため、.expect で経路実行を保証する。
@@ -11550,15 +11601,15 @@ mod dispatch_boundary_tests {
         // step_outputs 数は変わらず、structured_output を持つ entry が追加されていない
         assert_eq!(outputs_before.len(), outputs_after.len());
 
-        // OutputSubmitted event も追記されていない
+        // ArtifactProduced event も追記されていない
         let events_after = read_submit_output_events(&app, &run_id);
         let submitted_count_before = events_before
             .iter()
-            .filter(|e| matches!(e, WorkflowEvent::OutputSubmitted { .. }))
+            .filter(|e| matches!(e, WorkflowEvent::ArtifactProduced { .. }))
             .count();
         let submitted_count_after = events_after
             .iter()
-            .filter(|e| matches!(e, WorkflowEvent::OutputSubmitted { .. }))
+            .filter(|e| matches!(e, WorkflowEvent::ArtifactProduced { .. }))
             .count();
         assert_eq!(submitted_count_before, submitted_count_after);
         let node_completed = events_after
@@ -11630,6 +11681,7 @@ mod dispatch_boundary_tests {
                 Some(session_id),
                 None,
                 SubmissionViolation::MissingSubmitOutput,
+                None,
             )
             .await
             .unwrap();
@@ -11703,6 +11755,7 @@ mod dispatch_boundary_tests {
                 Some(session_id),
                 None,
                 SubmissionViolation::MissingSubmitOutput,
+                None,
             )
             .await
             .unwrap();
@@ -11857,6 +11910,7 @@ mod dispatch_boundary_tests {
                 Some("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
                 None,
                 SubmissionViolation::MissingSubmitOutput,
+                None,
             )
             .await
             .unwrap();
@@ -11942,6 +11996,7 @@ mod dispatch_boundary_tests {
                 Some(session_id),
                 None,
                 SubmissionViolation::MissingSubmitOutput,
+                None,
             )
             .await
             .unwrap();
@@ -11964,7 +12019,7 @@ mod dispatch_boundary_tests {
         );
     }
 
-    /// [08] 振る舞い定義 Rule 1: OutputSubmitted append が失敗した場合、
+    /// [08] 振る舞い定義 Rule 1: ArtifactProduced append が失敗した場合、
     /// step_outputs / workflow_variables / event log は提出前状態のまま保たれる。
     /// `write_log_required` の挿入 fail 経由で append 失敗を再現し、rollback の事実を
     /// 直接検証する（spec [08]: 「副作用なしで提出前状態のまま保つ」）。
@@ -11981,9 +12036,15 @@ mod dispatch_boundary_tests {
             name: "spec-wf".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: [(
+                "spec-directory".to_string(),
+                object_schema_for_test(&["spec_dir"]),
+            )]
+            .into_iter()
+            .collect(),
             nodes: vec![{
                 let mut step = make_test_step("plan", TestKind::Session, "plan", vec![], None);
-                step.output_contract = Some("spec-directory".to_string());
+                step.artifact = Some("spec-directory".to_string());
                 step
             }],
         };
@@ -12034,11 +12095,11 @@ mod dispatch_boundary_tests {
         assert!(!exec_after.0.contains_key("plan"));
         assert_eq!(exec_before.1, exec_after.1);
 
-        // OutputSubmitted event は append されない（log への副作用なし）
+        // ArtifactProduced event は append されない（log への副作用なし）
         let events_after = read_submit_output_events(&app, &run_id);
         assert_eq!(events_before.len(), events_after.len());
         assert!(events_after
             .iter()
-            .all(|e| !matches!(e, WorkflowEvent::OutputSubmitted { .. })));
+            .all(|e| !matches!(e, WorkflowEvent::ArtifactProduced { .. })));
     }
 }

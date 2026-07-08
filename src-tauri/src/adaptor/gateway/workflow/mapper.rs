@@ -122,6 +122,11 @@ pub(crate) fn domain_workflow_to_legacy(
         name: definition.name.clone(),
         description: definition.description.clone(),
         builtin: definition.builtin,
+        schemas: definition
+            .schemas
+            .iter()
+            .map(|(name, schema)| (name.clone(), domain_schema_to_legacy(schema)))
+            .collect(),
         variables: definition.variables.clone(),
         nodes: definition.nodes.iter().map(domain_node_to_legacy).collect(),
     };
@@ -144,8 +149,6 @@ fn domain_node_to_legacy(
         artifact: node.artifact.clone(),
         input: node.input.clone(),
         inputs: node.inputs.clone(),
-        output_contract: node.output_contract.clone(),
-        input_contracts: node.input_contracts.clone(),
         pass_previous_response: node.pass_previous_response,
         pass_output_from: node.pass_output_from.clone(),
         collect: node.collect.as_ref().map(domain_collect_to_legacy),
@@ -223,8 +226,8 @@ fn domain_child_node_to_legacy(
     crate::adaptor::gateway::workflow::schema::InterimChild {
         name: child.name.clone(),
         facets: domain_facets_to_legacy(&child.facets),
-        output_contract: child.output_contract.clone(),
-        input_contracts: child.input_contracts.clone(),
+        artifact: child.artifact.clone(),
+        input: child.input.clone(),
         pass_previous_response: child.pass_previous_response,
         pass_output_from: child.pass_output_from.clone(),
         model: child.model.clone(),
@@ -314,7 +317,6 @@ pub(crate) fn domain_facet_kind_to_legacy(kind: domain::FacetKind) -> legacy_fac
         domain::FacetKind::Policy => legacy_facet::FacetKind::Policy,
         domain::FacetKind::Knowledge => legacy_facet::FacetKind::Knowledge,
         domain::FacetKind::Instruction => legacy_facet::FacetKind::Instruction,
-        domain::FacetKind::Contract => legacy_facet::FacetKind::Contract,
     }
 }
 
@@ -411,23 +413,23 @@ pub(crate) fn domain_event_draft_to_legacy(
                 timestamp: event.timestamp,
             })
         }
-        "output_submitted" => {
+        "artifact_produced" => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase")]
             struct Payload {
                 workflow_name: String,
                 node_name: String,
-                contract: String,
-                structured_output: serde_json::Value,
+                contract: Option<String>,
+                value: serde_json::Value,
             }
 
             let payload: Payload = parse_payload(event)?;
-            Ok(legacy_event::WorkflowEvent::OutputSubmitted {
+            Ok(legacy_event::WorkflowEvent::ArtifactProduced {
                 run_id: event.run_id.clone(),
                 workflow_name: payload.workflow_name,
                 node_name: payload.node_name,
                 contract: payload.contract,
-                structured_output: payload.structured_output,
+                value: payload.value,
                 request_id: None,
                 submitted_at: None,
                 timestamp: event.timestamp,
@@ -507,8 +509,38 @@ fn domain_resolved_facets_to_legacy(
         policy: resolved.policy.clone(),
         knowledge: resolved.knowledge.clone(),
         instruction: resolved.instruction.clone(),
-        output_contract: resolved.output_contract.clone(),
-        input_contracts: resolved.input_contracts.clone(),
+    }
+}
+
+fn domain_schema_to_legacy(
+    schema: &domain::SchemaDef,
+) -> crate::adaptor::gateway::workflow::schema::SchemaDef {
+    match schema {
+        domain::SchemaDef::Object {
+            properties,
+            required,
+            additional_properties,
+        } => crate::adaptor::gateway::workflow::schema::SchemaDef::Object {
+            properties: properties
+                .iter()
+                .map(|(name, schema)| (name.clone(), domain_schema_to_legacy(schema)))
+                .collect(),
+            required: required.clone(),
+            additional_properties: *additional_properties,
+        },
+        domain::SchemaDef::Array { items } => {
+            crate::adaptor::gateway::workflow::schema::SchemaDef::Array {
+                items: items.clone(),
+            }
+        }
+        domain::SchemaDef::String { r#enum } => {
+            crate::adaptor::gateway::workflow::schema::SchemaDef::String {
+                r#enum: r#enum.clone(),
+            }
+        }
+        domain::SchemaDef::Boolean => crate::adaptor::gateway::workflow::schema::SchemaDef::Boolean,
+        domain::SchemaDef::Integer => crate::adaptor::gateway::workflow::schema::SchemaDef::Integer,
+        domain::SchemaDef::Number => crate::adaptor::gateway::workflow::schema::SchemaDef::Number,
     }
 }
 
@@ -608,6 +640,7 @@ mod tests {
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,
+            schemas: Default::default(),
             variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "step".to_string(),
@@ -655,6 +688,16 @@ mod tests {
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,
+            schemas: [(
+                "plan".to_string(),
+                domain::SchemaDef::Object {
+                    properties: Default::default(),
+                    required: Default::default(),
+                    additional_properties: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
             variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "implement".to_string(),
@@ -665,8 +708,8 @@ mod tests {
                     },
                     ..Default::default()
                 }),
-                input_contracts: Some(vec!["input".to_string()]),
-                output_contract: Some("output".to_string()),
+                input: Some("plan".to_string()),
+                artifact: Some("plan".to_string()),
                 transition_rules: vec![domain::TransitionRule {
                     r#match: "ok".to_string(),
                     next: "done".to_string(),
@@ -682,6 +725,12 @@ mod tests {
                 "name": "wf",
                 "description": "desc",
                 "builtin": false,
+                "schemas": {
+                    "plan": {
+                        "type": "object",
+                        "additionalProperties": false
+                    }
+                },
                 "nodes": [{
                     "name": "implement",
                     "session": {
@@ -690,8 +739,8 @@ mod tests {
                             "instruction": "inst"
                         }
                     },
-                    "input_contracts": ["input"],
-                    "output_contract": "output",
+                    "artifact": "plan",
+                    "input": "plan",
                     "rules": [{
                         "match": "ok",
                         "next": "done"

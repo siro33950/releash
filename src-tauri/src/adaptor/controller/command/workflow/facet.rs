@@ -7,7 +7,6 @@ fn parse_domain_facet_kind(kind: &str) -> Result<FacetKind, String> {
         "policy" => Ok(FacetKind::Policy),
         "knowledge" => Ok(FacetKind::Knowledge),
         "instruction" => Ok(FacetKind::Instruction),
-        "contract" => Ok(FacetKind::Contract),
         _ => Err(format!("Unknown facet kind: {kind}")),
     }
 }

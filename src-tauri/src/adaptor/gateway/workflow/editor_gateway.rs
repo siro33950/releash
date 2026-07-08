@@ -102,7 +102,6 @@ fn parse_editor_facet_kind(kind: &str) -> Result<facet::FacetKind, WorkflowError
         "policy" | "policies" => Ok(facet::FacetKind::Policy),
         "knowledge" => Ok(facet::FacetKind::Knowledge),
         "instruction" | "instructions" => Ok(facet::FacetKind::Instruction),
-        "contract" | "contracts" => Ok(facet::FacetKind::Contract),
         _ => Err(WorkflowError::validation(format!(
             "Unknown facet kind: {kind}"
         ))),
@@ -124,6 +123,7 @@ mod tests {
             name: "custom".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: Default::default(),
             variables: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "step".to_string(),
@@ -138,7 +138,7 @@ mod tests {
                 ..NodeDefinition::default()
             }],
         };
-        storage::save_workflow(tmp.path(), tmp.path(), &workflow).unwrap();
+        storage::save_workflow(tmp.path(), &workflow).unwrap();
 
         let path = resolve_workflow_editor_path(tmp.path(), "custom").unwrap();
 

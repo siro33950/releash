@@ -19,7 +19,7 @@ pub struct ParallelReduceResult {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParallelChildOutputMerge {
     pub structured_output: Option<serde_json::Value>,
-    pub output_contract: Option<String>,
+    pub artifact_contract: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,11 +54,11 @@ pub struct ParallelParentCompletionPlan {
 pub fn merge_parallel_child_completion_output(
     completed_structured_output: Option<serde_json::Value>,
     prior_structured_output: Option<serde_json::Value>,
-    prior_output_contract: Option<String>,
+    prior_artifact_contract: Option<String>,
 ) -> ParallelChildOutputMerge {
     ParallelChildOutputMerge {
         structured_output: completed_structured_output.or(prior_structured_output),
-        output_contract: prior_output_contract,
+        artifact_contract: prior_artifact_contract,
     }
 }
 
@@ -206,7 +206,7 @@ pub fn plan_parallel_parent_completion(
                     .map(|output| output.completed_at)
                     .unwrap_or(timestamp),
                 structured_output: output.and_then(|output| output.structured_output.clone()),
-                output_contract: output.and_then(|output| output.output_contract.clone()),
+                artifact_contract: output.and_then(|output| output.artifact_contract.clone()),
                 state: child.state.clone(),
                 failure_kind: child.failure_kind,
                 failure_disposition: child.failure_disposition,
@@ -244,7 +244,7 @@ pub fn plan_parallel_parent_completion(
             session_id: None,
             result: None,
             structured_output: Some(serde_json::Value::Object(children_output)),
-            output_contract: None,
+            artifact_contract: None,
             token_usage: Some(combined_tokens.clone()),
             completed_at: timestamp,
         },
@@ -361,7 +361,7 @@ mod parallel_tests {
             session_id: None,
             result: result.map(str::to_string),
             structured_output: None,
-            output_contract: None,
+            artifact_contract: None,
             token_usage: None,
             completed_at,
         }
@@ -484,7 +484,7 @@ mod parallel_tests {
             merge.structured_output,
             Some(serde_json::json!({ "verdict": "LGTM" }))
         );
-        assert_eq!(merge.output_contract.as_deref(), Some("review-contract"));
+        assert_eq!(merge.artifact_contract.as_deref(), Some("review-contract"));
     }
 
     #[test]
@@ -499,7 +499,7 @@ mod parallel_tests {
             merge.structured_output,
             Some(serde_json::json!({ "verdict": "NEEDS_FIX" }))
         );
-        assert_eq!(merge.output_contract.as_deref(), Some("review-contract"));
+        assert_eq!(merge.artifact_contract.as_deref(), Some("review-contract"));
     }
 
     #[test]

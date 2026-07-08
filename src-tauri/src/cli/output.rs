@@ -4,20 +4,17 @@ use clap::Subcommand;
 
 use super::common::{validate_run_id, CliError};
 use super::workflow_io;
-use crate::adaptor::gateway::workflow::WorkflowFacetFileRepository;
-use crate::domain::workflow::{
-    contract, secret_masker, ContractValidationResult, FacetKind, FacetRepository,
-};
+use crate::domain::workflow::{contract, secret_masker, ContractValidationResult};
 use crate::usecase::workflow::event_draft;
 use crate::usecase::workflow::ports::WorkflowEventDraft;
 
 #[derive(Subcommand, Debug)]
 pub(super) enum OutputSubcommand {
-    /// step の `output_contract` に従う構造化出力を提出する。
+    /// node の `artifact` schema に従う構造化出力を提出する。
     /// `--json` と `--file` は相互排他であり、いずれか必須。
     Submit {
         run_id: String,
-        #[arg(long, value_name = "STEP_NAME")]
+        #[arg(long = "node", alias = "step", value_name = "NODE_NAME")]
         step: String,
         #[arg(long = "type", value_name = "CONTRACT")]
         contract: String,
@@ -26,11 +23,11 @@ pub(super) enum OutputSubcommand {
         #[arg(long, conflicts_with = "json", value_name = "PATH")]
         file: Option<PathBuf>,
     },
-    /// 構造化出力の `output_contract` 適合性を副作用なしで確認する。
+    /// 構造化出力の `artifact` schema 適合性を副作用なしで確認する。
     /// engine state / event log は変化しない。
     Validate {
         run_id: String,
-        #[arg(long, value_name = "STEP_NAME")]
+        #[arg(long = "node", alias = "step", value_name = "NODE_NAME")]
         step: String,
         #[arg(long, value_name = "PATH")]
         file: PathBuf,
@@ -38,7 +35,7 @@ pub(super) enum OutputSubcommand {
     /// 提出済みの構造化出力を取得する。未提出時は決定論的に「未提出」を返す。
     Get {
         run_id: String,
-        #[arg(long, value_name = "STEP_NAME")]
+        #[arg(long = "node", alias = "step", value_name = "NODE_NAME")]
         step: String,
         #[arg(long)]
         json: bool,
@@ -55,7 +52,7 @@ pub(super) enum OutputSubcommand {
 ///
 /// 検証項目:
 ///   - run が存在する（event log の RunStarted から workflow を解決）
-///   - step が workflow に存在し output_contract を持つ
+///   - step が workflow に存在し artifact を持つ
 ///   - caller の `--type` が step の expected contract と一致する
 ///   - 入力 JSON が contract 適合（pure validator 再利用）
 ///
@@ -76,22 +73,23 @@ pub(super) fn cmd_output_submit(
         .map_err(|e| CliError::InvalidInput(format!("Failed to parse JSON: {e}")))?;
 
     // 同期検証: run / step / contract type 一致 / contract validation。
-    let expected_contract = resolve_step_output_contract_via_log(data_dir, run_id, step)?;
-    if expected_contract != contract {
+    let context = resolve_node_artifact_schema_via_log(data_dir, run_id, step)?;
+    if context.contract != contract {
         return Err(CliError::InvalidInput(format!(
-            "contract mismatch: step '{step}' expects '{expected_contract}', got '{contract}'"
+            "contract mismatch: step '{step}' expects '{}', got '{contract}'",
+            context.contract
         )));
     }
     // [08] preflight と本 submit (`handle_submit_output`) で同一の前処理 + validation を
-    // 共有するため、domain の secret masking + contract metadata validation 経由で呼ぶ。
+    // 共有するため、domain の secret masking + schemas validation 経由で呼ぶ。
     // CLI は別プロセスでアプリ状態 (`AppConfig` / `AppHandle`) を持たないため、ここでは
     // `secrets = &[]` で呼び、最終的な masking 込み判定は engine 側 watcher 経由で再評価される
     // （spec [08] CLI 完了基準: pending を書き出した時点で CLI は完了、最終判定は engine 側）。
-    match validate_cli_contract_output(contract, structured_output.clone()) {
+    match validate_cli_artifact_output(&context, structured_output.clone()) {
         ContractValidationResult::Valid { .. } => {}
         ContractValidationResult::Invalid(violation) => {
             return Err(CliError::InvalidInput(format!(
-                "contract violation ({}): {}",
+                "artifact schema violation ({}): {}",
                 violation.reason, violation.details
             )));
         }
@@ -119,21 +117,22 @@ pub(super) fn cmd_output_validate(
 ) -> Result<String, CliError> {
     validate_run_id(run_id)?;
     validate_step_argument(step)?;
-    let contract = resolve_step_output_contract_via_log(data_dir, run_id, step)?;
+    let context = resolve_node_artifact_schema_via_log(data_dir, run_id, step)?;
     let raw_json = std::fs::read_to_string(file)
         .map_err(|e| CliError::InvalidInput(format!("Failed to read file {:?}: {e}", file)))?;
     let value: serde_json::Value = serde_json::from_str(&raw_json)
         .map_err(|e| CliError::InvalidInput(format!("Failed to parse JSON: {e}")))?;
     // [08] preflight と本 submit (`handle_submit_output`) で同一の前処理 + validation を
-    // 共有するため、domain の secret masking + contract metadata validation 経由で呼ぶ。
+    // 共有するため、domain の secret masking + schemas validation 経由で呼ぶ。
     // CLI は別プロセスでアプリ状態を持たないため、ここでは `secrets = &[]` で呼ぶ
     // （最終 masking 込み judging は engine 側で再評価される）。
-    match validate_cli_contract_output(&contract, value) {
-        ContractValidationResult::Valid { .. } => {
-            Ok(format!("ok: contract '{contract}' is satisfied\n"))
-        }
+    match validate_cli_artifact_output(&context, value) {
+        ContractValidationResult::Valid { .. } => Ok(format!(
+            "ok: artifact schema '{}' is satisfied\n",
+            context.contract
+        )),
         ContractValidationResult::Invalid(violation) => Err(CliError::InvalidInput(format!(
-            "contract violation ({}): {}",
+            "artifact schema violation ({}): {}",
             violation.reason, violation.details
         ))),
     }
@@ -153,7 +152,7 @@ pub(super) fn cmd_output_get(
     // [08] 振る舞い定義 Rule 3 (5-5 修正): step が workflow に存在しない場合は
     // `output validate` と対称に `InvalidInput` を返す。`not_submitted` 出力は
     // 「step は存在するが未提出」専用とする。
-    let _contract = resolve_step_output_contract_via_log(data_dir, run_id, step)?;
+    let _contract = resolve_node_artifact_contract_via_log(data_dir, run_id, step)?;
     let events = workflow_io::read_domain_log(data_dir, run_id)?;
     let view = build_output_get_view(events, step);
     if json {
@@ -192,7 +191,7 @@ pub(super) fn cmd_output_get(
 fn validate_step_argument(step: &str) -> Result<(), CliError> {
     if step.trim().is_empty() {
         return Err(CliError::InvalidInput(
-            "--step must not be empty".to_string(),
+            "--node must not be empty".to_string(),
         ));
     }
     Ok(())
@@ -224,18 +223,18 @@ fn read_submit_input_json(
     }
 }
 
-/// event log の `RunStarted` から workflow definition を取り出し、step の
-/// `output_contract` を解決する。
+/// event log の `RunStarted` から workflow definition を取り出し、node の
+/// `artifact` を解決する。
 ///
 /// 経路本体は usecase の event draft helper に委譲し、CLI 層は
 /// `ContractLookupError` を `CliError` に射影するだけを担う。
-fn resolve_step_output_contract_via_log(
+fn resolve_node_artifact_contract_via_log(
     data_dir: &Path,
     run_id: &str,
     step: &str,
 ) -> Result<String, CliError> {
     let events = workflow_io::read_domain_log(data_dir, run_id)?;
-    event_draft::resolve_step_output_contract_from_drafts(&events, step, run_id).map_err(|err| {
+    event_draft::resolve_node_artifact_contract_from_drafts(&events, step, run_id).map_err(|err| {
         match err {
             contract::ContractLookupError::RunNotFound { .. } => {
                 CliError::NotFound(format!("Workflow run not found: {run_id}"))
@@ -243,26 +242,47 @@ fn resolve_step_output_contract_via_log(
             contract::ContractLookupError::InvalidRunStartedPayload { details } => {
                 CliError::InvalidInput(details)
             }
-            contract::ContractLookupError::NoOutputContract {
+            contract::ContractLookupError::NoArtifactContract {
                 workflow_name,
-                step,
+                node,
             } => CliError::InvalidInput(format!(
-                "step '{step}' has no output_contract in workflow '{workflow_name}'"
+                "node '{node}' has no artifact in workflow '{workflow_name}'"
             )),
         }
     })
 }
 
-fn validate_cli_contract_output(
-    contract_type: &str,
+fn resolve_node_artifact_schema_via_log(
+    data_dir: &Path,
+    run_id: &str,
+    step: &str,
+) -> Result<event_draft::ArtifactSchemaContext, CliError> {
+    let events = workflow_io::read_domain_log(data_dir, run_id)?;
+    event_draft::resolve_node_artifact_schema_from_drafts(&events, step, run_id).map_err(|err| {
+        match err {
+            contract::ContractLookupError::RunNotFound { .. } => {
+                CliError::NotFound(format!("Workflow run not found: {run_id}"))
+            }
+            contract::ContractLookupError::InvalidRunStartedPayload { details } => {
+                CliError::InvalidInput(details)
+            }
+            contract::ContractLookupError::NoArtifactContract {
+                workflow_name,
+                node,
+            } => CliError::InvalidInput(format!(
+                "node '{node}' has no artifact in workflow '{workflow_name}'"
+            )),
+        }
+    })
+}
+
+fn validate_cli_artifact_output(
+    context: &event_draft::ArtifactSchemaContext,
     structured_output: serde_json::Value,
 ) -> ContractValidationResult {
-    let contract_definition = WorkflowFacetFileRepository::new_default()
-        .get(FacetKind::Contract, contract_type)
-        .ok();
     let redacted =
-        secret_masker::mask_sensitive_structured_output(contract_type, structured_output, &[]);
-    contract::validate_contract_value_with_definition(redacted, contract_definition.as_deref())
+        secret_masker::mask_sensitive_structured_output(&context.contract, structured_output, &[]);
+    contract::validate_artifact_value(&context.schemas, &context.contract, redacted)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -281,13 +301,13 @@ enum OutputGetView {
 }
 
 fn build_output_get_view(events: Vec<WorkflowEventDraft>, step: &str) -> OutputGetView {
-    // 最新の OutputSubmitted は pure projection helper（spec [08] L165 / 振る舞い定義
+    // 最新の ArtifactProduced は pure projection helper（spec [08] L165 / 振る舞い定義
     // Rule 3）に集約する。CLI / Tauri 経路はそれぞれ自層の DTO（OutputGetView /
     // WorkflowGetOutputResponse）へ map するだけで挙動を共有する。
-    match event_draft::latest_output_submitted_from_drafts(&events, step) {
+    match event_draft::latest_artifact_produced_from_drafts(&events, step) {
         Some(snapshot) => OutputGetView::Submitted {
             contract: snapshot.contract,
-            structured_output: snapshot.structured_output,
+            structured_output: snapshot.value,
             submitted_at: snapshot.submitted_at,
             request_id: snapshot.request_id,
             timestamp: snapshot.timestamp,
@@ -306,8 +326,29 @@ mod tests {
     use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
     use crate::adaptor::gateway::workflow::pending_command::PendingCommandStore;
     use crate::adaptor::gateway::workflow::run::RunStatus;
+    use crate::adaptor::gateway::workflow::schema::SchemaDef;
     use clap::Parser;
     use tempfile::TempDir;
+
+    fn object_schema(fields: &[&str]) -> SchemaDef {
+        SchemaDef::Object {
+            properties: fields
+                .iter()
+                .map(|field| (field.to_string(), SchemaDef::String { r#enum: None }))
+                .collect(),
+            required: fields.iter().map(|field| field.to_string()).collect(),
+            additional_properties: false,
+        }
+    }
+
+    fn test_schemas() -> std::collections::BTreeMap<String, SchemaDef> {
+        [
+            ("review-verdict".to_string(), object_schema(&["verdict"])),
+            ("spec-directory".to_string(), object_schema(&["spec_dir"])),
+        ]
+        .into_iter()
+        .collect()
+    }
 
     #[test]
     fn cli_workflow_output_subcommands_parse_via_clap() {
@@ -380,7 +421,7 @@ mod tests {
         assert!(Cli::try_parse_from(&argv).is_err());
     }
 
-    /// テスト用 helper: 指定 step に output_contract を持つ workflow を含む RunStarted
+    /// テスト用 helper: 指定 step に artifact を持つ workflow を含む RunStarted
     /// event を log に append し、run_file も書き込む。CLI submit / validate の synchronous
     /// 解決経路は event log の RunStarted から workflow を取り出すため、テストでも本前提を
     /// 揃えてからコマンドを呼ぶ。
@@ -396,12 +437,13 @@ mod tests {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: test_schemas(),
             nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
                 name: step_name.to_string(),
                 kind: crate::adaptor::gateway::workflow::schema::NodeKind::Session(
                     crate::adaptor::gateway::workflow::schema::SessionSpec::default(),
                 ),
-                output_contract: Some(contract.to_string()),
+                artifact: Some(contract.to_string()),
                 ..Default::default()
             }],
         };
@@ -620,7 +662,7 @@ mod tests {
             &run_id,
             "review",
             "spec-directory",
-            Some("{\"spec_dir\":\"/not/relative\"}".to_string()),
+            Some("{}".to_string()),
             None,
         )
         .unwrap_err();
@@ -629,6 +671,36 @@ mod tests {
             .list_pending()
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn cmd_output_submit_rejects_spec_dir_outside_repo_without_side_effects() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(105);
+        seed_submit_workflow_log(
+            tmp.path(),
+            &run_id,
+            "/wt/submit-path-violation",
+            "review",
+            "spec-directory",
+        );
+
+        for spec_dir in ["/tmp/spec", "../outside"] {
+            let err = cmd_output_submit(
+                tmp.path(),
+                &run_id,
+                "review",
+                "spec-directory",
+                Some(format!(r#"{{"spec_dir":"{spec_dir}"}}"#)),
+                None,
+            )
+            .unwrap_err();
+            assert!(matches!(err, CliError::InvalidInput(_)));
+            assert!(PendingCommandStore::new(tmp.path())
+                .list_pending()
+                .unwrap()
+                .is_empty());
+        }
     }
 
     /// [08] 振る舞い定義 Rule 2: validate は pure validator を呼び、副作用を起こさない。
@@ -643,12 +715,13 @@ mod tests {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: test_schemas(),
             nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
                 name: "review".to_string(),
                 kind: crate::adaptor::gateway::workflow::schema::NodeKind::Session(
                     crate::adaptor::gateway::workflow::schema::SessionSpec::default(),
                 ),
-                output_contract: Some("spec-directory".to_string()),
+                artifact: Some("spec-directory".to_string()),
                 ..Default::default()
             }],
         };
@@ -666,13 +739,13 @@ mod tests {
             timestamp: 100.0,
         })
         .unwrap();
-        // 既存の OutputSubmitted を 1 件入れておき、validate がそれを変化させないことも確認する。
-        log.append(&WorkflowEvent::OutputSubmitted {
+        // 既存の ArtifactProduced を 1 件入れておき、validate がそれを変化させないことも確認する。
+        log.append(&WorkflowEvent::ArtifactProduced {
             run_id: run_id.clone(),
             workflow_name: "wf".to_string(),
             node_name: "review".to_string(),
-            contract: "review-verdict".to_string(),
-            structured_output: serde_json::json!({"verdict": "LGTM"}),
+            contract: Some("review-verdict".to_string()),
+            value: serde_json::json!({"verdict": "LGTM"}),
             request_id: Some("00000000-0000-0000-0000-0000000000aa".to_string()),
             submitted_at: Some(120.0),
             timestamp: 130.0,
@@ -701,7 +774,7 @@ mod tests {
         // run file の中身が変わっていない
         let run_file_after = std::fs::read_to_string(&run_file_path).unwrap();
         assert_eq!(run_file_before, run_file_after);
-        // 既存の OutputSubmitted がそのまま残る（reconstruct で step_outputs slot が不変）
+        // 既存の ArtifactProduced がそのまま残る（reconstruct で step_outputs slot が不変）
         let view = build_output_get_view(read_domain_log(tmp.path(), &run_id).unwrap(), "review");
         assert!(matches!(
             view,
@@ -723,12 +796,13 @@ mod tests {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
+            schemas: test_schemas(),
             nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
                 name: "review".to_string(),
                 kind: crate::adaptor::gateway::workflow::schema::NodeKind::Session(
                     crate::adaptor::gateway::workflow::schema::SessionSpec::default(),
                 ),
-                output_contract: Some("spec-directory".to_string()),
+                artifact: Some("spec-directory".to_string()),
                 ..Default::default()
             }],
         };
@@ -747,14 +821,33 @@ mod tests {
         })
         .unwrap();
         let input_file = tmp.path().join("input.json");
-        std::fs::write(&input_file, b"{\"spec_dir\":\"/not/relative\"}").unwrap();
+        std::fs::write(&input_file, b"{\"unexpected\":\"value\"}").unwrap();
 
         let err = cmd_output_validate(tmp.path(), &run_id, "review", &input_file).unwrap_err();
         assert!(matches!(err, CliError::InvalidInput(_)));
     }
 
+    #[test]
+    fn cmd_output_validate_rejects_spec_dir_outside_repo() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(106);
+        seed_submit_workflow_log(
+            tmp.path(),
+            &run_id,
+            "/wt/validate-path-violation",
+            "review",
+            "spec-directory",
+        );
+        let input_file = tmp.path().join("input.json");
+        std::fs::write(&input_file, br#"{"spec_dir":"../outside"}"#).unwrap();
+
+        let err = cmd_output_validate(tmp.path(), &run_id, "review", &input_file).unwrap_err();
+
+        assert!(matches!(err, CliError::InvalidInput(_)));
+    }
+
     /// [08] 振る舞い定義 Rule 3: `get` は提出済み output と付随メタを返す。
-    /// 同 step に対する複数 OutputSubmitted のうち最後のものを採用する。
+    /// 同 step に対する複数 ArtifactProduced のうち最後のものを採用する。
     #[test]
     fn cmd_output_get_returns_submitted_when_event_present() {
         let tmp = TempDir::new().unwrap();
@@ -766,12 +859,12 @@ mod tests {
         let log = WorkflowEventLog::new(tmp.path());
         log.append(&run_started_event(&run_id, "wf", "/wt/get"))
             .unwrap();
-        log.append(&WorkflowEvent::OutputSubmitted {
+        log.append(&WorkflowEvent::ArtifactProduced {
             run_id: run_id.clone(),
             workflow_name: "wf".to_string(),
             node_name: "review".to_string(),
-            contract: "review-verdict".to_string(),
-            structured_output: serde_json::json!({"verdict": "LGTM"}),
+            contract: Some("review-verdict".to_string()),
+            value: serde_json::json!({"verdict": "LGTM"}),
             request_id: Some("req-1".to_string()),
             submitted_at: Some(150.0),
             timestamp: 200.0,
@@ -820,7 +913,7 @@ mod tests {
         );
     }
 
-    /// [08] 振る舞い定義 Rule 3: 同 step に対し複数の OutputSubmitted が記録された場合、
+    /// [08] 振る舞い定義 Rule 3: 同 step に対し複数の ArtifactProduced が記録された場合、
     /// 最後 (= 最新) の event を採用する。
     #[test]
     fn cmd_output_get_returns_latest_event_when_multiple_submitted() {
@@ -833,23 +926,23 @@ mod tests {
         let log = WorkflowEventLog::new(tmp.path());
         log.append(&run_started_event(&run_id, "wf", "/wt/get-latest"))
             .unwrap();
-        log.append(&WorkflowEvent::OutputSubmitted {
+        log.append(&WorkflowEvent::ArtifactProduced {
             run_id: run_id.clone(),
             workflow_name: "wf".to_string(),
             node_name: "review".to_string(),
-            contract: "review-verdict".to_string(),
-            structured_output: serde_json::json!({"verdict": "NEEDS_FIX", "findings": [{"severity": "error", "message": "bug"}]}),
+            contract: Some("review-verdict".to_string()),
+            value: serde_json::json!({"verdict": "NEEDS_FIX", "findings": [{"severity": "error", "message": "bug"}]}),
             request_id: None,
             submitted_at: None,
             timestamp: 110.0,
         })
         .unwrap();
-        log.append(&WorkflowEvent::OutputSubmitted {
+        log.append(&WorkflowEvent::ArtifactProduced {
             run_id: run_id.clone(),
             workflow_name: "wf".to_string(),
             node_name: "review".to_string(),
-            contract: "review-verdict".to_string(),
-            structured_output: serde_json::json!({"verdict": "LGTM"}),
+            contract: Some("review-verdict".to_string()),
+            value: serde_json::json!({"verdict": "LGTM"}),
             request_id: None,
             submitted_at: None,
             timestamp: 120.0,
@@ -896,8 +989,8 @@ mod tests {
             "error message must include step name, got: {msg}"
         );
         assert!(
-            msg.contains("output_contract"),
-            "error message must mention output_contract (symmetric with validate), got: {msg}"
+            msg.contains("artifact"),
+            "error message must mention artifact (symmetric with validate), got: {msg}"
         );
     }
 }
