@@ -10598,10 +10598,11 @@ mod dispatch_boundary_tests {
         }
     }
 
-    /// Spec [04] rollback: RejectNode の required event append が失敗した場合も、
-    /// WorkflowExecution / Run Store は mutation 前 snapshot に戻り、event は append されない。
+    /// Spec [04] no-op 不変条件: Reject は reject rule の有無に関係なく
+    /// workflow transition として受理されず、WorkflowExecution / Run Store を変化させず
+    /// event も append しない。
     #[tokio::test]
-    async fn dispatch_reject_node_append_failure_rolls_back_execution_and_run_store() {
+    async fn dispatch_reject_node_unsupported_transition_is_noop() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let tmp = TempDir::new().unwrap();
@@ -10610,7 +10611,7 @@ mod dispatch_boundary_tests {
             .await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/reject-append-rollback";
+        let worktree_path = "/wt/reject-unsupported-noop";
         let mut exec = make_waiting_approval_execution_with_workflow(
             &run_id,
             worktree_path,
@@ -10619,8 +10620,6 @@ mod dispatch_boundary_tests {
         exec.current_session_id = None;
         let snapshot_before = exec.clone();
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
-        let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_logs");
-        std::fs::write(&log_dir_path, b"not a directory").unwrap();
 
         let result = engine
             .resolve_workflow_approval(
@@ -10636,7 +10635,12 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        assert!(matches!(result, Err(WorkflowEngineError::InvalidState(_))));
+        match result {
+            Err(WorkflowEngineError::InvalidState(message)) => {
+                assert!(message.contains("does not support reject transitions"));
+            }
+            other => panic!("expected unsupported reject transition, got {other:?}"),
+        }
         let execs = engine.executions.lock().await;
         let restored = execs.get(&run_id).unwrap();
         assert_eq!(restored.state, snapshot_before.state);
