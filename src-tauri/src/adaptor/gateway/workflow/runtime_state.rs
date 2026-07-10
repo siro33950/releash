@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-#[cfg(test)]
-use crate::adaptor::gateway::workflow::domain_mapping::transition_rule_from_domain;
 use crate::adaptor::gateway::workflow::domain_mapping::{
     node_definition_to_domain, parallel_aggregate_to_domain, parallel_step_state_from_domain,
     step_history_entries_to_domain, step_history_entry_from_domain, step_output_from_domain,
@@ -14,8 +12,6 @@ use crate::adaptor::gateway::workflow::engine_error::{
 use crate::adaptor::gateway::workflow::engine_start_guard;
 use crate::adaptor::gateway::workflow::output_submission as workflow_output_submission;
 use crate::adaptor::gateway::workflow::runtime_commit::StepOutcome;
-#[cfg(test)]
-use crate::adaptor::gateway::workflow::schema::TransitionRule;
 use crate::adaptor::gateway::workflow::schema::{ParallelAggregate, Workflow};
 use crate::adaptor::gateway::workflow::state::{
     ApprovalOperations, StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState,
@@ -25,6 +21,7 @@ use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::domain::workflow as workflow_domain;
 use crate::domain::workflow::services::history as workflow_history;
 use crate::domain::workflow::services::projection as workflow_projection;
+use crate::domain::workflow::services::routing as workflow_routing;
 use crate::domain::workflow::services::submission as workflow_submission;
 use crate::domain::workflow::services::transition as workflow_transition;
 use crate::domain::workflow::ApprovalDecision as DomainApprovalDecision;
@@ -383,6 +380,7 @@ impl WorkflowExecution {
                 self.updated_at = current_timestamp();
                 StepOutcome::Persist(self.to_workflow_state())
             }
+            NextStepDecision::Failed { reason } => self.fail_validation(reason),
             NextStepDecision::TransitionTo(name) => {
                 let idx = self
                     .workflow
@@ -422,62 +420,48 @@ impl WorkflowExecution {
             return Ok(StepOutcome::Persist(self.to_workflow_state()));
         }
 
-        self.apply_transition_inner(target_step_name, 0)
+        self.apply_transition_inner(target_step_name)
     }
 
     fn apply_transition_inner(
         &mut self,
         target_step_name: &str,
-        depth: usize,
     ) -> Result<StepOutcome, WorkflowEngineError> {
-        let max_depth = self.workflow.nodes.len();
-        if depth >= max_depth {
-            self.state = WorkflowExecutionState::Failed {
-                reason: format!("on_exhausted chain depth exceeded (max={max_depth})"),
-                kind: WorkflowStepFailureKind::ValidationFailure,
-                retry_count: None,
-            };
-            self.updated_at = current_timestamp();
-            return Ok(StepOutcome::Persist(self.to_workflow_state()));
-        }
-
-        let idx = self
-            .workflow
-            .nodes
-            .iter()
-            .position(|step| step.name == target_step_name)
-            .ok_or_else(|| {
-                WorkflowEngineError::InvalidWorkflow(format!(
-                    "Step '{target_step_name}' not found in workflow"
-                ))
-            })?;
-
-        let guard_result = self.check_cycle_guard(target_step_name)?;
-        match guard_result {
-            CycleGuardResult::Exceeded {
-                max_iterations,
-                count,
-                on_exhausted,
-            } => {
-                if let Some(fallback_target) = on_exhausted {
-                    self.apply_transition_inner(&fallback_target, depth + 1)
-                } else {
-                    self.state = WorkflowExecutionState::Failed {
-                        reason: format!(
-                            "Cycle guard exceeded for step '{target_step_name}': max_iterations={max_iterations}, executed={count}"
-                        ),
-                        kind: WorkflowStepFailureKind::ValidationFailure,
-                        retry_count: None,
-                    };
-                    self.updated_at = current_timestamp();
-                    Ok(StepOutcome::Persist(self.to_workflow_state()))
-                }
-            }
-            CycleGuardResult::Allowed => {
-                self.apply_transition_index(idx, target_step_name);
+        let workflow = workflow_definition_to_domain(&self.workflow);
+        match workflow_routing::guarded_target(
+            &workflow,
+            target_step_name.to_string(),
+            &self.step_execution_counts,
+        ) {
+            Ok(workflow_routing::RouteDecision::TransitionTo(name)) => {
+                let Some(idx) = self
+                    .workflow
+                    .nodes
+                    .iter()
+                    .position(|step| step.name == name)
+                else {
+                    return Ok(self.fail_validation(format!("node not found: {name}")));
+                };
+                self.apply_transition_index(idx, &name);
                 Ok(self.step_outcome_for_current_step())
             }
+            Ok(workflow_routing::RouteDecision::Completed) => {
+                self.state = WorkflowExecutionState::Completed;
+                self.updated_at = current_timestamp();
+                Ok(StepOutcome::Persist(self.to_workflow_state()))
+            }
+            Err(err) => Ok(self.fail_validation(err.to_string())),
         }
+    }
+
+    fn fail_validation(&mut self, reason: impl Into<String>) -> StepOutcome {
+        self.state = WorkflowExecutionState::Failed {
+            reason: reason.into(),
+            kind: WorkflowStepFailureKind::ValidationFailure,
+            retry_count: None,
+        };
+        self.updated_at = current_timestamp();
+        StepOutcome::Persist(self.to_workflow_state())
     }
 
     fn apply_transition_index(&mut self, step_index: usize, step_name: &str) {
@@ -491,13 +475,6 @@ impl WorkflowExecution {
         self.current_stall_observations.clear();
         self.clear_step_outputs_for_new_execution(step_index);
         self.updated_at = current_timestamp();
-
-        // resets_cycle_for: 遷移先ステップの設定に従い指定ステップのカウントをリセット
-        if let Some(targets) = self.workflow.nodes[step_index].resets_cycle_for.clone() {
-            for target in &targets {
-                self.step_execution_counts.remove(target);
-            }
-        }
     }
 
     fn step_outcome_for_current_step(&self) -> StepOutcome {
@@ -514,38 +491,70 @@ impl WorkflowExecution {
     /// 次のステップ遷移先を判定する（純粋関数）。
     pub(crate) fn decide_next_step(&self) -> NextStepDecision {
         let workflow = workflow_definition_to_domain(&self.workflow);
-        match workflow_transition::decide_next_node(&workflow, self.current_step_index) {
-            workflow_transition::NextNodeDecision::Completed => NextStepDecision::Completed,
-            workflow_transition::NextNodeDecision::TransitionTo(name) => {
+        match workflow_routing::route(
+            &workflow,
+            self.current_step_index,
+            self.current_node_artifact(),
+            &self.step_execution_counts,
+        ) {
+            Ok(workflow_routing::RouteDecision::Completed) => NextStepDecision::Completed,
+            Ok(workflow_routing::RouteDecision::TransitionTo(name)) => {
                 NextStepDecision::TransitionTo(name)
             }
+            Err(err) => NextStepDecision::Failed {
+                reason: err.to_string(),
+            },
         }
     }
 
-    /// 指定ステップへの遷移時にサイクルガードを検証する（純粋関数）。
-    pub(crate) fn check_cycle_guard(
+    fn current_node_artifact(&self) -> Option<&serde_json::Value> {
+        let node_name = &self.workflow.nodes.get(self.current_step_index)?.name;
+        self.step_outputs
+            .get(node_name)
+            .and_then(|output| output.structured_output.as_ref())
+    }
+
+    /// 指定 node への遷移時に loop_guard を検証する（純粋関数）。
+    #[cfg(test)]
+    pub(crate) fn check_loop_guard(
         &self,
         target_step_name: &str,
-    ) -> Result<CycleGuardResult, WorkflowEngineError> {
+    ) -> Result<LoopGuardResult, WorkflowEngineError> {
         let workflow = workflow_definition_to_domain(&self.workflow);
-        match workflow_transition::check_cycle_guard(
+        let decision = workflow_routing::guarded_target(
             &workflow,
+            target_step_name.to_string(),
             &self.step_execution_counts,
-            target_step_name,
         )
-        .map_err(workflow_error_to_engine_error)?
-        {
-            workflow_transition::CycleGuardDecision::Allowed => Ok(CycleGuardResult::Allowed),
-            workflow_transition::CycleGuardDecision::Exceeded {
-                max_iterations,
-                count,
-                on_exhausted,
-            } => Ok(CycleGuardResult::Exceeded {
-                max_iterations,
-                count,
-                on_exhausted,
-            }),
+        .map_err(workflow_error_to_engine_error)?;
+        if matches!(
+            decision,
+            workflow_routing::RouteDecision::TransitionTo(ref name) if name == target_step_name
+        ) {
+            return Ok(LoopGuardResult::Allowed);
         }
+        let node = workflow
+            .nodes
+            .iter()
+            .find(|node| node.name == target_step_name)
+            .ok_or_else(|| {
+                WorkflowEngineError::InvalidWorkflow(format!(
+                    "Node '{target_step_name}' not found in workflow"
+                ))
+            })?;
+        let Some((max_iterations, on_exhausted)) = workflow_routing::loop_guard(node) else {
+            return Ok(LoopGuardResult::Allowed);
+        };
+        let count = self
+            .step_execution_counts
+            .get(target_step_name)
+            .copied()
+            .unwrap_or(0);
+        Ok(LoopGuardResult::Exceeded {
+            max_iterations,
+            count,
+            on_exhausted: Some(on_exhausted.to_string()),
+        })
     }
 
     /// turn_complete後のアクションを判定する（純粋関数）。
@@ -572,9 +581,8 @@ impl WorkflowExecution {
                 exit_code,
                 kind,
             },
-            workflow_transition::TurnCompleteDecision::AutoEvaluate { rules, node_name } => {
+            workflow_transition::TurnCompleteDecision::AutoEvaluate { node_name } => {
                 TurnCompleteAction::AutoEvaluate {
-                    rules: rules.into_iter().map(transition_rule_from_domain).collect(),
                     step_name: node_name,
                 }
             }
@@ -626,9 +634,6 @@ impl WorkflowExecution {
         .map_err(workflow_error_to_engine_error)?
         {
             workflow_transition::ApprovalTransitionDecision::Advance => Ok(ApprovalAction::Advance),
-            workflow_transition::ApprovalTransitionDecision::TransitionTo(target) => {
-                Ok(ApprovalAction::TransitionTo(target))
-            }
         }
     }
 
@@ -667,11 +672,14 @@ pub(crate) enum NextStepDecision {
     Completed,
     /// 指定ステップへ遷移
     TransitionTo(String),
+    /// routing 不変条件違反による失敗
+    Failed { reason: String },
 }
 
 /// サイクルガード検証結果。
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum CycleGuardResult {
+#[cfg(test)]
+pub(crate) enum LoopGuardResult {
     /// 許可（ガードなし or 上限内）
     Allowed,
     /// 超過
@@ -693,10 +701,7 @@ pub(crate) enum TurnCompleteAction {
         kind: WorkflowStepFailureKind,
     },
     /// agent ノード → タグ検出して遷移
-    AutoEvaluate {
-        rules: Vec<TransitionRule>,
-        step_name: String,
-    },
+    AutoEvaluate { step_name: String },
     /// approval ノード → WaitingApproval
     WaitApproval,
     /// 設計上 turn_complete に流入してはならない node 種別を検出した
@@ -722,5 +727,4 @@ pub(crate) enum ApprovalDecision {
 #[cfg(test)]
 pub(crate) enum ApprovalAction {
     Advance,
-    TransitionTo(String),
 }

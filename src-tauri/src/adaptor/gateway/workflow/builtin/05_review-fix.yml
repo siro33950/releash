@@ -59,10 +59,11 @@ nodes:
       instruction: review-fix-check-tasks
   artifact: review-fix-tasks
   rules:
-  - match: NEEDS_FIX
-    next: implement_tasks
-  - match: LGTM
-    next: report
+  - switch:
+      on: verdict
+      cases:
+        NEEDS_FIX: implement_tasks
+        LGTM: report
 - name: implement_tasks
   session:
     model: gpt-5.5
@@ -74,11 +75,8 @@ nodes:
   inputs:
   - check_and_make_tasks
   rules:
-  - match: ".*"
-    next: check_and_make_tasks
-  cycle_guard:
-    max_iterations: 5
-    on_exhausted: report
+  - loop_guard: { max_iterations: 5, on_exhausted: report }
+  - next: check_and_make_tasks
 - name: report
   session:
     model: claude-opus-4-8

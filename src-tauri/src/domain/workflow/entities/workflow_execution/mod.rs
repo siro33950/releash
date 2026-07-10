@@ -487,7 +487,7 @@ mod aggregate_tests {
     use super::*;
     use crate::domain::workflow::value_objects::{
         CommandSpec, FacetRefs, FanoutSpec, InterimChild, NodeKind, SessionGate, SessionSpec,
-        TransitionRule, WorkflowDefinition,
+        WorkflowDefinition,
     };
 
     fn run_id() -> RunId {
@@ -569,11 +569,7 @@ mod aggregate_tests {
 
     #[test]
     fn snapshot_computes_step_states_and_approval_operations() {
-        let mut approval = node("approve", TestNodeKind::ApprovalSession);
-        approval.transition_rules = vec![TransitionRule {
-            r#match: "reject".to_string(),
-            next: "fix".to_string(),
-        }];
+        let approval = node("approve", TestNodeKind::ApprovalSession);
         let mut exec = WorkflowExecution::new(
             run_id(),
             workflow(vec![node("plan", TestNodeKind::Session), approval]),
@@ -602,7 +598,7 @@ mod aggregate_tests {
         assert_eq!(snapshot.step_states["plan"], "completed");
         assert_eq!(snapshot.step_states["approve"], "waiting_approval");
         assert_eq!(snapshot.total_token_usage.input_tokens, 2);
-        assert!(snapshot.approval_operations.unwrap().can_reject);
+        assert!(!snapshot.approval_operations.unwrap().can_reject);
         assert_eq!(exec.task(), Some("task"));
     }
 

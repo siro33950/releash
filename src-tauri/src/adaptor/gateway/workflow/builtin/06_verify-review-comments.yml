@@ -57,6 +57,8 @@ nodes:
       policy: reviewing
       knowledge: releash-thread-cli
       instruction: verify-review-comments-import
+  rules:
+  - next: decide_pr_review_comment_policy
 - name: decide_pr_review_comment_policy
   session:
     model: claude-opus-4-8
@@ -66,6 +68,8 @@ nodes:
       policy: triage
       knowledge: releash-thread-cli
       instruction: verify-review-comments-decide-policy
+  rules:
+  - next: check_and_make_tasks
 - name: check_and_make_tasks
   session:
     model: claude-opus-4-8
@@ -77,10 +81,11 @@ nodes:
       instruction: review-fix-check-tasks
   artifact: review-fix-tasks
   rules:
-  - match: NEEDS_FIX
-    next: implement_tasks
-  - match: LGTM
-    next: commit_push_and_reply
+  - switch:
+      on: verdict
+      cases:
+        NEEDS_FIX: implement_tasks
+        LGTM: commit_push_and_reply
 - name: implement_tasks
   session:
     model: gpt-5.5
@@ -92,11 +97,8 @@ nodes:
   inputs:
   - check_and_make_tasks
   rules:
-  - match: ".*"
-    next: check_and_make_tasks
-  cycle_guard:
-    max_iterations: 5
-    on_exhausted: commit_push_and_reply
+  - loop_guard: { max_iterations: 5, on_exhausted: commit_push_and_reply }
+  - next: check_and_make_tasks
 - name: commit_push_and_reply
   session:
     model: claude-opus-4-8

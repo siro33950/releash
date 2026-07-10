@@ -1,30 +1,10 @@
 //! Pure workflow transition decisions.
 
-use std::collections::HashMap;
-
-use regex::RegexBuilder;
-
 use crate::domain::workflow::value_objects::{
-    ApprovalDecision, NodeKindName, SessionGate, TransitionRule, WorkflowDefinition,
-    WorkflowExecutionState, WorkflowStepFailureKind,
+    ApprovalDecision, NodeKindName, SessionGate, WorkflowDefinition, WorkflowExecutionState,
+    WorkflowStepFailureKind,
 };
 use crate::domain::workflow::WorkflowError;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NextNodeDecision {
-    Completed,
-    TransitionTo(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CycleGuardDecision {
-    Allowed,
-    Exceeded {
-        max_iterations: u32,
-        count: u32,
-        on_exhausted: Option<String>,
-    },
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TurnCompleteDecision {
@@ -34,7 +14,6 @@ pub enum TurnCompleteDecision {
         kind: WorkflowStepFailureKind,
     },
     AutoEvaluate {
-        rules: Vec<TransitionRule>,
         node_name: String,
     },
     WaitApproval,
@@ -48,7 +27,6 @@ pub enum TurnCompleteDecision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalTransitionDecision {
     Advance,
-    TransitionTo(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,7 +39,6 @@ pub enum TurnCompleteMutationPlan {
         failure_reason: String,
     },
     AutoEvaluate {
-        rules: Vec<TransitionRule>,
         node_name: String,
     },
     RequestApproval {
@@ -92,21 +69,12 @@ pub struct ApprovalCompletion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalApplicationTransition {
     Advance,
-    TransitionTo(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalApplicationPlan {
     pub completion: ApprovalCompletion,
     pub transition: ApprovalApplicationTransition,
-}
-
-pub fn decide_next_node(workflow: &WorkflowDefinition, current_index: usize) -> NextNodeDecision {
-    if current_index + 1 >= workflow.nodes.len() {
-        NextNodeDecision::Completed
-    } else {
-        NextNodeDecision::TransitionTo(workflow.nodes[current_index + 1].name.clone())
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,36 +98,6 @@ pub fn classify_session_error(
         Some(SessionFailureSignal::ModelRefusal) => WorkflowStepFailureKind::ModelRefusal,
         None if exit_code == 124 => WorkflowStepFailureKind::StaleRuntimeTimeout,
         None => WorkflowStepFailureKind::InfrastructureCrash,
-    }
-}
-
-pub fn check_cycle_guard(
-    workflow: &WorkflowDefinition,
-    step_execution_counts: &HashMap<String, u32>,
-    target_node_name: &str,
-) -> Result<CycleGuardDecision, WorkflowError> {
-    let node = workflow
-        .nodes
-        .iter()
-        .find(|node| node.name == target_node_name)
-        .ok_or_else(|| WorkflowError::validation(format!("node not found: {target_node_name}")))?;
-
-    let Some(guard) = &node.cycle_guard else {
-        return Ok(CycleGuardDecision::Allowed);
-    };
-
-    let count = step_execution_counts
-        .get(target_node_name)
-        .copied()
-        .unwrap_or(0);
-    if count >= guard.max_iterations {
-        Ok(CycleGuardDecision::Exceeded {
-            max_iterations: guard.max_iterations,
-            count,
-            on_exhausted: guard.on_exhausted.clone(),
-        })
-    } else {
-        Ok(CycleGuardDecision::Allowed)
     }
 }
 
@@ -200,7 +138,6 @@ pub fn decide_turn_complete_action_with_signal(
     if let Some(session) = node.session() {
         return match session.gate {
             SessionGate::Auto => Ok(TurnCompleteDecision::AutoEvaluate {
-                rules: node.transition_rules.clone(),
                 node_name: node.name.clone(),
             }),
             SessionGate::Approval => Ok(TurnCompleteDecision::WaitApproval),
@@ -246,8 +183,8 @@ pub fn plan_turn_complete_mutation_with_signal(
             exit_code,
             kind,
         },
-        TurnCompleteDecision::AutoEvaluate { rules, node_name } => {
-            TurnCompleteMutationPlan::AutoEvaluate { rules, node_name }
+        TurnCompleteDecision::AutoEvaluate { node_name } => {
+            TurnCompleteMutationPlan::AutoEvaluate { node_name }
         }
         TurnCompleteDecision::WaitApproval => {
             let node_name = workflow
@@ -295,17 +232,10 @@ pub fn decide_approval_action(
 
     match decision {
         ApprovalDecision::Approve { .. } => Ok(ApprovalTransitionDecision::Advance),
-        ApprovalDecision::Reject { .. } => match node
-            .transition_rules
-            .iter()
-            .find(|rule| rule.r#match == "reject")
-        {
-            Some(rule) => Ok(ApprovalTransitionDecision::TransitionTo(rule.next.clone())),
-            None => Err(WorkflowError::invalid_state(format!(
-                "Step '{}' does not allow reject",
-                node.name
-            ))),
-        },
+        ApprovalDecision::Reject { .. } => Err(WorkflowError::invalid_state(format!(
+            "Node '{}' does not support reject transitions in rules",
+            node.name
+        ))),
         ApprovalDecision::Abort => Err(WorkflowError::invalid_state(
             "Abort is not an approval transition",
         )),
@@ -321,9 +251,6 @@ pub fn plan_approval_application(
 ) -> Result<ApprovalApplicationPlan, WorkflowError> {
     let transition = match decide_approval_action(workflow, current_index, state, decision)? {
         ApprovalTransitionDecision::Advance => ApprovalApplicationTransition::Advance,
-        ApprovalTransitionDecision::TransitionTo(target) => {
-            ApprovalApplicationTransition::TransitionTo(target)
-        }
     };
     Ok(ApprovalApplicationPlan {
         completion: ApprovalCompletion {
@@ -335,24 +262,11 @@ pub fn plan_approval_application(
     })
 }
 
-pub fn evaluate_auto_rules(text: &str, rules: &[TransitionRule]) -> Option<(String, String)> {
-    for rule in rules {
-        let Ok(regex) = RegexBuilder::new(&rule.r#match).size_limit(1 << 20).build() else {
-            continue;
-        };
-        if regex.is_match(text) {
-            return Some((rule.next.clone(), rule.r#match.clone()));
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::workflow::value_objects::{
-        CommandSpec, CycleGuard, FacetRefs, NodeDefinition, NodeKind, NodeKindName, SessionGate,
-        SessionSpec,
+        CommandSpec, FacetRefs, NodeDefinition, NodeKind, NodeKindName, SessionGate, SessionSpec,
     };
 
     enum TestKind {
@@ -397,40 +311,6 @@ mod tests {
             schemas: Default::default(),
             nodes,
         }
-    }
-
-    #[test]
-    fn decide_next_node_returns_following_node_or_completed() {
-        let workflow = workflow(vec![
-            node("plan", TestKind::Session),
-            node("done", TestKind::Session),
-        ]);
-
-        assert_eq!(
-            decide_next_node(&workflow, 0),
-            NextNodeDecision::TransitionTo("done".to_string())
-        );
-        assert_eq!(decide_next_node(&workflow, 1), NextNodeDecision::Completed);
-    }
-
-    #[test]
-    fn check_cycle_guard_reports_boundary_and_fallback() {
-        let mut guarded = node("review", TestKind::Session);
-        guarded.cycle_guard = Some(CycleGuard {
-            max_iterations: 2,
-            on_exhausted: Some("fallback".to_string()),
-        });
-        let workflow = workflow(vec![guarded]);
-        let counts = HashMap::from([("review".to_string(), 2)]);
-
-        assert_eq!(
-            check_cycle_guard(&workflow, &counts, "review").unwrap(),
-            CycleGuardDecision::Exceeded {
-                max_iterations: 2,
-                count: 2,
-                on_exhausted: Some("fallback".to_string())
-            }
-        );
     }
 
     #[test]
@@ -519,98 +399,44 @@ mod tests {
     }
 
     #[test]
-    fn decide_approval_action_uses_reject_rule() {
-        let mut approval = node("approve", TestKind::ApprovalSession);
-        approval.transition_rules = vec![TransitionRule {
-            r#match: "reject".to_string(),
-            next: "fix".to_string(),
-        }];
+    fn decide_approval_action_reject_is_no_longer_rules_based() {
+        let approval = node("approve", TestKind::ApprovalSession);
         let workflow = workflow(vec![approval]);
 
-        assert_eq!(
-            decide_approval_action(
-                &workflow,
-                0,
-                &WorkflowExecutionState::WaitingApproval,
-                &ApprovalDecision::Reject {
-                    reason: "needs fix".to_string()
-                },
-            )
-            .unwrap(),
-            ApprovalTransitionDecision::TransitionTo("fix".to_string())
-        );
+        assert!(decide_approval_action(
+            &workflow,
+            0,
+            &WorkflowExecutionState::WaitingApproval,
+            &ApprovalDecision::Reject {
+                reason: "needs fix".to_string()
+            },
+        )
+        .is_err());
     }
 
     #[test]
-    fn plan_approval_application_keeps_completion_data_and_reject_target() {
-        let mut approval = node("approve", TestKind::ApprovalSession);
-        approval.transition_rules = vec![TransitionRule {
-            r#match: "reject".to_string(),
-            next: "fix".to_string(),
-        }];
+    fn plan_approval_application_keeps_completion_data_on_approve() {
+        let approval = node("approve", TestKind::ApprovalSession);
         let workflow = workflow(vec![approval, node("fix", TestKind::Session)]);
 
         let plan = plan_approval_application(
             &workflow,
             0,
             &WorkflowExecutionState::WaitingApproval,
-            &ApprovalDecision::Reject {
-                reason: "needs work".to_string(),
-            },
+            &ApprovalDecision::Approve { comment: None },
             ApprovalApplication {
-                effective_result: "reject".to_string(),
-                structured_output: Some(serde_json::json!({ "decision": "reject" })),
+                effective_result: "approve".to_string(),
+                structured_output: Some(serde_json::json!({ "decision": "approve" })),
                 artifact_contract: Some("approval-contract".to_string()),
             },
         )
         .unwrap();
 
-        assert_eq!(
-            plan.transition,
-            ApprovalApplicationTransition::TransitionTo("fix".to_string())
-        );
-        assert_eq!(plan.completion.result, "reject");
+        assert_eq!(plan.transition, ApprovalApplicationTransition::Advance);
+        assert_eq!(plan.completion.result, "approve");
         assert_eq!(
             plan.completion.artifact_contract.as_deref(),
             Some("approval-contract")
-        );
-    }
-
-    #[test]
-    fn evaluate_auto_rules_returns_first_matching_regex_rule() {
-        let rules = vec![
-            TransitionRule {
-                r#match: "FIX".to_string(),
-                next: "implement".to_string(),
-            },
-            TransitionRule {
-                r#match: "NEEDS_FIX".to_string(),
-                next: "review".to_string(),
-            },
-        ];
-
-        assert_eq!(
-            evaluate_auto_rules("<decision>NEEDS_FIX</decision>", &rules),
-            Some(("implement".to_string(), "FIX".to_string()))
-        );
-    }
-
-    #[test]
-    fn evaluate_auto_rules_skips_invalid_regex_rules() {
-        let rules = vec![
-            TransitionRule {
-                r#match: "[invalid".to_string(),
-                next: "broken".to_string(),
-            },
-            TransitionRule {
-                r#match: "LGTM".to_string(),
-                next: "report".to_string(),
-            },
-        ];
-
-        assert_eq!(
-            evaluate_auto_rules("<decision>LGTM</decision>", &rules),
-            Some(("report".to_string(), "LGTM".to_string()))
         );
     }
 }

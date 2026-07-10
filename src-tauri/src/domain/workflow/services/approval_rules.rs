@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::domain::workflow::services::secret_masker;
 use crate::domain::workflow::value_objects::{
-    ApprovalDecision, StepHistoryEntry, TransitionRule, WorkflowExecutionState,
+    ApprovalDecision, StepHistoryEntry, WorkflowExecutionState,
 };
 use crate::domain::workflow::WorkflowError;
 #[cfg(test)]
@@ -20,12 +20,6 @@ pub enum ApprovalInputError {
     TooLong { label: &'static str, limit: usize },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ApprovalRuleError {
-    UnsupportedMatch { reason: &'static str },
-    TooManyRejectRules { reason: &'static str },
-}
-
 impl std::fmt::Display for ApprovalInputError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -36,18 +30,6 @@ impl std::fmt::Display for ApprovalInputError {
 }
 
 impl std::error::Error for ApprovalInputError {}
-
-impl std::fmt::Display for ApprovalRuleError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnsupportedMatch { reason } | Self::TooManyRejectRules { reason } => {
-                f.write_str(reason)
-            }
-        }
-    }
-}
-
-impl std::error::Error for ApprovalRuleError {}
 
 pub fn validate_optional_comment_text(
     value: Option<&str>,
@@ -77,23 +59,8 @@ pub fn validate_required_comment_text(
     Ok(())
 }
 
-pub fn can_reject(rules: &[TransitionRule]) -> bool {
-    rules.iter().any(|rule| rule.r#match == "reject")
-}
-
-pub fn validate_approval_rules(rules: &[TransitionRule]) -> Result<(), ApprovalRuleError> {
-    let reject_count = rules.iter().filter(|rule| rule.r#match == "reject").count();
-    if rules.iter().any(|rule| rule.r#match != "reject") {
-        return Err(ApprovalRuleError::UnsupportedMatch {
-            reason: "match: reject 以外のruleは定義できません",
-        });
-    }
-    if reject_count > 1 {
-        return Err(ApprovalRuleError::TooManyRejectRules {
-            reason: "match: reject ruleは最大1件です",
-        });
-    }
-    Ok(())
+pub fn can_reject() -> bool {
+    false
 }
 
 pub fn validate_approval_decision(decision: &ApprovalDecision) -> Result<(), ApprovalInputError> {
@@ -350,48 +317,8 @@ mod approval_rules_tests {
     }
 
     #[test]
-    fn test_can_reject_reject_ruleの有無を判定する() {
-        assert!(!can_reject(&[]));
-        assert!(can_reject(&[TransitionRule {
-            r#match: "reject".to_string(),
-            next: "fix".to_string(),
-        }]));
-    }
-
-    #[test]
-    fn validate_approval_rules_allows_only_one_reject_rule() {
-        assert!(validate_approval_rules(&[]).is_ok());
-        assert!(validate_approval_rules(&[TransitionRule {
-            r#match: "reject".to_string(),
-            next: "fix".to_string(),
-        }])
-        .is_ok());
-
-        assert_eq!(
-            validate_approval_rules(&[TransitionRule {
-                r#match: "approve".to_string(),
-                next: "done".to_string(),
-            }])
-            .unwrap_err()
-            .to_string(),
-            "match: reject 以外のruleは定義できません"
-        );
-
-        assert_eq!(
-            validate_approval_rules(&[
-                TransitionRule {
-                    r#match: "reject".to_string(),
-                    next: "fix".to_string(),
-                },
-                TransitionRule {
-                    r#match: "reject".to_string(),
-                    next: "retry".to_string(),
-                },
-            ])
-            .unwrap_err()
-            .to_string(),
-            "match: reject ruleは最大1件です"
-        );
+    fn test_can_reject_rulesに依存しない() {
+        assert!(!can_reject());
     }
 
     #[test]

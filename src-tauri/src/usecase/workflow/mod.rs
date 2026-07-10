@@ -15,6 +15,8 @@ pub(crate) mod ports;
 pub(crate) mod query_service;
 pub(crate) mod runtime_command;
 pub(crate) mod step_lifecycle;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub(crate) mod turn_complete;
 mod workspace_tree;
 
