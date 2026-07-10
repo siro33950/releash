@@ -9,6 +9,8 @@ import type {
 } from "@/types/workflow";
 import { DiagnosticItemRow } from "./DiagnosticBadge";
 
+type WorkflowRule = NonNullable<NodeDefinition["rules"]>[number];
+
 export function WorkflowDetail({
 	workflow,
 	report,
@@ -161,20 +163,12 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 							</span>
 							{step.rules.map((r) => (
 								<div
-									key={`${r.match}-${r.next}`}
+									key={`${step.name}-rule-${ruleKey(r)}`}
 									className="text-muted-foreground"
 								>
-									<span className="font-mono">{r.match}</span> →{" "}
-									<span className="font-mono">{r.next}</span>
+									<span className="font-mono">{formatRule(r)}</span>
 								</div>
 							))}
-						</div>
-					)}
-
-					{/* Cycle guard */}
-					{step.cycle_guard && (
-						<div className="text-muted-foreground">
-							Cycle Guard: max {step.cycle_guard.max_iterations} iterations
 						</div>
 					)}
 
@@ -222,6 +216,45 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 			)}
 		</div>
 	);
+}
+
+function formatRule(rule: WorkflowRule): string {
+	switch (rule.type) {
+		case "when":
+			return `when ${rule.on} then ${rule.then} else ${rule.next}`;
+		case "switch": {
+			const cases = Object.entries(rule.cases)
+				.map(([value, target]) => `${value} -> ${target}`)
+				.join(", ");
+			return rule.next
+				? `switch ${rule.on}: ${cases}, next -> ${rule.next}`
+				: `switch ${rule.on}: ${cases}`;
+		}
+		case "loop_guard":
+			return `loop_guard max ${rule.max_iterations} -> ${rule.on_exhausted}`;
+		case "next":
+			return `next -> ${rule.next}`;
+	}
+}
+
+function ruleKey(rule: WorkflowRule): string {
+	switch (rule.type) {
+		case "when":
+			return `when:${rule.on}:${rule.then}:${rule.next}`;
+		case "switch":
+			return `switch:${rule.on}:${sortedCases(rule.cases)}:${rule.next ?? ""}`;
+		case "loop_guard":
+			return `loop_guard:${rule.max_iterations}:${rule.on_exhausted}`;
+		case "next":
+			return `next:${rule.next}`;
+	}
+}
+
+function sortedCases(cases: Record<string, string>): string {
+	return Object.entries(cases)
+		.sort(([left], [right]) => left.localeCompare(right))
+		.map(([value, target]) => `${value}:${target}`)
+		.join(",");
 }
 
 function FacetRefRow({ label, value }: { label: string; value: string }) {

@@ -205,13 +205,7 @@ pub(crate) fn node_definition_to_domain(node: &schema::NodeDefinition) -> domain
         input: node.input.clone(),
         inputs: node.inputs.clone(),
         collect: node.collect.as_ref().map(collect_config_to_domain),
-        transition_rules: node
-            .transition_rules
-            .iter()
-            .map(transition_rule_to_domain)
-            .collect(),
-        cycle_guard: node.cycle_guard.as_ref().map(cycle_guard_to_domain),
-        resets_cycle_for: node.resets_cycle_for.clone(),
+        rules: node.rules.iter().map(rule_to_domain).collect(),
     }
 }
 
@@ -291,24 +285,26 @@ pub(crate) fn parallel_aggregate_to_domain(
     }
 }
 
-pub(crate) fn transition_rule_to_domain(rule: &schema::TransitionRule) -> domain::TransitionRule {
-    domain::TransitionRule {
-        r#match: rule.r#match.clone(),
-        next: rule.next.clone(),
-    }
-}
-
-pub(crate) fn transition_rule_from_domain(rule: domain::TransitionRule) -> schema::TransitionRule {
-    schema::TransitionRule {
-        r#match: rule.r#match,
-        next: rule.next,
-    }
-}
-
-fn cycle_guard_to_domain(guard: &schema::CycleGuard) -> domain::CycleGuard {
-    domain::CycleGuard {
-        max_iterations: guard.max_iterations,
-        on_exhausted: guard.on_exhausted.clone(),
+pub(crate) fn rule_to_domain(rule: &schema::Rule) -> domain::Rule {
+    match rule {
+        schema::Rule::When { on, then, next } => domain::Rule::When {
+            on: on.clone(),
+            then: then.clone(),
+            next: next.clone(),
+        },
+        schema::Rule::Switch { on, cases, next } => domain::Rule::Switch {
+            on: on.clone(),
+            cases: cases.clone(),
+            next: next.clone(),
+        },
+        schema::Rule::LoopGuard {
+            max_iterations,
+            on_exhausted,
+        } => domain::Rule::LoopGuard {
+            max_iterations: *max_iterations,
+            on_exhausted: on_exhausted.clone(),
+        },
+        schema::Rule::Next(next) => domain::Rule::Next(next.clone()),
     }
 }
 

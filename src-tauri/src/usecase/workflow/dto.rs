@@ -79,11 +79,7 @@ pub(crate) struct NodeDefinitionDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collect: Option<CollectConfigDto>,
     #[serde(default, rename = "rules", skip_serializing_if = "Vec::is_empty")]
-    pub transition_rules: Vec<TransitionRuleDto>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cycle_guard: Option<CycleGuardDto>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resets_cycle_for: Option<Vec<String>>,
+    pub rules: Vec<RuleDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -113,18 +109,26 @@ pub(crate) struct ParallelAggregateDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct TransitionRuleDto {
-    pub r#match: String,
-    pub next: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct CycleGuardDto {
-    pub max_iterations: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_exhausted: Option<String>,
+#[serde(rename_all = "snake_case", tag = "type")]
+pub(crate) enum RuleDto {
+    When {
+        on: String,
+        then: String,
+        next: String,
+    },
+    Switch {
+        on: String,
+        cases: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
+    },
+    LoopGuard {
+        max_iterations: u32,
+        on_exhausted: String,
+    },
+    Next {
+        next: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -264,13 +268,7 @@ fn node_to_dto(node: &domain::NodeDefinition) -> NodeDefinitionDto {
         input: node.input.clone(),
         inputs: node.inputs.clone(),
         collect: node.collect.as_ref().map(collect_to_dto),
-        transition_rules: node
-            .transition_rules
-            .iter()
-            .map(transition_rule_to_dto)
-            .collect(),
-        cycle_guard: node.cycle_guard.as_ref().map(cycle_guard_to_dto),
-        resets_cycle_for: node.resets_cycle_for.clone(),
+        rules: node.rules.iter().map(rule_to_dto).collect(),
     }
 }
 
@@ -354,17 +352,26 @@ fn aggregate_to_dto(aggregate: &domain::ParallelAggregate) -> ParallelAggregateD
     }
 }
 
-fn transition_rule_to_dto(rule: &domain::TransitionRule) -> TransitionRuleDto {
-    TransitionRuleDto {
-        r#match: rule.r#match.clone(),
-        next: rule.next.clone(),
-    }
-}
-
-fn cycle_guard_to_dto(guard: &domain::CycleGuard) -> CycleGuardDto {
-    CycleGuardDto {
-        max_iterations: guard.max_iterations,
-        on_exhausted: guard.on_exhausted.clone(),
+fn rule_to_dto(rule: &domain::Rule) -> RuleDto {
+    match rule {
+        domain::Rule::When { on, then, next } => RuleDto::When {
+            on: on.clone(),
+            then: then.clone(),
+            next: next.clone(),
+        },
+        domain::Rule::Switch { on, cases, next } => RuleDto::Switch {
+            on: on.clone(),
+            cases: cases.clone(),
+            next: next.clone(),
+        },
+        domain::Rule::LoopGuard {
+            max_iterations,
+            on_exhausted,
+        } => RuleDto::LoopGuard {
+            max_iterations: *max_iterations,
+            on_exhausted: on_exhausted.clone(),
+        },
+        domain::Rule::Next(next) => RuleDto::Next { next: next.clone() },
     }
 }
 
@@ -421,8 +428,7 @@ mod tests {
                 }),
                 artifact: Some("plan".to_string()),
                 input: Some("plan".to_string()),
-                transition_rules: vec![TransitionRuleDto {
-                    r#match: "ok".to_string(),
+                rules: vec![RuleDto::Next {
                     next: "done".to_string(),
                 }],
                 ..Default::default()
@@ -454,7 +460,7 @@ mod tests {
                     },
                     "artifact": "plan",
                     "input": "plan",
-                    "rules": [{"match": "ok", "next": "done"}]
+                    "rules": [{"type": "next", "next": "done"}]
                 }]
             })
         );

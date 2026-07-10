@@ -196,11 +196,7 @@ pub struct WorkflowNodeDefinitionView {
     pub collect: Option<WorkflowCollectConfigView>,
     // 共通: rules は空配列でも送る（frontend では非 optional として扱う）
     #[serde(default)]
-    pub rules: Vec<WorkflowTransitionRuleView>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cycle_guard: Option<WorkflowCycleGuardView>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resets_cycle_for: Option<Vec<String>>,
+    pub rules: Vec<WorkflowRuleView>,
 }
 
 /// fanout 配下の暫定 child API 表現。子は暗黙に session 扱い。
@@ -230,16 +226,26 @@ pub struct WorkflowAggregateConfigView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowTransitionRuleView {
-    pub r#match: String,
-    pub next: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowCycleGuardView {
-    pub max_iterations: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_exhausted: Option<String>,
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum WorkflowRuleView {
+    When {
+        on: String,
+        then: String,
+        next: String,
+    },
+    Switch {
+        on: String,
+        cases: std::collections::BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
+    },
+    LoopGuard {
+        max_iterations: u32,
+        on_exhausted: String,
+    },
+    Next {
+        next: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

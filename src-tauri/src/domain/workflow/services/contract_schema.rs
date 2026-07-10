@@ -272,15 +272,6 @@ fn validate_at(
                         &format!("{path}.{field}"),
                         violations,
                     );
-                    if field == "spec_dir" {
-                        if let (SchemaDef::String { .. }, Some(spec_dir)) =
-                            (property_schema, child.as_str())
-                        {
-                            if let Err(reason) = validate_spec_dir_path(spec_dir) {
-                                push(violations, &format!("{path}.{field}"), reason);
-                            }
-                        }
-                    }
                 }
             }
             if !additional_properties {
@@ -395,37 +386,6 @@ fn parse_string_array(value: &Value, field: &str) -> Result<Vec<String>, String>
         .collect()
 }
 
-fn validate_spec_dir_path(value: &str) -> Result<(), &'static str> {
-    if value.trim().is_empty() {
-        return Err("spec_dir must be a non-empty relative path");
-    }
-    if value.starts_with('/') || value.starts_with('\\') {
-        return Err("spec_dir must be a relative path");
-    }
-    if has_windows_prefix(value) {
-        return Err("spec_dir must not use a Windows drive or prefix");
-    }
-    if value.ends_with('/') || value.ends_with('\\') {
-        return Err("spec_dir must not end with a path separator");
-    }
-    if value
-        .split(['/', '\\'])
-        .any(|component| component.is_empty() || component == "..")
-    {
-        return Err("spec_dir must not contain empty or parent path components");
-    }
-    Ok(())
-}
-
-fn has_windows_prefix(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    matches!(
-        bytes,
-        [drive, b':', ..] if drive.is_ascii_alphabetic()
-    ) || value.starts_with("//")
-        || value.starts_with("\\\\")
-}
-
 #[cfg(test)]
 mod contract_schema_tests {
     use super::*;
@@ -485,30 +445,26 @@ mod contract_schema_tests {
     }
 
     #[test]
-    fn test_schema検証_spec_dirはrepo内相対pathだけ許可する() {
+    fn test_schema検証_spec_dirという名前だけではpath制約を適用しない() {
         let schema = object(
             BTreeMap::from([("spec_dir".to_string(), SchemaDef::String { r#enum: None })]),
             &["spec_dir"],
         );
-        assert!(validate(
-            &serde_json::json!({"spec_dir": "docs/specs/issues-123"}),
-            &schema,
-            &BTreeMap::new(),
-        )
-        .is_ok());
-
-        for value in ["/tmp/spec", "../outside", "docs/specs/", "C:\\tmp\\spec"] {
-            let violations = validate(
-                &serde_json::json!({"spec_dir": value}),
-                &schema,
-                &BTreeMap::new(),
-            )
-            .unwrap_err();
+        for value in [
+            "docs/specs/issues-123",
+            "/tmp/spec",
+            "../outside",
+            "docs/specs/",
+            "C:\\tmp\\spec",
+        ] {
             assert!(
-                violations
-                    .iter()
-                    .any(|violation| violation.path == "$.spec_dir"),
-                "expected spec_dir violation for {value}: {violations:?}"
+                validate(
+                    &serde_json::json!({"spec_dir": value}),
+                    &schema,
+                    &BTreeMap::new(),
+                )
+                .is_ok(),
+                "generic schema engine must not infer path constraints from field name for {value}"
             );
         }
     }

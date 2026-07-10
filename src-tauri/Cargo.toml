@@ -87,6 +87,7 @@ vendored-openssl = ["git2/vendored-openssl"]
 [dev-dependencies]
 filetime = "0.2"
 opentelemetry_sdk = { version = "0.32", features = ["testing"] }
+proptest = "1"
 # [04] / spec [04] テスト境界: production `WorkflowEngine::dispatch` を直接呼ぶ harness で
 # 実 `AppHandle` を構築するために tauri の test feature を有効化する。
 tauri = { version = "2.11", features = ["tray-icon", "image-png", "test"] }

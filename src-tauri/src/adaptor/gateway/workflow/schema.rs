@@ -186,9 +186,7 @@ pub struct NodeDefinition {
     pub input: Option<String>,
     pub inputs: Vec<String>,
     pub collect: Option<CollectConfig>,
-    pub transition_rules: Vec<TransitionRule>,
-    pub cycle_guard: Option<CycleGuard>,
-    pub resets_cycle_for: Option<Vec<String>>,
+    pub rules: Vec<Rule>,
 }
 
 impl NodeDefinition {
@@ -256,11 +254,7 @@ struct RawNodeDefinition {
     #[serde(default)]
     collect: Option<CollectConfig>,
     #[serde(default, rename = "rules")]
-    transition_rules: Vec<TransitionRule>,
-    #[serde(default)]
-    cycle_guard: Option<CycleGuard>,
-    #[serde(default)]
-    resets_cycle_for: Option<Vec<String>>,
+    rules: Vec<Rule>,
 }
 
 impl<'de> Deserialize<'de> for NodeDefinition {
@@ -294,9 +288,7 @@ impl<'de> Deserialize<'de> for NodeDefinition {
             input: raw.input,
             inputs: raw.inputs,
             collect: raw.collect,
-            transition_rules: raw.transition_rules,
-            cycle_guard: raw.cycle_guard,
-            resets_cycle_for: raw.resets_cycle_for,
+            rules: raw.rules,
         })
     }
 }
@@ -319,11 +311,9 @@ impl Serialize for NodeDefinition {
             map.serialize_entry("inputs", &self.inputs)?;
         }
         serialize_option(&mut map, "collect", &self.collect)?;
-        if !self.transition_rules.is_empty() {
-            map.serialize_entry("rules", &self.transition_rules)?;
+        if !self.rules.is_empty() {
+            map.serialize_entry("rules", &self.rules)?;
         }
-        serialize_option(&mut map, "cycle_guard", &self.cycle_guard)?;
-        serialize_option(&mut map, "resets_cycle_for", &self.resets_cycle_for)?;
         map.end()
     }
 }
@@ -375,19 +365,146 @@ pub struct ParallelAggregate {
     pub r#else: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct TransitionRule {
-    pub r#match: String,
-    pub next: String,
+pub struct WhenRule {
+    pub on: String,
+    pub then: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct CycleGuard {
+pub struct SwitchRule {
+    pub on: String,
+    pub cases: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LoopGuardRule {
     pub max_iterations: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_exhausted: Option<String>,
+    pub on_exhausted: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rule {
+    When {
+        on: String,
+        then: String,
+        next: String,
+    },
+    Switch {
+        on: String,
+        cases: BTreeMap<String, String>,
+        next: Option<String>,
+    },
+    LoopGuard {
+        max_iterations: u32,
+        on_exhausted: String,
+    },
+    Next(String),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRule {
+    #[serde(default)]
+    when: Option<WhenRule>,
+    #[serde(default)]
+    switch: Option<SwitchRule>,
+    #[serde(default)]
+    loop_guard: Option<LoopGuardRule>,
+    #[serde(default)]
+    next: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for Rule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawRule::deserialize(deserializer)?;
+        let discriminator_count = raw.when.is_some() as usize
+            + raw.switch.is_some() as usize
+            + raw.loop_guard.is_some() as usize;
+        match (raw.when, raw.switch, raw.loop_guard, raw.next) {
+            (Some(when), None, None, Some(next)) => Ok(Self::When {
+                on: when.on,
+                then: when.then,
+                next,
+            }),
+            (Some(_), None, None, None) => {
+                Err(de::Error::custom("when rule requires sibling next"))
+            }
+            (None, Some(switch), None, next) => Ok(Self::Switch {
+                on: switch.on,
+                cases: switch.cases,
+                next,
+            }),
+            (None, None, Some(loop_guard), None) => Ok(Self::LoopGuard {
+                max_iterations: loop_guard.max_iterations,
+                on_exhausted: loop_guard.on_exhausted,
+            }),
+            (None, None, None, Some(next)) => Ok(Self::Next(next)),
+            (None, None, Some(_), Some(_)) => {
+                Err(de::Error::custom("loop_guard rule cannot include next"))
+            }
+            (None, None, None, None) => Err(de::Error::custom(
+                "rule must contain one of when, switch, loop_guard, or next",
+            )),
+            _ if discriminator_count > 1 => Err(de::Error::custom(
+                "rule discriminator keys when, switch, and loop_guard are mutually exclusive",
+            )),
+            _ => Err(de::Error::custom("invalid rule shape")),
+        }
+    }
+}
+
+impl Serialize for Rule {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        match self {
+            Self::When { on, then, next } => {
+                map.serialize_entry(
+                    "when",
+                    &WhenRule {
+                        on: on.clone(),
+                        then: then.clone(),
+                    },
+                )?;
+                map.serialize_entry("next", next)?;
+            }
+            Self::Switch { on, cases, next } => {
+                map.serialize_entry(
+                    "switch",
+                    &SwitchRule {
+                        on: on.clone(),
+                        cases: cases.clone(),
+                    },
+                )?;
+                serialize_option(&mut map, "next", next)?;
+            }
+            Self::LoopGuard {
+                max_iterations,
+                on_exhausted,
+            } => {
+                map.serialize_entry(
+                    "loop_guard",
+                    &LoopGuardRule {
+                        max_iterations: *max_iterations,
+                        on_exhausted: on_exhausted.clone(),
+                    },
+                )?;
+            }
+            Self::Next(next) => {
+                map.serialize_entry("next", next)?;
+            }
+        }
+        map.end()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -532,6 +649,135 @@ nodes:
         assert!(agg.any_match.is_none());
         assert_eq!(agg.then, "report");
         assert_eq!(agg.r#else, "implement");
+    }
+
+    #[test]
+    fn parse_rules_tagged_enum_shapes() {
+        let yaml = r#"
+name: rules
+description: rules test
+nodes:
+  - name: judge
+    session:
+      permission: edit
+    rules:
+      - when: { on: ok, then: done }
+        next: fix
+      - loop_guard: { max_iterations: 3, on_exhausted: give_up }
+  - name: triage
+    session:
+      permission: edit
+    rules:
+      - switch:
+          on: verdict
+          cases:
+            LGTM: done
+            NEEDS_FIX: fix
+        next: give_up
+      - next: done
+"#;
+        let wf = serde_saphyr::from_str::<Workflow>(yaml).unwrap();
+
+        assert!(matches!(
+            &wf.nodes[0].rules[0],
+            Rule::When { on, then, next }
+                if on == "ok" && then == "done" && next == "fix"
+        ));
+        assert!(matches!(
+            &wf.nodes[0].rules[1],
+            Rule::LoopGuard {
+                max_iterations: 3,
+                on_exhausted
+            } if on_exhausted == "give_up"
+        ));
+        assert!(matches!(
+            &wf.nodes[1].rules[0],
+            Rule::Switch { on, cases, next }
+                if on == "verdict"
+                    && cases.get("LGTM").map(String::as_str) == Some("done")
+                    && cases.get("NEEDS_FIX").map(String::as_str) == Some("fix")
+                    && next.as_deref() == Some("give_up")
+        ));
+        assert!(matches!(
+            &wf.nodes[1].rules[1],
+            Rule::Next(next) if next == "done"
+        ));
+    }
+
+    #[test]
+    fn rejects_legacy_rule_match_key() {
+        let yaml = r#"
+name: legacy-rule
+description: invalid
+nodes:
+  - name: review
+    session:
+      permission: edit
+    rules:
+      - match: NEEDS_FIX
+        next: fix
+"#;
+        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        assert!(err.to_string().contains("match"));
+    }
+
+    #[test]
+    fn rejects_rule_with_multiple_discriminators() {
+        let yaml = r#"
+name: invalid-rule
+description: invalid
+nodes:
+  - name: review
+    session:
+      permission: edit
+    rules:
+      - when: { on: ok, then: done }
+        switch:
+          on: verdict
+          cases:
+            LGTM: done
+        next: fix
+"#;
+        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("discriminator keys when, switch, and loop_guard are mutually exclusive"));
+    }
+
+    #[test]
+    fn rejects_when_without_sibling_next() {
+        let yaml = r#"
+name: invalid-when
+description: invalid
+nodes:
+  - name: review
+    session:
+      permission: edit
+    rules:
+      - when: { on: ok, then: done }
+"#;
+        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        assert!(err.to_string().contains("when rule requires sibling next"));
+    }
+
+    #[test]
+    fn rejects_node_direct_cycle_guard_and_resets_cycle_for() {
+        let yaml = r#"
+name: legacy-guards
+description: invalid
+nodes:
+  - name: fix
+    session:
+      permission: edit
+    cycle_guard:
+      max_iterations: 2
+    resets_cycle_for:
+      - fix
+"#;
+        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("cycle_guard") || err.to_string().contains("resets_cycle_for")
+        );
     }
 
     #[test]

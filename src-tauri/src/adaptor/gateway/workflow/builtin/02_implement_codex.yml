@@ -24,6 +24,8 @@ nodes:
     facets:
       policy: coding
       instruction: implement
+  rules:
+  - next: review_parallel
 - name: review_parallel
   fanout:
     parallel_children:
@@ -41,6 +43,8 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: spec-implement-review-design
+  rules:
+  - next: fix
 - name: fix
   session:
     model: gpt-5.5
@@ -52,13 +56,12 @@ nodes:
       instruction: spec-implement-fix
   artifact: spec-implement-fix-verdict
   rules:
-  - match: fixed
-    next: review_parallel
-  - match: completed
-    next: report
-  cycle_guard:
-    max_iterations: 5
-    on_exhausted: report
+  - loop_guard: { max_iterations: 5, on_exhausted: report }
+  - switch:
+      on: verdict
+      cases:
+        fixed: review_parallel
+        completed: report
 - name: report
   session:
     model: gpt-5.5

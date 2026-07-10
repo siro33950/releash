@@ -96,9 +96,10 @@ mod tests {
         WorkflowSummary,
     };
     use crate::usecase::workflow::ports::{
-        WorkflowDefinitionSourceGateway, WorkflowEventRepository,
-        WorkflowStateProjectionRepository, WorkflowStepDetailProjectionRepository,
+        WorkflowEventRepository, WorkflowStateProjectionRepository,
+        WorkflowStepDetailProjectionRepository,
     };
+    use crate::usecase::workflow::test_support::NoopDefinitionSourceGateway;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::sync::Mutex;
 
@@ -165,22 +166,6 @@ mod tests {
 
         fn delete(&self, _name: &str) -> Result<(), WorkflowError> {
             Ok(())
-        }
-    }
-
-    struct NoopDefinitionSourceGateway;
-
-    impl WorkflowDefinitionSourceGateway for NoopDefinitionSourceGateway {
-        fn get_source(&self, _file_stem: &str) -> Result<Option<String>, WorkflowError> {
-            Ok(None)
-        }
-
-        fn save_source(
-            &self,
-            _source: &str,
-            _original_name: Option<&str>,
-        ) -> Result<WorkflowDefinition, WorkflowError> {
-            Err(WorkflowError::external("not used"))
         }
     }
 

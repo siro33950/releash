@@ -189,13 +189,7 @@ fn workflow_node_to_view(
         input: node.input,
         inputs: node.inputs,
         collect: node.collect.map(collect_config_to_view),
-        rules: node
-            .transition_rules
-            .into_iter()
-            .map(transition_rule_to_view)
-            .collect(),
-        cycle_guard: node.cycle_guard.map(cycle_guard_to_view),
-        resets_cycle_for: node.resets_cycle_for,
+        rules: node.rules.into_iter().map(rule_to_view).collect(),
     }
 }
 
@@ -245,19 +239,22 @@ fn facet_refs_to_view(facets: workflow::FacetRefs) -> workflow_wire::WorkflowFac
     }
 }
 
-fn transition_rule_to_view(
-    rule: workflow::TransitionRule,
-) -> workflow_wire::WorkflowTransitionRuleView {
-    workflow_wire::WorkflowTransitionRuleView {
-        r#match: rule.r#match,
-        next: rule.next,
-    }
-}
-
-fn cycle_guard_to_view(guard: workflow::CycleGuard) -> workflow_wire::WorkflowCycleGuardView {
-    workflow_wire::WorkflowCycleGuardView {
-        max_iterations: guard.max_iterations,
-        on_exhausted: guard.on_exhausted,
+fn rule_to_view(rule: workflow::Rule) -> workflow_wire::WorkflowRuleView {
+    match rule {
+        workflow::Rule::When { on, then, next } => {
+            workflow_wire::WorkflowRuleView::When { on, then, next }
+        }
+        workflow::Rule::Switch { on, cases, next } => {
+            workflow_wire::WorkflowRuleView::Switch { on, cases, next }
+        }
+        workflow::Rule::LoopGuard {
+            max_iterations,
+            on_exhausted,
+        } => workflow_wire::WorkflowRuleView::LoopGuard {
+            max_iterations,
+            on_exhausted,
+        },
+        workflow::Rule::Next(next) => workflow_wire::WorkflowRuleView::Next { next },
     }
 }
 

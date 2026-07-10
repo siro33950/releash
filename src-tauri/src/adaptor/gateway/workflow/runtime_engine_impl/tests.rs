@@ -6,7 +6,9 @@ use crate::adaptor::gateway::workflow::approval_runtime::MAX_APPROVAL_COMMENT_CH
 use crate::adaptor::gateway::workflow::failure_wire::{
     submission_violation_reason, SubmissionViolation,
 };
-use crate::adaptor::gateway::workflow::runtime_state::{ApprovalAction, TurnCompleteAction};
+use crate::adaptor::gateway::workflow::runtime_state::{
+    ApprovalAction, LoopGuardResult, TurnCompleteAction,
+};
 use crate::domain::agent_session::entities::PermissionResponse;
 use crate::domain::agent_session::gateway::{
     AgentBackend, AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, ForkSessionRequest,
@@ -546,8 +548,7 @@ async fn retry_current_step_outcome_releases_previous_session_only() {
     );
 }
 use crate::adaptor::gateway::workflow::schema::{
-    CollectConfig, CycleGuard, ParallelAggregate, ReduceStrategy, SchemaDef, TransitionRule,
-    Workflow,
+    CollectConfig, ParallelAggregate, ReduceStrategy, Rule, SchemaDef, Workflow,
 };
 
 fn object_schema_for_test(fields: &[&str]) -> SchemaDef {
@@ -590,6 +591,7 @@ fn make_minimal_approval_exec(
             NodeDefinition {
                 name: step_name.to_string(),
                 kind: test_node_kind(TestKind::ApprovalSession, "approve"),
+                rules: vec![Rule::Next("next-step".to_string())],
                 ..Default::default()
             },
             NodeDefinition {
@@ -1086,19 +1088,19 @@ fn make_test_step(
     name: &str,
     kind: TestKind,
     instruction: &str,
-    rules: Vec<TransitionRule>,
-    cycle_guard: Option<CycleGuard>,
+    mut rules: Vec<Rule>,
+    loop_guard: Option<Rule>,
 ) -> NodeDefinition {
+    rules.extend(loop_guard);
     NodeDefinition {
         name: name.to_string(),
         kind: test_node_kind(kind, instruction),
-        transition_rules: rules,
-        cycle_guard,
+        rules: rules,
         ..NodeDefinition::default()
     }
 }
 
-fn make_approval_step(name: &str, instruction: &str, rules: Vec<TransitionRule>) -> NodeDefinition {
+fn make_approval_step(name: &str, instruction: &str, rules: Vec<Rule>) -> NodeDefinition {
     make_test_step(name, TestKind::ApprovalSession, instruction, rules, None)
 }
 
@@ -1204,41 +1206,35 @@ fn make_test_workflow() -> Workflow {
         builtin: false,
         schemas: Default::default(),
         nodes: vec![
-            make_test_step("plan", TestKind::Session, "Plan the work", vec![], None),
+            make_test_step(
+                "plan",
+                TestKind::Session,
+                "Plan the work",
+                vec![Rule::Next("implement".to_string())],
+                None,
+            ),
             make_test_step(
                 "implement",
                 TestKind::Session,
                 "Implement the plan",
-                vec![],
+                vec![Rule::Next("review".to_string())],
                 None,
             ),
             make_test_step(
                 "review",
                 TestKind::Session,
                 "Review the implementation",
-                vec![
-                    TransitionRule {
-                        r#match: "NEEDS_FIX".to_string(),
-                        next: "implement".to_string(),
-                    },
-                    TransitionRule {
-                        r#match: "LGTM".to_string(),
-                        next: "report".to_string(),
-                    },
-                ],
-                Some(CycleGuard {
+                vec![Rule::Next("implement".to_string())],
+                Some(Rule::LoopGuard {
                     max_iterations: 3,
-                    on_exhausted: None,
+                    on_exhausted: "report".to_string(),
                 }),
             ),
             make_test_step(
                 "report",
                 TestKind::ApprovalSession,
                 "Generate report",
-                vec![TransitionRule {
-                    r#match: "reject".to_string(),
-                    next: "implement".to_string(),
-                }],
+                vec![],
                 None,
             ),
         ],
@@ -1448,7 +1444,7 @@ fn to_workflow_state_waiting_approval() {
     assert_eq!(ws.current_step_index, 3);
     assert_eq!(
         ws.approval_operations.as_ref().map(|ops| ops.can_reject),
-        Some(true)
+        Some(false)
     );
 }
 
@@ -1592,37 +1588,40 @@ fn to_workflow_state_completed() {
     assert_eq!(ws.total_steps, 4);
 }
 
-// ---- cycle_guard: boundary value at exactly max_iterations ----
+// ---- loop_guard: boundary value at exactly max_iterations ----
 
 #[test]
-fn check_cycle_guard_at_boundary_minus_one_allowed() {
+fn check_loop_guard_at_boundary_minus_one_allowed() {
     let mut exec = make_exec(2); // review (max_iterations=3)
     exec.step_execution_counts.insert("review".to_string(), 2);
     assert_eq!(
-        exec.check_cycle_guard("review").unwrap(),
-        CycleGuardResult::Allowed
+        exec.check_loop_guard("review").unwrap(),
+        LoopGuardResult::Allowed
     );
 }
 
 #[test]
-fn check_cycle_guard_at_exact_boundary_exceeded() {
+fn check_loop_guard_at_exact_boundary_exceeded() {
     let mut exec = make_exec(2); // review (max_iterations=3)
     exec.step_execution_counts.insert("review".to_string(), 3);
     assert_eq!(
-        exec.check_cycle_guard("review").unwrap(),
-        CycleGuardResult::Exceeded {
+        exec.check_loop_guard("review").unwrap(),
+        LoopGuardResult::Exceeded {
             max_iterations: 3,
             count: 3,
-            on_exhausted: None,
+            on_exhausted: Some("report".to_string()),
         }
     );
 }
 
 #[test]
-fn cycle_guard_no_guard_defined() {
+fn loop_guard_no_guard_defined() {
     let workflow = make_test_workflow();
-    let step = &workflow.nodes[0]; // plan (no cycle_guard)
-    assert!(step.cycle_guard.is_none());
+    let step = &workflow.nodes[0]; // plan (no loop_guard)
+    assert!(!step
+        .rules
+        .iter()
+        .any(|rule| matches!(rule, Rule::LoopGuard { .. })));
 }
 
 // ---- decide_next_step ----
@@ -1651,6 +1650,68 @@ fn make_exec(step_index: usize) -> WorkflowExecution {
     }
 }
 
+fn workflow_exec(workflow: Workflow, step_index: usize) -> WorkflowExecution {
+    WorkflowExecution {
+        id: "exec-1".to_string(),
+        workflow,
+        state: WorkflowExecutionState::Running,
+        current_step_index: step_index,
+        step_execution_counts: HashMap::new(),
+        step_history: Vec::new(),
+        step_outputs: HashMap::new(),
+        started_at: 1000.0,
+        updated_at: 1000.0,
+        current_session_id: None,
+        current_step_token_usage: TokenUsage::default(),
+        task: None,
+        parallel_run: None,
+        current_stall_observations: Vec::new(),
+        worktree_path: "/repo".to_string(),
+        workflow_defaults: WorkflowDefaults {
+            backend_id: None,
+            permission_mode: "edit".to_string(),
+        },
+    }
+}
+
+fn structured_step_output(step_name: &str, value: serde_json::Value) -> StepOutput {
+    StepOutput {
+        step_name: step_name.to_string(),
+        run_index: 1,
+        session_id: None,
+        result: None,
+        structured_output: Some(value),
+        artifact_contract: None,
+        token_usage: None,
+        completed_at: 1000.0,
+    }
+}
+
+fn bool_object_schema(field: &str) -> SchemaDef {
+    SchemaDef::Object {
+        properties: [(field.to_string(), SchemaDef::Boolean)]
+            .into_iter()
+            .collect(),
+        required: [field.to_string()].into_iter().collect(),
+        additional_properties: true,
+    }
+}
+
+fn enum_object_schema(field: &str, values: &[&str]) -> SchemaDef {
+    SchemaDef::Object {
+        properties: [(
+            field.to_string(),
+            SchemaDef::String {
+                r#enum: Some(values.iter().map(|value| (*value).to_string()).collect()),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        required: [field.to_string()].into_iter().collect(),
+        additional_properties: true,
+    }
+}
+
 #[test]
 fn decide_next_step_returns_next_step_name() {
     let exec = make_exec(0); // plan → next is implement
@@ -1675,54 +1736,298 @@ fn decide_next_step_middle_step() {
     );
 }
 
-// ---- check_cycle_guard ----
-
 #[test]
-fn check_cycle_guard_allowed_no_guard() {
-    let exec = make_exec(0);
+fn decide_next_step_routes_when_from_structured_output() {
+    let workflow = Workflow {
+        name: "when-runtime".to_string(),
+        description: String::new(),
+        builtin: false,
+        schemas: [("verdict".to_string(), bool_object_schema("passed"))]
+            .into_iter()
+            .collect(),
+        nodes: vec![
+            {
+                let mut step = make_test_step("judge", TestKind::Session, "judge", vec![], None);
+                step.artifact = Some("verdict".to_string());
+                step.rules = vec![Rule::When {
+                    on: "passed".to_string(),
+                    then: "done".to_string(),
+                    next: "fix".to_string(),
+                }];
+                step
+            },
+            make_test_step("done", TestKind::Session, "done", vec![], None),
+            make_test_step("fix", TestKind::Session, "fix", vec![], None),
+        ],
+    };
+    let mut exec = workflow_exec(workflow, 0);
+
+    exec.step_outputs.insert(
+        "judge".to_string(),
+        structured_step_output("judge", serde_json::json!({"passed": true})),
+    );
     assert_eq!(
-        exec.check_cycle_guard("plan").unwrap(),
-        CycleGuardResult::Allowed
+        exec.decide_next_step(),
+        NextStepDecision::TransitionTo("done".to_string())
+    );
+
+    exec.step_outputs.insert(
+        "judge".to_string(),
+        structured_step_output("judge", serde_json::json!({"passed": false})),
+    );
+    assert_eq!(
+        exec.decide_next_step(),
+        NextStepDecision::TransitionTo("fix".to_string())
     );
 }
 
 #[test]
-fn check_cycle_guard_allowed_within_limit() {
+fn decide_next_step_routes_switch_from_structured_output() {
+    let workflow = Workflow {
+        name: "switch-runtime".to_string(),
+        description: String::new(),
+        builtin: false,
+        schemas: [(
+            "verdict".to_string(),
+            enum_object_schema("decision", &["SHIP", "FIX"]),
+        )]
+        .into_iter()
+        .collect(),
+        nodes: vec![
+            {
+                let mut step = make_test_step("judge", TestKind::Session, "judge", vec![], None);
+                step.artifact = Some("verdict".to_string());
+                step.rules = vec![Rule::Switch {
+                    on: "decision".to_string(),
+                    cases: [
+                        ("SHIP".to_string(), "done".to_string()),
+                        ("FIX".to_string(), "fix".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    next: None,
+                }];
+                step
+            },
+            make_test_step("done", TestKind::Session, "done", vec![], None),
+            make_test_step("fix", TestKind::Session, "fix", vec![], None),
+        ],
+    };
+    let mut exec = workflow_exec(workflow, 0);
+
+    exec.step_outputs.insert(
+        "judge".to_string(),
+        structured_step_output("judge", serde_json::json!({"decision": "FIX"})),
+    );
+
+    assert_eq!(
+        exec.decide_next_step(),
+        NextStepDecision::TransitionTo("fix".to_string())
+    );
+}
+
+#[test]
+fn apply_advance_routes_builtin_review_fix_switch_by_verdict() {
+    for workflow_name in [
+        "05_review-fix",
+        "05_review-fix_gpt55",
+        "05_review-fix_opus48",
+    ] {
+        let workflow = crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
+            workflow_name,
+        )
+        .unwrap()
+        .unwrap();
+
+        for (verdict, expected_step) in [("NEEDS_FIX", "implement_tasks"), ("LGTM", "report")] {
+            let mut exec = workflow_exec(workflow.clone(), 0);
+            exec.step_outputs.insert(
+                "check_and_make_tasks".to_string(),
+                structured_step_output(
+                    "check_and_make_tasks",
+                    serde_json::json!({
+                        "verdict": verdict,
+                        "tasks": [],
+                        "summary": "summary"
+                    }),
+                ),
+            );
+
+            let outcome = exec.apply_advance();
+
+            assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+            assert_eq!(
+                exec.workflow.nodes[exec.current_step_index].name, expected_step,
+                "{workflow_name} verdict {verdict} must route to {expected_step}"
+            );
+        }
+    }
+}
+
+#[test]
+fn apply_advance_routes_builtin_implement_switch_by_verdict() {
+    for workflow_name in ["02_implement_gpt55", "02_implement_opus48"] {
+        let workflow = crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
+            workflow_name,
+        )
+        .unwrap()
+        .unwrap();
+        let fix_index = workflow
+            .nodes
+            .iter()
+            .position(|node| node.name == "fix")
+            .expect("builtin implement workflow must have fix node");
+
+        for (verdict, expected_step) in [("fixed", "review_parallel"), ("completed", "report")] {
+            let mut exec = workflow_exec(workflow.clone(), fix_index);
+            exec.step_outputs.insert(
+                "fix".to_string(),
+                structured_step_output(
+                    "fix",
+                    serde_json::json!({
+                        "verdict": verdict,
+                        "summary": "summary"
+                    }),
+                ),
+            );
+
+            let outcome = exec.apply_advance();
+
+            match expected_step {
+                "review_parallel" => assert!(matches!(outcome, StepOutcome::StartParallel(_))),
+                "report" => assert!(matches!(outcome, StepOutcome::TransitionAndStart(_))),
+                _ => unreachable!("unexpected fixture target"),
+            }
+            assert_eq!(
+                exec.workflow.nodes[exec.current_step_index].name, expected_step,
+                "{workflow_name} verdict {verdict} must route to {expected_step}"
+            );
+        }
+    }
+}
+
+#[test]
+fn apply_advance_fails_on_switch_no_match_without_next() {
+    let workflow = Workflow {
+        name: "switch-no-match".to_string(),
+        description: String::new(),
+        builtin: false,
+        schemas: [(
+            "verdict".to_string(),
+            enum_object_schema("decision", &["SHIP"]),
+        )]
+        .into_iter()
+        .collect(),
+        nodes: vec![
+            {
+                let mut step = make_test_step("judge", TestKind::Session, "judge", vec![], None);
+                step.artifact = Some("verdict".to_string());
+                step.rules = vec![Rule::Switch {
+                    on: "decision".to_string(),
+                    cases: [("SHIP".to_string(), "done".to_string())]
+                        .into_iter()
+                        .collect(),
+                    next: None,
+                }];
+                step
+            },
+            make_test_step("done", TestKind::Session, "done", vec![], None),
+        ],
+    };
+    let mut exec = workflow_exec(workflow, 0);
+    exec.step_outputs.insert(
+        "judge".to_string(),
+        structured_step_output("judge", serde_json::json!({"decision": "HOLD"})),
+    );
+
+    let outcome = exec.apply_advance();
+
+    assert!(matches!(outcome, StepOutcome::Persist(_)));
+    assert!(matches!(
+        exec.state,
+        WorkflowExecutionState::Failed {
+            kind: WorkflowStepFailureKind::ValidationFailure,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn apply_advance_fails_on_unknown_route_target() {
+    let workflow = Workflow {
+        name: "missing-target".to_string(),
+        description: String::new(),
+        builtin: false,
+        schemas: Default::default(),
+        nodes: vec![make_test_step(
+            "start",
+            TestKind::Session,
+            "start",
+            vec![Rule::Next("missing".to_string())],
+            None,
+        )],
+    };
+    let mut exec = workflow_exec(workflow, 0);
+
+    exec.apply_advance();
+
+    assert!(matches!(
+        exec.state,
+        WorkflowExecutionState::Failed {
+            kind: WorkflowStepFailureKind::ValidationFailure,
+            ..
+        }
+    ));
+}
+
+// ---- check_loop_guard ----
+
+#[test]
+fn check_loop_guard_allowed_no_guard() {
+    let exec = make_exec(0);
+    assert_eq!(
+        exec.check_loop_guard("plan").unwrap(),
+        LoopGuardResult::Allowed
+    );
+}
+
+#[test]
+fn check_loop_guard_allowed_within_limit() {
     let mut exec = make_exec(2);
     exec.step_execution_counts.insert("review".to_string(), 2);
     assert_eq!(
-        exec.check_cycle_guard("review").unwrap(),
-        CycleGuardResult::Allowed
+        exec.check_loop_guard("review").unwrap(),
+        LoopGuardResult::Allowed
     );
 }
 
 #[test]
-fn check_cycle_guard_exceeded() {
+fn check_loop_guard_exceeded() {
     let mut exec = make_exec(2);
     exec.step_execution_counts.insert("review".to_string(), 3);
     assert_eq!(
-        exec.check_cycle_guard("review").unwrap(),
-        CycleGuardResult::Exceeded {
+        exec.check_loop_guard("review").unwrap(),
+        LoopGuardResult::Exceeded {
             max_iterations: 3,
             count: 3,
-            on_exhausted: None,
+            on_exhausted: Some("report".to_string()),
         }
     );
 }
 
 #[test]
-fn check_cycle_guard_step_not_found() {
+fn check_loop_guard_step_not_found() {
     let exec = make_exec(0);
-    assert!(exec.check_cycle_guard("nonexistent").is_err());
+    assert!(exec.check_loop_guard("nonexistent").is_err());
 }
 
 #[test]
-fn check_cycle_guard_first_transition_no_count() {
+fn check_loop_guard_first_transition_no_count() {
     // step_execution_counts にキーなし = 初回遷移
-    let exec = make_exec(2); // review has cycle_guard(max_iterations=3)
+    let exec = make_exec(2); // review has loop_guard(max_iterations=3)
     assert_eq!(
-        exec.check_cycle_guard("review").unwrap(),
-        CycleGuardResult::Allowed
+        exec.check_loop_guard("review").unwrap(),
+        LoopGuardResult::Allowed
     );
 }
 
@@ -1753,14 +2058,11 @@ fn turn_complete_action_session_error() {
 
 #[test]
 fn turn_complete_action_auto_evaluate() {
-    let exec = make_exec(2); // review (auto, has rules)
+    let exec = make_exec(2); // review (auto)
     let action = exec.decide_turn_complete_action(0);
     match action {
-        TurnCompleteAction::AutoEvaluate { rules, step_name } => {
+        TurnCompleteAction::AutoEvaluate { step_name } => {
             assert_eq!(step_name, "review");
-            assert_eq!(rules.len(), 2);
-            assert_eq!(rules[0].r#match, "NEEDS_FIX");
-            assert_eq!(rules[1].r#match, "LGTM");
         }
         other => panic!("Expected AutoEvaluate, got {:?}", other),
     }
@@ -1837,9 +2139,8 @@ fn turn_complete_action_auto_no_rules_returns_auto_evaluate_empty() {
     let exec = make_exec(1); // implement (auto, no rules)
     let action = exec.decide_turn_complete_action(0);
     match action {
-        TurnCompleteAction::AutoEvaluate { rules, step_name } => {
+        TurnCompleteAction::AutoEvaluate { step_name } => {
             assert_eq!(step_name, "implement");
-            assert!(rules.is_empty());
         }
         other => panic!("Expected AutoEvaluate with empty rules, got {:?}", other),
     }
@@ -1859,16 +2160,14 @@ fn decide_approval_action_approve() {
 }
 
 #[test]
-fn decide_approval_action_reject_with_rule() {
-    let mut exec = make_exec(3); // report (approval, reject→implement)
+fn decide_approval_action_reject_is_not_routable() {
+    let mut exec = make_exec(3); // report (approval)
     exec.state = WorkflowExecutionState::WaitingApproval;
-    assert_eq!(
-        exec.decide_approval_action(&ApprovalDecision::Reject {
+    assert!(exec
+        .decide_approval_action(&ApprovalDecision::Reject {
             comment: "Needs fix".to_string()
         })
-        .unwrap(),
-        ApprovalAction::TransitionTo("implement".to_string())
-    );
+        .is_err());
 }
 
 #[test]
@@ -2252,7 +2551,10 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
     assert!(!raw.contains("PRIVATE KEY-----abc"));
     assert!(!raw.contains("MY_TOKEN_VALUE_123456"));
 
-    let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
+    let mut exec = make_approval_exec(
+        WorkflowExecutionState::WaitingApproval,
+        vec![Rule::Next("fix".to_string())],
+    );
     exec.workflow.nodes[0].artifact = Some("approved-fix-policy".to_string());
     let mut fix = make_test_step("fix", TestKind::Session, "Fix", vec![], None);
     let facet_contents = instruction_contents("Fix");
@@ -2392,28 +2694,6 @@ fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
 
 // ---- contract retry 判定テストは prose 抽出経路 ([08] で廃止) の付随物だったため削除した。
 //      contract 適合判定は CLI / Tauri 経由の SubmitOutput で発生し、retry は行わない。
-
-// ---- evaluate_auto_rules (reduce結果による遷移判定) ----
-
-#[test]
-fn reduce_result_triggers_transition_via_evaluate_auto_rules() {
-    let rules = vec![TransitionRule {
-        r#match: "NEEDS_FIX".to_string(),
-        next: "fix".to_string(),
-    }];
-    let result = turn_completion::evaluate_auto_rules("NEEDS_FIX", &rules);
-    assert_eq!(result, Some(("fix".to_string(), "NEEDS_FIX".to_string())));
-}
-
-#[test]
-fn reduce_result_lgtm_no_matching_rule_returns_none() {
-    let rules = vec![TransitionRule {
-        r#match: "NEEDS_FIX".to_string(),
-        next: "fix".to_string(),
-    }];
-    let result = turn_completion::evaluate_auto_rules("LGTM", &rules);
-    assert!(result.is_none());
-}
 
 // ---- build_step_prompt ----
 
@@ -3490,10 +3770,7 @@ fn build_parallel_step_prompt_no_policy_or_contract_returns_none_system_prompt()
 
 // ---- decide_approval_action ----
 
-fn make_approval_exec(
-    state: WorkflowExecutionState,
-    rules: Vec<TransitionRule>,
-) -> WorkflowExecution {
+fn make_approval_exec(state: WorkflowExecutionState, rules: Vec<Rule>) -> WorkflowExecution {
     WorkflowExecution {
         id: "exec-1".to_string(),
         workflow: Workflow {
@@ -4016,112 +4293,15 @@ fn make_step_history_entry_reject_no_structured_output() {
 // ---- handle_approval integration (lock-inner logic) ----
 
 #[test]
-fn reject_comment_flows_through_approval_to_transition_and_history() {
-    // handle_approval() のロック内ロジックを再現:
-    // validate → decide → make_step_history_entry → apply_transition
+fn reject_comment_is_valid_input_but_not_a_workflow_transition() {
     let decision = ApprovalDecision::Reject {
         comment: "Fix the naming convention".to_string(),
     };
 
-    // 1. validate
     workflow_approval_runtime::validate_approval_input(&decision, None).unwrap();
+    let exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
 
-    // 3. 遷移先 "fix" ステップを含むワークフローを構築
-    let mut exec = WorkflowExecution {
-        id: "exec-1".to_string(),
-        workflow: Workflow {
-            name: "review-fix".to_string(),
-            description: "test".to_string(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                make_approval_step(
-                    "review",
-                    "Review the code",
-                    vec![TransitionRule {
-                        r#match: "reject".to_string(),
-                        next: "fix".to_string(),
-                    }],
-                ),
-                {
-                    let mut fix =
-                        make_test_step("fix", TestKind::Session, "Fix the issues", vec![], None);
-                    fix.inputs = vec!["review".to_string()];
-                    fix
-                },
-            ],
-        },
-        state: WorkflowExecutionState::WaitingApproval,
-        current_step_index: 0,
-        step_execution_counts: HashMap::new(),
-        step_history: vec![],
-        started_at: 1000.0,
-        updated_at: 1000.0,
-        current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
-        step_outputs: HashMap::new(),
-        task: None,
-        parallel_run: None,
-        current_stall_observations: Vec::new(),
-        worktree_path: "/repo".to_string(),
-        workflow_defaults: WorkflowDefaults {
-            backend_id: None,
-            permission_mode: "edit".to_string(),
-        },
-    };
-
-    // 4. decide
-    let action = exec.decide_approval_action(&decision).unwrap();
-    assert_eq!(action, ApprovalAction::TransitionTo("fix".to_string()));
-
-    // 5. handle_approvalと同じ適用経路でReject commentをStepOutputに保存する
-    let outcome = WorkflowRuntimeService::apply_approval_application(
-        &mut exec,
-        &decision,
-        ApprovalApplication {
-            effective_result: "reject".to_string(),
-            structured_output: Some(workflow_approval_runtime::reject_structured_output(
-                "Fix the naming convention",
-                &[],
-            )),
-            artifact_contract: None,
-        },
-    )
-    .unwrap();
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
-
-    // 検証: step_history にReject結果が記録されている
-    assert_eq!(exec.step_history.len(), 1);
-    let hist = &exec.step_history[0];
-    assert_eq!(hist.step_name, "review");
-    assert_eq!(hist.result.as_deref(), Some("reject"));
-    assert_eq!(
-        hist.structured_output.as_ref().unwrap()["comment"],
-        "Fix the naming convention"
-    );
-    let review_output = exec.step_outputs.get("review").unwrap();
-    assert_eq!(review_output.result.as_deref(), Some("reject"));
-    assert_eq!(
-        review_output.structured_output.as_ref().unwrap()["comment"],
-        "Fix the naming convention"
-    );
-
-    // 検証: 遷移先 "fix" ステップに移動している
-    assert_eq!(exec.current_step_index, 1);
-    assert_eq!(exec.workflow.nodes[exec.current_step_index].name, "fix");
-
-    exec.workflow.nodes[exec.current_step_index].inputs = vec!["review".to_string()];
-    let facet_contents = instruction_contents("Fix the issues");
-    let (_sys, prompt) = workflow_prompt::build_step_prompt(
-        &exec.workflow.nodes[exec.current_step_index],
-        Some(&facet_contents),
-        "run-1",
-        None,
-        &exec.step_outputs,
-    )
-    .unwrap();
-    assert!(prompt.contains("\"decision\": \"reject\""));
-    assert!(prompt.contains("\"comment\": \"Fix the naming convention\""));
+    assert!(exec.decide_approval_action(&decision).is_err());
 }
 
 #[test]
@@ -4135,7 +4315,11 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
             schemas: Default::default(),
             nodes: vec![
                 {
-                    let mut step = make_approval_step("fix_policy", "Review fix policy", vec![]);
+                    let mut step = make_approval_step(
+                        "fix_policy",
+                        "Review fix policy",
+                        vec![Rule::Next("fix".to_string())],
+                    );
                     step.artifact = Some("approved-fix-policy".to_string());
                     step
                 },
@@ -4219,7 +4403,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
                     let mut step = make_approval_step(
                         "implementation_fix_policy",
                         "Review fix policy",
-                        vec![],
+                        vec![Rule::Next("fix".to_string())],
                     );
                     step.artifact = Some("approved-fix-policy".to_string());
                     step.inputs = vec!["code_review_parallel".to_string()];
@@ -4350,7 +4534,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
                     let mut step = make_approval_step(
                         "implementation_fix_policy",
                         "Review fix policy",
-                        vec![],
+                        vec![Rule::Next("fix".to_string())],
                     );
                     step.artifact = Some("approved-fix-policy".to_string());
                     step.inputs = vec!["code_review_parallel".to_string()];
@@ -4630,38 +4814,26 @@ fn make_on_exhausted_workflow() -> Workflow {
                 "fix",
                 TestKind::Session,
                 "Fix issues",
-                vec![TransitionRule {
-                    r#match: ".*".to_string(),
-                    next: "review".to_string(),
-                }],
-                Some(CycleGuard {
+                vec![Rule::Next("review".to_string())],
+                Some(Rule::LoopGuard {
                     max_iterations: 2,
-                    on_exhausted: Some("approval".to_string()),
+                    on_exhausted: "approval".to_string(),
                 }),
             ),
             make_test_step(
                 "review",
                 TestKind::Session,
                 "Review",
-                vec![TransitionRule {
-                    r#match: "NEEDS_FIX".to_string(),
-                    next: "fix".to_string(),
-                }],
+                vec![Rule::Next("fix".to_string())],
                 None,
             ),
-            NodeDefinition {
-                resets_cycle_for: Some(vec!["fix".to_string()]),
-                ..make_test_step(
-                    "approval",
-                    TestKind::Session,
-                    "Approve",
-                    vec![TransitionRule {
-                        r#match: "NEEDS_FIX".to_string(),
-                        next: "fix".to_string(),
-                    }],
-                    None,
-                )
-            },
+            make_test_step(
+                "approval",
+                TestKind::Session,
+                "Approve",
+                vec![Rule::Next("fix".to_string())],
+                None,
+            ),
         ],
     }
 }
@@ -4704,47 +4876,7 @@ fn on_exhausted_transitions_to_fallback_step() {
 }
 
 #[test]
-fn on_exhausted_none_fails_workflow() {
-    let mut wf = make_on_exhausted_workflow();
-    // on_exhausted を None に変更
-    wf.nodes[0].cycle_guard = Some(CycleGuard {
-        max_iterations: 2,
-        on_exhausted: None,
-    });
-
-    let mut exec = WorkflowExecution {
-        id: "exec-1".to_string(),
-        workflow: wf,
-        state: WorkflowExecutionState::Running,
-        current_step_index: 1,
-        step_execution_counts: {
-            let mut m = HashMap::new();
-            m.insert("fix".to_string(), 2);
-            m
-        },
-        step_history: vec![],
-        step_outputs: HashMap::new(),
-        started_at: 1000.0,
-        updated_at: 1000.0,
-        current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
-        task: None,
-        parallel_run: None,
-        current_stall_observations: Vec::new(),
-        worktree_path: "/repo".to_string(),
-        workflow_defaults: WorkflowDefaults {
-            backend_id: None,
-            permission_mode: "edit".to_string(),
-        },
-    };
-
-    let outcome = exec.apply_transition("fix").unwrap();
-    assert!(matches!(outcome, StepOutcome::Persist(_)));
-    assert!(matches!(exec.state, WorkflowExecutionState::Failed { .. }));
-}
-
-#[test]
-fn check_cycle_guard_exceeded_with_on_exhausted() {
+fn check_loop_guard_exceeded_with_on_exhausted() {
     let exec = WorkflowExecution {
         id: "exec-1".to_string(),
         workflow: make_on_exhausted_workflow(),
@@ -4772,105 +4904,12 @@ fn check_cycle_guard_exceeded_with_on_exhausted() {
     };
 
     assert_eq!(
-        exec.check_cycle_guard("fix").unwrap(),
-        CycleGuardResult::Exceeded {
+        exec.check_loop_guard("fix").unwrap(),
+        LoopGuardResult::Exceeded {
             max_iterations: 2,
             count: 2,
             on_exhausted: Some("approval".to_string()),
         }
-    );
-}
-
-// ---- resets_cycle_for テスト ----
-
-#[test]
-fn resets_cycle_for_clears_execution_count() {
-    let mut exec = WorkflowExecution {
-        id: "exec-1".to_string(),
-        workflow: make_on_exhausted_workflow(),
-        state: WorkflowExecutionState::Running,
-        current_step_index: 0, // fix
-        step_execution_counts: {
-            let mut m = HashMap::new();
-            m.insert("fix".to_string(), 2);
-            m
-        },
-        step_history: vec![],
-        step_outputs: HashMap::new(),
-        started_at: 1000.0,
-        updated_at: 1000.0,
-        current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
-        task: None,
-        parallel_run: None,
-        current_stall_observations: Vec::new(),
-        worktree_path: "/repo".to_string(),
-        workflow_defaults: WorkflowDefaults {
-            backend_id: None,
-            permission_mode: "edit".to_string(),
-        },
-    };
-
-    // approval に遷移 → resets_cycle_for で fix のカウントがリセット
-    let outcome = exec.apply_transition("approval").unwrap();
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
-    assert_eq!(
-        exec.workflow.nodes[exec.current_step_index].name,
-        "approval"
-    );
-    // fix のカウントがリセットされている
-    assert_eq!(exec.step_execution_counts.get("fix"), None);
-}
-
-#[test]
-fn resets_cycle_for_allows_reloop_after_reset() {
-    let mut exec = WorkflowExecution {
-        id: "exec-1".to_string(),
-        workflow: make_on_exhausted_workflow(),
-        state: WorkflowExecutionState::Running,
-        current_step_index: 0,
-        step_execution_counts: {
-            let mut m = HashMap::new();
-            m.insert("fix".to_string(), 2);
-            m
-        },
-        step_history: vec![],
-        step_outputs: HashMap::new(),
-        started_at: 1000.0,
-        updated_at: 1000.0,
-        current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
-        task: None,
-        parallel_run: None,
-        current_stall_observations: Vec::new(),
-        worktree_path: "/repo".to_string(),
-        workflow_defaults: WorkflowDefaults {
-            backend_id: None,
-            permission_mode: "edit".to_string(),
-        },
-    };
-
-    // approval に遷移（カウントリセット）
-    exec.apply_transition("approval").unwrap();
-    assert_eq!(exec.step_execution_counts.get("fix"), None);
-
-    // fix に再遷移可能（リセット後なのでガードに引っかからない）
-    let outcome = exec.apply_transition("fix").unwrap();
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
-    assert_eq!(exec.workflow.nodes[exec.current_step_index].name, "fix");
-    assert_eq!(exec.step_execution_counts.get("fix"), Some(&1));
-
-    // 2回目も可能
-    let outcome = exec.apply_transition("fix").unwrap();
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
-    assert_eq!(exec.step_execution_counts.get("fix"), Some(&2));
-
-    // 3回目は上限到達 → on_exhausted で approval へ
-    let outcome = exec.apply_transition("fix").unwrap();
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
-    assert_eq!(
-        exec.workflow.nodes[exec.current_step_index].name,
-        "approval"
     );
 }
 
@@ -4890,9 +4929,9 @@ fn on_exhausted_chain_transitions() {
                 TestKind::Session,
                 "A",
                 vec![],
-                Some(CycleGuard {
+                Some(Rule::LoopGuard {
                     max_iterations: 1,
-                    on_exhausted: Some("step_b".to_string()),
+                    on_exhausted: "step_b".to_string(),
                 }),
             ),
             make_test_step(
@@ -4900,9 +4939,9 @@ fn on_exhausted_chain_transitions() {
                 TestKind::Session,
                 "B",
                 vec![],
-                Some(CycleGuard {
+                Some(Rule::LoopGuard {
                     max_iterations: 1,
-                    on_exhausted: Some("step_c".to_string()),
+                    on_exhausted: "step_c".to_string(),
                 }),
             ),
             make_test_step("step_c", TestKind::Session, "C", vec![], None),
@@ -4941,23 +4980,28 @@ fn on_exhausted_chain_transitions() {
     assert_eq!(exec.workflow.nodes[exec.current_step_index].name, "step_c");
 }
 
-#[test]
-fn on_exhausted_chain_to_non_exhausted_fails() {
-    // step_a → (exhausted) → step_b (exhausted, no on_exhausted) → Failed
-    let wf = Workflow {
-        name: "chain-fail-test".to_string(),
+fn make_on_exhausted_depth_exceeded_workflow() -> Workflow {
+    Workflow {
+        name: "chain-depth-test".to_string(),
         description: "test".to_string(),
         builtin: false,
         schemas: Default::default(),
         nodes: vec![
             make_test_step(
+                "start",
+                TestKind::Session,
+                "start",
+                vec![Rule::Next("step_a".to_string())],
+                None,
+            ),
+            make_test_step(
                 "step_a",
                 TestKind::Session,
                 "A",
                 vec![],
-                Some(CycleGuard {
+                Some(Rule::LoopGuard {
                     max_iterations: 1,
-                    on_exhausted: Some("step_b".to_string()),
+                    on_exhausted: "step_b".to_string(),
                 }),
             ),
             make_test_step(
@@ -4965,43 +5009,64 @@ fn on_exhausted_chain_to_non_exhausted_fails() {
                 TestKind::Session,
                 "B",
                 vec![],
-                Some(CycleGuard {
+                Some(Rule::LoopGuard {
                     max_iterations: 1,
-                    on_exhausted: None,
+                    on_exhausted: "step_a".to_string(),
                 }),
             ),
         ],
-    };
-    let mut exec = WorkflowExecution {
-        id: "exec-1".to_string(),
-        workflow: wf,
-        state: WorkflowExecutionState::Running,
-        current_step_index: 0,
-        step_execution_counts: {
-            let mut m = HashMap::new();
-            m.insert("step_a".to_string(), 1);
-            m.insert("step_b".to_string(), 1);
-            m
-        },
-        step_history: vec![],
-        step_outputs: HashMap::new(),
-        started_at: 1000.0,
-        updated_at: 1000.0,
-        current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
-        task: None,
-        parallel_run: None,
-        current_stall_observations: Vec::new(),
-        worktree_path: "/repo".to_string(),
-        workflow_defaults: WorkflowDefaults {
-            backend_id: None,
-            permission_mode: "edit".to_string(),
-        },
-    };
+    }
+}
+
+#[test]
+fn apply_advance_fails_on_on_exhausted_chain_depth_exceeded() {
+    let mut exec = workflow_exec(make_on_exhausted_depth_exceeded_workflow(), 0);
+    exec.step_execution_counts =
+        HashMap::from([("step_a".to_string(), 1), ("step_b".to_string(), 1)]);
+
+    let outcome = exec.apply_advance();
+
+    assert!(matches!(outcome, StepOutcome::Persist(_)));
+    assert!(matches!(
+        exec.state,
+        WorkflowExecutionState::Failed {
+            ref reason,
+            kind: WorkflowStepFailureKind::ValidationFailure,
+            ..
+        } if reason == "validation_error: loop_guard on_exhausted chain depth exceeded"
+    ));
+}
+
+#[test]
+fn decide_next_step_fails_on_on_exhausted_chain_depth_exceeded() {
+    let mut exec = workflow_exec(make_on_exhausted_depth_exceeded_workflow(), 0);
+    exec.step_execution_counts =
+        HashMap::from([("step_a".to_string(), 1), ("step_b".to_string(), 1)]);
+
+    assert!(matches!(
+        exec.decide_next_step(),
+        NextStepDecision::Failed { ref reason }
+            if reason == "validation_error: loop_guard on_exhausted chain depth exceeded"
+    ));
+}
+
+#[test]
+fn apply_transition_fails_on_on_exhausted_chain_depth_exceeded() {
+    let mut exec = workflow_exec(make_on_exhausted_depth_exceeded_workflow(), 0);
+    exec.step_execution_counts =
+        HashMap::from([("step_a".to_string(), 1), ("step_b".to_string(), 1)]);
 
     let outcome = exec.apply_transition("step_a").unwrap();
+
     assert!(matches!(outcome, StepOutcome::Persist(_)));
-    assert!(matches!(exec.state, WorkflowExecutionState::Failed { .. }));
+    assert!(matches!(
+        exec.state,
+        WorkflowExecutionState::Failed {
+            ref reason,
+            kind: WorkflowStepFailureKind::ValidationFailure,
+            ..
+        } if reason == "validation_error: loop_guard on_exhausted chain depth exceeded"
+    ));
 }
 
 // ---- step が新しい実行を開始する瞬間に step_outputs から前回値を破棄する（Spec issues-989） ----
@@ -6636,7 +6701,7 @@ mod dispatch_boundary_tests {
     use crate::adaptor::gateway::workflow::run::{
         RunStatus, TerminalRunStatus, TriggerSource, WorkflowRun,
     };
-    use crate::adaptor::gateway::workflow::schema::{TransitionRule, Workflow};
+    use crate::adaptor::gateway::workflow::schema::{Rule, Workflow};
     use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
     use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
     use crate::usecase::agent_session::session::MessagePart;
@@ -6788,14 +6853,7 @@ mod dispatch_boundary_tests {
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_approval_step(
-                    "review",
-                    "review",
-                    vec![TransitionRule {
-                        r#match: "reject".to_string(),
-                        next: "fix".to_string(),
-                    }],
-                ),
+                make_approval_step("review", "review", vec![Rule::Next("fix".to_string())]),
                 make_test_step("fix", TestKind::Session, "fix", vec![], None),
             ],
         }
@@ -10286,10 +10344,9 @@ mod dispatch_boundary_tests {
 
     // 撤去済み: parent ChatSession / persist_state 機構の撤去で意味を失ったテスト。
 
-    /// Spec [04] テスト境界: RejectNode は production dispatch 経由で判断を受理し、
-    /// state mutation と ApprovalResolved { decision: Reject } append を行う。
+    /// Reject decision は旧 regex routing 廃止後は workflow transition として受理しない。
     #[tokio::test]
-    async fn dispatch_reject_node_accepts_mutates_state_and_appends_event() {
+    async fn dispatch_reject_node_is_rejected_without_state_or_event() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let tmp = TempDir::new().unwrap();
@@ -10305,9 +10362,10 @@ mod dispatch_boundary_tests {
             make_rejectable_approval_workflow(),
         );
         exec.current_session_id = None;
+        let snapshot_before = exec.clone();
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
 
-        engine
+        let result = engine
             .resolve_workflow_approval(
                 app.handle(),
                 &session_store,
@@ -10319,32 +10377,22 @@ mod dispatch_boundary_tests {
                 Some("needs changes".to_string()),
                 Some("review"),
             )
-            .await
-            .unwrap();
+            .await;
 
-        let events = read_dispatch_events(&app, &run_id);
-        assert!(matches!(
-            &events[..3],
-            [
-                WorkflowEvent::ApprovalResolved {
-                    decision: ApprovalDecisionRecord::Reject,
-                    comment: Some(comment),
-                    ..
-                },
-                WorkflowEvent::NodeCompleted {
-                    node_name: completed,
-                    result,
-                    ..
-                },
-                WorkflowEvent::NodeStarted {
-                    node_name: started,
-                    ..
-                },
-            ] if comment == "needs changes"
-                && completed == "review"
-                && result.as_deref() == Some("reject")
-                && started == "fix"
-        ));
+        assert!(matches!(result, Err(WorkflowEngineError::InvalidState(_))));
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).unwrap();
+        assert_eq!(restored.state, snapshot_before.state);
+        assert_eq!(
+            restored.current_step_index,
+            snapshot_before.current_step_index
+        );
+        assert_eq!(
+            restored.step_history.len(),
+            snapshot_before.step_history.len()
+        );
+        drop(execs);
+        assert!(read_dispatch_events(&app, &run_id).is_empty());
     }
 
     /// Spec [04] テスト境界: RejectNode の非受理経路は production dispatch 経由でも
@@ -10550,10 +10598,11 @@ mod dispatch_boundary_tests {
         }
     }
 
-    /// Spec [04] rollback: RejectNode の required event append が失敗した場合も、
-    /// WorkflowExecution / Run Store は mutation 前 snapshot に戻り、event は append されない。
+    /// Spec [04] no-op 不変条件: Reject は reject rule の有無に関係なく
+    /// workflow transition として受理されず、WorkflowExecution / Run Store を変化させず
+    /// event も append しない。
     #[tokio::test]
-    async fn dispatch_reject_node_append_failure_rolls_back_execution_and_run_store() {
+    async fn dispatch_reject_node_unsupported_transition_is_noop() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let tmp = TempDir::new().unwrap();
@@ -10562,7 +10611,7 @@ mod dispatch_boundary_tests {
             .await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let run_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/reject-append-rollback";
+        let worktree_path = "/wt/reject-unsupported-noop";
         let mut exec = make_waiting_approval_execution_with_workflow(
             &run_id,
             worktree_path,
@@ -10571,8 +10620,6 @@ mod dispatch_boundary_tests {
         exec.current_session_id = None;
         let snapshot_before = exec.clone();
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
-        let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_logs");
-        std::fs::write(&log_dir_path, b"not a directory").unwrap();
 
         let result = engine
             .resolve_workflow_approval(
@@ -10588,7 +10635,12 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        match result {
+            Err(WorkflowEngineError::InvalidState(message)) => {
+                assert!(message.contains("does not support reject transitions"));
+            }
+            other => panic!("expected unsupported reject transition, got {other:?}"),
+        }
         let execs = engine.executions.lock().await;
         let restored = execs.get(&run_id).unwrap();
         assert_eq!(restored.state, snapshot_before.state);
@@ -11579,7 +11631,6 @@ mod dispatch_boundary_tests {
                 &handles,
                 "/wt/agent-freetext",
                 &final_parts,
-                &[],
                 "review",
             )
             .await

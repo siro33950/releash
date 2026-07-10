@@ -547,8 +547,14 @@ describe("AutomationSection", () => {
 						},
 						artifact: "json-schema",
 						inputs: ["step-0"],
-						rules: [{ match: "pass", next: "next-step" }],
-						cycle_guard: { max_iterations: 3 },
+						rules: [
+							{ type: "next", next: "next-step" },
+							{
+								type: "loop_guard",
+								max_iterations: 3,
+								on_exhausted: "fallback-step",
+							},
+						],
 						collect: {
 							from: ["step-a", "step-b"],
 							reduce: "concat" as const,
@@ -569,7 +575,7 @@ describe("AutomationSection", () => {
 		expect(screen.getByText("json-schema")).toBeInTheDocument();
 		expect(screen.getByText("Transition Rules")).toBeInTheDocument();
 		expect(
-			screen.getByText("Cycle Guard: max 3 iterations"),
+			screen.getByText("loop_guard max 3 -> fallback-step"),
 		).toBeInTheDocument();
 		expect(screen.getByText(/^Inputs:/)).toBeInTheDocument();
 		expect(screen.getByText("step-0")).toBeInTheDocument();

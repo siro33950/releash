@@ -30,9 +30,9 @@ pub fn approval_operations(
     if !matches!(state, WorkflowExecutionState::WaitingApproval) {
         return None;
     }
-    let step = current_step?;
+    let _ = current_step?;
     Some(ApprovalOperations {
-        can_reject: approval_rules::can_reject(&step.transition_rules),
+        can_reject: approval_rules::can_reject(),
     })
 }
 
@@ -68,7 +68,7 @@ mod tests {
     use crate::domain::workflow::{
         value_objects::{
             FacetRefs, FailureDisposition, NodeDefinition, NodeKind, SessionGate, SessionSpec,
-            TransitionRule, WorkflowStepFailureKind,
+            WorkflowStepFailureKind,
         },
         ParallelChildRun, ParallelChildState, ParallelRunState,
     };
@@ -132,16 +132,12 @@ mod tests {
                 },
                 ..Default::default()
             }),
-            transition_rules: vec![TransitionRule {
-                r#match: "reject".to_string(),
-                next: "fix".to_string(),
-            }],
             ..Default::default()
         };
 
         assert_eq!(
             approval_operations(&WorkflowExecutionState::WaitingApproval, Some(&step)),
-            Some(ApprovalOperations { can_reject: true })
+            Some(ApprovalOperations { can_reject: false })
         );
         assert_eq!(
             approval_operations(&WorkflowExecutionState::Running, Some(&step)),

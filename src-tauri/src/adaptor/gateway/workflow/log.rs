@@ -873,18 +873,15 @@ mod tests {
     }
 
     fn make_test_workflow() -> Workflow {
-        use crate::adaptor::gateway::workflow::schema::{CycleGuard, TransitionRule};
+        use crate::adaptor::gateway::workflow::schema::Rule;
         let mut plan = make_agent_node("plan", "plan");
         let mut implement = make_agent_node("implement", "implement");
-        implement.transition_rules = vec![TransitionRule {
-            r#match: "review".to_string(),
-            next: "review".to_string(),
-        }];
+        implement.rules = vec![Rule::Next("review".to_string())];
         let mut review = make_approval_node("review", "review");
-        review.cycle_guard = Some(CycleGuard {
+        review.rules = vec![Rule::LoopGuard {
             max_iterations: 3,
-            on_exhausted: None,
-        });
+            on_exhausted: "implement".to_string(),
+        }];
         let _ = &mut plan;
         Workflow {
             name: "test-wf".to_string(),
@@ -1383,16 +1380,13 @@ mod tests {
     /// projection のバグ「WaitingApproval が固定される」回帰防止。
     #[test]
     fn reconstruct_state_node_started_after_approval_resets_to_running() {
-        use crate::adaptor::gateway::workflow::schema::TransitionRule;
+        use crate::adaptor::gateway::workflow::schema::Rule;
 
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
         // approval node のあとに後続 node を続ける workflow を作る。
         let mut review = make_approval_node("review", "review");
-        review.transition_rules = vec![TransitionRule {
-            r#match: "approve".to_string(),
-            next: "ship".to_string(),
-        }];
+        review.rules = vec![Rule::Next("ship".to_string())];
         let wf = Workflow {
             name: "approval-then-next".to_string(),
             description: "".to_string(),

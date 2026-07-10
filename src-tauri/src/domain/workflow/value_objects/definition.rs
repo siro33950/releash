@@ -118,9 +118,7 @@ pub struct NodeDefinition {
     pub input: Option<String>,
     pub inputs: Vec<String>,
     pub collect: Option<CollectConfig>,
-    pub transition_rules: Vec<TransitionRule>,
-    pub cycle_guard: Option<CycleGuard>,
-    pub resets_cycle_for: Option<Vec<String>>,
+    pub rules: Vec<Rule>,
 }
 
 impl NodeDefinition {
@@ -139,11 +137,6 @@ impl NodeDefinition {
 
     pub fn is_session(&self) -> bool {
         matches!(self.kind, NodeKind::Session(_))
-    }
-
-    pub fn is_approval_session(&self) -> bool {
-        self.session()
-            .is_some_and(|session| session.gate == SessionGate::Approval)
     }
 
     pub fn is_fanout(&self) -> bool {
@@ -213,16 +206,23 @@ pub struct ParallelAggregate {
     pub r#else: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct TransitionRule {
-    pub r#match: String,
-    pub next: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CycleGuard {
-    pub max_iterations: u32,
-    pub on_exhausted: Option<String>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rule {
+    When {
+        on: String,
+        then: String,
+        next: String,
+    },
+    Switch {
+        on: String,
+        cases: BTreeMap<String, String>,
+        next: Option<String>,
+    },
+    LoopGuard {
+        max_iterations: u32,
+        on_exhausted: String,
+    },
+    Next(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -10,7 +10,8 @@ use crate::adaptor::gateway::workflow::schema::Workflow;
 use crate::adaptor::gateway::workflow::state::{StepOutput, WorkflowExecutionState};
 use crate::domain::workflow::services::contract_schema::SchemaViolation;
 use crate::domain::workflow::services::{
-    contract as workflow_contract, contract_schema, secret_masker, submission as domain_submission,
+    contract as workflow_contract, contract_schema, secret_masker,
+    spec_directory as workflow_spec_directory, submission as domain_submission,
 };
 use crate::domain::workflow::{ContractType, ContractValidationResult, NodeName};
 
@@ -104,10 +105,21 @@ pub(crate) fn validate_submission_output_with_secrets(
         ContractValidationResult::Valid {
             structured_output,
             result,
-        } => Ok(ValidatedSubmissionOutput {
-            structured_output,
-            result,
-        }),
+        } => {
+            let violations =
+                workflow_spec_directory::validate_contract_value(contract, &structured_output);
+            if !violations.is_empty() {
+                let error = WorkflowEngineError::ValidationError(format!(
+                    "artifact schema validation failed (schema_violation): {}",
+                    workflow_contract::format_schema_violations(&violations)
+                ));
+                return Err(SubmissionValidationError::SchemaViolation { error, violations });
+            }
+            Ok(ValidatedSubmissionOutput {
+                structured_output,
+                result,
+            })
+        }
         ContractValidationResult::Invalid(violation) => {
             let error = WorkflowEngineError::ValidationError(format!(
                 "artifact schema validation failed ({}): {}",
@@ -593,6 +605,34 @@ mod tests {
             validated.structured_output["spec_dir"],
             "docs/specs/feat-token"
         );
+    }
+
+    #[test]
+    fn validate_submission_output_accepts_authoring_builtin_spec_directory_contract() {
+        for workflow_name in [
+            "01_authoring_draft",
+            "01_authoring_gpt55",
+            "01_authoring_opus48",
+        ] {
+            let workflow =
+                crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
+                    workflow_name,
+                )
+                .unwrap()
+                .unwrap();
+            let validated = validate_submission_output_with_secrets(
+                &workflow,
+                "spec-directory",
+                serde_json::json!({"spec_dir": "docs/specs/issues-1327"}),
+                &[],
+            )
+            .unwrap();
+
+            assert_eq!(
+                validated.structured_output["spec_dir"], "docs/specs/issues-1327",
+                "{workflow_name} must accept spec-directory output"
+            );
+        }
     }
 
     #[test]
