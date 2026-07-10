@@ -74,14 +74,28 @@ type WorkflowExecutionState =
 	  }
 	| { type: "aborted" };
 
-interface TransitionRule {
-	match: string;
-	next: string;
-}
-
-interface CycleGuard {
-	max_iterations: number;
-}
+type Rule =
+	| {
+			type: "when";
+			on: string;
+			then: string;
+			next: string;
+	  }
+	| {
+			type: "switch";
+			on: string;
+			cases: Record<string, string>;
+			next?: string;
+	  }
+	| {
+			type: "loop_guard";
+			max_iterations: number;
+			on_exhausted: string;
+	  }
+	| {
+			type: "next";
+			next: string;
+	  };
 
 export type NodeKind = "command" | "session" | "fanout";
 export type SessionGate = "auto" | "approval";
@@ -135,9 +149,7 @@ export interface NodeDefinition {
 	collect?: CollectConfig;
 	// 共通: rules は省略時 undefined（Rust 側で serde default 経路を持つが、frontend
 	// fixture では空配列を毎回書かなくて済むよう optional とする）
-	rules?: TransitionRule[];
-	cycle_guard?: CycleGuard;
-	resets_cycle_for?: string[];
+	rules?: Rule[];
 }
 
 interface CollectConfig {

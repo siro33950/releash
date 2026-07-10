@@ -4,6 +4,8 @@ use clap::Subcommand;
 
 use super::common::{validate_run_id, CliError};
 use super::workflow_io;
+use crate::domain::workflow::services::spec_directory as workflow_spec_directory;
+use crate::domain::workflow::value_objects::ContractViolation;
 use crate::domain::workflow::{contract, secret_masker, ContractValidationResult};
 use crate::usecase::workflow::event_draft;
 use crate::usecase::workflow::ports::WorkflowEventDraft;
@@ -282,7 +284,29 @@ fn validate_cli_artifact_output(
 ) -> ContractValidationResult {
     let redacted =
         secret_masker::mask_sensitive_structured_output(&context.contract, structured_output, &[]);
-    contract::validate_artifact_value(&context.schemas, &context.contract, redacted)
+    match contract::validate_artifact_value(&context.schemas, &context.contract, redacted) {
+        ContractValidationResult::Valid {
+            structured_output,
+            result,
+        } => {
+            let violations = workflow_spec_directory::validate_contract_value(
+                &context.contract,
+                &structured_output,
+            );
+            if violations.is_empty() {
+                ContractValidationResult::Valid {
+                    structured_output,
+                    result,
+                }
+            } else {
+                ContractValidationResult::Invalid(ContractViolation {
+                    reason: "schema_violation".to_string(),
+                    details: contract::format_schema_violations(&violations),
+                })
+            }
+        }
+        invalid => invalid,
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

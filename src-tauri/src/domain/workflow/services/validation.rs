@@ -1,8 +1,8 @@
-use crate::domain::workflow::services::{contract_schema, reference};
+use crate::domain::workflow::services::{contract_schema, reference, routing};
 use crate::domain::workflow::value_objects::{MAX_NODES_PER_WORKFLOW, MAX_PARALLEL_CHILDREN};
 use crate::domain::workflow::{
-    NodeDefinition, NodeKindName, ReduceStrategy, SchemaDef, TransitionRule,
-    WorkflowDefinition as Workflow, WorkflowError, WorkflowName,
+    NodeDefinition, NodeKindName, ReduceStrategy, SchemaDef, WorkflowDefinition as Workflow,
+    WorkflowError, WorkflowName,
 };
 use regex::RegexBuilder;
 use std::collections::HashSet;
@@ -19,10 +19,6 @@ pub enum ValidationError {
     EmptySteps,
     DuplicateStep {
         name: String,
-    },
-    UnknownNextStep {
-        step: String,
-        next: String,
     },
     MissingFacet {
         step: String,
@@ -50,27 +46,13 @@ pub enum ValidationError {
         parent: String,
         child: String,
     },
-    /// on_exhausted が存在しないステップを参照
-    UnknownOnExhausted {
+    /// rules の遷移先が存在しない node を参照
+    UnknownRuleTarget {
         step: String,
         target: String,
     },
-    /// resets_cycle_for が存在しないステップを参照
-    UnknownResetsCycleFor {
-        step: String,
-        target: String,
-    },
-    /// on_exhausted の遷移チェーンが循環を形成
-    CircularOnExhausted {
-        cycle: Vec<String>,
-    },
-    /// resets_cycle_for が cycle_guard を持たないステップを参照
-    ResetsCycleForNonGuardedStep {
-        step: String,
-        target: String,
-    },
-    /// approval step の rules は最大1件の match: reject のみ許可
-    InvalidApprovalRules {
+    /// rules の順序非依存性・網羅性・型付き参照・loop guard が不正
+    InvalidRules {
         step: String,
         reason: String,
     },
@@ -171,10 +153,6 @@ impl fmt::Display for ValidationError {
             Self::DuplicateStep { name } => {
                 write!(f, "ステップ名 '{name}' が重複しています")
             }
-            Self::UnknownNextStep { step, next } => write!(
-                f,
-                "ステップ '{step}' のルールが存在しないステップ '{next}' を参照しています"
-            ),
             Self::MissingFacet { step } => {
                 write!(
                     f,
@@ -199,25 +177,12 @@ impl fmt::Display for ValidationError {
                 f,
                 "parallelブロック '{parent}' の子ステップ '{child}' にはファセット参照が必要です"
             ),
-            Self::UnknownOnExhausted { step, target } => write!(
+            Self::UnknownRuleTarget { step, target } => write!(
                 f,
-                "ステップ '{step}' のon_exhaustedが存在しないステップ '{target}' を参照しています"
+                "node '{step}' のrulesが存在しないnode '{target}' を参照しています"
             ),
-            Self::UnknownResetsCycleFor { step, target } => write!(
-                f,
-                "ステップ '{step}' のresets_cycle_forが存在しないステップ '{target}' を参照しています"
-            ),
-            Self::CircularOnExhausted { cycle } => write!(
-                f,
-                "on_exhaustedの遷移チェーンが循環しています: {}",
-                cycle.join(" → ")
-            ),
-            Self::ResetsCycleForNonGuardedStep { step, target } => write!(
-                f,
-                "ステップ '{step}' のresets_cycle_forがcycle_guardを持たないステップ '{target}' を参照しています"
-            ),
-            Self::InvalidApprovalRules { step, reason } => {
-                write!(f, "approvalステップ '{step}' のrulesが不正です: {reason}")
+            Self::InvalidRules { step, reason } => {
+                write!(f, "node '{step}' のrulesが不正です: {reason}")
             }
             Self::InvalidPermissionMode { step, value } => {
                 let display_value = if value.is_empty() {
@@ -396,6 +361,17 @@ fn reference_diagnostic_to_validation_error(
     reference_error_to_validation_error(diagnostic.error, diagnostic.context)
 }
 
+fn routing_error_to_validation_error(error: routing::RoutingValidationError) -> ValidationError {
+    match error {
+        routing::RoutingValidationError::UnknownRuleTarget { step, target } => {
+            ValidationError::UnknownRuleTarget { step, target }
+        }
+        routing::RoutingValidationError::Invalid { step, reason } => {
+            ValidationError::InvalidRules { step, reason }
+        }
+    }
+}
+
 pub fn validate_name(name: &str) -> Result<(), ValidationError> {
     match WorkflowName::new(name) {
         Ok(_) => Ok(()),
@@ -468,6 +444,9 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                 }
             }
         }
+    }
+    if let Some(err) = routing::validate_rules(workflow).into_iter().next() {
+        return Err(routing_error_to_validation_error(err));
     }
 
     // 各ステップより前に定義されたステップ名を追跡（collect.from検証用）
@@ -567,10 +546,6 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
             // 新 schema では kind が型レベルで必須・列挙のため、
             // 旧 schema の MissingMode / InteractiveModeNotAllowed 検査は
             // YAML deserialize 段階で吸収される（[02] 範囲外）。
-            if step.is_approval_session() {
-                validate_approval_rules(&step.name, &step.transition_rules)?;
-            }
-
             // permission の妥当性チェック（必須）
             if step.is_session() {
                 validate_required_permission(&step.name, step.permission())?;
@@ -578,16 +553,6 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
 
             if let Some(err) = check_missing_facet(step) {
                 return Err(err);
-            }
-
-            // rules の遷移先チェック（トップレベルstepのみ）
-            for rule in &step.transition_rules {
-                if !transition_target_names.contains(rule.next.as_str()) {
-                    return Err(ValidationError::UnknownNextStep {
-                        step: step.name.clone(),
-                        next: rule.next.clone(),
-                    });
-                }
             }
 
             // collect.from の参照先 step 名が先行stepに存在するか検証（並列子stepも参照可）
@@ -609,7 +574,7 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                     for r in &collect.from {
                         let referenced_step = workflow.nodes.iter().find(|s| s.name == *r);
                         if let Some(rs) = referenced_step {
-                            if rs.transition_rules.is_empty() && !rs.is_fanout() {
+                            if rs.rules.is_empty() && !rs.is_fanout() {
                                 log::warn!(
                                     "collect step '{}' uses {:?} reducer but source step '{}' has no rules defined (result may be None)",
                                     step.name,
@@ -623,40 +588,6 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
             }
         }
 
-        // on_exhausted の参照先検証
-        if let Some(ref guard) = step.cycle_guard {
-            if let Some(ref target) = guard.on_exhausted {
-                if !transition_target_names.contains(target.as_str()) {
-                    return Err(ValidationError::UnknownOnExhausted {
-                        step: step.name.clone(),
-                        target: target.clone(),
-                    });
-                }
-            }
-        }
-
-        // resets_cycle_for の参照先検証
-        if let Some(ref targets) = step.resets_cycle_for {
-            for target in targets {
-                if !transition_target_names.contains(target.as_str()) {
-                    return Err(ValidationError::UnknownResetsCycleFor {
-                        step: step.name.clone(),
-                        target: target.clone(),
-                    });
-                }
-                // 参照先が cycle_guard を持つか検証
-                let target_step = workflow.nodes.iter().find(|s| s.name == *target);
-                if let Some(ts) = target_step {
-                    if ts.cycle_guard.is_none() {
-                        return Err(ValidationError::ResetsCycleForNonGuardedStep {
-                            step: step.name.clone(),
-                            target: target.clone(),
-                        });
-                    }
-                }
-            }
-        }
-
         // 次のステップのvalidationで使えるよう、このステップ名を追加
         preceding_step_names.insert(&step.name);
         // parallel blockの子step名も追加（後続parallel blockの子stepから参照可能にするため）
@@ -664,34 +595,6 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
             let children = &fanout.parallel_children;
             for child in children {
                 preceding_step_names.insert(&child.name);
-            }
-        }
-    }
-
-    // on_exhausted の循環参照検出
-    for step in &workflow.nodes {
-        if let Some(ref guard) = step.cycle_guard {
-            if let Some(ref target) = guard.on_exhausted {
-                let mut visited = vec![step.name.clone()];
-                let mut current = target.clone();
-                loop {
-                    if visited.contains(&current) {
-                        visited.push(current);
-                        return Err(ValidationError::CircularOnExhausted { cycle: visited });
-                    }
-                    visited.push(current.clone());
-                    // current のステップの on_exhausted を辿る
-                    let next = workflow
-                        .nodes
-                        .iter()
-                        .find(|s| s.name == current)
-                        .and_then(|s| s.cycle_guard.as_ref())
-                        .and_then(|g| g.on_exhausted.as_ref());
-                    match next {
-                        Some(n) => current = n.clone(),
-                        None => break,
-                    }
-                }
             }
         }
     }
@@ -965,18 +868,6 @@ fn validate_node_kind_fields(step: &NodeDefinition) -> Result<(), ValidationErro
     Ok(())
 }
 
-fn validate_approval_rules(
-    step_name: &str,
-    rules: &[TransitionRule],
-) -> Result<(), ValidationError> {
-    crate::domain::workflow::approval_rules::validate_approval_rules(rules).map_err(|err| {
-        ValidationError::InvalidApprovalRules {
-            step: step_name.to_string(),
-            reason: err.to_string(),
-        }
-    })
-}
-
 /// ステップに permission が必須として指定されていることを検証する。
 /// `None` または対象外の値（旧語彙・未知語彙・空文字）はバリデーションエラー。
 fn validate_required_permission(
@@ -1129,6 +1020,11 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
     if has_dup {
         return errors;
     }
+    errors.extend(
+        routing::validate_rules(workflow)
+            .into_iter()
+            .map(routing_error_to_validation_error),
+    );
 
     let mut preceding_step_names: HashSet<&str> = HashSet::new();
 
@@ -1217,11 +1113,6 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
         } else {
             // 新 schema では kind が型レベルで必須・列挙のため、旧 schema の
             // MissingMode / InteractiveModeNotAllowed 検査は YAML deserialize 段階で吸収される。
-            if step.is_approval_session() {
-                if let Err(e) = validate_approval_rules(&step.name, &step.transition_rules) {
-                    errors.push(e);
-                }
-            }
             if step.is_session() {
                 if let Err(e) = validate_required_permission(&step.name, step.permission()) {
                     errors.push(e);
@@ -1230,53 +1121,12 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
             if let Some(err) = check_missing_facet(step) {
                 errors.push(err);
             }
-            for rule in &step.transition_rules {
-                if !transition_target_names.contains(rule.next.as_str()) {
-                    errors.push(ValidationError::UnknownNextStep {
-                        step: step.name.clone(),
-                        next: rule.next.clone(),
-                    });
-                }
-            }
             if let Some(ref collect) = step.collect {
                 for r in &collect.from {
                     if !preceding_step_names.contains(r.as_str()) {
                         errors.push(ValidationError::UnknownCollectFrom {
                             step: step.name.clone(),
                             reference: r.clone(),
-                        });
-                    }
-                }
-            }
-        }
-
-        // on_exhausted の参照先検証
-        if let Some(ref guard) = step.cycle_guard {
-            if let Some(ref target) = guard.on_exhausted {
-                if !transition_target_names.contains(target.as_str()) {
-                    errors.push(ValidationError::UnknownOnExhausted {
-                        step: step.name.clone(),
-                        target: target.clone(),
-                    });
-                }
-            }
-        }
-
-        // resets_cycle_for の参照先検証
-        if let Some(ref targets) = step.resets_cycle_for {
-            for target in targets {
-                if !transition_target_names.contains(target.as_str()) {
-                    errors.push(ValidationError::UnknownResetsCycleFor {
-                        step: step.name.clone(),
-                        target: target.clone(),
-                    });
-                }
-                let target_step = workflow.nodes.iter().find(|s| s.name == *target);
-                if let Some(ts) = target_step {
-                    if ts.cycle_guard.is_none() {
-                        errors.push(ValidationError::ResetsCycleForNonGuardedStep {
-                            step: step.name.clone(),
-                            target: target.clone(),
                         });
                     }
                 }
@@ -1292,34 +1142,6 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
         }
     }
 
-    // on_exhausted の循環参照検出
-    for step in &workflow.nodes {
-        if let Some(ref guard) = step.cycle_guard {
-            if let Some(ref target) = guard.on_exhausted {
-                let mut visited = vec![step.name.clone()];
-                let mut current = target.clone();
-                loop {
-                    if visited.contains(&current) {
-                        visited.push(current);
-                        errors.push(ValidationError::CircularOnExhausted { cycle: visited });
-                        break;
-                    }
-                    visited.push(current.clone());
-                    let next = workflow
-                        .nodes
-                        .iter()
-                        .find(|s| s.name == current)
-                        .and_then(|s| s.cycle_guard.as_ref())
-                        .and_then(|g| g.on_exhausted.as_ref());
-                    match next {
-                        Some(n) => current = n.clone(),
-                        None => break,
-                    }
-                }
-            }
-        }
-    }
-
     errors
 }
 
@@ -1327,8 +1149,8 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        CollectConfig, CommandSpec, CycleGuard, FacetRefs, FanoutSpec, InterimChild, NodeKind,
-        ParallelAggregate, SchemaDef, SessionGate, SessionSpec,
+        CollectConfig, CommandSpec, FacetRefs, FanoutSpec, InterimChild, NodeKind,
+        ParallelAggregate, Rule, SchemaDef, SessionGate, SessionSpec,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -1352,7 +1174,7 @@ mod tests {
         Ok(valid.contains(model).then(|| "backend".to_string()))
     }
 
-    fn make_step(name: &str, kind: TestKind, rules: Vec<TransitionRule>) -> NodeDefinition {
+    fn make_step(name: &str, kind: TestKind, rules: Vec<Rule>) -> NodeDefinition {
         let node_kind = match kind {
             TestKind::Session => NodeKind::Session(SessionSpec {
                 permission: Some("edit".to_string()),
@@ -1375,7 +1197,7 @@ mod tests {
         NodeDefinition {
             name: name.to_string(),
             kind: node_kind,
-            transition_rules: rules,
+            rules: rules,
             ..NodeDefinition::default()
         }
     }
@@ -1471,14 +1293,13 @@ mod tests {
         let wf = make_workflow(vec![
             make_step("plan", TestKind::ApprovalSession, vec![]),
             NodeDefinition {
-                cycle_guard: Some(CycleGuard {
-                    max_iterations: 3,
-                    on_exhausted: None,
-                }),
-                transition_rules: vec![TransitionRule {
-                    r#match: "DONE".to_string(),
-                    next: "plan".to_string(),
-                }],
+                rules: vec![
+                    Rule::LoopGuard {
+                        max_iterations: 3,
+                        on_exhausted: "plan".to_string(),
+                    },
+                    Rule::Next("plan".to_string()),
+                ],
                 ..make_step("implement", TestKind::Session, vec![])
             },
         ]);
@@ -1489,72 +1310,68 @@ mod tests {
     // 旧テスト `interactive_mode_fails_validation` は削除した。
 
     #[test]
-    fn approval_step_allows_single_reject_rule() {
+    fn approval_step_allows_terminal_rules_empty() {
         let wf = make_workflow(vec![
             make_step("fix", TestKind::Session, vec![]),
-            make_step(
-                "approval",
-                TestKind::ApprovalSession,
-                vec![TransitionRule {
-                    r#match: "reject".to_string(),
-                    next: "fix".to_string(),
-                }],
-            ),
+            make_step("approval", TestKind::ApprovalSession, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
 
     #[test]
-    fn approval_step_rejects_non_reject_rule() {
+    fn rules_reject_multiple_next_catch_alls() {
         let wf = make_workflow(vec![
             make_step("fix", TestKind::Session, vec![]),
             make_step(
-                "approval",
+                "route",
                 TestKind::ApprovalSession,
-                vec![TransitionRule {
-                    r#match: "NEEDS_FIX".to_string(),
-                    next: "fix".to_string(),
-                }],
+                vec![Rule::Next("fix".to_string()), Rule::Next("fix".to_string())],
             ),
         ]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::InvalidApprovalRules { ref step, .. } if step == "approval"
+            ValidationError::InvalidRules { ref step, .. } if step == "route"
         ));
     }
 
     #[test]
-    fn approval_step_rejects_multiple_reject_rules() {
+    fn rules_reject_standalone_next_with_discriminator() {
         let wf = make_workflow(vec![
             make_step("fix", TestKind::Session, vec![]),
-            make_step(
-                "approval",
-                TestKind::ApprovalSession,
-                vec![
-                    TransitionRule {
-                        r#match: "reject".to_string(),
+            NodeDefinition {
+                artifact: Some("verdict".to_string()),
+                rules: vec![
+                    Rule::When {
+                        on: "ok".to_string(),
+                        then: "fix".to_string(),
                         next: "fix".to_string(),
                     },
-                    TransitionRule {
-                        r#match: "reject".to_string(),
-                        next: "fix".to_string(),
-                    },
+                    Rule::Next("fix".to_string()),
                 ],
-            ),
+                ..make_step("route", TestKind::Session, vec![])
+            },
         ]);
+        let wf = workflow_with_schemas(
+            wf.nodes,
+            BTreeMap::from([(
+                "verdict".to_string(),
+                SchemaDef::Object {
+                    properties: BTreeMap::from([("ok".to_string(), SchemaDef::Boolean)]),
+                    required: BTreeSet::from(["ok".to_string()]),
+                    additional_properties: true,
+                },
+            )]),
+        );
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::InvalidApprovalRules { ref step, .. } if step == "approval"
+            ValidationError::InvalidRules { ref step, .. } if step == "route"
         ));
     }
 
     #[test]
     fn invalid_transition_target_fails() {
         let wf = make_workflow(vec![NodeDefinition {
-            transition_rules: vec![TransitionRule {
-                r#match: "DONE".to_string(),
-                next: "nonexistent".to_string(),
-            }],
+            rules: vec![Rule::Next("nonexistent".to_string())],
             ..make_step("plan", TestKind::Session, vec![])
         }]);
         let result = validate(&wf);
@@ -1562,7 +1379,31 @@ mod tests {
         let err = result.unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::UnknownNextStep { ref next, .. } if next == "nonexistent"
+            ValidationError::UnknownRuleTarget { ref target, .. } if target == "nonexistent"
+        ));
+    }
+
+    #[test]
+    fn routing_unknown_target_maps_by_variant_not_reason_text() {
+        let err =
+            routing_error_to_validation_error(routing::RoutingValidationError::UnknownRuleTarget {
+                step: "route".to_string(),
+                target: "missing".to_string(),
+            });
+        assert!(matches!(
+            err,
+            ValidationError::UnknownRuleTarget { ref step, ref target }
+                if step == "route" && target == "missing"
+        ));
+
+        let err = routing_error_to_validation_error(routing::RoutingValidationError::Invalid {
+            step: "route".to_string(),
+            reason: "unknown rule target 'missing'".to_string(),
+        });
+        assert!(matches!(
+            err,
+            ValidationError::InvalidRules { ref step, ref reason }
+                if step == "route" && reason.contains("unknown rule target")
         ));
     }
 
@@ -2190,20 +2031,19 @@ mod tests {
         assert!(validate(&wf).is_ok());
     }
 
-    // ---- on_exhausted バリデーション ----
+    // ---- loop_guard / rules validation ----
 
     #[test]
-    fn on_exhausted_valid_target_passes() {
+    fn loop_guard_valid_target_passes() {
         let wf = make_workflow(vec![
             NodeDefinition {
-                cycle_guard: Some(CycleGuard {
-                    max_iterations: 2,
-                    on_exhausted: Some("approval".to_string()),
-                }),
-                transition_rules: vec![TransitionRule {
-                    r#match: ".*".to_string(),
-                    next: "approval".to_string(),
-                }],
+                rules: vec![
+                    Rule::LoopGuard {
+                        max_iterations: 2,
+                        on_exhausted: "approval".to_string(),
+                    },
+                    Rule::Next("approval".to_string()),
+                ],
                 ..make_step("fix", TestKind::Session, vec![])
             },
             make_step("approval", TestKind::ApprovalSession, vec![]),
@@ -2212,93 +2052,65 @@ mod tests {
     }
 
     #[test]
-    fn on_exhausted_unknown_target_fails() {
+    fn loop_guard_unknown_target_fails() {
         let wf = make_workflow(vec![NodeDefinition {
-            cycle_guard: Some(CycleGuard {
+            rules: vec![Rule::LoopGuard {
                 max_iterations: 2,
-                on_exhausted: Some("nonexistent".to_string()),
-            }),
+                on_exhausted: "nonexistent".to_string(),
+            }],
             ..make_step("fix", TestKind::Session, vec![])
         }]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::UnknownOnExhausted { ref step, ref target }
+            ValidationError::UnknownRuleTarget { ref step, ref target }
                 if step == "fix" && target == "nonexistent"
         ));
     }
 
     #[test]
-    fn on_exhausted_circular_fails() {
+    fn cycle_without_reachable_loop_guard_fails() {
         let wf = make_workflow(vec![
-            NodeDefinition {
-                cycle_guard: Some(CycleGuard {
-                    max_iterations: 2,
-                    on_exhausted: Some("step_b".to_string()),
-                }),
-                ..make_step("step_a", TestKind::Session, vec![])
-            },
-            NodeDefinition {
-                cycle_guard: Some(CycleGuard {
-                    max_iterations: 2,
-                    on_exhausted: Some("step_a".to_string()),
-                }),
-                ..make_step("step_b", TestKind::Session, vec![])
-            },
+            make_step(
+                "step_a",
+                TestKind::Session,
+                vec![Rule::Next("step_b".to_string())],
+            ),
+            make_step(
+                "step_b",
+                TestKind::Session,
+                vec![Rule::Next("step_a".to_string())],
+            ),
         ]);
         let err = validate(&wf).unwrap_err();
-        assert!(matches!(err, ValidationError::CircularOnExhausted { .. }));
+        assert!(matches!(
+            err,
+            ValidationError::InvalidRules { reason, .. } if reason.contains("cycle reachable")
+        ));
     }
 
-    // ---- resets_cycle_for バリデーション ----
-
     #[test]
-    fn resets_cycle_for_valid_target_passes() {
+    fn cycle_with_reachable_loop_guard_passes() {
         let wf = make_workflow(vec![
-            NodeDefinition {
-                cycle_guard: Some(CycleGuard {
-                    max_iterations: 3,
-                    on_exhausted: None,
-                }),
-                ..make_step("fix", TestKind::Session, vec![])
-            },
-            NodeDefinition {
-                resets_cycle_for: Some(vec!["fix".to_string()]),
-                ..make_step("approval", TestKind::ApprovalSession, vec![])
-            },
+            make_step(
+                "step_a",
+                TestKind::Session,
+                vec![Rule::Next("step_b".to_string())],
+            ),
+            make_step(
+                "step_b",
+                TestKind::Session,
+                vec![
+                    Rule::LoopGuard {
+                        max_iterations: 2,
+                        on_exhausted: "done".to_string(),
+                    },
+                    Rule::Next("step_a".to_string()),
+                ],
+            ),
+            make_step("done", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
-    }
-
-    #[test]
-    fn resets_cycle_for_unknown_target_fails() {
-        let wf = make_workflow(vec![NodeDefinition {
-            resets_cycle_for: Some(vec!["nonexistent".to_string()]),
-            ..make_step("approval", TestKind::ApprovalSession, vec![])
-        }]);
-        let err = validate(&wf).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::UnknownResetsCycleFor { ref step, ref target }
-                if step == "approval" && target == "nonexistent"
-        ));
-    }
-
-    #[test]
-    fn resets_cycle_for_non_guarded_step_fails() {
-        let wf = make_workflow(vec![
-            make_step("fix", TestKind::Session, vec![]),
-            NodeDefinition {
-                resets_cycle_for: Some(vec!["fix".to_string()]),
-                ..make_step("approval", TestKind::ApprovalSession, vec![])
-            },
-        ]);
-        let err = validate(&wf).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::ResetsCycleForNonGuardedStep { ref step, ref target }
-                if step == "approval" && target == "fix"
-        ));
     }
 
     // ---- input_reference 後方参照 ----

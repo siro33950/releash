@@ -15,7 +15,7 @@ use super::step_session_boundary::{dispatch_session_start, SessionStartGate};
 use super::step_session_boundary::{RealStepSessionDeps, StepSessionDeps};
 use crate::adaptor::gateway::workflow::approval_runtime as workflow_approval_runtime;
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    node_kind_to_domain, parallel_aggregate_to_domain, transition_rule_from_domain,
+    node_kind_to_domain, parallel_aggregate_to_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::engine_start_guard as workflow_engine_start_guard;
@@ -53,20 +53,20 @@ use crate::adaptor::gateway::workflow::runtime_commit::{
     RequiredEventCommit, StepOutcome,
 };
 use crate::adaptor::gateway::workflow::runtime_events as workflow_runtime_events;
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::runtime_state::NextStepDecision;
 use crate::adaptor::gateway::workflow::runtime_state::{
     ApprovalDecision, ParallelChildState, SessionWorkflowRef, WorkflowExecution,
 };
 #[cfg(test)]
-use crate::adaptor::gateway::workflow::runtime_state::{CycleGuardResult, NextStepDecision};
-#[cfg(test)]
 use crate::adaptor::gateway::workflow::runtime_state::{ParallelChildRun, ParallelRunState};
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::schema::NodeDefinition;
+use crate::adaptor::gateway::workflow::schema::Workflow;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::schema::{
     CommandSpec, FacetRefs, FanoutSpec, InterimChild, NodeKind, SessionGate, SessionSpec,
 };
-use crate::adaptor::gateway::workflow::schema::{TransitionRule, Workflow};
 use crate::adaptor::gateway::workflow::secret_source;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::state::ParallelStepState;
@@ -80,6 +80,7 @@ use crate::adaptor::gateway::workflow::step_settings::resolve_step_settings;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::step_settings::ResolvedStepSettings;
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
+#[cfg(test)]
 use crate::adaptor::gateway::workflow::turn_completion;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::services::contract as workflow_contract;
@@ -1823,13 +1824,8 @@ impl WorkflowRuntimeService {
                         rollback_snapshot: (exec.id.clone(), snapshot_before),
                     })
                 }
-                workflow_transition::TurnCompleteMutationPlan::AutoEvaluate {
-                    rules,
-                    node_name,
-                } => {
-                    let rules: Vec<TransitionRule> =
-                        rules.into_iter().map(transition_rule_from_domain).collect();
-                    Err((rules, node_name))
+                workflow_transition::TurnCompleteMutationPlan::AutoEvaluate { node_name } => {
+                    Err(node_name)
                 }
             }
         };
@@ -1860,14 +1856,13 @@ impl WorkflowRuntimeService {
                     .await
                 }
             }
-            Err((rules, step_name)) => {
+            Err(step_name) => {
                 self.handle_auto_complete(
                     app,
                     session_store,
                     agent_runtime,
                     &worktree_path,
                     final_parts,
-                    &rules,
                     &step_name,
                 )
                 .await
@@ -1950,16 +1945,6 @@ impl WorkflowRuntimeService {
                 );
                 exec.step_history.push(entry);
                 exec.apply_advance()
-            }
-            workflow_transition::ApprovalApplicationTransition::TransitionTo(target) => {
-                let completion = plan.completion;
-                let entry = exec.make_step_history_entry(
-                    Some(completion.result),
-                    completion.structured_output,
-                    completion.artifact_contract,
-                );
-                exec.step_history.push(entry);
-                exec.apply_transition(&target)?
             }
         };
         Ok(outcome)
@@ -3620,13 +3605,9 @@ impl WorkflowRuntimeService {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
-        final_parts: &[crate::usecase::agent_session::session::MessagePart],
-        rules: &[TransitionRule],
+        _final_parts: &[crate::usecase::agent_session::session::MessagePart],
         step_name: &str,
     ) -> Result<(), WorkflowEngineError> {
-        // テキストパートを結合（ロック外で完了）
-        let text = turn_completion::extract_text_from_parts(final_parts);
-
         // [08] prose 抽出経路廃止: agent step の structured output は CLI / Tauri 経由の
         // `SubmitOutput` でしか確定しない。artifact_contract がある step は、提出済み
         // output が見つからない限り完了扱いにせず、同じ session に修正ターンを投げる。
@@ -3694,16 +3675,6 @@ impl WorkflowRuntimeService {
 
         let effective_result = contract_result;
 
-        // タグ検出もロック外で完了（純粋関数）
-        let rule_match = if rules.is_empty() {
-            None // ルールなし → 定義順で次へ
-        } else if let Some(ref result_str) = effective_result {
-            // contract resultがある場合はそれでルール評価
-            Some(turn_completion::evaluate_auto_rules(result_str, rules))
-        } else {
-            Some(turn_completion::evaluate_auto_rules(&text, rules))
-        };
-
         // 判定 + 状態変更 + 履歴記録を原子的に実行
         let (outcome, snapshot_before) = {
             let mut execs = self.executions.lock().await;
@@ -3711,44 +3682,13 @@ impl WorkflowRuntimeService {
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             let snapshot_before = exec.clone();
 
-            let outcome = match rule_match {
-                None => {
-                    // ルールなし → 定義順で次へ
-                    let entry = exec.make_step_history_entry(
-                        effective_result,
-                        structured_output,
-                        artifact_contract,
-                    );
-                    exec.step_history.push(entry);
-                    exec.apply_advance()
-                }
-                Some(Some((next_step, matched_rule))) => {
-                    // ルールマッチ → 指定ステップへ遷移
-                    let entry = exec.make_step_history_entry(
-                        Some(matched_rule),
-                        structured_output,
-                        artifact_contract,
-                    );
-                    exec.step_history.push(entry);
-                    exec.apply_transition(&next_step)?
-                }
-                Some(None) => {
-                    // マッチなし → Failed
-                    let entry = exec.make_step_history_entry(
-                        Some("no_matching_rule".to_string()),
-                        structured_output,
-                        artifact_contract,
-                    );
-                    exec.step_history.push(entry);
-                    exec.state = WorkflowExecutionState::Failed {
-                        reason: format!("No matching rule found for step '{}' output", step_name),
-                        kind: WorkflowStepFailureKind::ValidationFailure,
-                        retry_count: None,
-                    };
-                    exec.updated_at = current_timestamp();
-                    StepOutcome::Persist(exec.to_workflow_state())
-                }
-            };
+            let entry = exec.make_step_history_entry(
+                effective_result,
+                structured_output,
+                artifact_contract,
+            );
+            exec.step_history.push(entry);
+            let outcome = exec.apply_advance();
             (outcome, snapshot_before)
         };
 
@@ -4794,10 +4734,8 @@ impl WorkflowRuntimeService {
                     ..Default::default()
                 }),
                 artifact: Some("approved-fix-policy".to_string()),
-                transition_rules: vec![],
-                cycle_guard: None,
+                rules: vec![],
                 collect: None,
-                resets_cycle_for: None,
                 ..Default::default()
             }],
         };

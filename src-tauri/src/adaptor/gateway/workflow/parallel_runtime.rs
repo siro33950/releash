@@ -18,7 +18,6 @@ use crate::adaptor::gateway::workflow::runtime_state::{
 use crate::adaptor::gateway::workflow::schema::{CollectConfig, InterimChild, ParallelAggregate};
 use crate::adaptor::gateway::workflow::state::{StepOutput, TokenUsage, WorkflowState};
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
-use crate::adaptor::gateway::workflow::turn_completion;
 use crate::domain::workflow::services::parallel as workflow_parallel;
 
 #[derive(Debug, Clone)]
@@ -228,7 +227,6 @@ pub(crate) fn apply_reduce_transition(
         .clone()
         .expect("ReduceAndTransition requires collect config");
     let reduce_result = apply_reduce(&collect, &exec.step_outputs);
-    let step_rules = step.transition_rules.clone();
     let snapshot_before = exec.clone();
 
     let entry = exec.make_step_history_entry(
@@ -249,16 +247,7 @@ pub(crate) fn apply_reduce_transition(
         collect.from,
     );
 
-    let next_outcome = if step_rules.is_empty() {
-        exec.apply_advance()
-    } else if let Some(ref result_str) = reduce_result.result {
-        match turn_completion::evaluate_auto_rules(result_str, &step_rules) {
-            Some((next_step, _)) => exec.apply_transition(&next_step)?,
-            None => exec.apply_advance(),
-        }
-    } else {
-        exec.apply_advance()
-    };
+    let next_outcome = exec.apply_advance();
 
     let node_outputs: Vec<CollectedOutputEntry> = collect
         .from

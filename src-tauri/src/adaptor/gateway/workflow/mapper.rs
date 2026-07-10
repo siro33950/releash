@@ -146,13 +146,12 @@ fn domain_node_to_legacy(
         input: node.input.clone(),
         inputs: node.inputs.clone(),
         collect: node.collect.as_ref().map(domain_collect_to_legacy),
-        transition_rules: node
-            .transition_rules
+        rules: node
+            .rules
             .iter()
-            .map(domain_transition_rule_to_legacy)
+            .cloned()
+            .map(domain_rule_to_legacy)
             .collect(),
-        cycle_guard: node.cycle_guard.as_ref().map(domain_cycle_guard_to_legacy),
-        resets_cycle_for: node.resets_cycle_for.clone(),
     }
 }
 
@@ -262,21 +261,22 @@ fn domain_aggregate_to_legacy(
     }
 }
 
-fn domain_transition_rule_to_legacy(
-    rule: &domain::TransitionRule,
-) -> crate::adaptor::gateway::workflow::schema::TransitionRule {
-    crate::adaptor::gateway::workflow::schema::TransitionRule {
-        r#match: rule.r#match.clone(),
-        next: rule.next.clone(),
-    }
-}
-
-fn domain_cycle_guard_to_legacy(
-    guard: &domain::CycleGuard,
-) -> crate::adaptor::gateway::workflow::schema::CycleGuard {
-    crate::adaptor::gateway::workflow::schema::CycleGuard {
-        max_iterations: guard.max_iterations,
-        on_exhausted: guard.on_exhausted.clone(),
+fn domain_rule_to_legacy(rule: domain::Rule) -> crate::adaptor::gateway::workflow::schema::Rule {
+    match rule {
+        domain::Rule::When { on, then, next } => {
+            crate::adaptor::gateway::workflow::schema::Rule::When { on, then, next }
+        }
+        domain::Rule::Switch { on, cases, next } => {
+            crate::adaptor::gateway::workflow::schema::Rule::Switch { on, cases, next }
+        }
+        domain::Rule::LoopGuard {
+            max_iterations,
+            on_exhausted,
+        } => crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
+            max_iterations,
+            on_exhausted,
+        },
+        domain::Rule::Next(next) => crate::adaptor::gateway::workflow::schema::Rule::Next(next),
     }
 }
 
@@ -662,10 +662,7 @@ mod tests {
                 }),
                 input: Some("plan".to_string()),
                 artifact: Some("plan".to_string()),
-                transition_rules: vec![domain::TransitionRule {
-                    r#match: "ok".to_string(),
-                    next: "done".to_string(),
-                }],
+                rules: vec![domain::Rule::Next("done".to_string())],
                 ..Default::default()
             }],
         };
@@ -693,10 +690,7 @@ mod tests {
                     },
                     "artifact": "plan",
                     "input": "plan",
-                    "rules": [{
-                        "match": "ok",
-                        "next": "done"
-                    }]
+                    "rules": [{"next": "done"}]
                 }]
             })
         );

@@ -21,6 +21,8 @@ nodes:
   artifact: spec-directory
   inputs:
   - request
+  rules:
+  - next: write_behavior
 - name: write_behavior
   session:
     model: gpt-5.5
@@ -31,6 +33,8 @@ nodes:
       instruction: spec-authoring-write-behavior
   inputs:
   - write_requirements
+  rules:
+  - next: write_design
 - name: write_design
   session:
     model: gpt-5.5
@@ -41,6 +45,8 @@ nodes:
       instruction: spec-authoring-write-design
   inputs:
   - write_requirements
+  rules:
+  - next: spec_finalize
 - name: spec_finalize
   session:
     model: gpt-5.5

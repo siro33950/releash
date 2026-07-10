@@ -2,7 +2,7 @@ use crate::adaptor::gateway::workflow::builtin;
 use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain;
 use crate::adaptor::gateway::workflow::facet::{self, FacetKind};
 use crate::adaptor::gateway::workflow::prompt_rendering;
-use crate::adaptor::gateway::workflow::schema::{NodeDefinition, ReduceStrategy, Workflow};
+use crate::adaptor::gateway::workflow::schema::{NodeDefinition, ReduceStrategy, Rule, Workflow};
 use crate::domain::workflow::validation;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -247,7 +247,6 @@ fn is_covered_by_diagnostics(e: &validation::ValidationError) -> bool {
         e,
         ValidationError::EmptyName
             | ValidationError::InvalidChars { .. }
-            | ValidationError::UnknownNextStep { .. }
             | ValidationError::MissingFacet { .. }
             | ValidationError::UnknownCollectFrom { .. }
     )
@@ -279,7 +278,8 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
             // （新 schema の YAML キーは個別だが、`MissingFacet` 側も "facets" 表現）。
             Some("parallel_children.facets".to_string()),
         ),
-        ValidationError::UnknownNextStep { step, .. } => {
+        ValidationError::UnknownRuleTarget { step, .. }
+        | ValidationError::InvalidRules { step, .. } => {
             (Some(step.clone()), Some("rules.next".to_string()))
         }
         ValidationError::MissingFacet { step } => (Some(step.clone()), Some("facets".to_string())),
@@ -287,23 +287,6 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
             (Some(step.clone()), Some("collect.from".to_string()))
         }
         ValidationError::InvalidArtifactReference { .. } => (None, Some("inputs".to_string())),
-        ValidationError::UnknownOnExhausted { step, .. } => (
-            Some(step.clone()),
-            Some("cycle_guard.on_exhausted".to_string()),
-        ),
-        ValidationError::UnknownResetsCycleFor { step, .. } => {
-            (Some(step.clone()), Some("resets_cycle_for".to_string()))
-        }
-        ValidationError::CircularOnExhausted { cycle } => (
-            cycle.first().cloned(),
-            Some("cycle_guard.on_exhausted".to_string()),
-        ),
-        ValidationError::ResetsCycleForNonGuardedStep { step, .. } => {
-            (Some(step.clone()), Some("resets_cycle_for".to_string()))
-        }
-        ValidationError::InvalidApprovalRules { step, .. } => {
-            (Some(step.clone()), Some("rules".to_string()))
-        }
         ValidationError::InvalidPermissionMode { step, .. } => {
             (Some(step.clone()), Some("permission".to_string()))
         }
@@ -339,23 +322,11 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
     }
 }
 
-/// ステップが定義順で次のステップへ暗黙的に進行し得るかを判定。
-/// エンジンの実際の遷移ロジックに基づく:
-/// - rules なし → 全モードで定義順の次へ進行
-/// - Interactive モード → rules マッチなし時に進行
-/// - Approval モード → approve 時に進行
-/// - Parallel block (aggregate なし) → 子完了後に進行
-/// - Auto モード + rules あり → マッチで遷移 or 不一致で FAIL（進行しない）
+/// ステップが完了後に定義順で暗黙進行する経路はない。
+/// rules なしは終端 node として扱う。
 fn can_advance_sequentially(step: &NodeDefinition) -> bool {
-    if let Some(fanout) = step.fanout() {
-        return fanout.aggregate.is_none();
-    }
-    if step.transition_rules.is_empty() {
-        return true;
-    }
-    // [02]: agent ノードは rules ありで rules マッチ時のみ遷移する。
-    // approval ノードのみ、rules ありでも sequential 進行を許す（既存挙動）。
-    step.is_approval_session()
+    let _ = step;
+    false
 }
 
 /// 到達可能性の計算結果。
@@ -380,9 +351,11 @@ fn compute_reachable_steps<'a>(
 
     // 明示的遷移先を収集
     for step in &wf.nodes {
-        for rule in &step.transition_rules {
-            if step_names.contains(rule.next.as_str()) {
-                explicitly_reachable.insert(&rule.next);
+        for rule in &step.rules {
+            for target in schema_rule_targets(rule) {
+                if step_names.contains(target) {
+                    explicitly_reachable.insert(target);
+                }
             }
         }
         if let Some(agg) = step.fanout().and_then(|fanout| fanout.aggregate.as_ref()) {
@@ -491,25 +464,6 @@ fn diagnose_workflow(
 
     // 各stepを診断
     for step in &wf.nodes {
-        // step参照チェック（rules.next）
-        for rule in &step.transition_rules {
-            if !step_names.contains(rule.next.as_str()) {
-                let item = DiagnosticItem {
-                    severity: Severity::Error,
-                    message: format!(
-                        "ステップ '{}' のルールが存在しないステップ '{}' を参照しています",
-                        step.name, rule.next
-                    ),
-                    workflow_name: Some(name.clone()),
-                    step_name: Some(step.name.clone()),
-                    facet_key: None,
-                    facet_kind: None,
-                    field: Some("rules.next".to_string()),
-                };
-                add_diagnostic(items, workflow_summaries, name, item);
-            }
-        }
-
         // collect.from 参照チェック（先行stepのみ参照可能）
         if let Some(ref collect) = step.collect {
             for from in &collect.from {
@@ -545,7 +499,7 @@ fn diagnose_workflow(
             ) {
                 for from in &collect.from {
                     if let Some(source_step) = wf.nodes.iter().find(|s| s.name == *from) {
-                        if source_step.transition_rules.is_empty() && !source_step.is_fanout() {
+                        if source_step.rules.is_empty() && !source_step.is_fanout() {
                             let item = DiagnosticItem {
                                 severity: Severity::Warning,
                                 message: format!(
@@ -662,6 +616,19 @@ fn diagnose_workflow(
                 preceding_step_names.insert(&child.name);
             }
         }
+    }
+}
+
+fn schema_rule_targets(rule: &Rule) -> Vec<&str> {
+    match rule {
+        Rule::When { then, next, .. } => vec![then.as_str(), next.as_str()],
+        Rule::Switch { cases, next, .. } => cases
+            .values()
+            .map(String::as_str)
+            .chain(next.iter().map(String::as_str))
+            .collect(),
+        Rule::LoopGuard { on_exhausted, .. } => vec![on_exhausted.as_str()],
+        Rule::Next(next) => vec![next.as_str()],
     }
 }
 
@@ -803,7 +770,7 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
         CollectConfig, CommandSpec, FacetRefs, FanoutSpec, InterimChild, NodeKind, ReduceStrategy,
-        SchemaDef, SessionSpec, TransitionRule, Workflow,
+        Rule, SchemaDef, SessionSpec, Workflow,
     };
     use std::fs;
     use tempfile::TempDir;
@@ -1098,20 +1065,28 @@ mod tests {
             builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                transition_rules: vec![TransitionRule {
-                    r#match: "DONE".to_string(),
-                    next: "nonexistent".to_string(),
-                }],
+                rules: vec![Rule::Next("nonexistent".to_string())],
                 ..make_step("step1", Some("impl"))
             }],
         };
         save_workflow_yaml(wf_dir, &wf);
 
         let report = diagnose_all(wf_dir, wf_dir);
-        assert!(report
+        let rule_target_errors = report
             .items
             .iter()
-            .any(|i| i.severity == Severity::Error && i.message.contains("存在しないステップ")));
+            .filter(|i| {
+                i.severity == Severity::Error
+                    && i.step_name.as_deref() == Some("step1")
+                    && i.field.as_deref() == Some("rules.next")
+                    && i.message.contains("存在しないnode")
+            })
+            .count();
+        assert_eq!(
+            rule_target_errors, 1,
+            "expected one rules target diagnostic from validate_all, got: {:?}",
+            report.items
+        );
     }
 
     #[test]
@@ -1162,10 +1137,7 @@ mod tests {
             schemas: Default::default(),
             nodes: vec![
                 NodeDefinition {
-                    transition_rules: vec![TransitionRule {
-                        r#match: "NEXT".to_string(),
-                        next: "step3".to_string(),
-                    }],
+                    rules: vec![Rule::Next("step3".to_string())],
                     ..make_step("step1", Some("impl"))
                 },
                 make_step("orphan", Some("impl")),
@@ -1185,13 +1157,12 @@ mod tests {
     }
 
     #[test]
-    fn diagnose_sequential_fallthrough_not_unreachable_but_warns() {
+    fn diagnose_rules_without_fallthrough_marks_later_nodes_unreachable() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "impl", "content");
 
-        // rules なしの step → 次の step は暗黙的に到達可能（到達不能ではない）
-        // ただし明示的遷移なしの warning は出る
+        // rules なしの node は終端なので、定義順の暗黙到達はない。
         let wf = Workflow {
             name: "test-wf".to_string(),
             description: "test".to_string(),
@@ -1206,23 +1177,15 @@ mod tests {
         save_workflow_yaml(wf_dir, &wf);
 
         let report = diagnose_all(wf_dir, wf_dir);
-        // 到達不能ではない
-        assert!(
-            !report
-                .items
-                .iter()
-                .any(|i| i.severity == Severity::Warning && i.message.contains("到達不能")),
-            "Sequential steps should not be flagged as unreachable, got: {:?}",
-            report.items
-        );
-        // 明示的遷移なしの warning が出る
-        assert!(
-            report.items.iter().any(|i| i.severity == Severity::Warning
-                && i.message.contains("明示的な遷移が定義されていません")
-                && i.step_name.as_deref() == Some("step2")),
-            "Expected implicit-only warning for step2, got: {:?}",
-            report.items
-        );
+        for step_name in ["step2", "step3"] {
+            assert!(
+                report.items.iter().any(|i| i.severity == Severity::Warning
+                    && i.message.contains("到達不能")
+                    && i.step_name.as_deref() == Some(step_name)),
+                "Expected unreachable warning for {step_name}, got: {:?}",
+                report.items
+            );
+        }
     }
 
     #[test]

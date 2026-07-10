@@ -536,12 +536,9 @@ mod tests {
                 NodeDefinition {
                     name: "review".to_string(),
                     kind: session_kind(SessionGate::Approval, "review-all"),
-                    transition_rules: vec![
-                        crate::adaptor::gateway::workflow::schema::TransitionRule {
-                            r#match: "reject".to_string(),
-                            next: "fix".to_string(),
-                        },
-                    ],
+                    rules: vec![crate::adaptor::gateway::workflow::schema::Rule::Next(
+                        "fix".to_string(),
+                    )],
                     ..NodeDefinition::default()
                 },
                 session_node("fix", "review-fix"),
@@ -1002,7 +999,7 @@ mod tests {
             )
             .await;
 
-        approve_workflow_step_adapter(
+        let adapter_err = approve_workflow_step_adapter(
             adapter_app.handle(),
             &adapter_handles,
             &adapter_store,
@@ -1014,8 +1011,8 @@ mod tests {
             "review".to_string(),
         )
         .await
-        .expect("adapter reject must succeed");
-        direct_engine
+        .unwrap_err();
+        let direct_err = direct_engine
             .resolve_workflow_approval(
                 direct_app.handle(),
                 &direct_store,
@@ -1028,19 +1025,11 @@ mod tests {
                 Some("review"),
             )
             .await
-            .expect("direct reject primitive must succeed");
+            .unwrap_err()
+            .to_string();
 
-        let adapter_state = project_adapter_state(&adapter_data_dir, &adapter_run_id);
-        let direct_state = project_adapter_state(&direct_data_dir, &direct_run_id);
-        assert_eq!(adapter_state.state, direct_state.state);
-        assert_eq!(
-            adapter_run_status(&adapter_engine, &adapter_run_id).await,
-            adapter_run_status(&direct_engine, &direct_run_id).await
-        );
-        assert_eq!(
-            event_kinds(&read_adapter_events(&adapter_data_dir, &adapter_run_id)),
-            event_kinds(&read_adapter_events(&direct_data_dir, &direct_run_id))
-        );
+        assert!(adapter_err.contains("does not support reject transitions"));
+        assert_eq!(adapter_err, direct_err);
     }
 
     /// approval UI 由来の Abort decision は expected node 付き abort primitive
@@ -1239,7 +1228,7 @@ mod tests {
             )
             .await;
 
-        approve_workflow_step_adapter(
+        let ui_err = approve_workflow_step_adapter(
             ui_app.handle(),
             &ui_handles,
             &ui_store,
@@ -1251,7 +1240,7 @@ mod tests {
             "review".to_string(),
         )
         .await
-        .expect("UI reject must succeed");
+        .unwrap_err();
 
         let cli_outcome = crate::adaptor::gateway::workflow::pending_command_dispatcher::dispatch_pending_command(
             cli_app.handle(),
@@ -1268,22 +1257,11 @@ mod tests {
             ),
         )
         .await;
-        assert_eq!(
-            cli_outcome,
-            crate::adaptor::gateway::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
-        );
-
-        let ui_state = project_adapter_state(&ui_data_dir, &ui_run_id);
-        let cli_state = project_adapter_state(&cli_data_dir, &cli_run_id);
-        assert_eq!(ui_state.state, cli_state.state);
-        assert_eq!(
-            adapter_run_status(&ui_engine, &ui_run_id).await,
-            adapter_run_status(&cli_engine, &cli_run_id).await
-        );
-        assert_eq!(
-            event_kinds_excluding_cli_mutation(&read_adapter_events(&ui_data_dir, &ui_run_id)),
-            event_kinds_excluding_cli_mutation(&read_adapter_events(&cli_data_dir, &cli_run_id))
-        );
+        let crate::adaptor::gateway::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::RejectedFinal(cli_err) = cli_outcome else {
+            panic!("CLI reject must be rejected, got {cli_outcome:?}");
+        };
+        assert!(ui_err.contains("does not support reject transitions"));
+        assert!(cli_err.contains("does not support reject transitions"));
     }
 
     /// CLI pending Abort（run 全体）は UI abort_workflow と engine 視点で等価。
