@@ -152,6 +152,11 @@ pub(crate) async fn sync_run_store_from_snapshot(
                 .complete_run(run_id, TerminalRunStatus::Aborted, now, None)
                 .await
         }
+        WorkflowExecutionState::Interrupted => {
+            run_store
+                .complete_run(run_id, TerminalRunStatus::Interrupted, now, None)
+                .await
+        }
         WorkflowExecutionState::Running | WorkflowExecutionState::WaitingApproval => {
             let status = if matches!(snapshot.state, WorkflowExecutionState::Running) {
                 RunStatus::Running
@@ -204,7 +209,9 @@ pub(crate) async fn rollback_execution_projection_after_run_store_sync_failure(
     let rollback_state = match active_projection.status {
         RunStatus::Running => WorkflowExecutionState::Running,
         RunStatus::WaitingApproval => WorkflowExecutionState::WaitingApproval,
-        RunStatus::Completed | RunStatus::Failed | RunStatus::Aborted => return,
+        RunStatus::Completed | RunStatus::Failed | RunStatus::Aborted | RunStatus::Interrupted => {
+            return
+        }
     };
     let mut execs = executions.lock().await;
     let Some(exec) = execs.get_mut(run_id) else {

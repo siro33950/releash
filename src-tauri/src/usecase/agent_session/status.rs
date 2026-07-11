@@ -259,7 +259,7 @@ impl AgentStatusCenter {
             WorkflowExecutionState::WaitingApproval => Some(AgentState::Waiting),
             WorkflowExecutionState::Failed { .. } => Some(AgentState::Error),
             WorkflowExecutionState::Completed => Some(AgentState::Done),
-            WorkflowExecutionState::Aborted => None,
+            WorkflowExecutionState::Aborted | WorkflowExecutionState::Interrupted => None,
         }
     }
 
@@ -1715,6 +1715,12 @@ mod tests {
         assert_eq!(
             AgentStatusCenter::workflow_execution_state_to_agent_state(
                 &WorkflowExecutionState::Aborted
+            ),
+            None
+        );
+        assert_eq!(
+            AgentStatusCenter::workflow_execution_state_to_agent_state(
+                &WorkflowExecutionState::Interrupted
             ),
             None
         );

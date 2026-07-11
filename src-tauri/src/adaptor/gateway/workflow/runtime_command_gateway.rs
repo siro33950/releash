@@ -22,10 +22,10 @@ use crate::usecase::workflow::command::{
 use crate::usecase::workflow::ports::{
     ApprovalChatTarget, PendingRuntimeCommand, PendingRuntimeCommandOutcome,
     PendingRuntimeCommandPayload, WorkflowAbortRunGateway, WorkflowApprovalChatGateway,
-    WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeStateGateway,
-    WorkflowStallObservedCommand, WorkflowStallObservedGateway, WorkflowStartRunGateway,
-    WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
-    WorkflowTurnFailureSignal,
+    WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeShutdownGateway,
+    WorkflowRuntimeStateGateway, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
+    WorkflowStartRunGateway, WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand,
+    WorkflowTurnCompleteGateway, WorkflowTurnFailureSignal,
 };
 
 use super::pending_command_dispatcher::{
@@ -399,6 +399,13 @@ impl WorkflowRuntimeStateGateway for TauriWorkflowRuntimeCommandGateway {
             .get_state(worktree_path)
             .await
             .map(crate::adaptor::gateway::workflow::state::workflow_state_to_domain_snapshot))
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkflowRuntimeShutdownGateway for TauriWorkflowRuntimeCommandGateway {
+    async fn shutdown_active_commands(&self) {
+        self.engine.shutdown_all_active_commands().await;
     }
 }
 

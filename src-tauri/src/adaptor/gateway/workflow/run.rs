@@ -29,6 +29,7 @@ pub enum RunStatus {
     Completed,
     Failed,
     Aborted,
+    Interrupted,
 }
 
 impl RunStatus {
@@ -36,7 +37,7 @@ impl RunStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            RunStatus::Completed | RunStatus::Failed | RunStatus::Aborted
+            RunStatus::Completed | RunStatus::Failed | RunStatus::Aborted | RunStatus::Interrupted
         )
     }
 }
@@ -50,6 +51,7 @@ pub enum TerminalRunStatus {
     Completed,
     Failed,
     Aborted,
+    Interrupted,
 }
 
 impl From<TerminalRunStatus> for RunStatus {
@@ -58,6 +60,7 @@ impl From<TerminalRunStatus> for RunStatus {
             TerminalRunStatus::Completed => RunStatus::Completed,
             TerminalRunStatus::Failed => RunStatus::Failed,
             TerminalRunStatus::Aborted => RunStatus::Aborted,
+            TerminalRunStatus::Interrupted => RunStatus::Interrupted,
         }
     }
 }

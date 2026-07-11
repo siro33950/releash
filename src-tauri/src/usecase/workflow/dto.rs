@@ -173,6 +173,7 @@ pub(crate) enum RunStatusDto {
     Completed,
     Failed,
     Aborted,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -382,6 +383,7 @@ fn run_status_to_dto(status: domain::RunStatus) -> RunStatusDto {
         domain::RunStatus::Completed => RunStatusDto::Completed,
         domain::RunStatus::Failed => RunStatusDto::Failed,
         domain::RunStatus::Aborted => RunStatusDto::Aborted,
+        domain::RunStatus::Interrupted => RunStatusDto::Interrupted,
     }
 }
 

@@ -551,12 +551,6 @@ pub fn validate_workflow_shape(workflow: &Workflow) -> Result<(), WorkflowError>
     if workflow.nodes.is_empty() {
         return Err(WorkflowError::validation("workflow has no nodes"));
     }
-    if let Some(node) = workflow.nodes.iter().find(|node| node.is_command()) {
-        return Err(WorkflowError::validation(format!(
-            "command node '{}' is not executable in this milestone",
-            node.name
-        )));
-    }
     Ok(())
 }
 

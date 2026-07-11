@@ -445,6 +445,7 @@ fn event_kind_display_name(kind: &str) -> &str {
         "run_completed" => "RunCompleted",
         "run_failed" => "RunFailed",
         "run_aborted" => "RunAborted",
+        "run_interrupted" => "RunInterrupted",
         "output_collected" => "OutputCollected",
         "parallel_started" => "ParallelStarted",
         "parallel_child_started" => "ParallelChildStarted",

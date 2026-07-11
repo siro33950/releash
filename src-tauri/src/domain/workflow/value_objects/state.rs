@@ -18,6 +18,7 @@ pub enum WorkflowExecutionState {
         retry_count: Option<u32>,
     },
     Aborted,
+    Interrupted,
 }
 
 impl WorkflowExecutionState {
@@ -28,6 +29,7 @@ impl WorkflowExecutionState {
             Self::Completed => STEP_STATE_COMPLETED,
             Self::Failed { .. } => STEP_STATE_FAILED,
             Self::Aborted => STEP_STATE_ABORTED,
+            Self::Interrupted => super::step_output::STEP_STATE_INTERRUPTED,
         }
     }
 
@@ -84,5 +86,6 @@ mod state_tests {
         assert!(WorkflowExecutionState::Running.is_active());
         assert!(WorkflowExecutionState::WaitingApproval.is_active());
         assert!(!WorkflowExecutionState::Aborted.is_active());
+        assert!(!WorkflowExecutionState::Interrupted.is_active());
     }
 }

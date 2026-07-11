@@ -12,7 +12,7 @@ use crate::domain::workflow::services::reference::{
 #[cfg(test)]
 use crate::domain::workflow::services::template_preview;
 
-fn artifact_values(
+pub(crate) fn artifact_values(
     step_outputs: &HashMap<String, StepOutput>,
     request: Option<&str>,
 ) -> HashMap<String, Value> {

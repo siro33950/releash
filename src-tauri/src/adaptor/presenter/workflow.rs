@@ -126,6 +126,9 @@ fn workflow_execution_state_to_view(
         workflow::WorkflowExecutionState::Aborted => {
             workflow_wire::WorkflowExecutionStateView::Aborted
         }
+        workflow::WorkflowExecutionState::Interrupted => {
+            workflow_wire::WorkflowExecutionStateView::Interrupted
+        }
     }
 }
 
