@@ -76,7 +76,8 @@ describe("useAutomation", () => {
 			nodes: [sessionNode],
 		};
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "save_workflow_source") return Promise.resolve(savedWorkflow);
+			if (cmd === "save_workflow_source")
+				return Promise.resolve({ ok: true, workflow: savedWorkflow });
 			if (cmd === "list_workflows") return Promise.resolve([]);
 			if (cmd === "diagnose_all_cmd")
 				return Promise.resolve({
@@ -107,6 +108,56 @@ describe("useAutomation", () => {
 			originalName: "old-name",
 		});
 		expect(result.current.selectedWorkflow).toEqual(savedWorkflow);
+		expect(result.current.selectedWorkflowName).toBe("source-wf");
+	});
+
+	it("saveWorkflowSource returns structured diagnostics without stringifying them", async () => {
+		const diagnostics = [
+			{
+				code: "WFT001",
+				severity: "error",
+				stage: "typecheck",
+				span: { start_line: 3, start_col: 5, end_line: 3, end_col: 9 },
+				message: "when.on field must be boolean",
+				workflow_name: "source-wf",
+				field: "rules.when.on",
+			},
+		];
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "save_workflow_source")
+				return Promise.resolve({
+					ok: false,
+					error: "workflow_diagnostics",
+					diagnostics,
+				});
+			if (cmd === "list_workflows") return Promise.resolve([]);
+			if (cmd === "diagnose_all_cmd")
+				return Promise.resolve({
+					items: [],
+					workflow_summaries: {},
+					facet_summaries: {},
+					facet_usage: {},
+				});
+			return Promise.resolve(undefined);
+		});
+		const { result } = renderHook(() => useAutomation(true));
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("list_workflows");
+		});
+
+		let saveResult!: Awaited<
+			ReturnType<typeof result.current.saveWorkflowSource>
+		>;
+		await act(async () => {
+			saveResult = await result.current.saveWorkflowSource("bad", "source-wf");
+		});
+
+		expect(saveResult).toEqual({
+			ok: false,
+			error: "workflow_diagnostics",
+			diagnostics,
+		});
 	});
 
 	it("deleteWorkflow invokes delete_workflow and refetches", async () => {
@@ -261,9 +312,68 @@ describe("useAutomation", () => {
 			name: "test",
 		});
 		expect(result.current.selectedWorkflow).toEqual(mockWorkflow);
+		expect(result.current.selectedWorkflowName).toBe("test");
 		expect(result.current.selectedWorkflowSource).toBe(
 			"name: test\nnodes: []\n",
 		);
+	});
+
+	it("selectWorkflow keeps source when typed workflow load returns diagnostics", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_workflow") {
+				return Promise.reject("workflow_diagnostics: WFS005: legacy field");
+			}
+			if (cmd === "get_workflow_source") {
+				return Promise.resolve("name: broken\nnodes:\n  - type: agent\n");
+			}
+			if (cmd === "list_workflows") return Promise.resolve([]);
+			if (cmd === "diagnose_all_cmd") {
+				return Promise.resolve({
+					items: [
+						{
+							code: "WFS005",
+							severity: "error",
+							stage: "parse_shape",
+							span: {
+								start_line: 3,
+								start_col: 5,
+								end_line: 3,
+								end_col: 15,
+							},
+							message: "legacy field",
+							workflow_name: "broken",
+						},
+					],
+					workflow_summaries: {
+						broken: { error_count: 1, warning_count: 0, info_count: 0 },
+					},
+					facet_summaries: {},
+					facet_usage: {},
+				});
+			}
+			return Promise.resolve(undefined);
+		});
+
+		const { result } = renderHook(() => useAutomation(true));
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("list_workflows");
+		});
+
+		await act(async () => {
+			await result.current.selectWorkflow("broken");
+		});
+
+		expect(result.current.selectedWorkflow).toBeNull();
+		expect(result.current.selectedWorkflowName).toBe("broken");
+		expect(result.current.selectedWorkflowSource).toBe(
+			"name: broken\nnodes:\n  - type: agent\n",
+		);
+		expect(result.current.report.workflow_summaries.broken).toEqual({
+			error_count: 1,
+			warning_count: 0,
+			info_count: 0,
+		});
 	});
 
 	it("deleteFacet invokes delete_facet and refreshes", async () => {

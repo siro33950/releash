@@ -276,9 +276,20 @@ export interface FacetSummary {
 }
 
 type DiagnosticSeverity = "error" | "warning" | "info";
+type DiagnosticStage = "parse_shape" | "resolve" | "typecheck" | "control_flow";
+
+interface DiagnosticSpan {
+	start_line: number;
+	start_col: number;
+	end_line: number;
+	end_col: number;
+}
 
 export interface DiagnosticItem {
+	code: string;
 	severity: DiagnosticSeverity;
+	stage: DiagnosticStage;
+	span?: DiagnosticSpan;
 	message: string;
 	workflow_name?: string;
 	step_name?: string;
@@ -305,3 +316,17 @@ export interface DiagnosticReport {
 	facet_summaries: Record<string, DiagnosticSummary>;
 	facet_usage: Record<string, FacetUsageEntry[]>;
 }
+
+export type SaveWorkflowSourceResponse =
+	| {
+			ok: true;
+			workflow: Workflow;
+			diagnostics?: DiagnosticItem[];
+			error?: string;
+	  }
+	| {
+			ok: false;
+			workflow?: null;
+			diagnostics: DiagnosticItem[];
+			error?: string;
+	  };

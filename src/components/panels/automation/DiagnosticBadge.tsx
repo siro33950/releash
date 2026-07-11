@@ -38,11 +38,29 @@ export function DiagnosticItemRow({ item }: { item: DiagnosticItem }) {
 		) : (
 			<Info className="size-3 text-blue-500 shrink-0" />
 		);
+	const spanLabel = item.span
+		? `${item.span.start_line}:${item.span.start_col}`
+		: null;
 
 	return (
-		<div className="flex items-start gap-1.5 text-xs">
+		<div className="flex items-start gap-2 text-xs">
 			{icon}
-			<span className="text-muted-foreground">{item.message}</span>
+			<div className="min-w-0 flex-1">
+				<div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+					<span className="font-mono text-[10px] font-medium text-foreground">
+						{item.code}
+					</span>
+					{spanLabel && (
+						<span className="font-mono text-[10px] text-muted-foreground">
+							{spanLabel}
+						</span>
+					)}
+					<span className="text-[10px] text-muted-foreground">
+						{item.stage.replace("_", " ")}
+					</span>
+				</div>
+				<div className="break-words text-muted-foreground">{item.message}</div>
+			</div>
 		</div>
 	);
 }

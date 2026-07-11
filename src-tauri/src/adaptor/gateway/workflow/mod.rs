@@ -55,6 +55,7 @@ pub(crate) mod runtime_state;
 pub(crate) mod schema;
 pub(crate) mod secret_source;
 mod secret_source_gateway;
+pub(crate) mod span_map;
 pub(crate) mod state;
 mod state_notification_gateway;
 mod state_projection_repository;

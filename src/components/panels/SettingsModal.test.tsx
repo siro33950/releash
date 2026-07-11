@@ -10,6 +10,29 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { type AppSettings, DEFAULT_SETTINGS } from "@/types/settings";
 import { SettingsModal } from "./SettingsModal";
 
+const monacoMock = vi.hoisted(() => {
+	const model = {
+		getValue: vi.fn(() => "name: my-workflow\nnodes: []\n"),
+		dispose: vi.fn(),
+	};
+	const editor = {
+		dispose: vi.fn(),
+		onDidChangeModelContent: vi.fn(() => ({ dispose: vi.fn() })),
+	};
+	return {
+		module: {
+			MarkerSeverity: { Error: 8, Warning: 4, Info: 2 },
+			editor: {
+				createModel: vi.fn(() => model),
+				create: vi.fn(() => editor),
+				setModelMarkers: vi.fn(),
+			},
+		},
+	};
+});
+
+vi.mock("monaco-editor", () => monacoMock.module);
+
 // Radix UI uses pointer events; jsdom doesn't implement them
 beforeAll(() => {
 	HTMLElement.prototype.hasPointerCapture = vi.fn() as never;
@@ -683,7 +706,7 @@ describe("SettingsModal", () => {
 		});
 	});
 
-	it("should call open_workflow_in_editor for custom workflow", async () => {
+	it("should open custom workflow in the panel editor", async () => {
 		const user = userEvent.setup();
 		const { invoke } = await import("@tauri-apps/api/core");
 		const emptyReport = {
@@ -700,10 +723,18 @@ describe("SettingsModal", () => {
 							name: "my-workflow",
 							description: "カスタムワークフロー",
 							builtin: false,
+							is_running: false,
 						},
 					]);
-				case "open_workflow_in_editor":
-					return Promise.resolve(null);
+				case "get_workflow_source":
+					return Promise.resolve("name: my-workflow\nnodes: []\n");
+				case "get_workflow":
+					return Promise.resolve({
+						name: "my-workflow",
+						description: "カスタムワークフロー",
+						builtin: false,
+						nodes: [],
+					});
 				case "diagnose_all_cmd":
 					return Promise.resolve(emptyReport);
 				default:
@@ -718,11 +749,18 @@ describe("SettingsModal", () => {
 			expect(screen.getByText("my-workflow")).toBeInTheDocument();
 		});
 
-		await user.click(screen.getByTitle("Open in editor"));
+		await user.click(screen.getByTitle("Edit"));
 
-		expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_workflow_in_editor", {
+		await waitFor(() => {
+			expect(screen.getByText("Workflow YAML")).toBeInTheDocument();
+		});
+		expect(vi.mocked(invoke)).toHaveBeenCalledWith("get_workflow_source", {
 			name: "my-workflow",
 		});
+		expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
+			"open_workflow_in_editor",
+			expect.anything(),
+		);
 	});
 
 	it("should call delete_workflow when Delete button is clicked", async () => {

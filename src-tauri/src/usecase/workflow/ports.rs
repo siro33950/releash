@@ -40,6 +40,20 @@ pub trait WorkflowDefinitionSourceGateway: Send + Sync {
         source: &str,
         original_name: Option<&str>,
     ) -> Result<WorkflowDefinition, WorkflowError>;
+    fn save_source_with_diagnostics(
+        &self,
+        source: &str,
+        original_name: Option<&str>,
+    ) -> Result<WorkflowDefinition, WorkflowSourceSaveError> {
+        self.save_source(source, original_name)
+            .map_err(WorkflowSourceSaveError::Workflow)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkflowSourceSaveError {
+    Diagnostics(Vec<serde_json::Value>),
+    Workflow(WorkflowError),
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -5,6 +5,7 @@ import type {
 	DiagnosticReport,
 	FacetKind,
 	FacetSummary,
+	SaveWorkflowSourceResponse,
 	Workflow,
 	WorkflowSummary,
 } from "@/types/workflow";
@@ -28,6 +29,9 @@ export function useAutomation(open: boolean) {
 	const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(
 		null,
 	);
+	const [selectedWorkflowName, setSelectedWorkflowName] = useState<
+		string | null
+	>(null);
 	const [selectedWorkflowSource, setSelectedWorkflowSource] = useState<
 		string | null
 	>(null);
@@ -88,6 +92,7 @@ export function useAutomation(open: boolean) {
 		}
 		return () => {
 			setSelectedWorkflow(null);
+			setSelectedWorkflowName(null);
 			setSelectedWorkflowSource(null);
 			setSelectedFacetContent(null);
 			setSelectedFacetKey(null);
@@ -148,27 +153,50 @@ export function useAutomation(open: boolean) {
 
 	// --- Workflow operations ---
 
-	const selectWorkflow = useCallback(async (name: string) => {
-		try {
-			const [wf, source] = await Promise.all([
-				invoke<Workflow>("get_workflow", { name }),
-				invoke<string>("get_workflow_source", { name }),
-			]);
-			setSelectedWorkflow(wf);
-			setSelectedWorkflowSource(source);
-		} catch (e) {
-			setError(String(e));
-		}
-	}, []);
+	const selectWorkflow = useCallback(
+		async (name: string) => {
+			setSelectedWorkflowName(name);
+			setError(null);
+			try {
+				const source = await invoke<string>("get_workflow_source", { name });
+				setSelectedWorkflowSource(source);
+				try {
+					const wf = await invoke<Workflow>("get_workflow", { name });
+					setSelectedWorkflow(wf);
+				} catch (e) {
+					setSelectedWorkflow(null);
+					setError(String(e));
+					await refreshDiagnostics();
+				}
+			} catch (e) {
+				setSelectedWorkflow(null);
+				setSelectedWorkflowSource(null);
+				setError(String(e));
+			}
+		},
+		[refreshDiagnostics],
+	);
 
 	const saveWorkflowSource = useCallback(
 		async (source: string, originalName?: string) => {
 			try {
-				const workflow = await invoke<Workflow>("save_workflow_source", {
-					source,
-					originalName: originalName ?? null,
-				});
+				const response = await invoke<SaveWorkflowSourceResponse>(
+					"save_workflow_source",
+					{
+						source,
+						originalName: originalName ?? null,
+					},
+				);
+				if (!response.ok) {
+					return {
+						ok: false as const,
+						error: response.error ?? "workflow_diagnostics",
+						diagnostics: response.diagnostics,
+					};
+				}
+				const { workflow } = response;
 				setSelectedWorkflow(workflow);
+				setSelectedWorkflowName(workflow.name);
 				setSelectedWorkflowSource(source);
 				await fetchAll();
 				return { ok: true as const, workflow };
@@ -184,8 +212,9 @@ export function useAutomation(open: boolean) {
 		async (name: string) => {
 			try {
 				await invoke("delete_workflow", { name });
-				if (selectedWorkflow?.name === name) {
+				if ((selectedWorkflow?.name ?? selectedWorkflowName) === name) {
 					setSelectedWorkflow(null);
+					setSelectedWorkflowName(null);
 					setSelectedWorkflowSource(null);
 				}
 				await fetchAll();
@@ -193,7 +222,7 @@ export function useAutomation(open: boolean) {
 				setError(String(e));
 			}
 		},
-		[fetchAll, selectedWorkflow],
+		[fetchAll, selectedWorkflow, selectedWorkflowName],
 	);
 
 	const duplicateWorkflow = useCallback(
@@ -324,6 +353,7 @@ export function useAutomation(open: boolean) {
 		clearExternalChange,
 
 		selectedWorkflow,
+		selectedWorkflowName,
 		selectedWorkflowSource,
 		selectedFacetContent,
 		selectedFacetKey,

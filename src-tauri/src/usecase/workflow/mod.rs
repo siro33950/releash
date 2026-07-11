@@ -30,7 +30,7 @@ use crate::domain::workflow::{
 };
 use crate::usecase::workflow::ports::{
     ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDefinitionSourceGateway,
-    WorkflowDiagnosticsGateway,
+    WorkflowDiagnosticsGateway, WorkflowSourceSaveError,
 };
 
 use definition::WorkflowDefinitionUsecase;
@@ -205,6 +205,7 @@ impl WorkflowUsecase {
         self.query.list_facet_summaries(kind)
     }
 
+    #[cfg(test)]
     pub fn save_workflow_source(
         &self,
         source: &str,
@@ -212,6 +213,15 @@ impl WorkflowUsecase {
     ) -> Result<WorkflowDefinition, WorkflowError> {
         self.definition_commands
             .save_workflow_source(source, original_name)
+    }
+
+    pub fn save_workflow_source_with_diagnostics(
+        &self,
+        source: &str,
+        original_name: Option<&str>,
+    ) -> Result<WorkflowDefinition, WorkflowSourceSaveError> {
+        self.definition_commands
+            .save_workflow_source_with_diagnostics(source, original_name)
     }
 
     pub fn delete_workflow(&self, name: &str) -> Result<(), WorkflowError> {

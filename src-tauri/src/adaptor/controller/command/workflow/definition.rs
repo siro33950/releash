@@ -2,6 +2,19 @@ use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::dto::{
     workflow_summary_to_dto, workflow_to_dto, WorkflowDto, WorkflowSummaryDto,
 };
+use crate::usecase::workflow::ports::WorkflowSourceSaveError;
+use serde::Serialize;
+
+#[derive(Debug, Serialize)]
+pub struct SaveWorkflowSourceResultDto {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workflow: Option<WorkflowDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    diagnostics: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
 
 #[tauri::command]
 pub async fn list_workflows(
@@ -65,13 +78,26 @@ pub async fn save_workflow_source(
     state: tauri::State<'_, AppState>,
     source: String,
     original_name: Option<String>,
-) -> Result<WorkflowDto, String> {
+) -> Result<SaveWorkflowSourceResultDto, String> {
     let usecase = state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
-        usecase
-            .save_workflow_source(&source, original_name.as_deref())
-            .map(|workflow| workflow_to_dto(&workflow))
-            .map_err(|e| e.to_string())
+        match usecase.save_workflow_source_with_diagnostics(&source, original_name.as_deref()) {
+            Ok(workflow) => Ok(SaveWorkflowSourceResultDto {
+                ok: true,
+                workflow: Some(workflow_to_dto(&workflow)),
+                diagnostics: Vec::new(),
+                error: None,
+            }),
+            Err(WorkflowSourceSaveError::Diagnostics(diagnostics)) => {
+                Ok(SaveWorkflowSourceResultDto {
+                    ok: false,
+                    workflow: None,
+                    diagnostics,
+                    error: Some("workflow_diagnostics".to_string()),
+                })
+            }
+            Err(WorkflowSourceSaveError::Workflow(error)) => Err(error.to_string()),
+        }
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?

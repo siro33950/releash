@@ -1,0 +1,15 @@
+name: reserved-artifact-field
+description: command artifact schema cannot declare command reserved fields
+schemas:
+  output:
+    type: object
+    properties:
+      ok:
+        type: boolean
+    required:
+      - ok
+    additionalProperties: false
+nodes:
+  - name: build
+    artifact: output
+    command: cargo test
