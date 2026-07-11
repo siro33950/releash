@@ -4,6 +4,31 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { useAutomation } from "@/hooks/useAutomation";
 import { AutomationSection } from "./AutomationSection";
 
+const monacoMock = vi.hoisted(() => {
+	const model = {
+		getValue: vi.fn(() => "name: test-wf\nnodes: []\n"),
+		dispose: vi.fn(),
+	};
+	const editor = {
+		dispose: vi.fn(),
+		onDidChangeModelContent: vi.fn(() => ({ dispose: vi.fn() })),
+	};
+	return {
+		model,
+		editor,
+		module: {
+			MarkerSeverity: { Error: 8, Warning: 4, Info: 2 },
+			editor: {
+				createModel: vi.fn(() => model),
+				create: vi.fn(() => editor),
+				setModelMarkers: vi.fn(),
+			},
+		},
+	};
+});
+
+vi.mock("monaco-editor", () => monacoMock.module);
+
 // Radix UI pointer event polyfills
 beforeAll(() => {
 	HTMLElement.prototype.hasPointerCapture = vi.fn() as never;
@@ -41,6 +66,7 @@ function createMockAutomation(
 		error: null,
 		setError: vi.fn(),
 		selectedWorkflow: null,
+		selectedWorkflowName: null,
 		selectedWorkflowSource: null,
 		selectedFacetContent: null,
 		selectedFacetKey: null,
@@ -129,7 +155,7 @@ describe("AutomationSection", () => {
 		render(<AutomationSection automation={automation} />);
 		expect(screen.getByTitle("Duplicate as custom")).toBeInTheDocument();
 		expect(screen.queryByTitle("Delete")).not.toBeInTheDocument();
-		expect(screen.queryByTitle("Open in editor")).not.toBeInTheDocument();
+		expect(screen.queryByTitle("Edit")).not.toBeInTheDocument();
 	});
 
 	it("custom workflow shows edit and delete buttons", () => {
@@ -145,10 +171,10 @@ describe("AutomationSection", () => {
 		});
 		render(<AutomationSection automation={automation} />);
 		expect(screen.getByTitle("Delete")).toBeInTheDocument();
-		expect(screen.getByTitle("Open in editor")).toBeInTheDocument();
+		expect(screen.getByTitle("Edit")).toBeInTheDocument();
 	});
 
-	it("creates workflow from minimal source without node schema", async () => {
+	it("creates workflow from valid minimal source", async () => {
 		const user = userEvent.setup();
 		const saveWorkflowSource = vi.fn().mockResolvedValue({
 			ok: true,
@@ -173,14 +199,24 @@ describe("AutomationSection", () => {
 
 		await waitFor(() => {
 			expect(saveWorkflowSource).toHaveBeenCalledWith(
-				'name: new-wf\ndescription: ""\n',
+				[
+					"name: new-wf",
+					'description: ""',
+					"nodes:",
+					"  - name: start",
+					"    session:",
+					"      gate: auto",
+					"      permission: edit",
+					"      facets: {}",
+					"",
+				].join("\n"),
 			);
 		});
 		const source = saveWorkflowSource.mock.calls[0][0];
-		expect(source).not.toContain("nodes:");
-		expect(source).not.toContain("session:");
-		expect(source).not.toContain("permission:");
-		expect(source).not.toContain("facets:");
+		expect(source).toContain("nodes:");
+		expect(source).toContain("session:");
+		expect(source).toContain("permission: edit");
+		expect(source).toContain("facets: {}");
 		expect(source).not.toContain("instruction:");
 		expect(selectWorkflow).toHaveBeenCalledWith("new-wf");
 	});
@@ -490,10 +526,25 @@ describe("AutomationSection", () => {
 		});
 	});
 
-	it("workflow detail Edit opens workflow in external editor", async () => {
+	it("workflow detail Edit opens writable in-panel editor and surfaces save diagnostics", async () => {
 		const user = userEvent.setup();
-		const openWorkflowInEditor = vi.fn();
-		const saveWorkflowSource = vi.fn();
+		vi.clearAllMocks();
+		const diagnostics = [
+			{
+				code: "WFT001",
+				severity: "error" as const,
+				stage: "typecheck" as const,
+				span: { start_line: 3, start_col: 5, end_line: 3, end_col: 9 },
+				message: "when.on field must be boolean",
+				workflow_name: "test-wf",
+				field: "rules.when.on",
+			},
+		];
+		const saveWorkflowSource = vi.fn().mockResolvedValue({
+			ok: false,
+			error: "workflow_diagnostics",
+			diagnostics,
+		});
 		const automation = createMockAutomation({
 			selectedWorkflow: {
 				name: "test-wf",
@@ -501,7 +552,8 @@ describe("AutomationSection", () => {
 				builtin: false,
 				nodes: [SESSION_NODE],
 			},
-			openWorkflowInEditor,
+			selectedWorkflowName: "test-wf",
+			selectedWorkflowSource: "name: test-wf\nnodes: []\n",
 			saveWorkflowSource,
 		});
 
@@ -509,11 +561,23 @@ describe("AutomationSection", () => {
 
 		await user.click(screen.getByText("Edit"));
 
-		expect(openWorkflowInEditor).toHaveBeenCalledWith("test-wf");
-		expect(saveWorkflowSource).not.toHaveBeenCalled();
+		await waitFor(() => {
+			expect(screen.getByText("Workflow YAML")).toBeInTheDocument();
+		});
+		expect(monacoMock.module.editor.create).toHaveBeenCalled();
+
+		await user.click(screen.getByRole("button", { name: /Save/ }));
+
+		await waitFor(() => {
+			expect(saveWorkflowSource).toHaveBeenCalledWith(
+				"name: test-wf\nnodes: []\n",
+				"test-wf",
+			);
+		});
+		expect(screen.getByText("WFT001")).toBeInTheDocument();
 		expect(
-			screen.queryByRole("textbox", { name: "Workflow YAML" }),
-		).not.toBeInTheDocument();
+			screen.getByText("when.on field must be boolean"),
+		).toBeInTheDocument();
 	});
 
 	it("workflow detail shows step details when expanded", async () => {
@@ -596,13 +660,23 @@ describe("AutomationSection", () => {
 				...EMPTY_REPORT,
 				items: [
 					{
+						code: "WFR900",
 						severity: "error",
+						stage: "resolve",
+						span: {
+							start_line: 6,
+							start_col: 9,
+							end_line: 6,
+							end_col: 20,
+						},
 						message: "Step references missing facet",
 						workflow_name: "diag-wf",
 						step_name: "step-1",
 					},
 					{
+						code: "WFT004",
 						severity: "warning",
+						stage: "typecheck",
 						message: "Consider adding artifact schema",
 						workflow_name: "diag-wf",
 						step_name: "step-1",
@@ -615,6 +689,8 @@ describe("AutomationSection", () => {
 		expect(
 			screen.getByText("Step references missing facet"),
 		).toBeInTheDocument();
+		expect(screen.getByText("WFR900")).toBeInTheDocument();
+		expect(screen.getByText("6:9")).toBeInTheDocument();
 		expect(
 			screen.getByText("Consider adding artifact schema"),
 		).toBeInTheDocument();
@@ -680,7 +756,9 @@ describe("AutomationSection", () => {
 				...EMPTY_REPORT,
 				items: [
 					{
+						code: "FAC003",
 						severity: "warning",
+						stage: "resolve",
 						message: "Template variable not provided",
 						facet_key: "test-facet",
 						facet_kind: "policies",

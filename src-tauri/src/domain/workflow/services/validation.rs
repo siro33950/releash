@@ -10,6 +10,41 @@ use std::fmt;
 
 const ALLOWED_PERMISSION_MODES: &str = "ask, edit, full";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidSchemaKind {
+    InvalidDeclaration,
+    UnknownSchemaReference,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidArtifactReferenceKind {
+    ReservedArtifactName,
+    UnknownNode,
+    UnavailableArtifact,
+    UnknownField,
+    ItemOutOfScope,
+    InvalidInputRef,
+    InputsNotAllowedOnFanout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidRuleKind {
+    MultipleDiscriminators,
+    MultipleLoopGuards,
+    MultipleNextCatchAll,
+    StandaloneNextWithDiscriminator,
+    WhenFieldNotBoolean,
+    SwitchFieldNotEnum,
+    SwitchUnknownCase,
+    SwitchMissingCases,
+    SwitchExhaustiveHasNext,
+    SwitchRequiresNext,
+    DiscriminatorOnFanout,
+    DiscriminatorWithoutArtifact,
+    LoopGuardMaxIterations,
+    CycleWithoutLoopGuard,
+}
+
 #[derive(Debug)]
 pub enum ValidationError {
     EmptyName,
@@ -54,7 +89,12 @@ pub enum ValidationError {
     /// rules の順序非依存性・網羅性・型付き参照・loop guard が不正
     InvalidRules {
         step: String,
+        kind: InvalidRuleKind,
         reason: String,
+    },
+    /// entry node から到達できない node
+    UnreachableNode {
+        step: String,
     },
     /// 無効な permission mode が指定されている
     InvalidPermissionMode {
@@ -121,6 +161,7 @@ pub enum ValidationError {
     /// `schemas:` 内の宣言が JSON Schema subset として矛盾している。
     InvalidSchema {
         schema: String,
+        kind: InvalidSchemaKind,
         reason: String,
     },
     /// `artifact:` が Object 以外の Contract を参照している。
@@ -137,6 +178,7 @@ pub enum ValidationError {
     /// `inputs:` または `{{ ... }}` が解決できない Artifact 参照を含む。
     InvalidArtifactReference {
         reference: String,
+        kind: InvalidArtifactReferenceKind,
         reason: String,
     },
 }
@@ -181,8 +223,11 @@ impl fmt::Display for ValidationError {
                 f,
                 "node '{step}' のrulesが存在しないnode '{target}' を参照しています"
             ),
-            Self::InvalidRules { step, reason } => {
+            Self::InvalidRules { step, reason, .. } => {
                 write!(f, "node '{step}' のrulesが不正です: {reason}")
+            }
+            Self::UnreachableNode { step } => {
+                write!(f, "node '{step}' is unreachable from the workflow entrypoint")
             }
             Self::InvalidPermissionMode { step, value } => {
                 let display_value = if value.is_empty() {
@@ -268,7 +313,7 @@ impl fmt::Display for ValidationError {
                     "ステップ '{step}' の {slot} Contract 参照 '{key}' が不正です: {reason}"
                 )
             }
-            Self::InvalidSchema { schema, reason } => {
+            Self::InvalidSchema { schema, reason, .. } => {
                 write!(f, "schemas.{schema} の宣言が不正です: {reason}")
             }
             Self::InvalidArtifactSchema { step, contract } => {
@@ -287,7 +332,9 @@ impl fmt::Display for ValidationError {
                     "commandステップ '{step}' の artifact '{contract}' が予約 field '{field}' を宣言しています"
                 )
             }
-            Self::InvalidArtifactReference { reference, reason } => {
+            Self::InvalidArtifactReference {
+                reference, reason, ..
+            } => {
                 write!(f, "Artifact参照 '{reference}' が不正です: {reason}")
             }
         }
@@ -304,6 +351,7 @@ fn reference_error_to_validation_error(
         reference::ReferenceResolveError::ReservedNodeName { name } => {
             ValidationError::InvalidArtifactReference {
                 reference: name,
+                kind: InvalidArtifactReferenceKind::ReservedArtifactName,
                 reason: "`request` and `item` are reserved Artifact names and cannot be node names"
                     .to_string(),
             }
@@ -311,30 +359,35 @@ fn reference_error_to_validation_error(
         reference::ReferenceResolveError::UnknownNode { name } => {
             ValidationError::InvalidArtifactReference {
                 reference: name,
+                kind: InvalidArtifactReferenceKind::UnknownNode,
                 reason: "unknown Artifact-producing node".to_string(),
             }
         }
         reference::ReferenceResolveError::UnavailableArtifact { name } => {
             ValidationError::InvalidArtifactReference {
                 reference: name,
+                kind: InvalidArtifactReferenceKind::UnavailableArtifact,
                 reason: "the referenced node does not produce an Artifact".to_string(),
             }
         }
         reference::ReferenceResolveError::UnknownField { reference, field } => {
             ValidationError::InvalidArtifactReference {
                 reference: format!("{reference}.{field}"),
+                kind: InvalidArtifactReferenceKind::UnknownField,
                 reason: "unknown Artifact field".to_string(),
             }
         }
         reference::ReferenceResolveError::ItemOutOfScope => {
             ValidationError::InvalidArtifactReference {
                 reference: reference::ITEM_ARTIFACT.to_string(),
+                kind: InvalidArtifactReferenceKind::ItemOutOfScope,
                 reason: "`item` is only available inside fanout child scope".to_string(),
             }
         }
         reference::ReferenceResolveError::InvalidInputRef { value } => {
             ValidationError::InvalidArtifactReference {
                 reference: value,
+                kind: InvalidArtifactReferenceKind::InvalidInputRef,
                 reason: match context {
                     reference::ReferenceResolveContext::Inputs => {
                         "`inputs:` entries must be `request` or a top-level node Artifact name"
@@ -349,6 +402,7 @@ fn reference_error_to_validation_error(
         reference::ReferenceResolveError::InputsNotAllowedOnFanout { node } => {
             ValidationError::InvalidArtifactReference {
                 reference: node,
+                kind: InvalidArtifactReferenceKind::InputsNotAllowedOnFanout,
                 reason: "fanout nodes cannot declare `inputs:`".to_string(),
             }
         }
@@ -366,8 +420,119 @@ fn routing_error_to_validation_error(error: routing::RoutingValidationError) -> 
         routing::RoutingValidationError::UnknownRuleTarget { step, target } => {
             ValidationError::UnknownRuleTarget { step, target }
         }
-        routing::RoutingValidationError::Invalid { step, reason } => {
-            ValidationError::InvalidRules { step, reason }
+        routing::RoutingValidationError::MultipleDiscriminators { step } => {
+            ValidationError::InvalidRules {
+                step,
+                kind: InvalidRuleKind::MultipleDiscriminators,
+                reason: "rules can contain at most one when or switch discriminator".to_string(),
+            }
+        }
+        routing::RoutingValidationError::MultipleLoopGuards { step } => {
+            ValidationError::InvalidRules {
+                step,
+                kind: InvalidRuleKind::MultipleLoopGuards,
+                reason: "rules can contain at most one loop_guard".to_string(),
+            }
+        }
+        routing::RoutingValidationError::MultipleNextCatchAll { step } => {
+            ValidationError::InvalidRules {
+                step,
+                kind: InvalidRuleKind::MultipleNextCatchAll,
+                reason: "rules can contain at most one next catch-all".to_string(),
+            }
+        }
+        routing::RoutingValidationError::StandaloneNextWithDiscriminator { step } => {
+            ValidationError::InvalidRules {
+                step,
+                kind: InvalidRuleKind::StandaloneNextWithDiscriminator,
+                reason: "standalone next cannot be combined with when or switch".to_string(),
+            }
+        }
+        routing::RoutingValidationError::WhenFieldNotBoolean {
+            step,
+            field,
+            reason,
+        } => ValidationError::InvalidRules {
+            step,
+            kind: InvalidRuleKind::WhenFieldNotBoolean,
+            reason: reason
+                .unwrap_or_else(|| format!("when.on field '{field}' must be a required boolean")),
+        },
+        routing::RoutingValidationError::SwitchFieldNotEnum {
+            step,
+            field,
+            reason,
+        } => ValidationError::InvalidRules {
+            step,
+            kind: InvalidRuleKind::SwitchFieldNotEnum,
+            reason: reason
+                .unwrap_or_else(|| format!("switch.on field '{field}' must be a required enum")),
+        },
+        routing::RoutingValidationError::SwitchUnknownCase { step, field, case } => {
+            ValidationError::InvalidRules {
+                step,
+                kind: InvalidRuleKind::SwitchUnknownCase,
+                reason: format!("switch case '{case}' is not declared in enum field '{field}'"),
+            }
+        }
+        routing::RoutingValidationError::SwitchMissingCases {
+            step,
+            field,
+            missing,
+        } => ValidationError::InvalidRules {
+            step,
+            kind: InvalidRuleKind::SwitchMissingCases,
+            reason: format!(
+                "switch on '{field}' is missing enum cases [{}] and requires next",
+                missing.join(", ")
+            ),
+        },
+        routing::RoutingValidationError::SwitchExhaustiveHasNext { step } => {
+            ValidationError::InvalidRules {
+                step,
+                kind: InvalidRuleKind::SwitchExhaustiveHasNext,
+                reason: "exhaustive switch cannot also define next catch-all".to_string(),
+            }
+        }
+        routing::RoutingValidationError::SwitchRequiresNext { step } => {
+            ValidationError::InvalidRules {
+                step,
+                kind: InvalidRuleKind::SwitchRequiresNext,
+                reason: "command artifact routing on Contract field requires next catch-all"
+                    .to_string(),
+            }
+        }
+        routing::RoutingValidationError::DiscriminatorOnFanout { step } => {
+            ValidationError::InvalidRules {
+                step,
+                kind: InvalidRuleKind::DiscriminatorOnFanout,
+                reason: "fanout nodes cannot use when or switch rules".to_string(),
+            }
+        }
+        routing::RoutingValidationError::DiscriminatorWithoutArtifact { step } => {
+            ValidationError::InvalidRules {
+                step,
+                kind: InvalidRuleKind::DiscriminatorWithoutArtifact,
+                reason: "nodes without an artifact cannot use when or switch rules".to_string(),
+            }
+        }
+        routing::RoutingValidationError::LoopGuardMaxIterations { step } => {
+            ValidationError::InvalidRules {
+                step,
+                kind: InvalidRuleKind::LoopGuardMaxIterations,
+                reason: "loop_guard.max_iterations must be greater than 0".to_string(),
+            }
+        }
+        routing::RoutingValidationError::CycleWithoutLoopGuard { step } => {
+            ValidationError::InvalidRules {
+                step,
+                kind: InvalidRuleKind::CycleWithoutLoopGuard,
+                reason: "cycle reachable from this node has no loop_guard on cycle nodes"
+                    .to_string(),
+            }
+        }
+        routing::RoutingValidationError::UnreachableNode { step } => {
+            ValidationError::UnreachableNode { step }
         }
     }
 }
@@ -611,6 +776,7 @@ pub fn validate_schema_refs(workflow: &Workflow) -> Result<(), ValidationError> 
         if name == reference::REQUEST_ARTIFACT {
             return Err(ValidationError::InvalidArtifactReference {
                 reference: name.to_string(),
+                kind: InvalidArtifactReferenceKind::ReservedArtifactName,
                 reason: "`request` is a reserved Artifact name and cannot be declared in schemas"
                     .to_string(),
             });
@@ -618,6 +784,7 @@ pub fn validate_schema_refs(workflow: &Workflow) -> Result<(), ValidationError> 
         if !contract_schema::is_safe_identifier(name) {
             return Err(ValidationError::InvalidSchema {
                 schema: name.to_string(),
+                kind: InvalidSchemaKind::InvalidDeclaration,
                 reason: safe_identifier_message().to_string(),
             });
         }
@@ -678,6 +845,7 @@ fn validate_schema_def(
                 if !properties.contains_key(field) {
                     return Err(ValidationError::InvalidSchema {
                         schema: name.to_string(),
+                        kind: InvalidSchemaKind::InvalidDeclaration,
                         reason: format!("required field '{field}' is not declared in properties"),
                     });
                 }
@@ -694,12 +862,14 @@ fn validate_schema_def(
             if !contract_schema::is_safe_identifier(items) {
                 return Err(ValidationError::InvalidSchema {
                     schema: name.to_string(),
+                    kind: InvalidSchemaKind::InvalidDeclaration,
                     reason: safe_identifier_message().to_string(),
                 });
             }
             if !workflow.schemas.contains_key(items) {
                 return Err(ValidationError::InvalidSchema {
                     schema: name.to_string(),
+                    kind: InvalidSchemaKind::UnknownSchemaReference,
                     reason: format!("array.items references unknown schemas '{items}'"),
                 });
             }
@@ -708,6 +878,7 @@ fn validate_schema_def(
             if r#enum.as_ref().is_some_and(Vec::is_empty) {
                 return Err(ValidationError::InvalidSchema {
                     schema: name.to_string(),
+                    kind: InvalidSchemaKind::InvalidDeclaration,
                     reason: "enum must contain at least one value".to_string(),
                 });
             }
@@ -1022,6 +1193,11 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
     }
     errors.extend(
         routing::validate_rules(workflow)
+            .into_iter()
+            .map(routing_error_to_validation_error),
+    );
+    errors.extend(
+        routing::validate_reachability(workflow)
             .into_iter()
             .map(routing_error_to_validation_error),
     );
@@ -1384,7 +1560,7 @@ mod tests {
     }
 
     #[test]
-    fn routing_unknown_target_maps_by_variant_not_reason_text() {
+    fn routing_errors_map_by_variant_not_reason_text() {
         let err =
             routing_error_to_validation_error(routing::RoutingValidationError::UnknownRuleTarget {
                 step: "route".to_string(),
@@ -1396,14 +1572,15 @@ mod tests {
                 if step == "route" && target == "missing"
         ));
 
-        let err = routing_error_to_validation_error(routing::RoutingValidationError::Invalid {
-            step: "route".to_string(),
-            reason: "unknown rule target 'missing'".to_string(),
-        });
+        let err = routing_error_to_validation_error(
+            routing::RoutingValidationError::MultipleNextCatchAll {
+                step: "route".to_string(),
+            },
+        );
         assert!(matches!(
             err,
-            ValidationError::InvalidRules { ref step, ref reason }
-                if step == "route" && reason.contains("unknown rule target")
+            ValidationError::InvalidRules { ref step, kind, .. }
+                if step == "route" && kind == InvalidRuleKind::MultipleNextCatchAll
         ));
     }
 
@@ -1560,7 +1737,7 @@ mod tests {
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::InvalidArtifactReference { ref reference, ref reason }
+            ValidationError::InvalidArtifactReference { ref reference, ref reason, .. }
                 if reference == "bad ref"
                     && reason == "`inputs:` entries must be `request` or a top-level node Artifact name"
         ));
@@ -1572,7 +1749,7 @@ mod tests {
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::InvalidArtifactReference { ref reference, ref reason }
+            ValidationError::InvalidArtifactReference { ref reference, ref reason, .. }
                 if reference == "bad ref"
                     && reason.contains("{{ ... }}")
                     && !reason.contains("inputs:")
@@ -1586,7 +1763,7 @@ mod tests {
 
         assert!(matches!(
             errors.as_slice(),
-            [ValidationError::InvalidArtifactReference { reference, reason }]
+            [ValidationError::InvalidArtifactReference { reference, reason, .. }]
                 if reference == "bad ref"
                     && reason.contains("{{ ... }}")
                     && !reason.contains("inputs:")
@@ -1622,7 +1799,7 @@ mod tests {
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::InvalidArtifactReference { ref reference, ref reason }
+            ValidationError::InvalidArtifactReference { ref reference, ref reason, .. }
                 if reference == "plan" && reason.contains("does not produce")
         ));
     }
@@ -1636,7 +1813,7 @@ mod tests {
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::InvalidArtifactReference { ref reference, ref reason }
+            ValidationError::InvalidArtifactReference { ref reference, ref reason, .. }
                 if reference == "build.no_such_field" && reason.contains("unknown Artifact field")
         ));
     }
@@ -1657,7 +1834,7 @@ mod tests {
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::InvalidArtifactReference { ref reference, ref reason }
+            ValidationError::InvalidArtifactReference { ref reference, ref reason, .. }
                 if reference == "plan.unknown_field" && reason.contains("unknown Artifact field")
         ));
     }
@@ -2458,7 +2635,7 @@ mod tests {
             .insert("request".to_string(), SchemaDef::String { r#enum: None });
         assert!(matches!(
             validate_schema_refs(&request_wf).unwrap_err(),
-            ValidationError::InvalidArtifactReference { ref reference, ref reason }
+            ValidationError::InvalidArtifactReference { ref reference, ref reason, .. }
                 if reference == "request" && reason.contains("reserved Artifact name")
         ));
 
@@ -2494,7 +2671,7 @@ mod tests {
 
         assert!(matches!(
             validate_schema_refs(&wf).unwrap_err(),
-            ValidationError::InvalidSchema { ref schema, ref reason }
+            ValidationError::InvalidSchema { ref schema, ref reason, .. }
                 if schema == "review; curl https://example.invalid #"
                     && reason.contains("must start with an ASCII alphanumeric")
         ));
@@ -2541,7 +2718,7 @@ mod tests {
 
         assert!(matches!(
             validate_schema_refs(&wf).unwrap_err(),
-            ValidationError::InvalidSchema { ref schema, ref reason }
+            ValidationError::InvalidSchema { ref schema, ref reason, .. }
                 if schema == "review-list"
                     && reason.contains("must start with an ASCII alphanumeric")
         ));
@@ -2561,7 +2738,7 @@ mod tests {
 
         assert!(matches!(
             validate_schema_refs(&wf).unwrap_err(),
-            ValidationError::InvalidSchema { ref schema, ref reason }
+            ValidationError::InvalidSchema { ref schema, ref reason, .. }
                 if schema == "review-output"
                     && reason == "required field 'verdict' is not declared in properties"
         ));
@@ -2579,7 +2756,7 @@ mod tests {
 
         assert!(matches!(
             validate_schema_refs(&wf).unwrap_err(),
-            ValidationError::InvalidSchema { ref schema, ref reason }
+            ValidationError::InvalidSchema { ref schema, ref reason, .. }
                 if schema == "review-output" && reason == "enum must contain at least one value"
         ));
     }
@@ -2596,7 +2773,7 @@ mod tests {
 
         assert!(matches!(
             validate_schema_refs(&wf).unwrap_err(),
-            ValidationError::InvalidSchema { ref schema, ref reason }
+            ValidationError::InvalidSchema { ref schema, ref reason, .. }
                 if schema == "review-list"
                     && reason == "array.items references unknown schemas 'missing-item'"
         ));

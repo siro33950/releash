@@ -1,4 +1,5 @@
 use super::builtin;
+use super::diagnostics;
 use super::domain_mapping::workflow_definition_to_domain;
 use super::facet;
 use super::schema::{Summary, Workflow};
@@ -13,6 +14,7 @@ pub enum StorageError {
     Io(std::io::Error),
     YamlDeserialize(serde_saphyr::Error),
     YamlSerialize(serde_saphyr::ser::Error),
+    Diagnostics(Vec<diagnostics::DiagnosticItem>),
     Validation(ValidationError),
     FacetResolution(facet::FacetError),
     NotFound { name: String },
@@ -25,6 +27,14 @@ impl fmt::Display for StorageError {
             Self::Io(e) => write!(f, "I/Oエラー: {e}"),
             Self::YamlDeserialize(e) => write!(f, "YAMLパース失敗: {e}"),
             Self::YamlSerialize(e) => write!(f, "YAMLシリアライズ失敗: {e}"),
+            Self::Diagnostics(items) => {
+                let messages = items
+                    .iter()
+                    .map(|item| format!("{}: {}", item.code, item.message))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                write!(f, "workflow_diagnostics: {messages}")
+            }
             Self::Validation(e) => write!(f, "validation_error: {e}"),
             Self::FacetResolution(e) => write!(f, "facet解決失敗: {e}"),
             Self::NotFound { name } => {
@@ -43,6 +53,7 @@ impl std::error::Error for StorageError {
             Self::Io(e) => Some(e),
             Self::YamlDeserialize(e) => Some(e),
             Self::YamlSerialize(e) => Some(e),
+            Self::Diagnostics(_) => None,
             Self::Validation(e) => Some(e),
             Self::FacetResolution(e) => Some(e),
             Self::NotFound { .. } => None,
@@ -135,9 +146,20 @@ pub fn parse_workflow_source(
     content: &str,
     facets_base_dir: &Path,
 ) -> Result<Workflow, StorageError> {
-    let mut workflow: Workflow = serde_saphyr::from_str(content)?;
+    let diagnosis = diagnostics::diagnose_workflow_source(content, None);
+    if diagnosis.has_errors() {
+        return Err(StorageError::Diagnostics(diagnosis.diagnostics));
+    }
+    let mut workflow = diagnosis.workflow.ok_or_else(|| {
+        StorageError::Diagnostics(vec![diagnostics::DiagnosticItem::new(
+            "WFS001",
+            diagnostics::Severity::Error,
+            diagnostics::DiagnosticStage::ParseShape,
+            None,
+            "workflow source could not be parsed",
+        )])
+    })?;
     workflow.builtin = builtin::is_builtin_workflow(&workflow.name);
-    validate_workflow_definition(&workflow)?;
     let facet_contents = facet::resolve_workflow_facets(&workflow, facets_base_dir)?;
     validate_resolved_facet_references(&workflow, &facet_contents)?;
     Ok(workflow)
@@ -181,10 +203,24 @@ pub fn save_workflow_source(
 /// 実行系は resolved cache から直接合成する）。
 pub fn load_workflow(path: &Path, facets_base_dir: &Path) -> Result<Workflow, StorageError> {
     let content = fs::read_to_string(path)?;
-    let mut workflow: Workflow = serde_saphyr::from_str(&content)?;
+    let diagnosis = diagnostics::diagnose_workflow_source(
+        &content,
+        path.file_stem().and_then(|stem| stem.to_str()),
+    );
+    if diagnosis.has_errors() {
+        return Err(StorageError::Diagnostics(diagnosis.diagnostics));
+    }
+    let mut workflow = diagnosis.workflow.ok_or_else(|| {
+        StorageError::Diagnostics(vec![diagnostics::DiagnosticItem::new(
+            "WFS001",
+            diagnostics::Severity::Error,
+            diagnostics::DiagnosticStage::ParseShape,
+            None,
+            "workflow source could not be parsed",
+        )])
+    })?;
     // YAMLの builtin フラグは無視し、コード側（builtin.rs）で判定する
     workflow.builtin = builtin::is_builtin_workflow(&workflow.name);
-    validate_workflow_definition(&workflow)?;
     let facet_contents = facet::resolve_workflow_facets(&workflow, facets_base_dir)?;
     validate_resolved_facet_references(&workflow, &facet_contents)?;
     Ok(workflow)
@@ -236,9 +272,27 @@ pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
     // facet 解決が必要な実行系経路は明示的に `load_workflow` を呼ぶ。
     let load_for_listing = |path: &Path| -> Result<Workflow, StorageError> {
         let content = fs::read_to_string(path)?;
-        let mut workflow: Workflow = serde_saphyr::from_str(&content)?;
+        let stem = path.file_stem().and_then(|stem| stem.to_str());
+        let diagnosis = diagnostics::diagnose_workflow_source(&content, stem);
+        if diagnosis.has_errors() {
+            return Ok(Workflow {
+                name: stem.unwrap_or("invalid").to_string(),
+                description: "Invalid workflow definition".to_string(),
+                builtin: false,
+                schemas: Default::default(),
+                nodes: Vec::new(),
+            });
+        }
+        let mut workflow = diagnosis.workflow.ok_or_else(|| {
+            StorageError::Diagnostics(vec![diagnostics::DiagnosticItem::new(
+                "WFS001",
+                diagnostics::Severity::Error,
+                diagnostics::DiagnosticStage::ParseShape,
+                None,
+                "workflow source could not be parsed",
+            )])
+        })?;
         workflow.builtin = builtin::is_builtin_workflow(&workflow.name);
-        validate_workflow_definition(&workflow)?;
         Ok(workflow)
     };
     let mut summaries = list_yml_summaries(
@@ -265,9 +319,15 @@ pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
     Ok(summaries)
 }
 
-fn validate_workflow_definition(workflow: &Workflow) -> Result<(), ValidationError> {
-    let workflow = workflow_definition_to_domain(workflow);
-    validation::validate(&workflow)
+fn validate_workflow_definition(workflow: &Workflow) -> Result<(), StorageError> {
+    let diagnostics = diagnostics::diagnose_workflow_definition(workflow, None);
+    if diagnostics
+        .iter()
+        .any(|item| item.severity == diagnostics::Severity::Error)
+    {
+        return Err(StorageError::Diagnostics(diagnostics));
+    }
+    Ok(())
 }
 
 pub(crate) fn resolve_and_validate_workflow_facets(
@@ -465,6 +525,30 @@ mod tests {
         let disk_entry = list.iter().find(|s| s.name == "renamed").unwrap();
         // Summary.nameはファイルstem（renamed）であるべき、YAML本文（original）ではない
         assert_eq!(disk_entry.name, "renamed");
+    }
+
+    #[test]
+    fn list_workflows_keeps_invalid_files_as_diagnostic_only_summaries() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        fs::write(
+            dir.join("broken.yml"),
+            r#"
+name: broken
+description: invalid workflow
+nodes:
+  - name: step
+    type: agent
+    instruction: implement
+"#,
+        )
+        .unwrap();
+
+        let list = list_workflows(dir).unwrap();
+        let disk_entry = list.iter().find(|s| s.name == "broken").unwrap();
+
+        assert_eq!(disk_entry.description, "Invalid workflow definition");
+        assert!(!disk_entry.builtin);
     }
 
     #[test]
@@ -727,8 +811,8 @@ steps:
         std::fs::write(&file_path, yaml).unwrap();
         let result = load_workflow(&file_path, dir);
         assert!(
-            matches!(result, Err(StorageError::YamlDeserialize(_))),
-            "旧 steps YAML は load 段階で deserialize 失敗する"
+            matches!(result, Err(StorageError::Diagnostics(ref items)) if items.iter().any(|item| item.code == "WFS005")),
+            "旧 steps YAML は load 段階で WFS005 diagnostic になる"
         );
     }
 
@@ -763,6 +847,8 @@ nodes:
         policy: p
         knowledge: k
         instruction: i
+    rules:
+      - next: par
   - name: par
     fanout:
       parallel_children:
@@ -850,7 +936,9 @@ nodes:
         let file_path = dir.join("old-variables-section.yml");
         std::fs::write(&file_path, yaml).unwrap();
         let result = load_workflow(&file_path, dir);
-        assert!(matches!(result, Err(StorageError::YamlDeserialize(_))));
+        assert!(
+            matches!(result, Err(StorageError::Diagnostics(ref items)) if items.iter().any(|item| item.code == "WFS005"))
+        );
     }
 
     #[test]
@@ -878,7 +966,9 @@ nodes:
             let file_path = dir.join(format!("old-{field}.yml"));
             std::fs::write(&file_path, yaml).unwrap();
             let result = load_workflow(&file_path, dir);
-            assert!(matches!(result, Err(StorageError::YamlDeserialize(_))));
+            assert!(
+                matches!(result, Err(StorageError::Diagnostics(ref items)) if items.iter().any(|item| item.code == "WFS005"))
+            );
         }
     }
 

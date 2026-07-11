@@ -1,5 +1,6 @@
 use std::fmt;
 
+use super::diagnostics;
 use super::domain_mapping::workflow_definition_to_domain;
 use super::facet::{self, FacetError, FacetKind};
 use super::schema::{Summary, Workflow};
@@ -103,6 +104,10 @@ pub enum BuiltinError {
         filename: &'static str,
         message: String,
     },
+    Diagnostics {
+        filename: &'static str,
+        diagnostics: Vec<diagnostics::DiagnosticItem>,
+    },
     Validation {
         filename: &'static str,
         source: ValidationError,
@@ -118,6 +123,17 @@ impl fmt::Display for BuiltinError {
         match self {
             Self::YamlParse { filename, message } => {
                 write!(f, "Invalid builtin workflow '{filename}': {message}")
+            }
+            Self::Diagnostics {
+                filename,
+                diagnostics,
+            } => {
+                let messages = diagnostics
+                    .iter()
+                    .map(|item| format!("{}: {}", item.code, item.message))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                write!(f, "Invalid builtin workflow '{filename}': {messages}")
             }
             Self::Validation { filename, source } => write!(
                 f,
@@ -156,11 +172,17 @@ pub fn load_builtin_workflow_resolved(name: &str) -> Result<Option<Workflow>, Bu
     else {
         return Ok(None);
     };
-    let mut wf: Workflow =
-        serde_saphyr::from_str(entry.content).map_err(|err| BuiltinError::YamlParse {
+    let diagnosis = diagnostics::diagnose_workflow_source(entry.content, Some(name));
+    if diagnosis.has_errors() {
+        return Err(BuiltinError::Diagnostics {
             filename: entry.filename,
-            message: err.to_string(),
-        })?;
+            diagnostics: diagnosis.diagnostics,
+        });
+    }
+    let mut wf: Workflow = diagnosis.workflow.ok_or_else(|| BuiltinError::YamlParse {
+        filename: entry.filename,
+        message: "workflow source could not be parsed".to_string(),
+    })?;
     wf.builtin = true;
     validation::validate(&workflow_definition_to_domain(&wf)).map_err(|err| {
         BuiltinError::Validation {
@@ -179,10 +201,15 @@ pub fn load_builtin_workflow_resolved(name: &str) -> Result<Option<Workflow>, Bu
                 filename: entry.filename,
                 source,
             },
+            storage::StorageError::Diagnostics(diagnostics) => BuiltinError::Diagnostics {
+                filename: entry.filename,
+                diagnostics,
+            },
             other => BuiltinError::Validation {
                 filename: entry.filename,
                 source: validation::ValidationError::InvalidArtifactReference {
                     reference: entry.filename.to_string(),
+                    kind: validation::InvalidArtifactReferenceKind::InvalidInputRef,
                     reason: other.to_string(),
                 },
             },

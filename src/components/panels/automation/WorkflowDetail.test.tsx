@@ -1,8 +1,29 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { DiagnosticReport, Workflow } from "@/types/workflow";
-import { WorkflowDetail } from "./WorkflowDetail";
+import {
+	WorkflowDetail,
+	WorkflowSourceDiagnosticDetail,
+} from "./WorkflowDetail";
+
+const monacoMock = vi.hoisted(() => {
+	const model = { dispose: vi.fn() };
+	const editor = { dispose: vi.fn() };
+	return {
+		model,
+		module: {
+			MarkerSeverity: { Error: 8, Warning: 4, Info: 2 },
+			editor: {
+				createModel: vi.fn(() => model),
+				create: vi.fn(() => editor),
+				setModelMarkers: vi.fn(),
+			},
+		},
+	};
+});
+
+vi.mock("monaco-editor", () => monacoMock.module);
 
 const EMPTY_REPORT: DiagnosticReport = {
 	items: [],
@@ -96,5 +117,91 @@ describe("WorkflowDetail facet refs row", () => {
 		await user.click(screen.getByText("implement"));
 
 		expect(screen.queryByText(matchLabel("Input"))).not.toBeInTheDocument();
+	});
+});
+
+describe("WorkflowDetail Monaco diagnostics", () => {
+	it("sets workflow diagnostic markers from spanned items only", async () => {
+		vi.clearAllMocks();
+		const report: DiagnosticReport = {
+			items: [
+				{
+					code: "WFT001",
+					severity: "error",
+					stage: "typecheck",
+					span: {
+						start_line: 3,
+						start_col: 5,
+						end_line: 3,
+						end_col: 5,
+					},
+					message: "when.on field must be boolean",
+					workflow_name: "wf",
+				},
+				{
+					code: "WFR003",
+					severity: "warning",
+					stage: "resolve",
+					span: {
+						start_line: 4,
+						start_col: 2,
+						end_line: 4,
+						end_col: 8,
+					},
+					message: "unknown reference",
+					workflow_name: "wf",
+				},
+				{
+					code: "WFC001",
+					severity: "error",
+					stage: "control_flow",
+					message: "unreachable",
+					workflow_name: "wf",
+				},
+			],
+			workflow_summaries: {},
+			facet_summaries: {},
+			facet_usage: {},
+		};
+
+		render(
+			<WorkflowSourceDiagnosticDetail
+				name="wf"
+				report={report}
+				source={"name: wf\nnodes: []\n"}
+				onEdit={vi.fn()}
+			/>,
+		);
+
+		await waitFor(() => {
+			expect(monacoMock.module.editor.setModelMarkers).toHaveBeenCalled();
+		});
+		const markerCall = monacoMock.module.editor.setModelMarkers.mock.calls.find(
+			([, owner, markers]) =>
+				owner === "workflow-diagnostics" && markers.length > 0,
+		);
+		expect(markerCall).toBeTruthy();
+		expect(markerCall?.[0]).toBe(monacoMock.model);
+		expect(markerCall?.[1]).toBe("workflow-diagnostics");
+		expect(markerCall?.[2]).toEqual([
+			{
+				severity: 8,
+				message: "WFT001: when.on field must be boolean",
+				startLineNumber: 3,
+				startColumn: 5,
+				endLineNumber: 3,
+				endColumn: 6,
+				code: "WFT001",
+			},
+			{
+				severity: 4,
+				message: "WFR003: unknown reference",
+				startLineNumber: 4,
+				startColumn: 2,
+				endLineNumber: 4,
+				endColumn: 8,
+				code: "WFR003",
+			},
+		]);
 	});
 });

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use serde_json::Value;
 
@@ -16,8 +16,63 @@ pub enum RouteDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingValidationError {
-    UnknownRuleTarget { step: String, target: String },
-    Invalid { step: String, reason: String },
+    UnknownRuleTarget {
+        step: String,
+        target: String,
+    },
+    MultipleDiscriminators {
+        step: String,
+    },
+    MultipleLoopGuards {
+        step: String,
+    },
+    MultipleNextCatchAll {
+        step: String,
+    },
+    StandaloneNextWithDiscriminator {
+        step: String,
+    },
+    WhenFieldNotBoolean {
+        step: String,
+        field: String,
+        reason: Option<String>,
+    },
+    SwitchFieldNotEnum {
+        step: String,
+        field: String,
+        reason: Option<String>,
+    },
+    SwitchUnknownCase {
+        step: String,
+        field: String,
+        case: String,
+    },
+    SwitchMissingCases {
+        step: String,
+        field: String,
+        missing: Vec<String>,
+    },
+    SwitchExhaustiveHasNext {
+        step: String,
+    },
+    SwitchRequiresNext {
+        step: String,
+    },
+    DiscriminatorOnFanout {
+        step: String,
+    },
+    DiscriminatorWithoutArtifact {
+        step: String,
+    },
+    LoopGuardMaxIterations {
+        step: String,
+    },
+    CycleWithoutLoopGuard {
+        step: String,
+    },
+    UnreachableNode {
+        step: String,
+    },
 }
 
 pub fn validate_rules(workflow: &WorkflowDefinition) -> Vec<RoutingValidationError> {
@@ -65,6 +120,60 @@ pub fn rule_targets(rule: &Rule) -> Vec<&str> {
     }
 }
 
+pub fn validate_reachability(workflow: &WorkflowDefinition) -> Vec<RoutingValidationError> {
+    let reachable = reachable_nodes_from_entry(workflow);
+    workflow
+        .nodes
+        .iter()
+        .skip(1)
+        .filter(|node| !reachable.contains(node.name.as_str()))
+        .map(|node| RoutingValidationError::UnreachableNode {
+            step: node.name.clone(),
+        })
+        .collect()
+}
+
+fn reachable_nodes_from_entry(workflow: &WorkflowDefinition) -> HashSet<&str> {
+    let node_by_name: BTreeMap<_, _> = workflow
+        .nodes
+        .iter()
+        .map(|node| (node.name.as_str(), node))
+        .collect();
+    let Some(entry) = workflow.nodes.first() else {
+        return HashSet::new();
+    };
+    let mut reachable = HashSet::new();
+    let mut queue = VecDeque::from([entry.name.as_str()]);
+    while let Some(current) = queue.pop_front() {
+        if !reachable.insert(current) {
+            continue;
+        }
+        let Some(node) = node_by_name.get(current).copied() else {
+            continue;
+        };
+        for target in explicit_targets(node) {
+            if node_by_name.contains_key(target) && !reachable.contains(target) {
+                queue.push_back(target);
+            }
+        }
+    }
+    reachable
+}
+
+fn explicit_targets(node: &NodeDefinition) -> Vec<&str> {
+    let mut targets = node.rules.iter().flat_map(rule_targets).collect::<Vec<_>>();
+    if let Some(aggregate) = node.fanout().and_then(|fanout| fanout.aggregate.as_ref()) {
+        targets.push(aggregate.then.as_str());
+        targets.push(aggregate.r#else.as_str());
+    }
+    targets
+}
+
+#[cfg(test)]
+fn reachable_node_names(workflow: &WorkflowDefinition) -> BTreeSet<&str> {
+    reachable_nodes_from_entry(workflow).into_iter().collect()
+}
+
 pub fn loop_guard(node: &NodeDefinition) -> Option<(u32, &str)> {
     node.rules.iter().find_map(|rule| match rule {
         Rule::LoopGuard {
@@ -99,10 +208,9 @@ fn validate_node_rules(
             Rule::LoopGuard { max_iterations, .. } => {
                 loop_guard_count += 1;
                 if *max_iterations == 0 {
-                    errors.push(invalid(
-                        node,
-                        "loop_guard.max_iterations must be greater than 0",
-                    ));
+                    errors.push(RoutingValidationError::LoopGuardMaxIterations {
+                        step: node.name.clone(),
+                    });
                 }
             }
             Rule::Next(_) => next_count += 1,
@@ -110,25 +218,24 @@ fn validate_node_rules(
     }
 
     if discriminator_count > 1 {
-        errors.push(invalid(
-            node,
-            "rules can contain at most one when or switch discriminator",
-        ));
+        errors.push(RoutingValidationError::MultipleDiscriminators {
+            step: node.name.clone(),
+        });
     }
     if loop_guard_count > 1 {
-        errors.push(invalid(node, "rules can contain at most one loop_guard"));
+        errors.push(RoutingValidationError::MultipleLoopGuards {
+            step: node.name.clone(),
+        });
     }
     if next_count > 1 {
-        errors.push(invalid(
-            node,
-            "rules can contain at most one next catch-all",
-        ));
+        errors.push(RoutingValidationError::MultipleNextCatchAll {
+            step: node.name.clone(),
+        });
     }
     if discriminator_count > 0 && next_count > 0 {
-        errors.push(invalid(
-            node,
-            "standalone next cannot be combined with when or switch",
-        ));
+        errors.push(RoutingValidationError::StandaloneNextWithDiscriminator {
+            step: node.name.clone(),
+        });
     }
 
     let discriminator = node
@@ -140,7 +247,11 @@ fn validate_node_rules(
             if let Err(reason) =
                 validate_routing_field(workflow, node, on, RoutingFieldKind::Boolean)
             {
-                errors.push(invalid(node, reason));
+                errors.push(RoutingValidationError::WhenFieldNotBoolean {
+                    step: node.name.clone(),
+                    field: on.clone(),
+                    reason: Some(reason),
+                });
             }
         }
         Some(Rule::Switch { on, cases, next }) => {
@@ -149,53 +260,52 @@ fn validate_node_rules(
                     let enum_set: BTreeSet<_> = enum_values.iter().map(String::as_str).collect();
                     let case_set: BTreeSet<_> = cases.keys().map(String::as_str).collect();
                     for case in case_set.difference(&enum_set) {
-                        errors.push(invalid(
-                            node,
-                            format!("switch case '{case}' is not declared in enum field '{on}'"),
-                        ));
+                        errors.push(RoutingValidationError::SwitchUnknownCase {
+                            step: node.name.clone(),
+                            field: on.clone(),
+                            case: (*case).to_string(),
+                        });
                     }
                     let missing: Vec<_> = enum_set.difference(&case_set).copied().collect();
                     let needs_p11_next = node.is_command() && node.artifact.is_some() && on != "ok";
                     if missing.is_empty() {
                         if next.is_some() && !needs_p11_next {
-                            errors.push(invalid(
-                                node,
-                                "exhaustive switch cannot also define next catch-all",
-                            ));
+                            errors.push(RoutingValidationError::SwitchExhaustiveHasNext {
+                                step: node.name.clone(),
+                            });
                         }
                         if needs_p11_next && next.is_none() {
-                            errors.push(invalid(
-                                node,
-                                "command artifact routing on Contract field requires next catch-all",
-                            ));
+                            errors.push(RoutingValidationError::SwitchRequiresNext {
+                                step: node.name.clone(),
+                            });
                         }
                     } else if next.is_none() {
-                        errors.push(invalid(
-                            node,
-                            format!(
-                                "switch on '{on}' is missing enum cases [{}] and requires next",
-                                missing.join(", ")
-                            ),
-                        ));
+                        errors.push(RoutingValidationError::SwitchMissingCases {
+                            step: node.name.clone(),
+                            field: on.clone(),
+                            missing: missing.into_iter().map(str::to_string).collect(),
+                        });
                     }
                 }
-                Err(reason) => errors.push(invalid(node, reason)),
+                Err(reason) => errors.push(RoutingValidationError::SwitchFieldNotEnum {
+                    step: node.name.clone(),
+                    field: on.clone(),
+                    reason: Some(reason),
+                }),
             }
         }
         _ => {}
     }
 
     if discriminator.is_some() && matches!(node.kind, NodeKind::Fanout(_)) {
-        errors.push(invalid(
-            node,
-            "fanout nodes cannot use when or switch rules",
-        ));
+        errors.push(RoutingValidationError::DiscriminatorOnFanout {
+            step: node.name.clone(),
+        });
     }
     if discriminator.is_some() && node.artifact.is_none() && !node.is_command() {
-        errors.push(invalid(
-            node,
-            "nodes without an artifact cannot use when or switch rules",
-        ));
+        errors.push(RoutingValidationError::DiscriminatorWithoutArtifact {
+            step: node.name.clone(),
+        });
     }
 
     errors
@@ -354,10 +464,9 @@ fn validate_cycles_have_loop_guard(workflow: &WorkflowDefinition) -> Vec<Routing
         if !has_guard_on_cycle {
             for name in component {
                 if let Some(node) = node_by_name.get(name).copied() {
-                    errors.push(invalid(
-                        node,
-                        "cycle reachable from this node has no loop_guard on cycle nodes",
-                    ));
+                    errors.push(RoutingValidationError::CycleWithoutLoopGuard {
+                        step: node.name.clone(),
+                    });
                 }
             }
         }
@@ -428,13 +537,6 @@ fn is_reachable<'a>(
         }
     }
     false
-}
-
-fn invalid(node: &NodeDefinition, reason: impl Into<String>) -> RoutingValidationError {
-    RoutingValidationError::Invalid {
-        step: node.name.clone(),
-        reason: reason.into(),
-    }
 }
 
 #[cfg(test)]
@@ -520,12 +622,59 @@ mod routing_tests {
     fn assert_invalid_reason(wf: &WorkflowDefinition, expected: &str) {
         let errors = validate_rules(wf);
         assert!(
-            errors.iter().any(|error| matches!(
-                error,
-                RoutingValidationError::Invalid { reason, .. } if reason.contains(expected)
-            )),
+            errors
+                .iter()
+                .any(|error| routing_error_test_reason(error).contains(expected)),
             "expected invalid reason containing '{expected}', got {errors:?}"
         );
+    }
+
+    fn routing_error_test_reason(error: &RoutingValidationError) -> String {
+        match error {
+            RoutingValidationError::MultipleDiscriminators { .. } => {
+                "rules can contain at most one when or switch discriminator".to_string()
+            }
+            RoutingValidationError::MultipleLoopGuards { .. } => {
+                "rules can contain at most one loop_guard".to_string()
+            }
+            RoutingValidationError::MultipleNextCatchAll { .. } => {
+                "rules can contain at most one next catch-all".to_string()
+            }
+            RoutingValidationError::StandaloneNextWithDiscriminator { .. } => {
+                "standalone next cannot be combined with when or switch".to_string()
+            }
+            RoutingValidationError::WhenFieldNotBoolean { reason, .. }
+            | RoutingValidationError::SwitchFieldNotEnum { reason, .. } => {
+                reason.clone().unwrap_or_default()
+            }
+            RoutingValidationError::SwitchUnknownCase { field, case, .. } => {
+                format!("switch case '{case}' is not declared in enum field '{field}'")
+            }
+            RoutingValidationError::SwitchMissingCases { field, missing, .. } => format!(
+                "switch on '{field}' is missing enum cases [{}] and requires next",
+                missing.join(", ")
+            ),
+            RoutingValidationError::SwitchExhaustiveHasNext { .. } => {
+                "exhaustive switch cannot also define next catch-all".to_string()
+            }
+            RoutingValidationError::SwitchRequiresNext { .. } => {
+                "command artifact routing on Contract field requires next catch-all".to_string()
+            }
+            RoutingValidationError::DiscriminatorOnFanout { .. } => {
+                "fanout nodes cannot use when or switch rules".to_string()
+            }
+            RoutingValidationError::DiscriminatorWithoutArtifact { .. } => {
+                "nodes without an artifact cannot use when or switch rules".to_string()
+            }
+            RoutingValidationError::LoopGuardMaxIterations { .. } => {
+                "loop_guard.max_iterations must be greater than 0".to_string()
+            }
+            RoutingValidationError::CycleWithoutLoopGuard { .. } => {
+                "cycle reachable from this node has no loop_guard on cycle nodes".to_string()
+            }
+            RoutingValidationError::UnknownRuleTarget { .. }
+            | RoutingValidationError::UnreachableNode { .. } => String::new(),
+        }
     }
 
     #[test]
@@ -873,6 +1022,57 @@ mod routing_tests {
         );
     }
 
+    #[test]
+    fn reachability_starts_at_entry_and_does_not_seed_unreachable_subgraph_edges() {
+        let wf = workflow(
+            vec![
+                session_node("entry", None, vec![]),
+                session_node("orphan", None, vec![Rule::Next("target".to_string())]),
+                session_node("target", None, vec![]),
+            ],
+            BTreeMap::new(),
+        );
+
+        assert_eq!(
+            reachable_node_names(&wf),
+            BTreeSet::from(["entry"]),
+            "unreachable subgraph edges must not mark their targets reachable"
+        );
+        let errors = validate_reachability(&wf);
+        for step in ["orphan", "target"] {
+            assert!(
+                errors.iter().any(|error| matches!(
+                    error,
+                    RoutingValidationError::UnreachableNode { step: found } if found == step
+                )),
+                "expected unreachable error for {step}, got {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reachability_follows_explicit_rule_targets_from_reachable_nodes() {
+        let wf = workflow(
+            vec![
+                session_node("entry", None, vec![Rule::Next("target".to_string())]),
+                session_node("orphan", None, vec![]),
+                session_node("target", None, vec![]),
+            ],
+            BTreeMap::new(),
+        );
+
+        assert_eq!(
+            reachable_node_names(&wf),
+            BTreeSet::from(["entry", "target"])
+        );
+        let errors = validate_reachability(&wf);
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            &errors[0],
+            RoutingValidationError::UnreachableNode { step } if step == "orphan"
+        ));
+    }
+
     fn cycle_with_exit_guard_workflow(guard_on_cycle: bool) -> WorkflowDefinition {
         let mut node_b_rules = vec![Rule::Next("step_a".to_string())];
         if guard_on_cycle {
@@ -925,16 +1125,16 @@ mod routing_tests {
         assert!(
             errors.iter().any(|error| matches!(
                 error,
-                RoutingValidationError::Invalid { step, reason }
-                    if step == "step_a" && reason.contains("cycle reachable")
+                RoutingValidationError::CycleWithoutLoopGuard { step }
+                    if step == "step_a"
             )),
             "expected step_a cycle guard error, got {errors:?}"
         );
         assert!(
             errors.iter().any(|error| matches!(
                 error,
-                RoutingValidationError::Invalid { step, reason }
-                    if step == "step_b" && reason.contains("cycle reachable")
+                RoutingValidationError::CycleWithoutLoopGuard { step }
+                    if step == "step_b"
             )),
             "expected step_b cycle guard error, got {errors:?}"
         );

@@ -1,0 +1,8 @@
+name: minimal-session
+description: valid single node workflow
+nodes:
+  - name: implement
+    session:
+      permission: edit
+      facets:
+        instruction: implement

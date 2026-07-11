@@ -49,7 +49,7 @@ export function FacetDetail({
 					<span className="text-xs font-medium">Diagnostics</span>
 					{diagnosticItems.map((item) => (
 						<DiagnosticItemRow
-							key={`${item.severity}-${item.message}-${item.field ?? ""}`}
+							key={`${item.code}-${item.span?.start_line ?? "na"}-${item.span?.start_col ?? "na"}-${item.message}-${item.field ?? ""}`}
 							item={item}
 						/>
 					))}

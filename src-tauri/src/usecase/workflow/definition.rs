@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::domain::workflow::{WorkflowDefinition, WorkflowDefinitionRepository, WorkflowError};
-use crate::usecase::workflow::ports::WorkflowDefinitionSourceGateway;
+use crate::usecase::workflow::ports::{WorkflowDefinitionSourceGateway, WorkflowSourceSaveError};
 
 #[derive(Clone)]
 pub struct WorkflowDefinitionUsecase {
@@ -20,12 +20,22 @@ impl WorkflowDefinitionUsecase {
         }
     }
 
+    #[cfg(test)]
     pub fn save_workflow_source(
         &self,
         source: &str,
         original_name: Option<&str>,
     ) -> Result<WorkflowDefinition, WorkflowError> {
         self.definition_sources.save_source(source, original_name)
+    }
+
+    pub fn save_workflow_source_with_diagnostics(
+        &self,
+        source: &str,
+        original_name: Option<&str>,
+    ) -> Result<WorkflowDefinition, WorkflowSourceSaveError> {
+        self.definition_sources
+            .save_source_with_diagnostics(source, original_name)
     }
 
     pub fn delete_workflow(&self, name: &str) -> Result<(), WorkflowError> {
