@@ -3,9 +3,13 @@ use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_do
 use crate::adaptor::gateway::workflow::facet::{self, FacetKind};
 use crate::adaptor::gateway::workflow::prompt_rendering;
 use crate::adaptor::gateway::workflow::schema::{NodeDefinition, ReduceStrategy, Rule, Workflow};
+use crate::adaptor::gateway::workflow::span_map::YamlSpanMap;
 use crate::domain::workflow::validation;
+use crate::domain::workflow::validation::{
+    InvalidArtifactReferenceKind, InvalidRuleKind, InvalidSchemaKind,
+};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 const ALL_FACET_KINDS: [FacetKind; 3] = [
@@ -14,7 +18,7 @@ const ALL_FACET_KINDS: [FacetKind; 3] = [
     FacetKind::Instruction,
 ];
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Error,
@@ -24,7 +28,11 @@ pub enum Severity {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticItem {
+    pub code: String,
     pub severity: Severity,
+    pub stage: DiagnosticStage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<DiagnosticSpan>,
     pub message: String,
     /// 対象の workflow 名（ファセット診断の場合は None）
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,6 +49,90 @@ pub struct DiagnosticItem {
     /// 対象フィールド
     #[serde(skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticStage {
+    ParseShape,
+    Resolve,
+    Typecheck,
+    ControlFlow,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct DiagnosticSpan {
+    pub start_line: usize,
+    pub start_col: usize,
+    pub end_line: usize,
+    pub end_col: usize,
+}
+
+impl DiagnosticSpan {
+    fn from_location(location: serde_saphyr::Location) -> Self {
+        let line = usize::try_from(location.line()).unwrap_or(usize::MAX);
+        let col = usize::try_from(location.column()).unwrap_or(usize::MAX);
+        Self {
+            start_line: line,
+            start_col: col,
+            end_line: line,
+            end_col: col.saturating_add(1),
+        }
+    }
+
+    fn from_scan_error(error: &serde_saphyr::granit_parser::ScanError) -> Self {
+        let marker = error.marker();
+        Self {
+            start_line: marker.line(),
+            start_col: marker.col() + 1,
+            end_line: marker.line(),
+            end_col: marker.col() + 2,
+        }
+    }
+}
+
+impl DiagnosticItem {
+    pub(crate) fn new(
+        code: impl Into<String>,
+        severity: Severity,
+        stage: DiagnosticStage,
+        span: Option<DiagnosticSpan>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: code.into(),
+            severity,
+            stage,
+            span,
+            message: message.into(),
+            workflow_name: None,
+            step_name: None,
+            facet_key: None,
+            facet_kind: None,
+            field: None,
+        }
+    }
+
+    fn workflow(mut self, name: impl Into<String>) -> Self {
+        self.workflow_name = Some(name.into());
+        self
+    }
+
+    fn step(mut self, name: impl Into<String>) -> Self {
+        self.step_name = Some(name.into());
+        self
+    }
+
+    fn facet(mut self, key: impl Into<String>, kind: impl Into<String>) -> Self {
+        self.facet_key = Some(key.into());
+        self.facet_kind = Some(kind.into());
+        self
+    }
+
+    fn field(mut self, field: impl Into<String>) -> Self {
+        self.field = Some(field.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -68,6 +160,726 @@ pub struct FacetUsageEntry {
     pub slot: String,
 }
 
+type LoadedWorkflowDiagnostics = Result<(Workflow, Vec<DiagnosticItem>), Vec<DiagnosticItem>>;
+type NamedWorkflowDiagnostics = (String, LoadedWorkflowDiagnostics);
+
+#[derive(Debug, Clone)]
+pub(crate) struct WorkflowSourceDiagnostics {
+    pub(crate) workflow: Option<Workflow>,
+    pub(crate) diagnostics: Vec<DiagnosticItem>,
+}
+
+impl WorkflowSourceDiagnostics {
+    pub(crate) fn has_errors(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|item| item.severity == Severity::Error)
+    }
+}
+
+pub(crate) fn diagnose_workflow_source(
+    source: &str,
+    workflow_name_hint: Option<&str>,
+) -> WorkflowSourceDiagnostics {
+    let span_map = match YamlSpanMap::parse(source) {
+        Ok(span_map) => span_map,
+        Err(error) => {
+            return WorkflowSourceDiagnostics {
+                workflow: None,
+                diagnostics: vec![DiagnosticItem::new(
+                    "WFS001",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    Some(DiagnosticSpan::from_scan_error(&error)),
+                    format!("YAML syntax error: {error}"),
+                )
+                .workflow(workflow_name_hint.unwrap_or("<unknown>"))],
+            };
+        }
+    };
+
+    let raw_value = serde_saphyr::from_str::<serde_json::Value>(source).ok();
+    let mut diagnostics = raw_value
+        .as_ref()
+        .map(|value| parse_shape_diagnostics(value, &span_map, workflow_name_hint))
+        .unwrap_or_default();
+
+    if diagnostics
+        .iter()
+        .any(|item| item.severity == Severity::Error)
+    {
+        normalize_invalid_source_workflow_name(&mut diagnostics, workflow_name_hint);
+        return WorkflowSourceDiagnostics {
+            workflow: None,
+            diagnostics,
+        };
+    }
+
+    let workflow = match serde_saphyr::from_str::<Workflow>(source) {
+        Ok(workflow) => workflow,
+        Err(error) => {
+            diagnostics.push(deserialize_error_diagnostic(
+                &error,
+                &span_map,
+                workflow_name_hint,
+            ));
+            return WorkflowSourceDiagnostics {
+                workflow: None,
+                diagnostics,
+            };
+        }
+    };
+
+    diagnostics.extend(diagnose_workflow_definition(&workflow, Some(&span_map)));
+    WorkflowSourceDiagnostics {
+        workflow: Some(workflow),
+        diagnostics,
+    }
+}
+
+pub(crate) fn diagnose_workflow_definition(
+    wf: &Workflow,
+    span_map: Option<&YamlSpanMap>,
+) -> Vec<DiagnosticItem> {
+    let mut items = Vec::new();
+    let workflow = workflow_definition_to_domain(wf);
+    for error in validation::validate_all(&workflow) {
+        items.push(validation_error_to_diagnostic(wf, &error, span_map));
+    }
+    items
+}
+
+fn normalize_invalid_source_workflow_name(
+    diagnostics: &mut [DiagnosticItem],
+    workflow_name_hint: Option<&str>,
+) {
+    let Some(name) = workflow_name_hint else {
+        return;
+    };
+    for item in diagnostics {
+        item.workflow_name = Some(name.to_string());
+    }
+}
+
+fn parse_shape_diagnostics(
+    value: &serde_json::Value,
+    span_map: &YamlSpanMap,
+    workflow_name_hint: Option<&str>,
+) -> Vec<DiagnosticItem> {
+    let mut diagnostics = Vec::new();
+    let workflow_name = value
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .or(workflow_name_hint)
+        .unwrap_or("<unknown>");
+    let Some(root) = value.as_object() else {
+        diagnostics.push(
+            DiagnosticItem::new(
+                "WFS002",
+                Severity::Error,
+                DiagnosticStage::ParseShape,
+                span_map.nearest_span(""),
+                "workflow YAML must be a mapping",
+            )
+            .workflow(workflow_name),
+        );
+        return diagnostics;
+    };
+
+    check_allowed_fields(
+        root,
+        "",
+        &["name", "description", "builtin", "schemas", "nodes"],
+        &["steps", "variables"],
+        span_map,
+        workflow_name,
+        None,
+        &mut diagnostics,
+    );
+
+    if let Some(name) = root.get("name").and_then(serde_json::Value::as_str) {
+        if validation::validate_name(name).is_err() {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFS006",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    span_map.field_span("name"),
+                    format!("workflow name '{name}' is not a safe identifier"),
+                )
+                .workflow(name)
+                .field("name"),
+            );
+        }
+    }
+
+    let Some(nodes) = root.get("nodes").and_then(serde_json::Value::as_array) else {
+        return diagnostics;
+    };
+    let mut names = BTreeSet::new();
+    for (index, node) in nodes.iter().enumerate() {
+        let node_path = format!("nodes[{index}]");
+        let Some(node_obj) = node.as_object() else {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFS002",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    span_map.nearest_span(&node_path),
+                    "node must be a mapping",
+                )
+                .workflow(workflow_name)
+                .field("nodes"),
+            );
+            continue;
+        };
+        let step_name = node_obj
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<unknown>");
+        check_allowed_fields(
+            node_obj,
+            &node_path,
+            &[
+                "name", "command", "session", "fanout", "artifact", "input", "inputs", "collect",
+                "rules",
+            ],
+            &[
+                "type",
+                "mode",
+                "facets",
+                "prompt",
+                "inline_prompt",
+                "output_contract",
+                "input_contracts",
+                "pass_output_from",
+                "pass_previous_response",
+                "variables",
+                "cycle_guard",
+                "resets_cycle_for",
+            ],
+            span_map,
+            workflow_name,
+            Some(step_name),
+            &mut diagnostics,
+        );
+        let kind_count = ["command", "session", "fanout"]
+            .iter()
+            .filter(|key| node_obj.contains_key(**key))
+            .count();
+        if kind_count != 1 {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFS003",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    span_map.nearest_span(&node_path),
+                    format!(
+                        "node '{step_name}' must contain exactly one kind block: command, session, or fanout"
+                    ),
+                )
+                .workflow(workflow_name)
+                .step(step_name)
+                .field("kind"),
+            );
+        }
+        if step_name == "request" || step_name == "item" {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFR004",
+                    Severity::Error,
+                    DiagnosticStage::Resolve,
+                    span_map.field_span(&format!("{node_path}.name")),
+                    format!("node name '{step_name}' is reserved"),
+                )
+                .workflow(workflow_name)
+                .step(step_name)
+                .field("name"),
+            );
+        }
+        if step_name != "<unknown>"
+            && (validation::validate_name(step_name).is_err() || !names.insert(step_name))
+        {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFS006",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    span_map.field_span(&format!("{node_path}.name")),
+                    format!("node name '{step_name}' is duplicated or invalid"),
+                )
+                .workflow(workflow_name)
+                .step(step_name)
+                .field("name"),
+            );
+        }
+        if node_obj.contains_key("fanout") {
+            for field in ["inputs", "collect"] {
+                if node_obj.contains_key(field) {
+                    diagnostics.push(kind_disallowed_diagnostic(
+                        workflow_name,
+                        step_name,
+                        "fanout",
+                        field,
+                        span_map.field_span(&format!("{node_path}.{field}")),
+                    ));
+                }
+            }
+        }
+        if node_obj.contains_key("command") && node_obj.contains_key("collect") {
+            diagnostics.push(kind_disallowed_diagnostic(
+                workflow_name,
+                step_name,
+                "command",
+                "collect",
+                span_map.field_span(&format!("{node_path}.collect")),
+            ));
+        }
+        if let Some(session) = node_obj
+            .get("session")
+            .and_then(serde_json::Value::as_object)
+        {
+            check_allowed_fields(
+                session,
+                &format!("{node_path}.session"),
+                &["model", "permission", "gate", "facets"],
+                &["mode", "prompt", "inline_prompt"],
+                span_map,
+                workflow_name,
+                Some(step_name),
+                &mut diagnostics,
+            );
+            if let Some(facets) = session.get("facets").and_then(serde_json::Value::as_object) {
+                check_allowed_fields(
+                    facets,
+                    &format!("{node_path}.session.facets"),
+                    &["policy", "knowledge", "instruction"],
+                    &[],
+                    span_map,
+                    workflow_name,
+                    Some(step_name),
+                    &mut diagnostics,
+                );
+            }
+        }
+        if let Some(fanout) = node_obj
+            .get("fanout")
+            .and_then(serde_json::Value::as_object)
+        {
+            check_allowed_fields(
+                fanout,
+                &format!("{node_path}.fanout"),
+                &["parallel_children", "aggregate"],
+                &[],
+                span_map,
+                workflow_name,
+                Some(step_name),
+                &mut diagnostics,
+            );
+            if let Some(children) = fanout
+                .get("parallel_children")
+                .and_then(serde_json::Value::as_array)
+            {
+                for (child_index, child) in children.iter().enumerate() {
+                    let child_path = format!("{node_path}.fanout.parallel_children[{child_index}]");
+                    if let Some(child_obj) = child.as_object() {
+                        let child_name = child_obj
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("<unknown>");
+                        check_allowed_fields(
+                            child_obj,
+                            &child_path,
+                            &["name", "model", "permission", "facets", "artifact", "input"],
+                            &["type", "mode", "prompt", "inline_prompt", "output_contract"],
+                            span_map,
+                            workflow_name,
+                            Some(child_name),
+                            &mut diagnostics,
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(rules) = node_obj.get("rules").and_then(serde_json::Value::as_array) {
+            for (rule_index, rule) in rules.iter().enumerate() {
+                let rule_path = format!("{node_path}.rules[{rule_index}]");
+                let Some(rule_obj) = rule.as_object() else {
+                    continue;
+                };
+                check_allowed_fields(
+                    rule_obj,
+                    &rule_path,
+                    &["when", "switch", "loop_guard", "next"],
+                    &["match", "cycle_guard", "resets_cycle_for"],
+                    span_map,
+                    workflow_name,
+                    Some(step_name),
+                    &mut diagnostics,
+                );
+                let discriminator_count = ["when", "switch", "loop_guard"]
+                    .iter()
+                    .filter(|key| rule_obj.contains_key(**key))
+                    .count();
+                if discriminator_count > 1 {
+                    diagnostics.push(
+                        DiagnosticItem::new(
+                            "WFS003",
+                            Severity::Error,
+                            DiagnosticStage::ParseShape,
+                            span_map.nearest_span(&rule_path),
+                            "rule discriminator keys when, switch, and loop_guard are mutually exclusive",
+                        )
+                        .workflow(workflow_name)
+                        .step(step_name)
+                        .field("rules"),
+                    );
+                }
+            }
+        }
+    }
+
+    diagnostics
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_allowed_fields(
+    map: &serde_json::Map<String, serde_json::Value>,
+    path: &str,
+    allowed: &[&str],
+    old_fields: &[&str],
+    span_map: &YamlSpanMap,
+    workflow_name: &str,
+    step_name: Option<&str>,
+    diagnostics: &mut Vec<DiagnosticItem>,
+) {
+    for key in map.keys() {
+        if allowed.contains(&key.as_str()) {
+            continue;
+        }
+        let field_path = if path.is_empty() {
+            key.to_string()
+        } else {
+            format!("{path}.{key}")
+        };
+        let (code, message) = if old_fields.contains(&key.as_str()) {
+            (
+                "WFS005",
+                format!(
+                    "field '{key}' belongs to the old workflow syntax and is no longer accepted"
+                ),
+            )
+        } else {
+            (
+                "WFS002",
+                format!("unknown workflow field '{key}' is not allowed here"),
+            )
+        };
+        let mut item = DiagnosticItem::new(
+            code,
+            Severity::Error,
+            DiagnosticStage::ParseShape,
+            span_map.field_span(&field_path),
+            message,
+        )
+        .workflow(workflow_name)
+        .field(key);
+        if let Some(step_name) = step_name {
+            item = item.step(step_name);
+        }
+        diagnostics.push(item);
+    }
+}
+
+fn kind_disallowed_diagnostic(
+    workflow_name: &str,
+    step_name: &str,
+    kind: &str,
+    field: &str,
+    span: Option<DiagnosticSpan>,
+) -> DiagnosticItem {
+    DiagnosticItem::new(
+        "WFS004",
+        Severity::Error,
+        DiagnosticStage::ParseShape,
+        span,
+        format!("node '{step_name}' ({kind}) cannot declare '{field}'"),
+    )
+    .workflow(workflow_name)
+    .step(step_name)
+    .field(field)
+}
+
+fn deserialize_error_diagnostic(
+    error: &serde_saphyr::Error,
+    span_map: &YamlSpanMap,
+    workflow_name_hint: Option<&str>,
+) -> DiagnosticItem {
+    let message = error.to_string();
+    let code = if message.contains("old workflow syntax") {
+        "WFS005"
+    } else if message.contains("unknown field") || message.contains("unknown variant") {
+        "WFS002"
+    } else if message.contains("kind block")
+        || message.contains("requires sibling next")
+        || message.contains("rule discriminator")
+        || message.contains("invalid rule shape")
+    {
+        "WFS003"
+    } else if message.contains("YAML") || message.contains("syntax") {
+        "WFS001"
+    } else {
+        "WFS002"
+    };
+    let span = error
+        .location()
+        .map(DiagnosticSpan::from_location)
+        .or_else(|| span_map.nearest_span(""));
+    DiagnosticItem::new(
+        code,
+        Severity::Error,
+        DiagnosticStage::ParseShape,
+        span,
+        format!("workflow shape error: {message}"),
+    )
+    .workflow(workflow_name_hint.unwrap_or("<unknown>"))
+}
+
+fn validation_error_to_diagnostic(
+    wf: &Workflow,
+    error: &validation::ValidationError,
+    span_map: Option<&YamlSpanMap>,
+) -> DiagnosticItem {
+    let (code, stage) = validation_error_code_stage(error);
+    let (step_name, field) = validation_error_context(error);
+    let span = span_map.and_then(|map| span_for_validation_error(wf, error, map));
+    let mut item = DiagnosticItem::new(code, Severity::Error, stage, span, error.to_string())
+        .workflow(wf.name.clone());
+    if let Some(step_name) = step_name {
+        item = item.step(step_name);
+    }
+    if let Some(field) = field {
+        item = item.field(field);
+    }
+    item
+}
+
+fn validation_error_code_stage(
+    error: &validation::ValidationError,
+) -> (&'static str, DiagnosticStage) {
+    use validation::ValidationError;
+    let code = match error {
+        ValidationError::EmptyName
+        | ValidationError::InvalidChars { .. }
+        | ValidationError::EmptySteps
+        | ValidationError::DuplicateStep { .. }
+        | ValidationError::ParallelChildNameConflict { .. }
+        | ValidationError::EmptyCommand { .. }
+        | ValidationError::DisallowedFieldForKind { .. }
+        | ValidationError::TooManyNodes { .. }
+        | ValidationError::TooManyParallelChildren { .. } => "WFS006",
+        ValidationError::UnknownRuleTarget { .. }
+        | ValidationError::AggregateUnknownTarget { .. }
+        | ValidationError::UnknownCollectFrom { .. } => "WFR001",
+        ValidationError::UnknownSchemaRef { .. } => "WFR002",
+        ValidationError::InvalidSchemaRef { .. } => "WFR002",
+        ValidationError::InvalidSchema { kind, .. } => match kind {
+            InvalidSchemaKind::UnknownSchemaReference => "WFR002",
+            InvalidSchemaKind::InvalidDeclaration => "WFS002",
+        },
+        ValidationError::InvalidArtifactReference { kind, .. } => match kind {
+            InvalidArtifactReferenceKind::ReservedArtifactName => "WFR004",
+            InvalidArtifactReferenceKind::ItemOutOfScope => "WFR005",
+            InvalidArtifactReferenceKind::InputsNotAllowedOnFanout => "WFS004",
+            InvalidArtifactReferenceKind::UnknownNode
+            | InvalidArtifactReferenceKind::UnavailableArtifact
+            | InvalidArtifactReferenceKind::UnknownField
+            | InvalidArtifactReferenceKind::InvalidInputRef => "WFR003",
+        },
+        ValidationError::InvalidArtifactSchema { .. } => "WFT004",
+        ValidationError::ReservedArtifactField { .. } => "WFT005",
+        ValidationError::InvalidRules { kind, .. } => match kind {
+            InvalidRuleKind::WhenFieldNotBoolean => "WFT001",
+            InvalidRuleKind::SwitchFieldNotEnum | InvalidRuleKind::SwitchUnknownCase => "WFT002",
+            InvalidRuleKind::DiscriminatorOnFanout
+            | InvalidRuleKind::DiscriminatorWithoutArtifact => "WFT006",
+            InvalidRuleKind::SwitchMissingCases => "WFC004",
+            InvalidRuleKind::LoopGuardMaxIterations | InvalidRuleKind::CycleWithoutLoopGuard => {
+                "WFC005"
+            }
+            InvalidRuleKind::MultipleNextCatchAll
+            | InvalidRuleKind::SwitchExhaustiveHasNext
+            | InvalidRuleKind::SwitchRequiresNext => "WFC003",
+            InvalidRuleKind::MultipleDiscriminators
+            | InvalidRuleKind::MultipleLoopGuards
+            | InvalidRuleKind::StandaloneNextWithDiscriminator => "WFC002",
+        },
+        ValidationError::UnreachableNode { .. } => "WFC001",
+        ValidationError::AggregateInvalidConfig { .. } => "WFC002",
+        ValidationError::MissingFacet { .. }
+        | ValidationError::ParallelChildMissingFacet { .. } => "WFR900",
+        ValidationError::InvalidPermissionMode { .. }
+        | ValidationError::MissingPermissionMode { .. }
+        | ValidationError::UnknownModel { .. }
+        | ValidationError::InvalidModelFormat { .. }
+        | ValidationError::ModelResolutionFailed { .. } => "WFT900",
+    };
+    (code, stage_for_code(code))
+}
+
+fn stage_for_code(code: &str) -> DiagnosticStage {
+    if code.starts_with("WFR") {
+        DiagnosticStage::Resolve
+    } else if code.starts_with("WFT") {
+        DiagnosticStage::Typecheck
+    } else if code.starts_with("WFC") {
+        DiagnosticStage::ControlFlow
+    } else {
+        DiagnosticStage::ParseShape
+    }
+}
+
+fn span_for_validation_error(
+    wf: &Workflow,
+    error: &validation::ValidationError,
+    span_map: &YamlSpanMap,
+) -> Option<DiagnosticSpan> {
+    use validation::ValidationError;
+    match error {
+        ValidationError::InvalidSchema { schema, .. } => span_map
+            .field_span(&format!("schemas.{schema}"))
+            .or_else(|| span_map.field_span("schemas")),
+        ValidationError::InvalidArtifactReference { reference, .. } => {
+            input_reference_path(wf, reference)
+                .and_then(|path| span_map.field_span(&path))
+                .or_else(|| span_map.field_span("nodes"))
+        }
+        ValidationError::InvalidRules { step, kind, .. } => invalid_rule_path(wf, step, *kind)
+            .and_then(|path| span_map.field_span(&path))
+            .or_else(|| {
+                step_base_path(wf, step)
+                    .and_then(|path| span_map.field_span(&format!("{path}.rules")))
+            }),
+        ValidationError::UnreachableNode { step } => {
+            step_base_path(wf, step).and_then(|path| span_map.nearest_span(&path))
+        }
+        _ => {
+            let (step_name, field) = validation_error_context(error);
+            match (step_name.as_deref(), field.as_deref()) {
+                (Some(step_name), Some(field)) => step_field_path(wf, step_name, field)
+                    .and_then(|path| span_map.field_span(&path)),
+                (Some(step_name), None) => {
+                    step_base_path(wf, step_name).and_then(|path| span_map.nearest_span(&path))
+                }
+                (None, Some(field)) => span_map.field_span(field),
+                (None, None) => span_map.nearest_span(""),
+            }
+        }
+    }
+}
+
+fn input_reference_path(wf: &Workflow, reference: &str) -> Option<String> {
+    for (index, node) in wf.nodes.iter().enumerate() {
+        for (input_index, input) in node.inputs.iter().enumerate() {
+            if input == reference {
+                return Some(format!("nodes[{index}].inputs[{input_index}]"));
+            }
+        }
+    }
+    None
+}
+
+fn invalid_rule_path(wf: &Workflow, step_name: &str, kind: InvalidRuleKind) -> Option<String> {
+    let (base, node) = step_base_path_with_node(wf, step_name)?;
+    let suffix = match kind {
+        InvalidRuleKind::WhenFieldNotBoolean => {
+            rule_index(node, |rule| matches!(rule, Rule::When { .. }))
+                .map(|index| format!("rules[{index}].when.on"))
+        }
+        InvalidRuleKind::SwitchFieldNotEnum
+        | InvalidRuleKind::SwitchUnknownCase
+        | InvalidRuleKind::SwitchMissingCases => {
+            rule_index(node, |rule| matches!(rule, Rule::Switch { .. }))
+                .map(|index| format!("rules[{index}].switch.on"))
+        }
+        InvalidRuleKind::SwitchExhaustiveHasNext | InvalidRuleKind::SwitchRequiresNext => {
+            rule_index(node, |rule| matches!(rule, Rule::Switch { .. }))
+                .map(|index| format!("rules[{index}].next"))
+        }
+        InvalidRuleKind::LoopGuardMaxIterations => {
+            rule_index(node, |rule| matches!(rule, Rule::LoopGuard { .. }))
+                .map(|index| format!("rules[{index}].loop_guard.max_iterations"))
+        }
+        InvalidRuleKind::DiscriminatorOnFanout | InvalidRuleKind::DiscriminatorWithoutArtifact => {
+            rule_index(node, |rule| {
+                matches!(rule, Rule::When { .. } | Rule::Switch { .. })
+            })
+            .map(|index| format!("rules[{index}]"))
+        }
+        InvalidRuleKind::MultipleDiscriminators
+        | InvalidRuleKind::MultipleLoopGuards
+        | InvalidRuleKind::MultipleNextCatchAll
+        | InvalidRuleKind::StandaloneNextWithDiscriminator
+        | InvalidRuleKind::CycleWithoutLoopGuard => Some("rules".to_string()),
+    }?;
+    Some(format!("{base}.{suffix}"))
+}
+
+fn step_base_path_with_node<'a>(
+    wf: &'a Workflow,
+    step_name: &str,
+) -> Option<(String, &'a NodeDefinition)> {
+    for (index, node) in wf.nodes.iter().enumerate() {
+        if node.name == step_name {
+            return Some((format!("nodes[{index}]"), node));
+        }
+    }
+    None
+}
+
+fn rule_index(node: &NodeDefinition, matches_rule: impl Fn(&Rule) -> bool) -> Option<usize> {
+    node.rules.iter().position(matches_rule)
+}
+
+fn step_base_path(wf: &Workflow, step_name: &str) -> Option<String> {
+    for (index, node) in wf.nodes.iter().enumerate() {
+        if node.name == step_name {
+            return Some(format!("nodes[{index}]"));
+        }
+        if let Some(fanout) = node.fanout() {
+            for (child_index, child) in fanout.parallel_children.iter().enumerate() {
+                if child.name == step_name {
+                    return Some(format!(
+                        "nodes[{index}].fanout.parallel_children[{child_index}]"
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn step_field_path(wf: &Workflow, step_name: &str, field: &str) -> Option<String> {
+    let base = step_base_path(wf, step_name)?;
+    let suffix = if base.contains("parallel_children") {
+        match field {
+            "permission" | "model" | "artifact" | "input" | "facets" => field.to_string(),
+            field => field.replace("parallel_children.", ""),
+        }
+    } else {
+        match field {
+            "permission" | "model" => format!("session.{field}"),
+            "facets" => "session.facets".to_string(),
+            "rules.next" => "rules".to_string(),
+            "parallel_children" | "parallel_children.facets" => {
+                "fanout.parallel_children".to_string()
+            }
+            field => field.to_string(),
+        }
+    };
+    Some(format!("{base}.{suffix}"))
+}
+
 /// 全ワークフロー・全ファセットを走査し診断結果を返す
 pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticReport {
     let mut items = Vec::new();
@@ -82,19 +894,15 @@ pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticR
     let workflows = load_all_workflows(workflows_dir, facets_base_dir);
     for (name, wf_result) in &workflows {
         match wf_result {
-            Err(msg) => {
-                let item = DiagnosticItem {
-                    severity: Severity::Error,
-                    message: format!("ワークフロー '{name}' の読み込みに失敗: {msg}"),
-                    workflow_name: Some(name.clone()),
-                    step_name: None,
-                    facet_key: None,
-                    facet_kind: None,
-                    field: None,
-                };
-                add_diagnostic(&mut items, &mut workflow_summaries, name, item);
+            Err(diagnostics) => {
+                for item in diagnostics {
+                    add_diagnostic(&mut items, &mut workflow_summaries, name, item.clone());
+                }
             }
-            Ok(wf) => {
+            Ok((wf, source_diagnostics)) => {
+                for item in source_diagnostics {
+                    add_diagnostic(&mut items, &mut workflow_summaries, name, item.clone());
+                }
                 diagnose_workflow(
                     wf,
                     &all_facet_keys,
@@ -105,6 +913,15 @@ pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticR
             }
         }
     }
+    let workflow_lookup: HashMap<&str, &Workflow> = workflows
+        .iter()
+        .filter_map(|(_, result)| {
+            result
+                .as_ref()
+                .ok()
+                .map(|(workflow, _)| (workflow.name.as_str(), workflow))
+        })
+        .collect();
 
     // --- ファセット診断 ---
     for kind in &ALL_FACET_KINDS {
@@ -114,36 +931,35 @@ pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticR
 
             // ファセットキー命名規則チェック
             if facet::validate_facet_key(&summary.key).is_err() {
-                let item = DiagnosticItem {
-                    severity: Severity::Error,
-                    message: format!(
+                let item = DiagnosticItem::new(
+                    "FAC001",
+                    Severity::Error,
+                    DiagnosticStage::Resolve,
+                    None,
+                    format!(
                         "ファセットキー '{}' が命名規則に違反しています",
                         summary.key
                     ),
-                    workflow_name: None,
-                    step_name: None,
-                    facet_key: Some(summary.key.clone()),
-                    facet_kind: Some(kind.dir_name().to_string()),
-                    field: Some("key".to_string()),
-                };
+                )
+                .facet(summary.key.clone(), kind.dir_name().to_string())
+                .field("key");
                 add_diagnostic(&mut items, &mut facet_summaries, &facet_id, item);
             }
 
             // ビルトイン info
             if summary.builtin {
-                let item = DiagnosticItem {
-                    severity: Severity::Info,
-                    message: format!(
+                let item = DiagnosticItem::new(
+                    "FAC000",
+                    Severity::Info,
+                    DiagnosticStage::Resolve,
+                    None,
+                    format!(
                         "ビルトインファセット '{}' ({})",
                         summary.key,
                         kind.dir_name()
                     ),
-                    workflow_name: None,
-                    step_name: None,
-                    facet_key: Some(summary.key.clone()),
-                    facet_kind: Some(kind.dir_name().to_string()),
-                    field: None,
-                };
+                )
+                .facet(summary.key.clone(), kind.dir_name().to_string());
                 add_diagnostic(&mut items, &mut facet_summaries, &facet_id, item);
             }
 
@@ -155,6 +971,17 @@ pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticR
                     kind.dir_name(),
                     &facet_id,
                     &mut items,
+                    &mut facet_summaries,
+                );
+                check_facet_template_references(
+                    &content,
+                    &summary.key,
+                    kind.dir_name(),
+                    &facet_id,
+                    &workflow_lookup,
+                    &facet_usage,
+                    &mut items,
+                    &mut workflow_summaries,
                     &mut facet_summaries,
                 );
             }
@@ -183,10 +1010,7 @@ fn collect_all_facet_keys(base_dir: &Path) -> HashSet<String> {
 }
 
 /// ディスク + builtin のワークフロー一覧を読み込み
-fn load_all_workflows(
-    dir: &Path,
-    facets_base_dir: &Path,
-) -> Vec<(String, Result<Workflow, String>)> {
+fn load_all_workflows(dir: &Path, facets_base_dir: &Path) -> Vec<NamedWorkflowDiagnostics> {
     let mut results = Vec::new();
 
     // ディスク上のカスタムワークフロー（validate() をスキップし全件走査）
@@ -198,14 +1022,26 @@ fn load_all_workflows(
                 if path.extension().and_then(|e| e.to_str()) == Some("yml") {
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                         let name = stem.to_string();
-                        let result = std::fs::read_to_string(&path)
-                            .map_err(|e| e.to_string())
-                            .and_then(|content| {
-                                let workflow = serde_saphyr::from_str::<Workflow>(&content)
-                                    .map_err(|e| e.to_string())?;
-                                let _ = facet::resolve_workflow_facets(&workflow, facets_base_dir);
-                                Ok(workflow)
-                            });
+                        let result = match std::fs::read_to_string(&path) {
+                            Ok(content) => {
+                                let diagnosis = diagnose_workflow_source(&content, Some(&name));
+                                if let Some(workflow) = diagnosis.workflow {
+                                    let _ =
+                                        facet::resolve_workflow_facets(&workflow, facets_base_dir);
+                                    Ok((workflow, diagnosis.diagnostics))
+                                } else {
+                                    Err(diagnosis.diagnostics)
+                                }
+                            }
+                            Err(error) => Err(vec![DiagnosticItem::new(
+                                "WFS001",
+                                Severity::Error,
+                                DiagnosticStage::ParseShape,
+                                None,
+                                format!("ワークフロー '{name}' の読み込みに失敗: {error}"),
+                            )
+                            .workflow(name.clone())]),
+                        };
                         seen.insert(name.clone());
                         results.push((name, result));
                     }
@@ -218,38 +1054,37 @@ fn load_all_workflows(
     for summary in builtin::list_builtin_workflows() {
         if !seen.contains(&summary.name) {
             match builtin::load_builtin_workflow_resolved(&summary.name) {
-                Ok(Some(wf)) => results.push((summary.name, Ok(wf))),
+                Ok(Some(wf)) => results.push((summary.name, Ok((wf, Vec::new())))),
                 Ok(None) => results.push((
                     summary.name.clone(),
-                    Err(format!(
-                        "ビルトインワークフロー '{}' の読み込みに失敗",
-                        summary.name
-                    )),
+                    Err(vec![DiagnosticItem::new(
+                        "WFS001",
+                        Severity::Error,
+                        DiagnosticStage::ParseShape,
+                        None,
+                        format!("ビルトインワークフロー '{}' の読み込みに失敗", summary.name),
+                    )
+                    .workflow(summary.name.clone())]),
                 )),
                 Err(err) => results.push((
                     summary.name.clone(),
-                    Err(format!(
-                        "ビルトインワークフロー '{}' の読み込みに失敗: {err}",
-                        summary.name
-                    )),
+                    Err(vec![DiagnosticItem::new(
+                        "WFS001",
+                        Severity::Error,
+                        DiagnosticStage::ParseShape,
+                        None,
+                        format!(
+                            "ビルトインワークフロー '{}' の読み込みに失敗: {err}",
+                            summary.name
+                        ),
+                    )
+                    .workflow(summary.name.clone())]),
                 )),
             }
         }
     }
 
     results
-}
-
-/// validation::validate() のエラーのうち、diagnose_workflow 側で個別にチェック済みのものを判定
-fn is_covered_by_diagnostics(e: &validation::ValidationError) -> bool {
-    use validation::ValidationError;
-    matches!(
-        e,
-        ValidationError::EmptyName
-            | ValidationError::InvalidChars { .. }
-            | ValidationError::MissingFacet { .. }
-            | ValidationError::UnknownCollectFrom { .. }
-    )
 }
 
 /// ValidationError からステップ名とフィールド名を抽出
@@ -278,9 +1113,15 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
             // （新 schema の YAML キーは個別だが、`MissingFacet` 側も "facets" 表現）。
             Some("parallel_children.facets".to_string()),
         ),
-        ValidationError::UnknownRuleTarget { step, .. }
-        | ValidationError::InvalidRules { step, .. } => {
+        ValidationError::UnknownRuleTarget { step, .. } => {
             (Some(step.clone()), Some("rules.next".to_string()))
+        }
+        ValidationError::InvalidRules { step, kind, .. } => (
+            Some(step.clone()),
+            Some(invalid_rule_field_name(*kind).to_string()),
+        ),
+        ValidationError::UnreachableNode { step } => {
+            (Some(step.clone()), Some("nodes".to_string()))
         }
         ValidationError::MissingFacet { step } => (Some(step.clone()), Some("facets".to_string())),
         ValidationError::UnknownCollectFrom { step, .. } => {
@@ -322,80 +1163,22 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
     }
 }
 
-/// ステップが完了後に定義順で暗黙進行する経路はない。
-/// rules なしは終端 node として扱う。
-fn can_advance_sequentially(step: &NodeDefinition) -> bool {
-    let _ = step;
-    false
-}
-
-/// 到達可能性の計算結果。
-struct ReachabilityResult<'a> {
-    /// 明示的遷移（rules.next, aggregate.then/else）+ 最初のステップで到達可能
-    explicitly_reachable: HashSet<&'a str>,
-    /// 明示的遷移 + 暗黙的順次進行を含めた全到達可能
-    all_reachable: HashSet<&'a str>,
-}
-
-/// 到達可能なステップ名の集合を計算する。
-/// 明示的遷移と暗黙的順次進行を区別して返す。
-fn compute_reachable_steps<'a>(
-    wf: &'a Workflow,
-    step_names: &HashSet<&'a str>,
-) -> ReachabilityResult<'a> {
-    let mut explicitly_reachable: HashSet<&str> = HashSet::new();
-
-    if let Some(first) = wf.nodes.first() {
-        explicitly_reachable.insert(&first.name);
-    }
-
-    // 明示的遷移先を収集
-    for step in &wf.nodes {
-        for rule in &step.rules {
-            for target in schema_rule_targets(rule) {
-                if step_names.contains(target) {
-                    explicitly_reachable.insert(target);
-                }
-            }
-        }
-        if let Some(agg) = step.fanout().and_then(|fanout| fanout.aggregate.as_ref()) {
-            if step_names.contains(agg.then.as_str()) {
-                explicitly_reachable.insert(&agg.then);
-            }
-            if step_names.contains(agg.r#else.as_str()) {
-                explicitly_reachable.insert(&agg.r#else);
-            }
-        }
-    }
-
-    // 暗黙的順次進行を伝播（到達可能なステップから次ステップへ）
-    let mut all_reachable = explicitly_reachable.clone();
-    loop {
-        let mut added = false;
-        for (i, step) in wf.nodes.iter().enumerate() {
-            if !all_reachable.contains(step.name.as_str()) {
-                continue;
-            }
-            if i + 1 >= wf.nodes.len() {
-                continue;
-            }
-            let next = &wf.nodes[i + 1];
-            if all_reachable.contains(next.name.as_str()) {
-                continue;
-            }
-            if can_advance_sequentially(step) {
-                all_reachable.insert(&next.name);
-                added = true;
-            }
-        }
-        if !added {
-            break;
-        }
-    }
-
-    ReachabilityResult {
-        explicitly_reachable,
-        all_reachable,
+fn invalid_rule_field_name(kind: InvalidRuleKind) -> &'static str {
+    match kind {
+        InvalidRuleKind::WhenFieldNotBoolean => "rules.when.on",
+        InvalidRuleKind::SwitchFieldNotEnum
+        | InvalidRuleKind::SwitchUnknownCase
+        | InvalidRuleKind::SwitchMissingCases => "rules.switch.on",
+        InvalidRuleKind::SwitchExhaustiveHasNext
+        | InvalidRuleKind::SwitchRequiresNext
+        | InvalidRuleKind::MultipleNextCatchAll => "rules.next",
+        InvalidRuleKind::LoopGuardMaxIterations => "rules.loop_guard.max_iterations",
+        InvalidRuleKind::DiscriminatorOnFanout
+        | InvalidRuleKind::DiscriminatorWithoutArtifact
+        | InvalidRuleKind::MultipleDiscriminators
+        | InvalidRuleKind::MultipleLoopGuards
+        | InvalidRuleKind::StandaloneNextWithDiscriminator
+        | InvalidRuleKind::CycleWithoutLoopGuard => "rules",
     }
 }
 
@@ -408,90 +1191,22 @@ fn diagnose_workflow(
 ) {
     let name = &wf.name;
 
-    // バリデーション（validate_all）を実行し、
-    // 診断側で個別チェックしていない項目をエラーとして報告
-    let workflow = workflow_definition_to_domain(wf);
-    for e in validation::validate_all(&workflow) {
-        let (step_name, field) = validation_error_context(&e);
-        if !is_covered_by_diagnostics(&e) {
-            let item = DiagnosticItem {
-                severity: Severity::Error,
-                message: e.to_string(),
-                workflow_name: Some(name.clone()),
-                step_name,
-                facet_key: None,
-                facet_kind: None,
-                field,
-            };
-            add_diagnostic(items, workflow_summaries, name, item);
-        }
-    }
-
-    // workflow名の命名規則チェック
-    if validation::validate_name(name).is_err() {
-        let item = DiagnosticItem {
-            severity: Severity::Error,
-            message: format!("ワークフロー名 '{name}' が命名規則に違反しています"),
-            workflow_name: Some(name.clone()),
-            step_name: None,
-            facet_key: None,
-            facet_kind: None,
-            field: Some("name".to_string()),
-        };
-        add_diagnostic(items, workflow_summaries, name, item);
-    }
-
     // ビルトイン info
     if wf.builtin {
-        let item = DiagnosticItem {
-            severity: Severity::Info,
-            message: format!("ビルトインワークフロー '{name}'"),
-            workflow_name: Some(name.clone()),
-            step_name: None,
-            facet_key: None,
-            facet_kind: None,
-            field: None,
-        };
+        let item = DiagnosticItem::new(
+            "WFI000",
+            Severity::Info,
+            DiagnosticStage::Resolve,
+            None,
+            format!("ビルトインワークフロー '{name}'"),
+        )
+        .workflow(name.clone());
         add_diagnostic(items, workflow_summaries, name, item);
     }
-
-    // step名の集合（到達可能性チェック・遷移先チェック用、トップレベルstep名のみ）
-    let step_names: HashSet<&str> = wf.nodes.iter().map(|s| s.name.as_str()).collect();
-    // 先行step名の集合（collect.from のチェック用）
-    // validation.rs と同じロジック: collect.from は先行ステップのみ参照可能
-    let mut preceding_step_names: HashSet<&str> = HashSet::new();
-    let reachability = compute_reachable_steps(wf, &step_names);
 
     // 各stepを診断
     for step in &wf.nodes {
-        // collect.from 参照チェック（先行stepのみ参照可能）
         if let Some(ref collect) = step.collect {
-            for from in &collect.from {
-                if !preceding_step_names.contains(from.as_str()) {
-                    let msg = if step_names.contains(from.as_str()) {
-                        format!(
-                            "ステップ '{}' のcollect.fromがまだ定義されていないステップ '{}' を参照しています（先行ステップのみ参照可能）",
-                            step.name, from
-                        )
-                    } else {
-                        format!(
-                            "ステップ '{}' のcollect.fromが存在しないステップ '{}' を参照しています",
-                            step.name, from
-                        )
-                    };
-                    let item = DiagnosticItem {
-                        severity: Severity::Error,
-                        message: msg,
-                        workflow_name: Some(name.clone()),
-                        step_name: Some(step.name.clone()),
-                        facet_key: None,
-                        facet_kind: None,
-                        field: Some("collect.from".to_string()),
-                    };
-                    add_diagnostic(items, workflow_summaries, name, item);
-                }
-            }
-
             // collect元stepにrulesがないwarning
             if matches!(
                 collect.reduce,
@@ -500,18 +1215,19 @@ fn diagnose_workflow(
                 for from in &collect.from {
                     if let Some(source_step) = wf.nodes.iter().find(|s| s.name == *from) {
                         if source_step.rules.is_empty() && !source_step.is_fanout() {
-                            let item = DiagnosticItem {
-                                severity: Severity::Warning,
-                                message: format!(
+                            let item = DiagnosticItem::new(
+                                "WFC900",
+                                Severity::Warning,
+                                DiagnosticStage::ControlFlow,
+                                None,
+                                format!(
                                     "collect元ステップ '{}' にrulesが未設定です（{:?}リデュースで結果がNoneになる可能性）",
                                     from, collect.reduce
                                 ),
-                                workflow_name: Some(name.clone()),
-                                step_name: Some(step.name.clone()),
-                                facet_key: None,
-                                facet_kind: None,
-                                field: Some("collect.reduce".to_string()),
-                            };
+                            )
+                            .workflow(name.clone())
+                            .step(step.name.clone())
+                            .field("collect.reduce");
                             add_diagnostic(items, workflow_summaries, name, item);
                         }
                     }
@@ -536,20 +1252,6 @@ fn diagnose_workflow(
                 },
             );
 
-        // command/fanout は実行構造を kind block に持つため facet は不要。
-        if step.is_session() && step.collect.is_none() && !step.has_facet_refs() {
-            let item = DiagnosticItem {
-                severity: Severity::Error,
-                message: format!("ステップ '{}' にはファセット参照が必要です", step.name),
-                workflow_name: Some(name.clone()),
-                step_name: Some(step.name.clone()),
-                facet_key: None,
-                facet_kind: None,
-                field: Some("facets".to_string()),
-            };
-            add_diagnostic(items, workflow_summaries, name, item);
-        }
-
         // parallel block の子step 診断
         if let Some(fanout) = step.fanout() {
             let children = &fanout.parallel_children;
@@ -571,64 +1273,6 @@ fn diagnose_workflow(
                 );
             }
         }
-
-        // 到達可能性チェック（最初のstepを除く）
-        if wf.nodes.first().map(|s| &s.name) != Some(&step.name) {
-            let step_str = step.name.as_str();
-            if !reachability.all_reachable.contains(step_str) {
-                // 明示的にも暗黙的にも到達不能
-                let item = DiagnosticItem {
-                    severity: Severity::Warning,
-                    message: format!(
-                        "ステップ '{}' はどこからも遷移されません（到達不能）",
-                        step.name
-                    ),
-                    workflow_name: Some(name.clone()),
-                    step_name: Some(step.name.clone()),
-                    facet_key: None,
-                    facet_kind: None,
-                    field: None,
-                };
-                add_diagnostic(items, workflow_summaries, name, item);
-            } else if !reachability.explicitly_reachable.contains(step_str) {
-                // 暗黙的順次進行でのみ到達可能 → 明示的遷移を推奨
-                let item = DiagnosticItem {
-                    severity: Severity::Warning,
-                    message: format!(
-                        "ステップ '{}' への明示的な遷移が定義されていません（暗黙的な順次進行で到達）",
-                        step.name
-                    ),
-                    workflow_name: Some(name.clone()),
-                    step_name: Some(step.name.clone()),
-                    facet_key: None,
-                    facet_kind: None,
-                    field: None,
-                };
-                add_diagnostic(items, workflow_summaries, name, item);
-            }
-        }
-
-        // preceding_step_names を更新（validation.rs と同じロジック）
-        preceding_step_names.insert(&step.name);
-        if let Some(fanout) = step.fanout() {
-            let children = &fanout.parallel_children;
-            for child in children {
-                preceding_step_names.insert(&child.name);
-            }
-        }
-    }
-}
-
-fn schema_rule_targets(rule: &Rule) -> Vec<&str> {
-    match rule {
-        Rule::When { then, next, .. } => vec![then.as_str(), next.as_str()],
-        Rule::Switch { cases, next, .. } => cases
-            .values()
-            .map(String::as_str)
-            .chain(next.iter().map(String::as_str))
-            .collect(),
-        Rule::LoopGuard { on_exhausted, .. } => vec![on_exhausted.as_str()],
-        Rule::Next(next) => vec![next.as_str()],
     }
 }
 
@@ -683,20 +1327,22 @@ impl<'a> FacetRefCheckContext<'a> {
             });
 
         if !self.all_facet_keys.contains(&facet_id) {
-            let item = DiagnosticItem {
-                severity: Severity::Error,
-                message: format!(
+            let item = DiagnosticItem::new(
+                "FAC002",
+                Severity::Error,
+                DiagnosticStage::Resolve,
+                None,
+                format!(
                     "ステップ '{}' が存在しないファセット '{}' ({}) を参照しています",
                     step_name,
                     key,
                     kind.dir_name()
                 ),
-                workflow_name: Some(self.workflow_name.to_string()),
-                step_name: Some(step_name.to_string()),
-                facet_key: Some(key.to_string()),
-                facet_kind: Some(kind.dir_name().to_string()),
-                field: Some(slot.to_string()),
-            };
+            )
+            .workflow(self.workflow_name.to_string())
+            .step(step_name.to_string())
+            .facet(key.to_string(), kind.dir_name().to_string())
+            .field(slot.to_string());
             add_diagnostic(
                 self.items,
                 self.workflow_summaries,
@@ -734,20 +1380,112 @@ fn check_template_variables(
     facet_summaries: &mut HashMap<String, DiagnosticSummary>,
 ) {
     for var_name in prompt_rendering::find_undefined_template_variables(content) {
-        let item = DiagnosticItem {
-            severity: Severity::Error,
-            message: format!(
+        let item = DiagnosticItem::new(
+            "FAC003",
+            Severity::Error,
+            DiagnosticStage::Resolve,
+            None,
+            format!(
                 "ファセット '{}' に未定義のテンプレート変数 '{{{{{}}}}}' が含まれています",
                 facet_key, var_name
             ),
-            workflow_name: None,
-            step_name: None,
-            facet_key: Some(facet_key.to_string()),
-            facet_kind: Some(facet_kind_name.to_string()),
-            field: Some("content".to_string()),
-        };
+        )
+        .facet(facet_key.to_string(), facet_kind_name.to_string())
+        .field("content");
         add_diagnostic(items, facet_summaries, facet_id, item);
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_facet_template_references(
+    content: &str,
+    facet_key: &str,
+    facet_kind_name: &str,
+    facet_id: &str,
+    workflow_lookup: &HashMap<&str, &Workflow>,
+    facet_usage: &HashMap<String, Vec<FacetUsageEntry>>,
+    items: &mut Vec<DiagnosticItem>,
+    workflow_summaries: &mut HashMap<String, DiagnosticSummary>,
+    facet_summaries: &mut HashMap<String, DiagnosticSummary>,
+) {
+    let Some(usages) = facet_usage.get(facet_id) else {
+        return;
+    };
+    for usage in usages {
+        let Some(workflow) = workflow_lookup.get(usage.workflow_name.as_str()).copied() else {
+            continue;
+        };
+        let domain_workflow = workflow_definition_to_domain(workflow);
+        let allow_item = facet_usage_allows_item(workflow, &usage.step_name);
+        for error in validation::validate_template_references(&domain_workflow, content, allow_item)
+        {
+            let span = facet_template_error_span(content, &error);
+            let mut item = validation_error_to_diagnostic(workflow, &error, None)
+                .facet(facet_key.to_string(), facet_kind_name.to_string())
+                .step(usage.step_name.clone())
+                .field("content");
+            item.span = span;
+            add_diagnostic_to_workflow_and_facet(
+                items,
+                workflow_summaries,
+                &usage.workflow_name,
+                facet_summaries,
+                facet_id,
+                item,
+            );
+        }
+    }
+}
+
+fn facet_usage_allows_item(workflow: &Workflow, step_name: &str) -> bool {
+    workflow.nodes.iter().any(|node| {
+        node.fanout().is_some_and(|fanout| {
+            fanout
+                .parallel_children
+                .iter()
+                .any(|child| child.name == step_name)
+        })
+    })
+}
+
+fn facet_template_error_span(
+    content: &str,
+    error: &validation::ValidationError,
+) -> Option<DiagnosticSpan> {
+    let validation::ValidationError::InvalidArtifactReference { reference, .. } = error else {
+        return None;
+    };
+    template_reference_span(content, reference)
+}
+
+fn template_reference_span(content: &str, reference: &str) -> Option<DiagnosticSpan> {
+    for (line_index, line) in content.lines().enumerate() {
+        let mut search_start = 0usize;
+        while let Some(open_rel) = line[search_start..].find("{{") {
+            let open = search_start + open_rel;
+            let inner_start = open + 2;
+            let Some(close_rel) = line[inner_start..].find("}}") else {
+                break;
+            };
+            let close = inner_start + close_rel;
+            let template_reference = line[inner_start..close].trim();
+            if template_reference == reference
+                || template_reference
+                    .strip_prefix(reference)
+                    .is_some_and(|rest| rest.starts_with('.'))
+            {
+                let end = close + 2;
+                return Some(DiagnosticSpan {
+                    start_line: line_index + 1,
+                    start_col: line[..open].chars().count() + 1,
+                    end_line: line_index + 1,
+                    end_col: line[..end].chars().count() + 1,
+                });
+            }
+            search_start = close + 2;
+        }
+    }
+    None
 }
 
 fn add_diagnostic(
@@ -756,13 +1494,34 @@ fn add_diagnostic(
     key: &str,
     item: DiagnosticItem,
 ) {
+    increment_summary(summaries, key, item.severity);
+    items.push(item);
+}
+
+fn add_diagnostic_to_workflow_and_facet(
+    items: &mut Vec<DiagnosticItem>,
+    workflow_summaries: &mut HashMap<String, DiagnosticSummary>,
+    workflow_key: &str,
+    facet_summaries: &mut HashMap<String, DiagnosticSummary>,
+    facet_key: &str,
+    item: DiagnosticItem,
+) {
+    increment_summary(workflow_summaries, workflow_key, item.severity);
+    increment_summary(facet_summaries, facet_key, item.severity);
+    items.push(item);
+}
+
+fn increment_summary(
+    summaries: &mut HashMap<String, DiagnosticSummary>,
+    key: &str,
+    severity: Severity,
+) {
     let summary = summaries.entry(key.to_string()).or_default();
-    match item.severity {
+    match severity {
         Severity::Error => summary.error_count += 1,
         Severity::Warning => summary.warning_count += 1,
         Severity::Info => summary.info_count += 1,
     }
-    items.push(item);
 }
 
 #[cfg(test)]
@@ -833,6 +1592,468 @@ mod tests {
         fs::create_dir_all(dir).unwrap();
         let content = serde_saphyr::to_string(wf).unwrap();
         fs::write(dir.join(format!("{}.yml", wf.name)), content).unwrap();
+    }
+
+    fn fixture_dir(kind: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/adaptor/gateway/workflow/fixtures")
+            .join(kind)
+    }
+
+    fn expected_stage_for_code(code: &str) -> DiagnosticStage {
+        match &code[..3] {
+            "WFR" => DiagnosticStage::Resolve,
+            "WFT" => DiagnosticStage::Typecheck,
+            "WFC" => DiagnosticStage::ControlFlow,
+            _ => DiagnosticStage::ParseShape,
+        }
+    }
+
+    #[test]
+    fn workflow_fixture_suite_valid_has_no_error_diagnostics() {
+        for entry in fs::read_dir(fixture_dir("valid")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("yml") {
+                continue;
+            }
+            let source = fs::read_to_string(&path).unwrap();
+            let diagnosis =
+                diagnose_workflow_source(&source, path.file_stem().and_then(|stem| stem.to_str()));
+            let errors = diagnosis
+                .diagnostics
+                .iter()
+                .filter(|item| item.severity == Severity::Error)
+                .collect::<Vec<_>>();
+            assert!(
+                errors.is_empty(),
+                "valid fixture {} produced errors: {errors:?}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_fixture_suite_invalid_fixes_expected_diagnostic_code() {
+        for entry in fs::read_dir(fixture_dir("invalid")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("yml") {
+                continue;
+            }
+            let filename = path.file_name().and_then(|name| name.to_str()).unwrap();
+            let expected_code = filename.split('_').next().unwrap();
+            let source = fs::read_to_string(&path).unwrap();
+            let diagnosis = diagnose_workflow_source(&source, Some(filename));
+            let matching = diagnosis
+                .diagnostics
+                .iter()
+                .filter(|item| item.code == expected_code)
+                .collect::<Vec<_>>();
+            assert!(
+                !matching.is_empty(),
+                "invalid fixture {} did not produce expected code {expected_code}: {:?}",
+                path.display(),
+                diagnosis.diagnostics
+            );
+            assert!(
+                matching
+                    .iter()
+                    .any(|item| item.stage == expected_stage_for_code(expected_code)),
+                "fixture {} produced {expected_code} with wrong stage: {matching:?}",
+                path.display()
+            );
+            assert!(
+                matching.iter().any(|item| item.span.is_some()),
+                "fixture {} expected {expected_code} to carry a span: {matching:?}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_source_diagnostics_use_file_stem_workflow_key() {
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        fs::write(
+            wf_dir.join("file-stem.yml"),
+            r#"
+name: yaml-name
+description: invalid workflow with mismatched name
+nodes:
+  - name: implement
+    type: agent
+    session:
+      permission: edit
+      facets:
+        instruction: implement
+"#,
+        )
+        .unwrap();
+
+        let report = diagnose_all(wf_dir, wf_dir);
+        let summary = report
+            .workflow_summaries
+            .get("file-stem")
+            .expect("invalid workflow summary must use file stem");
+        let items = report
+            .items
+            .iter()
+            .filter(|item| item.workflow_name.as_deref() == Some("file-stem"))
+            .collect::<Vec<_>>();
+        assert_eq!(summary.error_count, items.len());
+        assert!(
+            !report
+                .items
+                .iter()
+                .any(|item| item.workflow_name.as_deref() == Some("yaml-name")),
+            "invalid source diagnostics must not be keyed by YAML name: {:?}",
+            report.items
+        );
+    }
+
+    #[test]
+    fn diagnose_all_validates_facet_templates_with_workflow_context() {
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        setup_facet(
+            wf_dir,
+            "instructions",
+            "bad",
+            "Use {{ missing_node }} and {{ item.path }}",
+        );
+        let wf = Workflow {
+            name: "semantic-template".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![make_step("step1", Some("bad"))],
+        };
+        save_workflow_yaml(wf_dir, &wf);
+
+        let report = diagnose_all(wf_dir, wf_dir);
+        for code in ["WFR003", "WFR005"] {
+            assert!(
+                report.items.iter().any(|item| item.code == code
+                    && item.workflow_name.as_deref() == Some("semantic-template")
+                    && item.step_name.as_deref() == Some("step1")
+                    && item.facet_key.as_deref() == Some("bad")
+                    && item.field.as_deref() == Some("content")
+                    && item.span.is_some()),
+                "expected semantic facet diagnostic {code}, got: {:?}",
+                report.items
+            );
+        }
+        let workflow_summary = report
+            .workflow_summaries
+            .get("semantic-template")
+            .expect("semantic facet errors must count toward workflow summary");
+        assert!(workflow_summary.error_count >= 2);
+        let facet_summary = report
+            .facet_summaries
+            .get("instructions/bad")
+            .expect("semantic facet errors must count toward facet summary");
+        assert!(facet_summary.error_count >= 2);
+    }
+
+    #[test]
+    fn invalid_rule_span_points_to_specific_rule_field() {
+        let source =
+            fs::read_to_string(fixture_dir("invalid").join("WFT001_when-on-enum.yml")).unwrap();
+        let span_map = YamlSpanMap::parse(&source).unwrap();
+        let expected = span_map
+            .field_span("nodes[0].rules[0].when.on")
+            .expect("fixture must have when.on span");
+        let diagnosis = diagnose_workflow_source(&source, Some("WFT001_when-on-enum"));
+        let item = diagnosis
+            .diagnostics
+            .iter()
+            .find(|item| item.code == "WFT001")
+            .expect("fixture must produce WFT001");
+        assert_eq!(item.field.as_deref(), Some("rules.when.on"));
+        assert_eq!(item.span, Some(expected));
+    }
+
+    #[test]
+    fn unreachable_subgraph_targets_are_not_marked_reachable() {
+        let source =
+            fs::read_to_string(fixture_dir("invalid").join("WFC001_unreachable-subgraph.yml"))
+                .unwrap();
+        let diagnosis = diagnose_workflow_source(&source, Some("unreachable-subgraph"));
+        for step_name in ["orphan", "target"] {
+            assert!(
+                diagnosis
+                    .diagnostics
+                    .iter()
+                    .any(|item| item.code == "WFC001"
+                        && item.stage == DiagnosticStage::ControlFlow
+                        && item.step_name.as_deref() == Some(step_name)),
+                "expected WFC001 for {step_name}, got: {:?}",
+                diagnosis.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn validation_error_code_stage_uses_typed_variants() {
+        let cases = vec![
+            (
+                validation::ValidationError::InvalidSchema {
+                    schema: "list".to_string(),
+                    kind: InvalidSchemaKind::UnknownSchemaReference,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFR002",
+                DiagnosticStage::Resolve,
+            ),
+            (
+                validation::ValidationError::InvalidSchema {
+                    schema: "bad".to_string(),
+                    kind: InvalidSchemaKind::InvalidDeclaration,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFS002",
+                DiagnosticStage::ParseShape,
+            ),
+            (
+                validation::ValidationError::InvalidArtifactReference {
+                    reference: "request".to_string(),
+                    kind: InvalidArtifactReferenceKind::ReservedArtifactName,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFR004",
+                DiagnosticStage::Resolve,
+            ),
+            (
+                validation::ValidationError::InvalidArtifactReference {
+                    reference: "item".to_string(),
+                    kind: InvalidArtifactReferenceKind::ItemOutOfScope,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFR005",
+                DiagnosticStage::Resolve,
+            ),
+            (
+                validation::ValidationError::InvalidArtifactReference {
+                    reference: "fanout".to_string(),
+                    kind: InvalidArtifactReferenceKind::InputsNotAllowedOnFanout,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFS004",
+                DiagnosticStage::ParseShape,
+            ),
+            (
+                validation::ValidationError::InvalidArtifactReference {
+                    reference: "missing".to_string(),
+                    kind: InvalidArtifactReferenceKind::UnknownNode,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFR003",
+                DiagnosticStage::Resolve,
+            ),
+            (
+                validation::ValidationError::InvalidArtifactReference {
+                    reference: "plan".to_string(),
+                    kind: InvalidArtifactReferenceKind::UnavailableArtifact,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFR003",
+                DiagnosticStage::Resolve,
+            ),
+            (
+                validation::ValidationError::InvalidArtifactReference {
+                    reference: "plan.field".to_string(),
+                    kind: InvalidArtifactReferenceKind::UnknownField,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFR003",
+                DiagnosticStage::Resolve,
+            ),
+            (
+                validation::ValidationError::InvalidArtifactReference {
+                    reference: "bad ref".to_string(),
+                    kind: InvalidArtifactReferenceKind::InvalidInputRef,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFR003",
+                DiagnosticStage::Resolve,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::WhenFieldNotBoolean,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFT001",
+                DiagnosticStage::Typecheck,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::SwitchFieldNotEnum,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFT002",
+                DiagnosticStage::Typecheck,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::SwitchUnknownCase,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFT002",
+                DiagnosticStage::Typecheck,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::DiscriminatorOnFanout,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFT006",
+                DiagnosticStage::Typecheck,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::DiscriminatorWithoutArtifact,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFT006",
+                DiagnosticStage::Typecheck,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::SwitchMissingCases,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFC004",
+                DiagnosticStage::ControlFlow,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::CycleWithoutLoopGuard,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFC005",
+                DiagnosticStage::ControlFlow,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::LoopGuardMaxIterations,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFC005",
+                DiagnosticStage::ControlFlow,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::SwitchRequiresNext,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFC003",
+                DiagnosticStage::ControlFlow,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::SwitchExhaustiveHasNext,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFC003",
+                DiagnosticStage::ControlFlow,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::MultipleNextCatchAll,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFC003",
+                DiagnosticStage::ControlFlow,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::MultipleDiscriminators,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFC002",
+                DiagnosticStage::ControlFlow,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::MultipleLoopGuards,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFC002",
+                DiagnosticStage::ControlFlow,
+            ),
+            (
+                validation::ValidationError::InvalidRules {
+                    step: "route".to_string(),
+                    kind: InvalidRuleKind::StandaloneNextWithDiscriminator,
+                    reason: "renamed wording".to_string(),
+                },
+                "WFC002",
+                DiagnosticStage::ControlFlow,
+            ),
+            (
+                validation::ValidationError::UnreachableNode {
+                    step: "orphan".to_string(),
+                },
+                "WFC001",
+                DiagnosticStage::ControlFlow,
+            ),
+        ];
+
+        for (error, expected_code, expected_stage) in cases {
+            let (code, stage) = validation_error_code_stage(&error);
+            assert_eq!(code, expected_code, "wrong code for {error:?}");
+            assert_eq!(stage, expected_stage, "wrong stage for {error:?}");
+        }
+    }
+
+    #[test]
+    fn deserialize_error_diagnostic_classifies_error_messages() {
+        let span_map = YamlSpanMap::parse("name: sample\nnodes: []\n").unwrap();
+        let cases = [
+            ("old workflow syntax field", "WFS005"),
+            ("unknown field `type`", "WFS002"),
+            ("when rule requires sibling next", "WFS003"),
+            ("YAML syntax problem", "WFS001"),
+            ("unclassified deserialize problem", "WFS002"),
+        ];
+
+        for (message, expected_code) in cases {
+            let error = <serde_saphyr::Error as serde::de::Error>::custom(message);
+            let item = deserialize_error_diagnostic(&error, &span_map, Some("sample"));
+            assert_eq!(item.code, expected_code, "wrong code for {message}");
+            assert_eq!(item.stage, DiagnosticStage::ParseShape);
+        }
+    }
+
+    #[test]
+    fn builtin_workflows_have_zero_validation_diagnostics() {
+        for summary in builtin::list_builtin_workflows() {
+            let workflow = builtin::load_builtin_workflow_resolved(&summary.name)
+                .unwrap_or_else(|error| panic!("builtin {} failed to load: {error}", summary.name))
+                .unwrap_or_else(|| panic!("builtin {} not found", summary.name));
+            let diagnostics = diagnose_workflow_definition(&workflow, None);
+            let errors = diagnostics
+                .iter()
+                .filter(|item| item.severity == Severity::Error)
+                .collect::<Vec<_>>();
+            assert!(
+                errors.is_empty(),
+                "builtin {} produced diagnostics: {errors:?}",
+                summary.name
+            );
+        }
     }
 
     #[test]
@@ -1148,10 +2369,11 @@ mod tests {
 
         let report = diagnose_all(wf_dir, wf_dir);
         assert!(
-            report.items.iter().any(|i| i.severity == Severity::Warning
-                && i.message.contains("到達不能")
+            report.items.iter().any(|i| i.code == "WFC001"
+                && i.severity == Severity::Error
+                && i.stage == DiagnosticStage::ControlFlow
                 && i.step_name.as_deref() == Some("orphan")),
-            "Expected unreachable warning for orphan, got: {:?}",
+            "Expected WFC001 for orphan, got: {:?}",
             report.items
         );
     }
@@ -1179,10 +2401,11 @@ mod tests {
         let report = diagnose_all(wf_dir, wf_dir);
         for step_name in ["step2", "step3"] {
             assert!(
-                report.items.iter().any(|i| i.severity == Severity::Warning
-                    && i.message.contains("到達不能")
+                report.items.iter().any(|i| i.code == "WFC001"
+                    && i.severity == Severity::Error
+                    && i.stage == DiagnosticStage::ControlFlow
                     && i.step_name.as_deref() == Some(step_name)),
-                "Expected unreachable warning for {step_name}, got: {:?}",
+                "Expected WFC001 for {step_name}, got: {:?}",
                 report.items
             );
         }
@@ -1339,10 +2562,10 @@ mod tests {
         fs::write(wf_dir.join("bad workflow.yml"), content).unwrap();
 
         let report = diagnose_all(wf_dir, wf_dir);
-        assert!(report
-            .items
-            .iter()
-            .any(|i| i.severity == Severity::Error && i.message.contains("命名規則に違反")));
+        assert!(report.items.iter().any(|i| i.code == "WFS006"
+            && i.severity == Severity::Error
+            && i.stage == DiagnosticStage::ParseShape
+            && i.field.as_deref() == Some("name")));
     }
 
     #[test]
@@ -1472,10 +2695,12 @@ nodes:
 
         let report = diagnose_all(wf_dir, wf_dir);
         assert!(
-            report.items.iter().any(|i| i.severity == Severity::Error
+            report.items.iter().any(|i| i.code == "WFS006"
+                && i.severity == Severity::Error
+                && i.stage == DiagnosticStage::ParseShape
                 && i.workflow_name.as_deref() == Some("dup-step")
-                && i.message.contains("重複")),
-            "Expected duplicate step error, got: {:?}",
+                && i.field.as_deref() == Some("name")),
+            "Expected WFS006 duplicate step error, got: {:?}",
             report.items
         );
     }
@@ -1552,11 +2777,12 @@ nodes:
 
         let report = diagnose_all(wf_dir, wf_dir);
         assert!(
-            report.items.iter().any(|i| i.severity == Severity::Error
+            report.items.iter().any(|i| i.code == "WFR001"
+                && i.severity == Severity::Error
+                && i.stage == DiagnosticStage::Resolve
                 && i.step_name.as_deref() == Some("step1")
-                && i.field.as_deref() == Some("collect.from")
-                && i.message.contains("まだ定義されていないステップ")),
-            "Expected subsequent step reference error for collect.from, got: {:?}",
+                && i.field.as_deref() == Some("collect.from")),
+            "Expected WFR001 for collect.from, got: {:?}",
             report.items
         );
     }

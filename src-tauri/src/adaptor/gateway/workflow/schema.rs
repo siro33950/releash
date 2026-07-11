@@ -199,10 +199,6 @@ impl NodeDefinition {
         self.kind.name()
     }
 
-    pub fn is_session(&self) -> bool {
-        matches!(self.kind, NodeKind::Session(_))
-    }
-
     pub fn is_approval_session(&self) -> bool {
         self.session()
             .is_some_and(|session| session.gate == SessionGate::Approval)

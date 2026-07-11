@@ -1,8 +1,9 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { ChevronDown, ChevronRight, Save, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import type {
+	DiagnosticItem,
 	DiagnosticReport,
 	NodeDefinition,
 	Workflow,
@@ -11,13 +12,19 @@ import { DiagnosticItemRow } from "./DiagnosticBadge";
 
 type WorkflowRule = NonNullable<NodeDefinition["rules"]>[number];
 
+type WorkflowSaveResult =
+	| { ok: true; workflow?: Workflow }
+	| { ok: false; error: string; diagnostics?: DiagnosticItem[] };
+
 export function WorkflowDetail({
 	workflow,
 	report,
+	source,
 	onEdit,
 }: {
 	workflow: Workflow;
 	report: DiagnosticReport;
+	source?: string | null;
 	onEdit: () => void;
 }) {
 	const items = report.items.filter((i) => i.workflow_name === workflow.name);
@@ -43,12 +50,14 @@ export function WorkflowDetail({
 					<span className="text-xs font-medium">Diagnostics</span>
 					{items.map((item) => (
 						<DiagnosticItemRow
-							key={`${item.severity}-${item.message}-${item.field ?? ""}`}
+							key={`${item.code}-${item.span?.start_line ?? "na"}-${item.span?.start_col ?? "na"}-${item.message}-${item.field ?? ""}`}
 							item={item}
 						/>
 					))}
 				</div>
 			)}
+
+			{source && <WorkflowSourcePane source={source} diagnostics={items} />}
 
 			<div className="flex flex-col gap-2">
 				<span className="text-xs font-medium text-muted-foreground">
@@ -60,6 +69,278 @@ export function WorkflowDetail({
 			</div>
 		</div>
 	);
+}
+
+export function WorkflowSourceDiagnosticDetail({
+	name,
+	report,
+	source,
+	onEdit,
+}: {
+	name: string;
+	report: DiagnosticReport;
+	source: string;
+	onEdit: () => void;
+}) {
+	const items = report.items.filter((i) => i.workflow_name === name);
+
+	return (
+		<div className="flex flex-col gap-4">
+			<div className="flex items-center justify-between">
+				<div>
+					<h4 className="text-sm font-medium">{name}</h4>
+					<p className="text-xs text-muted-foreground">
+						Invalid workflow definition
+					</p>
+				</div>
+				<Button variant="outline" size="sm" onClick={onEdit}>
+					Edit
+				</Button>
+			</div>
+
+			{items.length > 0 && (
+				<div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
+					<span className="text-xs font-medium">Diagnostics</span>
+					{items.map((item) => (
+						<DiagnosticItemRow
+							key={`${item.code}-${item.span?.start_line ?? "na"}-${item.span?.start_col ?? "na"}-${item.message}-${item.field ?? ""}`}
+							item={item}
+						/>
+					))}
+				</div>
+			)}
+
+			<WorkflowSourcePane source={source} diagnostics={items} />
+		</div>
+	);
+}
+
+export function WorkflowSourceEditor({
+	name,
+	initialSource,
+	diagnostics,
+	onSave,
+	onCancel,
+}: {
+	name: string;
+	initialSource: string;
+	diagnostics: DiagnosticItem[];
+	onSave: (source: string) => Promise<WorkflowSaveResult>;
+	onCancel: () => void;
+}) {
+	const hostRef = useRef<HTMLDivElement | null>(null);
+	const editorRef = useRef<
+		import("monaco-editor").editor.IStandaloneCodeEditor | null
+	>(null);
+	const modelRef = useRef<import("monaco-editor").editor.ITextModel | null>(
+		null,
+	);
+	const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
+	const [content, setContent] = useState(initialSource);
+	const [saving, setSaving] = useState(false);
+	const [saveError, setSaveError] = useState<string | null>(null);
+	const markerDiagnostics = useMemo(
+		() => diagnostics.filter((item) => item.span),
+		[diagnostics],
+	);
+	const markerDiagnosticsRef = useRef(markerDiagnostics);
+
+	useEffect(() => {
+		setContent(initialSource);
+	}, [initialSource]);
+
+	useEffect(() => {
+		let disposed = false;
+		let cleanup: (() => void) | undefined;
+
+		void import("monaco-editor").then((monaco) => {
+			if (disposed || !hostRef.current) return;
+
+			monacoRef.current = monaco;
+			const model = monaco.editor.createModel(initialSource, "yaml");
+			modelRef.current = model;
+			const editor = monaco.editor.create(hostRef.current, {
+				model,
+				readOnly: false,
+				minimap: { enabled: false },
+				scrollBeyondLastLine: false,
+				automaticLayout: true,
+				lineNumbers: "on",
+				overviewRulerLanes: 2,
+				tabSize: 2,
+			});
+			const subscription = editor.onDidChangeModelContent(() => {
+				setContent(model.getValue());
+			});
+			editorRef.current = editor;
+			applyMonacoMarkers(monaco, model, markerDiagnosticsRef.current);
+			cleanup = () => {
+				monaco.editor.setModelMarkers(model, "workflow-diagnostics", []);
+				subscription.dispose();
+				editor.dispose();
+				model.dispose();
+				editorRef.current = null;
+				modelRef.current = null;
+				monacoRef.current = null;
+			};
+		});
+
+		return () => {
+			disposed = true;
+			cleanup?.();
+		};
+	}, [initialSource]);
+
+	useEffect(() => {
+		markerDiagnosticsRef.current = markerDiagnostics;
+		if (!monacoRef.current || !modelRef.current) return;
+		applyMonacoMarkers(monacoRef.current, modelRef.current, markerDiagnostics);
+	}, [markerDiagnostics]);
+
+	const handleSave = async () => {
+		setSaving(true);
+		setSaveError(null);
+		const result = await onSave(content);
+		setSaving(false);
+		if (!result.ok) {
+			setSaveError(result.error);
+		}
+	};
+
+	return (
+		<div className="flex flex-col gap-3">
+			<div className="flex items-center justify-between">
+				<div>
+					<h4 className="text-sm font-medium">{name}</h4>
+					<p className="text-xs text-muted-foreground">Workflow YAML</p>
+				</div>
+				<div className="flex items-center gap-2">
+					<Button variant="outline" size="sm" onClick={onCancel}>
+						<X className="size-3.5" />
+						Cancel
+					</Button>
+					<Button size="sm" onClick={handleSave} disabled={saving}>
+						<Save className="size-3.5" />
+						{saving ? "Saving..." : "Save"}
+					</Button>
+				</div>
+			</div>
+
+			{saveError && <p className="text-xs text-destructive">{saveError}</p>}
+
+			{diagnostics.length > 0 && (
+				<div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
+					<span className="text-xs font-medium">Diagnostics</span>
+					{diagnostics.map((item) => (
+						<DiagnosticItemRow
+							key={`${item.code}-${item.span?.start_line ?? "na"}-${item.span?.start_col ?? "na"}-${item.message}-${item.field ?? ""}`}
+							item={item}
+						/>
+					))}
+				</div>
+			)}
+
+			<div
+				ref={hostRef}
+				className="h-96 overflow-hidden rounded-md border border-border"
+			/>
+		</div>
+	);
+}
+
+function WorkflowSourcePane({
+	source,
+	diagnostics,
+}: {
+	source: string;
+	diagnostics: DiagnosticItem[];
+}) {
+	const hostRef = useRef<HTMLDivElement | null>(null);
+	const editorRef = useRef<
+		import("monaco-editor").editor.IStandaloneCodeEditor | null
+	>(null);
+	const modelRef = useRef<import("monaco-editor").editor.ITextModel | null>(
+		null,
+	);
+
+	const markerDiagnostics = useMemo(
+		() => diagnostics.filter((item) => item.span),
+		[diagnostics],
+	);
+
+	useEffect(() => {
+		let disposed = false;
+		let cleanup: (() => void) | undefined;
+
+		void import("monaco-editor").then((monaco) => {
+			if (disposed || !hostRef.current) return;
+
+			const model = monaco.editor.createModel(source, "yaml");
+			modelRef.current = model;
+			const editor = monaco.editor.create(hostRef.current, {
+				model,
+				readOnly: true,
+				minimap: { enabled: false },
+				scrollBeyondLastLine: false,
+				automaticLayout: true,
+				lineNumbers: "on",
+				renderLineHighlight: "none",
+				overviewRulerLanes: 2,
+			});
+			editorRef.current = editor;
+			applyMonacoMarkers(monaco, model, markerDiagnostics);
+			cleanup = () => {
+				monaco.editor.setModelMarkers(model, "workflow-diagnostics", []);
+				editor.dispose();
+				model.dispose();
+				editorRef.current = null;
+				modelRef.current = null;
+			};
+		});
+
+		return () => {
+			disposed = true;
+			cleanup?.();
+		};
+	}, [source, markerDiagnostics]);
+
+	return (
+		<div className="flex flex-col gap-1.5">
+			<span className="text-xs font-medium text-muted-foreground">YAML</span>
+			<div
+				ref={hostRef}
+				className="h-64 overflow-hidden rounded-md border border-border"
+			/>
+		</div>
+	);
+}
+
+function applyMonacoMarkers(
+	monaco: typeof import("monaco-editor"),
+	model: import("monaco-editor").editor.ITextModel,
+	diagnostics: DiagnosticItem[],
+) {
+	const markers = diagnostics.flatMap((item) => {
+		if (!item.span) return [];
+		const severity =
+			item.severity === "error"
+				? monaco.MarkerSeverity.Error
+				: item.severity === "warning"
+					? monaco.MarkerSeverity.Warning
+					: monaco.MarkerSeverity.Info;
+		return [
+			{
+				severity,
+				message: `${item.code}: ${item.message}`,
+				startLineNumber: item.span.start_line,
+				startColumn: item.span.start_col,
+				endLineNumber: item.span.end_line,
+				endColumn: Math.max(item.span.end_col, item.span.start_col + 1),
+				code: item.code,
+			},
+		];
+	});
+	monaco.editor.setModelMarkers(model, "workflow-diagnostics", markers);
 }
 
 function StepCard({ step, index }: { step: NodeDefinition; index: number }) {

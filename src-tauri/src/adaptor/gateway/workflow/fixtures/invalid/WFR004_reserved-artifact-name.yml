@@ -1,0 +1,8 @@
+name: reserved-artifact-name
+description: request is reserved
+nodes:
+  - name: request
+    session:
+      permission: edit
+      facets:
+        instruction: request

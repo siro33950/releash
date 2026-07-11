@@ -5,7 +5,7 @@ use crate::adaptor::gateway::workflow::{builtin, storage};
 use crate::domain::workflow::{
     validation, WorkflowDefinition, WorkflowDefinitionRepository, WorkflowError, WorkflowSummary,
 };
-use crate::usecase::workflow::ports::WorkflowDefinitionSourceGateway;
+use crate::usecase::workflow::ports::{WorkflowDefinitionSourceGateway, WorkflowSourceSaveError};
 
 use super::mapper;
 
@@ -188,6 +188,36 @@ impl WorkflowDefinitionSourceGateway for WorkflowDefinitionFileSourceGateway {
         remove_renamed_workflow_file_after_success(&self.workflows_dir, &plan)?;
         mapper::legacy_workflow_to_domain(saved)
     }
+
+    fn save_source_with_diagnostics(
+        &self,
+        source: &str,
+        original_name: Option<&str>,
+    ) -> Result<WorkflowDefinition, WorkflowSourceSaveError> {
+        let workflow = storage::parse_workflow_source(source, &self.facets_base_dir)
+            .map_err(storage_error_to_source_save_error)?;
+        let plan = validate_and_prepare_save(&self.workflows_dir, &workflow.name, original_name)
+            .map_err(WorkflowSourceSaveError::Workflow)?;
+        let saved =
+            storage::save_workflow_source(&self.workflows_dir, &self.facets_base_dir, source)
+                .map_err(storage_error_to_source_save_error)?;
+        remove_renamed_workflow_file_after_success(&self.workflows_dir, &plan)
+            .map_err(WorkflowSourceSaveError::Workflow)?;
+        mapper::legacy_workflow_to_domain(saved).map_err(WorkflowSourceSaveError::Workflow)
+    }
+}
+
+fn storage_error_to_source_save_error(error: storage::StorageError) -> WorkflowSourceSaveError {
+    match error {
+        storage::StorageError::Diagnostics(items) => {
+            let diagnostics = items
+                .into_iter()
+                .map(|item| serde_json::to_value(item).unwrap_or(serde_json::Value::Null))
+                .collect();
+            WorkflowSourceSaveError::Diagnostics(diagnostics)
+        }
+        other => WorkflowSourceSaveError::Workflow(WorkflowError::external(other.to_string())),
+    }
 }
 
 #[cfg(test)]
@@ -308,7 +338,9 @@ nodes:
             .unwrap_err();
         let loaded = gateway.get_source("stable").unwrap().unwrap();
 
-        assert!(err.to_string().contains("YAMLパース失敗"));
+        assert!(
+            matches!(err, WorkflowError::External(message) if message.contains("workflow_diagnostics") && message.contains("WFS005"))
+        );
         assert_eq!(loaded, original);
     }
 
@@ -358,7 +390,9 @@ nodes:
 
         let err = gateway.save_source(&source("-invalid"), None).unwrap_err();
 
-        assert!(err.to_string().contains("ワークフロー名"));
+        assert!(
+            matches!(err, WorkflowError::External(message) if message.contains("workflow_diagnostics") && message.contains("WFS006"))
+        );
         assert!(!workflows.path().join("-invalid.yml").exists());
     }
 }

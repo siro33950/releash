@@ -1,0 +1,31 @@
+name: switch-missing-cases
+description: non-exhaustive switch requires next
+schemas:
+  verdict:
+    type: object
+    properties:
+      decision:
+        type: string
+        enum:
+          - done
+          - fix
+    required:
+      - decision
+    additionalProperties: false
+nodes:
+  - name: judge
+    artifact: verdict
+    session:
+      permission: edit
+      facets:
+        instruction: judge
+    rules:
+      - switch:
+          on: decision
+          cases:
+            done: done
+  - name: done
+    session:
+      permission: edit
+      facets:
+        instruction: done

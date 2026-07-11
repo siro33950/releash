@@ -1,0 +1,17 @@
+name: cycle-without-loop-guard
+description: cycle must have loop_guard
+nodes:
+  - name: first
+    session:
+      permission: edit
+      facets:
+        instruction: first
+    rules:
+      - next: second
+  - name: second
+    session:
+      permission: edit
+      facets:
+        instruction: second
+    rules:
+      - next: first
