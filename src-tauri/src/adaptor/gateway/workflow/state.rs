@@ -75,6 +75,7 @@ pub enum WorkflowExecutionState {
         retry_count: Option<u32>,
     },
     Aborted,
+    Interrupted,
 }
 
 impl WorkflowExecutionState {
@@ -85,6 +86,7 @@ impl WorkflowExecutionState {
             Self::Completed => STEP_STATE_COMPLETED,
             Self::Failed { .. } => STEP_STATE_FAILED,
             Self::Aborted => STEP_STATE_ABORTED,
+            Self::Interrupted => crate::domain::workflow::STEP_STATE_INTERRUPTED,
         }
     }
 }

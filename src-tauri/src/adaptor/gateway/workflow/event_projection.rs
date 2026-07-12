@@ -28,7 +28,7 @@ use crate::domain::workflow::services::{
 };
 use crate::domain::workflow::{
     ContractValidationResult, STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED,
-    STEP_STATE_PENDING, STEP_STATE_RUNNING,
+    STEP_STATE_INTERRUPTED, STEP_STATE_PENDING, STEP_STATE_RUNNING,
 };
 #[cfg(test)]
 use crate::domain::workflow::{FailureDisposition, WorkflowStepFailureKind};
@@ -328,6 +328,13 @@ pub enum WorkflowEventView {
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
     },
+    RunInterrupted {
+        run_id: String,
+        workflow_name: String,
+        reason: String,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
     OutputCollected {
         run_id: String,
         workflow_name: String,
@@ -620,6 +627,17 @@ impl From<WorkflowEvent> for WorkflowEventView {
             } => WorkflowEventView::RunAborted {
                 run_id,
                 workflow_name,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::RunInterrupted {
+                run_id,
+                workflow_name,
+                reason,
+                timestamp,
+            } => WorkflowEventView::RunInterrupted {
+                run_id,
+                workflow_name,
+                reason,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
             WorkflowEvent::OutputCollected {
@@ -1455,6 +1473,36 @@ pub(crate) fn reconstruct_state_from_events(
                             state: STEP_STATE_ABORTED.to_string(),
                         });
                     }
+                }
+
+                active_parallel_steps.clear();
+                current_session_id = None;
+                stall_observations.clear();
+                updated_at = *timestamp;
+            }
+            WorkflowEvent::RunInterrupted { timestamp, .. } => {
+                exec_state = WorkflowExecutionState::Interrupted;
+                let current_run_index = step_execution_counts.get(&current_step_name).copied();
+                let already_in_history = step_history.last().is_some_and(|entry| {
+                    entry.step_name == current_step_name
+                        && Some(entry.run_index) == current_run_index
+                });
+
+                if current_run_index.is_some()
+                    && !already_in_history
+                    && !current_step_name.is_empty()
+                {
+                    step_history.push(StepHistoryEntry {
+                        step_name: current_step_name.clone(),
+                        completed_at: *timestamp,
+                        result: None,
+                        session_id: current_session_id.clone(),
+                        token_usage: None,
+                        structured_output: None,
+                        run_index: current_run_index.unwrap_or(0),
+                        child_outputs: None,
+                        state: STEP_STATE_INTERRUPTED.to_string(),
+                    });
                 }
 
                 active_parallel_steps.clear();

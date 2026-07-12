@@ -24,24 +24,11 @@ pub(crate) fn validate_start(
 
 fn domain_validation_to_engine_error(
     err: domain::WorkflowError,
-    workflow: &domain::WorkflowDefinition,
+    _workflow: &domain::WorkflowDefinition,
 ) -> WorkflowEngineError {
     match err {
         domain::WorkflowError::Validation(message) if message == "workflow has no nodes" => {
             WorkflowEngineError::InvalidWorkflow("Workflow has no steps".to_string())
-        }
-        domain::WorkflowError::Validation(message)
-            if message.starts_with("command node ") && message.contains("not executable") =>
-        {
-            let node_name = workflow
-                .nodes
-                .iter()
-                .find(|node| node.is_command())
-                .map(|node| node.name.as_str())
-                .unwrap_or("unknown");
-            WorkflowEngineError::InvalidWorkflow(format!(
-                "Command node '{node_name}' is not executable in this milestone (planned for [13])"
-            ))
         }
         domain::WorkflowError::Validation(message) => WorkflowEngineError::InvalidWorkflow(message),
         domain::WorkflowError::InvalidState(message) => WorkflowEngineError::InvalidState(message),
@@ -57,7 +44,7 @@ fn domain_validation_to_engine_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::{CommandSpec, NodeDefinition, NodeKind};
+    use crate::adaptor::gateway::workflow::schema::NodeDefinition;
 
     fn workflow(nodes: Vec<NodeDefinition>) -> Workflow {
         Workflow {
@@ -74,23 +61,6 @@ mod tests {
         let err = validate_workflow_shape(&workflow(Vec::new())).unwrap_err();
 
         assert_eq!(err.to_string(), "Workflow has no steps");
-    }
-
-    #[test]
-    fn validate_workflow_shape_delegates_to_domain_and_preserves_bash_message() {
-        let err = validate_workflow_shape(&workflow(vec![NodeDefinition {
-            name: "build".to_string(),
-            kind: NodeKind::Command(CommandSpec {
-                command: "cargo build".to_string(),
-            }),
-            ..Default::default()
-        }]))
-        .unwrap_err();
-
-        assert_eq!(
-            err.to_string(),
-            "Command node 'build' is not executable in this milestone (planned for [13])"
-        );
     }
 
     #[test]

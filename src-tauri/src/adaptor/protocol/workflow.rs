@@ -99,6 +99,7 @@ pub enum WorkflowExecutionStateView {
         retry_count: Option<u32>,
     },
     Aborted,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -436,6 +437,7 @@ mod tests {
                 retry_count: None,
             },
             WorkflowExecutionStateView::Aborted,
+            WorkflowExecutionStateView::Interrupted,
         ];
         for state in variants {
             let json = serde_json::to_string(&state).unwrap();

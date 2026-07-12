@@ -132,6 +132,7 @@ impl WorkflowExecution {
             WorkflowExecutionState::Completed
                 | WorkflowExecutionState::Failed { .. }
                 | WorkflowExecutionState::Aborted
+                | WorkflowExecutionState::Interrupted
         )
     }
 

@@ -157,6 +157,11 @@ pub trait WorkflowRuntimeStateGateway: Send + Sync {
 }
 
 #[async_trait::async_trait]
+pub trait WorkflowRuntimeShutdownGateway: Send + Sync {
+    async fn shutdown_active_commands(&self);
+}
+
+#[async_trait::async_trait]
 pub trait WorkflowApprovalChatGateway: Send + Sync {
     async fn resolve_approval_chat_target(
         &self,
@@ -178,6 +183,7 @@ pub trait WorkflowRuntimeCommandGateway:
     + WorkflowTurnCompleteGateway
     + WorkflowStallObservedGateway
     + WorkflowRuntimeStateGateway
+    + WorkflowRuntimeShutdownGateway
     + WorkflowApprovalChatGateway
 {
 }
@@ -191,6 +197,7 @@ impl<T> WorkflowRuntimeCommandGateway for T where
         + WorkflowTurnCompleteGateway
         + WorkflowStallObservedGateway
         + WorkflowRuntimeStateGateway
+        + WorkflowRuntimeShutdownGateway
         + WorkflowApprovalChatGateway
 {
 }

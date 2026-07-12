@@ -83,6 +83,7 @@ pub(crate) fn domain_run_status_to_legacy(status: domain::RunStatus) -> legacy_r
         domain::RunStatus::Completed => legacy_run::RunStatus::Completed,
         domain::RunStatus::Failed => legacy_run::RunStatus::Failed,
         domain::RunStatus::Aborted => legacy_run::RunStatus::Aborted,
+        domain::RunStatus::Interrupted => legacy_run::RunStatus::Interrupted,
     }
 }
 
@@ -93,6 +94,7 @@ fn legacy_run_status_to_domain(status: legacy_run::RunStatus) -> domain::RunStat
         legacy_run::RunStatus::Completed => domain::RunStatus::Completed,
         legacy_run::RunStatus::Failed => domain::RunStatus::Failed,
         legacy_run::RunStatus::Aborted => domain::RunStatus::Aborted,
+        legacy_run::RunStatus::Interrupted => domain::RunStatus::Interrupted,
     }
 }
 
@@ -372,6 +374,22 @@ pub(crate) fn domain_event_draft_to_legacy(
                 run_id: event.run_id.clone(),
                 workflow_name: payload.workflow_name,
                 aborted_step: None,
+                timestamp: event.timestamp,
+            })
+        }
+        "run_interrupted" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Payload {
+                workflow_name: String,
+                reason: String,
+            }
+
+            let payload: Payload = parse_payload(event)?;
+            Ok(legacy_event::WorkflowEvent::RunInterrupted {
+                run_id: event.run_id.clone(),
+                workflow_name: payload.workflow_name,
+                reason: payload.reason,
                 timestamp: event.timestamp,
             })
         }

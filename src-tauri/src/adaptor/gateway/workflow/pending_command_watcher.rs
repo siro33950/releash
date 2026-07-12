@@ -173,10 +173,10 @@ mod tests {
     use crate::usecase::workflow::ports::{
         ApprovalChatTarget, PendingRuntimeCommand, PendingRuntimeCommandOutcome,
         PendingRuntimeCommandPayload, WorkflowAbortRunGateway, WorkflowApprovalChatGateway,
-        WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeStateGateway,
-        WorkflowStallClearedCommand, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
-        WorkflowStartRunGateway, WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand,
-        WorkflowTurnCompleteGateway,
+        WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway,
+        WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway, WorkflowStallClearedCommand,
+        WorkflowStallObservedCommand, WorkflowStallObservedGateway, WorkflowStartRunGateway,
+        WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
     };
     use std::collections::VecDeque;
     use std::sync::Mutex as StdMutex;
@@ -354,6 +354,11 @@ mod tests {
         ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
             Ok(None)
         }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkflowRuntimeShutdownGateway for TestWorkflowRuntimeGateway {
+        async fn shutdown_active_commands(&self) {}
     }
 
     #[async_trait::async_trait]

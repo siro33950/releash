@@ -151,11 +151,11 @@ pub(super) fn cmd_output_get(
     validate_run_id(run_id)?;
     validate_step_argument(step)?;
     workflow_io::ensure_run_exists(data_dir, run_id)?;
-    // [08] 振る舞い定義 Rule 3 (5-5 修正): step が workflow に存在しない場合は
-    // `output validate` と対称に `InvalidInput` を返す。`not_submitted` 出力は
-    // 「step は存在するが未提出」専用とする。
-    let _contract = resolve_node_artifact_contract_via_log(data_dir, run_id, step)?;
     let events = workflow_io::read_domain_log(data_dir, run_id)?;
+    // [08] 振る舞い定義 Rule 3 (5-5 修正): step が workflow に存在しない場合は
+    // `output validate` と対称に `InvalidInput` を返す。artifact 無し command の
+    // 標準結果も取得対象なので、contract 解決ではなく node 存在だけを確認する。
+    ensure_node_exists_via_log(&events, run_id, step)?;
     let view = build_output_get_view(events, step);
     if json {
         let text =
@@ -170,7 +170,8 @@ pub(super) fn cmd_output_get(
                 request_id,
                 timestamp,
             } => {
-                let mut output = format!("submitted: step={step} contract={contract}\n");
+                let contract_label = contract.as_deref().unwrap_or("none");
+                let mut output = format!("submitted: step={step} contract={contract_label}\n");
                 if let Some(sa) = submitted_at {
                     output.push_str(&format!("submitted_at: {sa}\n"));
                 }
@@ -225,33 +226,28 @@ fn read_submit_input_json(
     }
 }
 
-/// event log の `RunStarted` から workflow definition を取り出し、node の
-/// `artifact` を解決する。
-///
-/// 経路本体は usecase の event draft helper に委譲し、CLI 層は
-/// `ContractLookupError` を `CliError` に射影するだけを担う。
-fn resolve_node_artifact_contract_via_log(
-    data_dir: &Path,
+fn ensure_node_exists_via_log(
+    events: &[WorkflowEventDraft],
     run_id: &str,
     step: &str,
-) -> Result<String, CliError> {
-    let events = workflow_io::read_domain_log(data_dir, run_id)?;
-    event_draft::resolve_node_artifact_contract_from_drafts(&events, step, run_id).map_err(|err| {
-        match err {
-            contract::ContractLookupError::RunNotFound { .. } => {
-                CliError::NotFound(format!("Workflow run not found: {run_id}"))
+) -> Result<(), CliError> {
+    match event_draft::node_exists_in_drafts(events, step, run_id) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(CliError::InvalidInput(format!(
+            "step '{step}' is not defined in workflow for run '{run_id}'"
+        ))),
+        Err(err) => Err(match err {
+            contract::ContractLookupError::RunNotFound { run_id } => {
+                CliError::InvalidInput(format!("run '{run_id}' was not found in event log"))
             }
             contract::ContractLookupError::InvalidRunStartedPayload { details } => {
                 CliError::InvalidInput(details)
             }
-            contract::ContractLookupError::NoArtifactContract {
-                workflow_name,
-                node,
-            } => CliError::InvalidInput(format!(
-                "node '{node}' has no artifact in workflow '{workflow_name}'"
-            )),
-        }
-    })
+            contract::ContractLookupError::NoArtifactContract { .. } => CliError::InvalidInput(
+                format!("step '{step}' is not defined in workflow for run '{run_id}'"),
+            ),
+        }),
+    }
 }
 
 fn resolve_node_artifact_schema_via_log(
@@ -313,7 +309,7 @@ fn validate_cli_artifact_output(
 #[serde(tag = "status", rename_all = "snake_case")]
 enum OutputGetView {
     Submitted {
-        contract: String,
+        contract: Option<String>,
         structured_output: serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         submitted_at: Option<f64>,
@@ -807,7 +803,7 @@ mod tests {
                 submitted_at: Some(120.0),
                 timestamp: 130.0,
                 ..
-            } if contract == "review-verdict"
+            } if contract.as_deref() == Some("review-verdict")
         ));
     }
 
@@ -903,7 +899,74 @@ mod tests {
                 submitted_at: Some(150.0),
                 timestamp: 200.0,
                 ..
-            } if contract == "review-verdict"
+            } if contract.as_deref() == Some("review-verdict")
+        ));
+    }
+
+    #[test]
+    fn cmd_output_get_returns_contractless_command_standard_result() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(101);
+        write_run_file(
+            tmp.path(),
+            &make_run(&run_id, "/wt/get-command", RunStatus::Running, 100.0),
+        );
+        let workflow = crate::adaptor::gateway::workflow::schema::Workflow {
+            name: "wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
+                name: "cmd".to_string(),
+                kind: crate::adaptor::gateway::workflow::schema::NodeKind::Command(
+                    crate::adaptor::gateway::workflow::schema::CommandSpec {
+                        command: "printf out".to_string(),
+                    },
+                ),
+                artifact: None,
+                input: None,
+                inputs: Vec::new(),
+                collect: None,
+                rules: Vec::new(),
+            }],
+        };
+        let log = WorkflowEventLog::new(tmp.path());
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: run_id.clone(),
+            workflow_name: "wf".to_string(),
+            workflow_file_stem: "wf".to_string(),
+            worktree_path: "/wt/get-command".to_string(),
+            request: String::new(),
+            workflow_definition: workflow,
+            timestamp: 100.0,
+        })
+        .unwrap();
+        log.append(&WorkflowEvent::ArtifactProduced {
+            run_id: run_id.clone(),
+            workflow_name: "wf".to_string(),
+            node_name: "cmd".to_string(),
+            contract: None,
+            value: serde_json::json!({
+                "ok": false,
+                "exit_code": 7,
+                "stdout": "out",
+                "stderr": "err",
+                "duration": 10
+            }),
+            request_id: None,
+            submitted_at: None,
+            timestamp: 200.0,
+        })
+        .unwrap();
+
+        let output = cmd_output_get(tmp.path(), &run_id, "cmd", false).unwrap();
+        let view = build_output_get_view(read_domain_log(tmp.path(), &run_id).unwrap(), "cmd");
+
+        assert!(output.contains("submitted: step=cmd contract=none"));
+        assert!(output.contains("\"ok\": false"));
+        assert!(matches!(
+            view,
+            OutputGetView::Submitted { contract: None, .. }
         ));
     }
 
@@ -1011,10 +1074,6 @@ mod tests {
         assert!(
             msg.contains("nonexistent_step"),
             "error message must include step name, got: {msg}"
-        );
-        assert!(
-            msg.contains("artifact"),
-            "error message must mention artifact (symmetric with validate), got: {msg}"
         );
     }
 }

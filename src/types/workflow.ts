@@ -16,9 +16,9 @@ interface TokenUsage {
 /**
  * spec issues-1023: step / child の終端状態。
  * `"completed"` が既定（旧 ndjson 互換）。`"failed"` は partial child failure、
- * `"aborted"` は `RunAborted` で中断された step / parallel child を表現する。
+ * `"aborted"` / `"interrupted"` は run の中断で停止した step / parallel child を表現する。
  */
-type StepEntryState = "completed" | "failed" | "aborted";
+type StepEntryState = "completed" | "failed" | "aborted" | "interrupted";
 
 type FailureDisposition =
 	| "retryable"
@@ -72,7 +72,8 @@ type WorkflowExecutionState =
 			failureKind: WorkflowStepFailureKind;
 			retryCount?: number;
 	  }
-	| { type: "aborted" };
+	| { type: "aborted" }
+	| { type: "interrupted" };
 
 type Rule =
 	| {
@@ -244,7 +245,13 @@ export interface WorkflowRunSummary {
 	runId: string;
 	workflowName: string;
 	task?: string | null;
-	status: "running" | "waiting_approval" | "completed" | "failed" | "aborted";
+	status:
+		| "running"
+		| "waiting_approval"
+		| "completed"
+		| "failed"
+		| "aborted"
+		| "interrupted";
 	worktreePath: string;
 	currentNodeName?: string | null;
 	triggerSource: "desktop_ui" | "remote" | "cli" | "agent";

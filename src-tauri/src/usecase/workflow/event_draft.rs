@@ -8,6 +8,7 @@ use crate::domain::workflow::SchemaDef;
 
 use super::ports::WorkflowEventDraft;
 
+#[cfg(test)]
 pub(crate) fn resolve_node_artifact_contract_from_drafts(
     events: &[WorkflowEventDraft],
     node_name: &str,
@@ -50,6 +51,19 @@ pub(crate) fn resolve_node_artifact_schema_from_drafts(
         }
     })?;
     Ok(ArtifactSchemaContext { contract, schemas })
+}
+
+pub(crate) fn node_exists_in_drafts(
+    events: &[WorkflowEventDraft],
+    node_name: &str,
+    run_id: &str,
+) -> Result<bool, ContractLookupError> {
+    let workflow = run_started_workflow_from_drafts(events, run_id)?;
+    workflow_contains_node(workflow.definition, node_name).map_err(|details| {
+        ContractLookupError::InvalidRunStartedPayload {
+            details: format!("invalid payload for run_started event: {details}"),
+        }
+    })
 }
 
 struct RunStartedWorkflow<'a> {
@@ -139,6 +153,51 @@ fn lookup_node_artifact_contract(
     Ok(None)
 }
 
+fn workflow_contains_node(workflow: &Value, node_name: &str) -> Result<bool, String> {
+    let nodes = workflow
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "workflow_definition.nodes must be an array".to_string())?;
+    for node in nodes {
+        if node.get("name").and_then(Value::as_str) == Some(node_name) {
+            return Ok(true);
+        }
+        if child_contains_node(
+            node.get("parallel_children"),
+            node_name,
+            "parallel_children",
+        )? {
+            return Ok(true);
+        }
+        if let Some(fanout) = node.get("fanout") {
+            if child_contains_node(
+                fanout.get("parallel_children"),
+                node_name,
+                "fanout.parallel_children",
+            )? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn child_contains_node(
+    children: Option<&Value>,
+    node_name: &str,
+    field_path: &str,
+) -> Result<bool, String> {
+    let Some(children) = children else {
+        return Ok(false);
+    };
+    let children = children
+        .as_array()
+        .ok_or_else(|| format!("{field_path} must be an array"))?;
+    Ok(children
+        .iter()
+        .any(|child| child.get("name").and_then(Value::as_str) == Some(node_name)))
+}
+
 fn lookup_child_artifact_contract(
     children: Option<&Value>,
     node_name: &str,
@@ -191,9 +250,8 @@ pub(crate) fn latest_artifact_produced_from_drafts(
         }
         let payload =
             serde_json::from_value::<ArtifactProducedDraftPayload>(event.payload.clone()).ok()?;
-        let contract = payload.contract?;
         (payload.node_name == step_name).then_some(ArtifactSubmittedSnapshot {
-            contract,
+            contract: payload.contract,
             value: payload.value,
             submitted_at: payload.submitted_at,
             request_id: payload.request_id,
@@ -389,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_artifact_produced_from_drafts_ignores_contractless_artifact() {
+    fn latest_artifact_produced_from_drafts_returns_contractless_artifact() {
         let events = vec![WorkflowEventDraft {
             run_id: "run-1".to_string(),
             event_kind: "artifact_produced".to_string(),
@@ -400,6 +458,10 @@ mod tests {
             }),
         }];
 
-        assert!(latest_artifact_produced_from_drafts(&events, "review").is_none());
+        let snapshot = latest_artifact_produced_from_drafts(&events, "review")
+            .expect("contractless standard artifact should be returned");
+
+        assert_eq!(snapshot.contract, None);
+        assert_eq!(snapshot.value["stdout"], "ok");
     }
 }

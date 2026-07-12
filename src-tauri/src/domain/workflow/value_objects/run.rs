@@ -5,11 +5,15 @@ pub enum RunStatus {
     Completed,
     Failed,
     Aborted,
+    Interrupted,
 }
 
 impl RunStatus {
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Aborted)
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Aborted | Self::Interrupted
+        )
     }
 }
 
@@ -75,5 +79,6 @@ mod run_tests {
         assert!(RunStatus::Completed.is_terminal());
         assert!(RunStatus::Failed.is_terminal());
         assert!(RunStatus::Aborted.is_terminal());
+        assert!(RunStatus::Interrupted.is_terminal());
     }
 }

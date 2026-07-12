@@ -50,6 +50,9 @@ pub(crate) fn workflow_execution_state_to_domain(
             retry_count: *retry_count,
         },
         legacy_state::WorkflowExecutionState::Aborted => domain::WorkflowExecutionState::Aborted,
+        legacy_state::WorkflowExecutionState::Interrupted => {
+            domain::WorkflowExecutionState::Interrupted
+        }
     }
 }
 

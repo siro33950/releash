@@ -559,12 +559,12 @@ mod aggregate_tests {
     }
 
     #[test]
-    fn new_rejects_empty_and_bash_workflows() {
+    fn new_rejects_empty_and_accepts_command_workflows() {
         let empty = workflow(Vec::new());
         assert!(WorkflowExecution::new(run_id(), empty, worktree(), None, 1.0).is_err());
 
         let with_command = workflow(vec![node("script", TestNodeKind::Command)]);
-        assert!(WorkflowExecution::new(run_id(), with_command, worktree(), None, 1.0).is_err());
+        assert!(WorkflowExecution::new(run_id(), with_command, worktree(), None, 1.0).is_ok());
     }
 
     #[test]
