@@ -12,22 +12,22 @@ use super::command::{
 };
 use super::ports::{
     ApprovalChatTarget, PendingRuntimeCommand, PendingRuntimeCommandOutcome,
-    WorkflowRuntimeCommandGateway, WorkflowRuntimeStateGateway, WorkflowStallClearedCommand,
-    WorkflowStallClearedNotification, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
-    WorkflowStallObservedNotification, WorkflowTurnCompleteNotification,
+    WorkflowRuntimeCommandGateway, WorkflowStallClearedCommand, WorkflowStallClearedNotification,
+    WorkflowStallObservedCommand, WorkflowStallObservedGateway, WorkflowStallObservedNotification,
+    WorkflowTurnCompleteNotification,
 };
 #[cfg(test)]
 use super::ports::{
     PendingRuntimeCommandPayload, WorkflowAbortRunGateway, WorkflowApprovalChatGateway,
-    WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowStartRunGateway,
-    WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
-    WorkflowTurnTokenUsage,
+    WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeShutdownGateway,
+    WorkflowRuntimeStateGateway, WorkflowStartRunGateway, WorkflowSubmitOutputGateway,
+    WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnTokenUsage,
 };
 use super::turn_complete::WorkflowTurnCompleteUsecase;
 
 #[derive(Clone)]
 pub struct WorkflowRuntimeUsecase {
-    runtime: Arc<dyn WorkflowRuntimeStateGateway>,
+    runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
     stall_observed: Arc<dyn WorkflowStallObservedGateway>,
     start_run: WorkflowStartRunUsecase,
     abort_run: WorkflowAbortRunUsecase,
@@ -132,6 +132,10 @@ impl WorkflowRuntimeUsecase {
     ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
         self.preflight.validate_worktree_lookup(worktree_path)?;
         self.runtime.get_state_by_worktree(worktree_path).await
+    }
+
+    pub async fn shutdown_active_commands(&self) {
+        self.runtime.shutdown_active_commands().await;
     }
 
     pub async fn prepare_approval_chat(
@@ -278,6 +282,13 @@ mod tests {
     }
 
     #[async_trait::async_trait]
+    impl WorkflowRuntimeShutdownGateway for FakeRuntimeGateway {
+        async fn shutdown_active_commands(&self) {
+            self.calls.lock().unwrap().push("shutdown_active_commands");
+        }
+    }
+
+    #[async_trait::async_trait]
     impl WorkflowApprovalChatGateway for FakeRuntimeGateway {
         async fn resolve_approval_chat_target(
             &self,
@@ -393,6 +404,19 @@ mod tests {
                 "resolve_approval_chat",
                 "validate_approval_chat"
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_usecase_delegates_active_command_shutdown() {
+        let gateway = Arc::new(FakeRuntimeGateway::default());
+        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
+
+        usecase.shutdown_active_commands().await;
+
+        assert_eq!(
+            gateway.calls.lock().unwrap().as_slice(),
+            ["shutdown_active_commands"]
         );
     }
 

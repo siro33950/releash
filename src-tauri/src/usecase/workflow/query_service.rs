@@ -25,7 +25,7 @@ pub type WorkflowStepDetailView = Value;
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkflowGetOutputResult {
     Submitted {
-        contract: String,
+        contract: Option<String>,
         structured_output: Value,
         submitted_at: Option<f64>,
         request_id: Option<String>,
@@ -794,7 +794,7 @@ mod tests {
         assert_eq!(
             result,
             WorkflowGetOutputResult::Submitted {
-                contract: "review-result".to_string(),
+                contract: Some("review-result".to_string()),
                 structured_output: serde_json::json!({"status":"new"}),
                 submitted_at: Some(3.0),
                 request_id: Some("req-new".to_string()),
@@ -807,6 +807,50 @@ mod tests {
                 .get_output(test_run_id(), "missing")
                 .unwrap(),
             WorkflowGetOutputResult::NotSubmitted
+        );
+    }
+
+    #[test]
+    fn get_output_returns_contractless_standard_artifact_for_step() {
+        let fixture = Fixture::new();
+        fixture
+            .events
+            .append(&WorkflowEventDraft {
+                run_id: test_run_id().to_string(),
+                event_kind: "artifact_produced".to_string(),
+                timestamp: 4.0,
+                payload: serde_json::json!({
+                    "workflow_name": "wf",
+                    "node_name": "review",
+                    "contract": null,
+                    "value": {
+                        "ok": false,
+                        "exit_code": 7,
+                        "stdout": "out",
+                        "stderr": "err",
+                        "duration": 10
+                    }
+                }),
+            })
+            .unwrap();
+
+        let result = fixture.service.get_output(test_run_id(), "review").unwrap();
+
+        assert_eq!(
+            result,
+            WorkflowGetOutputResult::Submitted {
+                contract: None,
+                structured_output: serde_json::json!({
+                    "ok": false,
+                    "exit_code": 7,
+                    "stdout": "out",
+                    "stderr": "err",
+                    "duration": 10
+                }),
+                submitted_at: None,
+                request_id: None,
+                timestamp: 4.0,
+            }
         );
     }
 

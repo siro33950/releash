@@ -714,6 +714,7 @@ mod tests {
                 WorkflowEvent::RunCompleted { .. } => "RunCompleted",
                 WorkflowEvent::RunFailed { .. } => "RunFailed",
                 WorkflowEvent::RunAborted { .. } => "RunAborted",
+                WorkflowEvent::RunInterrupted { .. } => "RunInterrupted",
                 WorkflowEvent::OutputCollected { .. } => "OutputCollected",
                 WorkflowEvent::ParallelStarted { .. } => "ParallelStarted",
                 WorkflowEvent::ParallelChildStarted { .. } => "ParallelChildStarted",

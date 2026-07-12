@@ -2477,8 +2477,8 @@ nodes:
         let wf_dir = tmp.path();
 
         let wf = Workflow {
-            name: "bash-wf".to_string(),
-            description: "bash test".to_string(),
+            name: "command-wf".to_string(),
+            description: "command test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![make_command("build", "cargo build")],
@@ -2502,8 +2502,8 @@ nodes:
         let wf_dir = tmp.path();
 
         let wf = Workflow {
-            name: "bash-wf".to_string(),
-            description: "bash test".to_string(),
+            name: "command-wf".to_string(),
+            description: "command test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![make_command("build", "   ")],
@@ -2516,7 +2516,7 @@ nodes:
                 .items
                 .iter()
                 .any(|i| i.severity == Severity::Error && i.message.contains("command")),
-            "bash node without command must report a command-related error: {:?}",
+            "command node without command must report a command-related error: {:?}",
             report.items
         );
     }

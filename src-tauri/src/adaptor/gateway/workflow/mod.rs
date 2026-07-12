@@ -30,8 +30,7 @@ pub(crate) mod internal_node_command;
 pub(crate) mod log;
 pub(crate) mod mapper;
 pub(crate) mod orphan_recovery;
-#[cfg(test)]
-mod output_limit;
+pub(crate) mod output_limit;
 pub(crate) mod output_submission;
 pub(crate) mod parallel_runtime;
 pub(crate) mod pending_command;

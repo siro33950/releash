@@ -1712,6 +1712,180 @@ fn enum_object_schema(field: &str, values: &[&str]) -> SchemaDef {
     }
 }
 
+fn command_output_for_test(exit_code: i32, stdout: String, stderr: String) -> CommandRunOutput {
+    CommandRunOutput {
+        exit_code,
+        stdout,
+        stderr,
+        duration_ms: 42,
+    }
+}
+
+fn command_artifact_test_workflow(
+    schemas: std::collections::BTreeMap<String, SchemaDef>,
+) -> Workflow {
+    Workflow {
+        name: "command-artifact".to_string(),
+        description: String::new(),
+        builtin: false,
+        schemas,
+        nodes: vec![make_test_step(
+            "run",
+            TestKind::Command,
+            "printf test",
+            vec![],
+            None,
+        )],
+    }
+}
+
+#[test]
+fn command_artifact_without_contract_sets_standard_result_and_limits_output() {
+    let workflow = command_artifact_test_workflow(Default::default());
+    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+    let long_stdout = "x".repeat(workflow_output_limit::MAX_OUTPUT_SIZE + 100);
+
+    let artifact = build_command_artifact(
+        &schemas,
+        None,
+        command_output_for_test(0, long_stdout, "err".to_string()),
+        &[],
+    );
+
+    assert_eq!(artifact.event_contract, None);
+    assert_eq!(artifact.result_summary, "exit_code=0");
+    assert_eq!(artifact.value["ok"], true);
+    assert_eq!(artifact.value["exit_code"], 0);
+    assert_eq!(artifact.value["stderr"], "err");
+    assert_eq!(artifact.value["duration"], 42);
+    let stdout = artifact.value["stdout"].as_str().unwrap();
+    assert!(stdout.starts_with('x'));
+    assert!(stdout.ends_with("... (truncated)"));
+    assert!(stdout.len() <= workflow_output_limit::MAX_OUTPUT_SIZE + 20);
+}
+
+#[test]
+fn command_artifact_with_contract_merges_contract_fields_and_sets_ok() {
+    let workflow = command_artifact_test_workflow(
+        [("verdict".to_string(), bool_object_schema("passed"))]
+            .into_iter()
+            .collect(),
+    );
+    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+
+    let artifact = build_command_artifact(
+        &schemas,
+        Some("verdict"),
+        command_output_for_test(0, r#"{"passed":true}"#.to_string(), String::new()),
+        &[],
+    );
+
+    assert_eq!(artifact.event_contract.as_deref(), Some("verdict"));
+    assert_eq!(artifact.value["ok"], true);
+    assert_eq!(artifact.value["exit_code"], 0);
+    assert_eq!(artifact.value["stdout"], r#"{"passed":true}"#);
+    assert_eq!(artifact.value["passed"], true);
+}
+
+#[test]
+fn command_artifact_contract_validation_failure_keeps_standard_result_only() {
+    let workflow = command_artifact_test_workflow(
+        [("verdict".to_string(), bool_object_schema("passed"))]
+            .into_iter()
+            .collect(),
+    );
+    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+
+    let artifact = build_command_artifact(
+        &schemas,
+        Some("verdict"),
+        command_output_for_test(0, r#"{"passed":"yes"}"#.to_string(), String::new()),
+        &[],
+    );
+
+    assert_eq!(artifact.event_contract, None);
+    assert_eq!(artifact.value["ok"], false);
+    assert_eq!(artifact.value["exit_code"], 0);
+    assert_eq!(artifact.value["stdout"], r#"{"passed":"yes"}"#);
+    assert!(artifact.value.get("passed").is_none());
+}
+
+#[test]
+fn command_artifact_valid_contract_with_nonzero_exit_keeps_contract_and_ok_false() {
+    let workflow = command_artifact_test_workflow(
+        [("verdict".to_string(), bool_object_schema("passed"))]
+            .into_iter()
+            .collect(),
+    );
+    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+
+    let artifact = build_command_artifact(
+        &schemas,
+        Some("verdict"),
+        command_output_for_test(7, r#"{"passed":true}"#.to_string(), String::new()),
+        &[],
+    );
+
+    assert_eq!(artifact.event_contract.as_deref(), Some("verdict"));
+    assert_eq!(artifact.value["passed"], true);
+    assert_eq!(artifact.value["ok"], false);
+    assert_eq!(artifact.value["exit_code"], 7);
+}
+
+#[test]
+fn command_artifact_contract_validation_uses_raw_stdout_before_display_truncation() {
+    let workflow = command_artifact_test_workflow(
+        [("verdict".to_string(), bool_object_schema("passed"))]
+            .into_iter()
+            .collect(),
+    );
+    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+    let stdout = format!(
+        r#"{{"passed":true,"padding":"{}"}}"#,
+        "x".repeat(workflow_output_limit::MAX_OUTPUT_SIZE)
+    );
+
+    let artifact = build_command_artifact(
+        &schemas,
+        Some("verdict"),
+        command_output_for_test(0, stdout, String::new()),
+        &[],
+    );
+
+    assert_eq!(artifact.event_contract.as_deref(), Some("verdict"));
+    assert_eq!(artifact.value["passed"], true);
+    assert_eq!(artifact.value["ok"], true);
+    assert!(artifact.value["stdout"]
+        .as_str()
+        .is_some_and(|stdout| stdout.ends_with(workflow_output_limit::TRUNCATION_MARKER)));
+}
+
+#[test]
+fn command_artifact_redacts_secrets_from_standard_and_structured_output() {
+    let workflow = command_artifact_test_workflow(
+        [("verdict".to_string(), object_schema_for_test(&["message"]))]
+            .into_iter()
+            .collect(),
+    );
+    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+    let secrets = vec!["CONFIGURED_SECRET_123".to_string()];
+
+    let artifact = build_command_artifact(
+        &schemas,
+        Some("verdict"),
+        command_output_for_test(
+            0,
+            r#"{"message":"CONFIGURED_SECRET_123"}"#.to_string(),
+            "stderr CONFIGURED_SECRET_123".to_string(),
+        ),
+        &secrets,
+    );
+
+    let serialized = serde_json::to_string(&artifact.value).unwrap();
+    assert!(!serialized.contains("CONFIGURED_SECRET_123"));
+    assert!(serialized.contains("[REDACTED]"));
+}
+
 #[test]
 fn decide_next_step_returns_next_step_name() {
     let exec = make_exec(0); // plan → next is implement
@@ -1774,6 +1948,49 @@ fn decide_next_step_routes_when_from_structured_output() {
     exec.step_outputs.insert(
         "judge".to_string(),
         structured_step_output("judge", serde_json::json!({"passed": false})),
+    );
+    assert_eq!(
+        exec.decide_next_step(),
+        NextStepDecision::TransitionTo("fix".to_string())
+    );
+}
+
+#[test]
+fn decide_next_step_routes_when_from_command_ok_field() {
+    let workflow = Workflow {
+        name: "command-ok-routing".to_string(),
+        description: String::new(),
+        builtin: false,
+        schemas: Default::default(),
+        nodes: vec![
+            {
+                let mut step =
+                    make_test_step("run_tests", TestKind::Command, "cargo test", vec![], None);
+                step.rules = vec![Rule::When {
+                    on: "ok".to_string(),
+                    then: "done".to_string(),
+                    next: "fix".to_string(),
+                }];
+                step
+            },
+            make_test_step("done", TestKind::Command, "printf done", vec![], None),
+            make_test_step("fix", TestKind::Command, "printf fix", vec![], None),
+        ],
+    };
+    let mut exec = workflow_exec(workflow, 0);
+
+    exec.step_outputs.insert(
+        "run_tests".to_string(),
+        structured_step_output("run_tests", serde_json::json!({"ok": true})),
+    );
+    assert_eq!(
+        exec.decide_next_step(),
+        NextStepDecision::TransitionTo("done".to_string())
+    );
+
+    exec.step_outputs.insert(
+        "run_tests".to_string(),
+        structured_step_output("run_tests", serde_json::json!({"ok": false})),
     );
     assert_eq!(
         exec.decide_next_step(),
@@ -2230,10 +2447,8 @@ fn validate_start_no_existing_returns_ok() {
     assert!(result.is_ok());
 }
 
-/// command kind node を含む workflow は実行系未対応のため
-/// 開始前に明示的に拒否される（実行系は [13] で具体化）。
 #[test]
-fn validate_start_rejects_command_node() {
+fn validate_start_accepts_command_node() {
     let workflow = Workflow {
         name: "command-wf".to_string(),
         description: String::new(),
@@ -2246,8 +2461,7 @@ fn validate_start_rejects_command_node() {
         }],
     };
     let result = WorkflowExecution::validate_start(&workflow, None);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("Command node"));
+    assert!(result.is_ok());
 }
 
 // ---- is_terminal ----
@@ -3926,6 +4140,7 @@ fn validate_approval_target_terminal_states_return_invalid_state_without_mutatio
             retry_count: None,
         },
         WorkflowExecutionState::Aborted,
+        WorkflowExecutionState::Interrupted,
     ] {
         let exec = make_approval_exec(state.clone(), vec![]);
         let result = workflow_approval_runtime::validate_approval_target_snapshot(
@@ -5683,10 +5898,11 @@ fn make_minimal_workflow() -> Workflow {
 }
 
 /// G3: workflow 構造の事前検証は `validate_workflow_shape` で副作用なく完結する。
-/// 空 nodes / bash node が含まれる workflow を弾けば、`start_workflow` の Phase 1 で
-/// parent ChatSession 作成より前にエラーで return できる（孤立 session を残さない）。
+/// 空 nodes を弾けば、`start_workflow` の Phase 1 で parent ChatSession 作成より前に
+/// エラーで return できる（孤立 session を残さない）。command node は実行可能 node として
+/// 受理される。
 #[test]
-fn validate_workflow_shape_rejects_empty_and_bash_workflows_without_side_effects() {
+fn validate_workflow_shape_rejects_empty_and_accepts_command_workflows_without_side_effects() {
     // 空 nodes は InvalidWorkflow
     let empty = Workflow {
         name: "wf".to_string(),
@@ -5700,8 +5916,8 @@ fn validate_workflow_shape_rejects_empty_and_bash_workflows_without_side_effects
         Err(WorkflowEngineError::InvalidWorkflow(_))
     ));
 
-    // bash node を含む workflow も InvalidWorkflow
-    let bash = Workflow {
+    // command node を含む workflow は実行可能
+    let command = Workflow {
         name: "wf".to_string(),
         description: "".to_string(),
         builtin: false,
@@ -5714,10 +5930,7 @@ fn validate_workflow_shape_rejects_empty_and_bash_workflows_without_side_effects
             None,
         )],
     };
-    assert!(matches!(
-        workflow_engine_start_guard::validate_workflow_shape(&bash),
-        Err(WorkflowEngineError::InvalidWorkflow(_))
-    ));
+    assert!(workflow_engine_start_guard::validate_workflow_shape(&command).is_ok());
 
     // 正常な workflow は Ok
     let ok = make_minimal_workflow();
@@ -6503,6 +6716,7 @@ async fn run_store_terminal_statuses_propagate_status_field_in_completed_listing
             WorkflowExecutionState::Completed => RunStatus::Completed,
             WorkflowExecutionState::Failed { .. } => RunStatus::Failed,
             WorkflowExecutionState::Aborted => RunStatus::Aborted,
+            WorkflowExecutionState::Interrupted => RunStatus::Interrupted,
             _ => unreachable!(),
         };
         engine
@@ -6990,9 +7204,9 @@ mod dispatch_boundary_tests {
         let workflow_usecase = Arc::new(
             crate::adaptor::controller::wiring::build_workflow_usecase(data_dir.clone()),
         );
-        tauri::test::mock_builder()
+        let app = tauri::test::mock_builder()
             .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                data_dir,
+                data_dir.clone(),
             ))
             .manage(app_config)
             .manage(config_repository)
@@ -7015,7 +7229,18 @@ mod dispatch_boundary_tests {
                 ),
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("tauri mock test app must build")
+            .expect("tauri mock test app must build");
+        app.manage(Arc::new(
+            crate::usecase::agent_session::status::AgentStatusCenter::new(),
+        ));
+        app.manage(Arc::new(
+            crate::usecase::agent_session::session::OpenTabRegistry::default(),
+        ));
+        app.manage(crate::test_support::build_agent_runtime_usecase(
+            Arc::new(crate::test_support::build_session_store()),
+            data_dir,
+        ));
+        app
     }
 
     struct NoopRepoPathsNotifier;
@@ -7244,6 +7469,806 @@ mod dispatch_boundary_tests {
         let mut config = config_repository.load().unwrap();
         config.app.last_repo_paths = vec![repo_path.to_string_lossy().to_string()];
         config_repository.save(config).unwrap();
+    }
+
+    fn command_step(name: &str, command: &str, rules: Vec<Rule>) -> NodeDefinition {
+        make_test_step(name, TestKind::Command, command, rules, None)
+    }
+
+    fn command_step_with_artifact(
+        name: &str,
+        command: &str,
+        artifact: &str,
+        rules: Vec<Rule>,
+    ) -> NodeDefinition {
+        let mut step = command_step(name, command, rules);
+        step.artifact = Some(artifact.to_string());
+        step
+    }
+
+    async fn start_command_workflow_nowait_for_test(
+        app: &DispatchTestApp,
+        engine: &WorkflowRuntimeService,
+        workflow: Workflow,
+        worktree_path: &std::path::Path,
+    ) -> String {
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir);
+        engine
+            .start_resolved_workflow(
+                app.handle(),
+                &session_store,
+                &handles,
+                workflow,
+                worktree_path.to_string_lossy().to_string(),
+                "command-test",
+                Some("run command".to_string()),
+                TriggerSource::DesktopUi,
+                crate::domain::agent_session::PermissionMode::Edit,
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn start_command_workflow_for_test(
+        app: &DispatchTestApp,
+        engine: &WorkflowRuntimeService,
+        workflow: Workflow,
+        worktree_path: &std::path::Path,
+    ) -> String {
+        let run_id =
+            start_command_workflow_nowait_for_test(app, engine, workflow, worktree_path).await;
+        wait_for_run_terminal(app, engine, &run_id).await;
+        run_id
+    }
+
+    fn artifact_event_for_node(
+        events: &[WorkflowEvent],
+        node: &str,
+    ) -> (Option<String>, serde_json::Value) {
+        events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::ArtifactProduced {
+                    node_name,
+                    contract,
+                    value,
+                    ..
+                } if node_name == node => Some((contract.clone(), value.clone())),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("ArtifactProduced for node '{node}' not found: {events:?}"))
+    }
+
+    fn completed_node_names(events: &[WorkflowEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                WorkflowEvent::NodeCompleted { node_name, .. } => Some(node_name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    async fn wait_for_active_command(engine: &WorkflowRuntimeService, run_id: &str) {
+        for _ in 0..100 {
+            if engine.active_commands.lock().await.contains_key(run_id) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("command process for run '{run_id}' did not become active");
+    }
+
+    async fn wait_for_inactive_command(engine: &WorkflowRuntimeService, run_id: &str) {
+        for _ in 0..500 {
+            if !engine.active_commands.lock().await.contains_key(run_id) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("command process for run '{run_id}' did not stop");
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_pid_file(path: &std::path::Path) -> i32 {
+        for _ in 0..500 {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if let Ok(pid) = text.trim().parse::<i32>() {
+                    return pid;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("pid file '{}' was not written", path.display());
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_process_exit(pid: i32) {
+        for _ in 0..500 {
+            if !process_exists(pid) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("process {pid} was not killed");
+    }
+
+    #[cfg(unix)]
+    fn process_exists(pid: i32) -> bool {
+        // SAFETY: kill(pid, 0) performs existence/permission probing without sending a signal.
+        let result = unsafe { libc::kill(pid, 0) };
+        if result == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+
+    async fn wait_for_run_terminal(
+        app: &DispatchTestApp,
+        engine: &WorkflowRuntimeService,
+        run_id: &str,
+    ) {
+        let data_dir = dispatch_data_dir(app.handle());
+        for _ in 0..500 {
+            let run_store_terminal = engine
+                .run_store()
+                .get_run(run_id)
+                .await
+                .is_some_and(|run| run.status.is_terminal());
+            let log_terminal = WorkflowEventLog::new(&data_dir)
+                .read_log(run_id)
+                .unwrap_or_default()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        event,
+                        WorkflowEvent::RunCompleted { .. }
+                            | WorkflowEvent::RunFailed { .. }
+                            | WorkflowEvent::RunAborted { .. }
+                            | WorkflowEvent::RunInterrupted { .. }
+                    )
+                });
+            if run_store_terminal && log_terminal {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let status = engine.run_store().get_run(run_id).await;
+        let events = WorkflowEventLog::new(&data_dir)
+            .read_log(run_id)
+            .unwrap_or_default();
+        panic!("run '{run_id}' did not become terminal; status={status:?}; events={events:?}");
+    }
+
+    #[tokio::test]
+    async fn command_runtime_appends_standard_artifact_and_keeps_node_completed_summary_only() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-standard".to_string(),
+            description: "command standard artifact".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_step(
+                "pwd",
+                "printf '%s' \"$PWD\"; printf '%s' err >&2",
+                vec![],
+            )],
+        };
+
+        let run_id =
+            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
+        let events = read_dispatch_events(&app, &run_id);
+        let (contract, value) = artifact_event_for_node(&events, "pwd");
+        let canonical_worktree = std::fs::canonicalize(worktree.path()).unwrap();
+
+        assert_eq!(contract, None);
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["exit_code"], 0);
+        assert_eq!(
+            value["stdout"].as_str(),
+            Some(canonical_worktree.to_string_lossy().as_ref())
+        );
+        assert_eq!(value["stderr"], "err");
+        assert!(value["duration"].as_u64().is_some());
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeCompleted {
+                node_name,
+                result: Some(result),
+                structured_output: None,
+                ..
+            } if node_name == "pwd" && result == "exit_code=0"
+        )));
+        assert_eq!(
+            engine.run_store().get_run(&run_id).await.unwrap().status,
+            RunStatus::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn command_runtime_routes_on_nonzero_exit_ok_false() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-exit-routing".to_string(),
+            description: "command ok routing".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                command_step(
+                    "run_tests",
+                    "exit 7",
+                    vec![Rule::When {
+                        on: "ok".to_string(),
+                        then: "done".to_string(),
+                        next: "fix".to_string(),
+                    }],
+                ),
+                command_step("done", "printf done", vec![]),
+                command_step("fix", "printf fix", vec![]),
+            ],
+        };
+
+        let run_id =
+            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
+        let events = read_dispatch_events(&app, &run_id);
+        let (_, value) = artifact_event_for_node(&events, "run_tests");
+
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["exit_code"], 7);
+        assert_eq!(
+            completed_node_names(&events),
+            vec!["run_tests".to_string(), "fix".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn command_runtime_merges_stdout_json_contract_and_routes_on_contract_field() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-contract-routing".to_string(),
+            description: "command stdout json artifact".to_string(),
+            builtin: false,
+            schemas: [("verdict".to_string(), bool_object_schema("passed"))]
+                .into_iter()
+                .collect(),
+            nodes: vec![
+                command_step_with_artifact(
+                    "judge",
+                    r#"printf '{"passed":true}'"#,
+                    "verdict",
+                    vec![Rule::When {
+                        on: "passed".to_string(),
+                        then: "done".to_string(),
+                        next: "fix".to_string(),
+                    }],
+                ),
+                command_step("done", "printf done", vec![]),
+                command_step("fix", "printf fix", vec![]),
+            ],
+        };
+
+        let run_id =
+            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
+        let events = read_dispatch_events(&app, &run_id);
+        let (contract, value) = artifact_event_for_node(&events, "judge");
+
+        assert_eq!(contract.as_deref(), Some("verdict"));
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["passed"], true);
+        assert_eq!(
+            completed_node_names(&events),
+            vec!["judge".to_string(), "done".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn command_runtime_contract_validation_failure_routes_to_fix_with_standard_result() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-contract-failure".to_string(),
+            description: "command stdout json artifact failure".to_string(),
+            builtin: false,
+            schemas: [("verdict".to_string(), bool_object_schema("passed"))]
+                .into_iter()
+                .collect(),
+            nodes: vec![
+                command_step_with_artifact(
+                    "judge",
+                    r#"printf '{"passed":"yes"}'"#,
+                    "verdict",
+                    vec![Rule::When {
+                        on: "passed".to_string(),
+                        then: "done".to_string(),
+                        next: "fix".to_string(),
+                    }],
+                ),
+                command_step("done", "printf done", vec![]),
+                command_step("fix", "printf fix", vec![]),
+            ],
+        };
+
+        let run_id =
+            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
+        let events = read_dispatch_events(&app, &run_id);
+        let (contract, value) = artifact_event_for_node(&events, "judge");
+
+        assert_eq!(contract, None);
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["exit_code"], 0);
+        assert!(value.get("passed").is_none());
+        assert_eq!(
+            completed_node_names(&events),
+            vec!["judge".to_string(), "fix".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn command_runtime_malformed_stdout_routes_to_fix_with_standard_result_only() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-contract-parse-failure".to_string(),
+            description: "command stdout json parse failure".to_string(),
+            builtin: false,
+            schemas: [("verdict".to_string(), bool_object_schema("passed"))]
+                .into_iter()
+                .collect(),
+            nodes: vec![
+                command_step_with_artifact(
+                    "judge",
+                    "printf not-json",
+                    "verdict",
+                    vec![Rule::When {
+                        on: "passed".to_string(),
+                        then: "done".to_string(),
+                        next: "fix".to_string(),
+                    }],
+                ),
+                command_step("done", "printf done", vec![]),
+                command_step("fix", "printf fix", vec![]),
+            ],
+        };
+
+        let run_id =
+            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
+        let events = read_dispatch_events(&app, &run_id);
+        let (contract, value) = artifact_event_for_node(&events, "judge");
+
+        assert_eq!(contract, None);
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["exit_code"], 0);
+        assert_eq!(value["stdout"], "not-json");
+        assert!(value.get("passed").is_none());
+        let mut keys = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(keys, ["duration", "exit_code", "ok", "stderr", "stdout"]);
+        assert_eq!(
+            completed_node_names(&events),
+            vec!["judge".to_string(), "fix".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn command_runtime_spec_directory_secondary_validation_routes_to_fix() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-spec-directory-validation".to_string(),
+            description: "command spec-directory secondary validation".to_string(),
+            builtin: false,
+            schemas: [(
+                "spec-directory".to_string(),
+                object_schema_for_test(&["spec_dir"]),
+            )]
+            .into_iter()
+            .collect(),
+            nodes: vec![
+                command_step_with_artifact(
+                    "plan",
+                    r#"printf '{"spec_dir":"../outside"}'"#,
+                    "spec-directory",
+                    vec![Rule::When {
+                        on: "ok".to_string(),
+                        then: "done".to_string(),
+                        next: "fix".to_string(),
+                    }],
+                ),
+                command_step("done", "printf done", vec![]),
+                command_step("fix", "printf fix", vec![]),
+            ],
+        };
+
+        let run_id =
+            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
+        let events = read_dispatch_events(&app, &run_id);
+        let (contract, value) = artifact_event_for_node(&events, "plan");
+
+        assert_eq!(contract, None);
+        assert_eq!(value["ok"], false);
+        assert!(value.get("spec_dir").is_none());
+        assert_eq!(
+            completed_node_names(&events),
+            vec!["plan".to_string(), "fix".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn command_runtime_contract_success_with_nonzero_exit_records_contract_but_ok_false() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-contract-nonzero".to_string(),
+            description: "command contract success nonzero exit".to_string(),
+            builtin: false,
+            schemas: [("verdict".to_string(), bool_object_schema("passed"))]
+                .into_iter()
+                .collect(),
+            nodes: vec![command_step_with_artifact(
+                "judge",
+                r#"printf '{"passed":true}'; exit 7"#,
+                "verdict",
+                vec![],
+            )],
+        };
+
+        let run_id =
+            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
+        let events = read_dispatch_events(&app, &run_id);
+        let (contract, value) = artifact_event_for_node(&events, "judge");
+
+        assert_eq!(contract.as_deref(), Some("verdict"));
+        assert_eq!(value["passed"], true);
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["exit_code"], 7);
+    }
+
+    #[tokio::test]
+    async fn command_runtime_forwards_workflow_execution_id_env() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-env-forwarding".to_string(),
+            description: "command env forwarding".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_step(
+                "print_env",
+                "printf '%s' \"$RELEASH_WORKFLOW_EXECUTION_ID\"",
+                vec![],
+            )],
+        };
+
+        let run_id =
+            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
+        let events = read_dispatch_events(&app, &run_id);
+        let (_, value) = artifact_event_for_node(&events, "print_env");
+
+        assert_eq!(value["stdout"].as_str(), Some(run_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn command_runtime_start_returns_before_long_running_command_completes_and_abort_still_works(
+    ) {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-nonblocking-start".to_string(),
+            description: "command nonblocking start".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_step("long", "sleep 30", vec![])],
+        };
+
+        let run_id = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            start_command_workflow_nowait_for_test(&app, &engine, workflow, worktree.path()),
+        )
+        .await
+        .expect("start_resolved_workflow must not wait for command completion");
+        wait_for_active_command(&engine, &run_id).await;
+
+        let data_dir = dispatch_data_dir(app.handle());
+        let (session_store, handles) = make_dispatch_deps(data_dir);
+        let outcome = engine
+            .abort_workflow_by_run_id(app.handle(), &session_store, &handles, &run_id, None, None)
+            .await
+            .unwrap();
+
+        assert!(matches!(outcome, AbortOutcome::Aborted));
+        wait_for_inactive_command(&engine, &run_id).await;
+        let events = read_dispatch_events(&app, &run_id);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::RunAborted { .. })));
+        assert!(events.iter().all(|event| {
+            !matches!(
+                event,
+                WorkflowEvent::NodeCompleted { node_name, .. }
+                    | WorkflowEvent::ArtifactProduced { node_name, .. }
+                    if node_name == "long"
+            )
+        }));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn app_exit_shutdown_interrupts_active_command_and_kills_process_group() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-app-exit-shutdown".to_string(),
+            description: "command app exit shutdown".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_step(
+                "long",
+                "sleep 30 & echo $! > child.pid; wait",
+                vec![],
+            )],
+        };
+
+        let run_id =
+            start_command_workflow_nowait_for_test(&app, &engine, workflow, worktree.path()).await;
+        wait_for_active_command(&engine, &run_id).await;
+        let child_pid = wait_for_pid_file(&worktree.path().join("child.pid")).await;
+
+        engine.shutdown_all_active_commands().await;
+
+        wait_for_inactive_command(&engine, &run_id).await;
+        wait_for_process_exit(child_pid).await;
+        let run = engine.run_store().get_run(&run_id).await.unwrap();
+        assert_eq!(run.status, RunStatus::Interrupted);
+        let events = read_dispatch_events(&app, &run_id);
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                WorkflowEvent::RunInterrupted { reason, .. } if reason == "app_exit"
+            )
+        }));
+        assert!(events.iter().all(|event| {
+            !matches!(
+                event,
+                WorkflowEvent::NodeCompleted { node_name, .. }
+                    | WorkflowEvent::ArtifactProduced { node_name, .. }
+                    if node_name == "long"
+            )
+        }));
+        let projected = reconstruct_state_from_events(&run_id, &events)
+            .unwrap()
+            .unwrap();
+        assert_eq!(projected.state, WorkflowExecutionState::Interrupted);
+        assert_eq!(
+            projected
+                .step_history
+                .last()
+                .map(|entry| entry.state.as_str()),
+            Some(crate::domain::workflow::STEP_STATE_INTERRUPTED)
+        );
+    }
+
+    #[tokio::test]
+    async fn command_runtime_completion_append_failure_marks_run_failed() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-append-failure".to_string(),
+            description: "command append failure".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_step(
+                "gate",
+                "while [ ! -f .command-go ]; do sleep 0.02; done; printf done",
+                vec![],
+            )],
+        };
+
+        let run_id =
+            start_command_workflow_nowait_for_test(&app, &engine, workflow, worktree.path()).await;
+        wait_for_active_command(&engine, &run_id).await;
+        engine.fail_next_required_event_append_for_test();
+        std::fs::write(worktree.path().join(".command-go"), "go").unwrap();
+        wait_for_run_terminal(&app, &engine, &run_id).await;
+
+        let run = engine.run_store().get_run(&run_id).await.unwrap();
+        assert_eq!(run.status, RunStatus::Failed);
+        assert!(run
+            .error_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("command completion event append failed")));
+        let events = read_dispatch_events(&app, &run_id);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::RunFailed { .. })));
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ArtifactProduced { .. })));
+    }
+
+    static COMMAND_SECRET_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn command_runtime_redacts_configured_and_env_secrets_before_persistence() {
+        let _guard = COMMAND_SECRET_ENV_LOCK.lock().await;
+        let configured_secret = "CONFIGURED_COMMAND_SECRET_12345";
+        let env_secret = "ENV_COMMAND_SECRET_12345";
+        std::env::set_var("RELEASH_COMMAND_SECRET_TEST", env_secret);
+
+        let app = make_dispatch_app();
+        let app_config = app.state::<Arc<crate::adaptor::gateway::app_config::AppConfig>>();
+        app_config
+            .with_config_mut(|config| {
+                config.server.token = configured_secret.to_string();
+                Ok(())
+            })
+            .unwrap();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        std::fs::write(
+            worktree.path().join("configured-secret.txt"),
+            configured_secret,
+        )
+        .unwrap();
+        let workflow = Workflow {
+            name: "command-secret-redaction".to_string(),
+            description: "command secret redaction".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_step(
+                "print_secret",
+                "cat configured-secret.txt; printf '%s' \"$RELEASH_COMMAND_SECRET_TEST\" >&2",
+                vec![],
+            )],
+        };
+
+        let run_id =
+            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
+        std::env::remove_var("RELEASH_COMMAND_SECRET_TEST");
+        let events = read_dispatch_events(&app, &run_id);
+        let (_, value) = artifact_event_for_node(&events, "print_secret");
+
+        let event_text = serde_json::to_string(&events).unwrap();
+        assert!(!event_text.contains(configured_secret));
+        assert!(!event_text.contains(env_secret));
+        assert!(!value.to_string().contains(configured_secret));
+        assert!(!value.to_string().contains(env_secret));
+
+        let data_dir = dispatch_data_dir(app.handle());
+        let ndjson = std::fs::read_to_string(
+            data_dir
+                .join("workflow_logs")
+                .join(format!("{run_id}.ndjson")),
+        )
+        .unwrap();
+        assert!(!ndjson.contains(configured_secret));
+        assert!(!ndjson.contains(env_secret));
+        let projected = reconstruct_state_from_events(&run_id, &events)
+            .unwrap()
+            .unwrap();
+        let projected_text = serde_json::to_string(&projected.step_outputs).unwrap();
+        assert!(!projected_text.contains(configured_secret));
+        assert!(!projected_text.contains(env_secret));
+    }
+
+    #[tokio::test]
+    async fn command_runtime_renders_previous_command_artifact_reference() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let mut echo = command_step("echo_thread", "printf '{{ list_threads.stdout }}'", vec![]);
+        echo.inputs = vec!["list_threads".to_string()];
+        let workflow = Workflow {
+            name: "command-input-reference".to_string(),
+            description: "command input artifact reference".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                command_step(
+                    "list_threads",
+                    "printf thread-42",
+                    vec![Rule::Next("echo_thread".to_string())],
+                ),
+                echo,
+            ],
+        };
+
+        let run_id =
+            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
+        let events = read_dispatch_events(&app, &run_id);
+        let (_, value) = artifact_event_for_node(&events, "echo_thread");
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["stdout"], "thread-42");
+    }
+
+    #[tokio::test]
+    async fn abort_workflow_kills_active_command_without_completion_artifact() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir);
+        let worktree = TempDir::new().unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let workflow = Workflow {
+            name: "command-abort".to_string(),
+            description: "abort command runtime".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_step("long", "sleep 30", vec![])],
+        };
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                workflow,
+                WorkflowExecutionState::Running,
+                worktree.path().to_string_lossy().to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let runtime_engine = engine.clone();
+        let app_handle = app.handle().clone();
+        let runtime_session_store = session_store.clone();
+        let runtime_handles = handles.clone();
+        let worktree_path = worktree.path().to_string_lossy().to_string();
+        let runtime_task = tokio::spawn(async move {
+            runtime_engine
+                .start_current_node_runtime(
+                    &app_handle,
+                    &runtime_session_store,
+                    &runtime_handles,
+                    &worktree_path,
+                )
+                .await
+        });
+
+        wait_for_active_command(&engine, &run_id).await;
+        let outcome = engine
+            .abort_workflow_by_run_id(app.handle(), &session_store, &handles, &run_id, None, None)
+            .await
+            .unwrap();
+
+        assert!(matches!(outcome, AbortOutcome::Aborted));
+        tokio::time::timeout(std::time::Duration::from_secs(8), runtime_task)
+            .await
+            .expect("command runtime should stop after abort")
+            .unwrap()
+            .unwrap();
+
+        let events = read_dispatch_events(&app, &run_id);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::RunAborted { .. })));
+        assert!(events.iter().all(|event| {
+            !matches!(
+                event,
+                WorkflowEvent::NodeCompleted { node_name, .. }
+                    | WorkflowEvent::ArtifactProduced { node_name, .. }
+                    if node_name == "long"
+            )
+        }));
     }
 
     #[tokio::test]

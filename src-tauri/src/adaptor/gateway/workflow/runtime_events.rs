@@ -430,6 +430,12 @@ pub(crate) fn terminal_events_for_snapshot(
             total_token_usage: snapshot.total_token_usage.clone(),
             timestamp: snapshot.updated_at,
         }]),
+        WorkflowExecutionState::Interrupted => Ok(vec![WorkflowEvent::RunInterrupted {
+            run_id: snapshot.execution_id.clone(),
+            workflow_name: snapshot.workflow_name.clone(),
+            reason: "interrupted".to_string(),
+            timestamp: snapshot.updated_at,
+        }]),
         WorkflowExecutionState::Failed {
             reason,
             kind,
@@ -583,6 +589,7 @@ pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
         | WorkflowEvent::RunCompleted { timestamp, .. }
         | WorkflowEvent::RunFailed { timestamp, .. }
         | WorkflowEvent::RunAborted { timestamp, .. }
+        | WorkflowEvent::RunInterrupted { timestamp, .. }
         | WorkflowEvent::OutputCollected { timestamp, .. }
         | WorkflowEvent::ParallelStarted { timestamp, .. }
         | WorkflowEvent::ParallelChildStarted { timestamp, .. }
@@ -609,6 +616,7 @@ pub(crate) fn set_workflow_event_timestamp(event: &mut WorkflowEvent, commit_tim
         | WorkflowEvent::RunCompleted { timestamp, .. }
         | WorkflowEvent::RunFailed { timestamp, .. }
         | WorkflowEvent::RunAborted { timestamp, .. }
+        | WorkflowEvent::RunInterrupted { timestamp, .. }
         | WorkflowEvent::OutputCollected { timestamp, .. }
         | WorkflowEvent::ParallelStarted { timestamp, .. }
         | WorkflowEvent::ParallelChildStarted { timestamp, .. }

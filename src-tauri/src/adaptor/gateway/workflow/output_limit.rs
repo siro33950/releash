@@ -1,6 +1,7 @@
-const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
+pub(crate) const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
+pub(crate) const TRUNCATION_MARKER: &str = "... (truncated)";
 
-fn truncate_output(text: String) -> String {
+pub(crate) fn truncate_output(text: String) -> String {
     if text.len() <= MAX_OUTPUT_SIZE {
         return text;
     }
@@ -9,7 +10,7 @@ fn truncate_output(text: String) -> String {
         end -= 1;
     }
     let mut truncated = text[..end].to_string();
-    truncated.push_str("... (truncated)");
+    truncated.push_str(TRUNCATION_MARKER);
     truncated
 }
 

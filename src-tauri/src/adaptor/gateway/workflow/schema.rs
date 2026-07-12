@@ -208,6 +208,13 @@ impl NodeDefinition {
         matches!(self.kind, NodeKind::Fanout(_))
     }
 
+    pub fn command(&self) -> Option<&str> {
+        match &self.kind {
+            NodeKind::Command(spec) => Some(spec.command.as_str()),
+            _ => None,
+        }
+    }
+
     pub fn session(&self) -> Option<&SessionSpec> {
         match &self.kind {
             NodeKind::Session(spec) => Some(spec),

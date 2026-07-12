@@ -18,7 +18,7 @@ pub enum ContractLookupError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArtifactSubmittedSnapshot {
-    pub contract: String,
+    pub contract: Option<String>,
     pub value: Value,
     pub submitted_at: Option<f64>,
     pub request_id: Option<String>,

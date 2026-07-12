@@ -409,7 +409,7 @@ pub fn run() {
             agent_runtime
                 .set_workflow_turn_complete_notifier(workflow_runtime_agent_notifier.clone());
             agent_runtime.set_workflow_stall_notifier(workflow_runtime_agent_notifier);
-            app.manage(workflow_runtime_usecase);
+            app.manage(workflow_runtime_usecase.clone());
 
             // [06] CLI mutating CLI 経路の file watcher を起動する。初回 pickup は
             // setup 済みの WorkflowRuntimeUsecase / AgentBackendRegistry を前提に dispatch
@@ -437,10 +437,12 @@ pub fn run() {
 
             infrastructure::platform::menu::setup_menu(app)?;
             let tray_agent_runtime = agent_runtime.clone();
+            let tray_workflow_runtime = workflow_runtime_usecase.clone();
             infrastructure::platform::tray::setup_tray(app, move |app| {
                 adaptor::controller::application_lifecycle::request_application_quit_with_runtime(
                     app,
                     tray_agent_runtime.clone(),
+                    tray_workflow_runtime.clone(),
                 );
             })?;
             if let Some(window) = app.get_webview_window("main") {

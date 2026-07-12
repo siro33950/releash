@@ -152,7 +152,7 @@ pub enum WorkflowValidateOutputResponse {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum WorkflowGetOutputResponse {
     Submitted {
-        contract: String,
+        contract: Option<String>,
         structured_output: serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         submitted_at: Option<f64>,

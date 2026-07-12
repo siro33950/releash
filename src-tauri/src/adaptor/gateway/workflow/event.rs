@@ -207,6 +207,13 @@ pub enum WorkflowEvent {
         aborted_step: Option<RunAbortedStepSnapshot>,
         timestamp: f64,
     },
+    /// lifecycle / stop 系の interruption により run が中断状態へ遷移した。
+    RunInterrupted {
+        run_id: String,
+        workflow_name: String,
+        reason: String,
+        timestamp: f64,
+    },
     /// collect step の reduce 結果。
     OutputCollected {
         run_id: String,
@@ -464,6 +471,7 @@ impl WorkflowEvent {
             | Self::RunCompleted { run_id, .. }
             | Self::RunFailed { run_id, .. }
             | Self::RunAborted { run_id, .. }
+            | Self::RunInterrupted { run_id, .. }
             | Self::OutputCollected { run_id, .. }
             | Self::ParallelStarted { run_id, .. }
             | Self::ParallelChildStarted { run_id, .. }

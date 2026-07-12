@@ -113,6 +113,8 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         chat_session_id: &str,
         content: &str,
     ) -> Result<(), WorkflowEngineError>;
+
+    async fn shutdown_all_active_commands(&self);
 }
 
 pub(crate) fn new_workflow_runtime_engine(
@@ -303,5 +305,9 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
     ) -> Result<(), WorkflowEngineError> {
         WorkflowRuntimeService::validate_approval_chat_instruction(self, chat_session_id, content)
             .await
+    }
+
+    async fn shutdown_all_active_commands(&self) {
+        WorkflowRuntimeService::shutdown_all_active_commands(self).await;
     }
 }

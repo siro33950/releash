@@ -716,7 +716,10 @@ fn workflow_execution_state_representative(
         crate::domain::workflow::WorkflowExecutionState::Failed { .. } => {
             RepresentativeStatus::Failed
         }
-        crate::domain::workflow::WorkflowExecutionState::Aborted => RepresentativeStatus::Aborted,
+        crate::domain::workflow::WorkflowExecutionState::Aborted
+        | crate::domain::workflow::WorkflowExecutionState::Interrupted => {
+            RepresentativeStatus::Aborted
+        }
     }
 }
 
@@ -744,6 +747,7 @@ fn run_status_representative(status: RunStatus) -> RepresentativeStatus {
         RunStatus::Completed => RepresentativeStatus::Completed,
         RunStatus::Failed => RepresentativeStatus::Failed,
         RunStatus::Aborted => RepresentativeStatus::Aborted,
+        RunStatus::Interrupted => RepresentativeStatus::Aborted,
     }
 }
 
