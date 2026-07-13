@@ -936,7 +936,7 @@ mod tests {
         };
         let context = WorkflowStepContext {
             run_id: "run-1".to_string(),
-            workflow_name: "05_review-fix_gpt55".to_string(),
+            workflow_name: "05_review-fix_codex".to_string(),
             step_name: "review".to_string(),
             run_index: 1,
             parent_step_name: None,
@@ -967,7 +967,7 @@ mod tests {
         };
         let context = WorkflowStepContext {
             run_id: "run-1".to_string(),
-            workflow_name: "05_review-fix_gpt55".to_string(),
+            workflow_name: "05_review-fix_codex".to_string(),
             step_name: "review".to_string(),
             run_index: 1,
             parent_step_name: None,

@@ -1,4 +1,4 @@
-name: 02_implement_opus48
+name: 02_implement_claude
 description: Spec を元にClaude系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。
 builtin: true
 
@@ -15,14 +15,14 @@ nodes:
     parallel_children:
       - name: review_spec
         type: agent
-        model: gpt-5.5
+        model: gpt-5.6-sol
         permission: edit
         instruction: spec-implement-review-spec
         policy: reviewing
         knowledge: releash-thread-cli
       - name: review_design
         type: agent
-        model: gpt-5.5
+        model: gpt-5.6-sol
         permission: edit
         instruction: spec-implement-review-design
         policy: reviewing

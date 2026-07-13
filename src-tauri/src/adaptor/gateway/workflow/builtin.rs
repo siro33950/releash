@@ -5,17 +5,17 @@ use super::facet::{self, FacetError, FacetKind};
 use super::schema::{Summary, Workflow};
 use crate::domain::workflow::validation::{self, ValidationError};
 
-const BUILTIN_AUTHORING_GPT55: &str = include_str!("builtin/01_authoring_gpt55.yml");
-const BUILTIN_AUTHORING_OPUS48: &str = include_str!("builtin/01_authoring_opus48.yml");
+const BUILTIN_AUTHORING_CODEX: &str = include_str!("builtin/01_authoring_codex.yml");
+const BUILTIN_AUTHORING_CLAUDE: &str = include_str!("builtin/01_authoring_claude.yml");
 const BUILTIN_AUTHORING_DRAFT: &str = include_str!("builtin/01_authoring_draft.yml");
-const BUILTIN_IMPLEMENT_GPT55: &str = include_str!("builtin/02_implement_gpt55.yml");
-const BUILTIN_IMPLEMENT_OPUS48: &str = include_str!("builtin/02_implement_opus48.yml");
+const BUILTIN_IMPLEMENT_CODEX: &str = include_str!("builtin/02_implement_codex.yml");
+const BUILTIN_IMPLEMENT_CLAUDE: &str = include_str!("builtin/02_implement_claude.yml");
 const BUILTIN_FULL_REVIEW: &str = include_str!("builtin/03_full-review.yml");
 const BUILTIN_REVIEW: &str = include_str!("builtin/03_review.yml");
 const BUILTIN_REVIEW_FIX_POLICY: &str = include_str!("builtin/04_review-fix-policy.yml");
 const BUILTIN_REVIEW_FIX: &str = include_str!("builtin/05_review-fix.yml");
-const BUILTIN_REVIEW_FIX_GPT55: &str = include_str!("builtin/05_review-fix_gpt55.yml");
-const BUILTIN_REVIEW_FIX_OPUS48: &str = include_str!("builtin/05_review-fix_opus48.yml");
+const BUILTIN_REVIEW_FIX_CODEX: &str = include_str!("builtin/05_review-fix_codex.yml");
+const BUILTIN_REVIEW_FIX_CLAUDE: &str = include_str!("builtin/05_review-fix_claude.yml");
 const BUILTIN_VERIFY_REVIEW_COMMENTS: &str = include_str!("builtin/06_verify-review-comments.yml");
 
 struct BuiltinEntry {
@@ -26,13 +26,13 @@ struct BuiltinEntry {
 
 const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
-        filename: "01_authoring_gpt55.yml",
-        content: BUILTIN_AUTHORING_GPT55,
+        filename: "01_authoring_codex.yml",
+        content: BUILTIN_AUTHORING_CODEX,
         description: "ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をGPT系モデルで構築する。レビューループは行わない。",
     },
     BuiltinEntry {
-        filename: "01_authoring_opus48.yml",
-        content: BUILTIN_AUTHORING_OPUS48,
+        filename: "01_authoring_claude.yml",
+        content: BUILTIN_AUTHORING_CLAUDE,
         description: "ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をClaude系モデルで構築する。レビューループは行わない。",
     },
     BuiltinEntry {
@@ -41,24 +41,24 @@ const BUILTINS: &[BuiltinEntry] = &[
         description: "requirements / behavior / design を文書ごとに Claude 系モデルで draft 方式（finalize なし）で一括作成し、Open Questions 解消後に人間のレビューを待つ。",
     },
     BuiltinEntry {
-        filename: "02_implement_gpt55.yml",
-        content: BUILTIN_IMPLEMENT_GPT55,
+        filename: "02_implement_codex.yml",
+        content: BUILTIN_IMPLEMENT_CODEX,
         description: "Spec を元にGPT系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。",
     },
     BuiltinEntry {
-        filename: "02_implement_opus48.yml",
-        content: BUILTIN_IMPLEMENT_OPUS48,
+        filename: "02_implement_claude.yml",
+        content: BUILTIN_IMPLEMENT_CLAUDE,
         description: "Spec を元にClaude系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。",
     },
     BuiltinEntry {
         filename: "03_full-review.yml",
         content: BUILTIN_FULL_REVIEW,
-        description: "全観点を claude-opus-4-8 / gpt-5.5 でレビューし、モデル単位の妥当性チェックを行う。Summary 段では各 Open Thread の reviewer 指摘と verifier 分類を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
+        description: "全観点を claude-opus-4-8 / gpt-5.6-sol でレビューし、モデル単位の妥当性チェックを行う。Summary 段では各 Open Thread の reviewer 指摘と verifier 分類を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
     },
     BuiltinEntry {
         filename: "03_review.yml",
         content: BUILTIN_REVIEW,
-        description: "Claude 系モデルと GPT-5.5 がそれぞれ 6 観点すべてを確認し、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
+        description: "Claude 系モデルと GPT-5.6 Sol がそれぞれ 6 観点すべてを確認し、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。",
     },
     BuiltinEntry {
         filename: "04_review-fix-policy.yml",
@@ -71,13 +71,13 @@ const BUILTINS: &[BuiltinEntry] = &[
         description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針と実装差分を確認して不足を Task 化し、Task 実装ループで方針との合致を保証する。最後に人間が承認した Thread を resolve する。",
     },
     BuiltinEntry {
-        filename: "05_review-fix_gpt55.yml",
-        content: BUILTIN_REVIEW_FIX_GPT55,
+        filename: "05_review-fix_codex.yml",
+        content: BUILTIN_REVIEW_FIX_CODEX,
         description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針と実装差分を GPT 系モデルで確認して不足を Task 化し、Task 実装ループで方針との合致を保証する。最後に人間が承認した Thread を resolve する。",
     },
     BuiltinEntry {
-        filename: "05_review-fix_opus48.yml",
-        content: BUILTIN_REVIEW_FIX_OPUS48,
+        filename: "05_review-fix_claude.yml",
+        content: BUILTIN_REVIEW_FIX_CLAUDE,
         description: "フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針と実装差分を確認して不足を Task 化し、Claude 系モデルで Task を実装するループで方針との合致を保証する。最後に人間が承認した Thread を resolve する。",
     },
     BuiltinEntry {

@@ -4,19 +4,19 @@ use crate::domain::workflow::{NodeType, TimeoutPolicy};
 
 const EXTENDED_STALE_TIMEOUT: Duration = Duration::from_secs(600);
 
-const EXTENDED_STALE_MODELS: &[&str] = &["claude-opus-4-8", "gpt-5.5"];
+const EXTENDED_STALE_MODELS: &[&str] = &["claude-opus-4-8", "gpt-5.6-sol"];
 
 const EXTENDED_STALE_NODE_KINDS: &[NodeType] = &[NodeType::Approval];
 
 const EXTENDED_STALE_TEMPLATES: &[&str] = &[
-    "02_implement_gpt55",
-    "02_implement_opus48",
+    "02_implement_codex",
+    "02_implement_claude",
     "03_review",
     "03_full-review",
     "04_review-fix-policy",
     "05_review-fix",
-    "05_review-fix_gpt55",
-    "05_review-fix_opus48",
+    "05_review-fix_codex",
+    "05_review-fix_claude",
     "06_verify-review-comments",
 ];
 
@@ -48,7 +48,7 @@ mod tests {
 
         assert_eq!(
             policy.stale_timeout(&TimeoutContext::new(
-                Some("gpt-5.5".to_string()),
+                Some("gpt-5.6-sol".to_string()),
                 NodeType::Agent,
                 None
             )),
@@ -58,7 +58,7 @@ mod tests {
             policy.stale_timeout(&TimeoutContext::new(
                 None,
                 NodeType::Agent,
-                Some("05_review-fix_gpt55".to_string())
+                Some("05_review-fix_codex".to_string())
             )),
             EXTENDED_STALE_TIMEOUT
         );
@@ -72,9 +72,9 @@ mod tests {
         );
         assert_eq!(
             TimeoutPolicy::default().stale_timeout(&TimeoutContext::new(
-                Some("gpt-5.5".to_string()),
+                Some("gpt-5.6-sol".to_string()),
                 NodeType::Approval,
-                Some("05_review-fix_gpt55".to_string())
+                Some("05_review-fix_codex".to_string())
             )),
             Duration::from_secs(180)
         );

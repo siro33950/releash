@@ -5,7 +5,7 @@ builtin: true
 nodes:
   - name: import_pr_review_comments
     type: agent
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     instruction: verify-review-comments-import
     policy: reviewing
@@ -35,7 +35,7 @@ nodes:
 
   - name: implement_tasks
     type: agent
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     instruction: review-fix
     policy: coding

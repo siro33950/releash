@@ -1,11 +1,11 @@
-name: 02_implement_gpt55
+name: 02_implement_codex
 description: Spec を元にGPT系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。
 builtin: true
 
 nodes:
   - name: implement
     type: agent
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: edit
     instruction: implement
     policy: coding
@@ -15,14 +15,14 @@ nodes:
     parallel_children:
       - name: review_spec
         type: agent
-        model: gpt-5.5
+        model: gpt-5.6-sol
         permission: full
         instruction: spec-implement-review-spec
         policy: reviewing
         knowledge: releash-thread-cli
       - name: review_design
         type: agent
-        model: gpt-5.5
+        model: gpt-5.6-sol
         permission: full
         instruction: spec-implement-review-design
         policy: reviewing
@@ -30,7 +30,7 @@ nodes:
 
   - name: fix
     type: agent
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     instruction: spec-implement-fix
     policy: coding
@@ -47,7 +47,7 @@ nodes:
 
   - name: report
     type: approval
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     instruction: spec-implement-report
     knowledge: releash-thread-cli

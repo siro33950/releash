@@ -6718,7 +6718,7 @@ mod dispatch_boundary_tests {
 
     /// 実バックエンドと同じ供給経路（`fixed_models()`）でモデル一覧を返す
     /// dispatch テスト用 backend。claude / codex の固定モデル定数をそのまま供給し、
-    /// builtin workflow が使う `claude-opus-4-8` / `gpt-5.5` を production と同一経路で
+    /// builtin workflow が使う `claude-opus-4-8` / `gpt-5.6-sol` を production と同一経路で
     /// 解決できるようにする（dispatch フロー検証の本来意図を維持）。
     struct DispatchMockBackend {
         backend_id: String,
@@ -6943,7 +6943,7 @@ mod dispatch_boundary_tests {
         ));
         // 実 backend と同じ供給経路（fixed_models()）で claude / codex の固定モデルを
         // 供給する mock backend を登録する。builtin workflow が使う claude-opus-4-8 /
-        // gpt-5.5 が production と同一経路で解決され、dispatch フロー検証を維持できる。
+        // gpt-5.6-sol が production と同一経路で解決され、dispatch フロー検証を維持できる。
         let mut registry = AgentBackendRegistry::new();
         let claude_models = crate::infrastructure::agent_session::claude::ClaudeBackend::new(None)
             .available_models()
