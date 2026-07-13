@@ -1490,7 +1490,7 @@ mod tests {
             .sync_active_projection(
                 &run_id,
                 RunStatus::WaitingApproval,
-                Some("approval-step".to_string()),
+                Some("review".to_string()),
                 110.0,
             )
             .await
@@ -1499,10 +1499,7 @@ mod tests {
         let active = store.list_active().await;
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].status, RunStatus::WaitingApproval);
-        assert_eq!(
-            active[0].current_node_name,
-            Some("approval-step".to_string())
-        );
+        assert_eq!(active[0].current_node_name, Some("review".to_string()));
 
         let path = run_file_path(tmp.path(), &run_id);
         let saved: WorkflowRun = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();

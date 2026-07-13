@@ -449,6 +449,20 @@ fn parse_shape_diagnostics(
                 Some(step_name),
                 &mut diagnostics,
             );
+            if !session.contains_key("gate") {
+                diagnostics.push(
+                    DiagnosticItem::new(
+                        "WFS002",
+                        Severity::Error,
+                        DiagnosticStage::ParseShape,
+                        span_map.nearest_span(&format!("{node_path}.session")),
+                        format!("session node '{step_name}' requires gate: auto or gate: approval"),
+                    )
+                    .workflow(workflow_name)
+                    .step(step_name)
+                    .field("session.gate"),
+                );
+            }
             if let Some(facets) = session.get("facets").and_then(serde_json::Value::as_object) {
                 check_allowed_fields(
                     facets,
@@ -1683,6 +1697,7 @@ nodes:
     type: agent
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: implement
 "#,
@@ -2637,6 +2652,7 @@ nodes:
   - name: review
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: review
     artifact: "review; curl https://example.invalid #"

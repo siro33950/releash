@@ -2,10 +2,7 @@ use std::path::Path;
 
 use clap::Subcommand;
 
-use super::common::{
-    approval_input_error_to_cli_error, truncate, validate_optional_cli_text_len, validate_run_id,
-    CliError,
-};
+use super::common::{truncate, validate_optional_cli_text_len, validate_run_id, CliError};
 use super::output::OutputSubcommand;
 use super::workflow_io;
 use crate::adaptor::gateway::app_config::read_config_if_exists;
@@ -16,8 +13,8 @@ use crate::adaptor::gateway::workflow::{
 use crate::adaptor::presenter::workflow::workflow_state_to_view;
 use crate::adaptor::protocol::workflow::WorkflowStateView;
 use crate::domain::workflow::{
-    approval_rules, ManagedWorktreeGateway, RunId, RunListFilter, RunStatusFilter,
-    WorkflowDefinitionRepository, WorkflowRunRepository, WorkflowRunSummary, WorkflowSummary,
+    ManagedWorktreeGateway, RunId, RunListFilter, RunStatusFilter, WorkflowDefinitionRepository,
+    WorkflowRunRepository, WorkflowRunSummary, WorkflowSummary,
 };
 use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowStateProjectionRepository};
 
@@ -56,26 +53,17 @@ pub(super) enum WorkflowSubcommand {
         #[arg(long)]
         json: bool,
     },
-    /// [06] approval node を承認する。CLI は pending command を file 仲介で
+    /// `gate: approval` で待機中の session を承認する。CLI は pending command を file 仲介で
     /// 書き出すまでで完了し、engine への到達は稼働中アプリの watcher が担う
     /// （spec [06] CLI 完了基準境界）。
     Approve {
         run_id: String,
-        /// 対象 node を限定する。省略時は engine が現在の承認待ち node を解決する。
+        /// 対象 node。WorkflowExecution の現在の承認待ち node と一致する必要がある。
         #[arg(long)]
-        node: Option<String>,
+        node: String,
         /// 任意の承認コメント。`ApprovalResolved.comment` に伝播する。
         #[arg(long)]
         comment: Option<String>,
-    },
-    /// [06] approval node を却下する。`--reason` 必須。
-    Reject {
-        run_id: String,
-        #[arg(long)]
-        node: Option<String>,
-        /// 却下理由（必須）。`WorkflowEvent` に平文で永続化される。
-        #[arg(long)]
-        reason: String,
     },
     /// [06] 進行中の workflow run を中止する。`--node` 指定時は当該 node に対する
     /// abort、未指定時は run 全体への abort として engine が処理する。
@@ -216,7 +204,7 @@ pub(super) fn cmd_status(data_dir: &Path, run_id: &str, json: bool) -> Result<St
 pub(super) fn cmd_approve(
     data_dir: &Path,
     run_id: &str,
-    node: Option<String>,
+    node: String,
     comment: Option<String>,
 ) -> Result<String, CliError> {
     validate_optional_cli_text_len(comment.as_deref(), "--comment")?;
@@ -226,23 +214,6 @@ pub(super) fn cmd_approve(
         workflow_io::CliRequestPayload::Approve {
             node_name: node,
             comment,
-        },
-    )
-}
-
-pub(super) fn cmd_reject(
-    data_dir: &Path,
-    run_id: &str,
-    node: Option<String>,
-    reason: String,
-) -> Result<String, CliError> {
-    validate_reject_reason(&reason)?;
-    cmd_enqueue_pending(
-        data_dir,
-        run_id,
-        workflow_io::CliRequestPayload::Reject {
-            node_name: node,
-            reason,
         },
     )
 }
@@ -266,17 +237,6 @@ fn cmd_enqueue_pending(
 ) -> Result<String, CliError> {
     let output = workflow_io::enqueue_pending_command(data_dir, run_id, payload)?;
     Ok(format!("{}\n", output.format_stdout_line()))
-}
-
-/// `--reason` 必須化境界（spec [06] 振る舞い定義 Rule: 却下要求には却下理由が伴う）。
-/// `clap` で `--reason` を必須化済みだが、空白のみの入力は CLI 入口で拒否する。
-///
-/// 文字数上限 / 空白判定はドメイン pure helper
-/// （`approval_rules::validate_reject_reason_text`）
-/// に集約し、CLI 層は `CliError::InvalidInput` への map に閉じる（review R2-01）。
-pub(super) fn validate_reject_reason(reason: &str) -> Result<(), CliError> {
-    approval_rules::validate_reject_reason_text(reason, "--reason")
-        .map_err(approval_input_error_to_cli_error)
 }
 
 /// 指定 run の event log。
@@ -1262,26 +1222,23 @@ mod tests {
         }
     }
 
-    /// [06] CLI 公開入口の parse 境界: `releash workflow {approve,reject,abort}`
+    /// CLI 公開入口の parse 境界: `releash workflow {approve,abort}`
     /// の typed subcommand が clap で parse できることを parser-level で担保する
-    /// （I/O は発生させない）。`reject` の `--reason` は必須。
+    /// （I/O は発生させない）。approve の `--node` は必須。
     #[test]
     fn cli_mutating_subcommands_parse_via_clap() {
         let run_id = "550e8400-e29b-41d4-a716-446655440000";
         for argv in [
-            vec!["releash", "workflow", "approve", run_id],
             vec!["releash", "workflow", "approve", run_id, "--node", "review"],
             vec![
                 "releash",
                 "workflow",
                 "approve",
                 run_id,
+                "--node",
+                "review",
                 "--comment",
                 "LGTM",
-            ],
-            vec!["releash", "workflow", "reject", run_id, "--reason", "no"],
-            vec![
-                "releash", "workflow", "reject", run_id, "--node", "review", "--reason", "no",
             ],
             vec!["releash", "workflow", "abort", run_id],
             vec!["releash", "workflow", "abort", run_id, "--node", "review"],
@@ -1293,32 +1250,22 @@ mod tests {
         }
     }
 
-    /// [06] 振る舞い定義 Rule: 却下要求には却下理由が伴う。
-    /// CLI 入口で `--reason` が省略された reject は parser 段階で reject される。
+    /// reject / rerun command は CLI grammar に存在しない。
     #[test]
-    fn cli_reject_requires_reason_argument() {
+    fn cli_removed_mutation_commands_are_not_accepted() {
         let run_id = "550e8400-e29b-41d4-a716-446655440000";
-        let argv = vec!["releash", "workflow", "reject", run_id];
-        assert!(
-            Cli::try_parse_from(&argv).is_err(),
-            "reject without --reason must be rejected by parser"
-        );
-    }
-
-    /// [06] 振る舞い定義 Rule: 却下要求には却下理由が伴う。空白のみの reason は
-    /// CLI 入口で InvalidInput として弾く（engine 側 validate_approval_decision
-    /// にも同じ境界がある）。
-    #[test]
-    fn validate_reject_reason_rejects_whitespace_only() {
-        assert!(validate_reject_reason("   ").is_err());
-        assert!(validate_reject_reason("").is_err());
-        assert!(validate_reject_reason("not empty").is_ok());
+        for argv in [
+            vec!["releash", "workflow", "reject", run_id],
+            vec!["releash", "workflow", "reject", run_id, "--reason", "no"],
+            vec!["releash", "workflow", "rerun", run_id],
+        ] {
+            assert!(Cli::try_parse_from(&argv).is_err());
+        }
     }
 
     #[test]
     fn cli_mutation_free_text_rejects_oversized_values() {
         let oversized = "x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1);
-        assert!(validate_reject_reason(&oversized).is_err());
         assert!(validate_optional_cli_text_len(Some(&oversized), "--comment").is_err());
         assert!(validate_optional_cli_text_len(Some("ok"), "--comment").is_ok());
     }
@@ -1335,7 +1282,7 @@ mod tests {
         let stdout = cmd_approve(
             tmp.path(),
             &run_id,
-            Some("review".to_string()),
+            "review".to_string(),
             Some("LGTM".to_string()),
         )
         .unwrap();
@@ -1343,7 +1290,7 @@ mod tests {
         assert!(stdout.starts_with(&format!("queued: run_id={run_id} request_id=")));
         assert!(stdout.ends_with('\n'));
         let expected = CliRequestPayload::Approve {
-            node_name: Some("review".to_string()),
+            node_name: "review".to_string(),
             comment: Some("LGTM".to_string()),
         };
         let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
@@ -1364,25 +1311,8 @@ mod tests {
         );
         let oversized = "x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1);
 
-        let err = cmd_approve(tmp.path(), &run_id, None, Some(oversized)).unwrap_err();
-
-        assert!(matches!(err, CliError::InvalidInput(_)));
-        assert!(PendingCommandStore::new(tmp.path())
-            .list_pending()
-            .unwrap()
-            .is_empty());
-    }
-
-    #[test]
-    fn cmd_reject_handler_rejects_invalid_reason_before_enqueue() {
-        let tmp = TempDir::new().unwrap();
-        let run_id = test_uuid(86);
-        write_run_file(
-            tmp.path(),
-            &make_run(&run_id, "/wt/reject-invalid", RunStatus::Running, 100.0),
-        );
-
-        let err = cmd_reject(tmp.path(), &run_id, None, "   ".to_string()).unwrap_err();
+        let err =
+            cmd_approve(tmp.path(), &run_id, "review".to_string(), Some(oversized)).unwrap_err();
 
         assert!(matches!(err, CliError::InvalidInput(_)));
         assert!(PendingCommandStore::new(tmp.path())
@@ -1404,7 +1334,7 @@ mod tests {
             &make_run(&run_id, "/wt/approve", RunStatus::Running, 100.0),
         );
         let payload = CliRequestPayload::Approve {
-            node_name: Some("review".to_string()),
+            node_name: "review".to_string(),
             comment: Some("LGTM".to_string()),
         };
         let output = enqueue_pending_command(tmp.path(), &run_id, payload.clone()).unwrap();
@@ -1414,30 +1344,6 @@ mod tests {
         let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].command.run_id, run_id);
-        assert_eq!(
-            serde_json::to_value(&entries[0].command.payload).unwrap(),
-            serde_json::to_value(&payload).unwrap()
-        );
-    }
-
-    #[test]
-    fn cmd_enqueue_pending_writes_pending_file_for_reject_with_reason_and_node() {
-        let tmp = TempDir::new().unwrap();
-        let run_id = test_uuid(82);
-        write_run_file(
-            tmp.path(),
-            &make_run(&run_id, "/wt/reject", RunStatus::Running, 100.0),
-        );
-        let payload = CliRequestPayload::Reject {
-            node_name: Some("review".to_string()),
-            reason: "needs changes".to_string(),
-        };
-
-        let output = enqueue_pending_command(tmp.path(), &run_id, payload.clone()).unwrap();
-
-        assert_eq!(output.run_id, run_id);
-        let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
-        assert_eq!(entries.len(), 1);
         assert_eq!(
             serde_json::to_value(&entries[0].command.payload).unwrap(),
             serde_json::to_value(&payload).unwrap()
@@ -1484,7 +1390,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let unknown_run_id = test_uuid(99);
         let payload = CliRequestPayload::Approve {
-            node_name: None,
+            node_name: "review".to_string(),
             comment: Some("x".to_string()),
         };
         let err = enqueue_pending_command(tmp.path(), &unknown_run_id, payload).unwrap_err();

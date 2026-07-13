@@ -1,9 +1,8 @@
-name: minimal-session
-description: valid single node workflow
+name: missing-session-gate
+description: session gate is required
 nodes:
   - name: implement
     session:
       permission: edit
-      gate: auto
       facets:
         instruction: implement

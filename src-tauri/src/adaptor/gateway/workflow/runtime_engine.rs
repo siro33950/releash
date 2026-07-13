@@ -10,7 +10,6 @@ use crate::adaptor::gateway::workflow::resolver::{
     ManagedWorktreeResolver, WorkflowDefinitionResolver,
 };
 use crate::adaptor::gateway::workflow::run::TriggerSource;
-use crate::adaptor::gateway::workflow::runtime_state::ApprovalDecision as RuntimeApprovalDecision;
 use crate::adaptor::gateway::workflow::schema::Workflow;
 use crate::adaptor::gateway::workflow::state::WorkflowState;
 use crate::domain::agent_session::PermissionMode;
@@ -64,9 +63,8 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
-        decision: RuntimeApprovalDecision,
-        approval_comment: Option<String>,
-        node_name: Option<&str>,
+        comment: Option<String>,
+        node_name: &str,
     ) -> Result<(), WorkflowEngineError>;
 
     async fn is_running(&self, session_id: &str) -> bool;
@@ -208,9 +206,8 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
-        decision: RuntimeApprovalDecision,
-        approval_comment: Option<String>,
-        node_name: Option<&str>,
+        comment: Option<String>,
+        node_name: &str,
     ) -> Result<(), WorkflowEngineError> {
         WorkflowRuntimeService::resolve_workflow_approval(
             self,
@@ -218,8 +215,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
             session_store,
             agent_runtime,
             run_id,
-            decision,
-            approval_comment,
+            comment,
             node_name,
         )
         .await

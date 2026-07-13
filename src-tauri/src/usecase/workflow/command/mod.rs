@@ -20,9 +20,7 @@ pub(crate) use submit_output::WorkflowSubmitOutputUsecase;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::{
-        ApprovalDecision, TriggerSource, WorkflowDefinition, WorkflowError,
-    };
+    use crate::domain::workflow::{TriggerSource, WorkflowDefinition, WorkflowError};
     use crate::usecase::workflow::ports::{
         PendingRuntimeCommand, PendingRuntimeCommandOutcome, PendingRuntimeCommandPayload,
         WorkflowAbortRunGateway, WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway,
@@ -125,8 +123,8 @@ mod tests {
         WorkflowApprovalUsecase::new(gateway.clone())
             .execute(ApprovalCommand {
                 run_id: valid_run_id(),
-                node_name: Some("review".to_string()),
-                decision: ApprovalDecision::Approve { comment: None },
+                node_name: "review".to_string(),
+                comment: None,
             })
             .await
             .unwrap();
@@ -187,8 +185,8 @@ mod tests {
         assert!(WorkflowApprovalUsecase::new(gateway.clone())
             .execute(ApprovalCommand {
                 run_id: valid_run_id(),
-                node_name: Some(" ".to_string()),
-                decision: ApprovalDecision::Approve { comment: None },
+                node_name: " ".to_string(),
+                comment: None,
             })
             .await
             .is_err());

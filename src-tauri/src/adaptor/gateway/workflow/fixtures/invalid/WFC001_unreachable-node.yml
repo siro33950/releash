@@ -4,10 +4,12 @@ nodes:
   - name: entry
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: entry
   - name: orphan
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: orphan

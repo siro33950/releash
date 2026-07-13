@@ -58,7 +58,7 @@ export interface WorkspaceWorkflowStepNode {
 	title: string;
 	status: WorkspaceStepStatus;
 	stepType: WorkspaceStepType;
-	canReject?: boolean;
+	canApprove?: boolean;
 	updatedAt: number;
 	runIndex?: number | null;
 	sessions: WorkspaceSessionNode[];

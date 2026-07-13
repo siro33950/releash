@@ -17,6 +17,7 @@ nodes:
     artifact: verdict
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: judge
     rules:
@@ -27,5 +28,6 @@ nodes:
   - name: done
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: done

@@ -73,7 +73,7 @@ pub fn workflow_state_to_view(
             .collect(),
         approval_operations: state.approval_operations.map(|operations| {
             workflow_wire::ApprovalOperationsView {
-                can_reject: operations.can_reject,
+                can_approve: operations.can_approve,
             }
         }),
         stall_observations: state

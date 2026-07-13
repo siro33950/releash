@@ -40,7 +40,7 @@ impl WorkflowExecutionState {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ApprovalOperations {
-    pub can_reject: bool,
+    pub can_approve: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

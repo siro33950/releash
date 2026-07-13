@@ -24,7 +24,6 @@ use crate::domain::workflow::services::projection as workflow_projection;
 use crate::domain::workflow::services::routing as workflow_routing;
 use crate::domain::workflow::services::submission as workflow_submission;
 use crate::domain::workflow::services::transition as workflow_transition;
-use crate::domain::workflow::ApprovalDecision as DomainApprovalDecision;
 use crate::domain::workflow::{FailureDisposition, WorkflowStepFailureKind};
 use crate::usecase::agent_session::status::current_timestamp;
 
@@ -239,9 +238,9 @@ impl WorkflowExecution {
             .nodes
             .get(self.current_step_index)
             .map(node_definition_to_domain);
-        workflow_projection::approval_operations(&state, current_step.as_ref()).map(|ops| {
+        workflow_projection::approval_operations(&state, current_step.as_ref()).map(|operations| {
             ApprovalOperations {
-                can_reject: ops.can_reject,
+                can_approve: operations.can_approve,
             }
         })
     }
@@ -619,50 +618,26 @@ impl WorkflowExecution {
 
     /// approvalモードの判定ロジック（純粋関数）。
     #[cfg(test)]
-    pub(crate) fn decide_approval_action(
-        &self,
-        decision: &ApprovalDecision,
-    ) -> Result<ApprovalAction, WorkflowEngineError> {
+    pub(crate) fn decide_approve_action(&self) -> Result<(), WorkflowEngineError> {
         let workflow = workflow_definition_to_domain(&self.workflow);
         let state = workflow_execution_state_to_domain(&self.state);
-        let decision = approval_decision_to_domain(decision);
-        match workflow_transition::decide_approval_action(
-            &workflow,
-            self.current_step_index,
-            &state,
-            &decision,
-        )
-        .map_err(workflow_error_to_engine_error)?
-        {
-            workflow_transition::ApprovalTransitionDecision::Advance => Ok(ApprovalAction::Advance),
-        }
+        workflow_transition::decide_approve_action(&workflow, self.current_step_index, &state)
+            .map_err(workflow_error_to_engine_error)
     }
 
     pub(crate) fn plan_approval_application(
         &self,
-        decision: &ApprovalDecision,
         application: workflow_transition::ApprovalApplication,
     ) -> Result<workflow_transition::ApprovalApplicationPlan, WorkflowEngineError> {
         let workflow = workflow_definition_to_domain(&self.workflow);
         let state = workflow_execution_state_to_domain(&self.state);
-        let decision = approval_decision_to_domain(decision);
         workflow_transition::plan_approval_application(
             &workflow,
             self.current_step_index,
             &state,
-            &decision,
             application,
         )
         .map_err(workflow_error_to_engine_error)
-    }
-}
-
-fn approval_decision_to_domain(decision: &ApprovalDecision) -> DomainApprovalDecision {
-    match decision {
-        ApprovalDecision::Approve => DomainApprovalDecision::Approve { comment: None },
-        ApprovalDecision::Reject { comment } => DomainApprovalDecision::Reject {
-            reason: comment.clone(),
-        },
     }
 }
 
@@ -714,18 +689,4 @@ pub(crate) enum TurnCompleteAction {
     },
     /// ワークフローが実行中でない → 何もしない
     NotRunning,
-}
-
-/// approvalモードのユーザー判定。
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ApprovalDecision {
-    Approve,
-    Reject { comment: String },
-}
-
-/// approvalモードの判定結果（純粋関数用）。
-#[derive(Debug, Clone, PartialEq)]
-#[cfg(test)]
-pub(crate) enum ApprovalAction {
-    Advance,
 }

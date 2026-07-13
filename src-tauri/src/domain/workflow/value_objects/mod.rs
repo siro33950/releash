@@ -1,4 +1,3 @@
-mod approval_decision;
 mod contract;
 mod definition;
 mod facet;
@@ -10,7 +9,6 @@ mod state;
 mod step_output;
 mod workflow_step_context;
 
-pub use approval_decision::ApprovalDecision;
 pub use contract::{ContractType, ContractValidationResult, ContractViolation};
 pub use definition::{
     CollectConfig, CommandSpec, FacetRefs, FanoutSpec, InterimChild, NodeDefinition, NodeKind,

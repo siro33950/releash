@@ -1480,7 +1480,7 @@ mod tests {
     // 旧テスト `interactive_mode_fails_validation` は削除した。
 
     #[test]
-    fn approval_step_allows_terminal_rules_empty() {
+    fn approval_gated_session_allows_terminal_rules_empty() {
         let wf = make_workflow(vec![
             make_step("fix", TestKind::Session, vec![]),
             make_step("approval", TestKind::ApprovalSession, vec![]),

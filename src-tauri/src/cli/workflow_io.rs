@@ -15,15 +15,9 @@ use crate::usecase::workflow::ports::{
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub(super) enum CliRequestPayload {
     Approve {
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        node_name: Option<String>,
+        node_name: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         comment: Option<String>,
-    },
-    Reject {
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        node_name: Option<String>,
-        reason: String,
     },
     Abort {
         #[serde(skip_serializing_if = "Option::is_none", default)]

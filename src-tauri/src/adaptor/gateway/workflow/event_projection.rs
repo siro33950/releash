@@ -8,11 +8,12 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::adaptor::gateway::workflow::domain_mapping::workflow_schemas_to_domain;
+use crate::adaptor::gateway::workflow::domain_mapping::{
+    node_definition_to_domain, workflow_execution_state_to_domain, workflow_schemas_to_domain,
+};
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::event::{
-    ApprovalDecisionRecord, CliMutationRejectionReason, CliMutationRequestRecord,
-    CollectedOutputEntry,
+    CliMutationRejectionReason, CliMutationRequestRecord, CollectedOutputEntry,
 };
 use crate::adaptor::gateway::workflow::event::{
     RunAbortedChildOutcome, RunAbortedChildOutputSnapshot, RunAbortedStepSnapshot,
@@ -20,11 +21,11 @@ use crate::adaptor::gateway::workflow::event::{
 };
 use crate::adaptor::gateway::workflow::schema::Workflow;
 use crate::adaptor::gateway::workflow::state::{
-    ChildOutputSnapshot, ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage,
-    WorkflowExecutionState, WorkflowStallObservation, WorkflowState,
+    ApprovalOperations, ChildOutputSnapshot, ParallelStepState, StepHistoryEntry, StepOutput,
+    TokenUsage, WorkflowExecutionState, WorkflowStallObservation, WorkflowState,
 };
 use crate::domain::workflow::services::{
-    contract as workflow_contract, parallel as workflow_parallel,
+    contract as workflow_contract, parallel as workflow_parallel, projection as workflow_projection,
 };
 use crate::domain::workflow::{
     ContractValidationResult, STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED,
@@ -299,7 +300,6 @@ pub enum WorkflowEventView {
         run_id: String,
         workflow_name: String,
         node_name: String,
-        decision: ApprovalDecisionRecord,
         #[serde(skip_serializing_if = "Option::is_none")]
         comment: Option<String>,
         #[serde(rename = "timestampMs")]
@@ -582,14 +582,12 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 run_id,
                 workflow_name,
                 node_name,
-                decision,
                 comment,
                 timestamp,
             } => WorkflowEventView::ApprovalResolved {
                 run_id,
                 workflow_name,
                 node_name,
-                decision,
                 comment,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
@@ -1802,6 +1800,17 @@ pub(crate) fn reconstruct_state_from_events(
         &exec_state,
         &step_history,
     );
+    let domain_state = workflow_execution_state_to_domain(&exec_state);
+    let current_step = workflow
+        .nodes
+        .get(current_step_index)
+        .map(node_definition_to_domain);
+    let approval_operations =
+        workflow_projection::approval_operations(&domain_state, current_step.as_ref()).map(
+            |operations| ApprovalOperations {
+                can_approve: operations.can_approve,
+            },
+        );
 
     Ok(Some(WorkflowState {
         execution_id: run_id.to_string(),
@@ -1818,7 +1827,7 @@ pub(crate) fn reconstruct_state_from_events(
         step_outputs,
         step_states,
         active_parallel_steps,
-        approval_operations: None,
+        approval_operations,
         stall_observations,
         started_at,
         updated_at,
@@ -1829,7 +1838,7 @@ pub(crate) fn reconstruct_state_from_events(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
-        FacetRefs, NodeDefinition, NodeKind, SchemaDef, SessionSpec, Workflow,
+        FacetRefs, NodeDefinition, NodeKind, SchemaDef, SessionGate, SessionSpec, Workflow,
     };
 
     fn agent_node(name: &str) -> NodeDefinition {
@@ -1841,7 +1850,16 @@ mod tests {
     }
 
     fn session_kind(instruction: &str) -> NodeKind {
+        session_kind_with_gate(SessionGate::Auto, instruction)
+    }
+
+    fn approval_session_kind(instruction: &str) -> NodeKind {
+        session_kind_with_gate(SessionGate::Approval, instruction)
+    }
+
+    fn session_kind_with_gate(gate: SessionGate, instruction: &str) -> NodeKind {
         NodeKind::Session(SessionSpec {
+            gate,
             facets: FacetRefs {
                 instruction: Some(instruction.to_string()),
                 ..Default::default()
@@ -1913,6 +1931,57 @@ mod tests {
             result.is_none(),
             "RunStarted を含まない events 列は復元対象外"
         );
+    }
+
+    #[test]
+    fn projection_restores_approval_operations_for_approval_gate_waiting_state() {
+        let run_id = "exec-approval-ops";
+        let mut workflow = workflow_with_nodes("wf", vec!["review"]);
+        workflow.nodes[0].kind = approval_session_kind("review the diff");
+        let events = vec![
+            run_started(run_id, workflow),
+            WorkflowEvent::ApprovalRequested {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                timestamp: 1001.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(state.state, WorkflowExecutionState::WaitingApproval);
+        assert_eq!(state.current_step_name, "review");
+        assert_eq!(
+            state
+                .approval_operations
+                .map(|operations| operations.can_approve),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn projection_does_not_restore_approval_operations_for_non_approval_gate() {
+        let run_id = "exec-auto-gate-waiting";
+        let workflow = workflow_with_nodes("wf", vec!["review"]);
+        let events = vec![
+            run_started(run_id, workflow),
+            WorkflowEvent::ApprovalRequested {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                timestamp: 1001.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(state.state, WorkflowExecutionState::WaitingApproval);
+        assert!(state.approval_operations.is_none());
     }
 
     #[test]
@@ -3014,7 +3083,7 @@ mod tests {
                 workflow_name: "wf".to_string(),
                 request_id: "00000000-0000-0000-0000-000000000601".to_string(),
                 request: CliMutationRequestRecord::Approve {
-                    node_name: Some("plan".to_string()),
+                    node_name: "plan".to_string(),
                     comment: Some("LGTM".to_string()),
                 },
                 requested_at: 1500.0,

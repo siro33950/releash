@@ -1,6 +1,6 @@
 //! [06] CLI mutating CLI 経路の file-direct 仲介層。
 //!
-//! `releash workflow approve|reject|abort` CLI は engine と直接 IPC せず、
+//! `releash workflow approve|abort` CLI は engine と直接 IPC せず、
 //! pending command を本モジュールが管理する file ディレクトリへ書き出す。
 //! 稼働中アプリの watcher が pickup し、dispatcher adapter 経由で engine runtime
 //! primitive に渡す（spec [06] アーキテクチャ概要 / 責務配置）。
@@ -52,15 +52,9 @@ pub const DEFAULT_PENDING_TTL_SECS: f64 = 24.0 * 60.0 * 60.0;
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum PendingCommandPayload {
     Approve {
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        node_name: Option<String>,
+        node_name: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         comment: Option<String>,
-    },
-    Reject {
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        node_name: Option<String>,
-        reason: String,
     },
     Abort {
         #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -744,15 +738,8 @@ mod tests {
 
     fn approve_payload() -> CliRequestPayload {
         CliRequestPayload::Approve {
-            node_name: Some("review".to_string()),
+            node_name: "review".to_string(),
             comment: Some("looks good".to_string()),
-        }
-    }
-
-    fn reject_payload() -> CliRequestPayload {
-        CliRequestPayload::Reject {
-            node_name: None,
-            reason: "must rework".to_string(),
         }
     }
 
@@ -794,7 +781,7 @@ mod tests {
     fn mark_processed_moves_entry_out_of_pending_queue() {
         let tmp = TempDir::new().unwrap();
         let store = PendingCommandStore::new(tmp.path());
-        let cmd = PendingCommand::new(test_uuid(2), reject_payload(), 200.0);
+        let cmd = PendingCommand::new(test_uuid(2), approve_payload(), 200.0);
         store.write_pending(&cmd).unwrap();
         let entry = store.list_pending().unwrap().pop().unwrap();
         let claimed = store.claim_pending(&entry).unwrap().unwrap();
@@ -831,7 +818,6 @@ mod tests {
     fn payload_round_trips_via_json() {
         for p in [
             approve_payload(),
-            reject_payload(),
             abort_payload(Some("review")),
             abort_payload(None),
         ] {
@@ -839,6 +825,27 @@ mod tests {
             let json = serde_json::to_string(&cmd).unwrap();
             let back: PendingCommand = serde_json::from_str(&json).unwrap();
             assert_eq!(back, cmd);
+        }
+    }
+
+    #[test]
+    fn legacy_reject_and_rerun_payloads_are_not_deserializable() {
+        for removed_kind in ["reject", "rerun"] {
+            let json = serde_json::json!({
+                "id": test_uuid(11),
+                "run_id": test_uuid(12),
+                "payload": {
+                    "kind": removed_kind,
+                    "node_name": "review",
+                    "reason": "needs changes"
+                },
+                "requested_at": 1.0
+            });
+
+            let error = serde_json::from_value::<PendingCommand>(json).unwrap_err();
+            assert!(error
+                .to_string()
+                .contains(&format!("unknown variant `{removed_kind}`")));
         }
     }
 

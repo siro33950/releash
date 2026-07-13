@@ -4,11 +4,10 @@ use std::sync::Arc;
 use crate::adaptor::gateway::workflow::pending_command::{
     PendingCommand, PendingCommandPayload, PendingCommandStore, DEFAULT_PENDING_TTL_SECS,
 };
-use crate::adaptor::gateway::workflow::runtime_state::ApprovalDecision as RuntimeApprovalDecision;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::app_config::ConfigRepository;
 use crate::domain::workflow::{
-    ApprovalDecision, TriggerSource, WorkflowDefinition, WorkflowError, WorkflowStateSnapshot,
+    TriggerSource, WorkflowDefinition, WorkflowError, WorkflowStateSnapshot,
 };
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
@@ -212,40 +211,17 @@ impl WorkflowAbortRunGateway for TauriWorkflowRuntimeCommandGateway {
 #[async_trait::async_trait]
 impl WorkflowApprovalGateway for TauriWorkflowRuntimeCommandGateway {
     async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError> {
-        match approval_command_to_runtime_resolution(command) {
-            RuntimeApprovalResolution::Decision {
-                run_id,
-                node_name,
-                decision,
-                approval_comment,
-            } => self
-                .engine
-                .resolve_workflow_approval(
-                    &self.app,
-                    &self.session_store,
-                    &self.agent_runtime,
-                    &run_id,
-                    decision,
-                    approval_comment,
-                    node_name.as_deref(),
-                )
-                .await
-                .map_err(|err| WorkflowError::external(err.to_string())),
-            RuntimeApprovalResolution::Abort {
-                run_id,
-                expected_node_name,
-            } => self
-                .engine
-                .abort_workflow_run(
-                    &self.app,
-                    &self.session_store,
-                    &self.agent_runtime,
-                    &run_id,
-                    expected_node_name.as_deref(),
-                )
-                .await
-                .map_err(|err| WorkflowError::external(err.to_string())),
-        }
+        self.engine
+            .resolve_workflow_approval(
+                &self.app,
+                &self.session_store,
+                &self.agent_runtime,
+                &command.run_id,
+                command.comment,
+                &command.node_name,
+            )
+            .await
+            .map_err(|err| WorkflowError::external(err.to_string()))
     }
 }
 
@@ -451,52 +427,12 @@ fn domain_trigger_source_to_legacy(
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum RuntimeApprovalResolution {
-    Decision {
-        run_id: String,
-        node_name: Option<String>,
-        decision: RuntimeApprovalDecision,
-        approval_comment: Option<String>,
-    },
-    Abort {
-        run_id: String,
-        expected_node_name: Option<String>,
-    },
-}
-
-fn approval_command_to_runtime_resolution(command: ApprovalCommand) -> RuntimeApprovalResolution {
-    match command.decision {
-        ApprovalDecision::Approve { comment } => RuntimeApprovalResolution::Decision {
-            run_id: command.run_id,
-            node_name: command.node_name,
-            decision: RuntimeApprovalDecision::Approve,
-            approval_comment: comment,
-        },
-        ApprovalDecision::Reject { reason } => RuntimeApprovalResolution::Decision {
-            run_id: command.run_id,
-            node_name: command.node_name,
-            decision: RuntimeApprovalDecision::Reject {
-                comment: reason.clone(),
-            },
-            approval_comment: Some(reason),
-        },
-        ApprovalDecision::Abort => RuntimeApprovalResolution::Abort {
-            run_id: command.run_id,
-            expected_node_name: command.node_name,
-        },
-    }
-}
-
 fn pending_runtime_payload_to_legacy(
     payload: PendingRuntimeCommandPayload,
 ) -> PendingCommandPayload {
     match payload {
         PendingRuntimeCommandPayload::Approve { node_name, comment } => {
             PendingCommandPayload::Approve { node_name, comment }
-        }
-        PendingRuntimeCommandPayload::Reject { node_name, reason } => {
-            PendingCommandPayload::Reject { node_name, reason }
         }
         PendingRuntimeCommandPayload::Abort { node_name } => {
             PendingCommandPayload::Abort { node_name }
@@ -547,66 +483,5 @@ mod tests {
             domain_trigger_source_to_legacy(TriggerSource::Agent),
             crate::adaptor::gateway::workflow::run::TriggerSource::Agent
         );
-    }
-
-    #[test]
-    fn maps_approval_decision_to_runtime_resolution() {
-        let approve = approval_command_to_runtime_resolution(ApprovalCommand {
-            run_id: "00000000-0000-0000-0000-000000000001".to_string(),
-            node_name: Some("review".to_string()),
-            decision: ApprovalDecision::Approve {
-                comment: Some("ok".to_string()),
-            },
-        });
-        match approve {
-            RuntimeApprovalResolution::Decision {
-                run_id,
-                node_name,
-                decision,
-                approval_comment,
-            } => {
-                assert_eq!(run_id, "00000000-0000-0000-0000-000000000001");
-                assert_eq!(node_name.as_deref(), Some("review"));
-                assert_eq!(decision, RuntimeApprovalDecision::Approve);
-                assert_eq!(approval_comment.as_deref(), Some("ok"));
-            }
-            other => panic!("expected approve decision, got {other:?}"),
-        }
-
-        let reject = approval_command_to_runtime_resolution(ApprovalCommand {
-            run_id: "00000000-0000-0000-0000-000000000001".to_string(),
-            node_name: Some("review".to_string()),
-            decision: ApprovalDecision::Reject {
-                reason: "no".to_string(),
-            },
-        });
-        match reject {
-            RuntimeApprovalResolution::Decision {
-                decision,
-                approval_comment,
-                ..
-            } => {
-                assert_eq!(
-                    decision,
-                    RuntimeApprovalDecision::Reject {
-                        comment: "no".to_string()
-                    }
-                );
-                assert_eq!(approval_comment.as_deref(), Some("no"));
-            }
-            other => panic!("expected reject decision, got {other:?}"),
-        }
-
-        let abort = approval_command_to_runtime_resolution(ApprovalCommand {
-            run_id: "00000000-0000-0000-0000-000000000001".to_string(),
-            node_name: Some("review".to_string()),
-            decision: ApprovalDecision::Abort,
-        });
-        match abort {
-            RuntimeApprovalResolution::Abort {
-                expected_node_name, ..
-            } => assert_eq!(expected_node_name.as_deref(), Some("review")),
-            other => panic!("expected abort resolution, got {other:?}"),
-        }
     }
 }

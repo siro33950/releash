@@ -8,5 +8,6 @@ nodes:
     artifact: verdict
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: judge

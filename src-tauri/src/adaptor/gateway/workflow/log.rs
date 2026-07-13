@@ -73,8 +73,8 @@ impl WorkflowEventLog {
     /// 複数 event を atomic な commit point として追記する。
     ///
     /// [04] spec『event 列と domain state の整合』Rule: 同一 command 受理サイクル内で
-    /// 複数の required event を発行する必要がある場合（approval abort: ApprovalResolved +
-    /// RunAborted など）、2 段の `append` だと 2 本目失敗時に 1 本目だけが NDJSON に
+    /// 複数の required event を発行する必要がある場合、2 段の `append` だと
+    /// 2 本目失敗時に 1 本目だけが NDJSON に
     /// 残り state rollback と event log が分裂する。本メソッドは serialize 結果を 1 本の
     /// バッファに連結したうえで、既存ログ + 追記分を同一ディレクトリの一時ファイルへ
     /// 書き出し、最後に rename する。既存ログファイルを直接変更しないため、write_all /
@@ -290,7 +290,7 @@ fn validate_log_run_id(run_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::event::{ApprovalDecisionRecord, CollectedOutputEntry};
+    use crate::adaptor::gateway::workflow::event::CollectedOutputEntry;
     use crate::adaptor::gateway::workflow::event_projection::reconstruct_state_from_events;
     use crate::adaptor::gateway::workflow::schema::Workflow;
     use crate::adaptor::gateway::workflow::state::{TokenUsage, WorkflowExecutionState};
@@ -432,7 +432,6 @@ mod tests {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
                 node_name: "review".to_string(),
-                decision: ApprovalDecisionRecord::Abort,
                 comment: None,
                 timestamp: 1000.0,
             },
@@ -468,7 +467,6 @@ mod tests {
             run_id: run_id.to_string(),
             workflow_name: "wf".to_string(),
             node_name: "review".to_string(),
-            decision: ApprovalDecisionRecord::Approve,
             comment: None,
             timestamp: 1.0,
         })
@@ -506,7 +504,6 @@ mod tests {
                 run_id: "00000000-0000-0000-0000-000000000903".to_string(),
                 workflow_name: "wf".to_string(),
                 node_name: "review".to_string(),
-                decision: ApprovalDecisionRecord::Approve,
                 comment: None,
                 timestamp: 1.0,
             },
@@ -729,7 +726,6 @@ mod tests {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 node_name: "s1".to_string(),
-                decision: ApprovalDecisionRecord::Approve,
                 comment: None,
                 timestamp: 4.7,
             },
@@ -851,7 +847,7 @@ mod tests {
         }
     }
 
-    fn make_approval_node(
+    fn make_approval_gated_session(
         name: &str,
         instruction: &str,
     ) -> crate::adaptor::gateway::workflow::schema::NodeDefinition {
@@ -877,7 +873,7 @@ mod tests {
         let mut plan = make_agent_node("plan", "plan");
         let mut implement = make_agent_node("implement", "implement");
         implement.rules = vec![Rule::Next("review".to_string())];
-        let mut review = make_approval_node("review", "review");
+        let mut review = make_approval_gated_session("review", "review");
         review.rules = vec![Rule::LoopGuard {
             max_iterations: 3,
             on_exhausted: "implement".to_string(),
@@ -1276,58 +1272,6 @@ mod tests {
         assert_eq!(state.state, WorkflowExecutionState::Completed);
     }
 
-    #[test]
-    fn reconstruct_state_reject_comment_preserved() {
-        let tmp = TempDir::new().unwrap();
-        let log = WorkflowEventLog::new(tmp.path());
-        let wf = make_test_workflow();
-
-        log.append(&WorkflowEvent::RunStarted {
-            run_id: "00000000-0000-0000-0000-000000000913".to_string(),
-            workflow_name: "test-wf".to_string(),
-            workflow_file_stem: "test-wf".to_string(),
-            worktree_path: "/repo".to_string(),
-            request: String::new(),
-            workflow_definition: wf.clone(),
-            timestamp: 1000.0,
-        })
-        .unwrap();
-        log.append(&WorkflowEvent::NodeStarted {
-            run_id: "00000000-0000-0000-0000-000000000913".to_string(),
-            workflow_name: "test-wf".to_string(),
-            node_name: "review".to_string(),
-            execution_count: 1,
-            timestamp: 1001.0,
-        })
-        .unwrap();
-        log.append(&WorkflowEvent::NodeCompleted {
-            run_id: "00000000-0000-0000-0000-000000000913".to_string(),
-            workflow_name: "test-wf".to_string(),
-            node_name: "review".to_string(),
-            result: Some("reject".to_string()),
-            session_id: Some("sess-review".to_string()),
-            token_usage: Some(TokenUsage {
-                input_tokens: 200,
-                output_tokens: 80,
-            }),
-            structured_output: None,
-            run_index: Some(1),
-            timestamp: 1002.0,
-        })
-        .unwrap();
-
-        let state = reconstruct_state_via_log(&log, "00000000-0000-0000-0000-000000000913")
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(state.step_history.len(), 1);
-        assert_eq!(state.step_history[0].step_name, "review");
-        assert_eq!(state.step_history[0].result, Some("reject".to_string()));
-        assert!(state.step_history[0].structured_output.is_none());
-
-        assert!(!state.step_outputs.contains_key("review"));
-    }
-
     /// [04] ApprovalRequested projection: 承認待ちに到達すると state が
     /// WaitingApproval に切り替わり、current_step_name / current_step_index が
     /// approval 対象 node に揃う。updated_at は ApprovalRequested の timestamp に
@@ -1384,8 +1328,8 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
-        // approval node のあとに後続 node を続ける workflow を作る。
-        let mut review = make_approval_node("review", "review");
+        // approval-gated session のあとに後続 node を続ける workflow を作る。
+        let mut review = make_approval_gated_session("review", "review");
         review.rules = vec![Rule::Next("ship".to_string())];
         let wf = Workflow {
             name: "approval-then-next".to_string(),
@@ -1424,7 +1368,6 @@ mod tests {
             run_id: "00000000-0000-0000-0000-000000000915".to_string(),
             workflow_name: "approval-then-next".to_string(),
             node_name: "review".to_string(),
-            decision: ApprovalDecisionRecord::Approve,
             comment: None,
             timestamp: 2003.0,
         })

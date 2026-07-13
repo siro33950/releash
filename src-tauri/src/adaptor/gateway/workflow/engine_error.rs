@@ -215,9 +215,7 @@ pub(crate) fn classify_cli_mutation_rejection_reason(
             }
         }
         WorkflowEngineError::InvalidState(msg) => {
-            if msg.contains("does not allow reject") {
-                NoRejectRule
-            } else if msg.contains("is not currently accepting structured output") {
+            if msg.contains("is not currently accepting structured output") {
                 StepNotAccepting
             } else if msg.contains("is already terminal")
                 || msg.contains("is not accepting structured output (state:")
@@ -326,10 +324,6 @@ mod tests {
                     "step 'r' is not a valid submission target".to_string(),
                 ),
                 R::NodeNotFound,
-            ),
-            (
-                WorkflowEngineError::InvalidState("Step 'r' does not allow reject".to_string()),
-                R::NoRejectRule,
             ),
             (
                 WorkflowEngineError::InvalidState(

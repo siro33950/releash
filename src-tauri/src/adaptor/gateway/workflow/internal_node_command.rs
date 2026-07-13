@@ -6,7 +6,7 @@
 //! 外部 adapter（Tauri command / CLI / agent path）から組み立てる経路を提供しない。
 //!
 //! ハンドラ実体は engine 側（`engine.rs`）に置く。本ファイルは型の所有のみを担い、
-//! `ApprovalDecision` 等の engine domain 型には依存しない。
+//! 外部向け workflow command 型には依存しない。
 
 use crate::adaptor::gateway::workflow::event::TokenUsage;
 use crate::domain::workflow::WorkflowStepFailureKind;

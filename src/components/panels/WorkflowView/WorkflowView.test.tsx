@@ -284,11 +284,11 @@ describe("WorkflowView", () => {
 		expect(screen.queryByText("agent")).toBeNull();
 	});
 
-	it("keeps Reject hidden when the approval step cannot reject", () => {
+	it("shows only Approve while an approval-gated session is waiting", () => {
 		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
 			stepDetailState({
 				status: "waiting",
-				canReject: false,
+				canApprove: true,
 				sessions: [stepDetail().sessions[0]],
 			}),
 		);
@@ -299,11 +299,24 @@ describe("WorkflowView", () => {
 		expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
 	});
 
+	it("does not show Approve for a waiting session without an approval gate", () => {
+		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
+			stepDetailState({
+				status: "waiting",
+				sessions: [stepDetail().sessions[0]],
+			}),
+		);
+
+		render(<WorkflowView worktreePath="/repo" selectionRequest={selection} />);
+
+		expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+	});
+
 	it("submits Approve from the Step header", async () => {
 		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
 			stepDetailState({
 				status: "waiting",
-				canReject: true,
+				canApprove: true,
 				sessions: [stepDetail().sessions[0]],
 			}),
 		);
@@ -317,74 +330,15 @@ describe("WorkflowView", () => {
 				runId: "run-1",
 				stepId: "run-1:review:1",
 				stepName: "review",
-				action: "approve",
-				reason: undefined,
 			});
 		});
-	});
-
-	it("requires a comment before submitting Reject", async () => {
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
-			stepDetailState({
-				status: "waiting",
-				canReject: true,
-				sessions: [stepDetail().sessions[0]],
-			}),
-		);
-
-		render(<WorkflowView worktreePath="/repo" selectionRequest={selection} />);
-		fireEvent.click(screen.getByRole("button", { name: "Reject" }));
-
-		const rejectButtons = screen.getAllByRole("button", { name: "Reject" });
-		expect(rejectButtons[1]).toBeDisabled();
-		fireEvent.change(screen.getByLabelText("Reject comment"), {
-			target: { value: "needs tests" },
-		});
-		expect(rejectButtons[1]).not.toBeDisabled();
-		fireEvent.click(rejectButtons[1]);
-
-		await waitFor(() => {
-			expect(submitWorkspaceWorkflowStepActionMock).toHaveBeenCalledWith({
-				worktreePath: "/repo",
-				runId: "run-1",
-				stepId: "run-1:review:1",
-				stepName: "review",
-				action: "reject",
-				reason: "needs tests",
-			});
-		});
-	});
-
-	it("closes Reject comment input without submitting when Cancel is clicked", async () => {
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
-			stepDetailState({
-				status: "waiting",
-				canReject: true,
-				sessions: [stepDetail().sessions[0]],
-			}),
-		);
-
-		render(<WorkflowView worktreePath="/repo" selectionRequest={selection} />);
-		fireEvent.click(screen.getByRole("button", { name: "Reject" }));
-		fireEvent.change(screen.getByLabelText("Reject comment"), {
-			target: { value: "needs tests" },
-		});
-		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-
-		expect(submitWorkspaceWorkflowStepActionMock).not.toHaveBeenCalled();
-		await waitFor(() => {
-			expect(screen.queryByLabelText("Reject comment")).toBeNull();
-		});
-
-		fireEvent.click(screen.getByRole("button", { name: "Reject" }));
-		expect(screen.getByLabelText("Reject comment")).toHaveValue("");
 	});
 
 	it("keeps the action error icon after closing the error popup", async () => {
 		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
 			stepDetailState({
 				status: "waiting",
-				canReject: true,
+				canApprove: true,
 				sessions: [stepDetail().sessions[0]],
 			}),
 		);

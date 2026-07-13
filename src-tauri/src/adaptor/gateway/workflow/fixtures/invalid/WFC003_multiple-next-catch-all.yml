@@ -4,6 +4,7 @@ nodes:
   - name: route
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: route
     rules:
@@ -12,5 +13,6 @@ nodes:
   - name: done
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: done

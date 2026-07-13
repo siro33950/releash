@@ -5,8 +5,6 @@ use crate::adaptor::gateway::workflow::builtin;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::facet::FacetKind;
 #[cfg(test)]
-use crate::adaptor::gateway::workflow::runtime_state::ApprovalDecision as RuntimeApprovalDecision;
-#[cfg(test)]
 use crate::adaptor::gateway::workflow::schema::{
     FacetSummary as LegacyFacetSummary, Summary as LegacyWorkflowSummary, Workflow,
 };
@@ -116,8 +114,6 @@ pub(crate) fn invoke_handler(
     ]
 }
 
-#[cfg(test)]
-use self::runtime::ApprovalDecisionInput;
 #[cfg(test)]
 use self::session_errors::redacted_workflow_tab_error;
 
@@ -364,53 +360,41 @@ async fn approve_workflow_step_adapter<R: tauri::Runtime>(
     session_store: &Arc<SessionStore>,
     engine: &Arc<TestRuntimeKernel>,
     run_id: String,
-    decision: ApprovalDecisionInput,
     step_name: String,
+    comment: Option<String>,
 ) -> Result<(), String> {
     validate_run_id(&run_id)?;
-    let approval = decision.into_approval_command(run_id, step_name);
-    match approval.decision {
-        crate::domain::workflow::ApprovalDecision::Approve { comment } => {
-            engine
-                .resolve_workflow_approval(
-                    app,
-                    session_store,
-                    handles,
-                    &approval.run_id,
-                    RuntimeApprovalDecision::Approve,
-                    comment,
-                    approval.node_name.as_deref(),
-                )
-                .await
-        }
-        crate::domain::workflow::ApprovalDecision::Reject { reason } => {
-            engine
-                .resolve_workflow_approval(
-                    app,
-                    session_store,
-                    handles,
-                    &approval.run_id,
-                    RuntimeApprovalDecision::Reject {
-                        comment: reason.clone(),
-                    },
-                    Some(reason),
-                    approval.node_name.as_deref(),
-                )
-                .await
-        }
-        crate::domain::workflow::ApprovalDecision::Abort => {
-            engine
-                .abort_workflow_run(
-                    app,
-                    session_store,
-                    handles,
-                    &approval.run_id,
-                    approval.node_name.as_deref(),
-                )
-                .await
-        }
-    }
-    .map_err(|e| e.to_string())
+    engine
+        .resolve_workflow_approval(app, session_store, handles, &run_id, comment, &step_name)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+async fn approve_workflow_step_payload_adapter<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<AgentSessionRuntimeUsecase>,
+    session_store: &Arc<SessionStore>,
+    engine: &Arc<TestRuntimeKernel>,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    let args = payload
+        .get("args")
+        .ok_or_else(|| "missing required key args".to_string())
+        .and_then(|value| {
+            runtime::parse_approve_workflow_step_args(value).map_err(|e| e.to_string())
+        })?;
+    approve_workflow_step_adapter(
+        app,
+        handles,
+        session_store,
+        engine,
+        args.run_id,
+        args.step_name,
+        args.comment,
+    )
+    .await
 }
 
 /// `run_id` の形式検証（path traversal / 不正文字対策）。
@@ -465,7 +449,6 @@ mod tests {
         FacetRefs, NodeDefinition, NodeKind, SessionGate, SessionSpec,
     };
     use crate::adaptor::gateway::workflow::state::{WorkflowExecutionState, WorkflowState};
-    use crate::domain::workflow::ApprovalDecision;
     use std::collections::HashSet;
     use std::path::Path;
     use tempfile::TempDir;
@@ -522,27 +505,7 @@ mod tests {
             description: "adapter command test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![approval_node("review", "review-all")],
-        }
-    }
-
-    fn rejectable_adapter_workflow() -> Workflow {
-        Workflow {
-            name: "adapter-boundary".to_string(),
-            description: "adapter command test".to_string(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                NodeDefinition {
-                    name: "review".to_string(),
-                    kind: session_kind(SessionGate::Approval, "review-all"),
-                    rules: vec![crate::adaptor::gateway::workflow::schema::Rule::Next(
-                        "fix".to_string(),
-                    )],
-                    ..NodeDefinition::default()
-                },
-                session_node("fix", "review-fix"),
-            ],
+            nodes: vec![approval_gated_session("review", "review-all")],
         }
     }
 
@@ -557,15 +520,7 @@ mod tests {
         })
     }
 
-    fn session_node(name: &str, instruction: &str) -> NodeDefinition {
-        NodeDefinition {
-            name: name.to_string(),
-            kind: session_kind(SessionGate::Auto, instruction),
-            ..Default::default()
-        }
-    }
-
-    fn approval_node(name: &str, instruction: &str) -> NodeDefinition {
+    fn approval_gated_session(name: &str, instruction: &str) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
             kind: session_kind(SessionGate::Approval, instruction),
@@ -928,10 +883,8 @@ mod tests {
             &adapter_store,
             &adapter_engine,
             adapter_run_id.clone(),
-            ApprovalDecisionInput::Approve {
-                comment: Some("lgtm".to_string()),
-            },
             "review".to_string(),
+            Some("lgtm".to_string()),
         )
         .await
         .expect("adapter approval must succeed");
@@ -941,9 +894,8 @@ mod tests {
                 &direct_store,
                 &direct_handles,
                 &direct_run_id,
-                RuntimeApprovalDecision::Approve,
                 Some("lgtm".to_string()),
-                Some("review"),
+                "review",
             )
             .await
             .expect("direct approval primitive must succeed");
@@ -966,145 +918,111 @@ mod tests {
         );
     }
 
-    /// Tauri adapter の Reject decision は approval primitive に射影され、
-    /// direct primitive と同じ state / Run Store status / typed event sequence に到達する。
+    /// 旧 reject / rerun payload は command 境界の typed args で拒否され、
+    /// approval primitive に到達しない。
     #[tokio::test]
-    async fn approve_workflow_step_adapter_matches_direct_reject_primitive() {
-        let adapter_app = make_adapter_app();
-        let adapter_engine = make_adapter_engine();
-        let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
-        let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
-        let adapter_run_id = uuid::Uuid::new_v4().to_string();
-        adapter_engine
+    async fn approve_workflow_step_rejects_legacy_decision_payloads_without_side_effects() {
+        let app = make_adapter_app();
+        let engine = make_adapter_engine();
+        let data_dir = configure_run_store(&app, &engine).await;
+        let (session_store, handles) = make_adapter_deps(&data_dir);
+        let run_id = uuid::Uuid::new_v4().to_string();
+        engine
             .seed_active_execution_for_test(
-                adapter_run_id.clone(),
-                rejectable_adapter_workflow(),
+                run_id.clone(),
+                approval_only_workflow(),
                 WorkflowExecutionState::WaitingApproval,
-                "/wt/adapter-reject".to_string(),
+                "/wt/legacy-approval-payload".to_string(),
                 TriggerSource::DesktopUi,
             )
             .await;
+        let before_events = event_kinds(&read_adapter_events(&data_dir, &run_id));
+        let before_state = engine
+            .get_state_by_run_id(&run_id)
+            .await
+            .expect("seeded approval run must be active");
 
-        let direct_app = make_adapter_app();
-        let direct_engine = make_adapter_engine();
-        let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
-        let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
-        let direct_run_id = uuid::Uuid::new_v4().to_string();
-        direct_engine
-            .seed_active_execution_for_test(
-                direct_run_id.clone(),
-                rejectable_adapter_workflow(),
-                WorkflowExecutionState::WaitingApproval,
-                "/wt/direct-reject".to_string(),
-                TriggerSource::DesktopUi,
-            )
-            .await;
-
-        let adapter_err = approve_workflow_step_adapter(
-            adapter_app.handle(),
-            &adapter_handles,
-            &adapter_store,
-            &adapter_engine,
-            adapter_run_id.clone(),
-            ApprovalDecisionInput::Reject {
-                reason: "needs changes".to_string(),
-            },
-            "review".to_string(),
-        )
-        .await
-        .unwrap_err();
-        let direct_err = direct_engine
-            .resolve_workflow_approval(
-                direct_app.handle(),
-                &direct_store,
-                &direct_handles,
-                &direct_run_id,
-                RuntimeApprovalDecision::Reject {
-                    comment: "needs changes".to_string(),
-                },
-                Some("needs changes".to_string()),
-                Some("review"),
+        for payload in [
+            serde_json::json!({
+                "runId": run_id.clone(),
+                "stepName": "review",
+                "decision": { "reject": { "reason": "needs changes" } },
+            }),
+            serde_json::json!({
+                "runId": run_id.clone(),
+                "stepName": "review",
+                "decision": { "rerun": { "reason": "try again" } },
+            }),
+        ] {
+            let err = approve_workflow_step_payload_adapter(
+                app.handle(),
+                &handles,
+                &session_store,
+                &engine,
+                payload,
             )
             .await
-            .unwrap_err()
-            .to_string();
+            .expect_err("legacy decision payload must be rejected before engine dispatch");
+            assert!(err.contains("missing required key args"));
+        }
 
-        assert!(adapter_err.contains("does not support reject transitions"));
-        assert_eq!(adapter_err, direct_err);
+        let after_events = read_adapter_events(&data_dir, &run_id);
+        assert_eq!(event_kinds(&after_events), before_events);
+        assert!(
+            !event_kinds(&after_events).contains(&"ApprovalResolved"),
+            "legacy payload rejection must not append ApprovalResolved"
+        );
+        let after_state = engine
+            .get_state_by_run_id(&run_id)
+            .await
+            .expect("rejected legacy payload must leave run active");
+        assert_eq!(after_state.state, before_state.state);
+        assert_eq!(
+            after_state.step_history.len(),
+            before_state.step_history.len()
+        );
+        assert_eq!(
+            adapter_run_status(&engine, &run_id).await,
+            RunStatus::WaitingApproval
+        );
     }
 
-    /// approval UI 由来の Abort decision は expected node 付き abort primitive
-    /// に射影され、direct primitive と同じ terminal state / Run Store status / event sequence に到達する。
     #[tokio::test]
-    async fn approve_workflow_step_adapter_matches_direct_approval_abort_primitive() {
-        let adapter_app = make_adapter_app();
-        let adapter_engine = make_adapter_engine();
-        let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
-        let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
-        let adapter_run_id = uuid::Uuid::new_v4().to_string();
-        adapter_engine
+    async fn approve_workflow_step_typed_payload_accepts_current_approve_shape() {
+        let app = make_adapter_app();
+        let engine = make_adapter_engine();
+        let data_dir = configure_run_store(&app, &engine).await;
+        let (session_store, handles) = make_adapter_deps(&data_dir);
+        let run_id = uuid::Uuid::new_v4().to_string();
+        engine
             .seed_active_execution_for_test(
-                adapter_run_id.clone(),
+                run_id.clone(),
                 approval_only_workflow(),
                 WorkflowExecutionState::WaitingApproval,
-                "/wt/adapter-approval-abort".to_string(),
+                "/wt/current-approval-payload".to_string(),
                 TriggerSource::DesktopUi,
             )
             .await;
 
-        let direct_app = make_adapter_app();
-        let direct_engine = make_adapter_engine();
-        let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
-        let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
-        let direct_run_id = uuid::Uuid::new_v4().to_string();
-        direct_engine
-            .seed_active_execution_for_test(
-                direct_run_id.clone(),
-                approval_only_workflow(),
-                WorkflowExecutionState::WaitingApproval,
-                "/wt/direct-approval-abort".to_string(),
-                TriggerSource::DesktopUi,
-            )
-            .await;
-
-        approve_workflow_step_adapter(
-            adapter_app.handle(),
-            &adapter_handles,
-            &adapter_store,
-            &adapter_engine,
-            adapter_run_id.clone(),
-            ApprovalDecisionInput::Abort,
-            "review".to_string(),
+        approve_workflow_step_payload_adapter(
+            app.handle(),
+            &handles,
+            &session_store,
+            &engine,
+            serde_json::json!({
+                "args": {
+                    "runId": run_id.clone(),
+                    "stepName": "review",
+                    "comment": "lgtm",
+                },
+            }),
         )
         .await
-        .expect("adapter approval abort must succeed");
-        direct_engine
-            .abort_workflow_run(
-                direct_app.handle(),
-                &direct_store,
-                &direct_handles,
-                &direct_run_id,
-                Some("review"),
-            )
-            .await
-            .expect("direct approval abort primitive must succeed");
+        .expect("current typed approve payload must be accepted");
 
-        assert_eq!(
-            project_adapter_state(&adapter_data_dir, &adapter_run_id).state,
-            project_adapter_state(&direct_data_dir, &direct_run_id).state
-        );
-        assert_eq!(
-            adapter_engine.list_completed_runs().await[0].status,
-            RunStatus::Aborted
-        );
-        assert_eq!(
-            direct_engine.list_completed_runs().await[0].status,
-            RunStatus::Aborted
-        );
-        assert_eq!(
-            event_kinds(&read_adapter_events(&adapter_data_dir, &adapter_run_id)),
-            event_kinds(&read_adapter_events(&direct_data_dir, &direct_run_id))
-        );
+        let state = project_adapter_state(&data_dir, &run_id);
+        assert_eq!(state.state, WorkflowExecutionState::Completed);
+        assert!(event_kinds(&read_adapter_events(&data_dir, &run_id)).contains(&"ApprovalResolved"));
     }
 
     // ---- CLI / UI 経路の engine 等価性（spec [06] L99-102 Rule, review R4-01） ----
@@ -1155,10 +1073,8 @@ mod tests {
             &ui_store,
             &ui_engine,
             ui_run_id.clone(),
-            ApprovalDecisionInput::Approve {
-                comment: Some("parity-lgtm".to_string()),
-            },
             "review".to_string(),
+            Some("parity-lgtm".to_string()),
         )
         .await
         .expect("UI approval must succeed");
@@ -1171,7 +1087,7 @@ mod tests {
             crate::adaptor::gateway::workflow::pending_command::PendingCommand::new(
                 cli_run_id.clone(),
                 crate::adaptor::gateway::workflow::pending_command::PendingCommandPayload::Approve {
-                    node_name: Some("review".to_string()),
+                    node_name: "review".to_string(),
                     comment: Some("parity-lgtm".to_string()),
                 },
                 100.0,
@@ -1194,75 +1110,6 @@ mod tests {
             event_kinds_excluding_cli_mutation(&read_adapter_events(&ui_data_dir, &ui_run_id)),
             event_kinds_excluding_cli_mutation(&read_adapter_events(&cli_data_dir, &cli_run_id))
         );
-    }
-
-    /// CLI pending Reject は UI approve_workflow_step Reject と engine 視点で等価。
-    #[tokio::test]
-    async fn cli_pending_reject_and_ui_reject_yield_equivalent_engine_outcome() {
-        let ui_app = make_adapter_app();
-        let ui_engine = make_adapter_engine();
-        let ui_data_dir = configure_run_store(&ui_app, &ui_engine).await;
-        let (ui_store, ui_handles) = make_adapter_deps(&ui_data_dir);
-        let ui_run_id = uuid::Uuid::new_v4().to_string();
-        ui_engine
-            .seed_active_execution_for_test(
-                ui_run_id.clone(),
-                rejectable_adapter_workflow(),
-                WorkflowExecutionState::WaitingApproval,
-                "/wt/ui-reject-parity".to_string(),
-                TriggerSource::DesktopUi,
-            )
-            .await;
-
-        let cli_app = make_adapter_app();
-        let cli_engine = make_adapter_engine();
-        let cli_data_dir = configure_run_store(&cli_app, &cli_engine).await;
-        let (cli_store, cli_handles) = make_adapter_deps(&cli_data_dir);
-        let cli_run_id = uuid::Uuid::new_v4().to_string();
-        cli_engine
-            .seed_active_execution_for_test(
-                cli_run_id.clone(),
-                rejectable_adapter_workflow(),
-                WorkflowExecutionState::WaitingApproval,
-                "/wt/cli-reject-parity".to_string(),
-                TriggerSource::DesktopUi,
-            )
-            .await;
-
-        let ui_err = approve_workflow_step_adapter(
-            ui_app.handle(),
-            &ui_handles,
-            &ui_store,
-            &ui_engine,
-            ui_run_id.clone(),
-            ApprovalDecisionInput::Reject {
-                reason: "needs changes".to_string(),
-            },
-            "review".to_string(),
-        )
-        .await
-        .unwrap_err();
-
-        let cli_outcome = crate::adaptor::gateway::workflow::pending_command_dispatcher::dispatch_pending_command(
-            cli_app.handle(),
-            &cli_engine,
-            &cli_store,
-            &cli_handles,
-            crate::adaptor::gateway::workflow::pending_command::PendingCommand::new(
-                cli_run_id.clone(),
-                crate::adaptor::gateway::workflow::pending_command::PendingCommandPayload::Reject {
-                    node_name: Some("review".to_string()),
-                    reason: "needs changes".to_string(),
-                },
-                200.0,
-            ),
-        )
-        .await;
-        let crate::adaptor::gateway::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::RejectedFinal(cli_err) = cli_outcome else {
-            panic!("CLI reject must be rejected, got {cli_outcome:?}");
-        };
-        assert!(ui_err.contains("does not support reject transitions"));
-        assert!(cli_err.contains("does not support reject transitions"));
     }
 
     /// CLI pending Abort（run 全体）は UI abort_workflow と engine 視点で等価。
@@ -1341,94 +1188,6 @@ mod tests {
             event_kinds_excluding_cli_mutation(&read_adapter_events(&ui_data_dir, &ui_run_id)),
             event_kinds_excluding_cli_mutation(&read_adapter_events(&cli_data_dir, &cli_run_id))
         );
-    }
-
-    // ---- ApprovalDecisionInput DTO（command 境界の wire 形式 + usecase command 変換） ----
-
-    /// Spec [04] / issues-1013: `ApprovalDecisionInput::Approve` は任意 comment を内包し、
-    /// `{"approve":{}}` / `{"approve":{"comment":"..."}}` の双方を受理する。
-    #[test]
-    fn approval_decision_input_deserialize_approve_optional_comment() {
-        let no_comment: ApprovalDecisionInput = serde_json::from_str(r#"{"approve":{}}"#).unwrap();
-        assert_eq!(no_comment, ApprovalDecisionInput::Approve { comment: None });
-        let with_comment: ApprovalDecisionInput =
-            serde_json::from_str(r#"{"approve":{"comment":"lgtm"}}"#).unwrap();
-        assert_eq!(
-            with_comment,
-            ApprovalDecisionInput::Approve {
-                comment: Some("lgtm".to_string())
-            }
-        );
-    }
-
-    /// Spec [04] / issues-1013: `ApprovalDecisionInput::Reject` は `reason` 必須。
-    #[test]
-    fn approval_decision_input_deserialize_reject_with_reason() {
-        let decision: ApprovalDecisionInput =
-            serde_json::from_str(r#"{"reject":{"reason":"Please fix"}}"#).unwrap();
-        assert_eq!(
-            decision,
-            ApprovalDecisionInput::Reject {
-                reason: "Please fix".to_string()
-            }
-        );
-    }
-
-    /// Spec [04] / issues-1013: `ApprovalDecisionInput::Abort` は unit variant の wire 形式。
-    #[test]
-    fn approval_decision_input_deserialize_abort_unit_variant() {
-        let decision: ApprovalDecisionInput = serde_json::from_str(r#""abort""#).unwrap();
-        assert_eq!(decision, ApprovalDecisionInput::Abort);
-    }
-
-    /// Spec [04] / issues-1013: 旧 unit variant `"approve"` は受理しない
-    /// （後方互換 wrapper を持たない command 境界の不変条件）。
-    #[test]
-    fn approval_decision_input_rejects_legacy_unit_approve() {
-        assert!(serde_json::from_str::<ApprovalDecisionInput>(r#""approve""#).is_err());
-    }
-
-    /// `ApprovalDecisionInput` は controller 境界の wire DTO に留め、usecase の
-    /// `ApprovalCommand` へ変換してから runtime usecase へ渡す。
-    #[test]
-    fn approval_decision_input_into_approval_command_routes_each_variant() {
-        let run_id = "00000000-0000-0000-0000-000000000099".to_string();
-        let step = "review".to_string();
-
-        let approve_input = ApprovalDecisionInput::Approve {
-            comment: Some("lgtm".to_string()),
-        };
-        let approve_cmd = approve_input.into_approval_command(run_id.clone(), step.clone());
-        assert_eq!(approve_cmd.run_id, run_id);
-        assert_eq!(approve_cmd.node_name.as_deref(), Some("review"));
-        match approve_cmd.decision {
-            ApprovalDecision::Approve { comment } => {
-                assert_eq!(comment.as_deref(), Some("lgtm"));
-            }
-            other => panic!("Approve must map to ApprovalDecision::Approve, got: {other:?}"),
-        }
-
-        let reject_input = ApprovalDecisionInput::Reject {
-            reason: "needs fix".to_string(),
-        };
-        let reject_cmd = reject_input.into_approval_command(run_id.clone(), step.clone());
-        assert_eq!(reject_cmd.run_id, run_id);
-        assert_eq!(reject_cmd.node_name.as_deref(), Some("review"));
-        match reject_cmd.decision {
-            ApprovalDecision::Reject { reason } => {
-                assert_eq!(reason, "needs fix");
-            }
-            other => panic!("Reject must map to ApprovalDecision::Reject, got: {other:?}"),
-        }
-
-        let abort_cmd =
-            ApprovalDecisionInput::Abort.into_approval_command(run_id.clone(), step.clone());
-        assert_eq!(abort_cmd.run_id, run_id);
-        assert_eq!(abort_cmd.node_name.as_deref(), Some("review"));
-        match abort_cmd.decision {
-            ApprovalDecision::Abort => {}
-            other => panic!("Abort must map to ApprovalDecision::Abort, got: {other:?}"),
-        }
     }
 
     #[test]

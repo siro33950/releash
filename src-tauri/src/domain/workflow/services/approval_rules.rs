@@ -2,12 +2,7 @@
 
 use std::collections::HashSet;
 
-use serde_json::json;
-
-use crate::domain::workflow::services::secret_masker;
-use crate::domain::workflow::value_objects::{
-    ApprovalDecision, StepHistoryEntry, WorkflowExecutionState,
-};
+use crate::domain::workflow::value_objects::{StepHistoryEntry, WorkflowExecutionState};
 use crate::domain::workflow::WorkflowError;
 #[cfg(test)]
 use crate::domain::workflow::STEP_STATE_COMPLETED;
@@ -41,13 +36,6 @@ pub fn validate_optional_comment_text(
     Ok(())
 }
 
-pub fn validate_reject_reason_text(
-    value: &str,
-    label: &'static str,
-) -> Result<(), ApprovalInputError> {
-    validate_required_comment_text(value, label)
-}
-
 pub fn validate_required_comment_text(
     value: &str,
     label: &'static str,
@@ -59,22 +47,6 @@ pub fn validate_required_comment_text(
     Ok(())
 }
 
-pub fn can_reject() -> bool {
-    false
-}
-
-pub fn validate_approval_decision(decision: &ApprovalDecision) -> Result<(), ApprovalInputError> {
-    match decision {
-        ApprovalDecision::Approve { comment } => {
-            validate_optional_comment_text(comment.as_deref(), "Approve comment")
-        }
-        ApprovalDecision::Reject { reason } => {
-            validate_reject_reason_text(reason, "Reject comment")
-        }
-        ApprovalDecision::Abort => Ok(()),
-    }
-}
-
 pub fn should_auto_approve_workflow_approval(
     state: &WorkflowExecutionState,
     approval_auto_approve_enabled: bool,
@@ -82,17 +54,9 @@ pub fn should_auto_approve_workflow_approval(
     approval_auto_approve_enabled && matches!(state, WorkflowExecutionState::WaitingApproval)
 }
 
-pub fn reject_structured_output(comment: &str, configured_secrets: &[String]) -> serde_json::Value {
-    let comment = secret_masker::mask_sensitive_text(comment, configured_secrets);
-    json!({
-        "decision": "reject",
-        "comment": comment,
-    })
-}
-
 pub struct ApprovalChatInstructionContext<'a> {
     pub is_current_approval_session: bool,
-    pub is_prior_approval_step_session: bool,
+    pub is_prior_approval_gate_session: bool,
     pub state: &'a WorkflowExecutionState,
 }
 
@@ -101,7 +65,7 @@ pub fn validate_approval_chat_instruction(
     content: &str,
 ) -> Result<(), WorkflowError> {
     if !context.is_current_approval_session {
-        if context.is_prior_approval_step_session {
+        if context.is_prior_approval_gate_session {
             return Err(WorkflowError::invalid_state(
                 "Workflow is not waiting for approval",
             ));
@@ -149,6 +113,7 @@ pub struct ApprovalTargetSnapshot<'a> {
     pub execution_id: &'a str,
     pub state: &'a WorkflowExecutionState,
     pub current_step_name: &'a str,
+    pub is_approval_gate_session: bool,
 }
 
 pub fn resolve_approval_target<'a>(
@@ -159,6 +124,11 @@ pub fn resolve_approval_target<'a>(
     if !matches!(snapshot.state, WorkflowExecutionState::WaitingApproval) {
         return Err(WorkflowError::invalid_state(
             "Workflow is not waiting for approval",
+        ));
+    }
+    if !snapshot.is_approval_gate_session {
+        return Err(WorkflowError::UnauthorizedApprovalTarget(
+            "current step is not an approval-gated session".to_string(),
         ));
     }
     let expected_execution_id = expected_execution_id.ok_or_else(|| {
@@ -192,20 +162,22 @@ pub fn validate_approval_target(
     Ok(())
 }
 
-pub fn is_approval_step_session(
+pub fn is_approval_gate_session(
     session_id: &str,
     current_session_id: Option<&str>,
     current_step_name: &str,
-    approval_step_names: &HashSet<String>,
+    approval_gate_session_names: &HashSet<String>,
     step_history: &[StepHistoryEntry],
 ) -> bool {
-    if current_session_id == Some(session_id) && approval_step_names.contains(current_step_name) {
+    if current_session_id == Some(session_id)
+        && approval_gate_session_names.contains(current_step_name)
+    {
         return true;
     }
 
     step_history.iter().any(|entry| {
         entry.session_id.as_deref() == Some(session_id)
-            && approval_step_names.contains(&entry.step_name)
+            && approval_gate_session_names.contains(&entry.step_name)
     })
 }
 
@@ -222,18 +194,6 @@ fn validate_text_length(value: &str, label: &'static str) -> Result<(), Approval
 #[cfg(test)]
 mod approval_rules_tests {
     use super::*;
-
-    #[test]
-    fn test_reject_reason_空白のみを拒否する() {
-        let err = validate_reject_reason_text("  \n", "Reject comment").unwrap_err();
-        assert_eq!(
-            err,
-            ApprovalInputError::Empty {
-                label: "Reject comment"
-            }
-        );
-        assert_eq!(err.to_string(), "Reject comment must not be empty");
-    }
 
     #[test]
     fn auto_approve_requires_waiting_approval_and_enabled_flag() {
@@ -265,7 +225,7 @@ mod approval_rules_tests {
     fn approval_chat_instruction_allows_unrelated_sessions_without_validating_content() {
         let context = ApprovalChatInstructionContext {
             is_current_approval_session: false,
-            is_prior_approval_step_session: false,
+            is_prior_approval_gate_session: false,
             state: &WorkflowExecutionState::Running,
         };
 
@@ -273,10 +233,10 @@ mod approval_rules_tests {
     }
 
     #[test]
-    fn approval_chat_instruction_rejects_prior_approval_step_sessions() {
+    fn approval_chat_instruction_rejects_prior_approval_gate_sessions() {
         let context = ApprovalChatInstructionContext {
             is_current_approval_session: false,
-            is_prior_approval_step_session: true,
+            is_prior_approval_gate_session: true,
             state: &WorkflowExecutionState::Completed,
         };
 
@@ -290,7 +250,7 @@ mod approval_rules_tests {
     fn approval_chat_instruction_requires_waiting_current_approval_session_and_content() {
         let not_waiting = ApprovalChatInstructionContext {
             is_current_approval_session: true,
-            is_prior_approval_step_session: false,
+            is_prior_approval_gate_session: false,
             state: &WorkflowExecutionState::Running,
         };
         assert!(matches!(
@@ -300,7 +260,7 @@ mod approval_rules_tests {
 
         let waiting = ApprovalChatInstructionContext {
             is_current_approval_session: true,
-            is_prior_approval_step_session: false,
+            is_prior_approval_gate_session: false,
             state: &WorkflowExecutionState::WaitingApproval,
         };
         assert!(matches!(
@@ -310,32 +270,14 @@ mod approval_rules_tests {
 
         let valid = ApprovalChatInstructionContext {
             is_current_approval_session: true,
-            is_prior_approval_step_session: false,
+            is_prior_approval_gate_session: false,
             state: &WorkflowExecutionState::WaitingApproval,
         };
         assert!(validate_approval_chat_instruction(valid, "please revise").is_ok());
     }
 
     #[test]
-    fn test_can_reject_rulesに依存しない() {
-        assert!(!can_reject());
-    }
-
-    #[test]
-    fn reject_structured_output_redacts_sensitive_comment() {
-        let structured = reject_structured_output(
-            "Reject because password=secret123 and ghp_abcdefghijklmnopqrstuvwxyz1234567890",
-            &[],
-        );
-        let comment = structured["comment"].as_str().unwrap();
-        assert_eq!(structured["decision"].as_str(), Some("reject"));
-        assert!(!comment.contains("secret123"));
-        assert!(!comment.contains("ghp_abcdefghijklmnopqrstuvwxyz1234567890"));
-        assert!(comment.contains("[REDACTED]"));
-    }
-
-    #[test]
-    fn resolve_chat_session_requires_active_waiting_approval_node_with_session() {
+    fn resolve_chat_session_requires_active_waiting_approval_gate_session() {
         let snapshot = ApprovalChatSessionSnapshot {
             is_active: true,
             state: &WorkflowExecutionState::WaitingApproval,
@@ -382,6 +324,7 @@ mod approval_rules_tests {
             execution_id: "run-1",
             state: &waiting,
             current_step_name: "review",
+            is_approval_gate_session: true,
         };
 
         assert_eq!(
@@ -393,6 +336,7 @@ mod approval_rules_tests {
             execution_id: "run-1",
             state: &waiting,
             current_step_name: "review",
+            is_approval_gate_session: true,
         };
         assert_eq!(
             resolve_approval_target(snapshot, Some("run-2"), Some("review"))
@@ -405,6 +349,7 @@ mod approval_rules_tests {
             execution_id: "run-1",
             state: &waiting,
             current_step_name: "review",
+            is_approval_gate_session: true,
         };
         assert_eq!(
             validate_approval_target(snapshot, Some("run-1"), None)
@@ -412,11 +357,24 @@ mod approval_rules_tests {
                 .to_string(),
             "unauthorized_approval_target: step_name is required"
         );
+
+        let snapshot = ApprovalTargetSnapshot {
+            execution_id: "run-1",
+            state: &waiting,
+            current_step_name: "review",
+            is_approval_gate_session: false,
+        };
+        assert_eq!(
+            resolve_approval_target(snapshot, Some("run-1"), Some("review"))
+                .unwrap_err()
+                .to_string(),
+            "unauthorized_approval_target: current step is not an approval-gated session"
+        );
     }
 
     #[test]
-    fn is_approval_step_session_matches_current_or_history_approval_steps() {
-        let approval_steps = HashSet::from(["review".to_string()]);
+    fn is_approval_gate_session_matches_current_or_history_gated_sessions() {
+        let approval_gate_sessions = HashSet::from(["review".to_string()]);
         let history = vec![StepHistoryEntry {
             step_name: "review".to_string(),
             completed_at: 1.0,
@@ -429,25 +387,25 @@ mod approval_rules_tests {
             state: STEP_STATE_COMPLETED.to_string(),
         }];
 
-        assert!(is_approval_step_session(
+        assert!(is_approval_gate_session(
             "current-review",
             Some("current-review"),
             "review",
-            &approval_steps,
+            &approval_gate_sessions,
             &history,
         ));
-        assert!(is_approval_step_session(
+        assert!(is_approval_gate_session(
             "old-review",
             None,
             "plan",
-            &approval_steps,
+            &approval_gate_sessions,
             &history,
         ));
-        assert!(!is_approval_step_session(
+        assert!(!is_approval_gate_session(
             "agent-session",
             Some("agent-session"),
             "plan",
-            &approval_steps,
+            &approval_gate_sessions,
             &history,
         ));
     }

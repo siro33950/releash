@@ -4,6 +4,7 @@ nodes:
   - name: first
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: first
     rules:
@@ -11,6 +12,7 @@ nodes:
   - name: second
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: second
     rules:
