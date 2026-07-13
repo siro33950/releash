@@ -38,9 +38,12 @@ impl WorkflowRuntimeCommandPreflight {
 
     pub(crate) fn validate_approval(&self, command: &ApprovalCommand) -> Result<(), WorkflowError> {
         RunId::new(command.run_id.clone())?;
-        validate_optional_node_name(command.node_name.as_deref())?;
-        approval_rules::validate_approval_decision(&command.decision)
-            .map_err(|err| WorkflowError::validation(err.to_string()))
+        NodeName::new(command.node_name.clone())?;
+        approval_rules::validate_optional_comment_text(
+            command.comment.as_deref(),
+            "Approve comment",
+        )
+        .map_err(|err| WorkflowError::validation(err.to_string()))
     }
 
     pub(crate) fn validate_submit_output(
@@ -61,20 +64,10 @@ impl WorkflowRuntimeCommandPreflight {
         RunId::new(command.request_id.clone())?;
         match &command.payload {
             PendingRuntimeCommandPayload::Approve { node_name, comment } => {
-                validate_optional_node_name(node_name.as_deref())?;
-                approval_rules::validate_approval_decision(
-                    &crate::domain::workflow::ApprovalDecision::Approve {
-                        comment: comment.clone(),
-                    },
-                )
-                .map_err(|err| WorkflowError::validation(err.to_string()))
-            }
-            PendingRuntimeCommandPayload::Reject { node_name, reason } => {
-                validate_optional_node_name(node_name.as_deref())?;
-                approval_rules::validate_approval_decision(
-                    &crate::domain::workflow::ApprovalDecision::Reject {
-                        reason: reason.clone(),
-                    },
+                NodeName::new(node_name.clone())?;
+                approval_rules::validate_optional_comment_text(
+                    comment.as_deref(),
+                    "Approve comment",
                 )
                 .map_err(|err| WorkflowError::validation(err.to_string()))
             }

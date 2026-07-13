@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use super::runtime_engine_impl::WorkflowRuntimeService;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::route_context::CommandCommitContext;
-use crate::adaptor::gateway::workflow::runtime_state::ApprovalDecision as RuntimeApprovalDecision;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::SessionStore;
 
@@ -39,9 +38,8 @@ pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
-        decision: RuntimeApprovalDecision,
-        approval_comment: Option<String>,
-        node_name: Option<&str>,
+        comment: Option<String>,
+        node_name: &str,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError>;
 
@@ -133,9 +131,8 @@ where
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
-        decision: RuntimeApprovalDecision,
-        approval_comment: Option<String>,
-        node_name: Option<&str>,
+        comment: Option<String>,
+        node_name: &str,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError> {
         self.as_ref()
@@ -144,8 +141,7 @@ where
                 session_store,
                 agent_runtime,
                 run_id,
-                decision,
-                approval_comment,
+                comment,
                 node_name,
                 commit_context,
             )
@@ -275,9 +271,8 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
-        decision: RuntimeApprovalDecision,
-        approval_comment: Option<String>,
-        node_name: Option<&str>,
+        comment: Option<String>,
+        node_name: &str,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError> {
         WorkflowRuntimeService::resolve_workflow_approval_with_commit_context(
@@ -286,8 +281,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
             session_store,
             agent_runtime,
             run_id,
-            decision,
-            approval_comment,
+            comment,
             node_name,
             commit_context,
         )

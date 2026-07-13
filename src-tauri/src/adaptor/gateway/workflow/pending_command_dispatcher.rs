@@ -15,7 +15,6 @@ use crate::adaptor::gateway::workflow::pending_command::{
 use crate::adaptor::gateway::workflow::route_context::{
     CommandCommitContext, WorkflowMutationContext, WorkflowMutationSource,
 };
-use crate::adaptor::gateway::workflow::runtime_state::ApprovalDecision as RuntimeApprovalDecision;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::SessionStore;
 
@@ -120,7 +119,7 @@ where
     // [08] CLI 提出経路と in-process 経路は engine の submit-output primitive で合流する。
     // CLI pending の SubmitOutput は CliMutationRequested を伴わず ArtifactProduced 単体で
     // 記録されるため commit_context は `SubmitOutput { request_id, submitted_at }` を運ぶ。
-    // 他の CLI mutation（Approve / Reject / Abort）は従来通り `CliPending` を運ぶ。
+    // 他の CLI mutation（Approve / Abort）は従来通り `CliPending` を運ぶ。
     let (commit_context, request_id) = if is_submit_output {
         // 5-3 修正: SubmitOutput の拒否時にも `CliMutationRejected` を補助履歴として
         // 残せるよう、step_name と contract を commit_context に保持する。
@@ -207,20 +206,15 @@ where
     E: PendingCommandRuntime<R> + ?Sized,
 {
     match payload {
-        PendingRuntimeDispatchPayload::Approval {
-            node_name,
-            decision,
-            approval_comment,
-        } => {
+        PendingRuntimeDispatchPayload::Approval { node_name, comment } => {
             engine
                 .resolve_workflow_approval_with_commit_context(
                     app,
                     session_store,
                     agent_runtime,
                     run_id,
-                    decision,
-                    approval_comment,
-                    node_name.as_deref(),
+                    comment,
+                    &node_name,
                     Some(commit_context),
                 )
                 .await
@@ -275,7 +269,7 @@ where
     let should_commit = should_commit_rejected_external_request(&error);
     // [06] spec [08] Rule 1 維持: SubmitOutput は accepted のメイン履歴
     // （`ArtifactProduced` / `CliMutationRequested`）に拒否事実を残さない。
-    // 一方、それ以外の CLI mutation（Approve / Reject / Abort）は従来通り
+    // 一方、それ以外の CLI mutation（Approve / Abort）は従来通り
     // `CliMutationRequested` を記録する。
     if !is_submit_output && should_commit {
         if let Err(record_error) = engine
@@ -333,10 +327,6 @@ fn payload_to_cli_request(payload: &PendingCommandPayload) -> CliMutationRequest
                 comment: comment.clone(),
             }
         }
-        PendingCommandPayload::Reject { node_name, reason } => CliMutationRequestRecord::Reject {
-            node_name: node_name.clone(),
-            reason: reason.clone(),
-        },
         PendingCommandPayload::Abort { node_name } => CliMutationRequestRecord::Abort {
             node_name: node_name.clone(),
         },
@@ -350,16 +340,15 @@ fn payload_to_cli_request(payload: &PendingCommandPayload) -> CliMutationRequest
 
 /// pending payload → runtime primitive 入力への純変換。
 ///
-/// 自由記述テキストの境界バリデーション（reject reason 非空 / 文字数上限）は
-/// engine 受理時の `validate_approval_decision` / `validate_approve_comment_length`
+/// 自由記述テキストの境界バリデーション（comment 文字数上限）は
+/// engine 受理時の approve comment validation
 /// に委ね、本 adapter では事前検証を行わない（review R2-01: ドメイン pure helper
 /// 集約に伴う dispatcher 重複検証の削除）。
 #[derive(Debug, Clone, PartialEq)]
 enum PendingRuntimeDispatchPayload {
     Approval {
-        node_name: Option<String>,
-        decision: RuntimeApprovalDecision,
-        approval_comment: Option<String>,
+        node_name: String,
+        comment: Option<String>,
     },
     Abort {
         expected_node_name: Option<String>,
@@ -374,20 +363,7 @@ enum PendingRuntimeDispatchPayload {
 fn payload_to_runtime_dispatch(payload: PendingCommandPayload) -> PendingRuntimeDispatchPayload {
     match payload {
         PendingCommandPayload::Approve { node_name, comment } => {
-            PendingRuntimeDispatchPayload::Approval {
-                node_name,
-                decision: RuntimeApprovalDecision::Approve,
-                approval_comment: comment,
-            }
-        }
-        PendingCommandPayload::Reject { node_name, reason } => {
-            PendingRuntimeDispatchPayload::Approval {
-                node_name,
-                decision: RuntimeApprovalDecision::Reject {
-                    comment: reason.clone(),
-                },
-                approval_comment: Some(reason),
-            }
+            PendingRuntimeDispatchPayload::Approval { node_name, comment }
         }
         PendingCommandPayload::Abort { node_name } => PendingRuntimeDispatchPayload::Abort {
             expected_node_name: node_name,
@@ -432,9 +408,8 @@ mod tests {
     #[derive(Debug)]
     struct ApprovalRuntimeCall {
         run_id: String,
-        decision: RuntimeApprovalDecision,
-        approval_comment: Option<String>,
-        node_name: Option<String>,
+        comment: Option<String>,
+        node_name: String,
         commit_context: Option<CommandCommitContext>,
     }
 
@@ -496,9 +471,8 @@ mod tests {
             _session_store: &Arc<SessionStore>,
             _agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
             run_id: &str,
-            decision: RuntimeApprovalDecision,
-            approval_comment: Option<String>,
-            node_name: Option<&str>,
+            comment: Option<String>,
+            node_name: &str,
             commit_context: Option<CommandCommitContext>,
         ) -> Result<(), WorkflowEngineError> {
             self.approval_calls
@@ -506,9 +480,8 @@ mod tests {
                 .unwrap()
                 .push(ApprovalRuntimeCall {
                     run_id: run_id.to_string(),
-                    decision,
-                    approval_comment,
-                    node_name: node_name.map(ToOwned::to_owned),
+                    comment,
+                    node_name: node_name.to_string(),
                     commit_context,
                 });
             match self.next_approval_error.lock().unwrap().take() {
@@ -642,42 +615,28 @@ mod tests {
     }
 
     #[test]
-    fn payload_to_runtime_dispatch_preserves_omitted_approve_node_for_engine_resolution() {
+    fn payload_to_runtime_dispatch_preserves_typed_approve_target() {
         let payload = CliRequestPayload::Approve {
-            node_name: None,
+            node_name: "review".to_string(),
             comment: None,
         };
         let dispatch_payload = payload_to_runtime_dispatch(payload.clone());
         let request = payload_to_cli_request(&payload);
         match dispatch_payload {
-            PendingRuntimeDispatchPayload::Approval {
-                node_name,
-                decision,
-                approval_comment,
-            } => {
-                assert!(node_name.is_none());
-                assert_eq!(decision, RuntimeApprovalDecision::Approve);
-                assert!(approval_comment.is_none());
+            PendingRuntimeDispatchPayload::Approval { node_name, comment } => {
+                assert_eq!(node_name, "review");
+                assert!(comment.is_none());
             }
             other => panic!("expected approval dispatch payload, got: {other:?}"),
         }
         assert_eq!(
             request,
             CliMutationRequestRecord::Approve {
-                node_name: None,
+                node_name: "review".to_string(),
                 comment: None
             }
         );
     }
-
-    // 注: かつて dispatcher 層で事前バリデーション（reject reason 非空 /
-    // comment 文字数上限）を行っていた `payload_to_runtime_dispatch_rejects_*`
-    // テストは、review R2-01（ドメインルールの 3 層重複解消）に伴い削除済み。
-    // 同等の境界バリデーションは `engine::validate_approval_decision` /
-    // `engine::validate_approve_comment_length` で担保されており、engine 側
-    // テスト（`validate_approval_decision_reject_*` / `approve_comment_length_*`）
-    // が引き続きカバーする。dispatch 全体の RejectedFinal 経路は
-    // `process_pending_entry_marks_final_reject_processed_once` でカバー済み。
 
     #[tokio::test]
     async fn dispatch_pending_approve_records_cli_request_after_engine_acceptance() {
@@ -689,7 +648,7 @@ mod tests {
         let pending = PendingCommand::new(
             run_id.clone(),
             CliRequestPayload::Approve {
-                node_name: None,
+                node_name: "review".to_string(),
                 comment: Some("cli-lgtm".to_string()),
             },
             900.0,
@@ -709,16 +668,15 @@ mod tests {
         assert_eq!(calls.len(), 1);
         let call = &calls[0];
         assert_eq!(call.run_id, run_id);
-        assert_eq!(call.decision, RuntimeApprovalDecision::Approve);
-        assert_eq!(call.approval_comment.as_deref(), Some("cli-lgtm"));
-        assert!(call.node_name.is_none());
+        assert_eq!(call.comment.as_deref(), Some("cli-lgtm"));
+        assert_eq!(call.node_name, "review");
         assert_cli_pending_context(
             call.commit_context
                 .as_ref()
                 .expect("approval call must carry commit context"),
             &run_id,
             CliMutationRequestRecord::Approve {
-                node_name: None,
+                node_name: "review".to_string(),
                 comment: Some("cli-lgtm".to_string()),
             },
             900.0,
@@ -726,7 +684,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_pending_entry_marks_final_reject_processed_once() {
+    async fn process_pending_entry_marks_final_rejection_processed_once() {
         let app = make_dispatch_app();
         let runtime = FakePendingRuntime::default();
         runtime.reject_next_approval(WorkflowEngineError::UnauthorizedApprovalTarget(
@@ -741,7 +699,7 @@ mod tests {
         let pending = PendingCommand::new(
             run_id.clone(),
             CliRequestPayload::Approve {
-                node_name: Some("stale-review".to_string()),
+                node_name: "stale-review".to_string(),
                 comment: None,
             },
             900.75,
@@ -791,7 +749,7 @@ mod tests {
         let pending = PendingCommand::new(
             run_id.clone(),
             CliRequestPayload::Approve {
-                node_name: Some("review".to_string()),
+                node_name: "review".to_string(),
                 comment: None,
             },
             901.75,
@@ -812,54 +770,6 @@ mod tests {
         let entries = store.list_pending().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].command.id, pending.id);
-    }
-
-    #[tokio::test]
-    async fn dispatch_pending_reject_preserves_cli_reason_but_redacts_approval_event_comment() {
-        let app = make_dispatch_app();
-        let runtime = FakePendingRuntime::default();
-        let (session_store, agent_runtime) = make_dispatch_deps();
-        let run_id = uuid::Uuid::new_v4().to_string();
-
-        let raw_reason = "reject because password=secret123".to_string();
-        let pending = PendingCommand::new(
-            run_id.clone(),
-            CliRequestPayload::Reject {
-                node_name: None,
-                reason: raw_reason.clone(),
-            },
-            905.0,
-        );
-
-        let result = dispatch_pending_command(
-            app.handle(),
-            &runtime,
-            &session_store,
-            &agent_runtime,
-            pending,
-        )
-        .await;
-        assert_eq!(result, PendingCommandDispatchOutcome::Accepted);
-
-        let calls = runtime.approval_calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        let call = &calls[0];
-        assert!(matches!(
-            call.decision,
-            RuntimeApprovalDecision::Reject { .. }
-        ));
-        assert_eq!(call.approval_comment.as_deref(), Some(raw_reason.as_str()));
-        assert_cli_pending_context(
-            call.commit_context
-                .as_ref()
-                .expect("reject call must carry commit context"),
-            &run_id,
-            CliMutationRequestRecord::Reject {
-                node_name: None,
-                reason: raw_reason,
-            },
-            905.0,
-        );
     }
 
     /// [08] CLI pending 経由の SubmitOutput が engine の handle_submit_output
@@ -966,56 +876,6 @@ mod tests {
         );
     }
 
-    /// 5-4 修正: reject rule の無い approval node への reject は runtime 側で
-    /// `InvalidState` として拒否される。dispatcher は request context と rejected
-    /// context の追記を runtime に委譲する。
-    #[tokio::test]
-    async fn dispatch_pending_reject_without_rule_records_cli_mutation_rejected() {
-        let app = make_dispatch_app();
-        let runtime = FakePendingRuntime::default();
-        runtime.reject_next_approval(WorkflowEngineError::InvalidState(
-            "Step 'review' does not allow reject".to_string(),
-        ));
-        let (session_store, agent_runtime) = make_dispatch_deps();
-        let run_id = uuid::Uuid::new_v4().to_string();
-
-        let pending = PendingCommand::new(
-            run_id.clone(),
-            CliRequestPayload::Reject {
-                node_name: None,
-                reason: "engine 側に reject rule が無い node を拒否".to_string(),
-            },
-            970.0,
-        );
-
-        let result = dispatch_pending_command(
-            app.handle(),
-            &runtime,
-            &session_store,
-            &agent_runtime,
-            pending,
-        )
-        .await;
-        assert!(matches!(
-            result,
-            PendingCommandDispatchOutcome::RejectedFinal(_)
-        ));
-
-        assert_eq!(runtime.append_contexts.lock().unwrap().len(), 1);
-        let rejected = runtime.rejected_mutation_contexts.lock().unwrap();
-        assert_eq!(rejected.len(), 1);
-        assert_cli_pending_context(
-            &rejected[0].0,
-            &run_id,
-            CliMutationRequestRecord::Reject {
-                node_name: None,
-                reason: "engine 側に reject rule が無い node を拒否".to_string(),
-            },
-            970.0,
-        );
-        assert!(rejected[0].1.contains("does not allow reject"));
-    }
-
     /// 5-3 / 5-4 修正: `classify_cli_mutation_rejection_reason` は engine error の典型的な
     /// メッセージから `CliMutationRejectionReason` を導出する。
     #[test]
@@ -1041,10 +901,6 @@ mod tests {
                     "step 'r' is not a valid submission target".to_string(),
                 ),
                 R::NodeNotFound,
-            ),
-            (
-                WorkflowEngineError::InvalidState("Step 'r' does not allow reject".to_string()),
-                R::NoRejectRule,
             ),
             (
                 WorkflowEngineError::InvalidState(

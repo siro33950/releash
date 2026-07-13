@@ -4,7 +4,6 @@
 //! domain layer. Infrastructure can map runtime storage types into these value
 //! objects, but the rules for derived fields live here.
 
-use crate::domain::workflow::services::approval_rules;
 use crate::domain::workflow::value_objects::{
     ApprovalOperations, NodeDefinition, ParallelStepState, StepHistoryEntry, TokenUsage,
     WorkflowExecutionState,
@@ -30,10 +29,11 @@ pub fn approval_operations(
     if !matches!(state, WorkflowExecutionState::WaitingApproval) {
         return None;
     }
-    let _ = current_step?;
-    Some(ApprovalOperations {
-        can_reject: approval_rules::can_reject(),
-    })
+    let current_step = current_step?;
+    if !current_step.is_approval_session() {
+        return None;
+    }
+    Some(ApprovalOperations { can_approve: true })
 }
 
 pub fn active_parallel_steps(parallel_run: Option<&ParallelRunState>) -> Vec<ParallelStepState> {
@@ -121,8 +121,8 @@ mod tests {
     }
 
     #[test]
-    fn approval_operations_only_exposes_reject_when_waiting_approval() {
-        let step = NodeDefinition {
+    fn approval_operations_only_exists_when_waiting_for_approval_session() {
+        let approval_step = NodeDefinition {
             name: "approve".to_string(),
             kind: NodeKind::Session(SessionSpec {
                 gate: SessionGate::Approval,
@@ -134,13 +134,32 @@ mod tests {
             }),
             ..Default::default()
         };
+        let auto_step = NodeDefinition {
+            name: "auto".to_string(),
+            kind: NodeKind::Session(SessionSpec {
+                gate: SessionGate::Auto,
+                facets: FacetRefs {
+                    instruction: Some("implement".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
 
         assert_eq!(
-            approval_operations(&WorkflowExecutionState::WaitingApproval, Some(&step)),
-            Some(ApprovalOperations { can_reject: false })
+            approval_operations(
+                &WorkflowExecutionState::WaitingApproval,
+                Some(&approval_step)
+            ),
+            Some(ApprovalOperations { can_approve: true })
         );
         assert_eq!(
-            approval_operations(&WorkflowExecutionState::Running, Some(&step)),
+            approval_operations(&WorkflowExecutionState::WaitingApproval, Some(&auto_step)),
+            None
+        );
+        assert_eq!(
+            approval_operations(&WorkflowExecutionState::Running, Some(&approval_step)),
             None
         );
     }

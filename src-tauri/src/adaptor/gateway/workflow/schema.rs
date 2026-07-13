@@ -140,7 +140,6 @@ pub struct SessionSpec {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<String>,
-    #[serde(default)]
     pub gate: SessionGate,
     #[serde(default, skip_serializing_if = "FacetRefs::is_empty")]
     pub facets: FacetRefs,
@@ -596,6 +595,22 @@ nodes:
     }
 
     #[test]
+    fn parse_session_node_requires_gate() {
+        let yaml = r#"
+name: missing-gate
+description: gate is required
+nodes:
+  - name: implement
+    session:
+      permission: edit
+"#;
+
+        let error = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+
+        assert!(error.to_string().contains("missing field `gate`"));
+    }
+
+    #[test]
     fn parse_command_node() {
         let yaml = r#"
 name: command-only
@@ -663,6 +678,7 @@ nodes:
   - name: judge
     session:
       permission: edit
+      gate: auto
     rules:
       - when: { on: ok, then: done }
         next: fix
@@ -670,6 +686,7 @@ nodes:
   - name: triage
     session:
       permission: edit
+      gate: auto
     rules:
       - switch:
           on: verdict
@@ -716,12 +733,36 @@ nodes:
   - name: review
     session:
       permission: edit
+      gate: auto
     rules:
       - match: NEEDS_FIX
         next: fix
 "#;
         let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
         assert!(err.to_string().contains("match"));
+    }
+
+    #[test]
+    fn rejects_removed_reject_and_rerun_rules() {
+        for removed_action in ["reject", "rerun"] {
+            let yaml = format!(
+                r#"
+name: removed-rule
+description: invalid
+nodes:
+  - name: review
+    session:
+      permission: edit
+      gate: approval
+    rules:
+      - match: {removed_action}
+        next: fix
+"#
+            );
+
+            let error = serde_saphyr::from_str::<Workflow>(&yaml).unwrap_err();
+            assert!(error.to_string().contains("match"));
+        }
     }
 
     #[test]
@@ -733,6 +774,7 @@ nodes:
   - name: review
     session:
       permission: edit
+      gate: auto
     rules:
       - when: { on: ok, then: done }
         switch:
@@ -756,6 +798,7 @@ nodes:
   - name: review
     session:
       permission: edit
+      gate: auto
     rules:
       - when: { on: ok, then: done }
 "#;
@@ -772,6 +815,7 @@ nodes:
   - name: fix
     session:
       permission: edit
+      gate: auto
     cycle_guard:
       max_iterations: 2
     resets_cycle_for:
@@ -805,6 +849,7 @@ nodes:
     command: "echo hi"
     session:
       permission: edit
+      gate: auto
 "#;
         let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
         assert!(err.to_string().contains("exactly one kind block"));
@@ -834,6 +879,7 @@ nodes:
   - name: review
     session:
       permission: edit
+      gate: auto
     output_contract: review-verdict
 "#;
         let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
@@ -850,6 +896,7 @@ nodes:
   - name: implement
     session:
       permission: edit
+      gate: auto
     input_contracts:
       - spec-directory
 "#;
@@ -869,6 +916,7 @@ nodes:
   - name: review
     session:
       permission: edit
+      gate: auto
     input: request_text
 "#;
         let workflow = serde_saphyr::from_str::<Workflow>(yaml).unwrap();
@@ -928,6 +976,7 @@ nodes:
   - name: review
     session:
       permission: edit
+      gate: auto
 "#;
         assert!(serde_saphyr::from_str::<Workflow>(yaml).is_err());
     }
@@ -941,6 +990,7 @@ nodes:
   - name: implement
     session:
       permission: edit
+      gate: auto
     instruction: implement
 "#;
         let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
@@ -957,6 +1007,7 @@ nodes:
   - name: quick
     session:
       permission: edit
+      gate: auto
     inline_prompt: "Do a quick analysis"
 "#;
         let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();

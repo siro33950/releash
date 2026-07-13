@@ -139,6 +139,16 @@ impl NodeDefinition {
         matches!(self.kind, NodeKind::Session(_))
     }
 
+    pub fn is_approval_session(&self) -> bool {
+        matches!(
+            self.kind,
+            NodeKind::Session(SessionSpec {
+                gate: SessionGate::Approval,
+                ..
+            })
+        )
+    }
+
     pub fn is_fanout(&self) -> bool {
         matches!(self.kind, NodeKind::Fanout(_))
     }

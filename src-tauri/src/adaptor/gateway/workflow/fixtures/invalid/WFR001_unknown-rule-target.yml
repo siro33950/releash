@@ -4,6 +4,7 @@ nodes:
   - name: implement
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: implement
     rules:

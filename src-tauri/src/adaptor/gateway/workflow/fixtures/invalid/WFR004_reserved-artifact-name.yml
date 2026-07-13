@@ -4,5 +4,6 @@ nodes:
   - name: request
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: request

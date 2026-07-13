@@ -153,9 +153,6 @@ fn pending_payload_to_runtime_payload(
         PendingCommandPayload::Approve { node_name, comment } => {
             PendingRuntimeCommandPayload::Approve { node_name, comment }
         }
-        PendingCommandPayload::Reject { node_name, reason } => {
-            PendingRuntimeCommandPayload::Reject { node_name, reason }
-        }
         PendingCommandPayload::Abort { node_name } => {
             PendingRuntimeCommandPayload::Abort { node_name }
         }

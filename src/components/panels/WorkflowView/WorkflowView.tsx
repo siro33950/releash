@@ -9,12 +9,10 @@ import {
 	PopoverContent,
 	PopoverTrigger,
 } from "@/components/ui/popover";
-import { Textarea } from "@/components/ui/textarea";
 import { WorkflowStepStatusIcon } from "@/components/workspace/WorkflowStepStatusIcon";
 import {
 	submitWorkspaceWorkflowStepAction,
 	useWorkspaceWorkflowStepDetail,
-	type WorkspaceWorkflowStepAction,
 } from "@/hooks/useWorkspaceWorkflowStepDetail";
 import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
 import type { AgentState } from "@/types/protocol";
@@ -160,88 +158,65 @@ function WorkspaceWorkflowStepGrid({
 }
 
 function WorkflowStepHeader({ step }: { step: WorkspaceWorkflowStepDetail }) {
-	const [pendingAction, setPendingAction] =
-		useState<WorkspaceWorkflowStepAction | null>(null);
+	const [approving, setApproving] = useState(false);
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [actionErrorOpen, setActionErrorOpen] = useState(false);
 
-	const handleStepAction = useCallback(
-		async (action: WorkspaceWorkflowStepAction, reason?: string) => {
-			if (pendingAction) return false;
-			setPendingAction(action);
-			try {
-				const result = await submitWorkspaceWorkflowStepAction({
-					worktreePath: step.worktreePath,
-					runId: step.runId,
-					stepId: step.id,
-					stepName: step.title,
-					action,
-					reason,
-				});
-				if (!result) {
-					throw new Error("Workflow step action failed.");
-				}
-				setActionError(null);
-				setActionErrorOpen(false);
-				return true;
-			} catch (error) {
-				setActionError(error instanceof Error ? error.message : String(error));
-				setActionErrorOpen(true);
-				return false;
-			} finally {
-				setPendingAction(null);
+	const handleApprove = useCallback(async () => {
+		if (approving) return false;
+		setApproving(true);
+		try {
+			const result = await submitWorkspaceWorkflowStepAction({
+				worktreePath: step.worktreePath,
+				runId: step.runId,
+				stepId: step.id,
+				stepName: step.title,
+			});
+			if (!result) {
+				throw new Error("Workflow step action failed.");
 			}
-		},
-		[pendingAction, step],
-	);
+			setActionError(null);
+			setActionErrorOpen(false);
+			return true;
+		} catch (error) {
+			setActionError(error instanceof Error ? error.message : String(error));
+			setActionErrorOpen(true);
+			return false;
+		} finally {
+			setApproving(false);
+		}
+	}, [approving, step]);
 
 	return (
 		<WorkflowStepHeaderContent
 			step={step}
-			pendingAction={pendingAction}
+			approving={approving}
 			actionError={actionError}
 			actionErrorOpen={actionErrorOpen}
 			onActionErrorOpenChange={setActionErrorOpen}
-			onAction={handleStepAction}
+			onApprove={handleApprove}
 		/>
 	);
 }
 
 function WorkflowStepHeaderContent({
 	step,
-	pendingAction,
+	approving,
 	actionError,
 	actionErrorOpen,
 	onActionErrorOpenChange,
-	onAction,
+	onApprove,
 }: {
 	step: WorkspaceWorkflowStepDetail;
-	pendingAction: WorkspaceWorkflowStepAction | null;
+	approving: boolean;
 	actionError: string | null;
 	actionErrorOpen: boolean;
 	onActionErrorOpenChange: (open: boolean) => void;
-	onAction: (
-		action: WorkspaceWorkflowStepAction,
-		reason?: string,
-	) => Promise<boolean>;
+	onApprove: () => Promise<boolean>;
 }) {
-	const [rejectOpen, setRejectOpen] = useState(false);
-	const [rejectComment, setRejectComment] = useState("");
-	const canRespondApproval =
-		step.status === "waiting" && step.canReject != null;
-	const canReject = canRespondApproval && step.canReject !== false;
-	const canSubmitReject =
-		rejectComment.trim().length > 0 && pendingAction == null;
-	const submitReject = useCallback(async () => {
-		if (!canSubmitReject) return;
-		const ok = await onAction("reject", rejectComment.trim());
-		if (!ok) return;
-		setRejectComment("");
-		setRejectOpen(false);
-	}, [canSubmitReject, onAction, rejectComment]);
 	const approve = useCallback(() => {
-		void onAction("approve");
-	}, [onAction]);
+		void onApprove();
+	}, [onApprove]);
 	return (
 		<div className="flex min-w-0 flex-1 items-center gap-3 pl-2">
 			<div className="flex min-w-0 items-center gap-2">
@@ -294,64 +269,15 @@ function WorkflowStepHeaderContent({
 						</PopoverContent>
 					</Popover>
 				)}
-				{canRespondApproval && (
-					<>
-						{canReject && (
-							<Popover open={rejectOpen} onOpenChange={setRejectOpen}>
-								<PopoverTrigger asChild>
-									<Button
-										type="button"
-										variant="outline"
-										size="xs"
-										disabled={pendingAction != null}
-									>
-										{pendingAction === "reject" ? "Rejecting..." : "Reject"}
-									</Button>
-								</PopoverTrigger>
-								<PopoverContent side="bottom" align="end" className="w-80 p-3">
-									<div className="flex flex-col gap-2">
-										<div className="text-sm font-medium">Reject step</div>
-										<Textarea
-											value={rejectComment}
-											onChange={(event) => setRejectComment(event.target.value)}
-											placeholder="Reject comment..."
-											className="min-h-20 resize-none text-sm"
-											aria-label="Reject comment"
-										/>
-										<div className="flex justify-end gap-2">
-											<Button
-												type="button"
-												variant="ghost"
-												size="xs"
-												onClick={() => {
-													setRejectComment("");
-													setRejectOpen(false);
-												}}
-											>
-												Cancel
-											</Button>
-											<Button
-												type="button"
-												size="xs"
-												disabled={!canSubmitReject}
-												onClick={() => void submitReject()}
-											>
-												Reject
-											</Button>
-										</div>
-									</div>
-								</PopoverContent>
-							</Popover>
-						)}
-						<Button
-							type="button"
-							size="xs"
-							disabled={pendingAction != null}
-							onClick={approve}
-						>
-							{pendingAction === "approve" ? "Approving..." : "Approve"}
-						</Button>
-					</>
+				{step.canApprove === true && (
+					<Button
+						type="button"
+						size="xs"
+						disabled={approving}
+						onClick={approve}
+					>
+						{approving ? "Approving..." : "Approve"}
+					</Button>
 				)}
 			</div>
 		</div>

@@ -26,5 +26,6 @@ nodes:
   - name: done
     session:
       permission: edit
+      gate: auto
       facets:
         instruction: done

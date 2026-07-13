@@ -231,12 +231,7 @@ export interface WorkflowState {
 	activeParallelSteps?: ParallelStepState[];
 	startedAt: number;
 	updatedAt: number;
-	approvalOperations?: ApprovalOperations;
 	stallObservations?: WorkflowStallObservation[];
-}
-
-interface ApprovalOperations {
-	canReject: boolean;
 }
 
 /// Workflow run 一覧コマンドから返る

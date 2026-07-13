@@ -105,7 +105,7 @@ pub enum WorkflowExecutionStateView {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalOperationsView {
-    pub can_reject: bool,
+    pub can_approve: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

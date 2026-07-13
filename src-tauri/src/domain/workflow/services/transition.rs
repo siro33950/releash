@@ -1,8 +1,7 @@
 //! Pure workflow transition decisions.
 
 use crate::domain::workflow::value_objects::{
-    ApprovalDecision, NodeKindName, SessionGate, WorkflowDefinition, WorkflowExecutionState,
-    WorkflowStepFailureKind,
+    NodeKindName, SessionGate, WorkflowDefinition, WorkflowExecutionState, WorkflowStepFailureKind,
 };
 use crate::domain::workflow::WorkflowError;
 
@@ -22,11 +21,6 @@ pub enum TurnCompleteDecision {
         kind: NodeKindName,
     },
     NotRunning,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ApprovalTransitionDecision {
-    Advance,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,15 +60,9 @@ pub struct ApprovalCompletion {
     pub artifact_contract: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ApprovalApplicationTransition {
-    Advance,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalApplicationPlan {
     pub completion: ApprovalCompletion,
-    pub transition: ApprovalApplicationTransition,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,12 +202,11 @@ pub fn plan_turn_complete_mutation_with_signal(
     Ok(plan)
 }
 
-pub fn decide_approval_action(
+pub fn decide_approve_action(
     workflow: &WorkflowDefinition,
     current_index: usize,
     state: &WorkflowExecutionState,
-    decision: &ApprovalDecision,
-) -> Result<ApprovalTransitionDecision, WorkflowError> {
+) -> Result<(), WorkflowError> {
     if !matches!(state, WorkflowExecutionState::WaitingApproval) {
         return Err(WorkflowError::invalid_state(
             "Workflow is not waiting for approval",
@@ -229,36 +216,27 @@ pub fn decide_approval_action(
     let node = workflow.nodes.get(current_index).ok_or_else(|| {
         WorkflowError::validation(format!("node index out of range: {current_index}"))
     })?;
-
-    match decision {
-        ApprovalDecision::Approve { .. } => Ok(ApprovalTransitionDecision::Advance),
-        ApprovalDecision::Reject { .. } => Err(WorkflowError::invalid_state(format!(
-            "Node '{}' does not support reject transitions in rules",
-            node.name
-        ))),
-        ApprovalDecision::Abort => Err(WorkflowError::invalid_state(
-            "Abort is not an approval transition",
-        )),
+    if !node.is_approval_session() {
+        return Err(WorkflowError::UnauthorizedApprovalTarget(
+            "current step is not an approval-gated session".to_string(),
+        ));
     }
+    Ok(())
 }
 
 pub fn plan_approval_application(
     workflow: &WorkflowDefinition,
     current_index: usize,
     state: &WorkflowExecutionState,
-    decision: &ApprovalDecision,
     application: ApprovalApplication,
 ) -> Result<ApprovalApplicationPlan, WorkflowError> {
-    let transition = match decide_approval_action(workflow, current_index, state, decision)? {
-        ApprovalTransitionDecision::Advance => ApprovalApplicationTransition::Advance,
-    };
+    decide_approve_action(workflow, current_index, state)?;
     Ok(ApprovalApplicationPlan {
         completion: ApprovalCompletion {
             result: application.effective_result,
             structured_output: application.structured_output,
             artifact_contract: application.artifact_contract,
         },
-        transition,
     })
 }
 
@@ -314,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn decide_turn_complete_action_distinguishes_agent_approval_and_unexpected_node() {
+    fn decide_turn_complete_action_distinguishes_session_gates_and_unexpected_node() {
         let workflow = workflow(vec![
             node("agent", TestKind::Session),
             node("approval", TestKind::ApprovalSession),
@@ -399,22 +377,6 @@ mod tests {
     }
 
     #[test]
-    fn decide_approval_action_reject_is_no_longer_rules_based() {
-        let approval = node("approve", TestKind::ApprovalSession);
-        let workflow = workflow(vec![approval]);
-
-        assert!(decide_approval_action(
-            &workflow,
-            0,
-            &WorkflowExecutionState::WaitingApproval,
-            &ApprovalDecision::Reject {
-                reason: "needs fix".to_string()
-            },
-        )
-        .is_err());
-    }
-
-    #[test]
     fn plan_approval_application_keeps_completion_data_on_approve() {
         let approval = node("approve", TestKind::ApprovalSession);
         let workflow = workflow(vec![approval, node("fix", TestKind::Session)]);
@@ -423,7 +385,6 @@ mod tests {
             &workflow,
             0,
             &WorkflowExecutionState::WaitingApproval,
-            &ApprovalDecision::Approve { comment: None },
             ApprovalApplication {
                 effective_result: "approve".to_string(),
                 structured_output: Some(serde_json::json!({ "decision": "approve" })),
@@ -432,11 +393,20 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.transition, ApprovalApplicationTransition::Advance);
         assert_eq!(plan.completion.result, "approve");
         assert_eq!(
             plan.completion.artifact_contract.as_deref(),
             Some("approval-contract")
         );
+    }
+
+    #[test]
+    fn approve_rejects_waiting_state_on_non_approval_gate_session() {
+        let workflow = workflow(vec![node("implement", TestKind::Session)]);
+
+        assert!(matches!(
+            decide_approve_action(&workflow, 0, &WorkflowExecutionState::WaitingApproval),
+            Err(WorkflowError::UnauthorizedApprovalTarget(_))
+        ));
     }
 }

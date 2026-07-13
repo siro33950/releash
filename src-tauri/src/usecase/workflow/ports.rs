@@ -277,12 +277,8 @@ pub struct PendingRuntimeCommand {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PendingRuntimeCommandPayload {
     Approve {
-        node_name: Option<String>,
+        node_name: String,
         comment: Option<String>,
-    },
-    Reject {
-        node_name: Option<String>,
-        reason: String,
     },
     Abort {
         node_name: Option<String>,

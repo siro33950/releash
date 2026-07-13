@@ -383,54 +383,14 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 				runId: "run-1",
 				stepId: "run-1:review:1",
 				stepName: "review",
-				action: "approve",
 			});
 
 			expect(mockInvoke).toHaveBeenNthCalledWith(1, "approve_workflow_step", {
-				runId: "run-1",
-				stepName: "review",
-				decision: { approve: { comment: null } },
-			});
-			expect(refreshEvents).toHaveLength(1);
-			expect(refreshEvents[0].detail).toEqual({ worktreePath: "/repo" });
-			expect(mockInvoke).toHaveBeenNthCalledWith(
-				2,
-				"get_workspace_workflow_step_detail",
-				{
-					worktreePath: "/repo",
+				args: {
 					runId: "run-1",
-					stepId: "run-1:review:1",
+					stepName: "review",
+					comment: null,
 				},
-			);
-			expect(result).toBe(reloaded);
-		} finally {
-			window.removeEventListener("workspace-tree-refresh", onRefresh);
-		}
-	});
-
-	it("submits reject with the comment as the decision reason", async () => {
-		const reloaded = stepDetail({ status: "failed" });
-		const refreshEvents: Array<CustomEvent<{ worktreePath?: string }>> = [];
-		const onRefresh = (event: Event) => {
-			refreshEvents.push(event as CustomEvent<{ worktreePath?: string }>);
-		};
-		window.addEventListener("workspace-tree-refresh", onRefresh);
-		mockInvoke.mockResolvedValueOnce(undefined).mockResolvedValueOnce(reloaded);
-
-		try {
-			const result = await submitWorkspaceWorkflowStepAction({
-				worktreePath: "/repo",
-				runId: "run-1",
-				stepId: "run-1:review:1",
-				stepName: "review",
-				action: "reject",
-				reason: "needs tests",
-			});
-
-			expect(mockInvoke).toHaveBeenNthCalledWith(1, "approve_workflow_step", {
-				runId: "run-1",
-				stepName: "review",
-				decision: { reject: { reason: "needs tests" } },
 			});
 			expect(refreshEvents).toHaveLength(1);
 			expect(refreshEvents[0].detail).toEqual({ worktreePath: "/repo" });

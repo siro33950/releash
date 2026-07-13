@@ -45,7 +45,7 @@ pub struct WorkflowState {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalOperations {
-    pub can_reject: bool,
+    pub can_approve: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -238,7 +238,7 @@ pub(crate) fn workflow_state_to_domain_snapshot(
             .collect(),
         approval_operations: state.approval_operations.map(|operations| {
             crate::domain::workflow::ApprovalOperations {
-                can_reject: operations.can_reject,
+                can_approve: operations.can_approve,
             }
         }),
         stall_observations: state
