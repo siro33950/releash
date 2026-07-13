@@ -1,4 +1,4 @@
-name: 01_authoring_opus48
+name: 01_authoring_claude
 description: ユーザーとの対話を通じて requirements / behavior / design の Spec 3 文書をClaude系モデルで構築する。レビューループは行わない。
 builtin: true
 

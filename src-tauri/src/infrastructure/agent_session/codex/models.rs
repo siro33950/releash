@@ -17,9 +17,9 @@ use super::wire::{
 pub(crate) const CODEX_BACKEND_ID: &str = "codex";
 
 const CODEX_FIXED_MODELS: &[(&str, &str)] = &[
-    ("gpt-5.5", "GPT-5.5"),
-    ("gpt-5.4", "GPT-5.4"),
-    ("gpt-5.4-mini", "GPT-5.4 Mini"),
+    ("gpt-5.6-sol", "GPT-5.6 Sol"),
+    ("gpt-5.6-terra", "GPT-5.6 Terra"),
+    ("gpt-5.6-luna", "GPT-5.6 Luna"),
 ];
 
 #[derive(Debug, Clone)]
@@ -312,8 +312,8 @@ mod tests {
             .map(|model| model.display_name.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(ids, vec!["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
-        assert_eq!(names, vec!["GPT-5.5", "GPT-5.4", "GPT-5.4 Mini"]);
+        assert_eq!(ids, vec!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",]);
+        assert_eq!(names, vec!["GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna",]);
     }
 
     #[test]

@@ -1,11 +1,11 @@
-name: 05_review-fix_gpt55
-description: フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針と実装差分を GPT 系モデルで確認して不足を Task 化し、Task 実装ループで方針との合致を保証する。最後に人間が承認した Thread を resolve する。
+name: 05_review-fix_claude
+description: フルレビューで残った Open Thread の [FIX_POLICY_APPROVED] 方針と実装差分を確認して不足を Task 化し、Claude 系モデルで Task を実装するループで方針との合致を保証する。最後に人間が承認した Thread を resolve する。
 builtin: true
 
 nodes:
   - name: check_and_make_tasks
     type: agent
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     instruction: review-fix-check-tasks
     output_contract: review-fix-tasks
@@ -19,8 +19,8 @@ nodes:
 
   - name: implement_tasks
     type: agent
-    model: gpt-5.5
-    permission: full
+    model: claude-opus-4-8
+    permission: edit
     instruction: review-fix
     policy: coding
     pass_output_from:
@@ -34,7 +34,7 @@ nodes:
 
   - name: report
     type: approval
-    model: gpt-5.5
-    permission: full
+    model: claude-opus-4-8
+    permission: edit
     instruction: review-fix-report
     knowledge: releash-thread-cli

@@ -13,7 +13,7 @@ nodes:
 
   - name: policy_consistency_review
     type: agent
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     instruction: review-fix-policy-consistency
     policy: reviewing

@@ -5,7 +5,7 @@ builtin: true
 nodes:
   - name: check_and_make_tasks
     type: agent
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     instruction: review-fix-check-tasks
     output_contract: review-fix-tasks
@@ -19,7 +19,7 @@ nodes:
 
   - name: implement_tasks
     type: agent
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     instruction: review-fix
     policy: coding
