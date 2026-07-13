@@ -19,7 +19,7 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
 };
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::engine_start_guard as workflow_engine_start_guard;
-use crate::adaptor::gateway::workflow::event::{ApprovalDecisionRecord, WorkflowEvent};
+use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 use crate::adaptor::gateway::workflow::event_log_query::{
     request_event_already_recorded, RequestEventKind, RequestEventLookupError,
 };
@@ -56,11 +56,11 @@ use crate::adaptor::gateway::workflow::runtime_commit::{
 use crate::adaptor::gateway::workflow::runtime_events as workflow_runtime_events;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::runtime_state::NextStepDecision;
-use crate::adaptor::gateway::workflow::runtime_state::{
-    ApprovalDecision, ParallelChildState, SessionWorkflowRef, WorkflowExecution,
-};
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::runtime_state::{ParallelChildRun, ParallelRunState};
+use crate::adaptor::gateway::workflow::runtime_state::{
+    ParallelChildState, SessionWorkflowRef, WorkflowExecution,
+};
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::schema::NodeDefinition;
 #[cfg(test)]
@@ -2070,22 +2070,17 @@ impl WorkflowRuntimeService {
 
     fn apply_approval_application(
         exec: &mut WorkflowExecution,
-        decision: &ApprovalDecision,
         application: workflow_transition::ApprovalApplication,
     ) -> Result<StepOutcome, WorkflowEngineError> {
-        let plan = exec.plan_approval_application(decision, application)?;
-        let outcome = match plan.transition {
-            workflow_transition::ApprovalApplicationTransition::Advance => {
-                let completion = plan.completion;
-                let entry = exec.make_step_history_entry(
-                    Some(completion.result),
-                    completion.structured_output,
-                    completion.artifact_contract,
-                );
-                exec.step_history.push(entry);
-                exec.apply_advance()
-            }
-        };
+        let plan = exec.plan_approval_application(application)?;
+        let completion = plan.completion;
+        let entry = exec.make_step_history_entry(
+            Some(completion.result),
+            completion.structured_output,
+            completion.artifact_contract,
+        );
+        exec.step_history.push(entry);
+        let outcome = exec.apply_advance();
         Ok(outcome)
     }
 
@@ -2104,17 +2099,15 @@ impl WorkflowRuntimeService {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
-        decision: ApprovalDecision,
-        approve_comment: Option<String>,
-        expected_step_name: Option<&str>,
+        comment: Option<String>,
+        expected_step_name: &str,
     ) -> Result<(), WorkflowEngineError> {
         self.resolve_workflow_approval_with_commit_context(
             app,
             session_store,
             agent_runtime,
             run_id,
-            decision,
-            approve_comment,
+            comment,
             expected_step_name,
             None,
         )
@@ -2128,9 +2121,8 @@ impl WorkflowRuntimeService {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
-        decision: ApprovalDecision,
-        approve_comment: Option<String>,
-        expected_step_name: Option<&str>,
+        comment: Option<String>,
+        expected_step_name: &str,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError> {
         self.handle_approval(
@@ -2138,8 +2130,7 @@ impl WorkflowRuntimeService {
             session_store,
             agent_runtime,
             run_id,
-            decision,
-            approve_comment,
+            comment,
             expected_step_name,
             commit_context,
         )
@@ -2155,16 +2146,10 @@ impl WorkflowRuntimeService {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
-        decision: ApprovalDecision,
-        approve_comment: Option<String>,
-        expected_step_name: Option<&str>,
+        comment: Option<String>,
+        expected_step_name: &str,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError> {
-        let (result_tag, decision_record) = match &decision {
-            ApprovalDecision::Approve => ("approve", ApprovalDecisionRecord::Approve),
-            ApprovalDecision::Reject { .. } => ("reject", ApprovalDecisionRecord::Reject),
-        };
-
         // target検証 + session_id + worktree_path + contract 提出状態を1回のロックで取得
         let (
             current_session_id,
@@ -2182,7 +2167,7 @@ impl WorkflowRuntimeService {
             workflow_approval_runtime::resolve_approval_target_snapshot(
                 exec,
                 Some(run_id),
-                expected_step_name,
+                Some(expected_step_name),
             )?;
             let node = &exec.workflow.nodes[exec.current_step_index];
             let artifact_contract = node.artifact.clone();
@@ -2210,83 +2195,54 @@ impl WorkflowRuntimeService {
             )
         };
 
-        // Reject時: 空コメントバリデーション + Approve/Reject 共通の長さ上限検証
-        // （副作用の前に実施）
-        workflow_approval_runtime::validate_approval_input(&decision, approve_comment.as_deref())?;
+        workflow_approval_runtime::validate_approve_comment(comment.as_deref())?;
+        let turn_phase = if let Some(ref sid) = current_session_id {
+            agent_runtime.turn_phase(sid).await
+        } else {
+            None
+        };
+        workflow_approval_runtime::validate_approval_turn_phase(turn_phase)?;
 
-        if matches!(decision, ApprovalDecision::Approve) {
-            let turn_phase = if let Some(ref sid) = current_session_id {
-                agent_runtime.turn_phase(sid).await
+        let approve_submitted_output = if let Some(ref contract) = approval_artifact_contract {
+            if let Some(output) = approval_submitted_output {
+                Some(output)
             } else {
-                None
-            };
-            workflow_approval_runtime::validate_approval_turn_phase(turn_phase)?;
-        }
-
-        let approve_submitted_output = if matches!(decision, ApprovalDecision::Approve) {
-            if let Some(ref contract) = approval_artifact_contract {
-                if let Some(output) = approval_submitted_output {
-                    Some(output)
-                } else {
-                    self.handle_missing_required_output(
-                        app,
-                        session_store,
-                        agent_runtime,
-                        &worktree_path,
-                        run_id,
-                        &workflow_name_for_contract,
-                        &node_name_for_contract,
-                        contract,
-                        approval_run_index,
-                        current_session_id.as_deref(),
-                        None,
-                        SubmissionViolation::MissingSubmitOutput,
-                        None,
-                    )
-                    .await?;
-                    return Err(WorkflowEngineError::ValidationError(
-                        "required structured output has not been submitted".to_string(),
-                    ));
-                }
-            } else {
-                None
+                self.handle_missing_required_output(
+                    app,
+                    session_store,
+                    agent_runtime,
+                    &worktree_path,
+                    run_id,
+                    &workflow_name_for_contract,
+                    &node_name_for_contract,
+                    contract,
+                    approval_run_index,
+                    current_session_id.as_deref(),
+                    None,
+                    SubmissionViolation::MissingSubmitOutput,
+                    None,
+                )
+                .await?;
+                return Err(WorkflowEngineError::ValidationError(
+                    "required structured output has not been submitted".to_string(),
+                ));
             }
         } else {
             None
         };
 
-        // [08] prose 抽出経路廃止に伴い、approval node の structured output は CLI / Tauri
-        // 経由の `SubmitOutput` でしか確定しない。Approve 時は提出済み output を採用し、
-        // Reject は理由を redaction 済み JSON に整形して application 入力に渡す。
         let (structured_output, contract_result): (Option<serde_json::Value>, Option<String>) =
-            match &decision {
-                ApprovalDecision::Approve => approve_submitted_output
-                    .as_ref()
-                    .map(|output| (output.structured_output.clone(), output.result.clone()))
-                    .unwrap_or((None, None)),
-                ApprovalDecision::Reject { comment } => {
-                    let secrets = secret_source::collect_configured_secret_values(app);
-                    (
-                        Some(workflow_approval_runtime::reject_structured_output(
-                            comment, &secrets,
-                        )),
-                        None,
-                    )
-                }
-            };
+            approve_submitted_output
+                .as_ref()
+                .map(|output| (output.structured_output.clone(), output.result.clone()))
+                .unwrap_or((None, None));
 
-        let application_artifact_contract: Option<String> = if matches!(
-            decision,
-            ApprovalDecision::Approve
-        ) && approve_submitted_output
-            .is_some()
-        {
+        let application_artifact_contract: Option<String> = if approve_submitted_output.is_some() {
             approval_artifact_contract.clone()
         } else {
             None
         };
-        // contract resultがあればそちらを優先、なければresult_tag
-        let effective_result = contract_result.unwrap_or_else(|| result_tag.to_string());
+        let effective_result = contract_result.unwrap_or_else(|| "approve".to_string());
 
         // [04] atomic mutation 境界: mutation 直前の WorkflowExecution 全体を snapshot に
         // 保持し、ApprovalResolved event append / persist のいずれかが失敗した場合は
@@ -2300,14 +2256,13 @@ impl WorkflowRuntimeService {
             workflow_approval_runtime::resolve_approval_target_snapshot(
                 exec,
                 Some(run_id),
-                expected_step_name,
+                Some(expected_step_name),
             )?;
             let workflow_name = exec.workflow.name.clone();
             let node_name = exec.workflow.nodes[exec.current_step_index].name.clone();
             let snapshot_before = exec.clone();
             let outcome = Self::apply_approval_application(
                 exec,
-                &decision,
                 workflow_transition::ApprovalApplication {
                     effective_result,
                     structured_output,
@@ -2324,14 +2279,9 @@ impl WorkflowRuntimeService {
         // [04] commit point: ApprovalResolved と、同じ受理サイクルで確定した
         // NodeCompleted / NodeStarted / terminal event を同一 batch で必須 append する。
         // append / persist 失敗時は snapshot で全フィールド一括復元する。
-        // 機密値 redaction: approve コメント / reject 理由には設定済み secret を含む可能性が
-        // あるため、event log に保存する前に mask_sensitive_text() で redaction する
-        // （reject_structured_output が同じ secret 列で structured_output 側に行う処理と対称）。
-        let raw_event_comment = match &decision {
-            ApprovalDecision::Approve => approve_comment.clone(),
-            ApprovalDecision::Reject { comment } => Some(comment.clone()),
-        };
-        let event_comment = if let Some(raw) = raw_event_comment {
+        // approve コメントには設定済み secret を含む可能性があるため、event log に
+        // 保存する前に mask_sensitive_text() で redaction する。
+        let event_comment = if let Some(raw) = comment {
             let secrets = secret_source::collect_configured_secret_values(app);
             Some(workflow_secret_masker::mask_sensitive_text(&raw, &secrets))
         } else {
@@ -2342,7 +2292,6 @@ impl WorkflowRuntimeService {
             run_id: run_id.to_string(),
             workflow_name: workflow_name_for_event.clone(),
             node_name: node_name_for_event.clone(),
-            decision: decision_record,
             comment: event_comment,
             timestamp: approval_timestamp,
         };
@@ -4860,9 +4809,8 @@ impl WorkflowRuntimeService {
                         session_store,
                         agent_runtime,
                         &run_id,
-                        ApprovalDecision::Approve,
                         None,
-                        Some(&step_name),
+                        &step_name,
                     ))
                     .await;
                 }
@@ -5186,7 +5134,6 @@ impl WorkflowRuntimeService {
     async fn handle_approval_with_output_for_test(
         &self,
         worktree_path: &str,
-        decision: ApprovalDecision,
         expected_execution_id: Option<&str>,
         expected_step_name: Option<&str>,
     ) -> Result<StepOutcome, WorkflowEngineError> {
@@ -5199,7 +5146,6 @@ impl WorkflowRuntimeService {
         };
         self.handle_approval_with_output_for_run_for_test(
             &run_id,
-            decision,
             expected_execution_id,
             expected_step_name,
         )
@@ -5244,7 +5190,6 @@ impl WorkflowRuntimeService {
     async fn handle_approval_with_output_for_run_for_test(
         &self,
         run_id: &str,
-        decision: ApprovalDecision,
         expected_execution_id: Option<&str>,
         expected_step_name: Option<&str>,
     ) -> Result<StepOutcome, WorkflowEngineError> {
@@ -5260,10 +5205,8 @@ impl WorkflowRuntimeService {
             )?;
         }
 
-        workflow_approval_runtime::validate_approval_input(&decision, None)?;
-        if matches!(decision, ApprovalDecision::Approve) {
-            workflow_approval_runtime::validate_approval_turn_phase(None)?;
-        }
+        workflow_approval_runtime::validate_approve_comment(None)?;
+        workflow_approval_runtime::validate_approval_turn_phase(None)?;
 
         let artifact_contract = {
             let execs = self.executions.lock().await;
@@ -5275,32 +5218,9 @@ impl WorkflowRuntimeService {
                 .clone()
         };
 
-        let result_tag = match &decision {
-            ApprovalDecision::Approve => "approve",
-            ApprovalDecision::Reject { .. } => "reject",
-        };
-        // [08] approval 経路の自由文 contract 抽出は廃止。approval node の構造化出力は
-        // CLI / Tauri 経由の `SubmitOutput` で確定する（spec [08] Rule 4）。Approve 時の
-        // `structured_output` は None で固定し、Reject 時のみ comment 由来の暫定 payload を
-        // 維持する（既存 reject 経路は本 issue のスコープ外）。
-        let (structured_output, contract_result): (Option<serde_json::Value>, Option<String>) =
-            match &decision {
-                ApprovalDecision::Approve => (None, None),
-                ApprovalDecision::Reject { comment } => (
-                    Some(workflow_approval_runtime::reject_structured_output(
-                        comment,
-                        &[],
-                    )),
-                    None,
-                ),
-            };
-
-        let application_artifact_contract = if matches!(decision, ApprovalDecision::Approve) {
-            artifact_contract.clone()
-        } else {
-            None
-        };
-        let effective_result = contract_result.unwrap_or_else(|| result_tag.to_string());
+        let structured_output = None;
+        let application_artifact_contract = artifact_contract;
+        let effective_result = "approve".to_string();
 
         let mut execs = self.executions.lock().await;
         let exec = execs
@@ -5313,7 +5233,6 @@ impl WorkflowRuntimeService {
         )?;
         Self::apply_approval_application(
             exec,
-            &decision,
             workflow_transition::ApprovalApplication {
                 effective_result,
                 structured_output,
@@ -5333,7 +5252,6 @@ impl WorkflowRuntimeService {
         {
             self.handle_approval_with_output_for_test(
                 worktree_path,
-                ApprovalDecision::Approve,
                 Some(&execution_id),
                 Some(&step_name),
             )

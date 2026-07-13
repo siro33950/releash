@@ -107,7 +107,7 @@ pub(crate) struct WorkspaceWorkflowStepNodeDto {
     pub status: String,
     pub step_type: &'static str,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub can_reject: Option<bool>,
+    pub can_approve: Option<bool>,
     pub updated_at: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_index: Option<u32>,
@@ -616,7 +616,7 @@ fn workflow_steps(
                     title: step_name.clone(),
                     status: step_status_for_group(&step_name, run_index, &refs, state).to_string(),
                     step_type: step_type_for_group(&step_name, state),
-                    can_reject: step_can_reject(&step_name, run_index, state),
+                    can_approve: step_can_approve(&step_name, run_index, state),
                     updated_at,
                     run_index,
                     sessions,
@@ -676,30 +676,25 @@ fn step_type_for_group(step_name: &str, state: Option<&WorkflowStateSnapshot>) -
         .unwrap_or("session")
 }
 
-fn step_can_reject(
+fn step_can_approve(
     step_name: &str,
     run_index: Option<u32>,
     state: Option<&WorkflowStateSnapshot>,
 ) -> Option<bool> {
     let state = state?;
-    if state.current_step_name != step_name {
+    if state.current_step_name != step_name
+        || session_projection::current_run_index(state) != run_index
+        || !matches!(
+            state.state,
+            crate::domain::workflow::WorkflowExecutionState::WaitingApproval
+        )
+    {
         return None;
     }
-    if session_projection::current_run_index(state) != run_index {
-        return None;
-    }
-    if !matches!(
-        state.state,
-        crate::domain::workflow::WorkflowExecutionState::WaitingApproval
-    ) {
-        return None;
-    }
-    Some(
-        state
-            .approval_operations
-            .as_ref()
-            .is_some_and(|operations| operations.can_reject),
-    )
+    state
+        .approval_operations
+        .as_ref()
+        .map(|operations| operations.can_approve)
 }
 
 fn workflow_execution_state_representative(
@@ -1302,7 +1297,7 @@ mod tests {
             "review".to_string(),
             STEP_STATE_WAITING_APPROVAL.to_string(),
         )]);
-        snapshot.approval_operations = Some(ApprovalOperations { can_reject: true });
+        snapshot.approval_operations = Some(ApprovalOperations { can_approve: true });
         snapshot.workflow_definition.nodes = vec![session_node("review", SessionGate::Approval)];
         snapshot.step_history = vec![crate::domain::workflow::StepHistoryEntry {
             step_name: "review".to_string(),
@@ -1352,11 +1347,11 @@ mod tests {
 
         assert_eq!(previous.status, STEP_STATE_COMPLETED);
         assert_eq!(previous.step_type, "session");
-        assert_eq!(previous.can_reject, None);
+        assert_eq!(previous.can_approve, None);
         assert_eq!(previous.sessions[0].id, "review-1");
         assert_eq!(current.status, "waiting");
         assert_eq!(current.step_type, "session");
-        assert_eq!(current.can_reject, Some(true));
+        assert_eq!(current.can_approve, Some(true));
         assert_eq!(current.sessions[0].id, "review-2");
     }
 

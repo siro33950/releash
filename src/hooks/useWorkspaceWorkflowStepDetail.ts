@@ -5,8 +5,6 @@ import type { SessionStatus } from "@/types/session";
 import type { WorkflowStatePayload } from "@/types/workflow";
 import type { WorkspaceWorkflowStepDetail } from "@/types/workspace-tree";
 
-export type WorkspaceWorkflowStepAction = "approve" | "reject";
-
 interface UseWorkspaceWorkflowStepDetailInput {
 	worktreePath: string | null;
 	runId: string | null;
@@ -157,23 +155,18 @@ export async function submitWorkspaceWorkflowStepAction({
 	runId,
 	stepId,
 	stepName,
-	action,
-	reason,
 }: {
 	worktreePath: string;
 	runId: string;
 	stepId: string;
 	stepName: string;
-	action: WorkspaceWorkflowStepAction;
-	reason?: string;
 }): Promise<WorkspaceWorkflowStepDetail | null> {
 	await invoke("approve_workflow_step", {
-		runId,
-		stepName,
-		decision:
-			action === "approve"
-				? { approve: { comment: null } }
-				: { reject: { reason: reason ?? "" } },
+		args: {
+			runId,
+			stepName,
+			comment: null,
+		},
 	});
 	window.dispatchEvent(
 		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),

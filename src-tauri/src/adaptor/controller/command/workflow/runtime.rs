@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use serde::Deserialize;
+
 use crate::adaptor::controller::command::workflow::{
     parse_workflow_approval_permission_mode, parse_workflow_start_permission_mode, validate_run_id,
 };
@@ -26,44 +28,20 @@ fn parse_domain_trigger_source(
     }
 }
 
-/// approval UI / Tauri command 境界からの判断入力 DTO。
-///
-/// [04] Command / Event Boundary: engine 内部の `ApprovalDecision` には依存させず、
-/// command 境界専用の DTO として usecase command への変換責務だけを担う。
-/// wire 形式: `{"approve":{"comment":...}}` / `{"reject":{"reason":...}}` / `"abort"`。
-/// 旧 unit variant `"approve"` は受理しない。
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalDecisionInput {
-    Approve {
-        #[serde(default)]
-        comment: Option<String>,
-    },
-    Reject {
-        reason: String,
-    },
-    Abort,
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ApproveWorkflowStepArgs {
+    pub run_id: String,
+    pub step_name: String,
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
-impl ApprovalDecisionInput {
-    pub(super) fn into_approval_command(
-        self,
-        run_id: String,
-        step_name: String,
-    ) -> ApprovalCommand {
-        let decision = match self {
-            Self::Approve { comment } => {
-                crate::domain::workflow::ApprovalDecision::Approve { comment }
-            }
-            Self::Reject { reason } => crate::domain::workflow::ApprovalDecision::Reject { reason },
-            Self::Abort => crate::domain::workflow::ApprovalDecision::Abort,
-        };
-        ApprovalCommand {
-            run_id,
-            node_name: Some(step_name),
-            decision,
-        }
-    }
+#[cfg(test)]
+pub(crate) fn parse_approve_workflow_step_args(
+    value: &serde_json::Value,
+) -> Result<ApproveWorkflowStepArgs, serde_json::Error> {
+    serde_json::from_value::<ApproveWorkflowStepArgs>(value.clone())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -130,16 +108,22 @@ pub async fn get_workflow_state(
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn approve_workflow_step(
     runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
-    run_id: String,
-    decision: ApprovalDecisionInput,
-    step_name: String,
+    args: ApproveWorkflowStepArgs,
 ) -> Result<(), String> {
+    let ApproveWorkflowStepArgs {
+        run_id,
+        step_name,
+        comment,
+    } = args;
     validate_run_id(&run_id)?;
     runtime
-        .resolve_approval(decision.into_approval_command(run_id, step_name))
+        .resolve_approval(ApprovalCommand {
+            run_id,
+            node_name: step_name,
+            comment,
+        })
         .await
         .map_err(|e| e.to_string())
 }

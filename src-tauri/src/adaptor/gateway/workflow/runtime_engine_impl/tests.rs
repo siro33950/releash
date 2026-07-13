@@ -6,9 +6,7 @@ use crate::adaptor::gateway::workflow::approval_runtime::MAX_APPROVAL_COMMENT_CH
 use crate::adaptor::gateway::workflow::failure_wire::{
     submission_violation_reason, SubmissionViolation,
 };
-use crate::adaptor::gateway::workflow::runtime_state::{
-    ApprovalAction, LoopGuardResult, TurnCompleteAction,
-};
+use crate::adaptor::gateway::workflow::runtime_state::{LoopGuardResult, TurnCompleteAction};
 use crate::domain::agent_session::entities::PermissionResponse;
 use crate::domain::agent_session::gateway::{
     AgentBackend, AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, ForkSessionRequest,
@@ -1100,7 +1098,7 @@ fn make_test_step(
     }
 }
 
-fn make_approval_step(name: &str, instruction: &str, rules: Vec<Rule>) -> NodeDefinition {
+fn make_approval_gated_session(name: &str, instruction: &str, rules: Vec<Rule>) -> NodeDefinition {
     make_test_step(name, TestKind::ApprovalSession, instruction, rules, None)
 }
 
@@ -1442,14 +1440,11 @@ fn to_workflow_state_waiting_approval() {
     assert_eq!(ws.state, WorkflowExecutionState::WaitingApproval);
     assert_eq!(ws.current_step_name, "report");
     assert_eq!(ws.current_step_index, 3);
-    assert_eq!(
-        ws.approval_operations.as_ref().map(|ops| ops.can_reject),
-        Some(false)
-    );
+    assert!(ws.approval_operations.is_some());
 }
 
 #[test]
-fn to_workflow_state_waiting_approval_without_reject_rule_disables_reject() {
+fn to_workflow_state_waiting_approval_exposes_approval_operation() {
     let workflow = make_test_workflow();
     let exec = WorkflowExecution {
         id: "exec-1".to_string(),
@@ -1473,10 +1468,7 @@ fn to_workflow_state_waiting_approval_without_reject_rule_disables_reject() {
         },
     };
     let ws = exec.to_workflow_state();
-    assert_eq!(
-        ws.approval_operations.as_ref().map(|ops| ops.can_reject),
-        Some(false)
-    );
+    assert!(ws.approval_operations.is_some());
 }
 
 #[test]
@@ -2363,47 +2355,19 @@ fn turn_complete_action_auto_no_rules_returns_auto_evaluate_empty() {
     }
 }
 
-// ---- decide_approval_action ----
+// ---- decide_approve_action ----
 
 #[test]
-fn decide_approval_action_approve() {
+fn decide_approve_action_advances() {
     let mut exec = make_exec(3); // report (approval)
     exec.state = WorkflowExecutionState::WaitingApproval;
-    assert_eq!(
-        exec.decide_approval_action(&ApprovalDecision::Approve)
-            .unwrap(),
-        ApprovalAction::Advance
-    );
+    exec.decide_approve_action().unwrap();
 }
 
 #[test]
-fn decide_approval_action_reject_is_not_routable() {
-    let mut exec = make_exec(3); // report (approval)
-    exec.state = WorkflowExecutionState::WaitingApproval;
-    assert!(exec
-        .decide_approval_action(&ApprovalDecision::Reject {
-            comment: "Needs fix".to_string()
-        })
-        .is_err());
-}
-
-#[test]
-fn decide_approval_action_reject_no_rule() {
-    let mut exec = make_exec(0); // plan (interactive, no reject rule)
-    exec.state = WorkflowExecutionState::WaitingApproval;
-    assert!(exec
-        .decide_approval_action(&ApprovalDecision::Reject {
-            comment: "Needs fix".to_string()
-        })
-        .is_err());
-}
-
-#[test]
-fn decide_approval_action_not_waiting() {
+fn decide_approve_action_not_waiting() {
     let exec = make_exec(3); // report, state=Running
-    assert!(exec
-        .decide_approval_action(&ApprovalDecision::Approve)
-        .is_err());
+    assert!(exec.decide_approve_action().is_err());
 }
 
 // ---- validate_start ----
@@ -2776,7 +2740,6 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
     exec.workflow.nodes.push(fix);
     let outcome = WorkflowRuntimeService::apply_approval_application(
         &mut exec,
-        &ApprovalDecision::Approve,
         ApprovalApplication {
             effective_result: "approved".to_string(),
             structured_output: Some(structured),
@@ -2819,7 +2782,7 @@ fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
     let mut exec = make_minimal_approval_exec(
         "00000000-0000-0000-0000-000000000917",
         "policy-session",
-        "approval-step",
+        "policy-review",
     );
     let secret_env_value = "MY_TOKEN_VALUE_123456".to_string();
     let mut structured = serde_json::json!({
@@ -2831,7 +2794,6 @@ fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
 
     let outcome = WorkflowRuntimeService::apply_approval_application(
         &mut exec,
-        &ApprovalDecision::Approve,
         ApprovalApplication {
             effective_result: "approved".to_string(),
             structured_output: Some(structured),
@@ -2844,7 +2806,7 @@ fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
     let entry = exec
         .step_history
         .iter()
-        .find(|entry| entry.step_name == "approval-step")
+        .find(|entry| entry.step_name == "policy-review")
         .unwrap();
     let log = WorkflowEventLog::new(tmp.path());
     log.append(&WorkflowEvent::RunStarted {
@@ -3982,7 +3944,7 @@ fn build_parallel_step_prompt_no_policy_or_contract_returns_none_system_prompt()
     assert_eq!(instruction, "INSTR");
 }
 
-// ---- decide_approval_action ----
+// ---- decide_approve_action ----
 
 fn make_approval_exec(state: WorkflowExecutionState, rules: Vec<Rule>) -> WorkflowExecution {
     WorkflowExecution {
@@ -3992,7 +3954,11 @@ fn make_approval_exec(state: WorkflowExecutionState, rules: Vec<Rule>) -> Workfl
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_approval_step("review", "Review the code", rules)],
+            nodes: vec![make_approval_gated_session(
+                "review",
+                "Review the code",
+                rules,
+            )],
         },
         state,
         current_step_index: 0,
@@ -4017,61 +3983,8 @@ fn make_approval_exec(state: WorkflowExecutionState, rules: Vec<Rule>) -> Workfl
 // ---- approval input validation adapter ----
 
 #[test]
-fn validate_approval_decision_reject_empty_comment_returns_error() {
-    let result = workflow_approval_runtime::validate_approval_input(
-        &ApprovalDecision::Reject {
-            comment: "".to_string(),
-        },
-        None,
-    );
-    assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Reject comment must not be empty"));
-}
-
-#[test]
-fn validate_approval_decision_reject_whitespace_only_returns_error() {
-    let result = workflow_approval_runtime::validate_approval_input(
-        &ApprovalDecision::Reject {
-            comment: "   \n\t  ".to_string(),
-        },
-        None,
-    );
-    assert!(result.is_err());
-}
-
-#[test]
-fn validate_approval_decision_reject_over_limit_returns_error() {
-    let result = workflow_approval_runtime::validate_approval_input(
-        &ApprovalDecision::Reject {
-            comment: "x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1),
-        },
-        None,
-    );
-    assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .starts_with("validation_error:"));
-}
-
-#[test]
-fn validate_approval_decision_reject_with_comment_ok() {
-    let result = workflow_approval_runtime::validate_approval_input(
-        &ApprovalDecision::Reject {
-            comment: "Please fix the bug".to_string(),
-        },
-        None,
-    );
-    assert!(result.is_ok());
-}
-
-#[test]
-fn validate_approval_decision_approve_ok() {
-    let result =
-        workflow_approval_runtime::validate_approval_input(&ApprovalDecision::Approve, None);
+fn validate_approve_comment_none_is_ok() {
+    let result = workflow_approval_runtime::validate_approve_comment(None);
     assert!(result.is_ok());
 }
 
@@ -4202,7 +4115,7 @@ fn validate_approval_turn_phase_rejects_unfinished_turns() {
 }
 
 // [08] 旧 `validate_approval_contract_extraction` ベースの 4 テストは prose 抽出経路の
-// 廃止に伴い削除した。approval node の構造化出力は CLI / Tauri 経由の `SubmitOutput`
+// 廃止に伴い削除した。approval-gated session の構造化出力は CLI / Tauri 経由の `SubmitOutput`
 // で確定し、対応する境界テストは `dispatch_boundary_tests::submit_output_*` 群と
 // `workflow::contract::tests::validate_contract_value_*` 群でカバーされる。
 
@@ -4276,7 +4189,7 @@ async fn validate_approval_chat_instruction_rejects_empty_or_whitespace_only_con
 }
 
 #[tokio::test]
-async fn validate_approval_chat_instruction_rejects_current_approval_step_before_waiting() {
+async fn validate_approval_chat_instruction_rejects_current_gated_session_before_waiting() {
     let engine = WorkflowRuntimeService::new_for_test();
     let mut exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
     exec.current_session_id = Some("step-session".to_string());
@@ -4367,67 +4280,6 @@ async fn validate_approval_chat_instruction_rejects_stale_approved_policy_sessio
     ));
 }
 
-#[tokio::test]
-async fn validate_approval_chat_instruction_rejects_stale_rejected_policy_session() {
-    let engine = WorkflowRuntimeService::new_for_test();
-    let mut exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
-    exec.workflow.nodes[0].name = "implementation_fix_policy".to_string();
-    exec.workflow.nodes[0].artifact = Some("approved-fix-policy".to_string());
-    exec.current_session_id = Some("implementation-approval-session".to_string());
-    exec.step_history.push(StepHistoryEntry {
-        step_name: "implementation_fix_policy".to_string(),
-        completed_at: 1000.0,
-        result: Some("reject".to_string()),
-        session_id: Some("stale-rejected-policy-session".to_string()),
-        token_usage: None,
-        structured_output: Some(serde_json::json!({
-            "decision": "reject",
-            "comment": "Revise policy."
-        })),
-        run_index: 1,
-        child_outputs: None,
-        state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
-    });
-    exec.step_outputs.insert(
-        "implementation_fix_policy".to_string(),
-        StepOutput {
-            step_name: "implementation_fix_policy".to_string(),
-            run_index: 1,
-            session_id: Some("stale-rejected-policy-session".to_string()),
-            result: Some("reject".to_string()),
-            structured_output: Some(serde_json::json!({
-                "decision": "reject",
-                "comment": "Revise policy."
-            })),
-            artifact_contract: None,
-            token_usage: None,
-            completed_at: 1000.0,
-        },
-    );
-    let run_id = exec.id.clone();
-    {
-        let mut execs = engine.executions.lock().await;
-        execs.insert(run_id.clone(), exec);
-    }
-    {
-        let mut refs = engine.session_workflow_refs.lock().await;
-        refs.insert(
-            "stale-rejected-policy-session".to_string(),
-            SessionWorkflowRef {
-                run_id: run_id.clone(),
-            },
-        );
-    }
-
-    let result = engine
-        .validate_approval_chat_instruction("stale-rejected-policy-session", "Please change policy")
-        .await;
-    assert!(matches!(
-        result.unwrap_err(),
-        WorkflowEngineError::InvalidState(_)
-    ));
-}
-
 #[test]
 fn latest_assistant_output_after_approval_chat_adjustment_is_selected() {
     let session = crate::usecase::agent_session::session::ChatSession {
@@ -4493,31 +4345,7 @@ fn latest_assistant_output_after_approval_chat_adjustment_is_selected() {
     assert_eq!(output, "latest approved policy");
 }
 
-// ---- make_step_history_entry ----
-
-#[test]
-fn make_step_history_entry_reject_no_structured_output() {
-    let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
-    let entry = exec.make_step_history_entry(Some("reject".to_string()), None, None);
-    assert_eq!(entry.result.as_deref(), Some("reject"));
-    assert!(entry.structured_output.is_none());
-    // structured_outputがNoneなのでStepOutputは生成されない
-    assert!(!exec.step_outputs.contains_key("review"));
-}
-
 // ---- handle_approval integration (lock-inner logic) ----
-
-#[test]
-fn reject_comment_is_valid_input_but_not_a_workflow_transition() {
-    let decision = ApprovalDecision::Reject {
-        comment: "Fix the naming convention".to_string(),
-    };
-
-    workflow_approval_runtime::validate_approval_input(&decision, None).unwrap();
-    let exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
-
-    assert!(exec.decide_approval_action(&decision).is_err());
-}
 
 #[test]
 fn apply_approval_application_records_approved_policy_and_advances_once() {
@@ -4530,7 +4358,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
             schemas: Default::default(),
             nodes: vec![
                 {
-                    let mut step = make_approval_step(
+                    let mut step = make_approval_gated_session(
                         "fix_policy",
                         "Review fix policy",
                         vec![Rule::Next("fix".to_string())],
@@ -4570,7 +4398,6 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
     });
     let first = WorkflowRuntimeService::apply_approval_application(
         &mut exec,
-        &ApprovalDecision::Approve,
         ApprovalApplication {
             effective_result: "approved".to_string(),
             structured_output: Some(structured_output),
@@ -4585,7 +4412,6 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
 
     let duplicate = WorkflowRuntimeService::apply_approval_application(
         &mut exec,
-        &ApprovalDecision::Approve,
         ApprovalApplication {
             effective_result: "approved".to_string(),
             structured_output: Some(serde_json::json!({
@@ -4615,7 +4441,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
             schemas: Default::default(),
             nodes: vec![
                 {
-                    let mut step = make_approval_step(
+                    let mut step = make_approval_gated_session(
                         "implementation_fix_policy",
                         "Review fix policy",
                         vec![Rule::Next("fix".to_string())],
@@ -4673,7 +4499,6 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
     });
     let outcome = WorkflowRuntimeService::apply_approval_application(
         &mut exec,
-        &ApprovalDecision::Approve,
         ApprovalApplication {
             effective_result: "approved".to_string(),
             structured_output: Some(structured_output),
@@ -4697,7 +4522,6 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
 
     let duplicate = WorkflowRuntimeService::apply_approval_application(
         &mut exec,
-        &ApprovalDecision::Approve,
         ApprovalApplication {
             effective_result: "approved".to_string(),
             structured_output: Some(serde_json::json!({
@@ -4746,7 +4570,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
                     }),
                 ),
                 {
-                    let mut step = make_approval_step(
+                    let mut step = make_approval_gated_session(
                         "implementation_fix_policy",
                         "Review fix policy",
                         vec![Rule::Next("fix".to_string())],
@@ -6453,7 +6277,7 @@ async fn abort_workflow_by_run_id_does_not_modify_sibling_active_run_state() {
     assert_eq!(final_active_state, Some(WorkflowExecutionState::Running));
 }
 
-/// Spec issues-1011 finding 17: approval/reject は run_id を主語に対象 execution を
+/// Spec issues-1011 finding 17: approve は run_id を主語に対象 execution を
 /// 直接更新し、同一 worktree に別 run が存在しても指定 run 以外へ適用しない。
 #[tokio::test]
 async fn approval_for_run_id_updates_only_target_run_when_worktree_is_shared() {
@@ -6479,7 +6303,6 @@ async fn approval_for_run_id_updates_only_target_run_when_worktree_is_shared() {
     let outcome = engine
         .handle_approval_with_output_for_run_for_test(
             &target_run_id,
-            ApprovalDecision::Approve,
             Some(&target_run_id),
             Some("review"),
         )
@@ -6802,7 +6625,7 @@ async fn resolve_chat_session_for_approval_rejects_non_waiting_approval_state() 
 }
 
 /// Spec issues-1011 finding 3: `resolve_chat_session_for_approval` は current node が
-/// Approval node でない場合に拒否する。
+/// approval-gated session でない場合に拒否する。
 #[tokio::test]
 async fn resolve_chat_session_for_approval_rejects_non_approval_current_node() {
     let engine = WorkflowRuntimeService::new_for_test();
@@ -6909,7 +6732,7 @@ async fn cleanup_session_workflow_refs_by_run_id_preserves_sibling_run_refs() {
 mod dispatch_boundary_tests {
     use super::*;
     use crate::adaptor::gateway::workflow::approval_runtime::MAX_APPROVAL_COMMENT_CHARS;
-    use crate::adaptor::gateway::workflow::event::{ApprovalDecisionRecord, WorkflowEvent};
+    use crate::adaptor::gateway::workflow::event::WorkflowEvent;
     use crate::adaptor::gateway::workflow::internal_node_command::InternalNodeCommand;
     use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
     use crate::adaptor::gateway::workflow::run::{
@@ -7056,18 +6879,22 @@ mod dispatch_boundary_tests {
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_approval_step("review", "review", vec![])],
+            nodes: vec![make_approval_gated_session("review", "review", vec![])],
         }
     }
 
-    fn make_rejectable_approval_workflow() -> Workflow {
+    fn make_approval_then_session_workflow() -> Workflow {
         Workflow {
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_approval_step("review", "review", vec![Rule::Next("fix".to_string())]),
+                make_approval_gated_session(
+                    "review",
+                    "review",
+                    vec![Rule::Next("fix".to_string())],
+                ),
                 make_test_step("fix", TestKind::Session, "fix", vec![], None),
             ],
         }
@@ -8437,11 +8264,10 @@ mod dispatch_boundary_tests {
         );
     }
 
-    /// Spec [04]: ApprovalResolved event は decision を typed (snake_case) で記録し、
-    /// approve コメントを comment field に伝播する。observer が dispatch 経由の判断を
-    /// 統一語彙で読めることを担保する。
+    /// Spec [04]: ApprovalResolved event は approve の事実だけを表し、コメントを
+    /// comment field に伝播する。decision field を持たないことを担保する。
     #[test]
-    fn approval_resolved_records_decision_and_comment_in_ndjson() {
+    fn approval_resolved_records_comment_without_decision_in_ndjson() {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
         let run_id = "00000000-0000-0000-0000-000000000300";
@@ -8450,11 +8276,13 @@ mod dispatch_boundary_tests {
             run_id: run_id.to_string(),
             workflow_name: "boundary-wf".to_string(),
             node_name: "review".to_string(),
-            decision: ApprovalDecisionRecord::Approve,
             comment: Some("lgtm".to_string()),
             timestamp: 1234.0,
         };
         log.append(&event).unwrap();
+
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(json.get("decision").is_none());
 
         let events = log.read_log(run_id).unwrap();
         assert_eq!(events.len(), 1);
@@ -8462,13 +8290,11 @@ mod dispatch_boundary_tests {
             WorkflowEvent::ApprovalResolved {
                 run_id: rid,
                 node_name,
-                decision,
                 comment,
                 ..
             } => {
                 assert_eq!(rid, run_id);
                 assert_eq!(node_name, "review");
-                assert_eq!(*decision, ApprovalDecisionRecord::Approve);
                 assert_eq!(comment.as_deref(), Some("lgtm"));
             }
             other => panic!("expected ApprovalResolved, got {other:?}"),
@@ -8497,7 +8323,6 @@ mod dispatch_boundary_tests {
             let exec = execs.get_mut(&run_id).unwrap();
             let _ = WorkflowRuntimeService::apply_approval_application(
                 exec,
-                &ApprovalDecision::Approve,
                 ApprovalApplication {
                     effective_result: "approve".to_string(),
                     structured_output: None,
@@ -8947,7 +8772,7 @@ mod dispatch_boundary_tests {
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let worktree_path = "/wt/engine-node-failure";
-        let workflow = make_rejectable_approval_workflow();
+        let workflow = make_approval_then_session_workflow();
         let run_id = uuid::Uuid::new_v4().to_string();
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -9029,7 +8854,7 @@ mod dispatch_boundary_tests {
         let mut startup_exec = make_waiting_approval_execution_with_workflow(
             &startup_run_id,
             startup_worktree_path,
-            make_rejectable_approval_workflow(),
+            make_approval_then_session_workflow(),
         );
         startup_exec.state = WorkflowExecutionState::Running;
         startup_exec.current_step_index = 1;
@@ -9055,7 +8880,7 @@ mod dispatch_boundary_tests {
         let mut validation_exec = make_waiting_approval_execution_with_workflow(
             &validation_run_id,
             validation_worktree_path,
-            make_rejectable_approval_workflow(),
+            make_approval_then_session_workflow(),
         );
         validation_exec.state = WorkflowExecutionState::Running;
         validation_exec.current_step_index = 1;
@@ -9888,7 +9713,7 @@ mod dispatch_boundary_tests {
 
         let worktree_path = "/wt/append-failure";
 
-        let workflow = make_rejectable_approval_workflow();
+        let workflow = make_approval_then_session_workflow();
         let run_id = uuid::Uuid::new_v4().to_string();
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -10287,7 +10112,7 @@ mod dispatch_boundary_tests {
     }
 
     /// Spec [04] Rule「権限の無い / 対象不在 / 既決の command は state 変化を起こさない」:
-    /// 既に判断済み（WaitingApproval ではない）node に対する Approve / Reject は
+    /// 既に承認済み（WaitingApproval ではない）node に対する Approve は
     /// `validate_approval_target_snapshot` で `InvalidState` として非受理になる。
     /// production dispatch 経路の `handle_approval` がこのガードを最初に通すため、
     /// 二度目以降の同一意図 command は state 変化を起こさない。
@@ -10304,62 +10129,25 @@ mod dispatch_boundary_tests {
         .unwrap_err();
         assert!(
             matches!(err, WorkflowEngineError::InvalidState(_)),
-            "既決 node への Approve/Reject は InvalidState で非受理 (got {err:?})"
+            "既決 node への Approve は InvalidState で非受理 (got {err:?})"
         );
     }
 
-    /// Spec [04] Rule: `validate_approval_decision` は Reject の空コメント / 上限超過を
-    /// 拒否する。dispatch 入口での新規外部入力に対する境界バリデーション。
-    #[test]
-    fn reject_decision_validation_rejects_empty_and_oversize_comments() {
-        let empty = workflow_approval_runtime::validate_approval_input(
-            &ApprovalDecision::Reject {
-                comment: "   ".to_string(),
-            },
-            None,
-        )
-        .unwrap_err();
-        assert!(matches!(empty, WorkflowEngineError::ValidationError(_)));
-
-        let oversize = workflow_approval_runtime::validate_approval_input(
-            &ApprovalDecision::Reject {
-                comment: "x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1),
-            },
-            None,
-        )
-        .unwrap_err();
-        assert!(matches!(oversize, WorkflowEngineError::ValidationError(_)));
-
-        workflow_approval_runtime::validate_approval_input(
-            &ApprovalDecision::Reject {
-                comment: "fix this".to_string(),
-            },
-            None,
-        )
-        .expect("正常な reject reason は受理される");
-    }
-
-    /// Spec [04] Rule: Approve コメントも reject と同じ MAX_APPROVAL_COMMENT_CHARS を
-    /// 適用する。空文字（None）は許容するが、上限超過は非受理。
+    /// Approve comment は空文字を許容するが、上限超過は非受理。
     #[test]
     fn approve_comment_length_validation_rejects_oversize_but_accepts_empty() {
-        workflow_approval_runtime::validate_approval_input(&ApprovalDecision::Approve, None)
-            .expect("None は許容される");
-        workflow_approval_runtime::validate_approval_input(&ApprovalDecision::Approve, Some(""))
+        workflow_approval_runtime::validate_approve_comment(None).expect("None は許容される");
+        workflow_approval_runtime::validate_approve_comment(Some(""))
             .expect("空コメント (Some(empty)) は許容される");
         let oversize_comment = "x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1);
-        let err = workflow_approval_runtime::validate_approval_input(
-            &ApprovalDecision::Approve,
-            Some(&oversize_comment),
-        )
-        .unwrap_err();
+        let err = workflow_approval_runtime::validate_approve_comment(Some(&oversize_comment))
+            .unwrap_err();
         assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
     }
 
     /// Spec [04] secret redaction: ApprovalResolved.comment に設定済み secret 値が
     /// 含まれる場合、event log に書き出す前に `mask_sensitive_text()` で redaction
     /// される。本テストは redaction primitive そのものの契約を担保する
-    /// （`reject_structured_output` と同じ secret 列で構造的に共有する経路）。
     #[test]
     fn mask_sensitive_text_redacts_secret_in_approval_comment() {
         let secrets = vec!["super-secret-token".to_string()];
@@ -10424,9 +10212,8 @@ mod dispatch_boundary_tests {
                 &session_store,
                 &handles,
                 &run_id,
-                ApprovalDecision::Approve,
                 Some("lgtm".to_string()),
-                Some("review"),
+                "review",
             )
             .await;
 
@@ -11185,11 +10972,11 @@ mod dispatch_boundary_tests {
         );
     }
 
-    /// Spec [04] no-op 不変条件: approval UI 由来の
+    /// Spec [04] no-op 不変条件: target 指定付きの
     /// `AbortRun { expected_node_name: Some(_) }` でも、対象不在・stale node・既決 node は
     /// production dispatch 経由で state / Run Store を変化させず event を append しない。
     #[tokio::test]
-    async fn dispatch_approval_abort_rejects_missing_stale_and_resolved_targets_without_append() {
+    async fn dispatch_targeted_abort_rejects_missing_stale_and_resolved_targets_without_append() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let tmp = TempDir::new().unwrap();
@@ -11319,7 +11106,7 @@ mod dispatch_boundary_tests {
         assert!(read_dispatch_events(&app, &resolved_run_id).is_empty());
     }
 
-    /// Spec [04] テスト境界: ApproveNode は production dispatch 経由で判断を受理し、
+    /// Spec [04] テスト境界: approval-gated session の Approve は production dispatch 経由で受理され、
     /// state mutation と ApprovalResolved append を同じ command 受理サイクルで行う。
     #[tokio::test]
     async fn dispatch_approve_node_accepts_mutates_state_and_appends_event() {
@@ -11342,9 +11129,8 @@ mod dispatch_boundary_tests {
                 &session_store,
                 &handles,
                 &run_id,
-                ApprovalDecision::Approve,
                 Some("lgtm".to_string()),
-                Some("review"),
+                "review",
             )
             .await
             .unwrap();
@@ -11357,10 +11143,7 @@ mod dispatch_boundary_tests {
         assert!(matches!(
             events.as_slice(),
             [
-                WorkflowEvent::ApprovalResolved {
-                    decision: ApprovalDecisionRecord::Approve,
-                    ..
-                },
+                WorkflowEvent::ApprovalResolved { .. },
                 WorkflowEvent::NodeCompleted { node_name, .. },
                 WorkflowEvent::RunCompleted { .. },
             ] if node_name == "review"
@@ -11369,265 +11152,10 @@ mod dispatch_boundary_tests {
 
     // 撤去済み: parent ChatSession / persist_state 機構の撤去で意味を失ったテスト。
 
-    /// Reject decision は旧 regex routing 廃止後は workflow transition として受理しない。
-    #[tokio::test]
-    async fn dispatch_reject_node_is_rejected_without_state_or_event() {
-        let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
-        let tmp = TempDir::new().unwrap();
-        engine
-            .set_run_store_data_dir(tmp.path().to_path_buf())
-            .await;
-        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/dispatch-reject-accept";
-        let mut exec = make_waiting_approval_execution_with_workflow(
-            &run_id,
-            worktree_path,
-            make_rejectable_approval_workflow(),
-        );
-        exec.current_session_id = None;
-        let snapshot_before = exec.clone();
-        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
-
-        let result = engine
-            .resolve_workflow_approval(
-                app.handle(),
-                &session_store,
-                &handles,
-                &run_id,
-                ApprovalDecision::Reject {
-                    comment: "needs changes".to_string(),
-                },
-                Some("needs changes".to_string()),
-                Some("review"),
-            )
-            .await;
-
-        assert!(matches!(result, Err(WorkflowEngineError::InvalidState(_))));
-        let execs = engine.executions.lock().await;
-        let restored = execs.get(&run_id).unwrap();
-        assert_eq!(restored.state, snapshot_before.state);
-        assert_eq!(
-            restored.current_step_index,
-            snapshot_before.current_step_index
-        );
-        assert_eq!(
-            restored.step_history.len(),
-            snapshot_before.step_history.len()
-        );
-        drop(execs);
-        assert!(read_dispatch_events(&app, &run_id).is_empty());
-    }
-
-    /// Spec [04] テスト境界: RejectNode の非受理経路は production dispatch 経由でも
-    /// state を変化させず、typed event を append しない。
-    #[tokio::test]
-    async fn dispatch_reject_node_rejected_target_keeps_state_and_no_append() {
-        let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
-        let tmp = TempDir::new().unwrap();
-        engine
-            .set_run_store_data_dir(tmp.path().to_path_buf())
-            .await;
-        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/dispatch-reject";
-        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
-        exec.current_session_id = None;
-        let snapshot_before = exec.clone();
-        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
-
-        let result = engine
-            .resolve_workflow_approval(
-                app.handle(),
-                &session_store,
-                &handles,
-                &run_id,
-                ApprovalDecision::Reject {
-                    comment: "needs changes".to_string(),
-                },
-                Some("needs changes".to_string()),
-                Some("review"),
-            )
-            .await;
-
-        assert!(matches!(result, Err(WorkflowEngineError::InvalidState(_))));
-        let execs = engine.executions.lock().await;
-        let restored = execs.get(&run_id).unwrap();
-        assert_eq!(restored.state, snapshot_before.state);
-        assert_eq!(
-            restored.step_history.len(),
-            snapshot_before.step_history.len()
-        );
-        drop(execs);
-        assert!(read_dispatch_events(&app, &run_id).is_empty());
-    }
-
-    /// Spec [04] no-op 不変条件: ApproveNode / RejectNode の対象不在・stale node・既決 node は
+    /// Spec [04] no-op 不変条件: Approve の対象不在・stale node・既決 node は
     /// production dispatch 経由でも state を変化させず event を append しない。
     #[tokio::test]
-    async fn dispatch_approval_commands_reject_missing_stale_and_resolved_targets_without_append() {
-        for command_kind in ["approve", "reject"] {
-            let app = make_dispatch_app();
-            let engine = WorkflowRuntimeService::new_for_test();
-            let tmp = TempDir::new().unwrap();
-            engine
-                .set_run_store_data_dir(tmp.path().to_path_buf())
-                .await;
-            let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-
-            let missing_run_id = uuid::Uuid::new_v4().to_string();
-            let missing = match command_kind {
-                "approve" => {
-                    engine
-                        .resolve_workflow_approval(
-                            app.handle(),
-                            &session_store,
-                            &handles,
-                            &missing_run_id,
-                            ApprovalDecision::Approve,
-                            None,
-                            Some("review"),
-                        )
-                        .await
-                }
-                "reject" => {
-                    engine
-                        .resolve_workflow_approval(
-                            app.handle(),
-                            &session_store,
-                            &handles,
-                            &missing_run_id,
-                            ApprovalDecision::Reject {
-                                comment: "needs changes".to_string(),
-                            },
-                            Some("needs changes".to_string()),
-                            Some("review"),
-                        )
-                        .await
-                }
-                _ => unreachable!(),
-            };
-            assert!(matches!(
-                missing,
-                Err(WorkflowEngineError::ExecutionNotFound(_))
-            ));
-            assert!(read_dispatch_events(&app, &missing_run_id).is_empty());
-
-            let stale_run_id = uuid::Uuid::new_v4().to_string();
-            let worktree_path = format!("/wt/{command_kind}-stale");
-            let mut stale_exec = make_waiting_approval_execution(&stale_run_id, &worktree_path);
-            stale_exec.current_session_id = None;
-            let stale_before = stale_exec.clone();
-            insert_execution_and_active_run(&engine, stale_exec, TriggerSource::DesktopUi).await;
-            let stale = match command_kind {
-                "approve" => {
-                    engine
-                        .resolve_workflow_approval(
-                            app.handle(),
-                            &session_store,
-                            &handles,
-                            &stale_run_id,
-                            ApprovalDecision::Approve,
-                            None,
-                            Some("old-review"),
-                        )
-                        .await
-                }
-                "reject" => {
-                    engine
-                        .resolve_workflow_approval(
-                            app.handle(),
-                            &session_store,
-                            &handles,
-                            &stale_run_id,
-                            ApprovalDecision::Reject {
-                                comment: "needs changes".to_string(),
-                            },
-                            Some("needs changes".to_string()),
-                            Some("old-review"),
-                        )
-                        .await
-                }
-                _ => unreachable!(),
-            };
-            assert!(matches!(
-                stale,
-                Err(WorkflowEngineError::UnauthorizedApprovalTarget(_))
-            ));
-            let execs = engine.executions.lock().await;
-            let restored = execs.get(&stale_run_id).unwrap();
-            assert_eq!(restored.state, stale_before.state);
-            assert_eq!(restored.current_step_index, stale_before.current_step_index);
-            assert_eq!(restored.step_history.len(), stale_before.step_history.len());
-            drop(execs);
-            assert!(read_dispatch_events(&app, &stale_run_id).is_empty());
-
-            let resolved_run_id = uuid::Uuid::new_v4().to_string();
-            let worktree_path = format!("/wt/{command_kind}-resolved");
-            let mut resolved_exec =
-                make_waiting_approval_execution(&resolved_run_id, &worktree_path);
-            resolved_exec.current_session_id = None;
-            resolved_exec.state = WorkflowExecutionState::Completed;
-            let resolved_before = resolved_exec.clone();
-            engine
-                .executions
-                .lock()
-                .await
-                .insert(resolved_run_id.clone(), resolved_exec);
-            let resolved = match command_kind {
-                "approve" => {
-                    engine
-                        .resolve_workflow_approval(
-                            app.handle(),
-                            &session_store,
-                            &handles,
-                            &resolved_run_id,
-                            ApprovalDecision::Approve,
-                            None,
-                            Some("review"),
-                        )
-                        .await
-                }
-                "reject" => {
-                    engine
-                        .resolve_workflow_approval(
-                            app.handle(),
-                            &session_store,
-                            &handles,
-                            &resolved_run_id,
-                            ApprovalDecision::Reject {
-                                comment: "needs changes".to_string(),
-                            },
-                            Some("needs changes".to_string()),
-                            Some("review"),
-                        )
-                        .await
-                }
-                _ => unreachable!(),
-            };
-            assert!(matches!(
-                resolved,
-                Err(WorkflowEngineError::InvalidState(_))
-            ));
-            let execs = engine.executions.lock().await;
-            let restored = execs.get(&resolved_run_id).unwrap();
-            assert_eq!(restored.state, resolved_before.state);
-            assert_eq!(
-                restored.step_history.len(),
-                resolved_before.step_history.len()
-            );
-            drop(execs);
-            assert!(read_dispatch_events(&app, &resolved_run_id).is_empty());
-        }
-    }
-
-    /// Spec [04] no-op 不変条件: Reject は reject rule の有無に関係なく
-    /// workflow transition として受理されず、WorkflowExecution / Run Store を変化させず
-    /// event も append しない。
-    #[tokio::test]
-    async fn dispatch_reject_node_unsupported_transition_is_noop() {
+    async fn dispatch_approve_rejects_missing_stale_and_resolved_targets_without_append() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let tmp = TempDir::new().unwrap();
@@ -11635,54 +11163,84 @@ mod dispatch_boundary_tests {
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/reject-unsupported-noop";
-        let mut exec = make_waiting_approval_execution_with_workflow(
-            &run_id,
-            worktree_path,
-            make_rejectable_approval_workflow(),
-        );
-        exec.current_session_id = None;
-        let snapshot_before = exec.clone();
-        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
-
-        let result = engine
+        let missing_run_id = uuid::Uuid::new_v4().to_string();
+        let missing = engine
             .resolve_workflow_approval(
                 app.handle(),
                 &session_store,
                 &handles,
-                &run_id,
-                ApprovalDecision::Reject {
-                    comment: "needs changes".to_string(),
-                },
-                Some("needs changes".to_string()),
-                Some("review"),
+                &missing_run_id,
+                None,
+                "review",
             )
             .await;
+        assert!(matches!(
+            missing,
+            Err(WorkflowEngineError::ExecutionNotFound(_))
+        ));
+        assert!(read_dispatch_events(&app, &missing_run_id).is_empty());
 
-        match result {
-            Err(WorkflowEngineError::InvalidState(message)) => {
-                assert!(message.contains("does not support reject transitions"));
-            }
-            other => panic!("expected unsupported reject transition, got {other:?}"),
-        }
+        let stale_run_id = uuid::Uuid::new_v4().to_string();
+        let mut stale_exec = make_waiting_approval_execution(&stale_run_id, "/wt/approve-stale");
+        stale_exec.current_session_id = None;
+        let stale_before = stale_exec.clone();
+        insert_execution_and_active_run(&engine, stale_exec, TriggerSource::DesktopUi).await;
+        let stale = engine
+            .resolve_workflow_approval(
+                app.handle(),
+                &session_store,
+                &handles,
+                &stale_run_id,
+                None,
+                "old-review",
+            )
+            .await;
+        assert!(matches!(
+            stale,
+            Err(WorkflowEngineError::UnauthorizedApprovalTarget(_))
+        ));
         let execs = engine.executions.lock().await;
-        let restored = execs.get(&run_id).unwrap();
-        assert_eq!(restored.state, snapshot_before.state);
-        assert_eq!(
-            restored.current_step_index,
-            snapshot_before.current_step_index
-        );
+        let restored = execs.get(&stale_run_id).unwrap();
+        assert_eq!(restored.state, stale_before.state);
+        assert_eq!(restored.current_step_index, stale_before.current_step_index);
+        assert_eq!(restored.step_history.len(), stale_before.step_history.len());
+        drop(execs);
+        assert!(read_dispatch_events(&app, &stale_run_id).is_empty());
+
+        let resolved_run_id = uuid::Uuid::new_v4().to_string();
+        let mut resolved_exec =
+            make_waiting_approval_execution(&resolved_run_id, "/wt/approve-resolved");
+        resolved_exec.current_session_id = None;
+        resolved_exec.state = WorkflowExecutionState::Completed;
+        let resolved_before = resolved_exec.clone();
+        engine
+            .executions
+            .lock()
+            .await
+            .insert(resolved_run_id.clone(), resolved_exec);
+        let resolved = engine
+            .resolve_workflow_approval(
+                app.handle(),
+                &session_store,
+                &handles,
+                &resolved_run_id,
+                None,
+                "review",
+            )
+            .await;
+        assert!(matches!(
+            resolved,
+            Err(WorkflowEngineError::InvalidState(_))
+        ));
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&resolved_run_id).unwrap();
+        assert_eq!(restored.state, resolved_before.state);
         assert_eq!(
             restored.step_history.len(),
-            snapshot_before.step_history.len()
+            resolved_before.step_history.len()
         );
         drop(execs);
-        let active = engine.list_active_runs().await;
-        assert_eq!(active.len(), 1);
-        assert_eq!(active[0].run_id, run_id);
-        assert_eq!(active[0].status, RunStatus::WaitingApproval);
-        assert!(read_dispatch_events(&app, &run_id).is_empty());
+        assert!(read_dispatch_events(&app, &resolved_run_id).is_empty());
     }
 
     // 撤去済み: persist_state 注入失敗を介した rollback テストは persist_state 機構の撤去で
@@ -11717,9 +11275,8 @@ mod dispatch_boundary_tests {
                 &session_store,
                 &handles,
                 &run_id,
-                ApprovalDecision::Approve,
                 Some("lgtm".to_string()),
-                Some("review"),
+                "review",
             )
             .await;
 
@@ -11740,43 +11297,6 @@ mod dispatch_boundary_tests {
     }
 
     // 撤去済み: persist_state 注入失敗テストは parent ChatSession 機構撤去で意味を失った。
-
-    /// Spec [04] atomic mutation 境界（A2 batch commit）: `write_log_required_batch`
-    /// 経由で ApprovalResolved + RunAborted を 1 つの commit point として書き込めば、
-    /// `WorkflowEventLog::append_batch` の 1 回の write_all で両 event が NDJSON に
-    /// 連結 append される。同一 commit batch 内の partial commit（最初の event のみ
-    /// 残る）を構造的に排除することを担保する（handle_approval の Abort 経路と
-    /// 同じ atomic 境界）。
-    #[test]
-    fn approval_abort_commit_batch_persists_both_events_in_single_write() {
-        let tmp = TempDir::new().unwrap();
-        let log = WorkflowEventLog::new(tmp.path());
-        let run_id = "00000000-0000-0000-0000-000000000900";
-        let approval_event = WorkflowEvent::ApprovalResolved {
-            run_id: run_id.to_string(),
-            workflow_name: "boundary-wf".to_string(),
-            node_name: "review".to_string(),
-            decision: ApprovalDecisionRecord::Abort,
-            comment: None,
-            timestamp: 4000.0,
-        };
-        let aborted_event = WorkflowEvent::RunAborted {
-            run_id: run_id.to_string(),
-            workflow_name: "boundary-wf".to_string(),
-            aborted_step: None,
-            timestamp: 4000.0,
-        };
-        log.append_batch(&[approval_event, aborted_event])
-            .expect("batch append for approval-abort commit point must succeed");
-        let events = log.read_log(run_id).unwrap();
-        assert_eq!(
-            events.len(),
-            2,
-            "ApprovalResolved + RunAborted は atomic batch で 2 件 append される"
-        );
-        assert!(matches!(events[0], WorkflowEvent::ApprovalResolved { .. }));
-        assert!(matches!(events[1], WorkflowEvent::RunAborted { .. }));
-    }
 
     /// Spec [04] atomic mutation 境界（A3 AbortRun terminal sync post-commit 化）:
     /// `abort_workflow_by_run_id` は append 失敗時に Run Store / external 副作用を

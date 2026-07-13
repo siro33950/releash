@@ -399,26 +399,14 @@ pub(crate) fn domain_event_draft_to_legacy(
             struct Payload {
                 workflow_name: String,
                 node_name: String,
-                decision: String,
                 comment: Option<String>,
             }
 
             let payload: Payload = parse_payload(event)?;
-            let decision = match payload.decision.as_str() {
-                "approve" => legacy_event::ApprovalDecisionRecord::Approve,
-                "reject" => legacy_event::ApprovalDecisionRecord::Reject,
-                "abort" => legacy_event::ApprovalDecisionRecord::Abort,
-                other => {
-                    return Err(domain::WorkflowError::validation(format!(
-                        "unsupported approval decision: {other}"
-                    )));
-                }
-            };
             Ok(legacy_event::WorkflowEvent::ApprovalResolved {
                 run_id: event.run_id.clone(),
                 workflow_name: payload.workflow_name,
                 node_name: payload.node_name,
-                decision,
                 comment: payload.comment,
                 timestamp: event.timestamp,
             })

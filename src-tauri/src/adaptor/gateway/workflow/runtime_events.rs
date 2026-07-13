@@ -910,9 +910,9 @@ mod tests {
             WorkflowMutationSource::CliPendingCommand {
                 request_id: "request-2".to_string(),
             },
-            CliMutationRequestRecord::Reject {
-                node_name: Some("approval".to_string()),
-                reason: "no".to_string(),
+            CliMutationRequestRecord::Approve {
+                node_name: "approval".to_string(),
+                comment: None,
             },
             50.0,
         ));
@@ -931,7 +931,7 @@ mod tests {
                 run_id,
                 workflow_name,
                 request_id,
-                request: CliMutationRequestRecord::Reject { .. },
+                request: CliMutationRequestRecord::Approve { .. },
                 reason: CliMutationRejectionReason::RunNotActive,
                 requested_at,
                 timestamp,

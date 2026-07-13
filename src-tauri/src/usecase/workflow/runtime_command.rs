@@ -152,7 +152,7 @@ impl WorkflowRuntimeUsecase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::{ApprovalDecision, TriggerSource, WorkflowDefinition};
+    use crate::domain::workflow::{TriggerSource, WorkflowDefinition};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -339,8 +339,8 @@ mod tests {
         usecase
             .resolve_approval(ApprovalCommand {
                 run_id: "00000000-0000-0000-0000-000000000001".to_string(),
-                node_name: Some("review".to_string()),
-                decision: ApprovalDecision::Approve { comment: None },
+                node_name: "review".to_string(),
+                comment: None,
             })
             .await
             .unwrap();
@@ -547,8 +547,8 @@ mod tests {
         let approval_err = usecase
             .resolve_approval(ApprovalCommand {
                 run_id: "00000000-0000-0000-0000-000000000001".to_string(),
-                node_name: Some(" ".to_string()),
-                decision: ApprovalDecision::Approve { comment: None },
+                node_name: " ".to_string(),
+                comment: None,
             })
             .await
             .unwrap_err();

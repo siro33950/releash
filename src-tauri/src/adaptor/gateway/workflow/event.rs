@@ -96,7 +96,7 @@ pub enum WorkflowEvent {
         workflow_definition: Workflow,
         timestamp: f64,
     },
-    /// node が実行開始された（agent / approval / bash いずれも対象）。
+    /// node が実行開始された（session / command / fanout いずれも対象）。
     NodeStarted {
         run_id: String,
         workflow_name: String,
@@ -171,12 +171,11 @@ pub enum WorkflowEvent {
         node_name: String,
         timestamp: f64,
     },
-    /// approval node に対するユーザー判断（approve / reject / abort）が受理された。
+    /// `gate: approval` の session に対する approve command が受理された。
     ApprovalResolved {
         run_id: String,
         workflow_name: String,
         node_name: String,
-        decision: ApprovalDecisionRecord,
         #[serde(skip_serializing_if = "Option::is_none")]
         comment: Option<String>,
         timestamp: f64,
@@ -290,14 +289,14 @@ pub enum WorkflowEvent {
     },
     /// [06] CLI 経路で workflow run に対する mutation が engine に到達した事実。
     ///
-    /// approval / abort mutation を CLI 経由で
+    /// approve / abort mutation を CLI 経由で
     /// engine が受け取ったことを `run_id` 主語で append-only に記録する。stale target /
     /// validation reject でも engine 到達後の拒否は記録する。実 state
     /// 変化の事実は引き続き `ApprovalResolved` / `RunAborted` で表現し、本 variant
     /// は「いつ・どの経路から・何が要求されたか」を観測経路から透過的に読めるよう
     /// にするためのもの（spec [06] 観測経路境界）。
     ///
-    /// `request` の自由記述（reason / comment）は平文で永続化される。秘匿情報を
+    /// `request` の自由記述 comment は平文で永続化される。秘匿情報を
     /// 含めない運用前提（spec [06] 要求の運用境界）。
     CliMutationRequested {
         run_id: String,
@@ -345,16 +344,14 @@ pub enum WorkflowEvent {
     ///
     /// `CliMutationRequested` が「リクエストを受理した事実」であるのに対し、
     /// 本 event は「engine が無効と判断して状態を変えなかった事実」を表す。
-    /// 両者は独立に発火し、両方記録される場合（reject rule なし node への
-    /// reject 等）と本 event のみ記録される場合（SubmitOutput の silent-drop
-    /// だった経路）がある。
+    /// 両者は独立に発火し、本 event のみ記録される場合もある。
     ///
     /// spec [08] Rule 1「SubmitOutput の拒否は事実履歴に残さない」の意味は、
     /// accepted のメイン履歴（`ArtifactProduced` / `CliMutationRequested`）に
     /// 出ないことを指すと再定義する。観測経路用の補助履歴として本 event は
     /// 並列に追記される。
     ///
-    /// `request` の自由記述（reason / comment）は平文で永続化される（spec
+    /// `request` の自由記述 comment は平文で永続化される（spec
     /// [06] 要求の運用境界と同じ）。
     CliMutationRejected {
         run_id: String,
@@ -378,8 +375,7 @@ pub enum WorkflowEvent {
 /// [06] CLI mutating CLI が要求した内容の typed 表現。
 ///
 /// 各 variant の `node_name` は対象 node の限定の有無を表す（`None` = run 全体 /
-/// 現在の承認待ち node を engine 側で解決する、`Some` = caller が明示的に node
-/// を限定）。`Reject` の `reason` は CLI 入口で必須化済み。
+/// を限定する。
 ///
 /// `SubmitOutput` variant は `CliMutationRejected` でのみ使用する（accepted 経路
 /// は `ArtifactProduced` event が一次表現）。payload 本体は容量が大きい可能性が
@@ -388,15 +384,9 @@ pub enum WorkflowEvent {
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum CliMutationRequestRecord {
     Approve {
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        node_name: Option<String>,
+        node_name: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         comment: Option<String>,
-    },
-    Reject {
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        node_name: Option<String>,
-        reason: String,
     },
     Abort {
         #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -422,10 +412,8 @@ pub enum CliMutationRejectionReason {
     RunNotActive,
     /// 対象 node が workflow に存在しない。
     NodeNotFound,
-    /// 現在 approval を待っていない node に approve/reject を要求した。
+    /// 現在 approval を待っていない node に approve を要求した。
     NotWaitingApproval,
-    /// 5-4: reject rule が定義されていない approval node に reject を要求した。
-    NoRejectRule,
     /// 5-3: 構造化出力の受領を受け付けていない step に submit を要求した
     /// （pending 等）。
     StepNotAccepting,
@@ -433,15 +421,6 @@ pub enum CliMutationRejectionReason {
     ContractMismatch,
     /// 上記いずれにも分類されない、engine の InvalidState / Validation 由来の拒否。
     Other,
-}
-
-/// approval 判断結果の typed 表現。NDJSON 上は snake_case として出力される。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalDecisionRecord {
-    Approve,
-    Reject,
-    Abort,
 }
 
 /// collect step の各子要素出力エントリ。
@@ -597,37 +576,27 @@ mod tests {
         assert_eq!(child["outcome"].as_str(), Some("aborted"));
     }
 
-    /// approval 判断結果は典型的な NDJSON 観測者から snake_case で読める。
+    /// ApprovalResolved は approve のみを表し、decision field を持たない。
     #[test]
-    fn approval_resolved_decision_serde_round_trips() {
-        for decision in [
-            ApprovalDecisionRecord::Approve,
-            ApprovalDecisionRecord::Reject,
-            ApprovalDecisionRecord::Abort,
-        ] {
-            let event = WorkflowEvent::ApprovalResolved {
-                run_id: "00000000-0000-0000-0000-000000000002".to_string(),
-                workflow_name: "wf".to_string(),
-                node_name: "review".to_string(),
-                decision,
-                comment: Some("c".to_string()),
-                timestamp: 2.0,
-            };
-            let json = serde_json::to_string(&event).unwrap();
-            assert!(json.contains("\"event\":\"approval_resolved\""));
-            let back: WorkflowEvent = serde_json::from_str(&json).unwrap();
-            match back {
-                WorkflowEvent::ApprovalResolved {
-                    decision: back_decision,
-                    ..
-                } => assert_eq!(back_decision, decision),
-                _ => panic!("expected ApprovalResolved"),
-            }
-        }
+    fn approval_resolved_serde_round_trips_without_decision() {
+        let event = WorkflowEvent::ApprovalResolved {
+            run_id: "00000000-0000-0000-0000-000000000002".to_string(),
+            workflow_name: "wf".to_string(),
+            node_name: "review".to_string(),
+            comment: Some("c".to_string()),
+            timestamp: 2.0,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event\":\"approval_resolved\""));
+        assert!(!json.contains("\"decision\""));
+        assert!(matches!(
+            serde_json::from_str::<WorkflowEvent>(&json).unwrap(),
+            WorkflowEvent::ApprovalResolved { .. }
+        ));
     }
 
     /// [06] CLI 経由 mutation 要求の事実は `WorkflowEvent` 列に typed event として
-    /// 記録される（spec [06] 観測経路境界）。3 種の payload variant が
+    /// 記録される（spec [06] 観測経路境界）。payload variant が
     /// 観測経路から平文で読み出せる shape として round-trip する。
     #[test]
     fn cli_mutation_requested_serde_round_trips_all_variants() {
@@ -636,22 +605,11 @@ mod tests {
             workflow_name: "wf".to_string(),
             request_id: "00000000-0000-0000-0000-000000000500".to_string(),
             request: CliMutationRequestRecord::Approve {
-                node_name: Some("review".to_string()),
+                node_name: "review".to_string(),
                 comment: Some("LGTM".to_string()),
             },
             requested_at: 100.0,
             timestamp: 101.0,
-        };
-        let reject = WorkflowEvent::CliMutationRequested {
-            run_id: "00000000-0000-0000-0000-000000000401".to_string(),
-            workflow_name: "wf".to_string(),
-            request_id: "00000000-0000-0000-0000-000000000501".to_string(),
-            request: CliMutationRequestRecord::Reject {
-                node_name: None,
-                reason: "must rework".to_string(),
-            },
-            requested_at: 200.0,
-            timestamp: 201.0,
         };
         let abort = WorkflowEvent::CliMutationRequested {
             run_id: "00000000-0000-0000-0000-000000000402".to_string(),
@@ -663,7 +621,7 @@ mod tests {
             requested_at: 300.0,
             timestamp: 301.0,
         };
-        for event in [approve, reject, abort] {
+        for event in [approve, abort] {
             let json = serde_json::to_string(&event).unwrap();
             assert!(json.contains("\"event\":\"cli_mutation_requested\""));
             let back: WorkflowEvent = serde_json::from_str(&json).unwrap();
@@ -672,30 +630,16 @@ mod tests {
         }
     }
 
-    /// [06] 自由記述データの観測経路境界: reason / comment は平文として
+    /// [06] 自由記述データの観測経路境界: comment は平文として
     /// NDJSON serialize 結果に出現する（マスキング・短縮されない）。
     #[test]
-    fn cli_mutation_requested_reason_and_comment_appear_in_serialized_json_verbatim() {
-        let reject = WorkflowEvent::CliMutationRequested {
-            run_id: "00000000-0000-0000-0000-000000000403".to_string(),
-            workflow_name: "wf".to_string(),
-            request_id: "00000000-0000-0000-0000-000000000503".to_string(),
-            request: CliMutationRequestRecord::Reject {
-                node_name: None,
-                reason: "free-form reject reason".to_string(),
-            },
-            requested_at: 100.0,
-            timestamp: 101.0,
-        };
-        let reject_json = serde_json::to_string(&reject).unwrap();
-        assert!(reject_json.contains("free-form reject reason"));
-
+    fn cli_mutation_requested_comment_appears_in_serialized_json_verbatim() {
         let approve = WorkflowEvent::CliMutationRequested {
             run_id: "00000000-0000-0000-0000-000000000404".to_string(),
             workflow_name: "wf".to_string(),
             request_id: "00000000-0000-0000-0000-000000000504".to_string(),
             request: CliMutationRequestRecord::Approve {
-                node_name: None,
+                node_name: "review".to_string(),
                 comment: Some("free-form approve comment".to_string()),
             },
             requested_at: 102.0,
@@ -782,7 +726,6 @@ mod tests {
                 run_id: rid.to_string(),
                 workflow_name: "w".to_string(),
                 node_name: "n".to_string(),
-                decision: ApprovalDecisionRecord::Approve,
                 comment: None,
                 timestamp: 0.0,
             },
@@ -821,22 +764,6 @@ mod tests {
         let cases = vec![
             (
                 WorkflowEvent::CliMutationRejected {
-                    run_id: "00000000-0000-0000-0000-000000000600".to_string(),
-                    workflow_name: "wf".to_string(),
-                    request_id: "00000000-0000-0000-0000-000000000700".to_string(),
-                    request: CliMutationRequestRecord::Reject {
-                        node_name: Some("plan_architecture".to_string()),
-                        reason: "rule なし node 拒否".to_string(),
-                    },
-                    reason: CliMutationRejectionReason::NoRejectRule,
-                    message: "Step 'plan_architecture' does not allow reject".to_string(),
-                    requested_at: 100.0,
-                    timestamp: 101.0,
-                },
-                "no_reject_rule",
-            ),
-            (
-                WorkflowEvent::CliMutationRejected {
                     run_id: "00000000-0000-0000-0000-000000000601".to_string(),
                     workflow_name: "wf".to_string(),
                     request_id: "00000000-0000-0000-0000-000000000701".to_string(),
@@ -858,7 +785,7 @@ mod tests {
                     workflow_name: "wf".to_string(),
                     request_id: "00000000-0000-0000-0000-000000000702".to_string(),
                     request: CliMutationRequestRecord::Approve {
-                        node_name: None,
+                        node_name: "review".to_string(),
                         comment: None,
                     },
                     reason: CliMutationRejectionReason::NotWaitingApproval,

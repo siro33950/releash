@@ -598,8 +598,26 @@ mod aggregate_tests {
         assert_eq!(snapshot.step_states["plan"], "completed");
         assert_eq!(snapshot.step_states["approve"], "waiting_approval");
         assert_eq!(snapshot.total_token_usage.input_tokens, 2);
-        assert!(!snapshot.approval_operations.unwrap().can_reject);
+        assert!(snapshot.approval_operations.is_some());
         assert_eq!(exec.task(), Some("task"));
+    }
+
+    #[test]
+    fn snapshot_omits_approval_operations_for_non_approval_gate_waiting_state() {
+        let mut exec = WorkflowExecution::new(
+            run_id(),
+            workflow(vec![node("implement", TestNodeKind::Session)]),
+            worktree(),
+            None,
+            1.0,
+        )
+        .unwrap();
+        exec.state = WorkflowExecutionState::WaitingApproval;
+
+        let snapshot = exec.to_snapshot();
+
+        assert_eq!(snapshot.step_states["implement"], "waiting_approval");
+        assert!(snapshot.approval_operations.is_none());
     }
 
     #[test]
