@@ -1,7 +1,7 @@
 {
 	"name": "releash",
 	"private": true,
-	"version": "0.3.68",
+	"version": "0.3.69",
 	"license": "(MIT OR Apache-2.0)",
 	"type": "module",
 	"scripts": {
