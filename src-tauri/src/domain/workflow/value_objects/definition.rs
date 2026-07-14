@@ -110,7 +110,6 @@ pub struct SessionSpec {
 pub struct FanoutSpec {
     pub child: Vec<String>,
     pub items: Option<ItemsSource>,
-    pub aggregate: Option<ParallelAggregate>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,7 +125,6 @@ pub struct NodeDefinition {
     pub artifact: Option<String>,
     pub input: Option<String>,
     pub inputs: Vec<String>,
-    pub collect: Option<CollectConfig>,
     pub rules: Vec<Rule>,
 }
 
@@ -201,14 +199,6 @@ impl NodeDefinition {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ParallelAggregate {
-    pub all_match: Option<String>,
-    pub any_match: Option<String>,
-    pub then: String,
-    pub r#else: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rule {
     When {
@@ -226,21 +216,6 @@ pub enum Rule {
         on_exhausted: String,
     },
     Next(String),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CollectConfig {
-    pub from: Vec<String>,
-    pub reduce: ReduceStrategy,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ReduceStrategy {
-    Last,
-    Concat,
-    Grouped,
-    AnyNeedsFix,
-    AllPassed,
 }
 
 #[derive(Debug, Clone, PartialEq)]

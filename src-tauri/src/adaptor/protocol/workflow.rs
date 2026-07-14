@@ -175,8 +175,6 @@ pub struct WorkflowFanoutSpecView {
     pub child: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<WorkflowItemsSourceView>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aggregate: Option<WorkflowAggregateConfigView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -202,21 +200,9 @@ pub struct WorkflowNodeDefinitionView {
     pub input: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collect: Option<WorkflowCollectConfigView>,
     // 共通: rules は空配列でも送る（frontend では非 optional として扱う）
     #[serde(default)]
     pub rules: Vec<WorkflowRuleView>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowAggregateConfigView {
-    #[serde(default)]
-    pub all_match: Option<String>,
-    #[serde(default)]
-    pub any_match: Option<String>,
-    pub then: String,
-    pub r#else: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -240,22 +226,6 @@ pub enum WorkflowRuleView {
     Next {
         next: String,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowCollectConfigView {
-    pub from: Vec<String>,
-    pub reduce: WorkflowReduceStrategyView,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkflowReduceStrategyView {
-    Last,
-    Concat,
-    Grouped,
-    AnyNeedsFix,
-    AllPassed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -477,7 +447,6 @@ mod tests {
                 serde_json::json!("first"),
                 serde_json::json!("second"),
             ])),
-            aggregate: None,
         };
         assert_eq!(
             serde_json::to_value(literal).unwrap(),
@@ -489,7 +458,6 @@ mod tests {
             items: Some(WorkflowItemsSourceView::ArtifactField(
                 "scan.items".to_string(),
             )),
-            aggregate: None,
         };
         assert_eq!(
             serde_json::to_value(reference).unwrap(),

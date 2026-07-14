@@ -404,7 +404,6 @@ mod tests {
                     kind: NodeKind::Fanout(FanoutSpec {
                         child: vec!["review-a".to_string(), "review-b".to_string()],
                         items: None,
-                        aggregate: None,
                     }),
                     ..Default::default()
                 },
@@ -460,7 +459,6 @@ mod tests {
         exec.parallel_run = Some(ParallelRunState {
             parent_step_name: "fanout-review".to_string(),
             parent_node_execution_id: "00000000-0000-4000-8000-000000000200".to_string(),
-            aggregate: None,
             children: vec![
                 ParallelChildRun {
                     node_execution_id: "00000000-0000-4000-8000-000000000201".to_string(),

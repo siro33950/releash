@@ -190,7 +190,6 @@ pub(crate) fn node_definition_to_domain(node: &schema::NodeDefinition) -> domain
         artifact: node.artifact.clone(),
         input: node.input.clone(),
         inputs: node.inputs.clone(),
-        collect: node.collect.as_ref().map(collect_config_to_domain),
         rules: node.rules.iter().map(rule_to_domain).collect(),
     }
 }
@@ -209,7 +208,6 @@ pub(crate) fn node_kind_to_domain(kind: &schema::NodeKind) -> domain::NodeKind {
         schema::NodeKind::Fanout(spec) => domain::NodeKind::Fanout(domain::FanoutSpec {
             child: spec.child.clone(),
             items: spec.items.as_ref().map(items_source_to_domain),
-            aggregate: spec.aggregate.as_ref().map(parallel_aggregate_to_domain),
         }),
     }
 }
@@ -236,34 +234,6 @@ fn items_source_to_domain(items: &schema::ItemsSource) -> domain::ItemsSource {
             node: node.clone(),
             field: field.clone(),
         },
-    }
-}
-
-pub(crate) fn collect_config_to_domain(collect: &schema::CollectConfig) -> domain::CollectConfig {
-    domain::CollectConfig {
-        from: collect.from.clone(),
-        reduce: reduce_strategy_to_domain(&collect.reduce),
-    }
-}
-
-fn reduce_strategy_to_domain(reduce: &schema::ReduceStrategy) -> domain::ReduceStrategy {
-    match reduce {
-        schema::ReduceStrategy::Last => domain::ReduceStrategy::Last,
-        schema::ReduceStrategy::Concat => domain::ReduceStrategy::Concat,
-        schema::ReduceStrategy::Grouped => domain::ReduceStrategy::Grouped,
-        schema::ReduceStrategy::AnyNeedsFix => domain::ReduceStrategy::AnyNeedsFix,
-        schema::ReduceStrategy::AllPassed => domain::ReduceStrategy::AllPassed,
-    }
-}
-
-pub(crate) fn parallel_aggregate_to_domain(
-    aggregate: &schema::ParallelAggregate,
-) -> domain::ParallelAggregate {
-    domain::ParallelAggregate {
-        all_match: aggregate.all_match.clone(),
-        any_match: aggregate.any_match.clone(),
-        then: aggregate.then.clone(),
-        r#else: aggregate.r#else.clone(),
     }
 }
 
@@ -368,7 +338,6 @@ mod tests {
                         node: "plan".to_string(),
                         field: "targets".to_string(),
                     }),
-                    aggregate: None,
                 }),
                 ..Default::default()
             }],

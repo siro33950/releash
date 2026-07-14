@@ -58,8 +58,6 @@ pub(crate) struct FanoutSpecDto {
     pub child: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<ItemsSourceDto>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aggregate: Option<ParallelAggregateDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -86,21 +84,8 @@ pub(crate) struct NodeDefinitionDto {
     pub input: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collect: Option<CollectConfigDto>,
     #[serde(default, rename = "rules", skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<RuleDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ParallelAggregateDto {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub all_match: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub any_match: Option<String>,
-    pub then: String,
-    pub r#else: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -124,23 +109,6 @@ pub(crate) enum RuleDto {
     Next {
         next: String,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct CollectConfigDto {
-    pub from: Vec<String>,
-    pub reduce: ReduceStrategyDto,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ReduceStrategyDto {
-    Last,
-    Concat,
-    Grouped,
-    AnyNeedsFix,
-    AllPassed,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -263,7 +231,6 @@ fn node_to_dto(node: &domain::NodeDefinition) -> NodeDefinitionDto {
         artifact: node.artifact.clone(),
         input: node.input.clone(),
         inputs: node.inputs.clone(),
-        collect: node.collect.as_ref().map(collect_to_dto),
         rules: node.rules.iter().map(rule_to_dto).collect(),
     }
 }
@@ -281,7 +248,6 @@ fn fanout_to_dto(fanout: &domain::FanoutSpec) -> FanoutSpecDto {
     FanoutSpecDto {
         child: fanout.child.clone(),
         items: fanout.items.as_ref().map(items_source_to_dto),
-        aggregate: fanout.aggregate.as_ref().map(aggregate_to_dto),
     }
 }
 
@@ -314,32 +280,6 @@ fn facet_refs_to_dto(facets: &domain::FacetRefs) -> FacetRefsDto {
         policy: facets.policy.clone(),
         knowledge: facets.knowledge.clone(),
         instruction: facets.instruction.clone(),
-    }
-}
-
-fn collect_to_dto(collect: &domain::CollectConfig) -> CollectConfigDto {
-    CollectConfigDto {
-        from: collect.from.clone(),
-        reduce: reduce_strategy_to_dto(&collect.reduce),
-    }
-}
-
-fn reduce_strategy_to_dto(reduce: &domain::ReduceStrategy) -> ReduceStrategyDto {
-    match reduce {
-        domain::ReduceStrategy::Last => ReduceStrategyDto::Last,
-        domain::ReduceStrategy::Concat => ReduceStrategyDto::Concat,
-        domain::ReduceStrategy::Grouped => ReduceStrategyDto::Grouped,
-        domain::ReduceStrategy::AnyNeedsFix => ReduceStrategyDto::AnyNeedsFix,
-        domain::ReduceStrategy::AllPassed => ReduceStrategyDto::AllPassed,
-    }
-}
-
-fn aggregate_to_dto(aggregate: &domain::ParallelAggregate) -> ParallelAggregateDto {
-    ParallelAggregateDto {
-        all_match: aggregate.all_match.clone(),
-        any_match: aggregate.any_match.clone(),
-        then: aggregate.then.clone(),
-        r#else: aggregate.r#else.clone(),
     }
 }
 
@@ -465,7 +405,6 @@ mod tests {
             items: Some(ItemsSourceDto::Literal(vec![serde_json::json!({
                 "thread_id": "thread-1"
             })])),
-            aggregate: None,
         };
         assert_eq!(
             serde_json::to_value(literal).unwrap(),
@@ -478,7 +417,6 @@ mod tests {
         let reference = FanoutSpecDto {
             child: vec!["review-opus".to_string(), "review-gpt".to_string()],
             items: Some(ItemsSourceDto::ArtifactField("scan.threads".to_string())),
-            aggregate: None,
         };
         assert_eq!(
             serde_json::to_value(reference).unwrap(),

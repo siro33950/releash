@@ -17,10 +17,8 @@ nodes:
     - review-security-gpt55
     - review-architecture-opus
     - review-architecture-gpt55
-    aggregate:
-      all_match: ".*"
-      then: verify-and-classify
-      else: verify-and-classify
+  rules:
+  - next: verify-and-classify
 - name: review-acceptance-opus
   session:
     model: claude-opus-4-8
@@ -134,10 +132,8 @@ nodes:
     child:
     - verify-opus
     - verify-gpt55
-    aggregate:
-      all_match: ".*"
-      then: reporting
-      else: reporting
+  rules:
+  - next: reporting
 - name: verify-opus
   session:
     model: claude-opus-4-8

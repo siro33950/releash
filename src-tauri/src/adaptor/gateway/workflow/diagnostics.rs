@@ -2,7 +2,7 @@ use crate::adaptor::gateway::workflow::builtin;
 use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain;
 use crate::adaptor::gateway::workflow::facet::{self, FacetKind};
 use crate::adaptor::gateway::workflow::prompt_rendering;
-use crate::adaptor::gateway::workflow::schema::{NodeDefinition, ReduceStrategy, Rule, Workflow};
+use crate::adaptor::gateway::workflow::schema::{NodeDefinition, Rule, Workflow};
 use crate::adaptor::gateway::workflow::span_map::YamlSpanMap;
 use crate::domain::workflow::validation;
 use crate::domain::workflow::validation::{
@@ -22,7 +22,6 @@ const ALL_FACET_KINDS: [FacetKind; 3] = [
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Error,
-    Warning,
     Info,
 }
 
@@ -341,8 +340,7 @@ fn parse_shape_diagnostics(
             node_obj,
             &node_path,
             &[
-                "name", "command", "session", "fanout", "artifact", "input", "inputs", "collect",
-                "rules",
+                "name", "command", "session", "fanout", "artifact", "input", "inputs", "rules",
             ],
             &[
                 "type",
@@ -357,6 +355,7 @@ fn parse_shape_diagnostics(
                 "variables",
                 "cycle_guard",
                 "resets_cycle_for",
+                "collect",
             ],
             span_map,
             workflow_name,
@@ -413,26 +412,13 @@ fn parse_shape_diagnostics(
                 .field("name"),
             );
         }
-        if node_obj.contains_key("fanout") {
-            for field in ["inputs", "collect"] {
-                if node_obj.contains_key(field) {
-                    diagnostics.push(kind_disallowed_diagnostic(
-                        workflow_name,
-                        step_name,
-                        "fanout",
-                        field,
-                        span_map.field_span(&format!("{node_path}.{field}")),
-                    ));
-                }
-            }
-        }
-        if node_obj.contains_key("command") && node_obj.contains_key("collect") {
+        if node_obj.contains_key("fanout") && node_obj.contains_key("inputs") {
             diagnostics.push(kind_disallowed_diagnostic(
                 workflow_name,
                 step_name,
-                "command",
-                "collect",
-                span_map.field_span(&format!("{node_path}.collect")),
+                "fanout",
+                "inputs",
+                span_map.field_span(&format!("{node_path}.inputs")),
             ));
         }
         if let Some(session) = node_obj
@@ -483,13 +469,28 @@ fn parse_shape_diagnostics(
             check_allowed_fields(
                 fanout,
                 &format!("{node_path}.fanout"),
-                &["child", "items", "aggregate"],
-                &["parallel_children"],
+                &["child", "items"],
+                &["parallel_children", "aggregate", "all_match", "any_match"],
                 span_map,
                 workflow_name,
                 Some(step_name),
                 &mut diagnostics,
             );
+            if let Some(aggregate) = fanout
+                .get("aggregate")
+                .and_then(serde_json::Value::as_object)
+            {
+                check_allowed_fields(
+                    aggregate,
+                    &format!("{node_path}.fanout.aggregate"),
+                    &[],
+                    &["all_match", "any_match", "then", "else"],
+                    span_map,
+                    workflow_name,
+                    Some(step_name),
+                    &mut diagnostics,
+                );
+            }
         }
         if let Some(rules) = node_obj.get("rules").and_then(serde_json::Value::as_array) {
             for (rule_index, rule) in rules.iter().enumerate() {
@@ -665,13 +666,11 @@ fn validation_error_code_stage(
         | ValidationError::DuplicateStep { .. }
         | ValidationError::EmptyFanoutChildren { .. }
         | ValidationError::EmptyCommand { .. }
-        | ValidationError::DisallowedFieldForKind { .. }
         | ValidationError::TooManyNodes { .. }
         | ValidationError::TooManyFanoutChildren { .. } => "WFS006",
-        ValidationError::UnknownRuleTarget { .. }
-        | ValidationError::UnknownFanoutChild { .. }
-        | ValidationError::AggregateUnknownTarget { .. }
-        | ValidationError::UnknownCollectFrom { .. } => "WFR001",
+        ValidationError::UnknownRuleTarget { .. } | ValidationError::UnknownFanoutChild { .. } => {
+            "WFR001"
+        }
         ValidationError::InvalidFanoutItemsReference { .. } => "WFR003",
         ValidationError::FanoutInputMismatch { .. } => "WFT003",
         ValidationError::FanoutChildLeafViolation { .. } => "WFC006",
@@ -709,7 +708,6 @@ fn validation_error_code_stage(
             | InvalidRuleKind::StandaloneNextWithDiscriminator => "WFC002",
         },
         ValidationError::UnreachableNode { .. } => "WFC001",
-        ValidationError::AggregateInvalidConfig { .. } => "WFC002",
         ValidationError::MissingFacet { .. } => "WFR900",
         ValidationError::InvalidPermissionMode { .. }
         | ValidationError::MissingPermissionMode { .. }
@@ -1086,12 +1084,6 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::FanoutChildLeafViolation { step, .. } => {
             (Some(step.clone()), Some("fanout.child".to_string()))
         }
-        ValidationError::AggregateInvalidConfig { step, .. } => {
-            (Some(step.clone()), Some("aggregate".to_string()))
-        }
-        ValidationError::AggregateUnknownTarget { step, .. } => {
-            (Some(step.clone()), Some("aggregate".to_string()))
-        }
         ValidationError::UnknownRuleTarget { step, .. } => {
             (Some(step.clone()), Some("rules.next".to_string()))
         }
@@ -1103,9 +1095,6 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
             (Some(step.clone()), Some("nodes".to_string()))
         }
         ValidationError::MissingFacet { step } => (Some(step.clone()), Some("facets".to_string())),
-        ValidationError::UnknownCollectFrom { step, .. } => {
-            (Some(step.clone()), Some("collect.from".to_string()))
-        }
         ValidationError::InvalidArtifactReference { .. } => (None, Some("inputs".to_string())),
         ValidationError::InvalidPermissionMode { step, .. } => {
             (Some(step.clone()), Some("permission".to_string()))
@@ -1123,9 +1112,6 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
             (Some(step.clone()), Some("model".to_string()))
         }
         ValidationError::EmptyCommand { step } => (Some(step.clone()), Some("command".to_string())),
-        ValidationError::DisallowedFieldForKind { step, field, .. } => {
-            (Some(step.clone()), Some(field.to_string()))
-        }
         ValidationError::TooManyNodes { .. } => (None, Some("nodes".to_string())),
         ValidationError::TooManyFanoutChildren { step, .. } => {
             (Some(step.clone()), Some("fanout.child".to_string()))
@@ -1185,35 +1171,6 @@ fn diagnose_workflow(
 
     // 各stepを診断
     for step in &wf.nodes {
-        if let Some(ref collect) = step.collect {
-            // collect元stepにrulesがないwarning
-            if matches!(
-                collect.reduce,
-                ReduceStrategy::AnyNeedsFix | ReduceStrategy::AllPassed
-            ) {
-                for from in &collect.from {
-                    if let Some(source_step) = wf.nodes.iter().find(|s| s.name == *from) {
-                        if source_step.rules.is_empty() && !source_step.is_fanout() {
-                            let item = DiagnosticItem::new(
-                                "WFC900",
-                                Severity::Warning,
-                                DiagnosticStage::ControlFlow,
-                                None,
-                                format!(
-                                    "collect元ステップ '{}' にrulesが未設定です（{:?}リデュースで結果がNoneになる可能性）",
-                                    from, collect.reduce
-                                ),
-                            )
-                            .workflow(name.clone())
-                            .step(step.name.clone())
-                            .field("collect.reduce");
-                            add_diagnostic(items, workflow_summaries, name, item);
-                        }
-                    }
-                }
-            }
-        }
-
         // ファセット参照の存在チェック + usage 記録
         FacetRefCheckContext::new(name, all_facet_keys, items, workflow_summaries, facet_usage)
             .check_step(
@@ -1472,7 +1429,6 @@ fn increment_summary(
     let summary = summaries.entry(key.to_string()).or_default();
     match severity {
         Severity::Error => summary.error_count += 1,
-        Severity::Warning => summary.warning_count += 1,
         Severity::Info => summary.info_count += 1,
     }
 }
@@ -1481,8 +1437,8 @@ fn increment_summary(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
-        CollectConfig, CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeKind, ReduceStrategy,
-        Rule, SchemaDef, SessionSpec, Workflow,
+        CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeKind, Rule, SchemaDef, SessionSpec,
+        Workflow,
     };
     use std::fs;
     use tempfile::TempDir;
@@ -1523,7 +1479,6 @@ mod tests {
             kind: NodeKind::Fanout(FanoutSpec {
                 child: children.into_iter().map(str::to_string).collect(),
                 items: None,
-                aggregate: None,
             }),
             ..NodeDefinition::default()
         }
@@ -2264,40 +2219,6 @@ nodes:
     }
 
     #[test]
-    fn diagnose_collect_warning() {
-        let tmp = TempDir::new().unwrap();
-        let wf_dir = tmp.path();
-        setup_facet(wf_dir, "instructions", "review", "content");
-
-        let wf = Workflow {
-            name: "test-wf".to_string(),
-            description: "test".to_string(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                NodeDefinition {
-                    // source step without rules
-                    ..make_step("review-step", Some("review"))
-                },
-                NodeDefinition {
-                    collect: Some(CollectConfig {
-                        from: vec!["review-step".to_string()],
-                        reduce: ReduceStrategy::AnyNeedsFix,
-                    }),
-                    ..make_step("collect-step", None)
-                },
-            ],
-        };
-        save_workflow_yaml(wf_dir, &wf);
-
-        let report = diagnose_all(wf_dir, wf_dir);
-        assert!(report
-            .items
-            .iter()
-            .any(|i| i.severity == Severity::Warning && i.message.contains("rulesが未設定")));
-    }
-
-    #[test]
     fn diagnose_unreachable_step() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
@@ -2522,39 +2443,6 @@ nodes:
     }
 
     #[test]
-    fn diagnose_collect_warning_all_passed() {
-        let tmp = TempDir::new().unwrap();
-        let wf_dir = tmp.path();
-        setup_facet(wf_dir, "instructions", "review", "content");
-
-        let wf = Workflow {
-            name: "test-wf".to_string(),
-            description: "test".to_string(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                NodeDefinition {
-                    ..make_step("review-step", Some("review"))
-                },
-                NodeDefinition {
-                    collect: Some(CollectConfig {
-                        from: vec!["review-step".to_string()],
-                        reduce: ReduceStrategy::AllPassed,
-                    }),
-                    ..make_step("collect-step", None)
-                },
-            ],
-        };
-        save_workflow_yaml(wf_dir, &wf);
-
-        let report = diagnose_all(wf_dir, wf_dir);
-        assert!(report
-            .items
-            .iter()
-            .any(|i| i.severity == Severity::Warning && i.message.contains("rulesが未設定")));
-    }
-
-    #[test]
     fn diagnose_invalid_facet_key_via_diagnose_all() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
@@ -2700,43 +2588,6 @@ nodes:
                 .iter()
                 .any(|i| i.severity == Severity::Error && i.field.as_deref() == Some("inputs")),
             "Artifact input reference should not be an error, got: {:?}",
-            report.items
-        );
-    }
-
-    #[test]
-    fn diagnose_collect_from_subsequent_step() {
-        let tmp = TempDir::new().unwrap();
-        let wf_dir = tmp.path();
-        setup_facet(wf_dir, "instructions", "task", "content");
-
-        // step1 が後続の step2 を collect.from で参照 → エラーになるべき
-        let wf = Workflow {
-            name: "subsequent-collect".to_string(),
-            description: "test".to_string(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                NodeDefinition {
-                    collect: Some(CollectConfig {
-                        from: vec!["step2".to_string()],
-                        reduce: ReduceStrategy::Concat,
-                    }),
-                    ..make_step("step1", None)
-                },
-                make_step("step2", Some("task")),
-            ],
-        };
-        save_workflow_yaml(wf_dir, &wf);
-
-        let report = diagnose_all(wf_dir, wf_dir);
-        assert!(
-            report.items.iter().any(|i| i.code == "WFR001"
-                && i.severity == Severity::Error
-                && i.stage == DiagnosticStage::Resolve
-                && i.step_name.as_deref() == Some("step1")
-                && i.field.as_deref() == Some("collect.from")),
-            "Expected WFR001 for collect.from, got: {:?}",
             report.items
         );
     }

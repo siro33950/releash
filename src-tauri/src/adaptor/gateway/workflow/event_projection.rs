@@ -13,7 +13,7 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
 };
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::event::{
-    CliMutationRejectionReason, CliMutationRequestRecord, CollectedOutputEntry, FanoutParentRef,
+    CliMutationRejectionReason, CliMutationRequestRecord, FanoutParentRef,
 };
 use crate::adaptor::gateway::workflow::event::{
     RunAbortedChildOutcome, RunAbortedChildOutputSnapshot, RunAbortedStepSnapshot,
@@ -319,19 +319,6 @@ pub enum WorkflowEventView {
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
     },
-    OutputCollected {
-        run_id: String,
-        workflow_name: String,
-        node_name: String,
-        node_outputs: Vec<CollectedOutputEntry>,
-        reduce_strategy: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reduce_result: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reduce_structured_output: Option<serde_json::Value>,
-        #[serde(rename = "timestampMs")]
-        timestamp_ms: f64,
-    },
     ContractRepairRequested {
         run_id: String,
         workflow_name: String,
@@ -588,25 +575,6 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 run_id,
                 workflow_name,
                 reason,
-                timestamp_ms: seconds_to_ms(timestamp),
-            },
-            WorkflowEvent::OutputCollected {
-                run_id,
-                workflow_name,
-                node_name,
-                node_outputs,
-                reduce_strategy,
-                reduce_result,
-                reduce_structured_output,
-                timestamp,
-            } => WorkflowEventView::OutputCollected {
-                run_id,
-                workflow_name,
-                node_name,
-                node_outputs,
-                reduce_strategy,
-                reduce_result,
-                reduce_structured_output,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
             WorkflowEvent::ContractRepairRequested {
@@ -1514,9 +1482,6 @@ pub(crate) fn reconstruct_state_from_events(
                 stall_observations.clear();
                 updated_at = *timestamp;
             }
-            WorkflowEvent::OutputCollected { timestamp, .. } => {
-                updated_at = *timestamp;
-            }
             WorkflowEvent::ContractRepairRequested { timestamp, .. } => {
                 updated_at = *timestamp;
             }
@@ -1553,7 +1518,7 @@ pub(crate) fn reconstruct_state_from_events(
                 // [08] CLI / in-process 経由で確定した step output を state に復元する。
                 // 後続 step が `input_reference` で経路非依存に参照できる shape に揃える。
                 // `result` は engine の live state と同じ値（contract validator の戻り値）
-                // を再導出する。これにより live と reload 経路で aggregate 評価が乖離しない。
+                // を再導出し、live と reload の Artifact projection を一致させる。
                 if is_fanout_child {
                     // fanout child Artifact は NodeExecution にだけ保持し、node-name map
                     // には載せない。親 fanout の ArtifactProduced(array) が唯一の参照面。
@@ -1571,8 +1536,7 @@ pub(crate) fn reconstruct_state_from_events(
                         ContractValidationResult::Valid { result, .. } => result,
                         // append-only ログに記録された ArtifactProduced は engine 側で validator を
                         // 通過しているため通常ここには到達しない。validator が将来変更されて
-                        // 不適合判定になっても、result を None にして live と同等に振る舞う
-                        // （aggregate 評価では match なしになるだけ）。
+                        // 不適合判定になっても、result を None にして live と同等に振る舞う。
                         ContractValidationResult::Invalid(_) => None,
                     }
                 } else {
@@ -2040,7 +2004,6 @@ mod tests {
         workflow.nodes[0].kind = NodeKind::Fanout(FanoutSpec {
             child: vec!["review".to_string()],
             items: None,
-            aggregate: None,
         });
         workflow.nodes[1].kind = approval_session_kind("review the diff");
         let events = vec![
@@ -2783,7 +2746,7 @@ mod tests {
             state.node_executions[2].artifact,
             Some(serde_json::json!({"value": 20}))
         );
-        assert!(state.step_outputs.get("worker").is_none());
+        assert!(!state.step_outputs.contains_key("worker"));
         assert_eq!(
             state
                 .step_outputs
@@ -2810,7 +2773,6 @@ mod tests {
         workflow.nodes[0].kind = NodeKind::Fanout(FanoutSpec {
             child: vec!["review-a".to_string(), "review-b".to_string()],
             items: None,
-            aggregate: None,
         });
         let mut events = vec![
             run_started(run_id, workflow),

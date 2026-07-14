@@ -67,8 +67,6 @@ pub(crate) enum StepOutcome {
     },
     /// 次のステップに遷移し、AgentSession を起動する
     TransitionAndStart(WorkflowState),
-    /// collect仮想stepに遷移し、reduce処理を実行する
-    ReduceAndTransition(WorkflowState),
     /// 並列ブロックに遷移し、子ステップを並列起動する
     StartParallel(WorkflowState),
 }
@@ -79,7 +77,6 @@ impl StepOutcome {
             Self::Persist(snapshot)
             | Self::RetryCurrentStep { snapshot, .. }
             | Self::TransitionAndStart(snapshot)
-            | Self::ReduceAndTransition(snapshot)
             | Self::StartParallel(snapshot) => snapshot,
         }
     }
@@ -104,9 +101,9 @@ impl StepOutcome {
                 completed_session_id,
                 ..
             } => completed_session_id.iter().cloned().collect(),
-            Self::TransitionAndStart(snapshot)
-            | Self::ReduceAndTransition(snapshot)
-            | Self::StartParallel(snapshot) => completed_step_session_ids(snapshot),
+            Self::TransitionAndStart(snapshot) | Self::StartParallel(snapshot) => {
+                completed_step_session_ids(snapshot)
+            }
         }
     }
 }

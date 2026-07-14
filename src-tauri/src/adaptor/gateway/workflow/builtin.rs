@@ -509,6 +509,41 @@ mod tests {
     }
 
     #[test]
+    fn review_builtins_route_fanouts_with_next_rules() {
+        let cases = [
+            ("03_review", "review-parallel", "reporting"),
+            ("03_full-review", "review-parallel", "verify-and-classify"),
+            ("03_full-review", "verify-and-classify", "reporting"),
+        ];
+
+        for (workflow_name, fanout_name, expected_next) in cases {
+            let workflow = load_builtin_workflow_resolved(workflow_name)
+                .unwrap_or_else(|err| panic!("builtin '{workflow_name}' must load: {err}"))
+                .unwrap_or_else(|| panic!("builtin '{workflow_name}' must exist"));
+            let fanout = workflow
+                .nodes
+                .iter()
+                .find(|node| node.name == fanout_name)
+                .unwrap_or_else(|| {
+                    panic!("builtin '{workflow_name}' must contain fanout '{fanout_name}'")
+                });
+
+            assert!(
+                fanout.fanout().is_some(),
+                "builtin '{workflow_name}' node '{fanout_name}' must remain a fanout"
+            );
+            assert!(
+                matches!(
+                    fanout.rules.as_slice(),
+                    [crate::adaptor::gateway::workflow::schema::Rule::Next(next)]
+                        if next == expected_next
+                ),
+                "builtin '{workflow_name}' fanout '{fanout_name}' must route directly to '{expected_next}'"
+            );
+        }
+    }
+
+    #[test]
     fn draft_authoring_workflow_is_document_steps() {
         let name = "01_authoring_draft";
         let wf = load_builtin_workflow_resolved(name)

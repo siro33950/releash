@@ -66,7 +66,6 @@ Issue [#1176](https://github.com/siro33950/releash/issues/1176) のスコープ�
 | `ParallelRunState` | Fanout | legacy_name | parallel 系語彙は Fanout に吸収する。 |
 | `ParallelChildRun` | NodeExecution / Fanout | legacy_name | fanout child も NodeExecution。 |
 | `ParallelChildState` | NodeExecution / Fanout | legacy_name | fanout child の状態。 |
-| `ParallelAggregate` | Fanout | legacy_name | fanout 集約設定/処理として扱う。 |
 | `ParallelStepState` | Fanout | read_model | UI/API 用 state。 |
 | `NodeCompletion` | NodeExecution | internal | NodeExecution 完了時の処理入力。 |
 | `ParallelChildCompletion` | NodeExecution | internal | child NodeExecution 完了時の処理入力。 |
@@ -99,8 +98,6 @@ Issue [#1176](https://github.com/siro33950/releash/issues/1176) のスコープ�
 | `ApprovalTargetSnapshot` | なし | internal | approval 対象検証用 snapshot。 |
 | `TransitionRule` | なし | internal | engine の transition 設定。 |
 | `CycleGuard` | なし | internal | engine の安全設定。 |
-| `CollectConfig` | なし | internal | engine の collect 設定。 |
-| `ReduceStrategy` | なし | internal | engine の reduce 設定。 |
 
 ### workflow contract / output
 
@@ -117,7 +114,6 @@ Issue [#1176](https://github.com/siro33950/releash/issues/1176) のスコープ�
 | `ConditionalArrayRule` | Contract | internal | validation rule。 |
 | `WorkflowValidateOutputResult` | Contract / Diagnostic | internal | output validation result。 |
 | `SubmitOutputCommand` | Command | internal | usecase command input。 |
-| `CollectedOutputEntry` | Artifact | internal | collect 処理の内部 entry。 |
 | `StepOutput` | Artifact | legacy_name | NodeExecution output の現行表現。 |
 | `StepHistoryEntry` | NodeExecution / Artifact | legacy_name | history/output の現行表現。 |
 | `ChildOutputSnapshot` | Fanout / Artifact | legacy_name | fanout child output snapshot。 |

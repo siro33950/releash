@@ -254,7 +254,6 @@ mod tests {
         let entry = aborted_parallel_history_entry(
             &ParallelRunState {
                 parent_step_name: "parallel-review".to_string(),
-                aggregate: None,
                 children: vec![
                     ParallelChildRun {
                         step_name: "child-a".to_string(),
